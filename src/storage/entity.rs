@@ -93,8 +93,6 @@ pub struct GmvDeviceExt {
 
 #[cfg(test)]
 mod tests {
-    use common::err::TransError;
-    use common::log::error;
     use common::once_cell::sync::OnceCell;
     use common::Tripe;
     use super::*;

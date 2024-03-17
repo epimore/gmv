@@ -58,7 +58,18 @@ impl Register {
                     let zip = Zip::build_data(Package::new(res_bill, Bytes::from(ok_response)));
                     let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
                     //todo next query device info
-                } else {}
+                } else {
+                    //设备下线
+                    GmvDevice::update_gmv_device_status_by_device_id(&device_id, 0);
+                    RWSession::clean(&device_id)?;
+                    let ok_response = builder::build_logout_ok_response(&req, bill.get_from())?;
+                    let res_bill = if bill.get_protocol().eq(&Protocol::UDP) {
+                        udp_turn_bill(bill)
+                    } else { bill.clone() };
+                    let zip = Zip::build_data(Package::new(res_bill, Bytes::from(ok_response)));
+                    let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
+                }
+
             }
             _ => {}
         }

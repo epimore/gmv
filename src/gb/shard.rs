@@ -21,7 +21,7 @@ pub mod rw {
 
     static RW_SESSION: Lazy<RWSession> = Lazy::new(|| RWSession::init());
 
-    fn get_rw_session_guard() -> GlobalResult<MutexGuard<'static,State>> {
+    fn get_rw_session_guard() -> GlobalResult<MutexGuard<'static, State>> {
         let guard = RW_SESSION.shared.state.lock()
             .map_err(|err| SysErr(anyhow!(err.to_string())))
             .hand_err(|msg| error!("{msg}"))?;
@@ -81,6 +81,15 @@ pub mod rw {
             Ok(())
         }
 
+        pub fn clean(device_id: &String) -> GlobalResult<()> {
+            let mut guard = get_rw_session_guard()?;
+            let state = &mut *guard;
+            state.sessions.remove(device_id).map(|(_tx, when, _expires)| {
+                state.expirations.remove(&(when, device_id.clone()));
+            });
+            Ok(())
+        }
+
         pub fn heart(device_id: &String) -> GlobalResult<()> {
             let mut guard = get_rw_session_guard()?;
             let state = &mut *guard;
@@ -109,6 +118,7 @@ pub mod rw {
                 if when > &now {
                     return Ok(Some(*when));
                 }
+                //todo 放入队列中处理，避免阻塞导致锁长期占用
                 GmvDevice::update_gmv_device_status_by_device_id(device_id, 0);
                 state.sessions.remove(device_id);
                 state.expirations.remove(&(*when, device_id.to_string()));
