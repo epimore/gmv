@@ -1,0 +1,21 @@
+log:
+  level: debug
+  suffix: server
+  store_path: ./logs
+
+db:
+  mysql:
+    host_or_ip: imysql
+    port: 33061
+    db_name: gmv
+    user: epimore
+    pass: clRXVjIzU1VrS3BEMXZmNxp5adMgQy599aQeu0tHYg0=
+    pool:
+      max_size: 100  # 默认100，最大连接词值，即峰值时，操作进行排队
+      min_size: 10   # 默认None，等同于max_size，最小连接池值，即空闲时也维持
+      check_health: true    # 默认true，连接池维持健康测试
+      read_timeout: 1800     # 默认不控制，读取超时时间 秒
+      write_timeout: 1800     # 默认不控制，写入超时时间 秒
+      connection_timeout: 30     # 默认30秒，连接超时时间
+
+
