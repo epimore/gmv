@@ -1,3 +1,5 @@
+/// UDP：三次心跳超时则移除会话
+/// TCP：连接断开或三次心跳超时则移除会话
 pub mod rw {
     use std::collections::{BTreeSet, HashMap};
     use std::sync::{Arc, LockResult, Mutex, MutexGuard};
@@ -73,7 +75,7 @@ pub mod rw {
         }
 
         pub fn insert(device_id: &String, tx: Sender<Zip>, heartbeat: u8, bill: &Bill) -> GlobalResult<()> {
-            let expires = Duration::from_secs(heartbeat as u64);
+            let expires = Duration::from_secs(heartbeat as u64 * 3);
             let when = Instant::now() + expires;
             let mut state = get_rw_session_guard()?;
             let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
@@ -104,6 +106,7 @@ pub mod rw {
         }
 
         //用于清理rw_session数据及端口TCP网络连接
+        //todo 禁用设备时需调用
         pub async fn clean_rw_session_and_net(device_id: &String) -> GlobalResult<()> {
             let mut guard = get_rw_session_guard()?;
             let state = &mut *guard;
@@ -134,6 +137,18 @@ pub mod rw {
                 state.expirations.insert((ct, device_id.clone()));
             });
             Ok(())
+        }
+
+        pub fn get_bill_by_device_id(device_id: &String) -> GlobalResult<Option<Bill>> {
+            let guard = get_rw_session_guard()?;
+            let option_bill = guard.sessions.get(device_id).map(|(_tx, _when, _expires, bill)| bill.clone());
+            Ok(option_bill)
+        }
+
+        pub fn get_expires_by_device_id(device_id: &String) -> GlobalResult<Option<Duration>> {
+            let guard = get_rw_session_guard()?;
+            let option_expires = guard.sessions.get(device_id).map(|(_tx, _when, expires, _bill)| *expires);
+            Ok(option_expires)
         }
     }
 

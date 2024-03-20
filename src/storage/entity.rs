@@ -94,6 +94,29 @@ pub struct GmvDeviceExt {
     max_camera: Option<u8>,
 }
 
+pub struct gmvDeviceChannel {
+    device_id: String,
+    channel_id: String,
+    name: Option<String>,
+    manufacturer: Option<String>,
+    model: Option<String>,
+    owner: Option<String>,
+    status: String,
+    civil_code: Option<String>,
+    address: Option<String>,
+    parental: Option<u8>,
+    block: Option<String>,
+    parent_id: Option<String>,
+    ip_address: Option<String>,
+    port: Option<u16>,
+    password: Option<String>,
+    longitude: Option<f32>,
+    latitude: Option<f32>,
+    ptz_type: Option<u8>,
+    supply_light_type: Option<u8>,
+    alias_name: Option<String>,
+}
+
 
 #[cfg(test)]
 mod tests {
