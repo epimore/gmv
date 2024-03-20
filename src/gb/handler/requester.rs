@@ -48,7 +48,7 @@ impl Register {
             &0u8 => {
                 let expires = parser::header::get_expires(&req)?;
                 if expires > 0 {
-                    RWSession::insert(&device_id, tx.clone(), *oauth.get_heartbeat_sec())?;
+                    RWSession::insert(&device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill)?;
                     let gmv_device = GmvDevice::build_gmv_device(&req, bill)?;
                     gmv_device.insert_single_gmv_device_by_register();
                     let ok_response = builder::build_register_ok_response(&req, bill.get_from())?;
@@ -60,16 +60,15 @@ impl Register {
                     //todo next query device info
                 } else {
                     //设备下线
-                    GmvDevice::update_gmv_device_status_by_device_id(&device_id, 0);
-                    RWSession::clean(&device_id)?;
                     let ok_response = builder::build_logout_ok_response(&req, bill.get_from())?;
                     let res_bill = if bill.get_protocol().eq(&Protocol::UDP) {
                         udp_turn_bill(bill)
                     } else { bill.clone() };
                     let zip = Zip::build_data(Package::new(res_bill, Bytes::from(ok_response)));
                     let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
+                    GmvDevice::update_gmv_device_status_by_device_id(&device_id, 0);
+                    RWSession::clean_rw_session_and_net(&device_id).await?;
                 }
-
             }
             _ => {}
         }

@@ -50,31 +50,27 @@ pub mod header {
         Ok(expires)
     }
 
+    pub fn get_domain(req: &Request) -> GlobalResult<String> {
+        let to_uri = req.to_header().hand_err(|msg| warn!("{msg}"))?.uri().hand_err(|msg| warn!("{msg}"))?;
+        Ok(to_uri.host_with_port.to_string())
+    }
+
     pub fn get_gb_version(req: &Request) -> Option<String> {
-        let other_1_0 = Header::Other("X-GB-Ver".into(), "1.0".into());
-        let other_1_1 = Header::Other("X-GB-Ver".into(), "1.1".into());
-        let other_2_0 = Header::Other("X-GB-Ver".into(), "2.0".into());
-        let other_3_0 = Header::Other("X-GB-Ver".into(), "3.0".into());
-        let x_gb_ver = String::from("X-GB-Ver");
         for header in req.headers().iter() {
             match header {
-                other_1_0 => {
-                    return Some("GB/T 28181—2011".to_string());
-                }
-                other_1_1 => {
-                    return Some("GB/T 28181—2011-1".to_string());
-                }
-                other_2_0 => {
-                    return Some("GB/T 28181—2016".to_string());
-                }
-                other_3_0 => {
-                    return Some("GB/T 28181—2022".to_string());
-                }
-                Header::Other(x_gb_ver, val) => {
-                    return Some(val.to_string());
+                Header::Other(key, val) => {
+                    if key.eq("X-GB-Ver") {
+                        return match &val[..] {
+                            "1.0" => Some("GB/T 28181—2011".to_string()),
+                            "1.1" => Some("GB/T 28181—2011-1".to_string()),
+                            "2.0" => Some("GB/T 28181—2016".to_string()),
+                            "3.0" => Some("GB/T 28181—2022".to_string()),
+                            &_ => Some(val.to_string())
+                        };
+                    }
                 }
                 _ => { continue; }
-            }
+            };
         }
         None
     }

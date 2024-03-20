@@ -37,6 +37,7 @@ impl GmvOauth {
 funs = [
 {fn_name = "insert_single_gmv_device", sql_type = "create:single", exist_update = "true"},
 {fn_name = "update_gmv_device_status", sql_type = "update", fields = "status", condition = "device_id:="},
+{fn_name = "query_single_gmv_device_by_device_id", sql_type = "read:single", condition = "device_id:="},
 ])]
 pub struct GmvDevice {
     device_id: String,
@@ -44,7 +45,6 @@ pub struct GmvDevice {
     register_expires: u32,
     register_time: u32,
     local_addr: String,
-    socket_addr: String,
     sip_from: String,
     sip_to: String,
     status: u8,
@@ -53,6 +53,11 @@ pub struct GmvDevice {
 
 
 impl GmvDevice {
+    pub fn query_gmv_device_by_device_id(device_id: &String) -> GlobalResult<Option<GmvDevice>> {
+        let mut conn = idb::get_mysql_conn().unwrap();
+        GmvDevice::query_single_gmv_device_by_device_id(&mut conn, device_id)
+    }
+
     pub fn insert_single_gmv_device_by_register(&self) {
         let mut conn = idb::get_mysql_conn().unwrap();
         self.insert_single_gmv_device(&mut conn);
@@ -71,7 +76,6 @@ impl GmvDevice {
             register_expires: parser::header::get_expires(req)?,
             register_time: Local::now().timestamp() as u32,
             local_addr: parser::header::get_local_addr(req)?,
-            socket_addr: bill.get_from().to_string(),
             sip_from: parser::header::get_from(req)?,
             sip_to: parser::header::get_to(req)?,
             status: 1,
@@ -117,5 +121,13 @@ mod tests {
     fn test_update_gmv_device_status_by_device_id() {
         init_mysql();
         let _ = GmvDevice::update_gmv_device_status_by_device_id(&"device_id_1".to_string(), 1);
+    }
+
+    #[test]
+    fn test_query_single_gmv_device_by_device_id() {
+        init_mysql();
+        GmvDevice::default().insert_single_gmv_device_by_register();
+        let result = GmvDevice::query_gmv_device_by_device_id(&"aaa".to_string());
+        println!("{result:?}");
     }
 }

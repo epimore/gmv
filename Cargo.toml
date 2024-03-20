@@ -13,3 +13,4 @@ ezsql = { path = "../macros/ezsql" }
 common = { path = "../pig/common", features = ["net"] }
 idb = { path = "../pig/idb" }
 mysql = "24.0"
+uuid = { version = "1.7.0", features = ["v4"] }
