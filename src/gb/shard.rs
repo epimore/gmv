@@ -1,3 +1,4 @@
+/// 数据读写会话：与网络协议交互
 /// UDP：三次心跳超时则移除会话
 /// TCP：连接断开或三次心跳超时则移除会话
 pub mod rw {
@@ -198,6 +199,20 @@ pub mod rw {
         fn next_expiration(&self) -> Option<Instant> {
             self.expirations.iter().next().map(|expiration| expiration.0)
         }
+    }
+}
+
+/// 事件会话：与业务事件交互
+/// 定位：请求 <——> 回复
+/// 会话超时 8s
+pub mod event{
+    pub enum Owner{
+        Sys,
+        User(String)
+    }
+
+    struct State{
+        // expirations:
     }
 }
 

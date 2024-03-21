@@ -10,6 +10,7 @@ use common::net::shard::{Bill, Package, Protocol, Zip};
 use common::net::udp_turn_bill;
 use common::tokio::sync::mpsc::Sender;
 use crate::gb::handler::{builder, parser};
+use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::shard::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvOauth};
 
@@ -51,16 +52,17 @@ impl Register {
                     RWSession::insert(&device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill)?;
                     let gmv_device = GmvDevice::build_gmv_device(&req, bill)?;
                     gmv_device.insert_single_gmv_device_by_register();
-                    let ok_response = builder::build_register_ok_response(&req, bill.get_from())?;
+                    let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_from())?;
                     let res_bill = if bill.get_protocol().eq(&Protocol::UDP) {
                         udp_turn_bill(bill)
                     } else { bill.clone() };
                     let zip = Zip::build_data(Package::new(res_bill, Bytes::from(ok_response)));
                     let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
                     //todo next query device info
+
                 } else {
                     //设备下线
-                    let ok_response = builder::build_logout_ok_response(&req, bill.get_from())?;
+                    let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_from())?;
                     let res_bill = if bill.get_protocol().eq(&Protocol::UDP) {
                         udp_turn_bill(bill)
                     } else { bill.clone() };
