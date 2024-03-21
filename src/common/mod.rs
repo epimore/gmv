@@ -1,7 +1,6 @@
 use std::net::Ipv4Addr;
 use constructor::Get;
 
-mod lazy_queue;
 mod map_config;
 
 #[derive(Debug, Get)]

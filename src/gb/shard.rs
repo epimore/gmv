@@ -50,7 +50,7 @@ pub mod rw {
             };
             let shard = session.shared.clone();
             thread::spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().hand_err(|msg| error!("{msg}")).unwrap();
+                let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("RW-SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
                 rt.spawn(Self::do_update_device_status(rx));
                 let _ = rt.block_on(Self::purge_expired_task(shard));
             });
@@ -197,7 +197,7 @@ pub mod rw {
     impl State {
         //获取下一个过期瞬间刻度
         fn next_expiration(&self) -> Option<Instant> {
-            self.expirations.iter().next().map(|expiration| expiration.0)
+            self.expirations.first().map(|expiration| expiration.0)
         }
     }
 }
@@ -205,14 +205,208 @@ pub mod rw {
 /// 事件会话：与业务事件交互
 /// 定位：请求 <——> 回复
 /// 会话超时 8s
-pub mod event{
-    pub enum Owner{
-        Sys,
-        User(String)
+pub mod event {
+    use std::collections::{BTreeSet, HashMap};
+    use std::collections::hash_map::Entry;
+    use std::process::id;
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::thread;
+    use rsip::Response;
+    use common::anyhow::anyhow;
+    use common::err::GlobalError::SysErr;
+    use common::err::{GlobalResult, TransError};
+    use common::log::{error, warn};
+    use common::net::shard::{Event, Protocol, Zip};
+    use common::once_cell::sync::Lazy;
+    use common::tokio;
+    use common::tokio::sync::mpsc::Sender;
+    use common::tokio::sync::{mpsc, Notify};
+    use common::tokio::time;
+    use common::tokio::time::Instant;
+    use constructor::{Get, New};
+
+    static EVENT_SESSION: Lazy<EventSession> = Lazy::new(|| EventSession::init());
+
+    fn get_event_session_guard() -> GlobalResult<MutexGuard<'static, State>> {
+        let guard = EVENT_SESSION.shared.state.lock()
+            .map_err(|err| SysErr(anyhow!(err.to_string())))
+            .hand_err(|msg| error!("{msg}"))?;
+        Ok(guard)
     }
 
-    struct State{
-        // expirations:
+    pub struct EventSession {
+        shared: Arc<Shared>,
+    }
+
+    impl EventSession {
+        fn init() -> Self {
+            let session = EventSession {
+                shared: Arc::new(
+                    Shared {
+                        state: Mutex::new(State { expirations: BTreeSet::new(), ident_map: HashMap::new() }),
+                        background_task: Notify::new(),
+                    }
+                ),
+            };
+            let shard = session.shared.clone();
+            thread::spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("EVENT-SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
+                let _ = rt.block_on(Self::purge_expired_task(shard));
+            });
+            session
+        }
+
+        async fn purge_expired_task(shared: Arc<Shared>) -> GlobalResult<()> {
+            loop {
+                if let Some(when) = shared.purge_expired_state().await? {
+                    tokio::select! {
+                        _ = time::sleep_until(when) =>{},
+                        _ = shared.background_task.notified() =>{},
+                    }
+                } else {
+                    shared.background_task.notified().await;
+                }
+            }
+        }
+
+        pub fn insert(ident: &Ident, when: Instant, container: Container) -> GlobalResult<()> {
+            let mut guard = get_event_session_guard()?;
+            let state = &mut *guard;
+            match state.ident_map.entry(ident.clone()) {
+                Entry::Occupied(o) => { Err(SysErr(anyhow!("{:?},重复插入",ident))) }
+                Entry::Vacant(en) => {
+                    en.insert((when, container));
+                    state.expirations.insert((when, ident.clone()));
+                    Ok(())
+                }
+            }
+        }
+
+        pub fn clean(ident: &Ident) -> GlobalResult<()> {
+            let mut guard = get_event_session_guard()?;
+            let state = &mut *guard;
+            state.ident_map.remove(ident).map(|(when, _container)| state.expirations.remove(&(when, ident.clone())));
+            Ok(())
+        }
+
+        pub async fn send_response_and_clean(ident: &Ident, response: Response) -> GlobalResult<()> {
+            let mut guard = get_event_session_guard()?;
+            let state = &mut *guard;
+            match state.ident_map.remove(ident) {
+                None => { Err(SysErr(anyhow!("{:?},无效请求",ident))) }
+                Some((when, container)) => {
+                    state.expirations.remove(&(when, ident.clone()));
+                    match container {
+                        Container::Res(res) => {
+                            //当tx为some时需发送响应结果
+                            if let Some(tx) = res {
+                                let _ = tx.send((Some(response), when)).await.hand_err(|msg| error!("{msg}"));
+                            }
+                            Ok(())
+                        }
+                        Container::Actor(..) => {
+                            Err(SysErr(anyhow!("{:?},无效事件",ident)))
+                        }
+                    }
+                }
+            }
+        }
+
+        //用于一次请求有多次响应：如点播时，有100-trying，再200-OK两次响应
+        //接收端确认无后继响应时，需调用clean()，清理会话
+        pub async fn send_response(ident: &Ident, response: Response) -> GlobalResult<()> {
+            let guard = get_event_session_guard()?;
+            match guard.ident_map.get(ident) {
+                None => { Err(SysErr(anyhow!("{:?},超时响应信息",ident))) }
+                Some((when, container)) => {
+                    match container {
+                        Container::Res(res) => {
+                            //当tx为some时需发送响应结果
+                            if let Some(tx) = res {
+                                let _ = tx.clone().send((Some(response), *when)).await.hand_err(|msg| error!("{msg}"));
+                            }
+                            Ok(())
+                        }
+                        Container::Actor(..) => {
+                            Err(SysErr(anyhow!("{:?},无效事件",ident)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    struct Shared {
+        state: Mutex<State>,
+        background_task: Notify,
+    }
+
+    impl Shared {
+        //清理过期state,并返回下一个过期瞬间刻度
+        async fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
+            let mut guard = get_event_session_guard()?;
+            let state = &mut *guard;
+            let now = Instant::now();
+            while let Some((when, ident)) = state.expirations.iter().next() {
+                if when > &now {
+                    return Ok(Some(*when));
+                }
+                if let Some((when, container)) = state.ident_map.remove(ident) {
+                    match container {
+                        Container::Res(res) => {
+                            warn!("{:?},响应超时。",ident);
+                            //无响应->发送None->接收端收到None,不需要再清理State
+                            if let Some(tx) = res {
+                                let _ = tx.send((None, when)).await.hand_err(|msg| error!("{msg}"));
+                            }
+                        }
+                        Container::Actor(mut zips, tx) => {
+                            while let Some(zip) = zips.pop() {
+                                let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
+                            }
+                        }
+                    }
+                }
+                state.expirations.remove(&(*when, ident.clone()));
+            }
+            Ok(None)
+        }
+    }
+
+    #[derive(New, Get, Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+    pub struct Ident {
+        device_id: String,
+        call_id: String,
+        cs_eq: String,
+    }
+
+    //Res : 请求响应，当需要做后继处理时，Sender不为None,接收端收到数据时如果后继不再接收数据，需调用清理state
+    //Actor : 延时之后所做操作,对设备Bill发送数据
+    pub enum Container {
+        //Option<Response> 可能无响应
+        Res(Option<Sender<(Option<Response>, Instant)>>),
+        Actor(Vec<Zip>, Sender<Zip>),
+    }
+
+    impl Container {
+        pub fn build_res(res: Option<Sender<(Option<Response>, Instant)>>) -> Self {
+            Container::Res(res)
+        }
+
+        pub fn build_actor(zips: Vec<Zip>, sender: Sender<Zip>) -> Self {
+            Container::Actor(zips, sender)
+        }
+    }
+
+    struct State {
+        expirations: BTreeSet<(Instant, Ident)>,
+        ident_map: HashMap<Ident, (Instant, Container)>,
+    }
+
+    impl State {
+        fn next_expiration(&self) -> Option<Instant> {
+            self.expirations.first().map(|expiration| expiration.0)
+        }
     }
 }
 
