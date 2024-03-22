@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use rsip::{Error, header, Header, headers, Method, Param, param, Request, SipMessage, uri, Uri};
 use rsip::Header::Via;
-use rsip::headers::{Date, header, typed};
+use rsip::headers::{CallId, Date, header, typed};
 use rsip::message::HeadersExt;
 use rsip::Param::{Other};
 use rsip::param::{OtherParam, OtherParamValue};
@@ -18,6 +18,7 @@ use common::err::GlobalError::SysErr;
 use common::net::shard::Bill;
 use crate::common::SessionConf;
 use crate::gb::handler::parser;
+use crate::gb::shard::event::Ident;
 use crate::gb::shard::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvOauth};
 use crate::storage::mapper;
@@ -117,34 +118,63 @@ impl ResponseBuilder {
 pub struct RequestBuilder;
 
 impl RequestBuilder {
-    pub fn build_message_request(device_id: &String, body: String) -> GlobalResult<SipMessage> {
+    pub fn query_device_info(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+        let xml = XmlBuilder::query_device_info(device_id);
+        let message_request = Self::build_message_request(device_id, xml);
+        message_request
+    }
+    pub fn query_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+        let xml = XmlBuilder::query_device_catalog(device_id);
+        let message_request = Self::build_message_request(device_id, xml);
+        message_request
+    }
+    pub fn subscribe_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+        let xml = XmlBuilder::query_device_catalog(device_id);
+        let message_request = Self::build_subscribe_request(device_id, xml);
+        message_request
+    }
+
+    fn build_message_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
         let (mut headers, uri) = Self::build_request_header(None, device_id, false, false, None, None)?;
-        headers.push(rsip::headers::CSeq::new("1 MESSAGE").into());
+        let call_id_str = Uuid::new_v4().as_simple().to_string();
+        headers.push(rsip::headers::CallId::new(&call_id_str).into());
+        let mut rng = rand::thread_rng();
+        let cs_eq_str = format!("{} MESSAGE", rng.gen_range(12u32..21u32));
+        let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
+        headers.push(cs_eq);
         headers.push(rsip::headers::ContentType::new("APPLICATION/MANSCDP+xml").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        Ok(rsip::Request {
+        let request_msg: SipMessage = Request {
             method: Method::Message,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
-        }.into())
+        }.into();
+        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
+        Ok((ident, request_msg))
     }
 
-    pub fn build_subscribe_request(device_id: &String, body: String) -> GlobalResult<SipMessage> {
+    fn build_subscribe_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
         let (mut headers, uri) = Self::build_request_header(None, device_id, true, true, None, None)?;
-        headers.push(rsip::headers::CSeq::new("1 SUBSCRIBE").into());
+        let call_id_str = Uuid::new_v4().as_simple().to_string();
+        headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = rand::thread_rng();
+        let cs_eq_str = format!("{} SUBSCRIBE", rng.gen_range(12u32..21u32));
+        let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
+        headers.push(cs_eq);
         headers.push(rsip::headers::Event::new(format!("Catalog;id={}", rng.gen_range(123456789u32..987654321u32))).into());
         headers.push(rsip::headers::ContentType::new("APPLICATION/MANSCDP+xml").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        Ok(rsip::Request {
+        let request_msg: SipMessage = Request {
             method: Method::Subscribe,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
-        }.into())
+        }.into();
+        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
+        Ok((ident, request_msg))
     }
     /// 构建下发请求头
     fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
@@ -161,7 +191,7 @@ impl RequestBuilder {
                 }
             }
         }
-        let socket_addr = bill.get_from().to_string();
+        // let socket_addr = bill.get_from().to_string();
         let conf = SessionConf::get_session_conf();
         let server_ip = &conf.get_wan_ip().to_string();
         let server_port = conf.get_wan_port();
@@ -188,7 +218,6 @@ impl RequestBuilder {
         }).unwrap_or_else(
             || { headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, domain)).into()) }
         );
-        headers.push(rsip::headers::CallId::new(Uuid::new_v4().as_simple().to_string()).into());
         if expires {
             let expires = RWSession::get_expires_by_device_id(device_id)?.ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))?;
             headers.push(rsip::headers::Expires::new(expires.as_secs().to_string()).into());
@@ -207,7 +236,7 @@ pub struct XmlBuilder;
 ///编码格式：2022 GB18030
 /// 2016 GB2312
 impl XmlBuilder {
-    pub fn query_device_info(device_id: &str) -> String {
+    pub fn query_device_info(device_id: &String) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
         xml.push_str("<Query>\r\n");
@@ -218,7 +247,7 @@ impl XmlBuilder {
         xml
     }
 
-    pub fn query_device_catalog(device_id: &str) -> String {
+    pub fn query_device_catalog(device_id: &String) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
         xml.push_str("<Query>\r\n");

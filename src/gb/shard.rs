@@ -7,14 +7,15 @@ pub mod rw {
     use std::thread;
     use std::time::Duration;
 
-    use rsip::Response;
+    use rsip::{Response, SipMessage};
 
     use common::anyhow::{anyhow, Error};
+    use common::bytes::Bytes;
     use common::chrono::Local;
     use common::err::{GlobalResult, TransError};
     use common::err::GlobalError::SysErr;
     use common::log::{error, warn};
-    use common::net::shard::{Bill, Event, Protocol, Zip};
+    use common::net::shard::{Bill, Event, Package, Protocol, Zip};
     use common::once_cell::sync::Lazy;
     use common::tokio;
     use common::tokio::{task, time};
@@ -158,27 +159,34 @@ pub mod rw {
             Ok(option_expires)
         }
 
-        fn get_output_sender_by_device_id(device_id: &String) -> GlobalResult<Option<Sender<Zip>>> {
+        fn get_output_sender_by_device_id(device_id: &String) -> GlobalResult<Option<(Sender<Zip>, Bill)>> {
             let guard = get_rw_session_guard()?;
-            let option_sender = guard.sessions.get(device_id).map(|(sender, _, _, _)| sender.clone());
-            Ok(option_sender)
+            let opt = guard.sessions.get(device_id).map(|(sender, _, _, bill)| (sender.clone(), bill.clone()));
+            Ok(opt)
         }
     }
 
     #[derive(New)]
     pub struct RequestOutput {
         ident: Ident,
-        zip: Zip,
+        msg: SipMessage,
         event_sender: Option<Sender<(Option<Response>, Instant)>>,
     }
 
     impl RequestOutput {
         pub async fn do_send(self) -> GlobalResult<()> {
             let device_id = self.ident.get_device_id();
-            let request_sender = RWSession::get_output_sender_by_device_id(device_id)?.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
+            let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id)?.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
             let when = Instant::now() + Duration::from_secs(EXPIRES);
             EventSession::listen_event(&self.ident, when, Container::build_res(self.event_sender))?;
-            let _ = request_sender.send(self.zip).await.hand_err(|msg| error!("{msg}"));
+            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_err(|msg| error!("{msg}"));
+            Ok(())
+        }
+
+        pub(super) async fn _do_send(self) -> GlobalResult<()> {
+            let device_id = self.ident.get_device_id();
+            let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id)?.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
+            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_err(|msg| error!("{msg}"));
             Ok(())
         }
     }
@@ -242,14 +250,15 @@ pub mod event {
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread;
 
-    use rsip::Response;
+    use rsip::{Response, SipMessage};
 
     use common::anyhow::anyhow;
+    use common::bytes::Bytes;
     use common::chrono::Duration;
     use common::err::{GlobalResult, TransError};
     use common::err::GlobalError::SysErr;
-    use common::log::{error, warn};
-    use common::net::shard::{Event, Protocol, Zip};
+    use common::log::{error, info, warn};
+    use common::net::shard::{Event, Package, Protocol, Zip};
     use common::once_cell::sync::Lazy;
     use common::tokio;
     use common::tokio::sync::{mpsc, Notify};
@@ -257,6 +266,7 @@ pub mod event {
     use common::tokio::time;
     use common::tokio::time::Instant;
     use constructor::{Get, New};
+    use crate::gb::shard::rw::{RequestOutput, RWSession};
 
     /// 会话超时 8s
     pub const EXPIRES: u64 = 8;
@@ -305,7 +315,7 @@ pub mod event {
         }
 
         //即时事件监听，延迟事件监听
-        pub(super) fn listen_event(ident: &Ident, when: Instant, container: Container) -> GlobalResult<()> {
+        pub(crate) fn listen_event(ident: &Ident, when: Instant, container: Container) -> GlobalResult<()> {
             let mut guard = get_event_session_guard()?;
             let state = &mut *guard;
             match state.ident_map.entry(ident.clone()) {
@@ -357,6 +367,11 @@ pub mod event {
                 Some((when, container)) => {
                     match container {
                         Container::Res(res) => {
+                            if response.status_code.code() < 300 {
+                                info!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
+                            } else {
+                                warn!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
+                            }
                             //当tx为some时需发送响应结果
                             if let Some(tx) = res {
                                 let _ = tx.clone().send((Some(response), *when)).await.hand_err(|msg| error!("{msg}"));
@@ -391,25 +406,25 @@ pub mod event {
                     state.expirations.remove(&(when, expire_ident.clone()));
                     match container {
                         Container::Res(res) => {
-                            warn!("{:?},响应超时。",ident);
+                            warn!("{:?},响应超时。",&ident);
                             //无响应->发送None->接收端收到None,不需要再清理State
                             if let Some(tx) = res {
                                 let _ = tx.send((None, when)).await.hand_err(|msg| error!("{msg}"));
                             }
                         }
                         //延迟事件触发后，添加延迟事件执行后的监听
-                        Container::Actor(new_ident, zip, sender0, sender1) => {
+                        Container::Actor(new_ident, msg, sender) => {
                             match state.ident_map.entry(new_ident.clone()) {
                                 Entry::Occupied(o) => { Err(SysErr(anyhow!("{:?},事件重复监听",new_ident)))? }
                                 //插入事件监听
                                 Entry::Vacant(en) => {
                                     let expires = time::Duration::from_secs(EXPIRES);
                                     let new_when = Instant::now() + expires;
-                                    en.insert((new_when, Container::build_res(sender1)));
+                                    en.insert((new_when, Container::build_res(sender)));
                                     state.expirations.insert((new_when, new_ident));
                                 }
                             }
-                            let _ = sender0.send(zip).await.hand_err(|msg| error!("{msg}"));
+                            RequestOutput::new(ident, msg, None)._do_send().await?
                         }
                     }
                 }
@@ -432,7 +447,7 @@ pub mod event {
         //实时事件
         Res(Option<Sender<(Option<Response>, Instant)>>),
         //延时事件,执行时，会加入实时事件
-        Actor(Ident, Zip, Sender<Zip>, Option<Sender<(Option<Response>, Instant)>>),
+        Actor(Ident, SipMessage, Option<Sender<(Option<Response>, Instant)>>),
     }
 
     impl Container {
@@ -442,8 +457,8 @@ pub mod event {
 
         /// * `sender0`: 延迟事件发生端
         /// * `sender1`: 异步事件回调发送端
-        pub fn build_actor(ident: Ident, zip: Zip, sender0: Sender<Zip>, sender1: Option<Sender<(Option<Response>, Instant)>>) -> Self {
-            Container::Actor(ident, zip, sender0, sender1)
+        pub fn build_actor(ident: Ident, msg: SipMessage, sender: Option<Sender<(Option<Response>, Instant)>>) -> Self {
+            Container::Actor(ident, msg, sender)
         }
     }
 

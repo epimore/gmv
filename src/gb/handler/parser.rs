@@ -1,13 +1,23 @@
 pub mod header {
     use rsip::headers::Via;
     use rsip::prelude::{HasHeaders, HeadersExt};
-    use rsip::{Header, Request};
+    use rsip::{Header, Request, Response};
     use common::anyhow::anyhow;
     use common::err::{GlobalError, GlobalResult, TransError};
     use common::err::GlobalError::{BizErr, SysErr};
     use common::log::{warn};
 
-    pub fn get_device_id(req: &Request) -> GlobalResult<String> {
+    pub fn get_device_id_by_request(req: &Request) -> GlobalResult<String> {
+        let from_user = req.from_header()
+            .hand_err(|msg| warn!("{msg}"))?
+            .uri().hand_err(|msg| warn!("{msg}"))?
+            .auth.ok_or(SysErr(anyhow!("user is none")))
+            .hand_err(|msg| warn!("{msg}"))?
+            .user;
+        Ok(from_user)
+    }
+
+    pub fn get_device_id_by_response(req: &Response) -> GlobalResult<String> {
         let from_user = req.from_header()
             .hand_err(|msg| warn!("{msg}"))?
             .uri().hand_err(|msg| warn!("{msg}"))?

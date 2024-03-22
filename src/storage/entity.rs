@@ -71,7 +71,7 @@ impl GmvDevice {
 
     pub fn build_gmv_device(req: &Request, bill: &Bill) -> GlobalResult<Self> {
         let device = Self {
-            device_id: parser::header::get_device_id(req)?,
+            device_id: parser::header::get_device_id_by_request(req)?,
             transport: parser::header::get_transport(req)?,
             register_expires: parser::header::get_expires(req)?,
             register_time: Local::now().timestamp() as u32,

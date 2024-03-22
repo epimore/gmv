@@ -9,8 +9,9 @@ use common::log::{error, warn};
 use common::net::shard::{Bill, Package, Protocol, Zip};
 use common::net::udp_turn_bill;
 use common::tokio::sync::mpsc::Sender;
-use crate::gb::handler::{builder, parser};
+use crate::gb::handler::{builder, cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
+use crate::gb::shard::event::EventSession;
 use crate::gb::shard::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvOauth};
 
@@ -37,7 +38,7 @@ struct Register;
 
 impl Register {
     async fn process(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
-        let device_id = parser::header::get_device_id(&req)?;
+        let device_id = parser::header::get_device_id_by_request(&req)?;
         let oauth = GmvOauth::read_gmv_oauth_by_device_id(&device_id)?
             .ok_or(SysErr(anyhow!("device id = [{}] 未知设备，拒绝接入",&device_id)))
             .hand_err(|msg| warn!("{msg}"))?;
@@ -58,8 +59,10 @@ impl Register {
                     } else { bill.clone() };
                     let zip = Zip::build_data(Package::new(res_bill, Bytes::from(ok_response)));
                     let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
-                    //todo next query device info
-
+                    // query subscribe device msg
+                    cmd::CmdQuery::lazy_query_device_info(&device_id).await?;
+                    cmd::CmdQuery::lazy_query_device_catalog(&device_id).await?;
+                    cmd::CmdQuery::lazy_subscribe_device_catalog(&device_id).await?;
                 } else {
                     //设备下线
                     let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_from())?;
@@ -83,7 +86,7 @@ impl Register {
         let from = parser::header::get_from(&req)?;
         let to = parser::header::get_to(&req)?;
         let time = Local::now().timestamp();
-        let device_id = parser::header::get_device_id(&req)?;
+        let device_id = parser::header::get_device_id_by_request(&req)?;
 
 
         unimplemented!()
