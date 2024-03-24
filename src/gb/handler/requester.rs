@@ -17,22 +17,24 @@ use crate::gb::shard::event::EventSession;
 use crate::gb::shard::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvOauth};
 
-pub async fn hand_request(req: Request, tx: Sender<Zip>) {
+pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
     match req.method {
-        Method::Ack => {}
-        Method::Bye => {}
-        Method::Cancel => {}
-        Method::Info => {}
-        Method::Invite => {}
-        Method::Message => {}
-        Method::Notify => {}
-        Method::Options => {}
-        Method::PRack => {}
-        Method::Publish => {}
-        Method::Refer => {}
-        Method::Register => {}
-        Method::Subscribe => {}
-        Method::Update => {}
+        Method::Ack => {Ok(())}
+        Method::Bye => {Ok(())}
+        Method::Cancel => {Ok(())}
+        Method::Info => {Ok(())}
+        Method::Invite => {Ok(())}
+        Method::Message => {Ok(())}
+        Method::Notify => {Ok(())}
+        Method::Options => {Ok(())}
+        Method::PRack => {Ok(())}
+        Method::Publish => {Ok(())}
+        Method::Refer => {Ok(())}
+        Method::Register => {
+            Register::process(req, tx, bill).await
+        }
+        Method::Subscribe => {Ok(())}
+        Method::Update => {Ok(())}
     }
 }
 

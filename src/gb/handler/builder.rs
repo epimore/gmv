@@ -16,7 +16,7 @@ use common::anyhow::anyhow;
 use common::chrono::format::InternalFixed;
 use common::err::GlobalError::SysErr;
 use common::net::shard::Bill;
-use crate::common::SessionConf;
+use crate::the_common::SessionConf;
 use crate::gb::handler::parser;
 use crate::gb::shard::event::Ident;
 use crate::gb::shard::rw::RWSession;
@@ -192,7 +192,7 @@ impl RequestBuilder {
             }
         }
         // let socket_addr = bill.get_from().to_string();
-        let conf = SessionConf::get_session_conf();
+        let conf = SessionConf::get_session_conf_by_cache();
         let server_ip = &conf.get_wan_ip().to_string();
         let server_port = conf.get_wan_port();
         //domain宜采用ID统一编码的前十位编码,扩展支持十位编码加“.spvmn.cn”后缀格式,或采用IP:port格式,port宜采用5060;这里统一使用device_id的前十位,不再调用DB进行判断原设备的使用方式

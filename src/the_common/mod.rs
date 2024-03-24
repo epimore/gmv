@@ -1,7 +1,6 @@
 use std::net::Ipv4Addr;
+use common::yaml_rust::Yaml;
 use constructor::Get;
-
-mod map_config;
 
 #[derive(Debug, Get)]
 pub struct SessionConf {
@@ -12,8 +11,7 @@ pub struct SessionConf {
 }
 
 impl SessionConf {
-    pub fn get_session_conf() -> Self {
-        let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
+    pub fn get_session_conf(cfg: &Yaml) -> Self {
         if cfg.is_badvalue() || cfg["server"].is_badvalue() || cfg["server"]["session"].is_badvalue() {
             panic!("server session config is invalid");
         }
@@ -24,16 +22,22 @@ impl SessionConf {
             wan_port: cfg["server"]["session"]["wan_port"].as_i64().expect("server session wan_port config is invalid") as u16,
         }
     }
+
+    pub fn get_session_conf_by_cache() -> Self {
+        let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
+        Self::get_session_conf(&cfg)
+    }
 }
 
 pub struct StreamConf {}
 
 #[cfg(test)]
 mod tests {
-    use crate::common::SessionConf;
+    use crate::the_common::SessionConf;
 
     #[test]
     fn test_map_conf() {
-        println!("{:?}", SessionConf::get_session_conf());
+        let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
+        println!("{:?}", SessionConf::get_session_conf(&cfg));
     }
 }
