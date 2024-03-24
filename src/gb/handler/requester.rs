@@ -9,7 +9,6 @@ use common::err::GlobalError::SysErr;
 use common::err::{GlobalResult, TransError};
 use common::log::{error, warn};
 use common::net::shard::{Bill, Package, Protocol, Zip};
-use common::net::udp_turn_bill;
 use common::tokio::sync::mpsc::Sender;
 use crate::gb::handler::{builder, cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
@@ -98,10 +97,7 @@ impl Register {
         let gmv_device = GmvDevice::build_gmv_device(&req, bill)?;
         gmv_device.insert_single_gmv_device_by_register();
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_from())?;
-        let res_bill = if bill.get_protocol().eq(&Protocol::UDP) {
-            udp_turn_bill(bill)
-        } else { bill.clone() };
-        let zip = Zip::build_data(Package::new(res_bill, Bytes::from(ok_response)));
+        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
         // query subscribe device msg
         cmd::CmdQuery::lazy_query_device_info(&device_id).await?;
@@ -111,10 +107,7 @@ impl Register {
 
     async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
         let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_from())?;
-        let res_bill = if bill.get_protocol().eq(&Protocol::UDP) {
-            udp_turn_bill(bill)
-        } else { bill.clone() };
-        let zip = Zip::build_data(Package::new(res_bill, Bytes::from(ok_response)));
+        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
         GmvDevice::update_gmv_device_status_by_device_id(&device_id, 0);
         RWSession::clean_rw_session_and_net(&device_id).await
@@ -122,10 +115,7 @@ impl Register {
 
     async fn unauthorized(req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
         let unauthorized_register_response = ResponseBuilder::unauthorized_register_response(&req, bill.get_from())?;
-        let res_bill = if bill.get_protocol().eq(&Protocol::UDP) {
-            udp_turn_bill(bill)
-        } else { bill.clone() };
-        let zip = Zip::build_data(Package::new(res_bill, Bytes::from(unauthorized_register_response)));
+        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(unauthorized_register_response)));
         let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
         Ok(())
     }
