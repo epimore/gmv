@@ -167,19 +167,18 @@ pub struct GmvDeviceChannel {
 
 impl GmvDeviceChannel {
     pub fn insert_gmv_device_channel(vs: Vec<(String, String)>) {
-        let (_device_id, dc_ls) = Self::build(vs);
+        let dc_ls = Self::build(vs);
         let mut conn = idb::get_mysql_conn().unwrap();
         Self::insert_batch_gmv_device_channel(dc_ls, &mut conn);
     }
-    pub fn build(vs: Vec<(String, String)>) -> (String, Vec<GmvDeviceChannel>) {
+    pub fn build(vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
         use crate::gb::handler::parser::xml::*;
         let mut dc = GmvDeviceChannel::default();
         let mut dcs: Vec<GmvDeviceChannel> = Vec::new();
-        let mut device_id = String::new();
         for (k, v) in vs {
             match &k[..] {
                 RESPONSE_DEVICE_ID => {
-                    device_id = v.to_string();
+                    dc.device_id = v.to_string();
                 }
                 RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID => {
                     dc.channel_id = v.to_string();
@@ -245,7 +244,7 @@ impl GmvDeviceChannel {
             }
         }
         dcs.push(dc);
-        (device_id, dcs)
+        dcs
     }
 }
 
