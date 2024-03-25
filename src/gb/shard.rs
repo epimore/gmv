@@ -162,6 +162,11 @@ pub mod rw {
             let opt = guard.sessions.get(device_id).map(|(sender, _, _, bill)| (sender.clone(), bill.clone()));
             Ok(opt)
         }
+
+        pub fn check_session_by_device_id(device_id: &String) -> GlobalResult<bool> {
+            let guard = get_rw_session_guard()?;
+            Ok(guard.sessions.contains_key(device_id))
+        }
     }
 
     #[derive(New)]
