@@ -3,22 +3,21 @@
 /// TCP：连接断开或三次心跳超时则移除会话
 pub mod rw {
     use std::collections::{BTreeSet, HashMap};
-    use std::sync::{Arc, LockResult, Mutex, MutexGuard};
+    use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread;
     use std::time::Duration;
 
     use rsip::{Response, SipMessage};
 
-    use common::anyhow::{anyhow, Error};
+    use common::anyhow::{anyhow};
     use common::bytes::Bytes;
-    use common::chrono::Local;
     use common::err::{GlobalResult, TransError};
     use common::err::GlobalError::SysErr;
     use common::log::{error, warn};
     use common::net::shard::{Bill, Event, Package, Protocol, Zip};
     use common::once_cell::sync::Lazy;
     use common::tokio;
-    use common::tokio::{task, time};
+    use common::tokio::{time};
     use common::tokio::sync::{mpsc, Notify};
     use common::tokio::sync::mpsc::{Receiver, Sender};
     use common::tokio::time::Instant;
@@ -26,7 +25,6 @@ pub mod rw {
 
     use crate::gb::shard::event::{Container, EventSession, EXPIRES, Ident};
     use crate::storage::entity::GmvDevice;
-    use crate::storage::mapper;
 
     static RW_SESSION: Lazy<RWSession> = Lazy::new(|| RWSession::init());
 
@@ -246,27 +244,23 @@ pub mod rw {
 pub mod event {
     use std::collections::{BTreeSet, HashMap};
     use std::collections::hash_map::Entry;
-    use std::process::id;
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread;
 
     use rsip::{Response, SipMessage};
 
     use common::anyhow::anyhow;
-    use common::bytes::Bytes;
-    use common::chrono::Duration;
     use common::err::{GlobalResult, TransError};
     use common::err::GlobalError::SysErr;
     use common::log::{error, info, warn};
-    use common::net::shard::{Event, Package, Protocol, Zip};
     use common::once_cell::sync::Lazy;
     use common::tokio;
-    use common::tokio::sync::{mpsc, Notify};
+    use common::tokio::sync::{Notify};
     use common::tokio::sync::mpsc::Sender;
     use common::tokio::time;
     use common::tokio::time::Instant;
     use constructor::{Get, New};
-    use crate::gb::shard::rw::{RequestOutput, RWSession};
+    use crate::gb::shard::rw::{RequestOutput};
 
     /// 会话超时 8s
     pub const EXPIRES: u64 = 8;
@@ -319,7 +313,7 @@ pub mod event {
             let mut guard = get_event_session_guard()?;
             let state = &mut *guard;
             match state.ident_map.entry(ident.clone()) {
-                Entry::Occupied(o) => { Err(SysErr(anyhow!("{:?},事件重复-添加监听无效",ident))) }
+                Entry::Occupied(_o) => { Err(SysErr(anyhow!("{:?},事件重复-添加监听无效",ident))) }
                 Entry::Vacant(en) => {
                     en.insert((when, container));
                     state.expirations.insert((when, ident.clone()));
@@ -415,7 +409,7 @@ pub mod event {
                         //延迟事件触发后，添加延迟事件执行后的监听
                         Container::Actor(new_ident, msg, sender) => {
                             match state.ident_map.entry(new_ident.clone()) {
-                                Entry::Occupied(o) => { Err(SysErr(anyhow!("{:?},事件重复监听",new_ident)))? }
+                                Entry::Occupied(_o) => { Err(SysErr(anyhow!("{:?},事件重复监听",new_ident)))? }
                                 //插入事件监听
                                 Entry::Vacant(en) => {
                                     let expires = time::Duration::from_secs(EXPIRES);

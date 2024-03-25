@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
-use rsip::{Error, header, Header, headers, Method, Param, param, Request, SipMessage, uri, Uri};
+use log::error;
+use rsip::{Header, headers, Method, Param, param, Request, SipMessage, uri, Uri};
 use rsip::Header::Via;
-use rsip::headers::{CallId, Date, header, typed};
+use rsip::headers::{typed};
 use rsip::message::HeadersExt;
 use rsip::Param::{Other};
 use rsip::param::{OtherParam, OtherParamValue};
@@ -13,14 +14,12 @@ use common::rand;
 use common::rand::Rng;
 use uuid::Uuid;
 use common::anyhow::anyhow;
-use common::chrono::format::InternalFixed;
 use common::err::GlobalError::SysErr;
-use common::net::shard::Bill;
 use crate::the_common::SessionConf;
 use crate::gb::handler::parser;
 use crate::gb::shard::event::Ident;
 use crate::gb::shard::rw::RWSession;
-use crate::storage::entity::{GmvDevice, GmvOauth};
+use crate::storage::entity::{GmvOauth};
 use crate::storage::mapper;
 
 pub struct ResponseBuilder;
@@ -187,11 +186,10 @@ impl RequestBuilder {
             match &channel_status.to_ascii_uppercase()[..] {
                 "ON" | "ONLINE" => { dst_id = channel_id }
                 _ => {
-                    anyhow!("设备：{device_id} - 通道：{channel_id}，已下线");
+                    Err(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，已下线")))?
                 }
             }
         }
-        // let socket_addr = bill.get_from().to_string();
         let conf = SessionConf::get_session_conf_by_cache();
         let server_ip = &conf.get_wan_ip().to_string();
         let server_port = conf.get_wan_port();

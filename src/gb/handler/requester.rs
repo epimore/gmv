@@ -1,18 +1,16 @@
-use rsip::{Error, Method, Request};
-use rsip::headers::{Authorization, ToTypedHeader};
+use rsip::{Method, Request};
+use rsip::headers::{ToTypedHeader};
 use rsip::message::HeadersExt;
 use rsip::services::DigestGenerator;
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
-use common::chrono::Local;
 use common::err::GlobalError::SysErr;
 use common::err::{GlobalResult, TransError};
 use common::log::{error, warn};
-use common::net::shard::{Bill, Package, Protocol, Zip};
+use common::net::shard::{Bill, Package, Zip};
 use common::tokio::sync::mpsc::Sender;
-use crate::gb::handler::{builder, cmd, parser};
+use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
-use crate::gb::shard::event::EventSession;
 use crate::gb::shard::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvOauth};
 
@@ -94,9 +92,9 @@ impl Register {
     }
     async fn login_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill, oauth: GmvOauth) -> GlobalResult<()> {
         RWSession::insert(&device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill)?;
-        let gmv_device = GmvDevice::build_gmv_device(&req, bill)?;
+        let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register();
-        let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_from())?;
+        let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
         // query subscribe device msg
@@ -106,7 +104,7 @@ impl Register {
     }
 
     async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
-        let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_from())?;
+        let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
         GmvDevice::update_gmv_device_status_by_device_id(&device_id, 0);
@@ -114,7 +112,7 @@ impl Register {
     }
 
     async fn unauthorized(req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
-        let unauthorized_register_response = ResponseBuilder::unauthorized_register_response(&req, bill.get_from())?;
+        let unauthorized_register_response = ResponseBuilder::unauthorized_register_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(unauthorized_register_response)));
         let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
         Ok(())

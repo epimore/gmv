@@ -3,8 +3,8 @@ pub mod header {
     use rsip::prelude::{HasHeaders, HeadersExt};
     use rsip::{Header, Request, Response};
     use common::anyhow::anyhow;
-    use common::err::{GlobalError, GlobalResult, TransError};
-    use common::err::GlobalError::{BizErr, SysErr};
+    use common::err::{GlobalResult, TransError};
+    use common::err::GlobalError::{SysErr};
     use common::log::{warn};
 
     pub fn get_device_id_by_request(req: &Request) -> GlobalResult<String> {

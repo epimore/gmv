@@ -2,7 +2,6 @@ use rsip::Request;
 use serde::{Deserialize, Serialize};
 use common::chrono::Local;
 use common::err::GlobalResult;
-use common::net::shard::Bill;
 use constructor::{Get, New, Set};
 use ezsql::crud;
 use crate::gb::handler::parser;
@@ -69,7 +68,7 @@ impl GmvDevice {
         oauth.update_gmv_device_status(&mut conn, device_id);
     }
 
-    pub fn build_gmv_device(req: &Request, bill: &Bill) -> GlobalResult<Self> {
+    pub fn build_gmv_device(req: &Request) -> GlobalResult<Self> {
         let device = Self {
             device_id: parser::header::get_device_id_by_request(req)?,
             transport: parser::header::get_transport(req)?,
