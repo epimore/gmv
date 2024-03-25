@@ -355,8 +355,9 @@ pub mod event {
         //用于一次请求有多次响应：如点播时，有100-trying，再200-OK两次响应
         //接收端确认无后继响应时，需调用remove_listen_event()，清理会话
         pub async fn handle_event(ident: &Ident, response: Response) -> GlobalResult<()> {
-            let guard = get_event_session_guard()?;
-            match guard.ident_map.get(ident) {
+            let mut guard = get_event_session_guard()?;
+            let state = &mut *guard;
+            match state.ident_map.get(ident) {
                 None => {
                     warn!("{:?},超时或未知响应",ident);
                     Ok(())
@@ -369,9 +370,12 @@ pub mod event {
                             } else {
                                 warn!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
                             }
-                            //当tx为some时需发送响应结果
+                            //当tx为some时发送响应结果，不清理会话，由相应rx接收端根据自身业务清理
                             if let Some(tx) = res {
                                 let _ = tx.clone().send((Some(response), *when)).await.hand_err(|msg| error!("{msg}"));
+                            } else {
+                                //清理会话
+                                state.ident_map.remove(ident).map(|(when, _container)| state.expirations.remove(&(when, ident.clone())));
                             }
                             Ok(())
                         }
