@@ -84,6 +84,11 @@ impl GmvDevice {
     }
 }
 
+#[derive(Default, Debug, Clone, Get)]
+#[crud(table_name = "GMV_DEVICE",
+funs = [
+{fn_name = "update_gmv_device_ext", sql_type = "update", condition = "device_id:="},
+])]
 pub struct GmvDeviceExt {
     device_id: String,
     device_type: Option<String>,
@@ -93,7 +98,51 @@ pub struct GmvDeviceExt {
     max_camera: Option<u8>,
 }
 
-pub struct gmvDeviceChannel {
+impl GmvDeviceExt {
+    pub fn update_gmv_device_ext_info(vs: Vec<(String, String)>) {
+        let mut conn = idb::get_mysql_conn().unwrap();
+        let ext = Self::build(vs);
+        let device_id = ext.get_device_id();
+        ext.update_gmv_device_ext(&mut conn, device_id);
+    }
+
+    fn build(vs: Vec<(String, String)>) -> GmvDeviceExt {
+        use crate::gb::handler::parser::xml::*;
+
+        let mut de = GmvDeviceExt::default();
+        for (k, v) in vs {
+            match &k[..] {
+                RESPONSE_DEVICE_ID => {
+                    de.device_id = v.to_string();
+                }
+                RESPONSE_MANUFACTURER => {
+                    de.manufacturer = v.to_string();
+                }
+                RESPONSE_MODEL => {
+                    de.model = v.to_string();
+                }
+                RESPONSE_FIRMWARE => {
+                    de.firmware = v.to_string();
+                }
+                RESPONSE_DEVICE_TYPE => {
+                    de.device_type = Some(v.to_string());
+                }
+                RESPONSE_MAX_CAMERA => {
+                    de.max_camera = v.parse::<u8>().ok();
+                }
+                _ => {}
+            }
+        }
+        de
+    }
+}
+
+#[derive(Debug, Clone, Default, Get)]
+#[crud(table_name = "GMV_DEVICE_CHANNEL",
+funs = [
+{fn_name = "insert_batch_gmv_device_channel", sql_type = "create:batch", exist_update = "true"},
+])]
+pub struct GmvDeviceChannel {
     device_id: String,
     channel_id: String,
     name: Option<String>,
@@ -114,6 +163,90 @@ pub struct gmvDeviceChannel {
     ptz_type: Option<u8>,
     supply_light_type: Option<u8>,
     alias_name: Option<String>,
+}
+
+impl GmvDeviceChannel {
+    pub fn insert_gmv_device_channel(vs: Vec<(String, String)>) {
+        let (_device_id, dc_ls) = Self::build(vs);
+        let mut conn = idb::get_mysql_conn().unwrap();
+        Self::insert_batch_gmv_device_channel(dc_ls, &mut conn);
+    }
+    pub fn build(vs: Vec<(String, String)>) -> (String, Vec<GmvDeviceChannel>) {
+        use crate::gb::handler::parser::xml::*;
+        let mut dc = GmvDeviceChannel::default();
+        let mut dcs: Vec<GmvDeviceChannel> = Vec::new();
+        let mut device_id = String::new();
+        for (k, v) in vs {
+            match &k[..] {
+                RESPONSE_DEVICE_ID => {
+                    device_id = v.to_string();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID => {
+                    dc.channel_id = v.to_string();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_NAME => {
+                    dc.name = v.parse::<String>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_MANUFACTURER => {
+                    dc.manufacturer = v.parse::<String>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_MODEL => {
+                    dc.model = v.parse::<String>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_OWNER => {
+                    dc.owner = v.parse::<String>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_CIVIL_CODE => {
+                    dc.civil_code = v.parse::<String>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_BLOCK => {
+                    dc.block = Some(v.to_string());
+                }
+                RESPONSE_DEVICE_LIST_ITEM_ADDRESS => {
+                    dc.address = v.parse::<String>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_PARENTAL => {
+                    dc.parental = v.parse::<u8>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_PARENT_ID => {
+                    dc.parent_id = Some(v.to_string());
+                }
+                RESPONSE_DEVICE_LIST_ITEM_LONGITUDE => {
+                    dc.longitude = v.parse::<f32>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_LATITUDE => {
+                    dc.latitude = v.parse::<f32>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_PTZ_TYPE => {
+                    dc.ptz_type = v.parse::<u8>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_SUPPLY_LIGHT_TYPE => {
+                    dc.supply_light_type = v.parse::<u8>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_IP_ADDRESS => {
+                    dc.ip_address = Some(v.to_string());
+                }
+                RESPONSE_DEVICE_LIST_ITEM_PORT => {
+                    dc.port = v.parse::<u16>().ok();
+                }
+                RESPONSE_DEVICE_LIST_ITEM_PASSWORD => {
+                    dc.password = Some(v.to_string());
+                }
+                RESPONSE_DEVICE_LIST_ITEM_STATUS => {
+                    dc.status = v.to_string();
+                }
+                SPLIT_CLASS if "4".eq(&v) => {
+                    if !dc.channel_id.is_empty() {
+                        dcs.push(dc.clone());
+                        dc = GmvDeviceChannel::default();
+                    }
+                }
+                &_ => {}
+            }
+        }
+        dcs.push(dc);
+        (device_id, dcs)
+    }
 }
 
 

@@ -19,7 +19,7 @@ use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::handler::parser::xml::MESSAGE_TYPE;
 use crate::gb::shard::rw::RWSession;
-use crate::storage::entity::{GmvDevice, GmvOauth};
+use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
 
 pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
@@ -37,8 +37,8 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalR
                     Method::Cancel => { Ok(()) }
                     Method::Info => { Ok(()) }
                     Method::Invite => { Ok(()) }
-                    Method::Message => { Ok(()) }
-                    Method::Notify => { Ok(()) }
+                    Method::Message => { Message::process(&device_id, req, tx.clone(), bill).await }
+                    Method::Notify => { Notify::process(req, tx.clone(), bill).await }
                     Method::Options => { Ok(()) }
                     Method::PRack => { Ok(()) }
                     Method::Publish => { Ok(()) }
@@ -211,12 +211,10 @@ impl Message {
                 for (k, v) in &vs {
                     if MESSAGE_TYPE.contains(&&k[..]) {
                         match &v[..] {
-                            MESSAGE_KEEP_ALIVE => {
-                                Self::keep_alive(device_id, vs, bill)?;
-                            }
+                            MESSAGE_KEEP_ALIVE => { Self::keep_alive(device_id, vs, bill)?; }
                             MESSAGE_CONFIG_DOWNLOAD => {}
-                            MESSAGE_NOTIFY_CATALOG => {}
-                            MESSAGE_DEVICE_INFO => {}
+                            MESSAGE_NOTIFY_CATALOG => { Self::notify_catalog(vs) }
+                            MESSAGE_DEVICE_INFO => { Self::device_info(vs); }
                             MESSAGE_ALARM => {}
                             MESSAGE_RECORD_INFO => {}
                             MESSAGE_MEDIA_STATUS => {}
@@ -234,7 +232,7 @@ impl Message {
                         break;
                     }
                 }
-                unimplemented!()
+                Ok(())
             }
             Err(err) => {
                 let val = encoding::decode(&req.body, GB18030).hand_err(|msg| error!("{msg}"))?;
@@ -260,6 +258,47 @@ impl Message {
             info!("keep_alive: device_id = {},status = {}",&device_id,&status);
         }
         RWSession::heart(device_id, bill.clone())
+    }
+
+    fn device_info(vs: Vec<(String, String)>) {
+        GmvDeviceExt::update_gmv_device_ext_info(vs)
+    }
+
+    fn notify_catalog(vs: Vec<(String, String)>) {
+        GmvDeviceChannel::insert_gmv_device_channel(vs)
+    }
+}
+
+struct Notify;
+
+impl Notify {
+    async fn process(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
+        use parser::xml::*;
+        match parse_xlm_to_vec(&req.body) {
+            Ok(vs) => {
+                let response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
+                for (k, v) in &vs {
+                    if MESSAGE_TYPE.contains(&&**k) {
+                        match &v[..] {
+                            MESSAGE_NOTIFY_CATALOG => {
+                                GmvDeviceChannel::insert_gmv_device_channel(vs);
+                            }
+                            _ => {
+                                warn!("notify cmdType 暂不支持;{:?}", &req);
+                            }
+                        }
+                        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(response)));
+                        let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let val = encoding::decode(&req.body, GB18030).hand_err(|msg| error!("{msg}"))?;
+                Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]",val)))?
+            }
+        }
     }
 }
 
