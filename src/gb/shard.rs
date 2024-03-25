@@ -357,7 +357,10 @@ pub mod event {
         pub async fn handle_event(ident: &Ident, response: Response) -> GlobalResult<()> {
             let guard = get_event_session_guard()?;
             match guard.ident_map.get(ident) {
-                None => { Err(SysErr(anyhow!("{:?},超时响应信息",ident))) }
+                None => {
+                    warn!("{:?},超时或未知响应",ident);
+                    Ok(())
+                }
                 Some((when, container)) => {
                     match container {
                         Container::Res(res) => {
