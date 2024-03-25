@@ -109,7 +109,7 @@ impl ResponseBuilder {
         headers.push(req.cseq_header().hand_err(|msg| warn!("{msg}"))?.clone().into());
         headers.push(Header::ContentLength(Default::default()));
         headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
-        req.contact_header().map(|contact| headers.push(contact.clone().into())).hand_err(|msg| warn!("{msg}"))?;
+        let _ = req.contact_header().map(|contact| headers.push(contact.clone().into())).hand_err(|msg| warn!("{msg}"));
         Ok(headers)
     }
 }
