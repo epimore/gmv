@@ -18,11 +18,7 @@ use crate::the_common::SessionConf;
 
 pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
     let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", session_conf.get_wan_port())).hand_err(|msg| error! {"{msg}"}).expect("监听地址无效");
-    let (output, input) = net::init_net(net::shard::Protocol::ALL, socket_addr).await.hand_err(|msg| error!("{msg}")).expect("网络监听失败");
-    input_msg(output, input).await
-}
-
-async fn input_msg(output: Sender<Zip>, mut input: Receiver<Zip>) -> GlobalResult<()> {
+    let (output, mut input) = net::init_net(net::shard::Protocol::ALL, socket_addr).await.hand_err(|msg| error!("{msg}")).expect("网络监听失败");
     while let Some(zip) = input.recv().await {
         debug!("receive {:?}",&zip);
         let bill = zip.get_bill();
