@@ -18,7 +18,7 @@ pub mod header {
     }
 
     pub fn get_device_id_by_response(req: &Response) -> GlobalResult<String> {
-        let from_user = req.from_header()
+        let from_user = req.to_header()
             .hand_err(|msg| warn!("{msg}"))?
             .uri().hand_err(|msg| warn!("{msg}"))?
             .auth.ok_or(SysErr(anyhow!("user is none")))
