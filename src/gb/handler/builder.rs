@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use log::error;
+use log::{debug, error};
 use rsip::{Header, headers, Method, Param, param, Request, SipMessage, uri, Uri};
 use rsip::Header::Via;
 use rsip::headers::{typed};
@@ -109,7 +109,7 @@ impl ResponseBuilder {
         headers.push(req.cseq_header().hand_err(|msg| warn!("{msg}"))?.clone().into());
         headers.push(Header::ContentLength(Default::default()));
         headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
-        let _ = req.contact_header().map(|contact| headers.push(contact.clone().into())).hand_err(|msg| warn!("{msg}"));
+        let _ = req.contact_header().map(|contact| headers.push(contact.clone().into())).unwrap_or_else(|msg| debug!("{msg}"));
         Ok(headers)
     }
 }

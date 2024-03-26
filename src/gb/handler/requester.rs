@@ -38,7 +38,7 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalR
                     Method::Info => { Ok(()) }
                     Method::Invite => { Ok(()) }
                     Method::Message => { Message::process(&device_id, req, tx.clone(), bill).await }
-                    Method::Notify => { Notify::process(req, tx.clone(), bill).await }
+                    Method::Notify => { Notify::process(&device_id, req, tx.clone(), bill).await }
                     Method::Options => { Ok(()) }
                     Method::PRack => { Ok(()) }
                     Method::Publish => { Ok(()) }
@@ -213,7 +213,7 @@ impl Message {
                         match &v[..] {
                             MESSAGE_KEEP_ALIVE => { Self::keep_alive(device_id, vs, bill)?; }
                             MESSAGE_CONFIG_DOWNLOAD => {}
-                            MESSAGE_NOTIFY_CATALOG => { Self::notify_catalog(vs) }
+                            MESSAGE_NOTIFY_CATALOG => { Self::notify_catalog(device_id, vs) }
                             MESSAGE_DEVICE_INFO => { Self::device_info(vs); }
                             MESSAGE_ALARM => {}
                             MESSAGE_RECORD_INFO => {}
@@ -264,15 +264,15 @@ impl Message {
         GmvDeviceExt::update_gmv_device_ext_info(vs)
     }
 
-    fn notify_catalog(vs: Vec<(String, String)>) {
-        GmvDeviceChannel::insert_gmv_device_channel(vs)
+    fn notify_catalog(device_id: &String, vs: Vec<(String, String)>) {
+        GmvDeviceChannel::insert_gmv_device_channel(device_id, vs)
     }
 }
 
 struct Notify;
 
 impl Notify {
-    async fn process(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
+    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
         use parser::xml::*;
         match parse_xlm_to_vec(&req.body) {
             Ok(vs) => {
@@ -281,7 +281,7 @@ impl Notify {
                     if MESSAGE_TYPE.contains(&&**k) {
                         match &v[..] {
                             MESSAGE_NOTIFY_CATALOG => {
-                                GmvDeviceChannel::insert_gmv_device_channel(vs);
+                                GmvDeviceChannel::insert_gmv_device_channel(device_id, vs);
                             }
                             _ => {
                                 warn!("notify cmdType 暂不支持;{:?}", &req);
