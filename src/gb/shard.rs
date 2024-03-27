@@ -287,7 +287,7 @@ pub mod event {
             let session = EventSession {
                 shared: Arc::new(
                     Shared {
-                        state: Mutex::new(State { expirations: BTreeSet::new(), ident_map: HashMap::new() }),
+                        state: Mutex::new(State { expirations: BTreeSet::new(), ident_map: HashMap::new(), device_session: HashMap::new() }),
                         background_task: Notify::new(),
                     }
                 ),
@@ -317,11 +317,13 @@ pub mod event {
         pub(crate) fn listen_event(ident: &Ident, when: Instant, container: Container) -> GlobalResult<()> {
             let mut guard = get_event_session_guard()?;
             let state = &mut *guard;
-            match state.ident_map.entry(ident.clone()) {
+            match state.device_session.entry(ident.call_id.clone()) {
                 Entry::Occupied(_o) => { Err(SysErr(anyhow!("{:?},事件重复-添加监听无效",ident))) }
                 Entry::Vacant(en) => {
-                    en.insert((when, container));
+                    //todo device_session根据value的device_id数量,可设置设备并行处理阈值
+                    en.insert(ident.device_id.clone());
                     state.expirations.insert((when, ident.clone()));
+                    state.ident_map.insert(ident.clone(), (when, container));
                     Ok(())
                 }
             }
@@ -330,38 +332,29 @@ pub mod event {
         pub fn remove_event(ident: &Ident) -> GlobalResult<()> {
             let mut guard = get_event_session_guard()?;
             let state = &mut *guard;
-            state.ident_map.remove(ident).map(|(when, _container)| state.expirations.remove(&(when, ident.clone())));
+            state.ident_map.remove(ident).map(|(when, _container)| {
+                state.expirations.remove(&(when, ident.clone()));
+                state.device_session.remove(ident.get_device_id())
+            });
             Ok(())
         }
 
-        // pub async fn send_event_and_drop(ident: &Ident, response: Response) -> GlobalResult<()> {
-        //     let mut guard = get_event_session_guard()?;
-        //     let state = &mut *guard;
-        //     match state.ident_map.remove(ident) {
-        //         None => { Err(SysErr(anyhow!("{:?},无效请求",ident))) }
-        //         Some((when, container)) => {
-        //             state.expirations.remove(&(when, ident.clone()));
-        //             match container {
-        //                 Container::Res(res) => {
-        //                     //当tx为some时需发送响应结果
-        //                     if let Some(tx) = res {
-        //                         let _ = tx.send((Some(response), when)).await.hand_err(|msg| error!("{msg}"));
-        //                     }
-        //                     Ok(())
-        //                 }
-        //                 Container::Actor(..) => {
-        //                     Err(SysErr(anyhow!("{:?},无效事件",ident)))
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
+        pub async fn handle_response(call_id: String, cs_eq: String, res: Response) -> GlobalResult<()> {
+            let mut guard = get_event_session_guard()?;
+            let state = &mut *guard;
+            match state.device_session.get(&call_id) {
+                None => { warn!("超时或未知响应:call_id={}",call_id); }
+                Some(device_id) => {
+                    let ident = Ident::new(device_id.clone(), call_id, cs_eq);
+                    Self::handle_event(&ident, res, state).await?;
+                }
+            }
+            Ok(())
+        }
 
         //用于一次请求有多次响应：如点播时，有100-trying，再200-OK两次响应
         //接收端确认无后继响应时，需调用remove_listen_event()，清理会话
-        pub async fn handle_event(ident: &Ident, response: Response) -> GlobalResult<()> {
-            let mut guard = get_event_session_guard()?;
-            let state = &mut *guard;
+        async fn handle_event(ident: &Ident, response: Response, state: &mut State) -> GlobalResult<()> {
             match state.ident_map.get(ident) {
                 None => {
                     warn!("{:?},超时或未知响应",ident);
@@ -380,7 +373,10 @@ pub mod event {
                                 let _ = tx.clone().send((Some(response), *when)).await.hand_err(|msg| error!("{msg}"));
                             } else {
                                 //清理会话
-                                state.ident_map.remove(ident).map(|(when, _container)| state.expirations.remove(&(when, ident.clone())));
+                                state.ident_map.remove(ident).map(|(when, _container)| {
+                                    state.expirations.remove(&(when, ident.clone()));
+                                    state.device_session.remove(ident.get_call_id())
+                                });
                             }
                             Ok(())
                         }
@@ -410,24 +406,26 @@ pub mod event {
                 }
                 if let Some((ident, (when, container))) = state.ident_map.remove_entry(expire_ident) {
                     state.expirations.remove(&(when, expire_ident.clone()));
+                    state.device_session.remove(ident.get_device_id());
                     match container {
                         Container::Res(res) => {
                             warn!("{:?},响应超时。",&ident);
-                            //无响应->发送None->接收端收到None,不需要再清理State
+                            //响应超时->发送None->接收端收到None,不需要再清理State
                             if let Some(tx) = res {
                                 let _ = tx.send((None, when)).await.hand_err(|msg| error!("{msg}"));
                             }
                         }
                         //延迟事件触发后，添加延迟事件执行后的监听
                         Container::Actor(new_ident, msg, sender) => {
-                            match state.ident_map.entry(new_ident.clone()) {
+                            match state.device_session.entry(new_ident.call_id.clone()) {
                                 Entry::Occupied(_o) => { Err(SysErr(anyhow!("{:?},事件重复监听",new_ident)))? }
                                 //插入事件监听
                                 Entry::Vacant(en) => {
+                                    en.insert(new_ident.device_id.clone());
                                     let expires = time::Duration::from_secs(EXPIRES);
                                     let new_when = Instant::now() + expires;
-                                    en.insert((new_when, Container::build_res(sender)));
-                                    state.expirations.insert((new_when, new_ident));
+                                    state.expirations.insert((new_when, new_ident.clone()));
+                                    state.ident_map.insert(new_ident, (new_when, Container::build_res(sender)));
                                 }
                             }
                             RequestOutput::new(ident, msg, None)._do_send().await?
@@ -461,8 +459,6 @@ pub mod event {
             Container::Res(res)
         }
 
-        /// * `sender0`: 延迟事件发生端
-        /// * `sender1`: 异步事件回调发送端
         pub fn build_actor(ident: Ident, msg: SipMessage, sender: Option<Sender<(Option<Response>, Instant)>>) -> Self {
             Container::Actor(ident, msg, sender)
         }
@@ -471,18 +467,15 @@ pub mod event {
     struct State {
         expirations: BTreeSet<(Instant, Ident)>,
         ident_map: HashMap<Ident, (Instant, Container)>,
-    }
-
-    impl State {
-        fn next_expiration(&self) -> Option<Instant> {
-            self.expirations.first().map(|expiration| expiration.0)
-        }
+        //call_id:device_id
+        device_session: HashMap<String, String>,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
+    use std::collections::hash_map::Entry;
 
     #[test]
     fn test_bt_set() {
@@ -497,6 +490,28 @@ mod tests {
         assert_eq!(Some(&3), iter.next());
         assert_eq!(Some(&6), iter.next());
         assert_eq!(None, iter.next());
+    }
+
+    #[test]
+    fn test_map_entry() {
+        let mut map = HashMap::new();
+        map.insert(1, 2);
+        map.insert(3, 4);
+        map.insert(5, 6);
+
+        match map.entry(3) {
+            Entry::Occupied(_) => { println!("repeat"); }
+            Entry::Vacant(en) => {
+                en.insert(10);
+            }
+        }
+        match map.entry(7) {
+            Entry::Occupied(_) => { println!("repeat"); }
+            Entry::Vacant(en) => {
+                en.insert(8);
+            }
+        }
+        println!("{map:?}");
     }
 }
 

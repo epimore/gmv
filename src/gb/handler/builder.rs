@@ -21,6 +21,7 @@ use crate::gb::shard::event::Ident;
 use crate::gb::shard::rw::RWSession;
 use crate::storage::entity::{GmvOauth};
 use crate::storage::mapper;
+use crate::the_common::model::StreamMode;
 
 pub struct ResponseBuilder;
 
@@ -227,6 +228,26 @@ impl RequestBuilder {
         headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
         Ok((headers, uri))
     }
+
+    // pub fn build_stream_request(device_id: &str, channel_id: &str, call_id: &str, from_tag: String, to_tag: String) -> GlobalResult<SipMessage> {
+    //     let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None)?;
+    //     headers.push(rsip::headers::CSeq::new("1 INVITE").into());
+    //     let from: &headers::From = header!(
+    //         headers.iter(),
+    //         headers::Header::From,
+    //         Error::missing_header("From")
+    //     )?;
+    //     headers.push(rsip::headers::Subject::new(format!("{}:{},{}:0", channel_id, ssrc, from.uri()?.auth.unwrap().user)).into());
+    //     headers.push(rsip::headers::ContentType::new("APPLICATION/SDP").into());
+    //     headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
+    //     Ok(rsip::Request {
+    //         method: Method::Invite,
+    //         uri,
+    //         headers,
+    //         version: rsip::common::version::Version::V2,
+    //         body: body.as_bytes().to_vec(),
+    //     }.into())
+    // }
 }
 
 pub struct XmlBuilder;
@@ -259,7 +280,47 @@ impl XmlBuilder {
 
 pub struct SdpBuilder;
 
-impl SdpBuilder {}
+impl SdpBuilder {
+    pub fn play_live() {}
+
+    ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
+    fn build_common_play(channel_id: &str, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
+        let conf = SessionConf::get_session_conf_by_cache();
+        let server_ip = &conf.get_wan_ip().to_string();
+        let mut sdp = String::with_capacity(300);
+        sdp.push_str("v=0\r\n");
+        sdp.push_str(&format!("o={} 0 0 IN IP4 {}\r\n", channel_id, server_ip));
+        sdp.push_str(&format!("s={}\r\n", name));
+        if u {
+            sdp.push_str(&format!("u={}:0\r\n", channel_id));
+        }
+        sdp.push_str(&format!("c=IN IP4 {}\r\n", dst_ip));
+        sdp.push_str(&format!("t={}\r\n", st_et));
+        match stream_mode {
+            StreamMode::Udp => {
+                sdp.push_str(&format!("m=video {} RTP/AVP 96 97 98 99\r\n", dst_port))
+            }
+            StreamMode::TcpActive => {
+                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", dst_port));
+                sdp.push_str("a=setup:active\r\n");
+                sdp.push_str("a=connection:new\r\n");
+            }
+            StreamMode::TcpPassive => {
+                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", dst_port));
+                sdp.push_str("a=setup:passive\r\n");
+                sdp.push_str("a=connection:new\r\n");
+            }
+        }
+        sdp.push_str("a=recvonly\r\n");
+        sdp.push_str("a=rtpmap:96 PS/90000\r\n");
+        sdp.push_str("a=rtpmap:97 MPEG4/90000\r\n");
+        sdp.push_str("a=rtpmap:98 H264/90000\r\n");
+        sdp.push_str("a=rtpmap:99 H265/90000\r\n");
+        download_speed.map(|speed| sdp.push_str(&format!("a=downloadspeed:{}\r\n", speed)));
+        sdp.push_str(&format!("y={}\r\n", ssrc));
+        Ok(sdp)
+    }
+}
 
 #[cfg(test)]
 mod tests {

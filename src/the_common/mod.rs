@@ -1,3 +1,5 @@
+pub mod model;
+
 use std::net::Ipv4Addr;
 use common::yaml_rust::Yaml;
 use constructor::Get;

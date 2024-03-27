@@ -31,10 +31,7 @@ pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
                             SipMessage::Response(res) => {
                                 let call_id: String = res.call_id_header().hand_err(|msg| error!("{msg}"))?.clone().into();
                                 let cs_eq: String = res.cseq_header().hand_err(|msg| error!("{msg}"))?.clone().into();
-                                //todo 是否固定为device_id;play时需测试
-                                let device_id = parser::header::get_device_id_by_response(&res)?;
-                                let ident = Ident::new(device_id, call_id, cs_eq);
-                                EventSession::handle_event(&ident, res).await?;
+                                EventSession::handle_response(call_id,cs_eq,res).await?;
                             }
                         }
                     }

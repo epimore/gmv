@@ -42,3 +42,8 @@ impl CmdQuery {
 pub struct CmdControl;
 
 pub struct CmdNotify;
+
+pub struct CmdStream;
+impl CmdStream{
+    pub fn play_live(){}
+}
