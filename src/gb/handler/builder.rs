@@ -1,27 +1,30 @@
 use std::net::SocketAddr;
+
 use log::{debug, error};
-use rsip::{Header, headers, Method, Param, param, Request, SipMessage, uri, Uri};
+use rsip::{Error, Header, header, headers, Method, Param, param, Request, SipMessage, uri, Uri};
 use rsip::Header::Via;
-use rsip::headers::{typed};
+use rsip::headers::typed;
 use rsip::message::HeadersExt;
-use rsip::Param::{Other};
 use rsip::param::{OtherParam, OtherParamValue};
+use rsip::Param::Other;
 use rsip::prelude::*;
+use uuid::Uuid;
+
+use common::anyhow::anyhow;
 use common::chrono::Local;
 use common::err::{GlobalResult, TransError};
+use common::err::GlobalError::SysErr;
 use common::log::warn;
 use common::rand;
 use common::rand::Rng;
-use uuid::Uuid;
-use common::anyhow::anyhow;
-use common::err::GlobalError::SysErr;
-use crate::the_common::SessionConf;
+
 use crate::gb::handler::parser;
 use crate::gb::shard::event::Ident;
 use crate::gb::shard::rw::RWSession;
-use crate::storage::entity::{GmvOauth};
+use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
 use crate::the_common::model::StreamMode;
+use crate::the_common::SessionConf;
 
 pub struct ResponseBuilder;
 
@@ -176,6 +179,29 @@ impl RequestBuilder {
         let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
         Ok((ident, request_msg))
     }
+
+    pub fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag))?;
+        let call_id_str = Uuid::new_v4().as_simple().to_string();
+        headers.push(rsip::headers::CallId::new(&call_id_str).into());
+        let mut rng = rand::thread_rng();
+        let cs_eq_str = format!("{} INFO", rng.gen_range(12u32..21u32));
+        let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
+        headers.push(cs_eq);
+
+        headers.push(rsip::headers::ContentType::new("APPLICATION/MANSRTSP").into());
+        headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
+        let msg = Request {
+            method: Method::Info,
+            uri,
+            headers,
+            version: rsip::common::version::Version::V2,
+            body: body.as_bytes().to_vec(),
+        }.into();
+        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
+        Ok((ident, msg))
+    }
+
     /// 构建下发请求头
     fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
                             -> GlobalResult<(rsip::Headers, Uri)> {
@@ -229,28 +255,81 @@ impl RequestBuilder {
         Ok((headers, uri))
     }
 
-    // pub fn build_stream_request(device_id: &str, channel_id: &str, call_id: &str, from_tag: String, to_tag: String) -> GlobalResult<SipMessage> {
-    //     let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None)?;
-    //     headers.push(rsip::headers::CSeq::new("1 INVITE").into());
-    //     let from: &headers::From = header!(
-    //         headers.iter(),
-    //         headers::Header::From,
-    //         Error::missing_header("From")
-    //     )?;
-    //     headers.push(rsip::headers::Subject::new(format!("{}:{},{}:0", channel_id, ssrc, from.uri()?.auth.unwrap().user)).into());
-    //     headers.push(rsip::headers::ContentType::new("APPLICATION/SDP").into());
-    //     headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-    //     Ok(rsip::Request {
-    //         method: Method::Invite,
-    //         uri,
-    //         headers,
-    //         version: rsip::common::version::Version::V2,
-    //         body: body.as_bytes().to_vec(),
-    //     }.into())
-    // }
+    pub fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let sdp = SdpBuilder::play_live(channel_id, dst_ip, dst_port, stream_mode, ssrc)?;
+        Self::build_stream_request(device_id, channel_id, ssrc, sdp)
+    }
+
+
+    // 点播历史视频
+    pub fn playback(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
+        let sdp = SdpBuilder::playback(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)?;
+        Self::build_stream_request(device_id, channel_id, ssrc, sdp)
+    }
+
+    // 云端录像
+    pub fn download(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
+        let sdp = SdpBuilder::download(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)?;
+        Self::build_stream_request(device_id, channel_id, ssrc, sdp)
+    }
+
+    // 拍照
+// 云台控制
+// 拖动播放
+    pub fn seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let sdp = SdpBuilder::info_seek(seek);
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+    }
+
+    // 倍速播放
+    pub fn speed(device_id: &String, channel_id: &String, speed: u8, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let sdp = SdpBuilder::info_speed(speed);
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+    }
+
+    // 查询硬盘录像情况
+// 暂停回放
+    pub fn pause(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let sdp = SdpBuilder::info_pause();
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+    }
+
+    // 恢复回放
+    pub fn replay(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let sdp = SdpBuilder::info_replay();
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+    }
+
+    fn build_stream_request(device_id: &String, channel_id: &String, ssrc: &str, body: String) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None)?;
+        let call_id_str = Uuid::new_v4().as_simple().to_string();
+        headers.push(rsip::headers::CallId::new(&call_id_str).into());
+        let mut rng = rand::thread_rng();
+        let cs_eq_str = format!("{} INVITE", rng.gen_range(12u32..21u32));
+        let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
+        headers.push(cs_eq);
+
+        let from: &headers::From = header!(
+            headers.iter(),
+            Header::From,
+            Error::missing_header("From")
+        ).hand_err(|msg| error!("{msg}"))?;
+        headers.push(rsip::headers::Subject::new(format!("{}:{},{}:0", channel_id, ssrc, from.uri().unwrap().auth.unwrap().user)).into());
+        headers.push(rsip::headers::ContentType::new("APPLICATION/SDP").into());
+        headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
+        let msg = Request {
+            method: Method::Invite,
+            uri,
+            headers,
+            version: rsip::common::version::Version::V2,
+            body: body.as_bytes().to_vec(),
+        }.into();
+        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
+        Ok((ident, msg))
+    }
 }
 
-pub struct XmlBuilder;
+struct XmlBuilder;
 
 ///编码格式：2022 GB18030
 /// 2016 GB2312
@@ -278,35 +357,84 @@ impl XmlBuilder {
     }
 }
 
-pub struct SdpBuilder;
+struct SdpBuilder;
 
 impl SdpBuilder {
-    pub fn play_live() {}
+    pub fn info_pause() -> String {
+        let mut sdp = String::with_capacity(100);
+        sdp.push_str("PAUSE RTSP/1.0\r\n");
+        sdp.push_str(&format!("CSeq: {}\r\n", Local::now().timestamp()));
+        sdp.push_str("PauseTime: now\r\n");
+        sdp
+    }
+
+    //暂停后恢复播放
+    pub fn info_replay() -> String {
+        let mut sdp = String::with_capacity(100);
+        sdp.push_str("PLAY RTSP/1.0\r\n");
+        sdp.push_str(&format!("CSeq: {}\r\n", Local::now().timestamp()));
+        sdp.push_str("Range: npt=now-\r\n");
+        sdp
+    }
+
+    //倍速播放
+    pub fn info_speed(speed: u8) -> String {
+        let mut sdp = String::with_capacity(100);
+        sdp.push_str("PLAY RTSP/1.0\r\n");
+        sdp.push_str(&format!("CSeq: {}\r\n", Local::now().timestamp()));
+        sdp.push_str(&format!("Scale: {}.000000\r\n", speed));
+        sdp
+    }
+
+    //拖动播放
+    pub fn info_seek(seek: u32) -> String {
+        let mut sdp = String::with_capacity(100);
+        sdp.push_str("PLAY RTSP/1.0\r\n");
+        sdp.push_str(&format!("CSeq: {}\r\n", Local::now().timestamp()));
+        sdp.push_str(&format!("Range: npt={}-\r\n", seek));
+        sdp
+    }
+
+    pub fn playback(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32) -> GlobalResult<String> {
+        let st_et = format!("{} {}", st, et);
+        let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Playback", &st_et, true, None)?;
+        Ok(sdp)
+    }
+
+    pub fn download(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32, download_speed: u8) -> GlobalResult<String> {
+        let st_et = format!("{} {}", st, et);
+        let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Download", &st_et, true, Some(download_speed))?;
+        Ok(sdp)
+    }
+    pub fn play_live(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str) -> GlobalResult<String> {
+        let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Play", "0 0", false, None)?;
+        Ok(sdp)
+    }
 
     ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
-    fn build_common_play(channel_id: &str, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
+    fn build_common_play(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
         let conf = SessionConf::get_session_conf_by_cache();
-        let server_ip = &conf.get_wan_ip().to_string();
+        let session_ip = &conf.get_wan_ip().to_string();
         let mut sdp = String::with_capacity(300);
         sdp.push_str("v=0\r\n");
-        sdp.push_str(&format!("o={} 0 0 IN IP4 {}\r\n", channel_id, server_ip));
+        sdp.push_str(&format!("o={} 0 0 IN IP4 {}\r\n", channel_id, session_ip));
         sdp.push_str(&format!("s={}\r\n", name));
         if u {
             sdp.push_str(&format!("u={}:0\r\n", channel_id));
         }
-        sdp.push_str(&format!("c=IN IP4 {}\r\n", dst_ip));
+        sdp.push_str(&format!("c=IN IP4 {}\r\n", media_ip));
         sdp.push_str(&format!("t={}\r\n", st_et));
         match stream_mode {
             StreamMode::Udp => {
-                sdp.push_str(&format!("m=video {} RTP/AVP 96 97 98 99\r\n", dst_port))
+                sdp.push_str(&format!("m=video {} RTP/AVP 96 97 98 99\r\n", media_port))
             }
             StreamMode::TcpActive => {
-                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", dst_port));
+                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", media_port));
                 sdp.push_str("a=setup:active\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
             StreamMode::TcpPassive => {
-                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", dst_port));
+                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", media_port));
                 sdp.push_str("a=setup:passive\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
