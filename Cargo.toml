@@ -15,5 +15,7 @@ idb = { path = "../pig/idb" }
 mysql = "24.0"
 uuid = { version = "1.7.0", features = ["v4"] }
 log = "0.4.20"
-quick-xml = {version = "0.31", features = ["encoding_rs", "encoding"] }
+quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"
+poem = "2.0"
+poem-openapi = { version = "4.0", features = ["swagger-ui"] }

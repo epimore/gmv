@@ -1,4 +1,6 @@
 pub mod model;
+mod cache;
+pub mod http;
 
 use std::net::Ipv4Addr;
 use common::yaml_rust::Yaml;
@@ -35,7 +37,7 @@ pub struct StreamConf {}
 
 #[cfg(test)]
 mod tests {
-    use crate::the_common::SessionConf;
+    use crate::general::SessionConf;
 
     #[test]
     fn test_map_conf() {

@@ -45,5 +45,7 @@ pub struct CmdNotify;
 
 pub struct CmdStream;
 impl CmdStream{
-    pub fn play_live(){}
+    pub fn play_live(){
+        // RequestBuilder::play_live_request()
+    }
 }

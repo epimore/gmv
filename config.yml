@@ -3,6 +3,13 @@ log:
   suffix: server
   store_path: ./logs
 
+http:
+  port: 19546
+  timeout: 30000   #请求超时 单位毫秒
+  prefix: /gb28181/api
+  server_name: gb28181-session
+  version: v0.2
+
 db:
   mysql:
     host_or_ip: imysql

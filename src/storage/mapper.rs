@@ -15,7 +15,7 @@ pub fn get_device_status_info(device_id: &String) -> GlobalResult<Option<(u8, u8
     let mut conn = idb::get_mysql_conn().unwrap();
     let option_status = conn.exec_first(sql, params! {device_id})
         .hand_err(|msg| error!("{msg}"))?
-        .map(|(heart,enable,expire,reg_ts,on)|(heart,enable,expire,reg_ts,on));
+        .map(|(heart, enable, expire, reg_ts, on)| (heart, enable, expire, reg_ts, on));
     Ok(option_status)
 }
 
@@ -29,7 +29,7 @@ mod test {
         static cell: OnceCell<Tripe> = OnceCell::new();
         cell.get_or_init(|| {
             let tripe = common::init();
-            idb::init_mysql(tripe.get_cfg());
+            idb::init_mysql(tripe.get_cfg().get(0).unwrap());
             tripe
         });
     }

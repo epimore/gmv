@@ -12,7 +12,7 @@ use common::net::shard::{Zip};
 use crate::gb::handler::parser;
 use crate::gb::shard::event::{EventSession, Ident};
 use crate::gb::shard::rw::RWSession;
-use crate::the_common::SessionConf;
+use crate::general::SessionConf;
 
 pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
     let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", session_conf.get_wan_port())).hand_err(|msg| error! {"{msg}"}).expect("监听地址无效");

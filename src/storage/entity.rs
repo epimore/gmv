@@ -258,7 +258,7 @@ mod tests {
         static cell: OnceCell<Tripe> = OnceCell::new();
         cell.get_or_init(|| {
             let tripe = common::init();
-            idb::init_mysql(tripe.get_cfg());
+            idb::init_mysql(tripe.get_cfg().get(0).unwrap());
             tripe
         });
     }

@@ -23,8 +23,8 @@ use crate::gb::shard::event::Ident;
 use crate::gb::shard::rw::RWSession;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
-use crate::the_common::model::StreamMode;
-use crate::the_common::SessionConf;
+use crate::general::model::StreamMode;
+use crate::general::SessionConf;
 
 pub struct ResponseBuilder;
 
