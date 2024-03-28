@@ -11,6 +11,7 @@ impl RestApi {
     #[oai(path = "/play/live/stream", method = "post")]
     /// 点播监控实时画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
     async fn play_live(&self, live: Form<PlayLiveModel>) -> Json<ResultMessageData<Option<StreamInfo>>> {
+
         // match handler::play_live(&deviceId.0, &channelId.0, 0, "twoLevel").await {
         //     Err(err) => {
         //         error!("点播失败；{}",err);

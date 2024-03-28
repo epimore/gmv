@@ -1,5 +1,8 @@
 use std::time::Duration;
+use rsip::Response;
 use common::err::GlobalResult;
+use common::tokio::sync::mpsc;
+use common::tokio::sync::mpsc::Receiver;
 use common::tokio::time::Instant;
 use crate::gb::handler::builder::RequestBuilder;
 use crate::gb::shard::event::{Container, EventSession};
@@ -44,8 +47,12 @@ pub struct CmdControl;
 pub struct CmdNotify;
 
 pub struct CmdStream;
-impl CmdStream{
-    pub fn play_live(){
-        // RequestBuilder::play_live_request()
+
+impl CmdStream {
+    pub async fn play_live() -> GlobalResult<Receiver<(Option<Response>, Instant)>> {
+        // let (ident, msg) = RequestBuilder::play_live_request(&"".to_string(), &"".to_string(), "", 0, StreamMode::Udp, "").expect("TODO: panic message");
+        let (tx, rx) = mpsc::channel(100);
+        // RequestOutput::new(ident, msg, Some(tx)).do_send().await?;
+        Ok(rx)
     }
 }

@@ -44,4 +44,45 @@ mod tests {
         let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
         println!("{:?}", SessionConf::get_session_conf(&cfg));
     }
+    fn print_banner(c: char) {
+        let binary = match c {
+            'G' => [
+                0b11111,
+                0b10000,
+                0b10011,
+                0b10001,
+                0b11111,
+            ],
+            'M' => [
+                0b10001,
+                0b11011,
+                0b10101,
+                0b10001,
+                0b10001,
+            ],
+            'V' => [
+                0b10001,
+                0b10001,
+                0b01010,
+                0b00100,
+                0b00100,
+            ],
+            _ => [0; 5],
+        };
+
+        for &row in binary.iter() {
+            for i in (0..5).rev() {
+                print!("{}", if row & (1 << i) == 0 { ' ' } else { '#' });
+            }
+            println!();
+        }
+        println!();
+    }
+
+    #[test]
+    fn test_banner(){
+        print_banner('G');
+        print_banner('M');
+        print_banner('V');
+    }
 }

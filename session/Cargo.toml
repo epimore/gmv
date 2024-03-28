@@ -1,0 +1,21 @@
+[package]
+name = "gmv"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rsip = "0.4"
+serde = "1.0"
+constructor = { path = "../macros/constructor" }
+ezsql = { path = "../macros/ezsql" }
+common = { path = "../pig/common", features = ["net"] }
+idb = { path = "../pig/idb" }
+mysql = "24.0"
+uuid = { version = "1.7.0", features = ["v4"] }
+log = "0.4.20"
+quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
+encoding_rs = "0.8"
+poem = "2.0"
+poem-openapi = { version = "4.0", features = ["swagger-ui"] }
