@@ -41,7 +41,6 @@ impl IO for Stream {
 
 async fn do_cache(rtp_packet: RtpPacket<'_>) -> GlobalResult<()> {
     let ssrc = rtp_packet.get_ssrc() as u32;
-
     let sn = rtp_packet.get_sequence().0.0;
     let ts = rtp_packet.get_timestamp().0.0;
 

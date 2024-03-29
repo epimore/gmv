@@ -13,7 +13,7 @@ pub mod live_session {
     use common::tokio::time::timeout;
     use crate::data::buffer::{Buf, BUFFER_SIZE, EXPIRE_SEC, State};
 
-    static LIVE_SESSION: Lazy<Arc<DashMap<String, LiveSession>>> = Lazy::new(|| Arc::new(DashMap::new()));
+    static LIVE_SESSION: Lazy<Arc<DashMap<u32, LiveSession>>> = Lazy::new(|| Arc::new(DashMap::new()));
 
     #[derive(Default)]
     pub struct LiveSession {
@@ -29,8 +29,8 @@ pub mod live_session {
         ///
         /// * `ssrc`:
         /// * `stream_id`:
-        pub fn insert_by_session(ssrc: String, stream_id: String) -> GlobalResult<()> {
-            match LIVE_SESSION.entry(ssrc.clone()) {
+        pub fn insert_by_session(ssrc: u32, stream_id: String) -> GlobalResult<()> {
+            match LIVE_SESSION.entry(ssrc) {
                 Entry::Occupied(_) => { Err(SysErr(anyhow!("ssrc = {:?},媒体流标识重复",ssrc))) }
                 Entry::Vacant(en) => {
                     let mut session = LiveSession::default();
@@ -40,14 +40,14 @@ pub mod live_session {
                 }
             }
         }
-        pub fn remove(ssrc: &String) -> Option<(String, LiveSession)> {
+        pub fn remove(ssrc: &u32) -> Option<(u32, LiveSession)> {
             LIVE_SESSION.remove(ssrc)
         }
 
         ///@Description 获取当前流信息
         ///@Param
         ///@return 存在ssrc-(当前缓冲区有效{含乱序}数据大小，可变缓冲区大小，输出流即时时间戳)
-        pub fn get_state(ssrc: &String) -> Option<(u8, u8, u32)> {
+        pub fn get_state(ssrc: &u32) -> Option<(u8, u8, u32)> {
             LIVE_SESSION.get(ssrc).map(
                 |c| {
                     let guard = c.buf.state.read();
@@ -59,7 +59,7 @@ pub mod live_session {
 
 
         /// 生产数据
-        pub fn produce(ssrc: &String, sn: u16, ts: u32, raw: Vec<u8>) -> bool {
+        pub fn produce(ssrc: &u32, sn: u16, ts: u32, raw: Vec<u8>) -> bool {
             match LIVE_SESSION.get(ssrc) {
                 None => {
                     info!("未注册的ssrc,抛弃");
@@ -82,7 +82,7 @@ pub mod live_session {
             }
         }
 
-        pub async fn async_consume(ssrc: &String) -> Option<Vec<u8>> {
+        pub async fn async_consume(ssrc: &u32) -> Option<Vec<u8>> {
             let res = timeout(Duration::from_secs(EXPIRE_SEC), async {
                 loop {
                     let session_opt = LIVE_SESSION.get(ssrc);
