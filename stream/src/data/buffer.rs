@@ -85,9 +85,19 @@ impl Cache {
         }
     }
 
-    pub fn consume(ssrc: &u32) -> Option<Vec<u8>> {
+    pub async fn readable(ssrc: &u32) -> GlobalResult<()> {
         match BUFFER.get(ssrc) {
-            None => { None }
+            None => { Err(SysErr(anyhow!("ssrc = {:?},媒体流或过期未注册",ssrc))) }
+            Some(buf) => {
+                buf.readable().await;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn consume(ssrc: &u32) -> GlobalResult<Option<Vec<u8>>> {
+        match BUFFER.get(ssrc) {
+            None => { Err(SysErr(anyhow!("ssrc = {:?},媒体流或过期未注册",ssrc))) }
             Some(buf) => {
                 let mut state_guard = buf.state.write();
                 buf.sub_counter();
@@ -111,14 +121,14 @@ impl Cache {
                         state_guard.index = inx;
                         let mut vec = Vec::new();
                         std::mem::swap(&mut vec, &mut inner_guard.2);
-                        return Some(vec);
+                        return Ok(Some(vec));
                     }
                     //非(首次读取与回绕)查找有效数据不累减计数器与扩大缓存滑动窗口
                     if state_guard.ts != 0 && !State::check_sn_abs_more_32767(inner_guard.0, state_guard.sn) {
                         buf.sub_counter();
                     }
                 }
-                None
+                Ok(None)
             }
         }
     }
@@ -157,7 +167,7 @@ impl Buf {
         *lock = (sn, ts, raw);
     }
 
-    pub async fn readable(&self) {
+    async fn readable(&self) {
         if *self.counter.read() < self.state.read().sliding_window {
             self.async_block.notified().await;
         }
