@@ -1,4 +1,5 @@
 mod buffer;
+mod session;
 
 pub mod live_session {
     use std::sync::Arc;
@@ -59,8 +60,8 @@ pub mod live_session {
 
 
         /// 生产数据
-        pub fn produce(ssrc: &u32, sn: u16, ts: u32, raw: Vec<u8>) -> bool {
-            match LIVE_SESSION.get(ssrc) {
+        pub fn produce(ssrc: u32, sn: u16, ts: u32, raw: Vec<u8>) -> bool {
+            match LIVE_SESSION.get(&ssrc) {
                 None => {
                     info!("未注册的ssrc,抛弃");
                     //todo 未知ssrc 是否 每隔N秒回调信令无该SSRC
