@@ -12,6 +12,7 @@ use common::tokio;
 use common::tokio::sync::Notify;
 use common::tokio::time;
 use common::tokio::time::Instant;
+use crate::data::buffer::Cache;
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -63,6 +64,7 @@ impl Session {
         match state.sessions.entry(ssrc) {
             Entry::Occupied(_) => { Err(SysErr(anyhow!("ssrc = {:?},媒体流标识重复",ssrc))) }
             Entry::Vacant(en) => {
+                Cache::add_ssrc(ssrc)?;
                 let when = Instant::now() + expires;
                 let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
                 state.expirations.insert((when, ssrc));
@@ -104,6 +106,7 @@ impl Shared {
             if when > now {
                 return Ok(Some(when));
             }
+            Cache::rm_ssrc(&ssrc);
             state.sessions.remove(&ssrc).map(|(obj)| info!("todo callback {obj:?}"));
             state.expirations.remove(&(when, ssrc));
         }

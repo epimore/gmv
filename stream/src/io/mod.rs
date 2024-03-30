@@ -11,7 +11,6 @@ use discortp::demux::Demuxed;
 use discortp::pnet::packet::{PacketData, PrimitiveValues};
 use discortp::rtcp::RtcpPacket;
 use discortp::rtp::{RtpPacket, RtpType};
-use crate::data::live_session::LiveSession;
 
 
 pub trait IO {
@@ -44,5 +43,5 @@ async fn do_cache(rtp_packet: RtpPacket<'_>,data:&Bytes) {
     let ssrc = rtp_packet.get_ssrc() as u32;
     let sn = rtp_packet.get_sequence().0.0;
     let ts = rtp_packet.get_timestamp().0.0;
-    LiveSession::produce(ssrc,sn,ts,data.to_vec());
+    // LiveSession::produce(ssrc,sn,ts,data.to_vec());
 }
