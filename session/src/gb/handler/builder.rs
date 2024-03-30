@@ -19,8 +19,8 @@ use common::rand;
 use common::rand::Rng;
 
 use crate::gb::handler::parser;
-use crate::gb::shard::event::Ident;
-use crate::gb::shard::rw::RWSession;
+use crate::gb::shared::event::Ident;
+use crate::gb::shared::rw::RWSession;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
 use crate::general::model::StreamMode;

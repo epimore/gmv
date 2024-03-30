@@ -14,7 +14,7 @@ pub mod rw {
     use common::err::{GlobalResult, TransError};
     use common::err::GlobalError::SysErr;
     use common::log::{error, warn};
-    use common::net::shard::{Bill, Event, Package, Protocol, Zip};
+    use common::net::shared::{Bill, Event, Package, Protocol, Zip};
     use common::once_cell::sync::Lazy;
     use common::tokio;
     use common::tokio::{time};
@@ -23,7 +23,7 @@ pub mod rw {
     use common::tokio::time::Instant;
     use constructor::New;
 
-    use crate::gb::shard::event::{Container, EventSession, EXPIRES, Ident};
+    use crate::gb::shared::event::{Container, EventSession, EXPIRES, Ident};
     use crate::storage::entity::GmvDevice;
 
     static RW_SESSION: Lazy<RWSession> = Lazy::new(|| RWSession::init());
@@ -53,11 +53,11 @@ pub mod rw {
                 ),
                 db_task: tx.clone(),
             };
-            let shard = session.shared.clone();
+            let shared = session.shared.clone();
             thread::spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("RW-SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
                 rt.spawn(Self::do_update_device_status(rx));
-                let _ = rt.block_on(Self::purge_expired_task(shard));
+                let _ = rt.block_on(Self::purge_expired_task(shared));
             });
             session
         }
@@ -265,7 +265,7 @@ pub mod event {
     use common::tokio::time;
     use common::tokio::time::Instant;
     use constructor::{Get, New};
-    use crate::gb::shard::rw::{RequestOutput};
+    use crate::gb::shared::rw::{RequestOutput};
 
     /// 会话超时 8s
     pub const EXPIRES: u64 = 8;
@@ -292,10 +292,10 @@ pub mod event {
                     }
                 ),
             };
-            let shard = session.shared.clone();
+            let shared = session.shared.clone();
             thread::spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("EVENT-SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
-                let _ = rt.block_on(Self::purge_expired_task(shard));
+                let _ = rt.block_on(Self::purge_expired_task(shared));
             });
             session
         }

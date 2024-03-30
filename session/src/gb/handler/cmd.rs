@@ -5,8 +5,8 @@ use common::tokio::sync::mpsc;
 use common::tokio::sync::mpsc::Receiver;
 use common::tokio::time::Instant;
 use crate::gb::handler::builder::RequestBuilder;
-use crate::gb::shard::event::{Container, EventSession};
-use crate::gb::shard::rw::RequestOutput;
+use crate::gb::shared::event::{Container, EventSession};
+use crate::gb::shared::rw::RequestOutput;
 
 pub struct CmdResponse;
 

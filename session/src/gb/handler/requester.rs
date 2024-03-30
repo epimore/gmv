@@ -12,13 +12,13 @@ use common::chrono::{Local, Timelike};
 use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::{error, warn};
-use common::net::shard::{Bill, Package, Zip};
+use common::net::shared::{Bill, Package, Zip};
 use common::tokio::sync::mpsc::Sender;
 
 use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::handler::parser::xml::MESSAGE_TYPE;
-use crate::gb::shard::rw::RWSession;
+use crate::gb::shared::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
 

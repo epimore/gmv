@@ -1,4 +1,4 @@
-mod shard;
+mod shared;
 pub mod handler;
 
 use std::net::SocketAddr;
@@ -8,15 +8,15 @@ use rsip::message::HeadersExt;
 use common::err::{GlobalResult, TransError};
 use common::log::{debug, error};
 use common::net;
-use common::net::shard::{Zip};
+use common::net::shared::{Zip};
 use crate::gb::handler::parser;
-use crate::gb::shard::event::{EventSession, Ident};
-use crate::gb::shard::rw::RWSession;
+use crate::gb::shared::event::{EventSession, Ident};
+use crate::gb::shared::rw::RWSession;
 use crate::general::SessionConf;
 
 pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
     let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", session_conf.get_wan_port())).hand_err(|msg| error! {"{msg}"}).expect("监听地址无效");
-    let (output, mut input) = net::init_net(net::shard::Protocol::ALL, socket_addr).await.hand_err(|msg| error!("{msg}")).expect("网络监听失败");
+    let (output, mut input) = net::init_net(net::shared::Protocol::ALL, socket_addr).await.hand_err(|msg| error!("{msg}")).expect("网络监听失败");
     while let Some(zip) = input.recv().await {
         debug!("receive {:?}",&zip);
         let bill = zip.get_bill();
