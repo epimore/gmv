@@ -11,6 +11,7 @@ use discortp::demux::Demuxed;
 use discortp::pnet::packet::{PacketData, PrimitiveValues};
 use discortp::rtcp::RtcpPacket;
 use discortp::rtp::{RtpPacket, RtpType};
+use crate::data::buffer;
 
 
 pub trait IO {
@@ -25,7 +26,7 @@ impl IO for Stream {
             match zip {
                 Zip::Data(data) => {
                     match demux::demux(data.get_data()) {
-                        Demuxed::Rtp(rtp_packet) => {do_cache(rtp_packet,data.get_data()).await;}
+                        Demuxed::Rtp(rtp_packet) => { do_cache(rtp_packet, data.get_data()); }
                         Demuxed::Rtcp(_) => {}
                         Demuxed::FailedParse(_) => {}
                         Demuxed::TooSmall => {}
@@ -39,9 +40,10 @@ impl IO for Stream {
     }
 }
 
-async fn do_cache(rtp_packet: RtpPacket<'_>,data:&Bytes) {
+fn do_cache(rtp_packet: RtpPacket<'_>, data: &Bytes) {
     let ssrc = rtp_packet.get_ssrc() as u32;
     let sn = rtp_packet.get_sequence().0.0;
     let ts = rtp_packet.get_timestamp().0.0;
-    // LiveSession::produce(ssrc,sn,ts,data.to_vec());
+    //todo ssrc
+    buffer::Cache::produce(1, sn, ts, data.to_vec());
 }

@@ -19,7 +19,7 @@ impl Stream {
                 hook: None,
             }
         } else {
-            let mut stream = &cfg["stream"];
+            let stream = &cfg["stream"];
             Stream {
                 port: stream["port"].as_i64().unwrap_or(8080) as u16,
                 timeout: stream["timeout"].as_i64().unwrap_or(30000) as u32,

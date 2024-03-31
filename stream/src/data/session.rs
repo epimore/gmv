@@ -23,6 +23,35 @@ fn get_session_guard() -> GlobalResult<MutexGuard<'static, State>> {
     Ok(guard)
 }
 
+pub fn insert(ssrc: u32, stream_id: String, expires: Duration, ext: Option<Ext>) -> GlobalResult<()> {
+    let mut state = get_session_guard()?;
+    if !state.sessions.contains_key(&ssrc) {
+        Cache::add_ssrc(ssrc)?;
+        let when = Instant::now() + expires;
+        let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+        state.expirations.insert((when, ssrc));
+        state.sessions.insert(ssrc, (when, stream_id, expires, ext));
+        drop(state);
+        if notify {
+            SESSION.shared.background_task.notify_one();
+        }
+        Ok(())
+    } else { Err(SysErr(anyhow!("ssrc = {:?},媒体流标识重复",ssrc))) }
+}
+
+pub fn refresh(ssrc: u32) -> GlobalResult<()> {
+    let mut guard = get_session_guard()?;
+    let state = &mut *guard;
+    state.sessions.get_mut(&ssrc).map(|(when, _, expires, _)| {
+        state.expirations.remove(&(*when, ssrc));
+        let ct = Instant::now() + *expires;
+        *when = ct;
+        state.expirations.insert((ct, ssrc));
+    });
+    Ok(())
+}
+
+
 struct Session {
     shared: Arc<Shared>,
 }
@@ -58,37 +87,6 @@ impl Session {
             }
         }
     }
-
-    pub fn insert(ssrc: u32, stream_id: String, expires: Duration, ext: Option<Ext>) -> GlobalResult<()> {
-        let mut state = get_session_guard()?;
-        match state.sessions.entry(ssrc) {
-            Entry::Occupied(_) => { Err(SysErr(anyhow!("ssrc = {:?},媒体流标识重复",ssrc))) }
-            Entry::Vacant(en) => {
-                Cache::add_ssrc(ssrc)?;
-                let when = Instant::now() + expires;
-                let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
-                state.expirations.insert((when, ssrc));
-                state.sessions.insert(ssrc, (when, stream_id, expires, ext));
-                drop(state);
-                if notify {
-                    SESSION.shared.background_task.notify_one();
-                }
-                Ok(())
-            }
-        }
-    }
-
-    pub fn refresh(ssrc: u32) -> GlobalResult<()> {
-        let mut guard = get_session_guard()?;
-        let state = &mut *guard;
-        state.sessions.get_mut(&ssrc).map(|(when, _, expires, _)| {
-            state.expirations.remove(&(*when, ssrc));
-            let ct = Instant::now() + *expires;
-            *when = ct;
-            state.expirations.insert((ct, ssrc));
-        });
-        Ok(())
-    }
 }
 
 struct Shared {
@@ -107,7 +105,7 @@ impl Shared {
                 return Ok(Some(when));
             }
             Cache::rm_ssrc(&ssrc);
-            state.sessions.remove(&ssrc).map(|(obj)| info!("todo callback {obj:?}"));
+            state.sessions.remove(&ssrc).map(|obj| info!("todo callback {obj:?}"));
             state.expirations.remove(&(when, ssrc));
         }
         Ok(None)
@@ -129,4 +127,4 @@ impl State {
 }
 
 #[derive(Debug)]
-struct Ext {}
+pub struct Ext {}

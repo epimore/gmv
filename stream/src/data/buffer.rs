@@ -11,17 +11,16 @@ use common::dashmap::mapref::entry::Entry;
 use common::dashmap::mapref::one::Ref;
 use common::err::GlobalError::SysErr;
 use common::err::{GlobalResult, TransError};
-use common::log::{error, info};
+use common::log::{debug, error, info};
 use common::once_cell::sync::Lazy;
 use common::tokio::runtime;
 use common::tokio::runtime::Runtime;
 use common::tokio::sync::Notify;
 use common::tokio::time::timeout;
+use crate::data::session;
 
 //缓冲空间大小
 pub const BUFFER_SIZE: usize = 64;
-//流超时时间：秒
-pub const EXPIRE_SEC: u64 = 16;
 const ROW: RwLock<(u16, u32, Vec<u8>)> = row_init_fn();
 
 const fn row_init_fn() -> RwLock<(u16, u32, Vec<u8>)> {
@@ -36,7 +35,7 @@ pub struct Cache;
 impl Cache {
     ///@Description 新增初始化一块SSRC缓冲数据
     ///@Param
-    pub fn add_ssrc(ssrc: u32) -> GlobalResult<()> {
+    pub(super) fn add_ssrc(ssrc: u32) -> GlobalResult<()> {
         match BUFFER.entry(ssrc) {
             Entry::Occupied(_) => { Err(SysErr(anyhow!("ssrc = {:?},媒体流标识重复",ssrc))) }
             Entry::Vacant(en) => {
@@ -77,9 +76,10 @@ impl Cache {
                 // 当还有该SSRC插入则-回调，并改状态为0，重新计时；
             }
             Some(buf) => {
-                println!("net data in ....");
+                debug!("produce data => ssrc = {}, sn = {}, ts = {}", ssrc, sn, ts);
                 if buf.add_counter_by_ts_sn(sn, ts) {
                     buf.update_inner_raw(sn, ts, raw);
+                    let _ = session::refresh(ssrc).hand_err(|msg| error!("{msg}"));
                 }
             }
         }
@@ -121,6 +121,7 @@ impl Cache {
                         state_guard.index = inx;
                         let mut vec = Vec::new();
                         std::mem::swap(&mut vec, &mut inner_guard.2);
+                        debug!("consume data => ssrc = {}, sn = {}, ts = {}, index = {}",ssrc,state_guard.sn,state_guard.ts,inx);
                         return Ok(Some(vec));
                     }
                     //非(首次读取与回绕)查找有效数据不累减计数器与扩大缓存滑动窗口
