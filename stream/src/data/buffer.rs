@@ -51,8 +51,10 @@ impl Cache {
     ///@Param ssrc
     ///@return true-存在该ssrc,false-不存在该ssrc
     pub fn rm_ssrc(ssrc: &u32) -> bool {
-        BUFFER.get(ssrc).map(|v| v.async_block.notify_one());
-        BUFFER.remove(ssrc).is_some()
+        BUFFER.get(ssrc).map(|v| {
+            v.async_block.1.store(false, Ordering::SeqCst);
+            v.async_block.0.notify_one()
+        }).is_some()
     }
     ///@Description 获取当前流信息
     ///@Param
@@ -90,13 +92,16 @@ impl Cache {
     }
 
     pub async fn readable(ssrc: &u32) -> GlobalResult<()> {
-        match BUFFER.get(ssrc) {
-            None => { Err(SysErr(anyhow!("ssrc = {:?},媒体流或过期未注册",ssrc))) }
+        let able = match BUFFER.get(ssrc) {
+            None => { Err(SysErr(anyhow!("ssrc = {:?},媒体流或过期未注册",ssrc)))? }
             Some(buf) => {
-                buf.readable().await;
-                Ok(())
+                buf.readable().await
             }
+        };
+        if !able {
+            BUFFER.remove(ssrc);
         }
+        Ok(())
     }
 
     pub fn consume(ssrc: &u32) -> GlobalResult<Option<Vec<u8>>> {
@@ -146,7 +151,7 @@ struct Buf {
     counter: Arc<AtomicU8>,
     state: Arc<RwLock<State>>,
     //异步阻塞等待数据
-    async_block: Notify,
+    async_block: (Notify, AtomicBool),
 }
 
 impl Default for Buf {
@@ -155,7 +160,7 @@ impl Default for Buf {
             inner: Arc::new([ROW; BUFFER_SIZE]),
             counter: Arc::new(AtomicU8::new(0)),
             state: Arc::new(RwLock::new(State::default())),
-            async_block: Notify::new(),
+            async_block: (Notify::new(), AtomicBool::new(true)),
         }
     }
 }
@@ -173,11 +178,13 @@ impl Buf {
         *lock = (sn, ts, raw);
     }
 
-    async fn readable(&self) {
+    async fn readable(&self) -> bool {
         if self.counter.load(Ordering::SeqCst) < self.state.read().sliding_window {
             info!("等待唤醒");
-            self.async_block.notified().await;
+            self.async_block.0.notified().await;
+            return self.async_block.1.load(Ordering::SeqCst);
         }
+        true
     }
 
     //判断是否为有效数据
@@ -188,7 +195,7 @@ impl Buf {
             self.add_counter();
             //计数器大于等于滑动缓存窗口提示可读
             if self.counter.load(Ordering::SeqCst) >= read_guard.sliding_window {
-                self.async_block.notify_one();
+                self.async_block.0.notify_one();
             }
             true
         } else {
