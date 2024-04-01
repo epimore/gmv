@@ -1,23 +1,25 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
-use parking_lot::{RwLock};
 use parking_lot::lock_api::RwLockReadGuard;
-use common::anyhow::anyhow;
+use parking_lot::RwLock;
 
+use common::anyhow::anyhow;
 use common::dashmap::DashMap;
 use common::dashmap::mapref::entry::Entry;
 use common::dashmap::mapref::one::Ref;
-use common::err::GlobalError::SysErr;
 use common::err::{GlobalResult, TransError};
+use common::err::GlobalError::SysErr;
 use common::log::{debug, error, info};
 use common::once_cell::sync::Lazy;
 use common::tokio::runtime;
 use common::tokio::runtime::Runtime;
 use common::tokio::sync::Notify;
+use common::tokio::sync::oneshot::Receiver;
 use common::tokio::time::timeout;
+
 use crate::data::session;
 
 //缓冲空间大小
@@ -49,6 +51,7 @@ impl Cache {
     ///@Param ssrc
     ///@return true-存在该ssrc,false-不存在该ssrc
     pub fn rm_ssrc(ssrc: &u32) -> bool {
+        BUFFER.get(ssrc).map(|v| v.async_block.notify_one());
         BUFFER.remove(ssrc).is_some()
     }
     ///@Description 获取当前流信息
@@ -77,7 +80,7 @@ impl Cache {
                 // 当还有该SSRC插入则-回调，并改状态为0，重新计时；
             }
             Some(buf) => {
-                info!("produce data => ssrc = {}, sn = {}, ts = {}", ssrc, sn, ts);
+                info!("produce data => ssrc = {}, sn = {}, ts = {},data-size = {}", ssrc, sn, ts,raw.len());
                 if buf.add_counter_by_ts_sn(sn, ts) {
                     buf.update_inner_raw(sn, ts, raw);
                     let _ = session::refresh(ssrc).hand_err(|msg| error!("{msg}"));
@@ -105,16 +108,13 @@ impl Cache {
                 //丢包处理，获取下一个值
                 let mut inx: usize = state_guard.index;
                 for i in 0..BUFFER_SIZE {
-                    let inner_guard = unsafe { buf.inner.get_unchecked(inx).read() };
+                    let mut inner_guard = unsafe { buf.inner.get_unchecked(inx).write() };
                     inx += 1;
                     if inx >= BUFFER_SIZE {
                         inx = 0;
                     }
                     if !inner_guard.2.is_empty() {
-                        drop(inner_guard);
-                        let mut inner_guard = unsafe { buf.inner.get_unchecked(inx).write() };
-                        let a = &mut inner_guard.2;
-                        let vec = std::mem::take(a);
+                        let vec = std::mem::take(&mut inner_guard.2);
                         state_guard.ts = inner_guard.1;
                         state_guard.sn = inner_guard.0;
                         drop(inner_guard);
@@ -188,7 +188,6 @@ impl Buf {
             self.add_counter();
             //计数器大于等于滑动缓存窗口提示可读
             if self.counter.load(Ordering::SeqCst) >= read_guard.sliding_window {
-                info!("唤醒");
                 self.async_block.notify_one();
             }
             true
