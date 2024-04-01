@@ -49,12 +49,12 @@ impl Cache {
     }
     ///@Description 移除ssrc
     ///@Param ssrc
-    ///@return true-存在该ssrc,false-不存在该ssrc
-    pub fn rm_ssrc(ssrc: &u32) -> bool {
+    pub fn rm_ssrc(ssrc: &u32){
         BUFFER.get(ssrc).map(|v| {
             v.async_block.1.store(false, Ordering::SeqCst);
-            v.async_block.0.notify_one()
-        }).is_some()
+            v.async_block.0.notify_one();
+        });
+        BUFFER.remove(ssrc);
     }
     ///@Description 获取当前流信息
     ///@Param
