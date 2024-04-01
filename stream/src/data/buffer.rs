@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
-use parking_lot::{RawRwLock, RwLock};
+use parking_lot::{RwLock};
 use parking_lot::lock_api::RwLockReadGuard;
 use common::anyhow::anyhow;
 
@@ -59,7 +60,7 @@ impl Cache {
                 let guard = c.state.read();
                 let temp = guard.clone();
                 drop(guard);
-                (c.counter.read().clone(), temp.sliding_window, temp.ts)
+                (c.counter.load(Ordering::SeqCst), temp.sliding_window, temp.ts)
             })
     }
 
@@ -76,7 +77,7 @@ impl Cache {
                 // 当还有该SSRC插入则-回调，并改状态为0，重新计时；
             }
             Some(buf) => {
-                debug!("produce data => ssrc = {}, sn = {}, ts = {}", ssrc, sn, ts);
+                info!("produce data => ssrc = {}, sn = {}, ts = {}", ssrc, sn, ts);
                 if buf.add_counter_by_ts_sn(sn, ts) {
                     buf.update_inner_raw(sn, ts, raw);
                     let _ = session::refresh(ssrc).hand_err(|msg| error!("{msg}"));
@@ -104,24 +105,27 @@ impl Cache {
                 //丢包处理，获取下一个值
                 let mut inx: usize = state_guard.index;
                 for i in 0..BUFFER_SIZE {
-                    let mut inner_guard = unsafe { buf.inner.get_unchecked(inx).write() };
+                    let inner_guard = unsafe { buf.inner.get_unchecked(inx).read() };
                     inx += 1;
                     if inx >= BUFFER_SIZE {
                         inx = 0;
                     }
                     if !inner_guard.2.is_empty() {
+                        drop(inner_guard);
+                        let mut inner_guard = unsafe { buf.inner.get_unchecked(inx).write() };
+                        let a = &mut inner_guard.2;
+                        let vec = std::mem::take(a);
+                        state_guard.ts = inner_guard.1;
+                        state_guard.sn = inner_guard.0;
+                        drop(inner_guard);
                         if i == 0 {//首次就命中则网络良好，减小缓冲区窗口
                             state_guard.down_sliding_window();
                         }
                         if i > 2 {
                             state_guard.up_sliding_window();
                         }
-                        state_guard.ts = inner_guard.1;
-                        state_guard.sn = inner_guard.0;
                         state_guard.index = inx;
-                        let mut vec = Vec::new();
-                        std::mem::swap(&mut vec, &mut inner_guard.2);
-                        debug!("consume data => ssrc = {}, sn = {}, ts = {}, index = {}",ssrc,state_guard.sn,state_guard.ts,inx);
+                        info!("consume data => ssrc = {}, sn = {}, ts = {}, index = {},vec-len = {}",ssrc,state_guard.sn,state_guard.ts,inx,vec.len());
                         return Ok(Some(vec));
                     }
                     //非(首次读取与回绕)查找有效数据不累减计数器与扩大缓存滑动窗口
@@ -139,7 +143,7 @@ impl Cache {
 struct Buf {
     //(sn,ts,row data)
     inner: Arc<[RwLock<(u16, u32, Vec<u8>)>; BUFFER_SIZE]>,
-    counter: Arc<RwLock<u8>>,
+    counter: Arc<AtomicU8>,
     state: Arc<RwLock<State>>,
     //异步阻塞等待数据
     async_block: Notify,
@@ -149,7 +153,7 @@ impl Default for Buf {
     fn default() -> Self {
         Self {
             inner: Arc::new([ROW; BUFFER_SIZE]),
-            counter: Arc::new(RwLock::new(0)),
+            counter: Arc::new(AtomicU8::new(0)),
             state: Arc::new(RwLock::new(State::default())),
             async_block: Notify::new(),
         }
@@ -163,13 +167,15 @@ impl Buf {
     ///@return
     fn update_inner_raw(&self, sn: u16, ts: u32, raw: Vec<u8>) {
         let index = sn as usize % BUFFER_SIZE;
-        let ptr = self.inner.as_ptr();
-        let mut lock = unsafe { (*ptr.add(index)).write() };
+        // let ptr = self.inner.as_ptr();
+        // let mut lock = unsafe { (*ptr.add(index)).write() };
+        let mut lock = unsafe { self.inner.get_unchecked(index).write() };
         *lock = (sn, ts, raw);
     }
 
     async fn readable(&self) {
-        if *self.counter.read() < self.state.read().sliding_window {
+        if self.counter.load(Ordering::SeqCst) < self.state.read().sliding_window {
+            info!("等待唤醒");
             self.async_block.notified().await;
         }
     }
@@ -178,13 +184,11 @@ impl Buf {
     fn add_counter_by_ts_sn(&self, sn: u16, ts: u32) -> bool {
         let read_guard = self.state.read();
         //序号增加、时间戳增加、序号回绕 皆为有效数据
-        if sn >= read_guard.sn || ts > read_guard.ts || State::check_sn_abs_more_32767(sn, read_guard.sn) {
-            //计数器max 为255.
-            if *self.counter.read() < 255 {
-                *self.counter.write() += 1;
-            }
+        if sn > read_guard.sn || ts > read_guard.ts || State::check_sn_abs_more_32767(sn, read_guard.sn) {
+            self.add_counter();
             //计数器大于等于滑动缓存窗口提示可读
-            if *self.counter.read() >= self.state.read().sliding_window {
+            if self.counter.load(Ordering::SeqCst) >= read_guard.sliding_window {
+                info!("唤醒");
                 self.async_block.notify_one();
             }
             true
@@ -197,16 +201,16 @@ impl Buf {
     ///@Param
     ///@return
     fn add_counter(&self) {
-        if *self.counter.read() < 255 {
-            *self.counter.write() += 1;
+        if self.counter.load(Ordering::SeqCst) < 255 {
+            self.counter.fetch_add(1, Ordering::SeqCst);
         }
     }
     ///@Description 计数器减一，当计数器>1
     ///@Param
     ///@return
     fn sub_counter(&self) {
-        if *self.counter.read() > 1 {
-            *self.counter.write() -= 1;
+        if self.counter.load(Ordering::SeqCst) > 1 {
+            self.counter.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -217,17 +221,15 @@ struct State {
     index: usize,
     ts: u32,
     sn: u16,
-    round_back: bool,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
-            sliding_window: 1,
+            sliding_window: 2,
             index: 0,
             ts: 0,
             sn: 0,
-            round_back: false,
         }
     }
 }

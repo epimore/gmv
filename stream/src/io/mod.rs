@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use common::bytes::Bytes;
 use common::err::{GlobalResult, TransError};
-use common::log::error;
+use common::log::{error, info};
 use common::net;
 use common::net::shared::Zip;
 use crate::general::mode::Stream;
@@ -26,7 +26,11 @@ impl IO for Stream {
             match zip {
                 Zip::Data(data) => {
                     match demux::demux(data.get_data()) {
-                        Demuxed::Rtp(rtp_packet) => { do_cache(rtp_packet, data.get_data()); }
+                        Demuxed::Rtp(rtp_packet) => {
+                            info!("data in 。。。。{:?}",rtp_packet.get_sequence());
+
+                            do_cache(rtp_packet, data.get_data());
+                        }
                         Demuxed::Rtcp(_) => {}
                         Demuxed::FailedParse(_) => {}
                         Demuxed::TooSmall => {}
