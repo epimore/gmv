@@ -53,7 +53,7 @@ impl Hook {
 }
 
 
-pub const AV_IO_CTX_BUFFER_SIZE: u16 = 2048;
+pub const AV_IO_CTX_BUFFER_SIZE: u16 = 1024*32;
 
 #[derive(Debug)]
 pub enum Media {

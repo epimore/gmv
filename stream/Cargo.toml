@@ -10,3 +10,4 @@ common = { path = "../../pig/common", features = ["net"] }
 constructor = { path = "../../macros/constructor" }
 discortp = { version = "0.6.0", features = ["discord-full"] }
 parking_lot = "0.12"
+ffmpeg-next = { version = "6.1", features = ["default", "static"] }
