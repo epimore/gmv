@@ -1,0 +1,10 @@
+v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=No Name
+c=IN IP4 172.18.38.186
+t=0 0
+a=tool:libavformat 58.76.100
+m=video 18547 RTP/AVP 96
+b=AS:980
+a=rtpmap:96 H264/90000
+a=fmtp:96 packetization-mode=1; sprop-parameter-sets=Z00AKpWoHgCJ+VA=,aO48gA==; profile-level-id=4D002A

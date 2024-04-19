@@ -9,7 +9,7 @@ use discortp::rtp::{RtpPacket, RtpType};
 
 use common::bytes::Bytes;
 use common::err::{GlobalResult, TransError};
-use common::log::{error, info};
+use common::log::{debug, error, info};
 use common::net;
 use common::net::shared::Zip;
 
@@ -27,9 +27,16 @@ impl IO for Stream {
         while let Some(zip) = input.recv().await {
             match zip {
                 Zip::Data(data) => {
+                    //todo 自己解析RTP...
                     match demux::demux(data.get_data()) {
                         Demuxed::Rtp(rtp_packet) => {
-                            do_cache(rtp_packet, data.get_data());
+                            if let RtpType::Dynamic(v) = rtp_packet.get_payload_type() {
+                                if v <= 100 {
+                                    do_cache(rtp_packet, data.get_data());
+                                }
+                            }else {
+                                info!("暂不支持数据类型: tp = {:?}",rtp_packet.get_payload_type())
+                            }
                         }
                         Demuxed::Rtcp(_) => {}
                         Demuxed::FailedParse(_) => {}

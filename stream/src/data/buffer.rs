@@ -82,7 +82,7 @@ impl Cache {
                 // 当还有该SSRC插入则-回调，并改状态为0，重新计时；
             }
             Some(buf) => {
-                info!("produce data => ssrc = {}, sn = {}, ts = {},data-size = {}", ssrc, sn, ts,raw.len());
+                // info!("produce data => ssrc = {}, sn = {}, ts = {},data-size = {}", ssrc, sn, ts,raw.len());
                 if buf.add_counter_by_ts_sn(sn, ts) {
                     buf.update_inner_raw(sn, ts, raw);
                     let _ = session::refresh(ssrc).hand_err(|msg| error!("{msg}"));
@@ -130,7 +130,7 @@ impl Cache {
                             state_guard.up_sliding_window();
                         }
                         state_guard.index = inx;
-                        info!("consume data => ssrc = {}, sn = {}, ts = {}, index = {},vec-len = {}",ssrc,state_guard.sn,state_guard.ts,inx,vec.len());
+                        // info!("consume data => ssrc = {}, sn = {}, ts = {}, index = {},vec-len = {}",ssrc,state_guard.sn,state_guard.ts,inx,vec.len());
                         return Ok(Some(vec));
                     }
                     //非(首次读取与回绕)查找有效数据不累减计数器与扩大缓存滑动窗口

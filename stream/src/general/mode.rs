@@ -1,3 +1,4 @@
+use discortp::rtp::RtpType;
 use common::err::{GlobalError, GlobalResult};
 use common::log::debug;
 use common::yaml_rust::Yaml;
@@ -120,7 +121,6 @@ impl Media {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

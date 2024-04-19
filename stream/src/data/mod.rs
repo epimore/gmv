@@ -3,6 +3,7 @@ use std::os::raw::{c_int, c_void};
 
 use ffmpeg_next::ffi::AVERROR_EOF;
 use ffmpeg_next::ffi::AVERROR_UNKNOWN;
+use ffmpeg_next::sys::AVERROR_STREAM_NOT_FOUND;
 
 use common::err::GlobalResult;
 use common::log::{debug, warn};
@@ -24,9 +25,9 @@ unsafe extern "C" fn read_packet(opaque: *mut c_void, buf: *mut u8, _buf_size: c
     let op = &*(opaque as *const u32);
     match buffer::Cache::consume(op) {
         Ok(None) => {
-            debug!("ssrc = {op},无数据");
+            // warn!("ssrc = {op},无数据");
             // AVERROR_UNKNOWN
-            AVERROR_EOF
+            ffmpeg_next::ffi::EAGAIN
         }
         Ok(Some(mut buffer)) => {
             debug!("---------buffer  = {:?}",&buffer);
@@ -34,7 +35,7 @@ unsafe extern "C" fn read_packet(opaque: *mut c_void, buf: *mut u8, _buf_size: c
             let cap = buffer.capacity();
             let br = buffer.as_mut_ptr();
             ptr::copy(br, buf, len);
-            debug!("========= buf  = {:?}",Vec::from_raw_parts(buf, len, cap));
+            // debug!("========= buf  = {:?}",Vec::from_raw_parts(buf, len, cap));
             len as c_int
         }
         Err(err) => {

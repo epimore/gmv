@@ -1,7 +1,8 @@
 extern crate core;
 
 use std::time::Duration;
-use common::log::info;
+use common::err::TransError;
+use common::log::{error, info};
 use common::tokio;
 use crate::io::IO;
 
@@ -17,6 +18,7 @@ async fn main() {
     let stream = general::mode::Stream::build(cfg);
     data::session::insert(1, "sid".to_string(), Duration::from_millis(*stream.get_timeout() as u64), None).expect("session init failed");
     tokio::spawn(async move { stream.listen_input().await; });
+    // let _ = protocol::trans::process(1).await.hand_err(|msg|error!("parse err: {msg}"));
     protocol::parse(1).await.expect("parse err");
     // data::buffer::Cache::readable(&1).await.expect("readable exception");
     // let call = data::call();

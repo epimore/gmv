@@ -426,15 +426,15 @@ impl SdpBuilder {
         sdp.push_str(&format!("t={}\r\n", st_et));
         match stream_mode {
             StreamMode::Udp => {
-                sdp.push_str(&format!("m=video {} RTP/AVP 96 97 98 99\r\n", media_port))
+                sdp.push_str(&format!("m=video {} RTP/AVP 96 97 98 99 100\r\n", media_port))
             }
             StreamMode::TcpActive => {
-                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", media_port));
+                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n", media_port));
                 sdp.push_str("a=setup:active\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
             StreamMode::TcpPassive => {
-                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99\r\n", media_port));
+                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n", media_port));
                 sdp.push_str("a=setup:passive\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
@@ -443,7 +443,8 @@ impl SdpBuilder {
         sdp.push_str("a=rtpmap:96 PS/90000\r\n");
         sdp.push_str("a=rtpmap:97 MPEG4/90000\r\n");
         sdp.push_str("a=rtpmap:98 H264/90000\r\n");
-        sdp.push_str("a=rtpmap:99 H265/90000\r\n");
+        sdp.push_str("a=rtpmap:99 SVAC/90000\r\n");
+        sdp.push_str("a=rtpmap:100 H265/90000\r\n");
         download_speed.map(|speed| sdp.push_str(&format!("a=downloadspeed:{}\r\n", speed)));
         sdp.push_str(&format!("y={}\r\n", ssrc));
         Ok(sdp)
