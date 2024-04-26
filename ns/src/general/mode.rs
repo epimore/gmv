@@ -2,7 +2,7 @@ use discortp::rtp::RtpType;
 use common::err::{GlobalError, GlobalResult};
 use common::log::debug;
 use common::yaml_rust::Yaml;
-use constructor::Get;
+use constructor::{Get, Set};
 
 #[derive(Debug, Get)]
 pub struct Stream {
@@ -53,8 +53,16 @@ impl Hook {
     }
 }
 
+#[derive(Debug, Get, Set, Default)]
+pub struct HttpStream {
+    port: u16,
+    method: String,
+    timeout: u8,
+    enable_flv: bool,
+    enable_m3u8: bool,
+}
 
-pub const AV_IO_CTX_BUFFER_SIZE: u16 = 1024*32;
+pub const AV_IO_CTX_BUFFER_SIZE: u16 = 1024 * 32;
 
 #[derive(Debug)]
 pub enum Media {

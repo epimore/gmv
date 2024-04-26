@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender};
+use flume::{bounded, Receiver, Sender};
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
+use common::clap::builder::Str;
 use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::{error, info};
@@ -190,7 +191,7 @@ impl State {
     }
 }
 
-pub type InnerChannel = (Sender<Bytes>, Receiver<Bytes>);
+type InnerChannel = (Sender<Bytes>, Receiver<Bytes>);
 
 #[derive(Debug, Get, Clone)]
 pub struct Channel {
@@ -200,10 +201,13 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn build(rtp_channel: InnerChannel, flv_channel: Option<InnerChannel>, m3u8_channel: Option<InnerChannel>) -> GlobalResult<Self> {
-        if flv_channel.is_none() && m3u8_channel.is_none() {
+    pub fn build(flv: bool, m3u8: bool) -> GlobalResult<Self> {
+        if !flv && !m3u8 {
             Err(SysErr(anyhow!("无输出管道。"))).hand_err(|msg| error!("{msg}"))?;
         }
+        let rtp_channel = bounded(8);
+        let flv_channel = if flv { Some(bounded(8)) } else { None };
+        let m3u8_channel = if m3u8 { Some(bounded(8)) } else { None };
         Ok(Self {
             rtp_channel,
             flv_channel,
@@ -240,4 +244,13 @@ impl Channel {
             Some((_tx, rx)) => { Some(rx.clone()) }
         }
     }
+}
+
+struct UserSession{
+    token:String,
+    flv_enable:bool,
+    m3u8_enable:bool,
+    //录制视频的地址
+    // down_filename:Option<String>,
+    // pic_filename:Option<String>,
 }

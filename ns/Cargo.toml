@@ -6,12 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-crossbeam-channel = "0.5"
 common = { path = "../../pig/common", features = ["net"] }
 constructor = { path = "../../macros/constructor" }
 discortp = { version = "0.6.0", features = ["discord-full"] }
-xmpegts = {git = "https://github.com/harlanc/xiu",branch = "gb28181"}
-bytesio = "0.3.2"
-byteorder = "1.4.2"
 parking_lot = "0.12"
 ffmpeg-next = { version = "7.0", features = ["default", "static"] }
+flume = "0.11"
+tokio-util = "0.7"
+futures-util = "0.3"
+hyper = { version = "0.14.26", features = ["full"] }
+http-body-util = "0.1"

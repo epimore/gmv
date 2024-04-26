@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
-use crossbeam_channel::{bounded, Sender, TrySendError};
+use flume::{bounded, Sender, TrySendError};
 use discortp::demux;
 use discortp::demux::Demuxed;
 use discortp::rtp::RtpType;
