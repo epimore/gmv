@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
-use flume::{bounded, Sender, TrySendError};
+use crossbeam_channel::{bounded, Sender, TrySendError};
 use discortp::demux;
 use discortp::demux::Demuxed;
 use discortp::rtp::RtpType;
@@ -29,10 +29,13 @@ async fn listen_input(stream: Stream) -> GlobalResult<()> {
                     Demuxed::Rtp(rtp_packet) => {
                         match state::session::refresh(rtp_packet.get_ssrc()) {
                             None => { debug!("未知ssrc: {}",rtp_packet.get_ssrc()) }
-                            Some(rtp_tx) => {
+                            Some((rtp_tx, rtp_rx)) => {
                                 if let RtpType::Dynamic(v) = rtp_packet.get_payload_type() {
                                     if v <= 100 {
-                                        let _ = rtp_tx.try_send(data.get_owned_data()).hand_err(|msg| debug!("{msg}"));
+                                        //通道满了，删除先入的数据
+                                        if let TrySendError::Full(data) = rtp_tx.try_send(data.get_owned_data()) {
+                                            let _ = rtp_rx.recv().hand_err(|msg| debug!("{msg}"));
+                                        }
                                     }
                                 } else {
                                     info!("暂不支持数据类型: tp = {:?}",rtp_packet.get_payload_type())

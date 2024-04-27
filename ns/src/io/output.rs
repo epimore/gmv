@@ -23,6 +23,7 @@ use common::tokio::{self,
 use crate::general::mode::HttpStream;
 
 async fn handle(
+    remote_addr: SocketAddr,
     req: Request<Body>,
     client_connection_cancel: CancellationToken,
 ) -> Result<Response<Body>, hyper::http::Error> {
@@ -47,6 +48,10 @@ async fn handle(
 
     Response::builder().status(StatusCode::OK).body(rx)
 }
+async fn biz(remote_addr: SocketAddr,
+             req: Request<Body>) {
+    let (tx, rx) = tokio::sync::broadcast::channel(100);
+}
 
 
 struct ServerListener(TcpListener);
@@ -66,11 +71,13 @@ pub async fn listen_stream(http_stream: HttpStream) -> GlobalResult<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", http_stream.get_port())).await.hand_err(|msg| error!("{msg}")).unwrap();
 
     let make_service = make_service_fn(|conn: &ClientConnection| {
-        let client_connection_cancel = conn.cancel.clone();
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                handle(req, client_connection_cancel.clone())
-            }))
+        if let Ok(remote_addr) = conn.conn.peer_addr() {
+            let client_connection_cancel = conn.cancel.clone();
+            async move {
+                Ok::<_, Infallible>(service_fn(move |req| {
+                    handle(remote_addr,req, client_connection_cancel.clone())
+                }))
+            }
         }
     });
     hyper::server::Server::builder(ServerListener(listener)).serve(make_service).await.hand_err(|msg| error!("{msg}")).unwrap();

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use flume::{bounded, Receiver, Sender};
+use crossbeam_channel::bounded;
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use common::anyhow::anyhow;
@@ -15,7 +15,7 @@ use common::err::GlobalError::SysErr;
 use common::log::{error, info};
 use common::once_cell::sync::Lazy;
 use common::tokio;
-use common::tokio::sync::Notify;
+use common::tokio::sync::{broadcast, Notify};
 use common::tokio::time;
 use common::tokio::time::Instant;
 use constructor::Get;
@@ -39,7 +39,7 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
 }
 
 //返回rtp_tx
-pub fn refresh(ssrc: u32) -> Option<Sender<Bytes>> {
+pub fn refresh(ssrc: u32) -> Option<(Sender<Bytes>, Receiver<Bytes>)> {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     state.sessions.get_mut(&ssrc).map(|(when, _, expires, channel)| {
@@ -47,7 +47,7 @@ pub fn refresh(ssrc: u32) -> Option<Sender<Bytes>> {
         let ct = Instant::now() + *expires;
         *when = ct;
         state.expirations.insert((ct, ssrc));
-        channel.get_rtp_tx()
+        (channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone())
     })
 }
 
@@ -191,13 +191,14 @@ impl State {
     }
 }
 
-type InnerChannel = (Sender<Bytes>, Receiver<Bytes>);
+type SyncChannel = (crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>);
+type BroadcastChannel = (broadcast::Sender<Bytes>, broadcast::Receiver<Bytes>);
 
 #[derive(Debug, Get, Clone)]
 pub struct Channel {
-    rtp_channel: InnerChannel,
-    flv_channel: Option<InnerChannel>,
-    m3u8_channel: Option<InnerChannel>,
+    rtp_channel: SyncChannel,
+    flv_channel: Option<BroadcastChannel>,
+    m3u8_channel: Option<BroadcastChannel>,
 }
 
 impl Channel {
@@ -206,50 +207,52 @@ impl Channel {
             Err(SysErr(anyhow!("无输出管道。"))).hand_err(|msg| error!("{msg}"))?;
         }
         let rtp_channel = bounded(8);
-        let flv_channel = if flv { Some(bounded(8)) } else { None };
-        let m3u8_channel = if m3u8 { Some(bounded(8)) } else { None };
+        let flv_channel = if flv { Some(broadcast::channel(8)) } else { None };
+        let m3u8_channel = if m3u8 { Some(broadcast::channel(8)) } else { None };
         Ok(Self {
             rtp_channel,
             flv_channel,
             m3u8_channel,
         })
     }
-    fn get_rtp_rx(&self) -> Receiver<Bytes> {
+    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Bytes> {
         self.rtp_channel.1.clone()
     }
-    fn get_rtp_tx(&self) -> Sender<Bytes> {
+    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<Bytes> {
         self.rtp_channel.0.clone()
     }
-    fn get_flv_tx(&self) -> Option<Sender<Bytes>> {
+    fn get_flv_tx(&self) -> Option<broadcast::Sender<Bytes>> {
         match self.get_flv_channel() {
             None => { None }
             Some((tx, _rx)) => { Some(tx.clone()) }
         }
     }
-    fn get_flv_rx(&self) -> Option<Receiver<Bytes>> {
+    fn get_flv_rx(&self) -> Option<broadcast::Receiver<Bytes>> {
         match self.get_flv_channel() {
             None => { None }
-            Some((_tx, rx)) => { Some(rx.clone()) }
+            Some((tx, rx)) => { Some(tx.subscribe()) }
         }
     }
-    fn get_m3u8_tx(&self) -> Option<Sender<Bytes>> {
+    fn get_m3u8_tx(&self) -> Option<broadcast::Sender<Bytes>> {
         match self.get_m3u8_channel() {
             None => { None }
             Some((tx, _rx)) => { Some(tx.clone()) }
         }
     }
-    fn get_m3u8_rx(&self) -> Option<Receiver<Bytes>> {
+    fn get_m3u8_rx(&self) -> Option<broadcast::Receiver<Bytes>> {
         match self.get_m3u8_channel() {
             None => { None }
-            Some((_tx, rx)) => { Some(rx.clone()) }
+            Some((tx, _rx)) => {
+                Some(tx.subscribe())
+            }
         }
     }
 }
 
-struct UserSession{
-    token:String,
-    flv_enable:bool,
-    m3u8_enable:bool,
+struct UserSession {
+    token: String,
+    flv_enable: bool,
+    m3u8_enable: bool,
     //录制视频的地址
     // down_filename:Option<String>,
     // pic_filename:Option<String>,
