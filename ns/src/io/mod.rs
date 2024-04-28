@@ -1,8 +1,7 @@
 use std::{ptr, slice};
 use std::os::raw::{c_int, c_void};
 
-use flume::{Receiver, RecvError, Sender};
-use ffmpeg_next::ffi::AVERROR_EOF;
+use ffmpeg_next::ffi::{AVERROR_EOF, EAGAIN};
 use common::bytes::Bytes;
 use common::err::TransError;
 use common::log::{debug, warn};
@@ -56,35 +55,25 @@ unsafe extern "C" fn tx_flv_packet(opaque: *mut c_void, buf: *mut u8, buf_size: 
             -1
         }
         Some(flv_tx) => {
-            match flv_tx {
-                None => { -1 }
-                Some(tx) => {
-                    let slice = slice::from_raw_parts(buf, buf_size as usize);
-                    let _ = tx.try_send(Bytes::copy_from_slice(slice)).hand_err(|msg| debug!("{msg}"));
-                    buf_size
-                }
-            }
+            let slice = slice::from_raw_parts(buf, buf_size as usize);
+            let _ = flv_tx.send(Bytes::copy_from_slice(slice)).hand_err(|msg| debug!("flv 发送失败{msg}"));
+            buf_size
         }
     }
 }
 
 #[no_mangle]
-unsafe extern "C" fn tx_m3u8_packet(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
+unsafe extern "C" fn tx_hls_packet(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
     let ssrc = &*(opaque as *const u32);
-    match session::get_m3u8_tx(ssrc) {
+    match session::get_hls_tx(ssrc) {
         None => {
             warn!("ssrc = {ssrc},流已释放");
             -1
         }
-        Some(m3u8_tx) => {
-            match m3u8_tx {
-                None => { -1 }
-                Some(tx) => {
-                    let slice = slice::from_raw_parts(buf, buf_size as usize);
-                    let _ = tx.try_send(Bytes::copy_from_slice(slice)).hand_err(|msg| debug!("{msg}"));
-                    buf_size
-                }
-            }
+        Some(hls_tx) => {
+            let slice = slice::from_raw_parts(buf, buf_size as usize);
+            let _ = hls_tx.send(Bytes::copy_from_slice(slice)).hand_err(|msg| debug!("hls 发送失败: {msg}"));
+            buf_size
         }
     }
 }

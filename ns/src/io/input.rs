@@ -33,7 +33,7 @@ async fn listen_input(stream: Stream) -> GlobalResult<()> {
                                 if let RtpType::Dynamic(v) = rtp_packet.get_payload_type() {
                                     if v <= 100 {
                                         //通道满了，删除先入的数据
-                                        if let TrySendError::Full(data) = rtp_tx.try_send(data.get_owned_data()) {
+                                        if let Err(TrySendError::Full(_)) = rtp_tx.try_send(data.get_owned_data()) {
                                             let _ = rtp_rx.recv().hand_err(|msg| debug!("{msg}"));
                                         }
                                     }

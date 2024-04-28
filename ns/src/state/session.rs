@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crossbeam_channel::bounded;
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use common::anyhow::anyhow;
@@ -39,7 +38,7 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
 }
 
 //返回rtp_tx
-pub fn refresh(ssrc: u32) -> Option<(Sender<Bytes>, Receiver<Bytes>)> {
+pub fn refresh(ssrc: u32) -> Option<(crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>)> {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     state.sessions.get_mut(&ssrc).map(|(when, _, expires, channel)| {
@@ -51,8 +50,8 @@ pub fn refresh(ssrc: u32) -> Option<(Sender<Bytes>, Receiver<Bytes>)> {
     })
 }
 
-//外层option判断ssrc是否存在，里层判断是否需要rtp/m3u8协议
-pub fn get_flv_tx(ssrc: &u32) -> Option<Option<Sender<Bytes>>> {
+//外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
+pub fn get_flv_tx(ssrc: &u32) ->Option<broadcast::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -62,7 +61,7 @@ pub fn get_flv_tx(ssrc: &u32) -> Option<Option<Sender<Bytes>>> {
     }
 }
 
-pub fn get_flv_rx(ssrc: &u32) -> Option<Option<Receiver<Bytes>>> {
+pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -72,27 +71,27 @@ pub fn get_flv_rx(ssrc: &u32) -> Option<Option<Receiver<Bytes>>> {
     }
 }
 
-pub fn get_m3u8_tx(ssrc: &u32) -> Option<Option<Sender<Bytes>>> {
+pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, channel)) => {
-            Some(channel.get_m3u8_tx())
+            Some(channel.get_hls_tx())
         }
     }
 }
 
-pub fn get_m3u8_rx(ssrc: &u32) -> Option<Option<Receiver<Bytes>>> {
+pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, channel)) => {
-            Some(channel.get_m3u8_rx())
+            Some(channel.get_hls_rx())
         }
     }
 }
 
-pub fn get_rtp_tx(ssrc: &u32) -> Option<Sender<Bytes>> {
+pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -102,7 +101,7 @@ pub fn get_rtp_tx(ssrc: &u32) -> Option<Sender<Bytes>> {
     }
 }
 
-pub fn get_rtp_rx(ssrc: &u32) -> Option<Receiver<Bytes>> {
+pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -194,25 +193,22 @@ impl State {
 type SyncChannel = (crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>);
 type BroadcastChannel = (broadcast::Sender<Bytes>, broadcast::Receiver<Bytes>);
 
-#[derive(Debug, Get, Clone)]
+#[derive(Debug)]
 pub struct Channel {
     rtp_channel: SyncChannel,
-    flv_channel: Option<BroadcastChannel>,
-    m3u8_channel: Option<BroadcastChannel>,
+    flv_channel: BroadcastChannel,
+    hls_channel: BroadcastChannel,
 }
 
 impl Channel {
-    pub fn build(flv: bool, m3u8: bool) -> GlobalResult<Self> {
-        if !flv && !m3u8 {
-            Err(SysErr(anyhow!("无输出管道。"))).hand_err(|msg| error!("{msg}"))?;
-        }
-        let rtp_channel = bounded(8);
-        let flv_channel = if flv { Some(broadcast::channel(8)) } else { None };
-        let m3u8_channel = if m3u8 { Some(broadcast::channel(8)) } else { None };
+    pub fn build() -> GlobalResult<Self> {
+        let rtp_channel = crossbeam_channel::bounded(8);
+        let flv_channel = broadcast::channel(8);
+        let hls_channel = broadcast::channel(8);
         Ok(Self {
             rtp_channel,
             flv_channel,
-            m3u8_channel,
+            hls_channel,
         })
     }
     fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Bytes> {
@@ -221,38 +217,24 @@ impl Channel {
     fn get_rtp_tx(&self) -> crossbeam_channel::Sender<Bytes> {
         self.rtp_channel.0.clone()
     }
-    fn get_flv_tx(&self) -> Option<broadcast::Sender<Bytes>> {
-        match self.get_flv_channel() {
-            None => { None }
-            Some((tx, _rx)) => { Some(tx.clone()) }
-        }
+    fn get_flv_tx(&self) -> broadcast::Sender<Bytes> {
+        self.flv_channel.0.clone()
     }
-    fn get_flv_rx(&self) -> Option<broadcast::Receiver<Bytes>> {
-        match self.get_flv_channel() {
-            None => { None }
-            Some((tx, rx)) => { Some(tx.subscribe()) }
-        }
+    fn get_flv_rx(&self) -> broadcast::Receiver<Bytes> {
+        self.flv_channel.0.subscribe()
     }
-    fn get_m3u8_tx(&self) -> Option<broadcast::Sender<Bytes>> {
-        match self.get_m3u8_channel() {
-            None => { None }
-            Some((tx, _rx)) => { Some(tx.clone()) }
-        }
+    fn get_hls_tx(&self) -> broadcast::Sender<Bytes> {
+        self.hls_channel.0.clone()
     }
-    fn get_m3u8_rx(&self) -> Option<broadcast::Receiver<Bytes>> {
-        match self.get_m3u8_channel() {
-            None => { None }
-            Some((tx, _rx)) => {
-                Some(tx.subscribe())
-            }
-        }
+    fn get_hls_rx(&self) -> broadcast::Receiver<Bytes> {
+        self.hls_channel.0.subscribe()
     }
 }
 
 struct UserSession {
     token: String,
     flv_enable: bool,
-    m3u8_enable: bool,
+    hls_enable: bool,
     //录制视频的地址
     // down_filename:Option<String>,
     // pic_filename:Option<String>,

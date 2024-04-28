@@ -5,6 +5,7 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
+use std::f32::consts::E;
 
 use hyper::{
     Body,
@@ -13,7 +14,9 @@ use hyper::{
     Response, server::accept::Accept, service::{make_service_fn, service_fn}, StatusCode,
 };
 use tokio_util::sync::CancellationToken;
-use common::err::{GlobalResult, TransError};
+use common::anyhow::anyhow;
+use common::err::{GlobalError, GlobalResult, TransError};
+use common::err::GlobalError::SysErr;
 use common::log::error;
 
 use common::tokio::{self,
@@ -26,7 +29,8 @@ async fn handle(
     remote_addr: SocketAddr,
     req: Request<Body>,
     client_connection_cancel: CancellationToken,
-) -> Result<Response<Body>, hyper::http::Error> {
+) -> GlobalResult<Response<Body>> {
+// ) -> Result<Response<Body>, hyper::http::Error> {
     let (mut tx, rx) = Body::channel();
 
     // spawn background task, end when client connection is dropped
@@ -46,11 +50,14 @@ async fn handle(
         }
     });
 
-    Response::builder().status(StatusCode::OK).body(rx)
+    let response = Response::builder().status(StatusCode::OK).body(rx).hand_err(|msg| error!("{msg}"))?;
+    Ok(response)
 }
+
 async fn biz(remote_addr: SocketAddr,
              req: Request<Body>) {
-    let (tx, rx) = tokio::sync::broadcast::channel(100);
+    // let (tx, rx) = tokio::sync::broadcast::channel(100);
+    unimplemented!()
 }
 
 
@@ -71,14 +78,20 @@ pub async fn listen_stream(http_stream: HttpStream) -> GlobalResult<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", http_stream.get_port())).await.hand_err(|msg| error!("{msg}")).unwrap();
 
     let make_service = make_service_fn(|conn: &ClientConnection| {
-        if let Ok(remote_addr) = conn.conn.peer_addr() {
-            let client_connection_cancel = conn.cancel.clone();
-            async move {
-                Ok::<_, Infallible>(service_fn(move |req| {
-                    handle(remote_addr,req, client_connection_cancel.clone())
-                }))
+        let client_connection_cancel = conn.cancel.clone();
+        match conn.conn.peer_addr() {
+            Ok(remote_addr) => {
+                async move {
+                    Ok::<_, GlobalError>(service_fn(move |req| {
+                        handle(remote_addr, req, client_connection_cancel.clone())
+                    }))
+                }
+            }
+            Err(err) => {
+                async {Ok::<_, GlobalError>(SysErr(anyhow!("获取remote addr失败;err={err}")))}
             }
         }
+
     });
     hyper::server::Server::builder(ServerListener(listener)).serve(make_service).await.hand_err(|msg| error!("{msg}")).unwrap();
     Ok(())
