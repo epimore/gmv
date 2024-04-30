@@ -3,24 +3,10 @@ log:
   suffix: stream
   store_path: ./logs
 
-http-api: #API接口
-  port: 18546
-  timeout: 30000   #请求超时 单位毫秒
-  prefix: /gb28181/stream
-  server_name: gb28181-session
-  version: v0.2
-http-stream: #http流输出接口
-  port: 18547
-  method: get
-  timeout: 8 #单位秒，客户端断开连接后关闭流，todo 0 不关闭
-  enable_flv: true #默认开启 地址/flv/{stream_id}/{token}
-  enable_m3u8: false #默认不开启，地址/flv/{stream_id}/{token}
+server:
+  name: stream-node-1 #服务标识身份,流媒体集群唯一标识
+  rtp-port: 18568 #监听rtp媒体流端口;
+  rtcp-port: 18569 #监听rtcp媒体流端口;
+  http-port: 18570 #流媒体API端口
+  hook-uri: http://127.0.0.1:18567 #信令服务的地址
 
-stream: #rtp流接收入口及事件回调配置
-  port: 18548
-  timeout: 8000 #请求超时 单位毫秒
-  hook:
-    on_publish: xxx.cn
-    off_publish: xxx1.cn
-    on_play: xxx2.cn
-    off_play: xxx3.cn

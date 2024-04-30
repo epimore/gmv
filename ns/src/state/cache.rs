@@ -14,10 +14,14 @@ use common::err::GlobalError::SysErr;
 use common::log::{error, info};
 use common::once_cell::sync::Lazy;
 use common::tokio;
-use common::tokio::sync::{broadcast, Notify};
+use common::tokio::sync::{broadcast, mpsc, Notify};
+use common::tokio::sync::oneshot::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
 use constructor::Get;
+use crate::general::mode::ServerConf;
+use crate::io::event_hook;
+use crate::io::event_hook::Event;
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -51,7 +55,7 @@ pub fn refresh(ssrc: u32) -> Option<(crossbeam_channel::Sender<Bytes>, crossbeam
 }
 
 //外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
-pub fn get_flv_tx(ssrc: &u32) ->Option<broadcast::Sender<Bytes>> {
+pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -111,6 +115,11 @@ pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Bytes>> {
     }
 }
 
+pub fn get_server_conf() -> &'static ServerConf {
+    let conf = &SESSION.shared.server_conf;
+    conf
+}
+
 
 struct Session {
     shared: Arc<Shared>,
@@ -118,6 +127,11 @@ struct Session {
 
 impl Session {
     fn init() -> Self {
+        let tripe = common::init();
+        let cfg_yaml = tripe.get_cfg().get(0).clone().expect("config file is invalid");
+        let server_conf = ServerConf::build(cfg_yaml);
+        banner();
+        let (tx, rx) = mpsc::channel(1000);
         let session = Session {
             shared: Arc::new(Shared {
                 state: RwLock::new(State {
@@ -126,13 +140,27 @@ impl Session {
                     expirations: BTreeSet::new(),
                 }),
                 background_task: Notify::new(),
+                server_conf: server_conf.clone(),
+                event_rx: tx,
             })
         };
         let shared = session.shared.clone();
         thread::spawn(|| {
             let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
+
             let _ = rt.block_on(Self::purge_expired_task(shared));
         });
+        thread::spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("HOOK-EVENT").build().hand_err(|msg| error!("{msg}")).unwrap();
+            let _ = rt.block_on(Event::event_loop(rx));
+        });
+        println!("Server node name = {}\n\
+        Listen to http api addr = 0.0.0.0:{}\n\
+        Listen to rtp over tcp and udp,stream addr = 0.0.0.0:{}\n\
+        Listen to rtcp over tcp and udp,message addr = 0.0.0.0:{}\n\
+        Hook to http addr = {}\n\
+        ... GMV:STREAM started."
+                 , server_conf.get_name(), server_conf.get_http_port(), server_conf.get_rtp_port(), server_conf.get_rtcp_port(), server_conf.get_hook_uri());
         session
     }
 
@@ -153,6 +181,8 @@ impl Session {
 struct Shared {
     state: RwLock<State>,
     background_task: Notify,
+    server_conf: ServerConf,
+    event_rx: mpsc::Sender<(event_hook::Event, Sender<event_hook::EventRes>)>,
 }
 
 impl Shared {
@@ -231,11 +261,14 @@ impl Channel {
     }
 }
 
-struct UserSession {
-    token: String,
-    flv_enable: bool,
-    hls_enable: bool,
-    //录制视频的地址
-    // down_filename:Option<String>,
-    // pic_filename:Option<String>,
+fn banner() {
+    let br = r#"
+   ___   __  __  __   __
+  / __| |  \/  | \ \ / /
+ | (_ | | |\/| |  \ V /
+  \___| |_|__|_|  _\_/_
+_|"""""|_|"""""|_| """"|
+"`-0-0-'"`-0-0-'"`-0-0-'
+"#;
+    println!("{}", br);
 }

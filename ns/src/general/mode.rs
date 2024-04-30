@@ -4,62 +4,46 @@ use common::log::debug;
 use common::yaml_rust::Yaml;
 use constructor::{Get, Set};
 
-#[derive(Debug, Get)]
-pub struct Stream {
-    port: u16,
-    timeout: u32,
-    hook: Option<Hook>,
+//统一响应超时:单位毫秒
+pub const TIME_OUT: u16 = 8000;
+//数据通道缓存大小
+pub const BUFFER_SIZE: u8 = 8;
+//API接口根信息
+pub const INDEX: &str = r#"<!DOCTYPE html><html lang="en"><head>
+    <style>body{display:grid;place-items:center;height:100vh;margin:0;}</style>
+    <metacharset="UTF - 8"><title>GMV</title></head>
+<body><div><h1>GMV:STREAM-SERVER</h1></div></body></html>"#;
+
+#[derive(Debug, Get, Clone)]
+pub struct ServerConf {
+    name: String,
+    rtp_port: u16,
+    rtcp_port:u16,
+    http_port: u16,
+    hook_uri: String,
 }
 
-impl Stream {
+impl ServerConf {
     pub fn build(cfg: &Yaml) -> Self {
-        if cfg.is_badvalue() || cfg["stream"].is_badvalue() {
-            Stream {
-                port: 23344,
-                timeout: 30000,
-                hook: None,
+        if cfg.is_badvalue() || cfg["server"].is_badvalue() {
+            Self {
+                name: "stream-node-1".to_string(),
+                rtp_port: 18568,
+                rtcp_port: 18569,
+                http_port: 18570,
+                hook_uri: "http://127.0.0.1:18567".to_string(),
             }
         } else {
-            let stream = &cfg["stream"];
-            Stream {
-                port: stream["port"].as_i64().unwrap_or(8080) as u16,
-                timeout: stream["timeout"].as_i64().unwrap_or(30000) as u32,
-                hook: Hook::build(stream),
+            let server = &cfg["server"];
+            Self {
+                name: server["name"].as_str().map(|str| str.to_string()).unwrap_or("stream-node-1".to_string()),
+                rtp_port: server["rtp-port"].as_i64().unwrap_or(18568) as u16,
+                rtcp_port: server["rtcp-port"].as_i64().unwrap_or(18569) as u16,
+                http_port: server["http-port"].as_i64().unwrap_or(18570) as u16,
+                hook_uri: server["hook-uri"].as_str().map(|str| str.to_string()).unwrap_or("http://127.0.0.1:18567".to_string()),
             }
         }
     }
-}
-
-#[derive(Debug)]
-pub struct Hook {
-    on_publish: Option<String>,
-    off_publish: Option<String>,
-    on_play: Option<String>,
-    off_play: Option<String>,
-}
-
-impl Hook {
-    fn build(cfg: &Yaml) -> Option<Self> {
-        if cfg["hook"].is_badvalue() {
-            None
-        } else {
-            Some(Self {
-                on_publish: cfg["hook"]["on_publish"].as_str().map(|str| str.to_string()),
-                off_publish: cfg["hook"]["off_publish"].as_str().map(|str| str.to_string()),
-                on_play: cfg["hook"]["on_play"].as_str().map(|str| str.to_string()),
-                off_play: cfg["hook"]["off_play"].as_str().map(|str| str.to_string()),
-            })
-        }
-    }
-}
-
-#[derive(Debug, Get, Set, Default)]
-pub struct HttpStream {
-    port: u16,
-    method: String,
-    timeout: u8,
-    enable_flv: bool,
-    enable_m3u8: bool,
 }
 
 pub const AV_IO_CTX_BUFFER_SIZE: u16 = 1024 * 32;
@@ -132,12 +116,12 @@ impl Media {
 
 #[cfg(test)]
 mod tests {
-    use crate::general::mode::Stream;
+    use crate::general::mode::ServerConf;
 
     #[test]
     pub fn test_build_stream() {
         let binding = common::get_config();
         let cfg = binding.get(0).unwrap();
-        println!("{:?}", Stream::build(cfg));
+        println!("{:?}", ServerConf::build(cfg));
     }
 }

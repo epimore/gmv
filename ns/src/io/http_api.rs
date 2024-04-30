@@ -1,14 +1,8 @@
 use std::{convert::Infallible, io, pin::Pin, result, task::{Context, Poll}, time::Duration};
-use std::f32::consts::E;
 use std::io::Error;
 use std::net::SocketAddr;
 
-use hyper::{
-    Body,
-    body::Bytes,
-    Request,
-    Response, server::accept::Accept, service::{make_service_fn, service_fn}, StatusCode,
-};
+use hyper::{Body, body::Bytes, Method, Request, Response, server::accept::Accept, service::{make_service_fn, service_fn}, StatusCode};
 use tokio_util::sync::CancellationToken;
 
 use common::anyhow::anyhow;
@@ -20,7 +14,7 @@ use common::tokio::{self,
                     net::{TcpListener, TcpStream},
 };
 
-use crate::general::mode::HttpStream;
+use crate::general::mode::{INDEX, ServerConf};
 
 async fn handle(
     opt_addr: Option<SocketAddr>,
@@ -28,6 +22,7 @@ async fn handle(
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
 // ) -> Result<Response<Body>, hyper::http::Error> {
+    let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败")))?;
     let (mut tx, rx) = Body::channel();
     // spawn background task, end when client connection is dropped
     tokio::spawn(async move {
@@ -50,21 +45,34 @@ async fn handle(
     Ok(response)
 }
 
-/// HTTP status code 404
-async fn req_bad() -> GlobalResult<Response<Body>> {
-    let res = Response::builder()
-        .status(StatusCode::BAD_REQUEST)
-        .body(Body::empty())
-        .hand_err(|msg| warn!("{msg}"))?;
-    Ok(res)
-}
-
 async fn biz(remote_addr: SocketAddr,
-             req: Request<Body>) {
+             req: Request<Body>) -> GlobalResult<Response<Body>> {
     // let (tx, rx) = tokio::sync::broadcast::channel(100);
-    unimplemented!()
+    match (req.method(), req.uri().path()) {
+        (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
+        (&Method::GET, "/listen/ssrc") => {
+            // Test what happens when file cannot be found
+            // simple_file_send("this_file_should_not_exist.html").await
+            unimplemented!()
+        }
+        (&Method::GET, "/drop/ssrc") => {
+            unimplemented!()
+        }
+        (&Method::GET, "/start/record") => {
+            unimplemented!()
+        }
+        (&Method::GET, "/stop/record") => {
+            unimplemented!()
+        }
+        (&Method::GET, "/stop/record") => {
+            unimplemented!()
+        }
+        (&Method::GET, "/query/state") => {
+            unimplemented!()
+        }
+        _ => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap()),
+    }
 }
-
 
 struct ServerListener(TcpListener);
 
@@ -79,8 +87,8 @@ impl Drop for ClientConnection {
     }
 }
 
-pub async fn listen_stream(http_stream: HttpStream) -> GlobalResult<()> {
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", http_stream.get_port())).await.hand_err(|msg| error!("{msg}")).unwrap();
+pub async fn run(port: u16) -> GlobalResult<()> {
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_err(|msg| error!("{msg}")).unwrap();
     let make_service = make_service_fn(|conn: &ClientConnection| {
         let opt_addr = conn.conn.peer_addr().ok();
         let client_connection_cancel = conn.cancel.clone();
@@ -89,24 +97,6 @@ pub async fn listen_stream(http_stream: HttpStream) -> GlobalResult<()> {
                 handle(opt_addr, req, client_connection_cancel.clone())
             }))
         }
-        /*match conn.conn.peer_addr() {
-            Ok(remote_addr) => {
-                async move {
-                    Ok::<_, GlobalError>(service_fn(move |req| {
-                        handle(remote_addr, req, client_connection_cancel.clone())
-                    }))
-                }
-            }
-            Err(err) => {
-                async move {
-                    Ok::<_, GlobalError>(service_fn(move |_req| {
-                        // debug!("连接时获取客户端地址失败,{err}");
-                        req_bad()
-                    }))
-                }
-            }
-        }*/
-        // let remote_addr = conn.conn.peer_addr().hand_err(|err|warn!("获取客户端地址失败,err={}",err))?;
     });
     hyper::server::Server::builder(ServerListener(listener)).serve(make_service).await.hand_err(|msg| error!("{msg}")).unwrap();
     Ok(())

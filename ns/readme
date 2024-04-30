@@ -1,0 +1,3 @@
+流播放地址：
+/flv/{stream_id}/{token}
+/hls/{stream_id}/{token}

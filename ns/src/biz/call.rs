@@ -1,19 +1,30 @@
 use std::net::SocketAddr;
 
-pub struct BaseStreamInfo {
-    ssrc: String,
-    stream_id: String,
+pub struct RtpInfo {
+    ssrc: u32,
     //tcp/udp
-    protocol: Option<String>,
-    in_time: Option<u32>,
-    server_id: String,
+    protocol: String,
+    //媒体流源地址
+    origin_addr: String,
+    server_name: String,
+}
+
+impl RtpInfo {
+    //未知流，每隔8秒提示一次
+    pub async fn stream_unknown(&self) {}
+}
+
+pub struct BaseStreamInfo {
+    rtp_info: RtpInfo,
+    stream_id: String,
+    in_time: u32,
 }
 
 impl BaseStreamInfo {
     //当接收到输入流时进行回调
-    pub async fn stream_listen_in(&self) {}
-    //当流无操作时（无观看、无录制），依旧接收到ssrc流输入时，间隔8秒回调一次
-    pub async fn stream_none_opt(&self) {}
+    pub async fn stream_in(&self) {}
+    //当流闲置时（无观看、无录制），依旧接收到ssrc流输入时，间隔8秒回调一次
+    pub async fn stream_idle(&self) {}
 }
 
 pub struct StreamPlayInfo {
@@ -22,14 +33,17 @@ pub struct StreamPlayInfo {
     token: String,
     //0-flv,1-hls
     play_type: u8,
+    //当前观看人数
+    hls_play_count: u32,
+    flv_play_count: u32,
 }
 
 impl StreamPlayInfo {
     //当用户访问播放流时进行回调（可用于鉴权）
-    pub async fn stream_on_play(&self) {}
+    pub async fn on_play(&self) {}
 
     //当用户断开播放时进行回调
-    pub async fn stream_off_play(&self) {}
+    pub async fn off_play(&self) {}
 }
 
 pub struct StreamRecordInfo {
@@ -42,17 +56,17 @@ pub struct StreamRecordInfo {
 
 impl StreamRecordInfo {
     //当流录制完成时进行回调
-    pub async fn stream_end_record(&self) {}
+    pub async fn end_record(&self) {}
 }
 
-pub struct StreamRunEvent {
+pub struct StreamState {
     base_stream_info: BaseStreamInfo,
-    hls_enable: Option<bool>,
-    flv_enable: Option<bool>,
+    hls_play_count: u32,
+    flv_play_count: u32,
     record_enable: Option<bool>,
 }
 
-impl StreamRunEvent {
+impl StreamState {
     //当等待输入流超时时进行回调
     pub async fn stream_input_timeout(&self) {}
 }
