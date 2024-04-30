@@ -1,4 +1,5 @@
 use std::{convert::Infallible, io, pin::Pin, result, task::{Context, Poll}, time::Duration};
+use std::collections::HashMap;
 use std::io::Error;
 use std::net::SocketAddr;
 
@@ -14,7 +15,8 @@ use common::tokio::{self,
                     net::{TcpListener, TcpStream},
 };
 
-use crate::general::mode::{INDEX, ServerConf};
+use crate::biz;
+use crate::general::mode::{INDEX, ResMsg, ServerConf};
 
 async fn handle(
     opt_addr: Option<SocketAddr>,
@@ -51,9 +53,7 @@ async fn biz(remote_addr: SocketAddr,
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
         (&Method::GET, "/listen/ssrc") => {
-            // Test what happens when file cannot be found
-            // simple_file_send("this_file_should_not_exist.html").await
-            unimplemented!()
+            biz::api::listen_ssrc(&req).await
         }
         (&Method::GET, "/drop/ssrc") => {
             unimplemented!()
@@ -68,6 +68,12 @@ async fn biz(remote_addr: SocketAddr,
             unimplemented!()
         }
         (&Method::GET, "/query/state") => {
+            unimplemented!()
+        }
+        (&Method::GET, "/play/flv") => {
+            unimplemented!()
+        }
+        (&Method::GET, "/play/hls") => {
             unimplemented!()
         }
         _ => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap()),

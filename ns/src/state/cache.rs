@@ -9,9 +9,9 @@ use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
 use common::clap::builder::Str;
-use common::err::{GlobalResult, TransError};
+use common::err::{BizError, GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
-use common::log::{error, info};
+use common::log::{debug, error, info};
 use common::once_cell::sync::Lazy;
 use common::tokio;
 use common::tokio::sync::{broadcast, mpsc, Notify};
@@ -19,9 +19,9 @@ use common::tokio::sync::oneshot::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
 use constructor::Get;
-use crate::general::mode::ServerConf;
-use crate::io::event_hook;
-use crate::io::event_hook::Event;
+use crate::general::mode::{BUFFER_SIZE, ServerConf};
+use crate::io::hook_handler;
+use crate::io::hook_handler::Event;
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -38,7 +38,7 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
             SESSION.shared.background_task.notify_one();
         }
         Ok(())
-    } else { Err(SysErr(anyhow!("ssrc = {:?},媒体流标识重复",ssrc))) }
+    } else { Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC已存在", ssrc), |msg| error!("{msg}"))) }
 }
 
 //返回rtp_tx
@@ -182,7 +182,7 @@ struct Shared {
     state: RwLock<State>,
     background_task: Notify,
     server_conf: ServerConf,
-    event_rx: mpsc::Sender<(event_hook::Event, Sender<event_hook::EventRes>)>,
+    event_rx: mpsc::Sender<(hook_handler::Event, Sender<hook_handler::EventRes>)>,
 }
 
 impl Shared {
@@ -231,15 +231,15 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn build() -> GlobalResult<Self> {
-        let rtp_channel = crossbeam_channel::bounded(8);
-        let flv_channel = broadcast::channel(8);
-        let hls_channel = broadcast::channel(8);
-        Ok(Self {
+    pub fn build() -> Self {
+        let rtp_channel = crossbeam_channel::bounded(BUFFER_SIZE);
+        let flv_channel = broadcast::channel(BUFFER_SIZE);
+        let hls_channel = broadcast::channel(BUFFER_SIZE);
+        Self {
             rtp_channel,
             flv_channel,
             hls_channel,
-        })
+        }
     }
     fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Bytes> {
         self.rtp_channel.1.clone()

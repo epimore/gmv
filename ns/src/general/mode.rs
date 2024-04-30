@@ -1,24 +1,54 @@
 use discortp::rtp::RtpType;
-use common::err::{GlobalError, GlobalResult};
-use common::log::debug;
+use serde::{Deserialize, Serialize};
+use common::err::{GlobalError, GlobalResult, TransError};
+use common::log::{debug, error};
 use common::yaml_rust::Yaml;
 use constructor::{Get, Set};
 
 //统一响应超时:单位毫秒
-pub const TIME_OUT: u16 = 8000;
+pub const TIME_OUT: u64 = 8000;
 //数据通道缓存大小
-pub const BUFFER_SIZE: u8 = 8;
+pub const BUFFER_SIZE: usize = 8;
 //API接口根信息
 pub const INDEX: &str = r#"<!DOCTYPE html><html lang="en"><head>
     <style>body{display:grid;place-items:center;height:100vh;margin:0;}</style>
     <metacharset="UTF - 8"><title>GMV</title></head>
 <body><div><h1>GMV:STREAM-SERVER</h1></div></body></html>"#;
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ResMsg<T:Serialize> {
+    code: i8,
+    msg: String,
+    data: Option<T>,
+}
+
+impl<T:Serialize> ResMsg<T> {
+    pub fn build_success() -> Self {
+        Self { code: 0, msg: "success".to_string(), data: None }
+    }
+    pub fn build_failed() -> Self {
+        Self { code: -1, msg: "failed".to_string(), data: None }
+    }
+
+    pub fn build_failed_by_msg(msg: String) -> Self {
+        Self { code: -1, msg, data: None }
+    }
+
+    pub fn define_res(code: i8, msg: String) -> Self {
+        Self { code, msg, data: None }
+    }
+
+    pub fn to_json(&self) -> GlobalResult<String> {
+        let json_str = serde_json::to_string(self).hand_err(|msg| error!("{msg}"))?;
+        Ok(json_str)
+    }
+}
+
 #[derive(Debug, Get, Clone)]
 pub struct ServerConf {
     name: String,
     rtp_port: u16,
-    rtcp_port:u16,
+    rtcp_port: u16,
     http_port: u16,
     hook_uri: String,
 }

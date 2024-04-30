@@ -1,50 +1,86 @@
-use common::err::GlobalResult;
-use crate::biz::call::StreamState;
+use std::collections::HashMap;
+use std::time::Duration;
 
-pub struct ResMsg<T> {
-    code: i8,
-    msg: String,
-    data: Option<T>,
+use hyper::{Body, header, Request, Response, StatusCode};
+use serde::{Deserialize, Serialize};
+
+use common::err::{GlobalError, GlobalResult, TransError};
+use common::log::error;
+
+use crate::biz::call::StreamState;
+use crate::general::mode::{ResMsg, TIME_OUT};
+use crate::state::cache;
+
+fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
+    let ssrc = param_map.get("ssrc")
+        .map(|s| s.parse::<u32>().hand_err(|msg| error!("{msg}")))
+        .ok_or(GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))??;
+    Ok(ssrc)
 }
 
-impl<T> ResMsg<T> {
-    pub fn build_success() -> Self {
-        Self { code: 0, msg: "success".to_string(), data: None }
-    }
-    pub fn build_failed() -> Self {
-        Self { code: -1, msg: "failed".to_string(), data: None }
-    }
+fn get_stream_id(param_map: &HashMap<String, String>) -> GlobalResult<String> {
+    let stream_id = param_map.get("stream_id").ok_or(GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))?;
+    Ok(stream_id.to_string())
+}
 
-    pub fn build_failed_by_msg(msg: String) -> Self {
-        Self { code: -1, msg, data: None }
-    }
-
-    pub fn define_res(code: i8, msg: String) -> Self {
-        Self { code, msg, data: None }
-    }
+fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
+    let map = form_urlencoded::parse(req.uri().query()
+        .ok_or(GlobalError::new_biz_error(1100, "URL上参数不存在", |msg| error!("{msg}")))?.as_bytes())
+        .into_owned()
+        .collect::<HashMap<String, String>>();
+    Ok(map)
 }
 
 //监听ssrc，返回状态
-pub async fn listen_ssrc(ssrc: &String, stream_id: &String) -> GlobalResult<()> {
-    unimplemented!()
+pub async fn listen_ssrc(req: &Request<Body>) -> GlobalResult<Response<Body>> {
+    let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
+    let param_map = get_param_map(req);
+    if param_map.is_err() {
+        let json_data = ResMsg::<bool>::build_failed_by_msg("参数错误".to_string()).to_json()?;
+        let res = response.status(StatusCode::UNPROCESSABLE_ENTITY).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+        return Ok(res);
+    }
+    let map = param_map?;
+    let ssrc = get_ssrc(&map);
+    let stream_id = get_stream_id(&map);
+    if ssrc.is_err() || stream_id.is_err() {
+        let json_data = ResMsg::<bool>::build_failed_by_msg("参数错误".to_string()).to_json()?;
+        let res = response.status(StatusCode::UNPROCESSABLE_ENTITY).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+        return Ok(res);
+    }
+    let res = match cache::insert(ssrc?, stream_id?, Duration::from_millis(TIME_OUT), cache::Channel::build()) {
+        Ok(_) => {
+            let json_data = ResMsg::<bool>::build_success().to_json()?;
+            response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?
+        }
+        Err(error) => {
+            let json_data = ResMsg::<bool>::build_failed_by_msg(error.to_string()).to_json()?;
+            response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?
+        }
+    };
+    Ok(res)
 }
 
 //删除ssrc，返回正在使用的stream_id/token
-pub async fn drop_ssrc(ssrc: &String) -> GlobalResult<()> {
+pub async fn drop_ssrc(ssrc: u32) -> GlobalResult<()> {
     unimplemented!()
 }
 
 //开启录像
-pub async fn start_record(ssrc: &String, file_name: &String) {}
+pub async fn start_record(ssrc: u32, file_name: &String) {}
 
 //停止录像，是否清理录像文件
-pub async fn stop_record(ssrc: &String, clean: bool) {}
+pub async fn stop_record(ssrc: u32, clean: bool) {}
 
 //踢出用户观看
-pub async fn kick_token(stream_id: &String, token: &String){}
+pub async fn kick_token(stream_id: &String, token: &String) {}
 
-impl ResMsg<Vec<StreamState>> {
-    //查询流媒体数据状态,hls/flv/record
-    pub async fn get_state(ssrc: Option<String>, stream_id: Option<String>) { unimplemented!() }
-}
+//查询流媒体数据状态,hls/flv/record:ResMsg<Vec<StreamState>>
+pub async fn get_state(ssrc: Option<u32>, stream_id: Option<String>) { unimplemented!() }
+
+//播放flv
+pub async fn play_flv(stream_id: &String, token: &String) {}
+
+//播放hls
+pub async fn play_hls(stream_id: &String, token: &String) {}
 
