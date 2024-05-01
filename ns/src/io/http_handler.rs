@@ -14,6 +14,7 @@ use common::tokio::{self,
                     io::{AsyncRead, AsyncWrite, ReadBuf},
                     net::{TcpListener, TcpStream},
 };
+use common::tokio::sync::mpsc::Sender;
 
 use crate::biz;
 use crate::general::mode::{INDEX, ResMsg, ServerConf};
@@ -21,6 +22,7 @@ use crate::general::mode::{INDEX, ResMsg, ServerConf};
 async fn handle(
     opt_addr: Option<SocketAddr>,
     req: Request<Body>,
+    tx: Sender<u32>,
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
 // ) -> Result<Response<Body>, hyper::http::Error> {
@@ -47,13 +49,12 @@ async fn handle(
     Ok(response)
 }
 
-async fn biz(remote_addr: SocketAddr,
-             req: Request<Body>) -> GlobalResult<Response<Body>> {
+async fn biz(remote_addr: SocketAddr, tx: Sender<u32>, req: Request<Body>) -> GlobalResult<Response<Body>> {
     // let (tx, rx) = tokio::sync::broadcast::channel(100);
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
         (&Method::GET, "/listen/ssrc") => {
-            biz::api::listen_ssrc(&req).await
+            biz::api::listen_ssrc(&req,tx).await
         }
         (&Method::GET, "/drop/ssrc") => {
             unimplemented!()
@@ -93,14 +94,15 @@ impl Drop for ClientConnection {
     }
 }
 
-pub async fn run(port: u16) -> GlobalResult<()> {
+pub async fn run(port: u16, tx: Sender<u32>) -> GlobalResult<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_err(|msg| error!("{msg}")).unwrap();
     let make_service = make_service_fn(|conn: &ClientConnection| {
         let opt_addr = conn.conn.peer_addr().ok();
         let client_connection_cancel = conn.cancel.clone();
+        let tx_cl = tx.clone();
         async move {
             Ok::<_, GlobalError>(service_fn(move |req| {
-                handle(opt_addr, req, client_connection_cancel.clone())
+                handle(opt_addr, req, tx_cl.clone(), client_connection_cancel.clone())
             }))
         }
     });

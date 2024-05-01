@@ -128,6 +128,7 @@ struct Session {
 impl Session {
     fn init() -> Self {
         let tripe = common::init();
+        ffmpeg_next::init().expect("ffmpeg init failed");
         let cfg_yaml = tripe.get_cfg().get(0).clone().expect("config file is invalid");
         let server_conf = ServerConf::build(cfg_yaml);
         banner();
@@ -159,8 +160,12 @@ impl Session {
         Listen to rtp over tcp and udp,stream addr = 0.0.0.0:{}\n\
         Listen to rtcp over tcp and udp,message addr = 0.0.0.0:{}\n\
         Hook to http addr = {}\n\
-        ... GMV:STREAM started."
-                 , server_conf.get_name(), server_conf.get_http_port(), server_conf.get_rtp_port(), server_conf.get_rtcp_port(), server_conf.get_hook_uri());
+        ... GMV:STREAM started.",
+                 server_conf.get_name(),
+                 server_conf.get_http_port(),
+                 server_conf.get_rtp_port(),
+                 server_conf.get_rtcp_port(),
+                 server_conf.get_hook_uri());
         session
     }
 
@@ -263,12 +268,12 @@ impl Channel {
 
 fn banner() {
     let br = r#"
-   ___   __  __  __   __
-  / __| |  \/  | \ \ / /
- | (_ | | |\/| |  \ V /
-  \___| |_|__|_|  _\_/_
-_|"""""|_|"""""|_| """"|
-"`-0-0-'"`-0-0-'"`-0-0-'
+            ___   __  __  __   __    _      ___    _____    ___     ___     ___   __  __
+    o O O  / __| |  \/  | \ \ / /   (_)    / __|  |_   _|  | _ \   | __|   /   \ |  \/  |
+   o      | (_ | | |\/| |  \ V /     _     \__ \    | |    |   /   | _|    | - | | |\/| |
+  o0__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   _|_|_   |_|_\   |___|   |_|_| |_|__|_|
+ {======|_|""G""|_|""M""|_|""V""|_|"""""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|
+./o--000'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
 "#;
     println!("{}", br);
 }

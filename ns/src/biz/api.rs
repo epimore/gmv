@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::log::error;
+use common::tokio::sync::mpsc::Sender;
 
 use crate::biz::call::StreamState;
 use crate::general::mode::{ResMsg, TIME_OUT};
@@ -32,7 +33,7 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
 }
 
 //监听ssrc，返回状态
-pub async fn listen_ssrc(req: &Request<Body>) -> GlobalResult<Response<Body>> {
+pub async fn listen_ssrc(req: &Request<Body>, tx: Sender<u32>) -> GlobalResult<Response<Body>> {
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
     let param_map = get_param_map(req);
     if param_map.is_err() {
@@ -41,15 +42,17 @@ pub async fn listen_ssrc(req: &Request<Body>) -> GlobalResult<Response<Body>> {
         return Ok(res);
     }
     let map = param_map?;
-    let ssrc = get_ssrc(&map);
-    let stream_id = get_stream_id(&map);
-    if ssrc.is_err() || stream_id.is_err() {
+    let ssrc_res = get_ssrc(&map);
+    let stream_id_res = get_stream_id(&map);
+    if ssrc_res.is_err() || stream_id_res.is_err() {
         let json_data = ResMsg::<bool>::build_failed_by_msg("参数错误".to_string()).to_json()?;
         let res = response.status(StatusCode::UNPROCESSABLE_ENTITY).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
         return Ok(res);
     }
-    let res = match cache::insert(ssrc?, stream_id?, Duration::from_millis(TIME_OUT), cache::Channel::build()) {
+    let ssrc = ssrc_res?;
+    let res = match cache::insert(ssrc, stream_id_res?, Duration::from_millis(TIME_OUT), cache::Channel::build()) {
         Ok(_) => {
+            tx.send(ssrc).await.hand_err(|msg| error!("{msg}"))?;
             let json_data = ResMsg::<bool>::build_success().to_json()?;
             response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?
         }
