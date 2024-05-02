@@ -9,52 +9,54 @@ use tokio_util::sync::CancellationToken;
 use common::anyhow::anyhow;
 use common::err::{BizError, GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
-use common::log::{debug, error, warn};
+use common::log::{debug, error, info, warn};
 use common::tokio::{self,
                     io::{AsyncRead, AsyncWrite, ReadBuf},
                     net::{TcpListener, TcpStream},
 };
 use common::tokio::sync::mpsc::Sender;
+use common::tokio::sync::oneshot;
 
 use crate::biz;
+use crate::biz::{api, call};
 use crate::general::mode::{INDEX, ResMsg, ServerConf};
 
 async fn handle(
     opt_addr: Option<SocketAddr>,
     req: Request<Body>,
-    tx: Sender<u32>,
+    ssrc_tx: Sender<u32>,
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
-// ) -> Result<Response<Body>, hyper::http::Error> {
     let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败")))?;
-    let (mut tx, rx) = Body::channel();
-    // spawn background task, end when client connection is dropped
-    tokio::spawn(async move {
-        let mut counter = 0;
-        loop {
-            tokio::select! {
-                _ = client_connection_cancel.cancelled() => {
-                    println!("client connection is dropped, exiting loop");
-                    break;
-                },
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                    tx.send_data(Bytes::from(format!("{counter}\n"))).await.unwrap();
-                    counter += 1;
-                }
-            }
+    match get_token(&req) {
+        Ok(token) => {
+            tokio::spawn(async move {
+                client_connection_cancel.cancelled().await;
+                //todo callback off_play by token..
+                //call::StreamPlayInfo::off_play();
+            });
+            let response = biz(remote_addr, ssrc_tx, token, req).await?;
+            Ok(response)
         }
-    });
-
-    let response = Response::builder().status(StatusCode::OK).body(rx).hand_err(|msg| error!("{msg}"))?;
-    Ok(response)
+        Err(_) => {
+            api::res_401()
+        }
+    }
 }
 
-async fn biz(remote_addr: SocketAddr, tx: Sender<u32>, req: Request<Body>) -> GlobalResult<Response<Body>> {
+fn get_token(req: &Request<Body>) -> GlobalResult<String> {
+    let token_str = req.headers().get("gmv-token")
+        .ok_or(GlobalError::new_biz_error(1100, "header无gmv-token", |msg| info!("{msg}")))?
+        .to_str().hand_err(|msg| info!("获取gmv-token失败;err = {msg}"))?;
+    Ok(token_str.to_string())
+}
+
+async fn biz(remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>) -> GlobalResult<Response<Body>> {
     // let (tx, rx) = tokio::sync::broadcast::channel(100);
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
         (&Method::GET, "/listen/ssrc") => {
-            biz::api::listen_ssrc(&req,tx).await
+            biz::api::listen_ssrc(&req, ssrc_tx).await
         }
         (&Method::GET, "/drop/ssrc") => {
             unimplemented!()
@@ -65,16 +67,13 @@ async fn biz(remote_addr: SocketAddr, tx: Sender<u32>, req: Request<Body>) -> Gl
         (&Method::GET, "/stop/record") => {
             unimplemented!()
         }
-        (&Method::GET, "/stop/record") => {
+        (&Method::GET, "/start/play") => {
+            unimplemented!()
+        }
+        (&Method::GET, "/stop/play") => {
             unimplemented!()
         }
         (&Method::GET, "/query/state") => {
-            unimplemented!()
-        }
-        (&Method::GET, "/play/flv") => {
-            unimplemented!()
-        }
-        (&Method::GET, "/play/hls") => {
             unimplemented!()
         }
         _ => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap()),

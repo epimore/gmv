@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::thread;
@@ -32,7 +32,7 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
         let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
         state.expirations.insert((when, ssrc));
         state.sessions.insert(ssrc, (when, stream_id.clone(), expires, channel));
-        state.inner.insert(stream_id, ssrc);
+        state.inner.insert(stream_id, (ssrc, HashSet::new(), HashSet::new()));
         drop(state);
         if notify {
             SESSION.shared.background_task.notify_one();
@@ -212,9 +212,11 @@ impl Shared {
 
 ///自定义会话信息
 struct State {
+    //ssrc,(ts,stream_id,dur,ch)
     sessions: HashMap<u32, (Instant, String, Duration, Channel)>,
-    inner: HashMap<String, u32>,
-    //(ts,ssrc):stream_id
+    //stream_id:(ssrc,flv-tokens,hls-tokens)
+    inner: HashMap<String, (u32, HashSet<String>, HashSet<String>)>,
+    //(ts,ssrc)
     expirations: BTreeSet<(Instant, u32)>,
 }
 
@@ -271,8 +273,8 @@ fn banner() {
             ___   __  __  __   __    _      ___    _____    ___     ___     ___   __  __
     o O O  / __| |  \/  | \ \ / /   (_)    / __|  |_   _|  | _ \   | __|   /   \ |  \/  |
    o      | (_ | | |\/| |  \ V /     _     \__ \    | |    |   /   | _|    | - | | |\/| |
-  o0__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   _|_|_   |_|_\   |___|   |_|_| |_|__|_|
- {======|_|""G""|_|""M""|_|""V""|_|"""""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|
+  oO__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   _|_|_   |_|_\   |___|   |_|_| |_|__|_|
+ {======|_|""G""|_|""M""|_|""V""|_|"":""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|
 ./o--000'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
 "#;
     println!("{}", br);

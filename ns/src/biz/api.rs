@@ -32,8 +32,16 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
     Ok(map)
 }
 
+pub fn res_401() -> GlobalResult<Response<Body>> {
+    let json_data = ResMsg::<bool>::build_failed_by_msg("401 无token".to_string()).to_json()?;
+    let res = Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .status(StatusCode::UNAUTHORIZED).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+    return Ok(res);
+}
+
 //监听ssrc，返回状态
-pub async fn listen_ssrc(req: &Request<Body>, tx: Sender<u32>) -> GlobalResult<Response<Body>> {
+pub async fn listen_ssrc(req: &Request<Body>, ssrc_tx: Sender<u32>) -> GlobalResult<Response<Body>> {
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
     let param_map = get_param_map(req);
     if param_map.is_err() {
@@ -52,7 +60,7 @@ pub async fn listen_ssrc(req: &Request<Body>, tx: Sender<u32>) -> GlobalResult<R
     let ssrc = ssrc_res?;
     let res = match cache::insert(ssrc, stream_id_res?, Duration::from_millis(TIME_OUT), cache::Channel::build()) {
         Ok(_) => {
-            tx.send(ssrc).await.hand_err(|msg| error!("{msg}"))?;
+            ssrc_tx.send(ssrc).await.hand_err(|msg| error!("{msg}"))?;
             let json_data = ResMsg::<bool>::build_success().to_json()?;
             response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?
         }
@@ -75,15 +83,12 @@ pub async fn start_record(ssrc: u32, file_name: &String) {}
 //停止录像，是否清理录像文件
 pub async fn stop_record(ssrc: u32, clean: bool) {}
 
-//踢出用户观看
-pub async fn kick_token(stream_id: &String, token: &String) {}
-
 //查询流媒体数据状态,hls/flv/record:ResMsg<Vec<StreamState>>
 pub async fn get_state(ssrc: Option<u32>, stream_id: Option<String>) { unimplemented!() }
 
-//播放flv
-pub async fn play_flv(stream_id: &String, token: &String) {}
+//开启播放，stp:0-all,1-flv,2-hls
+pub async fn start_play(stream_id: String, token: String, stp: u8) {}
 
-//播放hls
-pub async fn play_hls(stream_id: &String, token: &String) {}
+//关闭播放，stp:0-all,1-flv,2-hls
+pub async fn stop_play(stream_id: String, token: String, stp: u8) {}
 
