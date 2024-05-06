@@ -27,14 +27,18 @@ async fn handle(
     ssrc_tx: Sender<u32>,
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
+    
     let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败")))?;
+    
     match get_token(&req) {
         Ok(token) => {
             tokio::spawn(async move {
                 client_connection_cancel.cancelled().await;
+                println!("close.....");
                 //todo callback off_play by token..
                 //call::StreamPlayInfo::off_play();
             });
+            
             let response = biz(remote_addr, ssrc_tx, token, req).await?;
             Ok(response)
         }
@@ -46,12 +50,13 @@ async fn handle(
 
 fn get_token(req: &Request<Body>) -> GlobalResult<String> {
     let token_str = req.headers().get("gmv-token")
-        .ok_or(GlobalError::new_biz_error(1100, "header无gmv-token", |msg| info!("{msg}")))?
+        .ok_or_else(||GlobalError::new_biz_error(1100, "header无gmv-token", |msg| info!("{msg}")))?
         .to_str().hand_err(|msg| info!("获取gmv-token失败;err = {msg}"))?;
     Ok(token_str.to_string())
 }
 
 async fn biz(remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>) -> GlobalResult<Response<Body>> {
+    
     // let (tx, rx) = tokio::sync::broadcast::channel(100);
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
@@ -95,17 +100,23 @@ impl Drop for ClientConnection {
 
 pub async fn run(port: u16, tx: Sender<u32>) -> GlobalResult<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_err(|msg| error!("{msg}")).unwrap();
+    
     let make_service = make_service_fn(|conn: &ClientConnection| {
+        
         let opt_addr = conn.conn.peer_addr().ok();
         let client_connection_cancel = conn.cancel.clone();
         let tx_cl = tx.clone();
+        
         async move {
             Ok::<_, GlobalError>(service_fn(move |req| {
+                
                 handle(opt_addr, req, tx_cl.clone(), client_connection_cancel.clone())
             }))
         }
     });
+    
     hyper::server::Server::builder(ServerListener(listener)).serve(make_service).await.hand_err(|msg| error!("{msg}")).unwrap();
+    
     Ok(())
 }
 

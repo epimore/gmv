@@ -25,7 +25,8 @@ pub async fn run(port: u16) -> GlobalResult<()> {
                 //todo 自己解析RTP...
                 match demux::demux(data.get_data()) {
                     Demuxed::Rtp(rtp_packet) => {
-                        match state::cache::refresh(rtp_packet.get_ssrc()) {
+                        // match state::cache::refresh(rtp_packet.get_ssrc()) {
+                        match state::cache::refresh(1) {
                             None => { debug!("未知ssrc: {}",rtp_packet.get_ssrc()) }
                             Some((rtp_tx, rtp_rx)) => {
                                 if let RtpType::Dynamic(v) = rtp_packet.get_payload_type() {

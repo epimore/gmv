@@ -15,18 +15,18 @@ use crate::state::cache;
 fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
     let ssrc = param_map.get("ssrc")
         .map(|s| s.parse::<u32>().hand_err(|msg| error!("{msg}")))
-        .ok_or(GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))??;
+        .ok_or_else(||GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))??;
     Ok(ssrc)
 }
 
 fn get_stream_id(param_map: &HashMap<String, String>) -> GlobalResult<String> {
-    let stream_id = param_map.get("stream_id").ok_or(GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))?;
+    let stream_id = param_map.get("stream_id").ok_or_else(||GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))?;
     Ok(stream_id.to_string())
 }
 
 fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
     let map = form_urlencoded::parse(req.uri().query()
-        .ok_or(GlobalError::new_biz_error(1100, "URL上参数不存在", |msg| error!("{msg}")))?.as_bytes())
+        .ok_or_else(||GlobalError::new_biz_error(1100, "URL上参数不存在", |msg| error!("{msg}")))?.as_bytes())
         .into_owned()
         .collect::<HashMap<String, String>>();
     Ok(map)
