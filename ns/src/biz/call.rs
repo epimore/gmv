@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
+use constructor::New;
 
+#[derive(New)]
 pub struct RtpInfo {
     ssrc: u32,
     //tcp/udp
@@ -14,6 +16,7 @@ impl RtpInfo {
     pub async fn stream_unknown(&self) {}
 }
 
+#[derive(New)]
 pub struct BaseStreamInfo {
     rtp_info: RtpInfo,
     stream_id: String,

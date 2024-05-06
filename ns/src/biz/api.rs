@@ -61,6 +61,7 @@ pub async fn listen_ssrc(req: &Request<Body>, ssrc_tx: Sender<u32>) -> GlobalRes
     let res = match cache::insert(ssrc, stream_id_res?, Duration::from_millis(TIME_OUT), cache::Channel::build()) {
         Ok(_) => {
             ssrc_tx.send(ssrc).await.hand_err(|msg| error!("{msg}"))?;
+
             let json_data = ResMsg::<bool>::build_success().to_json()?;
             response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?
         }

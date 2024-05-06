@@ -8,6 +8,8 @@ use common::err::{GlobalResult, TransError};
 use common::log::error;
 use crate::general::mode::AV_IO_CTX_BUFFER_SIZE;
 use ffmpeg_next::util::error as er;
+use common::anyhow::anyhow;
+use common::err::GlobalError::SysErr;
 use crate::io::converter::handler;
 
 pub(crate) fn parse(ssrc: u32) -> GlobalResult<()> {
@@ -23,24 +25,24 @@ pub(crate) fn parse(ssrc: u32) -> GlobalResult<()> {
         let mut out_fmt_ctx = unsafe { avformat_alloc_context() };
         let opa = Box::into_raw(Box::new(ssrc)) as *mut c_void;
         avformat_alloc_output_context2(&mut out_fmt_ctx, ptr::null_mut(), CString::new("flv").unwrap().as_ptr(), ptr::null());
-        let flv_write = handler::call_flv_write();
-        (*out_fmt_ctx).pb = unsafe { avio_alloc_context(in_tx_bf, AV_IO_CTX_BUFFER_SIZE as c_int, 0, opa, None, Some(flv_write), None) };
+        (*out_fmt_ctx).pb = unsafe { avio_alloc_context(in_tx_bf, AV_IO_CTX_BUFFER_SIZE as c_int, 0, opa, None, Some(handler::call_flv_write()), None) };
         let mut output = context::Output::wrap(out_fmt_ctx);
         if out_fmt_ctx.is_null() {
             error!("Could not deduce output format from flv");
+            return Err(SysErr(anyhow!("Could not deduce output format from flv")));
         }
         let sdp = CString::new("/home/ubuntu20/code/rs/mv/github/epimore/gmv/ns/123.sdp".to_string()).expect("CString::new failed").into_raw();
         match avformat_open_input(&mut fmt_ctx, sdp, input_format, &mut opts) {
             0 =>
                 {
-                    let rtp_read = handler::call_rtp_read();
-                    let io_ctx = unsafe { avio_alloc_context(in_tx_bf, AV_IO_CTX_BUFFER_SIZE as c_int, 0, opa, Some(rtp_read), None, None) };
+                    let io_ctx = unsafe { avio_alloc_context(in_tx_bf, AV_IO_CTX_BUFFER_SIZE as c_int, 0, opa, Some(handler::call_rtp_read()), None, None) };
                     (*fmt_ctx).pb = io_ctx;
                     (*fmt_ctx).flags |= AVFMT_NOFILE;
                     (*fmt_ctx).max_analyze_duration = 0;
                     (*fmt_ctx).probesize = 8;
                     if fmt_ctx.is_null() || io_ctx.is_null() {
                         println!("is null");
+                        return Err(SysErr(anyhow!("Context is null")));
                     }
                     match avformat_find_stream_info(fmt_ctx, ptr::null_mut()) {
                         r if r >= 0 => {
@@ -62,9 +64,7 @@ pub(crate) fn parse(ssrc: u32) -> GlobalResult<()> {
                                 ost_index += 1;
                                 let mut ost = output.add_stream(encoder::find(codec::Id::None)).unwrap();
                                 ost.set_parameters(ist.parameters());
-                                unsafe {
-                                    (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-                                }
+                                (*ost.parameters().as_mut_ptr()).codec_tag = 0;
                             }
                             output.set_metadata(ictx.metadata().to_owned());
                             output.write_header().unwrap();

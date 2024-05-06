@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -12,6 +14,7 @@ use common::clap::builder::Str;
 use common::err::{BizError, GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::{debug, error, info};
+use common::net::shared::{Bill, Zip};
 use common::once_cell::sync::Lazy;
 use common::tokio;
 use common::tokio::sync::{broadcast, mpsc, Notify};
@@ -19,9 +22,11 @@ use common::tokio::sync::oneshot::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
 use constructor::Get;
+
+use crate::biz::call::{BaseStreamInfo, RtpInfo};
 use crate::general::mode::{BUFFER_SIZE, ServerConf};
 use crate::io::hook_handler;
-use crate::io::hook_handler::Event;
+use crate::io::hook_handler::{Event, EventRes};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -31,7 +36,7 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
         let when = Instant::now() + expires;
         let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
         state.expirations.insert((when, ssrc));
-        state.sessions.insert(ssrc, (when, stream_id.clone(), expires, channel));
+        state.sessions.insert(ssrc, (when, stream_id.clone(), expires, channel, false, None));
         state.inner.insert(stream_id, (ssrc, HashSet::new(), HashSet::new()));
         drop(state);
         if notify {
@@ -42,16 +47,46 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
 }
 
 //返回rtp_tx
-pub fn refresh(ssrc: u32) -> Option<(crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>)> {
+pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>)> {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
-    state.sessions.get_mut(&ssrc).map(|(when, _, expires, channel)| {
+    if let Some((when, stream_id, expires, channel, reported, info)) = state.sessions.get_mut(&ssrc) {
         state.expirations.remove(&(*when, ssrc));
         let ct = Instant::now() + *expires;
         *when = ct;
         state.expirations.insert((ct, ssrc));
-        (channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone())
-    })
+        if !*reported {
+            let remote_addr_str = bill.get_remote_addr().to_string();
+            let protocol_addr = bill.get_protocol().get_value().to_string();
+            *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
+            let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
+            let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
+            let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
+            let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
+            *reported = true;
+        }
+        return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
+    }
+    None
+
+
+    // state.sessions.get_mut(&ssrc).map(|(when, stream_id, expires, channel, reported, info)| {
+    //     state.expirations.remove(&(*when, ssrc));
+    //     let ct = Instant::now() + *expires;
+    //     *when = ct;
+    //     state.expirations.insert((ct, ssrc));
+    //     if !reported.load(Ordering::SeqCst) {
+    //         let remote_addr_str = zip.get_bill_remote_addr().to_string();
+    //         let protocol_addr = zip.get_bill_protocol().get_value().to_string();
+    //         *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
+    //         let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
+    //         let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
+    //         let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
+    //         let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
+    //         reported.store(true, Ordering::SeqCst);
+    //     }
+    //     (channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone())
+    // })
 }
 
 //外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
@@ -59,7 +94,7 @@ pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel)) => {
+        Some((_, _, _, channel, _, _)) => {
             Some(channel.get_flv_tx())
         }
     }
@@ -69,7 +104,7 @@ pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel)) => {
+        Some((_, _, _, channel, _, _)) => {
             Some(channel.get_flv_rx())
         }
     }
@@ -79,7 +114,7 @@ pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel)) => {
+        Some((_, _, _, channel, _, _)) => {
             Some(channel.get_hls_tx())
         }
     }
@@ -89,7 +124,7 @@ pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel)) => {
+        Some((_, _, _, channel, _, _)) => {
             Some(channel.get_hls_rx())
         }
     }
@@ -99,7 +134,7 @@ pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel)) => {
+        Some((_, _, _, channel, _, _)) => {
             Some(channel.get_rtp_tx())
         }
     }
@@ -109,7 +144,7 @@ pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel)) => {
+        Some((_, _, _, channel, _, _)) => {
             Some(channel.get_rtp_rx())
         }
     }
@@ -118,6 +153,10 @@ pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Bytes>> {
 pub fn get_server_conf() -> &'static ServerConf {
     let conf = &SESSION.shared.server_conf;
     conf
+}
+
+pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
+    SESSION.shared.event_tx.clone()
 }
 
 
@@ -142,7 +181,7 @@ impl Session {
                 }),
                 background_task: Notify::new(),
                 server_conf: server_conf.clone(),
-                event_rx: tx,
+                event_tx: tx,
             })
         };
         let shared = session.shared.clone();
@@ -187,7 +226,7 @@ struct Shared {
     state: RwLock<State>,
     background_task: Notify,
     server_conf: ServerConf,
-    event_rx: mpsc::Sender<(hook_handler::Event, Sender<hook_handler::EventRes>)>,
+    event_tx: mpsc::Sender<(hook_handler::Event, Option<Sender<hook_handler::EventRes>>)>,
 }
 
 impl Shared {
@@ -200,7 +239,7 @@ impl Shared {
             if when > now {
                 return Ok(Some(when));
             }
-            state.sessions.remove(&ssrc).map(|(_, stream_id, _, _)|
+            state.sessions.remove(&ssrc).map(|(_, stream_id, _, _, _, _)|
                 //todo callback
                 state.inner.remove(&stream_id)
             );
@@ -212,8 +251,8 @@ impl Shared {
 
 ///自定义会话信息
 struct State {
-    //ssrc,(ts,stream_id,dur,ch)
-    sessions: HashMap<u32, (Instant, String, Duration, Channel)>,
+    //ssrc,(ts,stream_id,dur,ch,stream_in_reported,origin_addr,protocol)
+    sessions: HashMap<u32, (Instant, String, Duration, Channel, bool, Option<(String, String)>)>,
     //stream_id:(ssrc,flv-tokens,hls-tokens)
     inner: HashMap<String, (u32, HashSet<String>, HashSet<String>)>,
     //(ts,ssrc)
