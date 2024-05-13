@@ -1,3 +1,7 @@
 流播放地址：
 /flv/{stream_id}/{token}
 /hls/{stream_id}/{token}
+
+ffmpeg -re -i E:\book\mv\st\yddz.mp4 -vcodec copy -f rtp rtp://172.18.38.186:18568
+ffmpeg -protocol_whitelist file,udp,rtp -i ./123.sdp -c:v copy -f flv 1.flv
+

@@ -68,25 +68,6 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sende
         return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
     }
     None
-
-
-    // state.sessions.get_mut(&ssrc).map(|(when, stream_id, expires, channel, reported, info)| {
-    //     state.expirations.remove(&(*when, ssrc));
-    //     let ct = Instant::now() + *expires;
-    //     *when = ct;
-    //     state.expirations.insert((ct, ssrc));
-    //     if !reported.load(Ordering::SeqCst) {
-    //         let remote_addr_str = zip.get_bill_remote_addr().to_string();
-    //         let protocol_addr = zip.get_bill_protocol().get_value().to_string();
-    //         *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
-    //         let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
-    //         let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
-    //         let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
-    //         let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
-    //         reported.store(true, Ordering::SeqCst);
-    //     }
-    //     (channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone())
-    // })
 }
 
 //外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
@@ -226,7 +207,7 @@ struct Shared {
     state: RwLock<State>,
     background_task: Notify,
     server_conf: ServerConf,
-    event_tx: mpsc::Sender<(hook_handler::Event, Option<Sender<hook_handler::EventRes>>)>,
+    event_tx: mpsc::Sender<(Event, Option<Sender<EventRes>>)>,
 }
 
 impl Shared {

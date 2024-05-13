@@ -1,6 +1,8 @@
 use std::os::raw::{c_int, c_void};
 use std::{ptr, slice};
+use std::str::from_utf8;
 use ffmpeg_next::ffi::AVERROR_EOF;
+use serde::__private::from_utf8_lossy;
 use common::bytes::Bytes;
 use common::err::TransError;
 use common::log::{debug, warn};
@@ -21,6 +23,10 @@ pub fn call_hls_write() -> FuncWritePacket {
     tx_hls_packet
 }
 
+pub fn call_rtcp_write() -> FuncWritePacket {
+    tx_rtcp_packet
+}
+
 //_buf_size 由网络接口定义接收的数据大小 < buf_size , 故此处不再做判断
 #[no_mangle]
 unsafe extern "C" fn read_rtp_packet(opaque: *mut c_void, buf: *mut u8, _buf_size: c_int) -> c_int {
@@ -35,8 +41,7 @@ unsafe extern "C" fn read_rtp_packet(opaque: *mut c_void, buf: *mut u8, _buf_siz
                 Ok(bytes) => {
                     debug!("---------buffer  = {:?}",&bytes);
                     let len = bytes.len();
-                    let br = bytes.to_vec().as_ptr();
-                    ptr::copy_nonoverlapping(br, buf, len);
+                    ptr::copy_nonoverlapping(bytes.to_vec().as_ptr(), buf, len);
                     // debug!("========= buf  = {:?}",Vec::from_raw_parts(buf, len, buffer.capacity()));
                     len as c_int
                 }
@@ -51,6 +56,7 @@ unsafe extern "C" fn read_rtp_packet(opaque: *mut c_void, buf: *mut u8, _buf_siz
 
 #[no_mangle]
 unsafe extern "C" fn tx_flv_packet(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
+    println!("flv output.................");
     let ssrc = &*(opaque as *const u32);
     match cache::get_flv_tx(ssrc) {
         None => {
@@ -80,4 +86,11 @@ unsafe extern "C" fn tx_hls_packet(opaque: *mut c_void, buf: *mut u8, buf_size: 
             buf_size
         }
     }
+}
+
+#[no_mangle]
+unsafe extern "C" fn tx_rtcp_packet(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
+    let slice = slice::from_raw_parts(buf, buf_size as usize+1);
+    println!("rtcp data size = {},val = {:?}", slice.len(),from_utf8_lossy(slice));
+    buf_size
 }

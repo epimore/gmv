@@ -25,12 +25,14 @@ pub async fn run(port: u16) -> GlobalResult<()> {
                 //todo 自己解析RTP...
                 match demux::demux(data.get_data()) {
                     Demuxed::Rtp(rtp_packet) => {
-                        // match state::cache::refresh(rtp_packet.get_ssrc()) {
+                        //todo ssrc
                         match state::cache::refresh(1, data.get_bill()).await {
                             None => { debug!("未知ssrc: {}",rtp_packet.get_ssrc()) }
                             Some((rtp_tx, rtp_rx)) => {
                                 if let RtpType::Dynamic(v) = rtp_packet.get_payload_type() {
                                     if v <= 100 {
+                                        // println!("seq = {:?}",rtp_packet.get_sequence());
+
                                         //通道满了，删除先入的数据
                                         if let Err(TrySendError::Full(_)) = rtp_tx.try_send(data.get_owned_data()) {
                                             let _ = rtp_rx.recv().hand_err(|msg| debug!("{msg}"));
