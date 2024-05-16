@@ -136,12 +136,34 @@ impl StreamRecordInfo {
 #[derive(New, Serialize)]
 pub struct StreamState {
     base_stream_info: BaseStreamInfo,
-    hls_play_count: u32,
     flv_play_count: u32,
-    record_enable: Option<bool>,
+    hls_play_count: u32,
+    record_name: Option<String>,
 }
 
 impl StreamState {
     //当等待输入流超时时进行回调
-    pub async fn stream_input_timeout(&self) {}
+    pub async fn stream_input_timeout(&self) -> Option<bool> {
+        let client = reqwest::Client::new();
+        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::STREAM_INPUT_TIMEOUT);
+        let res = client.post(uri)
+            .timeout(Duration::from_millis(TIME_OUT))
+            .json(self).send().await
+            .hand_err(|msg| error!("{msg}"));
+        match res {
+            Ok(resp) => {
+                match (resp.status().is_success(), resp.json::<RespBo>().await) {
+                    (true, Ok(_)) => {
+                        Some(true)
+                    }
+                    _ => {
+                        Some(false)
+                    }
+                }
+            }
+            Err(_) => {
+                None
+            }
+        }
+    }
 }

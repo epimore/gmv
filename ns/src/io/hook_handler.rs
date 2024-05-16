@@ -41,7 +41,9 @@ impl Event {
                     bsi.stream_in().await;
                 }
                 Event::streamIdle(_) => {}
-                Event::streamTimeout(_) => {}
+                Event::streamTimeout(ss) => {
+                    let _ = ss.stream_input_timeout().await;
+                }
                 Event::streamUnknown(_) => {}
                 Event::onPlay(spi) => {
                     let res = spi.on_play().await;

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry;
+use std::f32::consts::E;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -23,7 +24,7 @@ use common::tokio::time;
 use common::tokio::time::Instant;
 use constructor::Get;
 
-use crate::biz::call::{BaseStreamInfo, RtpInfo};
+use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamState};
 use crate::general::mode::{BUFFER_SIZE, ServerConf};
 use crate::io::hook_handler;
 use crate::io::hook_handler::{Event, EventRes};
@@ -37,7 +38,7 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
         let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
         state.expirations.insert((when, ssrc));
         state.sessions.insert(ssrc, (when, stream_id.clone(), expires, channel, 0, None));
-        state.inner.insert(stream_id, (ssrc, HashSet::new(), HashSet::new()));
+        state.inner.insert(stream_id, (ssrc, HashSet::new(), HashSet::new(), None));
         drop(state);
         if notify {
             SESSION.shared.background_task.notify_one();
@@ -144,7 +145,7 @@ pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
 pub fn update_token(stream_id: &String, play_type: &String, user_token: String, in_out: bool) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
-    if let Some((_, flv_sets, hls_sets)) = state.inner.get_mut(stream_id) {
+    if let Some((_, flv_sets, hls_sets, _)) = state.inner.get_mut(stream_id) {
         match &play_type[..] {
             "flv" => { if in_out { flv_sets.insert(user_token); } else { flv_sets.remove(&user_token); } }
             "hls" => { if in_out { hls_sets.insert(user_token); } else { hls_sets.remove(&user_token); } }
@@ -160,7 +161,7 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
         None => {
             None
         }
-        Some((ssrc, flv_tokens, hls_tokens)) => {
+        Some((ssrc, flv_tokens, hls_tokens, _)) => {
             match guard.sessions.get(ssrc) {
                 Some((ts, stream_id, dur, ch, stream_in_reported_time, Some((origin_addr, protocol)))) => {
                     let server_name = SESSION.shared.server_conf.get_name().to_string();
@@ -177,7 +178,7 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
 pub fn remove_by_stream_id(stream_id: &String) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
-    if let Some((ssrc, _, _)) = state.inner.remove(stream_id) {
+    if let Some((ssrc, _, _, _)) = state.inner.remove(stream_id) {
         if let Some((when, _, _, _, _, _)) = state.sessions.remove(&ssrc) {
             state.expirations.remove(&(when, ssrc));
         }
@@ -264,10 +265,30 @@ impl Shared {
             if when > now {
                 return Ok(Some(when));
             }
-            state.sessions.remove(&ssrc).map(|(_, stream_id, _, _, _, _)|
-                //todo callback
-                state.inner.remove(&stream_id)
-            );
+            if let Some((_, stream_id, _, _, stream_in_reported_time, op)) = state.sessions.remove(&ssrc) {
+                if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = state.inner.remove(&stream_id) {
+                    if let Some((origin_addr,protocol)) = op {
+                        //callback stream timeout
+                        let server_name = SESSION.shared.server_conf.get_name().to_string();
+                        let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
+                        let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
+                        let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
+                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state),None)).await.hand_err(|msg|error!("{msg}"));
+                    }
+                }
+            }
+            // state.sessions.remove(&ssrc).map(|(ts, stream_id, dur, ch, stream_in_reported_time, op)|
+            //     state.inner.remove(&stream_id).map(|(ssrc, flv_tokens, hls_tokens, record_name)|{
+            //     op.map(|(origin_addr,protocol)|{
+            //         //callback stream timeout
+            //         let server_name = SESSION.shared.server_conf.get_name().to_string();
+            //         let rtp_info = RtpInfo::new(*ssrc, protocol, origin_addr, server_name);
+            //         let stream_info = BaseStreamInfo::new(rtp_info, stream_id, *stream_in_reported_time);
+            //         let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
+            //         SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state),None)).await
+            //     })
+            // })
+            // );
             state.expirations.remove(&(when, ssrc));
         }
         Ok(None)
@@ -278,8 +299,8 @@ impl Shared {
 struct State {
     //ssrc,(ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol))
     sessions: HashMap<u32, (Instant, String, Duration, Channel, u32, Option<(String, String)>)>,
-    //stream_id:(ssrc,flv-tokens,hls-tokens)
-    inner: HashMap<String, (u32, HashSet<String>, HashSet<String>)>,
+    //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
+    inner: HashMap<String, (u32, HashSet<String>, HashSet<String>, Option<String>)>,
     //(ts,ssrc)
     expirations: BTreeSet<(Instant, u32)>,
 }
