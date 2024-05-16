@@ -4,17 +4,17 @@ use std::time::Duration;
 
 use hyper::{Body, header, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use common::bytes::Bytes;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_util::sync::CancellationToken;
 
+use common::bytes::Bytes;
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::log::error;
+use common::tokio;
 use common::tokio::sync::broadcast::Receiver;
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::sync::oneshot;
 use common::tokio::sync::oneshot::error::RecvError;
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_util::sync::CancellationToken;
-use common::tokio;
 
 use crate::biz::call::{BaseStreamInfo, StreamPlayInfo, StreamState};
 use crate::general::mode::{ResMsg, TIME_OUT};
@@ -122,7 +122,7 @@ pub async fn start_play(map: HashMap<String, String>, token: String, remote_addr
                     let info = StreamPlayInfo::new(bsi, remote_addr, token.clone(), play_type.clone(), flv_tokens, hls_tokens);
                     let (tx, rx) = oneshot::channel();
                     let event_tx = cache::get_event_tx();
-                    let _ = event_tx.send((Event::onPlay(info), Some(tx))).await.hand_err(|msg| error!("{msg}"));
+                    let _ = event_tx.clone().send((Event::onPlay(info), Some(tx))).await.hand_err(|msg| error!("{msg}"));
                     match rx.await {
                         Ok(res) => {
                             let mut res_builder = Response::builder()
@@ -145,7 +145,10 @@ pub async fn start_play(map: HashMap<String, String>, token: String, remote_addr
                                                 tokio::spawn(async move {
                                                     client_connection_cancel.cancelled().await;
                                                     cache::update_token(&stream_id, &play_type, token.clone(), false);
-                                                    call_off_play(stream_id, remote_addr, token, play_type).await;
+                                                    if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
+                                                        let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
+                                                        let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
+                                                    }
                                                 });
                                                 Ok(flv_res)
                                             }
@@ -154,7 +157,7 @@ pub async fn start_play(map: HashMap<String, String>, token: String, remote_addr
                                     "hls" => {
                                         match cache::get_hls_rx(&ssrc) {
                                             None => { res_404() }
-                                            Some(mut rx) => {
+                                            Some(rx) => {
                                                 //Content-Type：返回的数据类型;HLS M3U8,通常是 application/vnd.apple.mpegurl 或 application/x-mpegURL。
                                                 let hls_res = res_builder.header("Content-Type", "application/x-mpegURL")
                                                     .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_err(|msg| error!("{msg}"))?;
@@ -163,7 +166,10 @@ pub async fn start_play(map: HashMap<String, String>, token: String, remote_addr
                                                 tokio::spawn(async move {
                                                     client_connection_cancel.cancelled().await;
                                                     cache::update_token(&stream_id, &play_type, token.clone(), false);
-                                                    call_off_play(stream_id, remote_addr, token, play_type).await;
+                                                    if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
+                                                        let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
+                                                        let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
+                                                    }
                                                 });
                                                 Ok(hls_res)
                                             }
@@ -191,10 +197,3 @@ pub async fn start_play(map: HashMap<String, String>, token: String, remote_addr
 
 //关闭播放，stp:0-all,1-flv,2-hls
 pub async fn stop_play(stream_id: String, token: String, stp: u8) {}
-
-async fn call_off_play(stream_id: String, remote_addr: SocketAddr, token: String, play_type: String) {
-    if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
-        let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
-        let _ = info.off_play().await;
-    }
-}

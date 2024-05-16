@@ -6,7 +6,7 @@ use common::yaml_rust::Yaml;
 use constructor::{Get, Set};
 
 //统一响应超时:单位毫秒
-pub const TIME_OUT: u64 = 80000;
+pub const TIME_OUT: u64 = 8000;
 //数据通道缓存大小
 pub const BUFFER_SIZE: usize = 8;
 //API接口根信息

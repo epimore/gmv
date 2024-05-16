@@ -94,14 +94,28 @@ impl StreamPlayInfo {
     }
 
     //当用户断开播放时进行回调
-    pub async fn off_play(&self) -> GlobalResult<bool> {
+    pub async fn off_play(&self) -> Option<bool> {
         let client = reqwest::Client::new();
         let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::OFF_PLAY);
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
-            .hand_err(|msg| error!("{msg}"))?;
-        Ok(res.status().is_success())
+            .hand_err(|msg| error!("{msg}"));
+        match res {
+            Ok(resp) => {
+                match (resp.status().is_success(), resp.json::<RespBo>().await) {
+                    (true, Ok(RespBo { code: 1, msg: _ })) => {
+                        Some(true)
+                    }
+                    _ => {
+                        Some(false)
+                    }
+                }
+            }
+            Err(_) => {
+                None
+            }
+        }
     }
 }
 

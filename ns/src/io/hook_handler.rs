@@ -1,7 +1,9 @@
+use ffmpeg_next::picture::Type::S;
 use common::err::GlobalResult;
 use common::tokio::sync::mpsc::Receiver;
 use common::tokio::sync::oneshot::Sender;
 use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use crate::state::cache;
 
 pub enum Event {
     streamIn(BaseStreamInfo),
@@ -25,7 +27,7 @@ pub enum EventRes {
     streamUnknown(Option<bool>),
     //用户点播媒体流事件,none与false-回复用户401，true-写入流
     onPlay(Option<bool>),
-    //用户关闭媒体流事件，响应内容不敏感;some-成功接收;None-未成功接收
+    //用户关闭媒体流事件;some-成功接收,some(true)-关闭整个流;None-未成功接收
     offPlay(Option<bool>),
     //录像完成事件：响应内容不敏感;some-成功接收;None-未成功接收->查看流是否被使用(观看)->否->调用streamIdle事件
     endRecord(Option<bool>),
@@ -45,7 +47,12 @@ impl Event {
                     let res = spi.on_play().await;
                     let _ = tx.unwrap().send(EventRes::onPlay(res));
                 }
-                Event::offPlay(_) => {}
+                Event::offPlay(spi) => {
+                    if let Some(true) = spi.off_play().await {
+                        let stream_id = spi.get_base_stream_info().get_stream_id();
+                        cache::remove_by_stream_id(stream_id);
+                    }
+                }
                 Event::endRecord(_) => {}
             }
         }

@@ -174,6 +174,16 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
     }
 }
 
+pub fn remove_by_stream_id(stream_id: &String) {
+    let mut guard = SESSION.shared.state.write();
+    let state = &mut *guard;
+    if let Some((ssrc, _, _)) = state.inner.remove(stream_id) {
+        if let Some((when, _, _, _, _, _)) = state.sessions.remove(&ssrc) {
+            state.expirations.remove(&(when, ssrc));
+        }
+    }
+}
+
 
 struct Session {
     shared: Arc<Shared>,
