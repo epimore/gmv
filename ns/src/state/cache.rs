@@ -197,7 +197,7 @@ impl Session {
         let cfg_yaml = tripe.get_cfg().get(0).clone().expect("config file is invalid");
         let server_conf = ServerConf::build(cfg_yaml);
         banner();
-        let (tx, rx) = mpsc::channel(1000);
+        let (tx, rx) = mpsc::channel(10000);
         let session = Session {
             shared: Arc::new(Shared {
                 state: RwLock::new(State {
@@ -277,18 +277,6 @@ impl Shared {
                     }
                 }
             }
-            // state.sessions.remove(&ssrc).map(|(ts, stream_id, dur, ch, stream_in_reported_time, op)|
-            //     state.inner.remove(&stream_id).map(|(ssrc, flv_tokens, hls_tokens, record_name)|{
-            //     op.map(|(origin_addr,protocol)|{
-            //         //callback stream timeout
-            //         let server_name = SESSION.shared.server_conf.get_name().to_string();
-            //         let rtp_info = RtpInfo::new(*ssrc, protocol, origin_addr, server_name);
-            //         let stream_info = BaseStreamInfo::new(rtp_info, stream_id, *stream_in_reported_time);
-            //         let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
-            //         SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state),None)).await
-            //     })
-            // })
-            // );
             state.expirations.remove(&(when, ssrc));
         }
         Ok(None)
