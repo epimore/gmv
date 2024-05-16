@@ -51,8 +51,8 @@ impl BaseStreamInfo {
             .ok().map(|res| res.status().is_success());
         res
     }
-    //当流闲置时（无观看、无录制），依旧接收到ssrc流输入时，间隔8秒回调一次
-    pub async fn stream_idle(&self) {}
+    // //当流闲置时（无观看、无录制），依旧接收到ssrc流输入时，间隔8秒回调一次
+    // pub async fn stream_idle(&self) {}
 }
 
 #[derive(New, Serialize, Get)]

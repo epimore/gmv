@@ -1,4 +1,3 @@
-use ffmpeg_next::picture::Type::S;
 use common::err::GlobalResult;
 use common::tokio::sync::mpsc::Receiver;
 use common::tokio::sync::oneshot::Sender;
@@ -7,7 +6,7 @@ use crate::state::cache;
 
 pub enum Event {
     streamIn(BaseStreamInfo),
-    streamIdle(BaseStreamInfo),
+    // streamIdle(BaseStreamInfo),
     streamTimeout(StreamState),
     streamUnknown(RtpInfo),
     onPlay(StreamPlayInfo),
@@ -19,9 +18,9 @@ pub enum Event {
 pub enum EventRes {
     //收到国标媒体流事件：响应内容不敏感;some-成功接收;None-未成功接收
     streamIn(Option<bool>),
-    //用户关闭播放时检测国标流是否闲置事件：响应0,关闭流，1-255为等待时间，单位秒；未响应则取消监听该ssrc
-    streamIdle(Option<u8>),
-    //接收国标媒体流超时事件：取消监听该SSRC,响应内容不敏感;
+    // //用户关闭播放时检测国标流是否闲置事件：响应0,关闭流，1-255为等待时间，单位秒；未响应则取消监听该ssrc
+    // streamIdle(Option<u8>),
+    //接收国标媒体流超时事件：取消监听该SSRC,响应内容不敏感;当流空闲时不刷新超时时间,即流超时也可能是流空闲导致
     streamTimeout(Option<bool>),
     //未知ssrc流事件；响应内容不敏感,some-成功接收;None-未成功接收
     streamUnknown(Option<bool>),
@@ -40,7 +39,9 @@ impl Event {
                 Event::streamIn(bsi) => {
                     bsi.stream_in().await;
                 }
-                Event::streamIdle(_) => {}
+                // Event::streamIdle(_) => {
+                //
+                // }
                 Event::streamTimeout(ss) => {
                     let _ = ss.stream_input_timeout().await;
                 }

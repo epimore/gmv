@@ -52,21 +52,26 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sende
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     if let Some((when, stream_id, expires, channel, reported_time, info)) = state.sessions.get_mut(&ssrc) {
-        state.expirations.remove(&(*when, ssrc));
-        let ct = Instant::now() + *expires;
-        *when = ct;
-        state.expirations.insert((ct, ssrc));
-        if *reported_time == 0 {
-            let remote_addr_str = bill.get_remote_addr().to_string();
-            let protocol_addr = bill.get_protocol().get_value().to_string();
-            *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
-            let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
-            let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
-            let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
-            let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
-            *reported_time = time;
+        //判断流是否空闲，若使用中则刷新Instant
+        if let Some((_ssrc, flv_sets, hls_sets, record)) = state.inner.get(stream_id) {
+            if flv_sets.len() > 0 || hls_sets.len() > 0 || record.is_some() {
+                state.expirations.remove(&(*when, ssrc));
+                let ct = Instant::now() + *expires;
+                *when = ct;
+                state.expirations.insert((ct, ssrc));
+                if *reported_time == 0 {
+                    let remote_addr_str = bill.get_remote_addr().to_string();
+                    let protocol_addr = bill.get_protocol().get_value().to_string();
+                    *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
+                    let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
+                    let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
+                    let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
+                    let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
+                    *reported_time = time;
+                }
+                return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
+            }
         }
-        return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
     }
     None
 }
@@ -267,13 +272,13 @@ impl Shared {
             }
             if let Some((_, stream_id, _, _, stream_in_reported_time, op)) = state.sessions.remove(&ssrc) {
                 if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = state.inner.remove(&stream_id) {
-                    if let Some((origin_addr,protocol)) = op {
+                    if let Some((origin_addr, protocol)) = op {
                         //callback stream timeout
                         let server_name = SESSION.shared.server_conf.get_name().to_string();
                         let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
                         let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
                         let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
-                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state),None)).await.hand_err(|msg|error!("{msg}"));
+                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_err(|msg| error!("{msg}"));
                     }
                 }
             }
