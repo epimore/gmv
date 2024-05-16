@@ -11,18 +11,33 @@ pub const TIME_OUT: u64 = 80000;
 pub const BUFFER_SIZE: usize = 8;
 //API接口根信息
 pub const INDEX: &str = r#"<!DOCTYPE html><html lang="en"><head>
-    <style>body{display:grid;place-items:center;height:100vh;margin:0;}</style>
+    <style>body{display:grid;place-items:center;height:100vh;margin:0;}<bof/style>
     <metacharset="UTF - 8"><title>GMV</title></head>
 <body><div><h1>GMV:STREAM-SERVER</h1></div></body></html>"#;
 
+//callback uri start
+//ssrc流注册
+pub const STREAM_IN: &str = "/stream/in";
+//ssrc流无操作
+pub const STREAM_IDLE: &str = "/stream/idle";
+//播放流
+pub const ON_PLAY: &str = "/on/play";
+//关闭播放
+pub const OFF_PLAY: &str = "/off/play";
+//录制结束
+pub const END_RECORD: &str = "/end/record";
+//等待流超时
+pub const STREAM_INPUT_TIMEOUT: &str = "/stream/input/timeout";
+//callback uri end
+
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ResMsg<T:Serialize> {
+pub struct ResMsg<T: Serialize> {
     code: i8,
     msg: String,
     data: Option<T>,
 }
 
-impl<T:Serialize> ResMsg<T> {
+impl<T: Serialize> ResMsg<T> {
     pub fn build_success() -> Self {
         Self { code: 0, msg: "success".to_string(), data: None }
     }

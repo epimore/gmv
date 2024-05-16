@@ -27,19 +27,11 @@ async fn handle(
     ssrc_tx: Sender<u32>,
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
-    
     let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败")))?;
-    
+
     match get_token(&req) {
         Ok(token) => {
-            tokio::spawn(async move {
-                client_connection_cancel.cancelled().await;
-                println!("close.....");
-                //todo callback off_play by token..
-                //call::StreamPlayInfo::off_play();
-            });
-            
-            let response = biz(remote_addr, ssrc_tx, token, req).await?;
+            let response = biz(remote_addr, ssrc_tx, token, req, client_connection_cancel).await?;
             Ok(response)
         }
         Err(_) => {
@@ -50,38 +42,53 @@ async fn handle(
 
 fn get_token(req: &Request<Body>) -> GlobalResult<String> {
     let token_str = req.headers().get("gmv-token")
-        .ok_or_else(||GlobalError::new_biz_error(1100, "header无gmv-token", |msg| info!("{msg}")))?
+        .ok_or_else(|| GlobalError::new_biz_error(1100, "header无gmv-token", |msg| info!("{msg}")))?
         .to_str().hand_err(|msg| info!("获取gmv-token失败;err = {msg}"))?;
     Ok(token_str.to_string())
 }
 
-async fn biz(remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>) -> GlobalResult<Response<Body>> {
-    
-    // let (tx, rx) = tokio::sync::broadcast::channel(100);
+fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
+    let map = form_urlencoded::parse(req.uri().query()
+        .ok_or_else(|| GlobalError::new_biz_error(1100, "URL上参数不存在", |msg| error!("{msg}")))?.as_bytes())
+        .into_owned()
+        .collect::<HashMap<String, String>>();
+    Ok(map)
+}
+
+async fn biz(remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
-        (&Method::GET, "/listen/ssrc") => {
-            biz::api::listen_ssrc(&req, ssrc_tx).await
+        rest => {
+            let param_map_res = get_param_map(&req);
+            if param_map_res.is_err() {
+                return api::res_422();
+            }
+            let param_map = param_map_res.unwrap();
+            match rest {
+                (&Method::GET, "/listen/ssrc") => {
+                    api::listen_ssrc(param_map, ssrc_tx).await
+                }
+                (&Method::GET, "/drop/ssrc") => {
+                    unimplemented!()
+                }
+                (&Method::GET, "/start/record") => {
+                    unimplemented!()
+                }
+                (&Method::GET, "/stop/record") => {
+                    unimplemented!()
+                }
+                (&Method::GET, "/start/play") => {
+                    api::start_play(param_map, token, remote_addr, client_connection_cancel).await
+                }
+                (&Method::GET, "/stop/play") => {
+                    unimplemented!()
+                }
+                (&Method::GET, "/query/state") => {
+                    unimplemented!()
+                }
+                _ => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap()),
+            }
         }
-        (&Method::GET, "/drop/ssrc") => {
-            unimplemented!()
-        }
-        (&Method::GET, "/start/record") => {
-            unimplemented!()
-        }
-        (&Method::GET, "/stop/record") => {
-            unimplemented!()
-        }
-        (&Method::GET, "/start/play") => {
-            unimplemented!()
-        }
-        (&Method::GET, "/stop/play") => {
-            unimplemented!()
-        }
-        (&Method::GET, "/query/state") => {
-            unimplemented!()
-        }
-        _ => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap()),
     }
 }
 
@@ -100,23 +107,21 @@ impl Drop for ClientConnection {
 
 pub async fn run(port: u16, tx: Sender<u32>) -> GlobalResult<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_err(|msg| error!("{msg}")).unwrap();
-    
+
     let make_service = make_service_fn(|conn: &ClientConnection| {
-        
         let opt_addr = conn.conn.peer_addr().ok();
         let client_connection_cancel = conn.cancel.clone();
         let tx_cl = tx.clone();
-        
+
         async move {
             Ok::<_, GlobalError>(service_fn(move |req| {
-                
                 handle(opt_addr, req, tx_cl.clone(), client_connection_cancel.clone())
             }))
         }
     });
-    
+
     hyper::server::Server::builder(ServerListener(listener)).serve(make_service).await.hand_err(|msg| error!("{msg}")).unwrap();
-    
+
     Ok(())
 }
 

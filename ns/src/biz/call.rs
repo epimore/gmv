@@ -1,7 +1,23 @@
 use std::net::SocketAddr;
-use constructor::New;
+use std::time::Duration;
+use reqwest::Response;
+use serde::{Deserialize, Serialize};
+use common::anyhow::Error;
+use common::err::{GlobalResult, TransError};
+use common::log::error;
+use constructor::{Get, New};
+use log::{log, warn};
+use crate::general::mode;
+use crate::general::mode::TIME_OUT;
+use crate::state::cache;
 
-#[derive(New)]
+#[derive(Deserialize)]
+struct RespBo {
+    code: i16,
+    msg: Option<String>,
+}
+
+#[derive(New, Serialize, Get)]
 pub struct RtpInfo {
     ssrc: u32,
     //tcp/udp
@@ -16,7 +32,7 @@ impl RtpInfo {
     pub async fn stream_unknown(&self) {}
 }
 
-#[derive(New)]
+#[derive(New, Serialize, Get)]
 pub struct BaseStreamInfo {
     rtp_info: RtpInfo,
     stream_id: String,
@@ -25,30 +41,71 @@ pub struct BaseStreamInfo {
 
 impl BaseStreamInfo {
     //当接收到输入流时进行回调
-    pub async fn stream_in(&self) {}
+    pub async fn stream_in(&self) -> Option<bool> {
+        let client = reqwest::Client::new();
+        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::STREAM_IN);
+        let res = client.post(uri)
+            .timeout(Duration::from_millis(TIME_OUT))
+            .json(self).send().await
+            .hand_err(|msg| error!("{msg}"))
+            .ok().map(|res| res.status().is_success());
+        res
+    }
     //当流闲置时（无观看、无录制），依旧接收到ssrc流输入时，间隔8秒回调一次
     pub async fn stream_idle(&self) {}
 }
 
+#[derive(New, Serialize, Get)]
 pub struct StreamPlayInfo {
     base_stream_info: BaseStreamInfo,
     remote_addr: SocketAddr,
     token: String,
     //0-flv,1-hls
-    play_type: u8,
+    play_type: String,
     //当前观看人数
-    hls_play_count: u32,
     flv_play_count: u32,
+    hls_play_count: u32,
 }
 
 impl StreamPlayInfo {
     //当用户访问播放流时进行回调（可用于鉴权）
-    pub async fn on_play(&self) {}
+    pub async fn on_play(&self) -> Option<bool> {
+        let client = reqwest::Client::new();
+        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::ON_PLAY);
+        let res = client.post(uri)
+            .timeout(Duration::from_millis(TIME_OUT))
+            .json(self).send().await
+            .hand_err(|msg| error!("{msg}"));
+        match res {
+            Ok(resp) => {
+                match (resp.status().is_success(), resp.json::<RespBo>().await) {
+                    (true, Ok(RespBo { code: 0, msg: _ })) => {
+                        Some(true)
+                    }
+                    _ => {
+                        Some(false)
+                    }
+                }
+            }
+            Err(_) => {
+                None
+            }
+        }
+    }
 
     //当用户断开播放时进行回调
-    pub async fn off_play(&self) {}
+    pub async fn off_play(&self) -> GlobalResult<bool> {
+        let client = reqwest::Client::new();
+        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::OFF_PLAY);
+        let res = client.post(uri)
+            .timeout(Duration::from_millis(TIME_OUT))
+            .json(self).send().await
+            .hand_err(|msg| error!("{msg}"))?;
+        Ok(res.status().is_success())
+    }
 }
 
+#[derive(New, Serialize)]
 pub struct StreamRecordInfo {
     base_stream_info: BaseStreamInfo,
     file_path: String,
@@ -62,6 +119,7 @@ impl StreamRecordInfo {
     pub async fn end_record(&self) {}
 }
 
+#[derive(New, Serialize)]
 pub struct StreamState {
     base_stream_info: BaseStreamInfo,
     hls_play_count: u32,

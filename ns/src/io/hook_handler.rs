@@ -5,7 +5,7 @@ use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo
 
 pub enum Event {
     streamIn(BaseStreamInfo),
-    // streamIdle(BaseStreamInfo),
+    streamIdle(BaseStreamInfo),
     streamTimeout(StreamState),
     streamUnknown(RtpInfo),
     onPlay(StreamPlayInfo),
@@ -17,8 +17,8 @@ pub enum Event {
 pub enum EventRes {
     //收到国标媒体流事件：响应内容不敏感;some-成功接收;None-未成功接收
     streamIn(Option<bool>),
-    // //国标流闲置事件：响应0,关闭流，1-255为等待时间，单位秒；未响应则取消监听该ssrc
-    // streamIdle(Option<u8>),
+    //用户关闭播放时检测国标流是否闲置事件：响应0,关闭流，1-255为等待时间，单位秒；未响应则取消监听该ssrc
+    streamIdle(Option<u8>),
     //接收国标媒体流超时事件：取消监听该SSRC,响应内容不敏感;
     streamTimeout(Option<bool>),
     //未知ssrc流事件；响应内容不敏感,some-成功接收;None-未成功接收
@@ -35,11 +35,16 @@ impl Event {
     pub async fn event_loop(mut rx: Receiver<(Event, Option<Sender<EventRes>>)>) -> GlobalResult<()> {
         while let Some((event, tx)) = rx.recv().await {
             match event {
-                Event::streamIn(_) => {}
-                // Event::streamIdle(_) => {}
+                Event::streamIn(bsi) => {
+                    bsi.stream_in().await;
+                }
+                Event::streamIdle(_) => {}
                 Event::streamTimeout(_) => {}
                 Event::streamUnknown(_) => {}
-                Event::onPlay(_) => {}
+                Event::onPlay(spi) => {
+                    let res = spi.on_play().await;
+                    let _ = tx.unwrap().send(EventRes::onPlay(res));
+                }
                 Event::offPlay(_) => {}
                 Event::endRecord(_) => {}
             }
