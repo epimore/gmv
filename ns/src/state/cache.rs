@@ -3,9 +3,10 @@ use std::collections::hash_map::Entry;
 use std::f32::consts::E;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use ffmpeg_next::picture::Type::S;
 
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -25,19 +26,20 @@ use common::tokio::time::Instant;
 use constructor::Get;
 
 use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamState};
-use crate::general::mode::{BUFFER_SIZE, ServerConf};
+use crate::general::mode::{BUFFER_SIZE, HALF_TIME_OUT, ServerConf, TIME_OUT};
 use crate::io::hook_handler;
 use crate::io::hook_handler::{Event, EventRes};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel) -> GlobalResult<()> {
+pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()> {
     let mut state = SESSION.shared.state.write();
     if !state.sessions.contains_key(&ssrc) {
+        let expires = Duration::from_millis(HALF_TIME_OUT);
         let when = Instant::now() + expires;
         let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
         state.expirations.insert((when, ssrc));
-        state.sessions.insert(ssrc, (when, stream_id.clone(), expires, channel, 0, None));
+        state.sessions.insert(ssrc, (AtomicBool::new(true), when, stream_id.clone(), expires, channel, 0, None));
         state.inner.insert(stream_id, (ssrc, HashSet::new(), HashSet::new(), None));
         drop(state);
         if notify {
@@ -49,27 +51,38 @@ pub fn insert(ssrc: u32, stream_id: String, expires: Duration, channel: Channel)
 
 //返回rtp_tx
 pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>)> {
-    let mut guard = SESSION.shared.state.write();
-    let state = &mut *guard;
-    if let Some((when, stream_id, expires, channel, reported_time, info)) = state.sessions.get_mut(&ssrc) {
-        //判断流是否空闲，若使用中则刷新Instant
-        if let Some((_ssrc, flv_sets, hls_sets, record)) = state.inner.get(stream_id) {
+    let guard = SESSION.shared.state.read();
+    let mut first_in = false;
+    if let Some((on, when, stream_id, expires, channel, reported_time, info)) = guard.sessions.get(&ssrc) {
+        if let Some((_ssrc, flv_sets, hls_sets, record)) = guard.inner.get(stream_id) {
+            //更新流状态：时间轮会扫描流，将其置为false，若使用中则on更改为true;
+            //增加判断流是否使用,若使用则更新流状态;目的：流空闲则断流。
             if flv_sets.len() > 0 || hls_sets.len() > 0 || record.is_some() {
-                state.expirations.remove(&(*when, ssrc));
-                let ct = Instant::now() + *expires;
-                *when = ct;
-                state.expirations.insert((ct, ssrc));
-                if *reported_time == 0 {
-                    let remote_addr_str = bill.get_remote_addr().to_string();
-                    let protocol_addr = bill.get_protocol().get_value().to_string();
-                    *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
-                    let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
-                    let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
-                    let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
-                    let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
-                    *reported_time = time;
+                if !on.load(Ordering::SeqCst) {
+                    on.store(true, Ordering::SeqCst);
                 }
-            }
+            };
+        }
+        if reported_time == &0 {
+            first_in = true;
+        } else {
+            return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
+        }
+    }
+    drop(guard);
+    //流注册时-回调
+    if first_in {
+        first_in = false;
+        let mut guard = SESSION.shared.state.write();
+        if let Some((on, when, stream_id, expires, channel, reported_time, info)) = guard.sessions.get_mut(&ssrc) {
+            let remote_addr_str = bill.get_remote_addr().to_string();
+            let protocol_addr = bill.get_protocol().get_value().to_string();
+            *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
+            let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
+            let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
+            let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
+            let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
+            *reported_time = time;
             return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
         }
     }
@@ -81,7 +94,7 @@ pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel, _, _)) => {
+        Some((_, _, _, _, channel, _, _)) => {
             Some(channel.get_flv_tx())
         }
     }
@@ -91,7 +104,7 @@ pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel, _, _)) => {
+        Some((_, _, _, _, channel, _, _)) => {
             Some(channel.get_flv_rx())
         }
     }
@@ -101,7 +114,7 @@ pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel, _, _)) => {
+        Some((_, _, _, _, channel, _, _)) => {
             Some(channel.get_hls_tx())
         }
     }
@@ -111,7 +124,7 @@ pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel, _, _)) => {
+        Some((_, _, _, _, channel, _, _)) => {
             Some(channel.get_hls_rx())
         }
     }
@@ -121,7 +134,7 @@ pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel, _, _)) => {
+        Some((_, _, _, _, channel, _, _)) => {
             Some(channel.get_rtp_tx())
         }
     }
@@ -131,7 +144,7 @@ pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Bytes>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
-        Some((_, _, _, channel, _, _)) => {
+        Some((_, _, _, _, channel, _, _)) => {
             Some(channel.get_rtp_rx())
         }
     }
@@ -168,7 +181,7 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
         }
         Some((ssrc, flv_tokens, hls_tokens, _)) => {
             match guard.sessions.get(ssrc) {
-                Some((ts, stream_id, dur, ch, stream_in_reported_time, Some((origin_addr, protocol)))) => {
+                Some((_, ts, stream_id, dur, ch, stream_in_reported_time, Some((origin_addr, protocol)))) => {
                     let server_name = SESSION.shared.server_conf.get_name().to_string();
                     let rtp_info = RtpInfo::new(*ssrc, protocol.to_string(), origin_addr.to_string(), server_name);
                     let stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *stream_in_reported_time);
@@ -184,7 +197,7 @@ pub fn remove_by_stream_id(stream_id: &String) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     if let Some((ssrc, _, _, _)) = state.inner.remove(stream_id) {
-        if let Some((when, _, _, _, _, _)) = state.sessions.remove(&ssrc) {
+        if let Some((_, when, _, _, _, _, _)) = state.sessions.remove(&ssrc) {
             state.expirations.remove(&(when, ssrc));
         }
     }
@@ -262,27 +275,52 @@ struct Shared {
 
 impl Shared {
     //清理过期state,并返回下一个过期瞬间刻度
+    //判断是否有数据:
+    // 有:on=true变false;重新插入计时队列，更新时刻
+    // 无：on->false；清理state，并回调通知timeout
     async fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
         let mut guard = SESSION.shared.state.write();
         let state = &mut *guard;
         let now = Instant::now();
+        let mut notify_one = false;
         while let Some(&(when, ssrc)) = state.expirations.iter().next() {
             if when > now {
                 return Ok(Some(when));
             }
-            if let Some((_, stream_id, _, _, stream_in_reported_time, op)) = state.sessions.remove(&ssrc) {
-                if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = state.inner.remove(&stream_id) {
-                    if let Some((origin_addr, protocol)) = op {
-                        //callback stream timeout
-                        let server_name = SESSION.shared.server_conf.get_name().to_string();
-                        let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
-                        let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
-                        let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
-                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_err(|msg| error!("{msg}"));
+            state.expirations.remove(&(when, ssrc));
+            let mut del = false;
+            if let Some((on, ts, _, _, _, _, _)) = state.sessions.get_mut(&ssrc) {
+                if on.load(Ordering::SeqCst) {
+                    on.store(false, Ordering::SeqCst);
+                    let expires = Duration::from_millis(HALF_TIME_OUT);
+                    let when = Instant::now() + expires;
+                    *ts = when;
+                    let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                    state.expirations.insert((when, ssrc));
+                    if notify {
+                        notify_one = notify;
+                    }
+                } else {
+                    del = true;
+                }
+            }
+            if del {
+                if let Some((_, _, stream_id, _, _, stream_in_reported_time, op)) = state.sessions.remove(&ssrc) {
+                    if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = state.inner.remove(&stream_id) {
+                        if let Some((origin_addr, protocol)) = op {
+                            //callback stream timeout
+                            let server_name = SESSION.shared.server_conf.get_name().to_string();
+                            let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
+                            let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
+                            let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
+                            let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_err(|msg| error!("{msg}"));
+                        }
                     }
                 }
             }
-            state.expirations.remove(&(when, ssrc));
+        }
+        if notify_one {
+            SESSION.shared.background_task.notify_one();
         }
         Ok(None)
     }
@@ -290,8 +328,8 @@ impl Shared {
 
 ///自定义会话信息
 struct State {
-    //ssrc,(ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol))
-    sessions: HashMap<u32, (Instant, String, Duration, Channel, u32, Option<(String, String)>)>,
+    //ssrc,(on,ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol))
+    sessions: HashMap<u32, (AtomicBool, Instant, String, Duration, Channel, u32, Option<(String, String)>)>,
     //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
     inner: HashMap<String, (u32, HashSet<String>, HashSet<String>, Option<String>)>,
     //(ts,ssrc)

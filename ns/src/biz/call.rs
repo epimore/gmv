@@ -43,7 +43,7 @@ impl BaseStreamInfo {
     //当接收到输入流时进行回调
     pub async fn stream_in(&self) -> Option<bool> {
         let client = reqwest::Client::new();
-        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::STREAM_IN);
+        let uri = format!("{} {}", cache::get_server_conf().get_hook_uri(), mode::STREAM_IN);
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
@@ -71,7 +71,7 @@ impl StreamPlayInfo {
     //当用户访问播放流时进行回调（可用于鉴权）
     pub async fn on_play(&self) -> Option<bool> {
         let client = reqwest::Client::new();
-        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::ON_PLAY);
+        let uri = format!("{} {}", cache::get_server_conf().get_hook_uri(), mode::ON_PLAY);
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
@@ -96,7 +96,7 @@ impl StreamPlayInfo {
     //当用户断开播放时进行回调
     pub async fn off_play(&self) -> Option<bool> {
         let client = reqwest::Client::new();
-        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::OFF_PLAY);
+        let uri = format!("{} {}", cache::get_server_conf().get_hook_uri(), mode::OFF_PLAY);
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
@@ -145,7 +145,7 @@ impl StreamState {
     //当等待输入流超时时进行回调
     pub async fn stream_input_timeout(&self) -> Option<bool> {
         let client = reqwest::Client::new();
-        let uri = format!("{} {}", cache::get_server_conf().get_name(), mode::STREAM_INPUT_TIMEOUT);
+        let uri = format!("{} {}", cache::get_server_conf().get_hook_uri(), mode::STREAM_INPUT_TIMEOUT);
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await

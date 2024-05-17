@@ -7,6 +7,7 @@ use constructor::{Get, Set};
 
 //统一响应超时:单位毫秒
 pub const TIME_OUT: u64 = 8000;
+pub const HALF_TIME_OUT: u64 = 4000;
 //数据通道缓存大小
 pub const BUFFER_SIZE: usize = 8;
 //API接口根信息

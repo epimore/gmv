@@ -79,7 +79,9 @@ pub(crate) fn parse(ssrc: u32) -> GlobalResult<()> {
                                 (*ost.parameters().as_mut_ptr()).codec_tag = 0;
                             }
                             output.set_metadata(ictx.metadata().to_owned());
-                            output.write_header().unwrap();
+                            if output.write_header().is_err() {
+                                return Err(SysErr(anyhow!("output write_header err")));
+                            }
                             (*output.as_mut_ptr()).flags |= AVFMT_NOFILE;
                             for (stream, mut packet) in ictx.packets() {
                                 let ist_index = stream.index();

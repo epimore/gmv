@@ -78,7 +78,7 @@ pub async fn listen_ssrc(map: HashMap<String, String>, ssrc_tx: Sender<u32>) -> 
     match (get_ssrc(&map), get_stream_id(&map)) {
         (Ok(ssrc), Ok(stream_id)) => {
             let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
-            let res = match cache::insert(ssrc, stream_id, Duration::from_millis(TIME_OUT), cache::Channel::build()) {
+            let res = match cache::insert(ssrc, stream_id, cache::Channel::build()) {
                 Ok(_) => {
                     ssrc_tx.send(ssrc).await.hand_err(|msg| error!("{msg}"))?;
                     let json_data = ResMsg::<bool>::build_success().to_json()?;
