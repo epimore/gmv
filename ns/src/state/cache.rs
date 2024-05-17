@@ -69,8 +69,8 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sende
                     let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
                     *reported_time = time;
                 }
-                return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
             }
+            return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
         }
     }
     None
