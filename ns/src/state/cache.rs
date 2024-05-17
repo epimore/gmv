@@ -231,11 +231,10 @@ impl Session {
         let shared = session.shared.clone();
         thread::spawn(|| {
             let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
-
             let _ = rt.block_on(Self::purge_expired_task(shared));
         });
         thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("HOOK-EVENT").build().hand_err(|msg| error!("{msg}")).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().thread_name("HOOK-EVENT").build().hand_err(|msg| error!("{msg}")).unwrap();
             let _ = rt.block_on(Event::event_loop(rx));
         });
         println!("Server node name = {}\n\
