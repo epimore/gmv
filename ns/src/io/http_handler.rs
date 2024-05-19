@@ -54,7 +54,6 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
         .collect::<HashMap<String, String>>();
     Ok(map)
 }
-
 async fn biz(remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
@@ -86,7 +85,10 @@ async fn biz(remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: 
                 (&Method::GET, "/query/state") => {
                     unimplemented!()
                 }
-                _ => Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap()),
+                (_,uri) => {
+                    println!("uri = {}",uri);
+                    Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap())
+                },
             }
         }
     }

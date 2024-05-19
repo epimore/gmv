@@ -21,9 +21,9 @@ struct RespBo {
 pub struct RtpInfo {
     ssrc: u32,
     //tcp/udp
-    protocol: String,
+    protocol: Option<String>,
     //媒体流源地址
-    origin_addr: String,
+    origin_addr: Option<String>,
     server_name: String,
 }
 

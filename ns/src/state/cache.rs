@@ -57,11 +57,11 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sende
         if let Some((_ssrc, flv_sets, hls_sets, record)) = guard.inner.get(stream_id) {
             //更新流状态：时间轮会扫描流，将其置为false，若使用中则on更改为true;
             //增加判断流是否使用,若使用则更新流状态;目的：流空闲则断流。
-            if flv_sets.len() > 0 || hls_sets.len() > 0 || record.is_some() {
-                if !on.load(Ordering::SeqCst) {
-                    on.store(true, Ordering::SeqCst);
-                }
-            };
+            // if flv_sets.len() > 0 || hls_sets.len() > 0 || record.is_some() {
+            if !on.load(Ordering::SeqCst) {
+                on.store(true, Ordering::SeqCst);
+            }
+            // }
         }
         if reported_time == &0 {
             first_in = true;
@@ -78,7 +78,7 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sende
             let remote_addr_str = bill.get_remote_addr().to_string();
             let protocol_addr = bill.get_protocol().get_value().to_string();
             *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
-            let rtp_info = RtpInfo::new(ssrc, protocol_addr, remote_addr_str, SESSION.shared.server_conf.get_name().clone());
+            let rtp_info = RtpInfo::new(ssrc, Some(protocol_addr), Some(remote_addr_str), SESSION.shared.server_conf.get_name().clone());
             let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
             let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
             let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
@@ -183,7 +183,7 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
             match guard.sessions.get(ssrc) {
                 Some((_, ts, stream_id, dur, ch, stream_in_reported_time, Some((origin_addr, protocol)))) => {
                     let server_name = SESSION.shared.server_conf.get_name().to_string();
-                    let rtp_info = RtpInfo::new(*ssrc, protocol.to_string(), origin_addr.to_string(), server_name);
+                    let rtp_info = RtpInfo::new(*ssrc, Some(protocol.to_string()), Some(origin_addr.to_string()), server_name);
                     let stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *stream_in_reported_time);
                     Some((stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32))
                 }
@@ -306,14 +306,18 @@ impl Shared {
             if del {
                 if let Some((_, _, stream_id, _, _, stream_in_reported_time, op)) = state.sessions.remove(&ssrc) {
                     if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = state.inner.remove(&stream_id) {
-                        if let Some((origin_addr, protocol)) = op {
-                            //callback stream timeout
-                            let server_name = SESSION.shared.server_conf.get_name().to_string();
-                            let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
-                            let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
-                            let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
-                            let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_err(|msg| error!("{msg}"));
+                        //callback stream timeout
+                        let server_name = SESSION.shared.server_conf.get_name().to_string();
+                        let mut origin_addr = None;
+                        let mut protocol = None;
+                        if let Some((origin_addr_s, protocol_s)) = op {
+                            origin_addr = Some(origin_addr_s);
+                            protocol = Some(protocol_s);
                         }
+                        let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
+                        let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
+                        let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
+                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_err(|msg| error!("{msg}"));
                     }
                 }
             }

@@ -1,5 +1,5 @@
 use std::os::raw::{c_int, c_void};
-use std::{ptr, slice};
+use std::{cmp, ptr, slice};
 use std::str::from_utf8;
 use ffmpeg_next::ffi::AVERROR_EOF;
 use serde::__private::from_utf8_lossy;
@@ -13,6 +13,10 @@ type FuncWritePacket = unsafe extern fn(opaque: *mut c_void, buf: *mut u8, buf_s
 
 pub fn call_rtp_read() -> FuncReadPacket {
     read_rtp_packet
+}
+
+pub fn call_sdp_str_read() -> FuncReadPacket {
+    read_avio_packet_string
 }
 
 pub fn call_flv_write() -> FuncWritePacket {
@@ -39,8 +43,8 @@ unsafe extern "C" fn read_rtp_packet(opaque: *mut c_void, buf: *mut u8, _buf_siz
         Some(rx) => {
             match rx.recv() {
                 Ok(bytes) => {
-                    debug!("---------buffer  = {:?}",&bytes);
                     let len = bytes.len();
+                    println!("rtp data size = {len}");
                     ptr::copy_nonoverlapping(bytes.to_vec().as_ptr(), buf, len);
                     // debug!("========= buf  = {:?}",Vec::from_raw_parts(buf, len, buffer.capacity()));
                     len as c_int
@@ -65,7 +69,7 @@ unsafe extern "C" fn tx_flv_packet(opaque: *mut c_void, buf: *mut u8, buf_size: 
         }
         Some(flv_tx) => {
             let slice = slice::from_raw_parts(buf, buf_size as usize);
-            println!("flv data size = {}", slice.len());
+            // println!("flv data size = {}", slice.len());
             let _ = flv_tx.send(Bytes::copy_from_slice(slice)).hand_err(|msg| debug!("flv 发送失败{msg}"));
             buf_size
         }
@@ -90,7 +94,26 @@ unsafe extern "C" fn tx_hls_packet(opaque: *mut c_void, buf: *mut u8, buf_size: 
 
 #[no_mangle]
 unsafe extern "C" fn tx_rtcp_packet(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
-    let slice = slice::from_raw_parts(buf, buf_size as usize+1);
-    println!("rtcp data size = {},val = {:?}", slice.len(),from_utf8_lossy(slice));
+    let slice = slice::from_raw_parts(buf, buf_size as usize + 1);
+    println!("rtcp data size = {},val = {:?}", slice.len(), from_utf8_lossy(slice));
     buf_size
+}
+
+#[no_mangle]
+unsafe extern "C" fn read_avio_packet_string(opaque: *mut c_void, buf: *mut u8, buf_size: i32) -> c_int {
+    // Cast opaque to a mutable reference to a String
+    let s = &mut *(opaque as *mut String);
+    // Determine the size to copy
+    let size_to_copy = cmp::min(buf_size as usize, s.len());
+    // Return AVERROR_EOF if there's no data to copy
+    if size_to_copy == 0 {
+        return AVERROR_EOF;
+    }
+    // Get a pointer to the string's data
+    let data = s.as_ptr();
+    // Copy the data to the buffer
+    ptr::copy_nonoverlapping(data, buf, size_to_copy);
+    // Remove the copied data from the string
+    s.drain(..size_to_copy);
+    size_to_copy as c_int
 }
