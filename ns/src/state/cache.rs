@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use ffmpeg_next::picture::Type::S;
 
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
