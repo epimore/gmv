@@ -4,7 +4,7 @@ log:
   store_path: ./logs
 
 http:
-  port: 19546
+  port: 18567
   timeout: 30000   #请求超时 单位毫秒
   prefix: /gb28181/api
   server_name: gb28181-session
