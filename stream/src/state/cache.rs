@@ -210,7 +210,7 @@ struct Session {
 impl Session {
     fn init() -> Self {
         let tripe = common::init();
-        ffmpeg_next::init().expect("ffmpeg init failed");
+        // ffmpeg_next::init().expect("ffmpeg init failed");
         let cfg_yaml = tripe.get_cfg().get(0).clone().expect("config file is invalid");
         let server_conf = ServerConf::build(cfg_yaml);
         banner();
