@@ -3,6 +3,7 @@ pub mod gb;
 pub mod general;
 mod api;
 mod service;
+mod utils;
 
 use log::error;
 use common::err::TransError;
