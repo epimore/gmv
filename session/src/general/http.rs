@@ -40,7 +40,7 @@ impl Http {
         use poem::http::Method;
         use poem_openapi::OpenApiService;
 
-        let http_addr = format!("http://127.0.0.1:{}{}", &self.port, &self.prefix);
+        let http_addr = format!("http://0.0.0.0:{}{}", &self.port, &self.prefix);
         let service = OpenApiService::new(api, &self.server_name, &self.version)
             .server(&http_addr);
         let ui = service.swagger_ui();
@@ -49,7 +49,7 @@ impl Http {
                 .with(Cors::new().allow_methods([Method::GET, Method::POST])))
             .nest("/docs", ui);
         info!("GMV-API HTTP服务启动:{http_addr}");
-        Server::new(TcpListener::bind(format!("127.0.0.1:{}", &self.port)))
+        Server::new(TcpListener::bind(format!("0.0.0.0:{}", &self.port)))
             .run(route).await.hand_err(|msg| error!("{msg}"))?;
         Ok(())
     }

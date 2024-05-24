@@ -7,6 +7,8 @@ pub enum PlayType {
     Down,
 }
 
+//device_id/channel_id/ssrc/user_id/token
+
 impl PlayType {}
 
 /// 目的：todo 添加user_id、stream_id、device_id等关系，user拉取流时，需要通过session接口获取流地址：创建user与流的关系，stream回调查看是否具备权限，防止复制流地址获取流
