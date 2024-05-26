@@ -1,6 +1,7 @@
 
 use poem::FromRequest;
 use poem_openapi::OpenApi;
+use poem_openapi::param::Header;
 use poem_openapi::payload::{Form, Json};
 use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
 
@@ -11,8 +12,9 @@ impl RestApi {
     #[allow(non_snake_case)]
     #[oai(path = "/play/live/stream", method = "post")]
     /// 点播监控实时画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
-    async fn play_live(&self, live: Json<PlayLiveModel>) -> Json<ResultMessageData<Option<StreamInfo>>> {
-        println!("{:?}",live.0);
+    async fn play_live(&self, live: Json<PlayLiveModel>,#[oai(name = "gmv-token")] token: Header<String>) -> Json<ResultMessageData<Option<StreamInfo>>> {
+        println!("header = {:?}",token.0);
+        println!("body = {:?}",live);
         Json(ResultMessageData::build_success_none())
     }
 

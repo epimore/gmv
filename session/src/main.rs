@@ -22,5 +22,4 @@ async fn main() {
     });
     let conf = general::SessionConf::get_session_conf(cfg);
     let _ = gb::gb_run(&conf).await.hand_err(|msg| error!("GB RUN FAILED <<< [{msg}]"));
-    println!("Hello, world!");
 }

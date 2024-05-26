@@ -37,7 +37,7 @@ pub mod rw {
 
     pub struct RWSession {
         shared: Arc<Shared>,
-        //todo  将task放入缓存
+        //更新设备状态
         db_task: Sender<String>,
     }
 

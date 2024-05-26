@@ -52,7 +52,6 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
 pub struct PlayLiveModel {
     #[oai(validator(min_length = "20", max_length = "20"))] deviceId: String,
     #[oai(validator(min_length = "20", max_length = "20"))] channelId: String,
-    #[oai(validator(min_length = "4", max_length = "32"))] identity: Option<String>,
     #[oai(validator(maximum(value = "2"), minimum(value = "0")))] transMode: Option<u8>,
 }
 
