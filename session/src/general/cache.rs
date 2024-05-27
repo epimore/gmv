@@ -2,8 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use log::{error, warn};
+use mysql::serde_json;
+use serde::{Deserialize, Serialize};
 
 use common::bytes::Bytes;
 use common::dashmap::DashMap;
@@ -190,6 +193,33 @@ impl Cache {
             }
         }
     }
+
+    async fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
+        let mut guard = GENERAL_CACHE.shared.state.lock().await;
+        match expire {
+            None => { guard.entities.insert(key, (data, None, call_tx)); }
+            Some(ins) => {
+                guard.entities.insert(key.clone(), (data, Some(ins), call_tx));
+                guard.expirations.insert((ins, key));
+            }
+        }
+    }
+
+    pub async fn state_insert_obj<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, call_tx: Option<Sender<Option<Bytes>>>) {
+        //此处不会panic，obj满足序列化与反序列化
+        let vec = serde_json::to_vec(obj).unwrap();
+        let bytes = Bytes::from(vec);
+        Self::state_insert(key, bytes, None, call_tx).await;
+    }
+    pub async fn state_insert_obj_by_timer<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, expire: Duration, call_tx: Option<Sender<Option<Bytes>>>) {
+        //此处不会panic，obj满足序列化与反序列化
+        let vec = serde_json::to_vec(obj).unwrap();
+        let bytes = Bytes::from(vec);
+        let when = Instant::now() + expire;
+        Self::state_insert(key, bytes, Some(when), call_tx).await;
+    }
+
+    pub
 
     fn init() -> Self {
         let cache = Self {
