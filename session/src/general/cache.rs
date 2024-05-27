@@ -8,11 +8,12 @@ use bimap::BiMap;
 use log::{error, warn};
 use mysql::serde_json;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 
 use common::bytes::Bytes;
 use common::dashmap::DashMap;
 use common::dashmap::mapref::entry::Entry;
-use common::err::TransError;
+use common::err::{GlobalResult, TransError};
 use common::once_cell::sync::Lazy;
 use common::tokio;
 use common::tokio::sync::{Mutex, Notify};
@@ -249,6 +250,7 @@ impl Cache {
         let bytes = Bytes::from(vec);
         Self::state_insert(key, bytes, None, call_tx).await;
     }
+
     pub async fn state_insert_obj_by_timer<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, expire: Duration, call_tx: Option<Sender<Option<Bytes>>>) {
         //此处不会panic，obj满足序列化与反序列化
         let vec = serde_json::to_vec(obj).unwrap();
@@ -257,7 +259,26 @@ impl Cache {
         Self::state_insert(key, bytes, Some(when), call_tx).await;
     }
 
-    pub
+    pub async fn state_remove(key: &String) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
+        let mut guard = GENERAL_CACHE.shared.state.lock().await;
+        if let Some((data, Some(when), opt_tx)) = guard.entities.remove(key) {
+            guard.expirations.remove(&(when, key.to_string()));
+            return Some((data, opt_tx));
+        }
+        None
+    }
+
+    pub async fn state_get_obj<T: Serialize + DeserializeOwned>(key: &str) -> GlobalResult<Option<(T, Option<Sender<Option<Bytes>>>)>> {
+        let guard = GENERAL_CACHE.shared.state.lock().await;
+        match guard.entities.get(key) {
+            None => { Ok(None) }
+            Some((val, _, opt_tx)) => {
+                let data: T = serde_json::from_slice(&val.clone()).hand_err(|msg| error!("{msg}"))?;
+                Ok(Some((data, opt_tx.clone())))
+            }
+        }
+    }
+
 
     fn init() -> Self {
         let cache = Self {
