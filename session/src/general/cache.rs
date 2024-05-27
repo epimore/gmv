@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use bimap::BiMap;
 use log::{error, warn};
 use mysql::serde_json;
 use serde::{Deserialize, Serialize};
@@ -79,28 +80,42 @@ impl Cache {
             .map(|sets| sets.contains(gmv_token))
             .unwrap_or(false)
     }
-    //device_id:HashMap<channel_id,HashMap<ssrc,(stream_id,playType)>>
+    //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
     //层层插入
-    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, play_type: PlayType) {
+    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, play_type: PlayType) -> bool {
         match GENERAL_CACHE.shared.device_map.entry(device_id) {
             Entry::Occupied(mut occ) => {
                 let m_map = occ.get_mut();
                 match m_map.entry(channel_id) {
                     Occupied(mut m_occ) => {
                         let s_map = m_occ.get_mut();
-                        match s_map.entry(ssrc) {
-                            Occupied(s_occ) => {}
+                        match s_map.entry(play_type) {
+                            Occupied(mut s_occ) => {
+                                //直播只插入一条
+                                if play_type == PlayType::Live {
+                                    false
+                                } else {
+                                    let s_map = s_occ.get_mut();
+                                    s_map.insert_no_overwrite(stream_id, ssrc).is_ok()
+                                }
+                            }
                             //存在device_id,channel_id,不存在ssrc则:在channel_id对应的map中插入
                             Vacant(s_vac) => {
-                                s_vac.insert((stream_id, play_type));
+                                let mut bi_map = BiMap::new();
+                                bi_map.insert(stream_id, ssrc);
+                                s_vac.insert(bi_map);
+                                true
                             }
                         }
                     }
                     //存在device_id,不存在channel_id则：在存在device_id对应的map中插入channel_id与ssrc对应的map
                     Vacant(m_vac) => {
+                        let mut bi_map = BiMap::new();
+                        bi_map.insert(stream_id, ssrc);
                         let mut s_map = HashMap::new();
-                        s_map.insert(ssrc, (stream_id, play_type));
+                        s_map.insert(play_type, bi_map);
                         m_vac.insert(s_map);
+                        true
                     }
                 }
             }
@@ -108,16 +123,19 @@ impl Cache {
             Entry::Vacant(vac) => {
                 let mut m_map = HashMap::new();
                 let mut s_map = HashMap::new();
-                s_map.insert(ssrc, (stream_id, play_type));
+                let mut bi_map = BiMap::new();
+                bi_map.insert(stream_id, ssrc);
+                s_map.insert(play_type, bi_map);
                 m_map.insert(channel_id, s_map);
                 vac.insert(m_map);
+                true
             }
         }
     }
 
     //层层删除：若最终device_id对应的都无数据，则整体删除
     //device_id: String, channel_id: String, ssrc: String
-    pub fn device_map_remove(device_id: &String, opt_channel_ssrc: Option<(&String, Option<&String>)>) {
+    pub fn device_map_remove(device_id: &String, opt_channel_ssrc: Option<(&String, Option<(PlayType, &String)>)>) {
         match opt_channel_ssrc {
             None => {
                 GENERAL_CACHE.shared.device_map.remove(device_id);
@@ -141,7 +159,7 @@ impl Cache {
                 }
             }
             //存在SSRC:删除里层SSRC,若删除时，device_id对应的map将无数据,则直接删除device_id
-            Some((channel_id, Some(ssrc))) => {
+            Some((channel_id, Some((play_type, ssrc)))) => {
                 match GENERAL_CACHE.shared.device_map.entry(device_id.to_string()) {
                     // 如果其值包含channel_id,ssrc,且仅一条数据，则删除device_id
                     // 如果其值包含channel_id,有多条ssrc，则删除ssrc记录
@@ -152,16 +170,28 @@ impl Cache {
                         match m_map.entry(channel_id.to_string()) {
                             Occupied(mut s_occ) => {
                                 let s_map = s_occ.get_mut();
-                                if s_map.contains_key(ssrc) {
-                                    if s_map.len() == 1 {
-                                        if m_len == 1 {
-                                            m_occ.remove();
-                                        } else {
-                                            s_occ.remove();
+                                let s_len = s_map.len();
+                                match s_map.entry(play_type) {
+                                    Occupied(mut i_occ) => {
+                                        let i_map = i_occ.get_mut();
+                                        let i_len = i_map.len();
+                                        if i_map.contains_right(ssrc) {
+                                            if i_len == 1 {
+                                                if s_len == 1 {
+                                                    if m_len == 1 {
+                                                        m_occ.remove();
+                                                    } else {
+                                                        s_occ.remove();
+                                                    }
+                                                } else {
+                                                    i_occ.remove();
+                                                }
+                                            } else {
+                                                i_map.remove_by_right(ssrc);
+                                            }
                                         }
-                                    } else {
-                                        s_map.remove(ssrc);
                                     }
+                                    Vacant(i_vac) => {}
                                 }
                             }
                             Vacant(s_vac) => {}
@@ -174,7 +204,7 @@ impl Cache {
         }
     }
 
-    pub fn device_map_count(device_id: &String, opt_channel_ssrc: Option<(&String, Option<&String>)>) -> usize {
+    pub fn device_map_count(device_id: &String, opt_channel_ssrc: Option<(&String, Option<(&PlayType, Option<&String>)>)>) -> usize {
         match opt_channel_ssrc {
             None => {
                 GENERAL_CACHE.shared.device_map.get(device_id).map(|m_map| m_map.len()).unwrap_or(0)
@@ -185,10 +215,18 @@ impl Cache {
                         .map(|s_map| s_map.len()).unwrap_or(0))
                     .unwrap_or(0)
             }
-            Some((channel_id, Some(ssrc))) => {
+            Some((channel_id, Some((play_type, None)))) => {
                 GENERAL_CACHE.shared.device_map.get(device_id)
                     .map(|m_map| m_map.get(channel_id)
-                        .map(|s_map| if s_map.contains_key(ssrc) { 1 } else { 0 }).unwrap_or(0))
+                        .map(|s_map| if s_map.contains_key(play_type) { 1 } else { 0 }).unwrap_or(0))
+                    .unwrap_or(0)
+            }
+            Some((channel_id, Some((play_type, Some(ssrc))))) => {
+                GENERAL_CACHE.shared.device_map.get(device_id)
+                    .map(|m_map| m_map.get(channel_id)
+                        .map(|s_map| s_map.get(play_type)
+                            .map(|i_map| if i_map.contains_right(ssrc) { 1 } else { 0 }).unwrap_or(0))
+                        .unwrap_or(0))
                     .unwrap_or(0)
             }
         }
@@ -277,7 +315,9 @@ struct Shared {
     //stream_id:set<gmv_token>
     stream_map: DashMap<String, HashSet<String>>,
     //device_id:HashMap<channel_id,HashMap<ssrc,(stream_id,playType)>>
-    device_map: DashMap<String, HashMap<String, HashMap<String, (String, PlayType)>>>,
+    // device_map: DashMap<String, HashMap<String, HashMap<String, (String, PlayType)>>>,
+    //device_id:HashMap<channel_id,HashMap<playType,BiMap<stream_id,ssrc>>
+    device_map: DashMap<String, HashMap<String, HashMap<PlayType, BiMap<String, String>>>>,
 }
 
 impl Shared {
@@ -298,6 +338,7 @@ impl Shared {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub enum PlayType {
     Live,
     Back,
@@ -356,9 +397,9 @@ mod tests {
         Cache::device_map_insert("did1".to_string(), "cid1".to_string(), "ssrc1".to_string(), "sid1".to_string(), PlayType::Down);
         let len = GENERAL_CACHE.shared.device_map.len();
         assert_eq!(len, 1);
-        let len1 = Cache::device_map_count(&"did1".to_string(), Some((&"cid1".to_string(), Some(&"ssrc1".to_string()))));
+        let len1 = Cache::device_map_count(&"did1".to_string(), Some((&"cid1".to_string(), Some((&PlayType::Down, Some(&"ssrc1".to_string()))))));
         assert_eq!(len1, 1);
-        Cache::device_map_remove(&"did1".to_string(), Some((&"cid1".to_string(), Some(&"ssrc1".to_string()))));
+        Cache::device_map_remove(&"did1".to_string(), Some((&"cid1".to_string(), Some((PlayType::Down, &"ssrc1".to_string())))));
         let len2 = GENERAL_CACHE.shared.device_map.len();
         assert_eq!(len2, 0);
     }
