@@ -31,21 +31,19 @@ server:
     lan_port: 25600  #lan端口
     wan_port: 25600  #wan端口
   stream:
-    storage:
-      root_path: /mnt
-    trans_realm:
-      enable: false
-      node:
-        - name: s1   #节点名称，唯一值，不能与其他节点重复
-          pub_ip: 175.178.243.153  #公网IP，用于视频流接入 47.98.179.156
-          secret: 035c73f7-bb6b-4889-a715-d9eb2d1925cc  #服务之间通信秘钥   q
-          local_port: 28000  #节点局域网端口，用于流媒体服务之间通信
-          local_ip: 175.178.243.153  #节点局域网IP，用于流媒体服务之间通信
-          rtp_range: 32100-32109 # 用于接收视频流,6个以上连续端口，用-分割起始结束
-        - name: s2   #节点名称，唯一值，不能与其他节点重复
-          local_ip: 175.178.243.153  #节点局域网IP，用于流媒体服务之间通信
-          local_port: 29000  #节点局域网端口，用于流媒体服务之间通信
-          secret: 035c73f7-bb6b-4889-a715-d9eb2d1925cc  #服务之间通信秘钥
-          pub_ip: 175.178.243.153  #公网IP，用于视频流接入
-          rtp_range: 32110-32119 # 用于接收视频流,6个以上连续端口，用-分割起始结束
+    proxy_enable: true #是否统一代理流出口，否-使用流媒体服务的公网ip返回结果
+    proxy_addr: https://epimore.cn #流代理地址;eg:https://epimore.cn/s1/start/play?stream_id=stream_id1111&play_type=flv
+    node:
+      - name: s1 #流媒体服务的标识，节点名称，唯一值，不能与其他节点重复
+        pub_ip: 175.178.243.153 #流媒体服务接收rtp流的公网地址
+        pub_port: 18568 #流媒体服务接收rtp流的端口
+        local_ip: 127.0.0.1 #节点局域网IP，用于流媒体服务之间通信
+        local_port: 18570 #节点局域网端口，用于流媒体服务之间通信
+      - name: s2 #流媒体服务的标识，节点名称，唯一值，不能与其他节点重复
+        pub_ip: 175.178.243.153 #流媒体服务接收rtp流的公网地址
+        pub_port: 19568 #流媒体服务接收rtp流的端口
+        local_ip: 127.0.0.1 #节点局域网IP，用于流媒体服务之间通信
+        local_port: 18570 #节点局域网端口，用于流媒体服务之间通信
+
+
 

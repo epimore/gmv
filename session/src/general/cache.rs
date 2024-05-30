@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -11,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 
 use common::bytes::Bytes;
-use common::dashmap::DashMap;
+use common::dashmap::{DashMap, DashSet};
 use common::dashmap::mapref::entry::Entry;
+use common::dashmap::mapref::one::Ref;
+use common::dashmap::setref::multiple::RefMulti;
 use common::err::{GlobalResult, TransError};
 use common::once_cell::sync::Lazy;
 use common::tokio;
@@ -20,6 +23,7 @@ use common::tokio::sync::{Mutex, Notify};
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
+use constructor::Get;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 
@@ -29,46 +33,88 @@ pub struct Cache {
 }
 
 impl Cache {
+    pub fn ssrc_sn_get() -> Option<u16> {
+        let opt_ssrc_sn = { GENERAL_CACHE.shared.ssrc_sn.iter().next().map(|item| *item.key()) };
+        match opt_ssrc_sn {
+            None => { None }
+            Some(ssrc_sn) => {
+                GENERAL_CACHE.shared.ssrc_sn.remove(&ssrc_sn)
+            }
+        }
+    }
+
+    pub fn ssrc_sn_set(ssrc_sn: u16) -> bool {
+        GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_sn)
+    }
+
     //添加流与用户关系：
-    //当不存在流时:直接插入stream_id与新建的set<gmv_token>
-    //当存在流时:在流对应的set<gmv_token>中添加数据
-    pub fn stream_map_insert(stream_id: String, gmv_token: String) {
+//当不存在流时:直接插入stream_id与新建的set<gmv_token>
+//当存在流时:在流对应的set<gmv_token>中添加数据
+    pub fn stream_map_insert_token(stream_id: String, gmv_token: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(mut occ) => {
-                occ.get_mut().insert(gmv_token);
+                let (opt_sets, _) = occ.get_mut();
+                match opt_sets {
+                    None => {
+                        let mut sets = HashSet::new();
+                        sets.insert(gmv_token);
+                        *opt_sets = Some(sets);
+                        true
+                    }
+                    Some(sets) => {
+                        sets.insert(gmv_token);
+                        true
+                    }
+                }
             }
             Entry::Vacant(vac) => {
-                let mut set = HashSet::new();
-                set.insert(gmv_token);
-                vac.insert(set);
+                false
+            }
+        }
+    }
+
+    //当媒体流注册时，需插入建立关系,成功插入：true
+    pub fn stream_map_insert_node_name(stream_id: String, stream_node_name: String) -> bool {
+        match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
+            Entry::Occupied(_) => { false }
+            Entry::Vacant(vac) => {
+                vac.insert((None, stream_node_name));
+                true
             }
         }
     }
 
     //移除流与用户关系
-    //1.当gmv_token为None时-直接删除
-    //2.当gmv_token为Some时-删除set<gmv_token>中的gmv_token：如果set<gmv_token>中只有一条该gmv_token,则如第1项
-    pub fn stream_map_remove(stream_id: &String, gmv_token: Option<&String>) {
+//1.当gmv_token为None时-直接删除
+//2.当gmv_token为Some时-删除set<gmv_token>中的gmv_token：如果set<gmv_token>中只有一条该gmv_token,则如第1项
+    pub fn stream_map_remove(stream_id: &String, gmv_token: Option<&String>) -> bool {
         match gmv_token {
-            None => { GENERAL_CACHE.shared.stream_map.remove(stream_id); }
+            None => {
+                GENERAL_CACHE.shared.stream_map.remove(stream_id);
+                false
+            }
             Some(token) => {
                 match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
                     Entry::Occupied(mut occ) => {
-                        match occ.get().len() {
-                            0 => {
-                                occ.remove();
-                            }
-                            1 => {
-                                if occ.get().contains(token) {
+                        if let (Some(sets), _) = occ.get_mut() {
+                            match sets.len() {
+                                0 => {
                                     occ.remove();
                                 }
+                                1 => {
+                                    if sets.contains(token) {
+                                        occ.remove();
+                                    }
+                                }
+                                _ => {
+                                    sets.remove(token);
+                                }
                             }
-                            _ => {
-                                occ.get_mut().remove(token);
-                            }
+                            return true;
                         }
+                        false
                     }
-                    Entry::Vacant(vac) => {}
+                    Entry::Vacant(vac) => { false }
                 }
             }
         }
@@ -76,13 +122,19 @@ impl Cache {
 
     //确认流与用户是否建立了关系
     pub fn stream_map_contains_token(stream_id: &String, gmv_token: &String) -> bool {
-        GENERAL_CACHE.shared.stream_map
-            .get(stream_id)
-            .map(|sets| sets.contains(gmv_token))
-            .unwrap_or(false)
+        match GENERAL_CACHE.shared.stream_map.get(stream_id) {
+            None => { false }
+            Some(inner_ref) => {
+                if let (Some(sets), _) = inner_ref.value() {
+                    return sets.contains(gmv_token);
+                }
+                false
+            }
+        }
     }
+
     //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
-    //层层插入
+//层层插入
     pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, play_type: PlayType) -> bool {
         match GENERAL_CACHE.shared.device_map.entry(device_id) {
             Entry::Occupied(mut occ) => {
@@ -135,7 +187,7 @@ impl Cache {
     }
 
     //层层删除：若最终device_id对应的都无数据，则整体删除
-    //device_id: String, channel_id: String, ssrc: String
+//device_id: String, channel_id: String, ssrc: String
     pub fn device_map_remove(device_id: &String, opt_channel_ssrc: Option<(&String, Option<(PlayType, &String)>)>) {
         match opt_channel_ssrc {
             None => {
@@ -200,6 +252,31 @@ impl Cache {
                     }
                     //与device_id不匹配，不做处理
                     Entry::Vacant(m_vac) => {}
+                }
+            }
+        }
+    }
+
+    //返回stream_id,ssrc
+    pub fn device_map_get_live_info(device_id: &String, channel_id: &String) -> Option<(String, String)> {
+        match GENERAL_CACHE.shared.device_map.get(device_id) {
+            None => { None }
+            Some(m_map) => {
+                match m_map.get(channel_id) {
+                    None => { None }
+                    Some(s_map) => {
+                        match s_map.get(&PlayType::Live) {
+                            None => { None }
+                            Some(i_map) => {
+                                match i_map.iter().next() {
+                                    None => { None }
+                                    Some((stream_id, ssrc)) => {
+                                        Some((stream_id.to_string(), ssrc.to_string()))
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -279,6 +356,13 @@ impl Cache {
         }
     }
 
+    fn init_ssrc_sn() -> DashSet<u16> {
+        let mut sets = DashSet::new();
+        for i in 1..10000 {
+            sets.insert(i);
+        }
+        sets
+    }
 
     fn init() -> Self {
         let cache = Self {
@@ -291,6 +375,7 @@ impl Cache {
                         }
                     ),
                     background_task: Notify::new(),
+                    ssrc_sn: Self::init_ssrc_sn(),
                     stream_map: Default::default(),
                     device_map: Default::default(),
                 }
@@ -330,13 +415,15 @@ impl State {
     }
 }
 
+#[derive(Get)]
+#[get(ssrc_sn)]
 struct Shared {
     state: Mutex<State>,
     background_task: Notify,
-    //stream_id:set<gmv_token>
-    stream_map: DashMap<String, HashSet<String>>,
-    //device_id:HashMap<channel_id,HashMap<ssrc,(stream_id,playType)>>
-    // device_map: DashMap<String, HashMap<String, HashMap<String, (String, PlayType)>>>,
+    //存放原始可用的ssrc序号
+    ssrc_sn: DashSet<u16>,
+    //stream_id:(set<gmv_token>,stream_node_name)
+    stream_map: DashMap<String, (Option<HashSet<String>>, String)>,
     //device_id:HashMap<channel_id,HashMap<playType,BiMap<stream_id,ssrc>>
     device_map: DashMap<String, HashMap<String, HashMap<PlayType, BiMap<String, String>>>>,
 }
@@ -374,13 +461,17 @@ mod tests {
 
     #[test]
     fn test_stream_map() {
-        Cache::stream_map_insert("ID1".to_string(), "TOKEN1".to_string());
-        Cache::stream_map_insert("ID2".to_string(), "TOKEN2".to_string());
-        Cache::stream_map_insert("ID1".to_string(), "XXX".to_string());
+        Cache::stream_map_insert_node_name("ID1".to_string(), "NODE1".to_string());
+        Cache::stream_map_insert_node_name("ID2".to_string(), "NODE2".to_string());
+        Cache::stream_map_insert_node_name("ID3".to_string(), "NODE3".to_string());
+        Cache::stream_map_insert_node_name("ID4".to_string(), "NODE4".to_string());
+        Cache::stream_map_insert_token("ID1".to_string(), "TOKEN1".to_string());
+        Cache::stream_map_insert_token("ID2".to_string(), "TOKEN2".to_string());
+        Cache::stream_map_insert_token("ID1".to_string(), "XXX".to_string());
 
-        Cache::stream_map_insert("ID1".to_string(), "ABAB".to_string());
-        Cache::stream_map_insert("ID3".to_string(), "xx3".to_string());
-        Cache::stream_map_insert("ID4".to_string(), "xx4".to_string());
+        Cache::stream_map_insert_token("ID1".to_string(), "ABAB".to_string());
+        Cache::stream_map_insert_token("ID3".to_string(), "xx3".to_string());
+        Cache::stream_map_insert_token("ID4".to_string(), "xx4".to_string());
 
         Cache::stream_map_remove(&"ID4".to_string(), None);
         Cache::stream_map_remove(&"ID1".to_string(), Some(&"ABAB".to_string()));
@@ -391,21 +482,22 @@ mod tests {
         for en in GENERAL_CACHE.shared.stream_map.iter() {
             let key = en.key();
             println!("{key}");
-            let sets = en.value();
-            let mut iter = sets.iter();
-            if key[..].eq("ID1") {
-                assert_eq!(sets.len(), 2);
-                assert!(sets.contains("TOKEN1"));
-                assert!(sets.contains("XXX"));
-                println!("{:?}", iter.next());
-                println!("{:?}", iter.next());
+            if let (Some(sets), _) = en.value() {
+                let mut iter = sets.iter();
+                if key[..].eq("ID1") {
+                    assert_eq!(sets.len(), 2);
+                    assert!(sets.contains("TOKEN1"));
+                    assert!(sets.contains("XXX"));
+                    println!("{:?}", iter.next());
+                    println!("{:?}", iter.next());
+                }
+                if key[..].eq("ID2") {
+                    assert_eq!(sets.len(), 1);
+                    assert!(sets.contains("TOKEN2"));
+                    println!("{:?}", iter.next());
+                }
+                size += 1;
             }
-            if key[..].eq("ID2") {
-                assert_eq!(sets.len(), 1);
-                assert!(sets.contains("TOKEN2"));
-                println!("{:?}", iter.next());
-            }
-            size += 1;
         }
         assert_eq!(GENERAL_CACHE.shared.stream_map.len(), 2);
         assert!(Cache::stream_map_contains_token(&"ID1".to_string(), &"TOKEN1".to_string()), "not contains {} : {}", "ID1", "TOKEN1");
@@ -423,5 +515,15 @@ mod tests {
         Cache::device_map_remove(&"did1".to_string(), Some((&"cid1".to_string(), Some((PlayType::Down, &"ssrc1".to_string())))));
         let len2 = GENERAL_CACHE.shared.device_map.len();
         assert_eq!(len2, 0);
+    }
+
+    #[test]
+    fn test_ssrc_sn() {
+        let ssrc_sn = Cache::ssrc_sn_get().unwrap();
+        println!("ssrc_sn = {ssrc_sn}");
+        assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9998);
+        assert_eq!(GENERAL_CACHE.shared.ssrc_sn.contains(&ssrc_sn), false);
+        Cache::ssrc_sn_set(ssrc_sn);
+        assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9999);
     }
 }

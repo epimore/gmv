@@ -4,6 +4,7 @@ use common::err::GlobalResult;
 use poem_openapi::types::{ParseFromJSON, ToJSON, Type};
 use poem_openapi::{self, Object};
 use serde::{Deserialize, Serialize};
+use constructor::Get;
 
 pub enum StreamMode {
     Udp,
@@ -48,7 +49,7 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
 
 
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize, Object, Serialize)]
+#[derive(Debug, Deserialize, Object, Serialize, Get)]
 pub struct PlayLiveModel {
     #[oai(validator(min_length = "20", max_length = "20"))] deviceId: String,
     #[oai(validator(min_length = "20", max_length = "20"))] channelId: String,
