@@ -109,90 +109,89 @@ pub async fn start_record(ssrc: u32, file_name: &String) {}
 pub async fn stop_record(ssrc: u32, clean: bool) {}
 
 //查询流媒体数据状态,hls/flv/record:ResMsg<Vec<StreamState>>
-pub async fn get_state(ssrc: Option<u32>, stream_id: Option<String>) { unimplemented!() }
+pub fn get_state(opt_stream_id: Option<String>) -> GlobalResult<Response<Body>> {
+    let vec = cache::get_stream_state(opt_stream_id);
+    let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
+    let json_data = ResMsg::<Vec<StreamState>>::build_success_data(vec).to_json()?;
+    let res = response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+    Ok(res)
+}
 
 //开启播放:play_type=flv/hls
-pub async fn start_play(map: HashMap<String, String>, token: String, remote_addr: SocketAddr, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
-    return match (get_play_type(&map), get_stream_id(&map)) {
-        (Ok(play_type), Ok(stream_id)) => {
-            match cache::get_base_stream_info_by_stream_id(&stream_id) {
-                None => { res_404() }
-                Some((bsi, flv_tokens, hls_tokens)) => {
-                    let ssrc = *(bsi.get_rtp_info().get_ssrc());
-                    let info = StreamPlayInfo::new(bsi, remote_addr, token.clone(), play_type.clone(), flv_tokens, hls_tokens);
-                    let (tx, rx) = oneshot::channel();
-                    let event_tx = cache::get_event_tx();
-                    let _ = event_tx.clone().send((Event::onPlay(info), Some(tx))).await.hand_err(|msg| error!("{msg}"));
-                    match rx.await {
-                        Ok(res) => {
-                            let mut res_builder = Response::builder()
-                                .status(StatusCode::OK)
-                                .header("Access-Control-Allow-Origin", "*")
-                                .header("Transfer-Encoding", "chunked")
-                                .header("Connection", "keep-alive")
-                                .header("Cache-Control", "no-cache");//Cache-Control: 根据需求设置，一般可以设为 no-cache 或者 public, max-age=秒数。
-                            if let EventRes::onPlay(Some(true)) = res {
-                                match &play_type[..] {
-                                    "flv" => {
-                                        match cache::get_flv_rx(&ssrc) {
-                                            None => { res_404() }
-                                            Some(rx) => {
-                                                let flv_res = res_builder.header("Content-Type", "video/x-flv")
-                                                    .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_err(|msg| error!("{msg}"))?;
-                                                //插入用户
-                                                cache::update_token(&stream_id, &play_type, token.clone(), true);
-                                                //监听连接：当断开连接时,更新正在查看的用户、回调通知
-                                                tokio::spawn(async move {
-                                                    client_connection_cancel.cancelled().await;
-                                                    cache::update_token(&stream_id, &play_type, token.clone(), false);
-                                                    if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
-                                                        let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
-                                                        let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
-                                                    }
-                                                });
-                                                Ok(flv_res)
+pub async fn start_play(play_type: String, stream_id: String, token: String, remote_addr: SocketAddr, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
+    match cache::get_base_stream_info_by_stream_id(&stream_id) {
+        None => { res_404() }
+        Some((bsi, flv_tokens, hls_tokens)) => {
+            let ssrc = *(bsi.get_rtp_info().get_ssrc());
+            let info = StreamPlayInfo::new(bsi, remote_addr, token.clone(), play_type.clone(), flv_tokens, hls_tokens);
+            let (tx, rx) = oneshot::channel();
+            let event_tx = cache::get_event_tx();
+            let _ = event_tx.clone().send((Event::onPlay(info), Some(tx))).await.hand_err(|msg| error!("{msg}"));
+            match rx.await {
+                Ok(res) => {
+                    let mut res_builder = Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Transfer-Encoding", "chunked")
+                        .header("Connection", "keep-alive")
+                        .header("Cache-Control", "no-cache");//Cache-Control: 根据需求设置，一般可以设为 no-cache 或者 public, max-age=秒数。
+                    if let EventRes::onPlay(Some(true)) = res {
+                        match &play_type[..] {
+                            "flv" => {
+                                match cache::get_flv_rx(&ssrc) {
+                                    None => { res_404() }
+                                    Some(rx) => {
+                                        let flv_res = res_builder.header("Content-Type", "video/x-flv")
+                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_err(|msg| error!("{msg}"))?;
+                                        //插入用户
+                                        cache::update_token(&stream_id, &play_type, token.clone(), true);
+                                        //监听连接：当断开连接时,更新正在查看的用户、回调通知
+                                        tokio::spawn(async move {
+                                            client_connection_cancel.cancelled().await;
+                                            cache::update_token(&stream_id, &play_type, token.clone(), false);
+                                            if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
+                                                let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
+                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
                                             }
-                                        }
+                                        });
+                                        Ok(flv_res)
                                     }
-                                    "hls" => {
-                                        match cache::get_hls_rx(&ssrc) {
-                                            None => { res_404() }
-                                            Some(rx) => {
-                                                //Content-Type：返回的数据类型;HLS M3U8,通常是 application/vnd.apple.mpegurl 或 application/x-mpegURL。
-                                                let hls_res = res_builder.header("Content-Type", "application/x-mpegURL")
-                                                    .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_err(|msg| error!("{msg}"))?;
-                                                cache::update_token(&stream_id, &play_type, token.clone(), true);
-                                                //监听连接：当断开连接时,更新正在查看的用户、回调通知
-                                                tokio::spawn(async move {
-                                                    client_connection_cancel.cancelled().await;
-                                                    cache::update_token(&stream_id, &play_type, token.clone(), false);
-                                                    if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
-                                                        let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
-                                                        let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
-                                                    }
-                                                });
-                                                Ok(hls_res)
-                                            }
-                                        }
-                                    }
-                                    _ => { res_422() }
                                 }
-                            } else {
-                                res_401()
                             }
+                            "hls" => {
+                                match cache::get_hls_rx(&ssrc) {
+                                    None => { res_404() }
+                                    Some(rx) => {
+                                        //Content-Type：返回的数据类型;HLS M3U8,通常是 application/vnd.apple.mpegurl 或 application/x-mpegURL。
+                                        let hls_res = res_builder.header("Content-Type", "application/x-mpegURL")
+                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_err(|msg| error!("{msg}"))?;
+                                        cache::update_token(&stream_id, &play_type, token.clone(), true);
+                                        //监听连接：当断开连接时,更新正在查看的用户、回调通知
+                                        tokio::spawn(async move {
+                                            client_connection_cancel.cancelled().await;
+                                            cache::update_token(&stream_id, &play_type, token.clone(), false);
+                                            if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
+                                                let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
+                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
+                                            }
+                                        });
+                                        Ok(hls_res)
+                                    }
+                                }
+                            }
+                            _ => { res_422() }
                         }
-                        Err(_) => {
-                            //对端关闭,表示流已释放
-                            res_404()
-                        }
+                    } else {
+                        res_401()
                     }
+                }
+                Err(_) => {
+                    //对端关闭,表示流已释放
+                    res_404()
                 }
             }
         }
-        _ => {
-            res_422()
-        }
-    };
+    }
 }
 
 //关闭播放，stp:0-all,1-flv,2-hls

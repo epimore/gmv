@@ -14,6 +14,7 @@ mod rtcp_handler;
 
 pub async fn run() -> GlobalResult<()> {
     let conf = cache::get_server_conf();
+    let node_name = conf.get_name();
     let rtp_port = *(conf.get_rtp_port());
     let rtcp_port = *(conf.get_rtcp_port());
     let http_port = *(conf.get_http_port());
@@ -28,5 +29,5 @@ pub async fn run() -> GlobalResult<()> {
             rt.block_on(rtp_handler::run(rtp_port));
         }).expect("RTP:IO 运行时创建异常；err ={}");
     });
-    http_handler::run(http_port, tx).await
+    http_handler::run(node_name,http_port, tx).await
 }

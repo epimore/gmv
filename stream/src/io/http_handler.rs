@@ -21,7 +21,16 @@ use crate::biz;
 use crate::biz::{api, call};
 use crate::general::mode::{INDEX, ResMsg, ServerConf};
 
+const DROP_SSRC: &str = "/drop/ssrc";
+const LISTEN_SSRC: &str = "/listen/ssrc";
+const STOP_RECORD: &str = "/stop/record";
+const START_RECORD: &str = "/start/record";
+const PLAY: &str = "/play/";
+const STOP_PLAY: &str = "/stop/play";
+const QUERY_STATE: &str = "/query/state";
+
 async fn handle(
+    node_name: &String,
     opt_addr: Option<SocketAddr>,
     req: Request<Body>,
     ssrc_tx: Sender<u32>,
@@ -31,7 +40,7 @@ async fn handle(
 
     match get_token(&req) {
         Ok(token) => {
-            let response = biz(remote_addr, ssrc_tx, token, req, client_connection_cancel).await?;
+            let response = biz(node_name, remote_addr, ssrc_tx, token, req, client_connection_cancel).await?;
             Ok(response)
         }
         Err(_) => {
@@ -54,41 +63,56 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
         .collect::<HashMap<String, String>>();
     Ok(map)
 }
-async fn biz(remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
+
+async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
-        rest => {
+        (&Method::GET, LISTEN_SSRC) => {
             let param_map_res = get_param_map(&req);
             if param_map_res.is_err() {
                 return api::res_422();
             }
             let param_map = param_map_res.unwrap();
-            match rest {
-                (&Method::GET, "/listen/ssrc") => {
-                    api::listen_ssrc(param_map, ssrc_tx).await
+            api::listen_ssrc(param_map, ssrc_tx).await
+        }
+        (&Method::GET, DROP_SSRC) => {
+            unimplemented!()
+        }
+        (&Method::GET, START_RECORD) => {
+            unimplemented!()
+        }
+        (&Method::GET, STOP_RECORD) => {
+            unimplemented!()
+        }
+        (&Method::GET, STOP_PLAY) => {
+            unimplemented!()
+        }
+        (&Method::GET, QUERY_STATE) => {
+            match req.uri().query() {
+                None => { api::get_state(None) }
+                Some(param) => {
+                    let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
+                    api::get_state(map.get("stream_id").map(|stream_id_ref| stream_id_ref.clone()))
                 }
-                (&Method::GET, "/drop/ssrc") => {
-                    unimplemented!()
+            }
+        }
+        (method, uri) => {
+            if method.eq(&Method::GET) {
+                if let Some(index) = uri.find('.') {
+                    let start_play = &format!("/{node_name}{PLAY}");
+                    let p_len = start_play.len();
+                    //stream_id最小20位
+                    if index > p_len + 20 {
+                        let play_type = &uri[index + 1..];
+                        if play_type.eq("flv") || play_type.eq("m3u8") {
+                            let stream_id = (&uri[p_len..index]).to_string();
+                            return api::start_play(stream_id, play_type.to_string(), token, remote_addr, client_connection_cancel).await;
+                        }
+                    }
                 }
-                (&Method::GET, "/start/record") => {
-                    unimplemented!()
-                }
-                (&Method::GET, "/stop/record") => {
-                    unimplemented!()
-                }
-                (&Method::GET, "/start/play") => {
-                    api::start_play(param_map, token, remote_addr, client_connection_cancel).await
-                }
-                (&Method::GET, "/stop/play") => {
-                    unimplemented!()
-                }
-                (&Method::GET, "/query/state") => {
-                    unimplemented!()
-                }
-                (_,uri) => {
-                    println!("uri = {}",uri);
-                    Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap())
-                },
+                Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap())
+            } else {
+                Ok(Response::builder().status(StatusCode::METHOD_NOT_ALLOWED).body(Body::from("GMV::METHOD_NOT_ALLOWED")).unwrap())
             }
         }
     }
@@ -107,7 +131,7 @@ impl Drop for ClientConnection {
     }
 }
 
-pub async fn run(port: u16, tx: Sender<u32>) -> GlobalResult<()> {
+pub async fn run(node_name: &'static String, port: u16, tx: Sender<u32>) -> GlobalResult<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_err(|msg| error!("{msg}")).unwrap();
 
     let make_service = make_service_fn(|conn: &ClientConnection| {
@@ -117,7 +141,7 @@ pub async fn run(port: u16, tx: Sender<u32>) -> GlobalResult<()> {
 
         async move {
             Ok::<_, GlobalError>(service_fn(move |req| {
-                handle(opt_addr, req, tx_cl.clone(), client_connection_cancel.clone())
+                handle(node_name, opt_addr, req, tx_cl.clone(), client_connection_cancel.clone())
             }))
         }
     });

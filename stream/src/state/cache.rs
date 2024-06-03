@@ -202,6 +202,49 @@ pub fn remove_by_stream_id(stream_id: &String) {
     }
 }
 
+pub fn get_stream_state(opt_stream_id: Option<String>) -> Vec<StreamState> {
+    let mut vec = Vec::new();
+    let guard = SESSION.shared.state.read();
+    let server_name = SESSION.shared.server_conf.get_name().to_string();
+    match opt_stream_id {
+        None => {
+            //ssrc,(on,ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol))
+            for (ssrc, (_, _, stream_id, _, _, report_timestamp, opt_addr_protocol)) in &guard.sessions {
+                let mut origin_addr = None;
+                let mut protocol = None;
+                if let Some((addr, proto)) = opt_addr_protocol {
+                    origin_addr = Some(addr.clone());
+                    protocol = Some(proto.clone());
+                }
+                let rtp_info = RtpInfo::new(*ssrc, protocol, origin_addr, server_name.clone());
+                let base_stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *report_timestamp);
+                //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
+                if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = guard.inner.get(stream_id) {
+                    let state = StreamState::new(base_stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name.clone());
+                    vec.push(state);
+                }
+            }
+        }
+        Some(stream_id) => {
+            if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = &guard.inner.get(&stream_id) {
+                if let Some((_, _, stream_id, _, _, report_timestamp, opt_addr_protocol)) = &guard.sessions.get(ssrc) {
+                    let mut origin_addr = None;
+                    let mut protocol = None;
+                    if let Some((addr, proto)) = opt_addr_protocol {
+                        origin_addr = Some(addr.clone());
+                        protocol = Some(proto.clone());
+                    }
+                    let rtp_info = RtpInfo::new(*ssrc, protocol, origin_addr, server_name.clone());
+                    let base_stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *report_timestamp);
+                    let state = StreamState::new(base_stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name.clone());
+                    vec.push(state);
+                }
+            }
+        }
+    }
+    vec
+}
+
 
 struct Session {
     shared: Arc<Shared>,
@@ -237,7 +280,7 @@ impl Session {
             let _ = rt.block_on(Event::event_loop(rx));
         });
         println!("Server node name = {}\n\
-        Listen to http api addr = 0.0.0.0:{}\n\
+        Listen to http web addr = 0.0.0.0:{}\n\
         Listen to rtp over tcp and udp,stream addr = 0.0.0.0:{}\n\
         Listen to rtcp over tcp and udp,message addr = 0.0.0.0:{}\n\
         Hook to http addr = {}\n\

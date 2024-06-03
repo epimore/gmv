@@ -58,6 +58,10 @@ impl<T: Serialize> ResMsg<T> {
         let json_str = serde_json::to_string(self).hand_err(|msg| error!("{msg}"))?;
         Ok(json_str)
     }
+
+    pub fn build_success_data(data: T) -> Self {
+        Self { code: 0, msg: "success".to_string(), data: Some(data) }
+    }
 }
 
 #[derive(Debug, Get, Clone)]
