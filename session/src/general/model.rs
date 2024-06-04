@@ -5,6 +5,7 @@ use poem_openapi::types::{ParseFromJSON, ToJSON, Type};
 use poem_openapi::{self, Object};
 use serde::{Deserialize, Serialize};
 use constructor::Get;
+use crate::general;
 
 pub enum StreamMode {
     Udp,
@@ -43,7 +44,7 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
         Self { code: 200, msg: Some("success".to_string()), data: None }
     }
     pub fn build_failure() -> Self {
-        Self { code: 500, msg: Some("执行失败".to_string()), data: None }
+        Self { code: 500, msg: Some("操作失败".to_string()), data: None }
     }
 }
 
@@ -59,9 +60,35 @@ pub struct PlayLiveModel {
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Object, Serialize)]
 pub struct StreamInfo {
-    pub streamId: String,
-    pub flv: String,
-    pub m3u8: String,
+    streamId: String,
+    flv: String,
+    m3u8: String,
+}
+
+impl StreamInfo {
+    pub fn build(streamId: String, node_name: String) -> Option<Self> {
+        let stream_conf = general::StreamConf::get_session_conf_by_cache();
+        match stream_conf.get_proxy_addr() {
+            None => {
+                if let Some(node_stream) = stream_conf.get_node_map().get(&node_name) {
+                    Some(Self {
+                        flv: format!("http://{}:{}/{node_name}/{streamId}.flv", node_stream.get_pub_ip(), node_stream.get_pub_port()),
+                        m3u8: format!("http://{}:{}/{node_name}/{streamId}.m3u8", node_stream.get_pub_ip(), node_stream.get_pub_port()),
+                        streamId,
+                    })
+                } else {
+                    None
+                }
+            }
+            Some(addr) => {
+                Some(Self {
+                    flv: format!("{addr}/{node_name}/{streamId}.flv"),
+                    m3u8: format!("{addr}/{node_name}/{streamId}.m3u8"),
+                    streamId,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]

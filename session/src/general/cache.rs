@@ -23,10 +23,8 @@ use common::tokio::sync::{Mutex, Notify};
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
-use constructor::Get;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
-
 
 pub struct Cache {
     shared: Arc<Shared>,
@@ -47,9 +45,30 @@ impl Cache {
         GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_sn)
     }
 
+    pub fn stream_map_order_node() -> BTreeSet<(u16, String)> {
+        let mut map = HashMap::<String, u16>::new();
+        while let Some(item) = GENERAL_CACHE.shared.stream_map.iter().next() {
+            let (_, node_name) = item.value();
+            match map.entry(node_name.clone()) {
+                Occupied(mut occ) => {
+                    let count = occ.get_mut();
+                    *count += 1;
+                }
+                Vacant(vac) => {
+                    vac.insert(1);
+                }
+            }
+        }
+        let mut set = BTreeSet::new();
+        for (k, v) in map {
+            set.insert((v, k));
+        }
+        set
+    }
+
     //添加流与用户关系：
-//当不存在流时:直接插入stream_id与新建的set<gmv_token>
-//当存在流时:在流对应的set<gmv_token>中添加数据
+    //当不存在流时:直接插入stream_id与新建的set<gmv_token>
+    //当存在流时:在流对应的set<gmv_token>中添加数据
     pub fn stream_map_insert_token(stream_id: String, gmv_token: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(mut occ) => {
@@ -82,6 +101,14 @@ impl Cache {
                 true
             }
         }
+    }
+
+    pub fn stream_map_query_node_name(stream_id: &String) -> Option<String> {
+        GENERAL_CACHE.shared.stream_map.get(stream_id)
+            .map(|item| {
+                let (_, node_name) = item.value();
+                node_name.clone()
+            })
     }
 
     //移除流与用户关系
@@ -310,13 +337,23 @@ impl Cache {
         }
     }
 
-    async fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
+    pub async fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
         let mut guard = GENERAL_CACHE.shared.state.lock().await;
         match expire {
             None => { guard.entities.insert(key, (data, None, call_tx)); }
             Some(ins) => {
                 guard.entities.insert(key.clone(), (data, Some(ins), call_tx));
                 guard.expirations.insert((ins, key));
+            }
+        }
+    }
+
+    pub async fn state_get(key: &str) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
+        let guard = GENERAL_CACHE.shared.state.lock().await;
+        match guard.entities.get(key) {
+            None => { None }
+            Some((val, _, opt_tx)) => {
+                Some((val.clone(), opt_tx.clone()))
             }
         }
     }
@@ -357,7 +394,7 @@ impl Cache {
     }
 
     fn init_ssrc_sn() -> DashSet<u16> {
-        let mut sets = DashSet::new();
+        let sets = DashSet::new();
         for i in 1..10000 {
             sets.insert(i);
         }
@@ -415,8 +452,6 @@ impl State {
     }
 }
 
-#[derive(Get)]
-#[get(ssrc_sn)]
 struct Shared {
     state: Mutex<State>,
     background_task: Notify,

@@ -1,9 +1,10 @@
-
+use log::info;
 use poem::FromRequest;
 use poem_openapi::OpenApi;
 use poem_openapi::param::Header;
 use poem_openapi::payload::{Form, Json};
 use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
+use crate::service::{BaseStreamInfo, handler};
 
 pub struct RestApi;
 
@@ -12,9 +13,22 @@ impl RestApi {
     #[allow(non_snake_case)]
     #[oai(path = "/play/live/stream", method = "post")]
     /// 点播监控实时画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
-    async fn play_live(&self, live: Json<PlayLiveModel>,#[oai(name = "gmv-token")] token: Header<String>) -> Json<ResultMessageData<Option<StreamInfo>>> {
-        println!("header = {:?}",token.0);
-        println!("body = {:?}",live);
+    async fn play_live(&self, live: Json<PlayLiveModel>, #[oai(name = "gmv-token")] token: Header<String>) -> Json<ResultMessageData<Option<StreamInfo>>> {
+        let header = token.0;
+        let live_model = live.0;
+        info!("header = {:?},body = {:?}", &header,&live_model);
+        match handler::play_live(live_model, header).await {
+            //todo  返回错误码及错误信息
+            None => { Json(ResultMessageData::build_failure()) }
+            Some(data) => { Json(ResultMessageData::build_success(Some(data))) }
+        }
+    }
+
+    #[oai(path = "/stream/in", method = "post")]
+    async fn stream_in(&self, base_stream_info: Json<BaseStreamInfo>) -> Json<ResultMessageData<Option<bool>>> {
+        let info = base_stream_info.0;
+        info!("base_stream_info = {:?}", &info);
+        handler::stream_in(info).await;
         Json(ResultMessageData::build_success_none())
     }
 

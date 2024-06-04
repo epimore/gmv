@@ -1,7 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::ops::Index;
-
 use common::yaml_rust::Yaml;
 use constructor::Get;
 
@@ -36,13 +35,15 @@ impl SessionConf {
     }
 }
 
+#[derive(Get)]
 pub struct StreamConf {
     proxy_addr: Option<String>,
-    nodes: Vec<StreamNode>,
+    //node_name:StreamNode
+    node_map: HashMap<String, StreamNode>,
 }
 
+#[derive(Get)]
 pub struct StreamNode {
-    name: String,
     local_ip: Ipv4Addr,
     local_port: u16,
     pub_ip: Ipv4Addr,
@@ -62,11 +63,10 @@ impl StreamConf {
         }
         let media = &cfg["server"]["stream"]["node"];
         let arr = media.as_vec().expect("server stream node config is invalid");
-        let mut ns = HashSet::new();
-        let mut nodes = Vec::new();
+        let mut node_map = HashMap::new();
         for (index, val) in arr.iter().enumerate() {
             let name = val.index("name").as_str().expect(&format!("node-{index}: 获取name失败")).to_string();
-            if !ns.insert(name.clone()) {
+            if node_map.contains_key(&name) {
                 panic!("node-{index}:name重复，建议使用s1,s2,s3等连续编号");
             }
             let pub_ip = val.index("pub_ip").as_str().expect(&format!("node-{index}:公网ip错误")).parse::<Ipv4Addr>().expect("server session pub_ip IPV4 is invalid");
@@ -74,15 +74,14 @@ impl StreamConf {
             let local_ip = val.index("pub_ip").as_str().expect(&format!("node-{index}:局域网ip错误")).parse::<Ipv4Addr>().expect("server session local_ip IPV4 is invalid");
             let local_port = val.index("pub_port").as_i64().expect(&format!("node-{index}:局域网端口错误")) as u16;
             let node = StreamNode {
-                name,
                 local_ip,
                 local_port,
                 pub_ip,
                 pub_port,
             };
-            nodes.push(node);
+            node_map.insert(name, node);
         }
-        Self { proxy_addr, nodes }
+        Self { proxy_addr, node_map }
     }
 
     pub fn get_session_conf_by_cache() -> Self {
