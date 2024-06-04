@@ -1,4 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
+use common::err::GlobalResult;
+use crate::storage::entity::GmvOauth;
 
 const D_DIC: [char; 10] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 //按键盘从上至下，从左到右形成小写、大写字母字典表
@@ -98,6 +100,11 @@ pub fn de_stream_id(stream_id: &str) -> (String, String, String) {
             format!("{}", u32::from_str_radix(chunk.iter().collect::<String>().as_str(), 2).expect("Invalid binary group"))
         }).collect::<String>();
     (ori_str[0..20].to_string(), ori_str[20..40].to_string(), ori_str[40..].to_string())
+}
+
+pub fn build_ssrc(device_id:&String,channel_id:&String,num_ssrc:u16,live:bool)->GlobalResult<String>{
+    let result = GmvOauth::read_gmv_oauth_by_device_id(device_id)?;
+    unimplemented!()
 }
 
 #[test]

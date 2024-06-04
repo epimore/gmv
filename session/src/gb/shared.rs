@@ -3,7 +3,7 @@
 /// TCP：连接断开或三次心跳超时则移除会话
 pub mod rw {
     use std::collections::{BTreeSet, HashMap};
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
@@ -18,7 +18,7 @@ pub mod rw {
     use common::once_cell::sync::Lazy;
     use common::tokio;
     use common::tokio::{time};
-    use common::tokio::sync::{mpsc, Notify};
+    use common::tokio::sync::{mpsc, Mutex, MutexGuard, Notify};
     use common::tokio::sync::mpsc::{Receiver, Sender};
     use common::tokio::time::Instant;
     use constructor::New;
@@ -27,13 +27,6 @@ pub mod rw {
     use crate::storage::entity::GmvDevice;
 
     static RW_SESSION: Lazy<RWSession> = Lazy::new(|| RWSession::init());
-
-    fn get_rw_session_guard() -> GlobalResult<MutexGuard<'static, State>> {
-        let guard = RW_SESSION.shared.state.lock()
-            .map_err(|err| SysErr(anyhow!(err.to_string())))
-            .hand_err(|msg| error!("{msg}"))?;
-        Ok(guard)
-    }
 
     pub struct RWSession {
         shared: Arc<Shared>,
@@ -80,10 +73,10 @@ pub mod rw {
             }
         }
 
-        pub fn insert(device_id: &String, tx: Sender<Zip>, heartbeat: u8, bill: &Bill) -> GlobalResult<()> {
+        pub async fn insert(device_id: &String, tx: Sender<Zip>, heartbeat: u8, bill: &Bill) {
             let expires = Duration::from_secs(heartbeat as u64 * 3);
             let when = Instant::now() + expires;
-            let mut state = get_rw_session_guard()?;
+            let mut state = RW_SESSION.shared.state.lock().await;
             let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
             state.expirations.insert((when, device_id.clone()));
             //当插入时，已有该设备映射时，需删除老数据，插入新数据
@@ -96,25 +89,23 @@ pub mod rw {
             if notify {
                 RW_SESSION.shared.background_task.notify_one();
             }
-            Ok(())
         }
 
         //用于收到网络出口对端连接断开时，清理rw_session数据
-        pub fn clean_rw_session_by_bill(bill: &Bill) -> GlobalResult<()> {
-            let mut guard = get_rw_session_guard()?;
+        pub async fn clean_rw_session_by_bill(bill: &Bill) {
+            let mut guard = RW_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             state.bill_map.remove(bill).map(|device_id| {
                 state.sessions.remove(&device_id).map(|(_tx, when, _expires, _bill)| {
                     state.expirations.remove(&(when, device_id));
                 });
             });
-            Ok(())
         }
 
         //用于清理rw_session数据及端口TCP网络连接
         //todo 禁用设备时需调用
-        pub async fn clean_rw_session_and_net(device_id: &String) -> GlobalResult<()> {
-            let mut guard = get_rw_session_guard()?;
+        pub async fn clean_rw_session_and_net(device_id: &String) {
+            let mut guard = RW_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             if let Some((tx, when, _expires, bill)) = state.sessions.remove(device_id) {
                 state.expirations.remove(&(when, device_id.clone()));
@@ -124,11 +115,10 @@ pub mod rw {
                     let _ = tx.send(Zip::build_event(Event::new(bill, 0))).await.hand_err(|msg| warn!("{msg}"));
                 }
             }
-            Ok(())
         }
 
-        pub fn heart(device_id: &String, new_bill: Bill) -> GlobalResult<()> {
-            let mut guard = get_rw_session_guard()?;
+        pub async fn heart(device_id: &String, new_bill: Bill) {
+            let mut guard = RW_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             state.sessions.get_mut(device_id).map(|(_tx, when, expires, bill)| {
                 //UDP的无连接状态，需根据心跳实时刷新其网络三元组
@@ -142,30 +132,29 @@ pub mod rw {
                 *when = ct;
                 state.expirations.insert((ct, device_id.clone()));
             });
-            Ok(())
         }
 
-        pub fn get_bill_by_device_id(device_id: &String) -> GlobalResult<Option<Bill>> {
-            let guard = get_rw_session_guard()?;
+        pub async fn get_bill_by_device_id(device_id: &String) -> Option<Bill> {
+            let guard = RW_SESSION.shared.state.lock().await;
             let option_bill = guard.sessions.get(device_id).map(|(_tx, _when, _expires, bill)| bill.clone());
-            Ok(option_bill)
+            option_bill
         }
 
-        pub fn get_expires_by_device_id(device_id: &String) -> GlobalResult<Option<Duration>> {
-            let guard = get_rw_session_guard()?;
+        pub async fn get_expires_by_device_id(device_id: &String) -> Option<Duration> {
+            let guard = RW_SESSION.shared.state.lock().await;
             let option_expires = guard.sessions.get(device_id).map(|(_tx, _when, expires, _bill)| *expires);
-            Ok(option_expires)
+            option_expires
         }
 
-        fn get_output_sender_by_device_id(device_id: &String) -> GlobalResult<Option<(Sender<Zip>, Bill)>> {
-            let guard = get_rw_session_guard()?;
+        async fn get_output_sender_by_device_id(device_id: &String) -> Option<(Sender<Zip>, Bill)> {
+            let guard = RW_SESSION.shared.state.lock().await;
             let opt = guard.sessions.get(device_id).map(|(sender, _, _, bill)| (sender.clone(), bill.clone()));
-            Ok(opt)
+            opt
         }
 
-        pub fn check_session_by_device_id(device_id: &String) -> GlobalResult<bool> {
-            let guard = get_rw_session_guard()?;
-            Ok(guard.sessions.contains_key(device_id))
+        pub async fn check_session_by_device_id(device_id: &String) -> bool {
+            let guard = RW_SESSION.shared.state.lock().await;
+            guard.sessions.contains_key(device_id)
         }
     }
 
@@ -179,16 +168,16 @@ pub mod rw {
     impl RequestOutput {
         pub async fn do_send(self) -> GlobalResult<()> {
             let device_id = self.ident.get_device_id();
-            let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id)?.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
+            let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
             let when = Instant::now() + Duration::from_secs(EXPIRES);
-            EventSession::listen_event(&self.ident, when, Container::build_res(self.event_sender))?;
+            EventSession::listen_event(&self.ident, when, Container::build_res(self.event_sender)).await?;
             let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_err(|msg| error!("{msg}"));
             Ok(())
         }
 
         pub(super) async fn _do_send(self) -> GlobalResult<()> {
             let device_id = self.ident.get_device_id();
-            let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id)?.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
+            let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
             let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_err(|msg| error!("{msg}"));
             Ok(())
         }
@@ -203,7 +192,7 @@ pub mod rw {
     impl Shared {
         //清理过期state,并返回下一个过期瞬间刻度
         async fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
-            let mut guard = get_rw_session_guard()?;
+            let mut guard = RW_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             let now = Instant::now();
             while let Some((when, device_id)) = state.expirations.iter().next() {
@@ -249,7 +238,7 @@ pub mod rw {
 pub mod event {
     use std::collections::{BTreeSet, HashMap};
     use std::collections::hash_map::Entry;
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::Arc;
     use std::thread;
 
     use rsip::{Response, SipMessage};
@@ -260,7 +249,7 @@ pub mod event {
     use common::log::{error, info, warn};
     use common::once_cell::sync::Lazy;
     use common::tokio;
-    use common::tokio::sync::{Notify};
+    use common::tokio::sync::{Mutex, MutexGuard, Notify};
     use common::tokio::sync::mpsc::Sender;
     use common::tokio::time;
     use common::tokio::time::Instant;
@@ -270,13 +259,6 @@ pub mod event {
     /// 会话超时 8s
     pub const EXPIRES: u64 = 8;
     static EVENT_SESSION: Lazy<EventSession> = Lazy::new(|| EventSession::init());
-
-    fn get_event_session_guard() -> GlobalResult<MutexGuard<'static, State>> {
-        let guard = EVENT_SESSION.shared.state.lock()
-            .map_err(|err| SysErr(anyhow!(err.to_string())))
-            .hand_err(|msg| error!("{msg}"))?;
-        Ok(guard)
-    }
 
     pub struct EventSession {
         shared: Arc<Shared>,
@@ -314,8 +296,8 @@ pub mod event {
         }
 
         //即时事件监听，延迟事件监听
-        pub(crate) fn listen_event(ident: &Ident, when: Instant, container: Container) -> GlobalResult<()> {
-            let mut guard = get_event_session_guard()?;
+        pub(crate) async fn listen_event(ident: &Ident, when: Instant, container: Container)->GlobalResult<()> {
+            let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             match state.device_session.entry(ident.call_id.clone()) {
                 Entry::Occupied(_o) => { Err(SysErr(anyhow!("{:?},事件重复-添加监听无效",ident))) }
@@ -329,18 +311,17 @@ pub mod event {
             }
         }
 
-        pub fn remove_event(ident: &Ident) -> GlobalResult<()> {
-            let mut guard = get_event_session_guard()?;
+        pub async fn remove_event(ident: &Ident) {
+            let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             state.ident_map.remove(ident).map(|(when, _container)| {
                 state.expirations.remove(&(when, ident.clone()));
                 state.device_session.remove(ident.get_device_id())
             });
-            Ok(())
         }
 
-        pub async fn handle_response(call_id: String, cs_eq: String, res: Response) -> GlobalResult<()> {
-            let mut guard = get_event_session_guard()?;
+        pub async fn handle_response(call_id: String, cs_eq: String, res: Response) ->GlobalResult<()>{
+            let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             match state.device_session.get(&call_id) {
                 None => { warn!("超时或未知响应:call_id={}",call_id); }
@@ -397,7 +378,7 @@ pub mod event {
     impl Shared {
         //清理过期state,并返回下一个过期瞬间刻度
         async fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
-            let mut guard = get_event_session_guard()?;
+            let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             let now = Instant::now();
             while let Some((when, expire_ident)) = state.expirations.iter().next() {

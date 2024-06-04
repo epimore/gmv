@@ -4,10 +4,11 @@ use log::error;
 use mysql::serde_json;
 
 use common::bytes::Bytes;
-use common::err::{GlobalResult, TransError};
+use common::err::{GlobalError, GlobalResult, TransError};
 use common::tokio::sync::mpsc;
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time::Instant;
+use crate::gb::RWSession;
 
 use crate::general;
 use crate::general::model::{PlayLiveModel, StreamInfo};
@@ -26,13 +27,15 @@ pub async fn stream_in(base_stream_info: BaseStreamInfo) {
         let bytes = Bytes::from(vec);
         let _ = tx.send(Some(bytes)).await.hand_err(|msg| error!("{msg}"));
     }
-    
+
 }
 
 pub async fn stream_input_timeout() {}
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> Option<StreamInfo> {
     let device_id = play_live_model.get_deviceId();
+    // RWSession::check_session_by_device_id(device_id)
+
     let channel_id = play_live_model.get_channelId();
     //查看直播流是否已存在,有则直接返回
     if let Some((stream_id, node_name)) = enable_live_stream(device_id, channel_id, &token).await {
@@ -41,6 +44,16 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> Option<
     }
 
     unimplemented!()
+}
+
+async fn start_live_stream(device_id: &String, channel_id: &String, token: &String)->GlobalResult<()>{
+    let num_ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
+    let mut node_sets = general::cache::Cache::stream_map_order_node();
+    while let Some((_,node_name)) = node_sets.pop_first() {
+        let stream_node = general::StreamConf::get_session_conf_by_cache().get_node_map().get(&node_name).unwrap();
+
+    }
+    Err(GlobalError::new_biz_error(1100, "无可用流媒体服务", |msg| error!("{msg}")))
 }
 
 

@@ -121,24 +121,24 @@ impl ResponseBuilder {
 pub struct RequestBuilder;
 
 impl RequestBuilder {
-    pub fn query_device_info(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn query_device_info(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::query_device_info(device_id);
-        let message_request = Self::build_message_request(device_id, xml);
+        let message_request = Self::build_message_request(device_id, xml).await;
         message_request
     }
-    pub fn query_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn query_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::query_device_catalog(device_id);
-        let message_request = Self::build_message_request(device_id, xml);
+        let message_request = Self::build_message_request(device_id, xml).await;
         message_request
     }
-    pub fn subscribe_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn subscribe_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::query_device_catalog(device_id);
-        let message_request = Self::build_subscribe_request(device_id, xml);
+        let message_request = Self::build_subscribe_request(device_id, xml).await;
         message_request
     }
 
-    fn build_message_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(None, device_id, false, false, None, None)?;
+    async fn build_message_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(None, device_id, false, false, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = rand::thread_rng();
@@ -158,8 +158,8 @@ impl RequestBuilder {
         Ok((ident, request_msg))
     }
 
-    fn build_subscribe_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(None, device_id, true, true, None, None)?;
+    async fn build_subscribe_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(None, device_id, true, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = rand::thread_rng();
@@ -180,8 +180,8 @@ impl RequestBuilder {
         Ok((ident, request_msg))
     }
 
-    pub fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag))?;
+    pub async fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag)).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = rand::thread_rng();
@@ -203,9 +203,9 @@ impl RequestBuilder {
     }
 
     /// 构建下发请求头
-    fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
+    async fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
                             -> GlobalResult<(rsip::Headers, Uri)> {
-        let bill = RWSession::get_bill_by_device_id(device_id)?.ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_err(|msg| warn!("{msg}"))?;
+        let bill = RWSession::get_bill_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_err(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
         if channel_id.is_some() {
             let channel_id = channel_id.unwrap();
@@ -244,7 +244,7 @@ impl RequestBuilder {
             || { headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, domain)).into()) }
         );
         if expires {
-            let expires = RWSession::get_expires_by_device_id(device_id)?.ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))?;
+            let expires = RWSession::get_expires_by_device_id(device_id).await.ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))?;
             headers.push(rsip::headers::Expires::new(expires.as_secs().to_string()).into());
         }
         if contact {
@@ -255,53 +255,53 @@ impl RequestBuilder {
         Ok((headers, uri))
     }
 
-    pub fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::play_live(channel_id, dst_ip, dst_port, stream_mode, ssrc)?;
-        Self::build_stream_request(device_id, channel_id, ssrc, sdp)
+        Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
 
     // 点播历史视频
-    pub fn playback(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn playback(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::playback(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)?;
-        Self::build_stream_request(device_id, channel_id, ssrc, sdp)
+        Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
     // 云端录像
-    pub fn download(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn download(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::download(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)?;
-        Self::build_stream_request(device_id, channel_id, ssrc, sdp)
+        Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
     // 拍照
 // 云台控制
 // 拖动播放
-    pub fn seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_seek(seek);
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
     }
 
     // 倍速播放
-    pub fn speed(device_id: &String, channel_id: &String, speed: u8, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn speed(device_id: &String, channel_id: &String, speed: u8, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_speed(speed);
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
     }
 
     // 查询硬盘录像情况
 // 暂停回放
-    pub fn pause(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn pause(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_pause();
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
     }
 
     // 恢复回放
-    pub fn replay(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn replay(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_replay();
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag)
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
     }
 
-    fn build_stream_request(device_id: &String, channel_id: &String, ssrc: &str, body: String) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None)?;
+    async fn build_stream_request(device_id: &String, channel_id: &String, ssrc: &str, body: String) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = rand::thread_rng();

@@ -29,7 +29,7 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalR
         Register::process(&device_id, req, tx, bill).await.hand_err(|msg| error!("设备 = [{}],注册失败",&device_id))?;
         Ok(())
     } else {
-        match State::check_session(&device_id, tx.clone(), bill)? {
+        match State::check_session(&device_id, tx.clone(), bill).await? {
             State::Usable | State::ReCache => {
                 match req.method {
                     Method::Ack => { Ok(()) }
@@ -82,8 +82,8 @@ impl State {
     /// 2)设备未在注册有效期内，重新注册
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
-    fn check_session(device_id: &String, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<State> {
-        let rw_session = RWSession::check_session_by_device_id(device_id)?;
+    async fn check_session(device_id: &String, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<State> {
+        let rw_session = RWSession::check_session_by_device_id(device_id).await;
         if rw_session {
             Ok(State::Usable)
         } else {
@@ -100,7 +100,7 @@ impl State {
                         //判断是否在注册有效期内
                         if reg_ts + expire > Local::now().timestamp() as u32 {
                             //刷新缓存
-                            RWSession::insert(device_id, tx, heart, bill)?;
+                            RWSession::insert(device_id, tx, heart, bill).await;
                             //如果设备是离线状态，则更新为在线
                             if on == 0 {
                                 GmvDevice::update_gmv_device_status_by_device_id(device_id, 1);
@@ -172,7 +172,7 @@ impl Register {
         }
     }
     async fn login_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill, oauth: GmvOauth) -> GlobalResult<()> {
-        RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill)?;
+        RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill).await;
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register();
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
@@ -189,7 +189,8 @@ impl Register {
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
         GmvDevice::update_gmv_device_status_by_device_id(device_id, 0);
-        RWSession::clean_rw_session_and_net(device_id).await
+        RWSession::clean_rw_session_and_net(device_id).await;
+        Ok(())
     }
 
     async fn unauthorized(req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
@@ -211,7 +212,7 @@ impl Message {
                 for (k, v) in &vs {
                     if MESSAGE_TYPE.contains(&&k[..]) {
                         match &v[..] {
-                            MESSAGE_KEEP_ALIVE => { Self::keep_alive(device_id, vs, bill)?; }
+                            MESSAGE_KEEP_ALIVE => { Self::keep_alive(device_id, vs, bill).await; }
                             MESSAGE_CONFIG_DOWNLOAD => {}
                             MESSAGE_NOTIFY_CATALOG => { Self::notify_catalog(device_id, vs) }
                             MESSAGE_DEVICE_INFO => { Self::device_info(vs); }
@@ -240,7 +241,7 @@ impl Message {
             }
         }
     }
-    fn keep_alive(device_id: &String, vs: Vec<(String, String)>, bill: &Bill) -> GlobalResult<()> {
+    async fn keep_alive(device_id: &String, vs: Vec<(String, String)>, bill: &Bill) {
         use parser::xml::{NOTIFY_DEVICE_ID, NOTIFY_STATUS};
         if log::max_level() <= LevelFilter::Info {
             let (mut device_id, mut status) = (String::new(), String::new());
@@ -257,7 +258,7 @@ impl Message {
             }
             info!("keep_alive: device_id = {},status = {}",&device_id,&status);
         }
-        RWSession::heart(device_id, bill.clone())
+        RWSession::heart(device_id, bill.clone()).await;
     }
 
     fn device_info(vs: Vec<(String, String)>) {

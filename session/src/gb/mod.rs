@@ -11,7 +11,7 @@ use common::net;
 use common::net::shared::{Zip};
 use crate::gb::handler::parser;
 use crate::gb::shared::event::{EventSession, Ident};
-use crate::gb::shared::rw::RWSession;
+pub use crate::gb::shared::rw::RWSession;
 use crate::general::SessionConf;
 
 pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
@@ -42,7 +42,7 @@ pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
             }
             Zip::Event(event) => {
                 if event.get_type_code() == &0u8 {
-                    RWSession::clean_rw_session_by_bill(event.get_bill())?;
+                    RWSession::clean_rw_session_by_bill(event.get_bill()).await;
                 }
             }
         }
