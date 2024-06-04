@@ -21,5 +21,5 @@ async fn main() {
         http.init_web_server((web::api::RestApi, web::hook::HookApi)).await
     });
     let conf = general::SessionConf::get_session_conf(cfg);
-    let _ = gb::gb_run(&conf).await.hand_err(|msg| error!("GB RUN FAILED <<< [{msg}]"));
+    let _ = gb::gb_run(&conf).await.hand_log(|msg| error!("GB RUN FAILED <<< [{msg}]"));
 }

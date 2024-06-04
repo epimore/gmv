@@ -55,7 +55,7 @@ impl<T: Serialize> ResMsg<T> {
     }
 
     pub fn to_json(&self) -> GlobalResult<String> {
-        let json_str = serde_json::to_string(self).hand_err(|msg| error!("{msg}"))?;
+        let json_str = serde_json::to_string(self).hand_log(|msg| error!("{msg}"))?;
         Ok(json_str)
     }
 

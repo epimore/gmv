@@ -18,7 +18,7 @@ const QUERY_STATE: &str = "/query/state";
 fn build_uri_header(gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<(String, HeaderMap)> {
     let uri = format!("http://{}:{}", local_ip.to_string(), local_port);
     let mut headers = HeaderMap::new();
-    headers.insert("gmv-token", header::HeaderValue::from_str(gmv_token).hand_err(|msg| error!("{msg}"))?);
+    headers.insert("gmv-token", header::HeaderValue::from_str(gmv_token).hand_log(|msg| error!("{msg}"))?);
     Ok((uri, headers))
 }
 
@@ -33,14 +33,14 @@ pub async fn call_stream_state(opt_stream_id: Option<&String>, gmv_token: &Strin
     let body = reqwest::Client::builder()
         .default_headers(headers)
         .build()
-        .hand_err(|msg| error!("{msg}"))?
+        .hand_log(|msg| error!("{msg}"))?
         .get(&uri)
         .send()
         .await
-        .hand_err(|msg| error!("{msg}"))?
+        .hand_log(|msg| error!("{msg}"))?
         .json::<ResMsg<Vec<StreamState>>>()
         .await
-        .hand_err(|msg| error!("{msg}"))?;
+        .hand_log(|msg| error!("{msg}"))?;
     return if body.code == 0 {
         if let Some(data) = body.data {
             return Ok(data);
@@ -57,14 +57,14 @@ pub async fn call_listen_ssrc(stream_id: &String, ssrc: &String, gmv_token: &Str
     let body = reqwest::Client::builder()
         .default_headers(headers)
         .build()
-        .hand_err(|msg| error!("{msg}"))?
+        .hand_log(|msg| error!("{msg}"))?
         .get(&uri)
         .send()
         .await
-        .hand_err(|msg| error!("{msg}"))?
+        .hand_log(|msg| error!("{msg}"))?
         .json::<ResMsg<bool>>()
         .await
-        .hand_err(|msg| error!("{msg}"))?;
+        .hand_log(|msg| error!("{msg}"))?;
 
     return if body.code == 0 {
         if let Some(data) = body.data {

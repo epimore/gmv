@@ -80,7 +80,7 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sende
             let rtp_info = RtpInfo::new(ssrc, Some(protocol_addr), Some(remote_addr_str), SESSION.shared.server_conf.get_name().clone());
             let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
             let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
-            let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_err(|msg| error!("{msg}"));
+            let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_log(|msg| error!("{msg}"));
             *reported_time = time;
             return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
         }
@@ -272,11 +272,11 @@ impl Session {
         };
         let shared = session.shared.clone();
         thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("SESSION").build().hand_log(|msg| error!("{msg}")).unwrap();
             let _ = rt.block_on(Self::purge_expired_task(shared));
         });
         thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().thread_name("HOOK-EVENT").build().hand_err(|msg| error!("{msg}")).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().thread_name("HOOK-EVENT").build().hand_log(|msg| error!("{msg}")).unwrap();
             let _ = rt.block_on(Event::event_loop(rx));
         });
         println!("Server node name = {}\n\
@@ -359,7 +359,7 @@ impl Shared {
                         let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
                         let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
                         let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
-                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_err(|msg| error!("{msg}"));
+                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_log(|msg| error!("{msg}"));
                     }
                 }
             }

@@ -19,8 +19,8 @@ use crate::general::mode::ServerConf;
 use crate::state;
 
 pub async fn run(port: u16) {
-    let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).hand_err(|msg| error! {"{msg}"}).expect("监听地址无效");
-    let (output, mut input) = net::init_net(net::shared::Protocol::ALL, socket_addr).await.hand_err(|msg| error!("{msg}")).expect("网络监听失败");
+    let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).hand_log(|msg| error! {"{msg}"}).expect("监听地址无效");
+    let (output, mut input) = net::init_net(net::shared::Protocol::ALL, socket_addr).await.hand_log(|msg| error!("{msg}")).expect("网络监听失败");
     while let Some(zip) = input.recv().await {
         match zip {
             Zip::Data(data) => {
@@ -37,7 +37,7 @@ pub async fn run(port: u16) {
                                     if v <= 100 {
                                         //通道满了，删除先入的数据
                                         if let Err(TrySendError::Full(_)) = rtp_tx.try_send(data.get_owned_data()) {
-                                            let _ = rtp_rx.recv().hand_err(|msg| debug!("{msg}"));
+                                            let _ = rtp_rx.recv().hand_log(|msg| debug!("{msg}"));
                                         }
                                     }
                                 } else {

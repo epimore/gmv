@@ -9,59 +9,59 @@ pub mod header {
 
     pub fn get_device_id_by_request(req: &Request) -> GlobalResult<String> {
         let from_user = req.from_header()
-            .hand_err(|msg| warn!("{msg}"))?
-            .uri().hand_err(|msg| warn!("{msg}"))?
+            .hand_log(|msg| warn!("{msg}"))?
+            .uri().hand_log(|msg| warn!("{msg}"))?
             .auth.ok_or(SysErr(anyhow!("user is none")))
-            .hand_err(|msg| warn!("{msg}"))?
+            .hand_log(|msg| warn!("{msg}"))?
             .user;
         Ok(from_user)
     }
 
     pub fn get_device_id_by_response(req: &Response) -> GlobalResult<String> {
         let from_user = req.to_header()
-            .hand_err(|msg| warn!("{msg}"))?
-            .uri().hand_err(|msg| warn!("{msg}"))?
+            .hand_log(|msg| warn!("{msg}"))?
+            .uri().hand_log(|msg| warn!("{msg}"))?
             .auth.ok_or(SysErr(anyhow!("user is none")))
-            .hand_err(|msg| warn!("{msg}"))?
+            .hand_log(|msg| warn!("{msg}"))?
             .user;
         Ok(from_user)
     }
 
     pub fn get_via_header(req: &Request) -> GlobalResult<&Via> {
-        let via = req.via_header().hand_err(|msg| warn!("{msg}"))?;
+        let via = req.via_header().hand_log(|msg| warn!("{msg}"))?;
         Ok(via)
     }
 
     pub fn get_transport(req: &Request) -> GlobalResult<String> {
-        let transport = get_via_header(req)?.trasnport().hand_err(|msg| warn!("{msg}"))?.to_string();
+        let transport = get_via_header(req)?.trasnport().hand_log(|msg| warn!("{msg}"))?.to_string();
         Ok(transport)
     }
 
     pub fn get_local_addr(req: &Request) -> GlobalResult<String> {
-        let local_addr = get_via_header(req)?.uri().hand_err(|msg| warn!("{msg}"))?.host_with_port.to_string();
+        let local_addr = get_via_header(req)?.uri().hand_log(|msg| warn!("{msg}"))?.host_with_port.to_string();
         Ok(local_addr)
     }
 
     pub fn get_from(req: &Request) -> GlobalResult<String> {
-        let from = req.from_header().hand_err(|msg| warn!("{msg}"))?.uri().hand_err(|msg| warn!("{msg}"))?.to_string();
+        let from = req.from_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?.to_string();
         Ok(from)
     }
 
     pub fn get_to(req: &Request) -> GlobalResult<String> {
-        let to = req.to_header().hand_err(|msg| warn!("{msg}"))?.uri().hand_err(|msg| warn!("{msg}"))?.to_string();
+        let to = req.to_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?.to_string();
         Ok(to)
     }
 
     pub fn get_expires(req: &Request) -> GlobalResult<u32> {
         let expires = req.expires_header()
             .ok_or(SysErr(anyhow!("无参数expires")))
-            .hand_err(|msg| warn!("{msg}"))?
-            .seconds().hand_err(|msg| warn!("{msg}"))?;
+            .hand_log(|msg| warn!("{msg}"))?
+            .seconds().hand_log(|msg| warn!("{msg}"))?;
         Ok(expires)
     }
 
     pub fn get_domain(req: &Request) -> GlobalResult<String> {
-        let to_uri = req.to_header().hand_err(|msg| warn!("{msg}"))?.uri().hand_err(|msg| warn!("{msg}"))?;
+        let to_uri = req.to_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?;
         Ok(to_uri.host_with_port.to_string())
     }
 
@@ -151,13 +151,13 @@ pub mod xml {
         loop {
             match xml_reader.read_event() {
                 Ok(Event::Start(ref e)) => {
-                    let start_tag = from_utf8(e.name().0).hand_err(|msg| error!("{msg}"))?;
+                    let start_tag = from_utf8(e.name().0).hand_log(|msg| error!("{msg}"))?;
                     tag.push_str(&*format!("{},", start_tag));
                     b = false;
                 }
                 Ok(Event::Text(e)) => {
                     //此处使用GB18030进行解析,兼容新版本要求
-                    let val = encoding::decode(e.deref(), GB18030).hand_err(|msg| error!("{msg}"))?;
+                    let val = encoding::decode(e.deref(), GB18030).hand_log(|msg| error!("{msg}"))?;
                     let len = tag.split(",").collect::<Vec<&str>>().len() - 1;
                     if k != len || j {
                         k = len;
@@ -169,7 +169,7 @@ pub mod xml {
                 }
                 Ok(Event::End(ref e)) => {
                     let end = tag.len() - e.len() - 1;
-                    tag = tag[0..end].parse().hand_err(|msg| error!("{msg}"))?;
+                    tag = tag[0..end].parse().hand_log(|msg| error!("{msg}"))?;
                     j = b;
                     b = true;
                 }

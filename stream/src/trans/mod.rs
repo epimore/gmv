@@ -12,10 +12,10 @@ pub async fn run(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
         let (tx, rx) = unbounded_channel::<FrameData>();
         tokio::spawn(async move {
-            let _ = gb_process::run(ssrc, tx).await.hand_err(|msg|error!("{msg}"));
+            let _ = gb_process::run(ssrc, tx).await.hand_log(|msg|error!("{msg}"));
         });
         tokio::spawn(async move {
-            let _ = flv_process::run(ssrc, rx).await.hand_err(|msg|error!("{msg}"));
+            let _ = flv_process::run(ssrc, rx).await.hand_log(|msg|error!("{msg}"));
         });
     }
 }

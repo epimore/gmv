@@ -25,22 +25,24 @@ pub async fn stream_in(base_stream_info: BaseStreamInfo) {
     if let Some((_, Some(tx))) = general::cache::Cache::state_get(&key_stream_in_id).await {
         let vec = serde_json::to_vec(&base_stream_info).unwrap();
         let bytes = Bytes::from(vec);
-        let _ = tx.send(Some(bytes)).await.hand_err(|msg| error!("{msg}"));
+        let _ = tx.send(Some(bytes)).await.hand_log(|msg| error!("{msg}"));
     }
 
 }
 
 pub async fn stream_input_timeout() {}
 
-pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> Option<StreamInfo> {
+pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = play_live_model.get_deviceId();
-    // RWSession::check_session_by_device_id(device_id)
+    if RWSession::check_session_by_device_id(device_id).await {
+        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
+    }
 
     let channel_id = play_live_model.get_channelId();
     //查看直播流是否已存在,有则直接返回
     if let Some((stream_id, node_name)) = enable_live_stream(device_id, channel_id, &token).await {
         general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
-        return StreamInfo::build(stream_id, node_name);
+        return Ok(StreamInfo::build(stream_id, node_name));
     }
 
     unimplemented!()

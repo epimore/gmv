@@ -10,6 +10,6 @@ mod trans;
 
 #[tokio::main]
 async fn main() {
-    let _ = io::run().await.hand_err(|msg| error!("{msg}"));
+    let _ = io::run().await.hand_log(|msg| error!("{msg}"));
     //todo ctrl_c
 }

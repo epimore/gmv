@@ -48,7 +48,7 @@ pub mod rw {
             };
             let shared = session.shared.clone();
             thread::spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("RW-SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
+                let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("RW-SESSION").build().hand_log(|msg| error!("{msg}")).unwrap();
                 rt.spawn(Self::do_update_device_status(rx));
                 let _ = rt.block_on(Self::purge_expired_task(shared));
             });
@@ -112,7 +112,7 @@ pub mod rw {
                 state.bill_map.remove(&bill);
                 //通知网络出口关闭TCP连接
                 if &Protocol::TCP == bill.get_protocol() {
-                    let _ = tx.send(Zip::build_event(Event::new(bill, 0))).await.hand_err(|msg| warn!("{msg}"));
+                    let _ = tx.send(Zip::build_event(Event::new(bill, 0))).await.hand_log(|msg| warn!("{msg}"));
                 }
             }
         }
@@ -171,14 +171,14 @@ pub mod rw {
             let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
             let when = Instant::now() + Duration::from_secs(EXPIRES);
             EventSession::listen_event(&self.ident, when, Container::build_res(self.event_sender)).await?;
-            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_err(|msg| error!("{msg}"));
+            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_log(|msg| error!("{msg}"));
             Ok(())
         }
 
         pub(super) async fn _do_send(self) -> GlobalResult<()> {
             let device_id = self.ident.get_device_id();
             let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
-            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_err(|msg| error!("{msg}"));
+            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(self.msg)))).await.hand_log(|msg| error!("{msg}"));
             Ok(())
         }
     }
@@ -200,7 +200,7 @@ pub mod rw {
                     return Ok(Some(*when));
                 }
                 //放入队列中处理，避免阻塞导致锁长期占用:更新DB中设备状态为离线
-                let _ = RW_SESSION.db_task.clone().send(device_id.clone()).await.hand_err(|msg| warn!("{msg}"));
+                let _ = RW_SESSION.db_task.clone().send(device_id.clone()).await.hand_log(|msg| warn!("{msg}"));
                 // GmvDevice::update_gmv_device_status_by_device_id(device_id, 0);
                 //移除会话map
                 if let Some((tx, when, _dur, bill)) = state.sessions.remove(device_id) {
@@ -208,7 +208,7 @@ pub mod rw {
                     state.expirations.remove(&(when, device_id.to_string()));
                     //通知网络出口关闭TCP连接
                     if &Protocol::TCP == bill.get_protocol() {
-                        let _ = tx.send(Zip::build_event(Event::new(bill, 0))).await.hand_err(|msg| warn!("{msg}"));
+                        let _ = tx.send(Zip::build_event(Event::new(bill, 0))).await.hand_log(|msg| warn!("{msg}"));
                     }
                 }
             }
@@ -276,7 +276,7 @@ pub mod event {
             };
             let shared = session.shared.clone();
             thread::spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("EVENT-SESSION").build().hand_err(|msg| error!("{msg}")).unwrap();
+                let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("EVENT-SESSION").build().hand_log(|msg| error!("{msg}")).unwrap();
                 let _ = rt.block_on(Self::purge_expired_task(shared));
             });
             session
@@ -351,7 +351,7 @@ pub mod event {
                             }
                             //当tx为some时发送响应结果，不清理会话，由相应rx接收端根据自身业务清理
                             if let Some(tx) = res {
-                                let _ = tx.clone().send((Some(response), *when)).await.hand_err(|msg| error!("{msg}"));
+                                let _ = tx.clone().send((Some(response), *when)).await.hand_log(|msg| error!("{msg}"));
                             } else {
                                 //清理会话
                                 state.ident_map.remove(ident).map(|(when, _container)| {
@@ -393,7 +393,7 @@ pub mod event {
                             warn!("{:?},响应超时。",&ident);
                             //响应超时->发送None->接收端收到None,不需要再清理State
                             if let Some(tx) = res {
-                                let _ = tx.send((None, when)).await.hand_err(|msg| error!("{msg}"));
+                                let _ = tx.send((None, when)).await.hand_log(|msg| error!("{msg}"));
                             }
                         }
                         //延迟事件触发后，添加延迟事件执行后的监听

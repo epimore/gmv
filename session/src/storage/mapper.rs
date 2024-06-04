@@ -6,7 +6,7 @@ use common::log::error;
 pub fn get_device_channel_status(device_id: &String, channel_id: &String) -> GlobalResult<Option<String>> {
     let sql = String::from("select `STATUS` from GMV_DEVICE_CHANNEL where device_id=:device_id and channel_id=:channel_id");
     let mut conn = idb::get_mysql_conn().unwrap();
-    let option_status = conn.exec_first(sql, params! {device_id,channel_id}).hand_err(|msg| error!("{msg}"))?;
+    let option_status = conn.exec_first(sql, params! {device_id,channel_id}).hand_log(|msg| error!("{msg}"))?;
     Ok(option_status)
 }
 
@@ -14,7 +14,7 @@ pub fn get_device_status_info(device_id: &String) -> GlobalResult<Option<(u8, u8
     let sql = String::from("SELECT o.HEARTBEAT_SEC,o.`STATUS`,d.REGISTER_EXPIRES,d.REGISTER_TIME,d.`STATUS` FROM GMV_OAUTH o INNER JOIN GMV_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=:device_id");
     let mut conn = idb::get_mysql_conn().unwrap();
     let option_status = conn.exec_first(sql, params! {device_id})
-        .hand_err(|msg| error!("{msg}"))?
+        .hand_log(|msg| error!("{msg}"))?
         .map(|(heart, enable, expire, reg_ts, on)| (heart, enable, expire, reg_ts, on));
     Ok(option_status)
 }

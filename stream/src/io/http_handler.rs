@@ -52,7 +52,7 @@ async fn handle(
 fn get_token(req: &Request<Body>) -> GlobalResult<String> {
     let token_str = req.headers().get("gmv-token")
         .ok_or_else(|| GlobalError::new_biz_error(1100, "header无gmv-token", |msg| info!("{msg}")))?
-        .to_str().hand_err(|msg| info!("获取gmv-token失败;err = {msg}"))?;
+        .to_str().hand_log(|msg| info!("获取gmv-token失败;err = {msg}"))?;
     Ok(token_str.to_string())
 }
 
@@ -132,7 +132,7 @@ impl Drop for ClientConnection {
 }
 
 pub async fn run(node_name: &'static String, port: u16, tx: Sender<u32>) -> GlobalResult<()> {
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_err(|msg| error!("{msg}")).unwrap();
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_log(|msg| error!("{msg}")).unwrap();
 
     let make_service = make_service_fn(|conn: &ClientConnection| {
         let opt_addr = conn.conn.peer_addr().ok();
@@ -146,7 +146,7 @@ pub async fn run(node_name: &'static String, port: u16, tx: Sender<u32>) -> Glob
         }
     });
 
-    hyper::server::Server::builder(ServerListener(listener)).serve(make_service).await.hand_err(|msg| error!("{msg}")).unwrap();
+    hyper::server::Server::builder(ServerListener(listener)).serve(make_service).await.hand_log(|msg| error!("{msg}")).unwrap();
 
     Ok(())
 }

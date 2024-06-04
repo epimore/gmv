@@ -387,7 +387,7 @@ impl Cache {
         match guard.entities.get(key) {
             None => { Ok(None) }
             Some((val, _, opt_tx)) => {
-                let data: T = serde_json::from_slice(&val.clone()).hand_err(|msg| error!("{msg}"))?;
+                let data: T = serde_json::from_slice(&val.clone()).hand_log(|msg| error!("{msg}"))?;
                 Ok(Some((data, opt_tx.clone())))
             }
         }
@@ -420,7 +420,7 @@ impl Cache {
         };
         let shared = cache.shared.clone();
         thread::Builder::new().name("General:Cache".to_string()).spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().hand_err(|msg| error!("{msg}")).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().hand_log(|msg| error!("{msg}")).unwrap();
             let _ = rt.block_on(Self::purge_expired_task(shared));
         }).expect("General:Cache background thread create failed");
         cache
@@ -473,7 +473,7 @@ impl Shared {
                 return Some(*when);
             }
             if let Some((_, _, Some(tx))) = state.entities.remove(key) {
-                let _ = tx.send(None).await.hand_err(|msg| warn!("{msg}"));
+                let _ = tx.send(None).await.hand_log(|msg| warn!("{msg}"));
             }
             state.expirations.remove(&(*when, key.clone()));
         }

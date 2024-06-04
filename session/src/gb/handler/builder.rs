@@ -90,7 +90,7 @@ impl ResponseBuilder {
 
     fn build_response_header(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<rsip::Headers> {
         let via_header = parser::header::get_via_header(req)?;
-        let mut params = via_header.params().hand_err(|msg| warn!("{msg}"))?;
+        let mut params = via_header.params().hand_log(|msg| warn!("{msg}"))?;
         if params.iter_mut().any(|param| {
             if (*param).eq(&Other(OtherParam::from("rport"), None)) {
                 *param = Other(OtherParam::from("rport"), Some(OtherParamValue::from(socket_addr.port().to_string())));
@@ -100,17 +100,17 @@ impl ResponseBuilder {
         }) {
             params.push(Param::Received(param::Received::from(socket_addr.ip().to_string())));
         }
-        let mut via: typed::Via = via_header.typed().hand_err(|msg| warn!("{msg}"))?;
+        let mut via: typed::Via = via_header.typed().hand_log(|msg| warn!("{msg}"))?;
         via.params = params;
         let mut headers: rsip::Headers = Default::default();
         headers.push(Via(via.untyped()));
-        headers.push(req.from_header().hand_err(|msg| warn!("{msg}"))?.clone().into());
+        headers.push(req.from_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
         let mut rng = rand::thread_rng();
-        let to = req.to_header().hand_err(|msg| warn!("{msg}"))?.typed().hand_err(|msg| warn!("{msg}"))?;
+        let to = req.to_header().hand_log(|msg| warn!("{msg}"))?.typed().hand_log(|msg| warn!("{msg}"))?;
         let to = to.with_tag(rng.gen_range(123456789u32..987654321u32).to_string().into());
         headers.push(to.into());
-        headers.push(req.call_id_header().hand_err(|msg| warn!("{msg}"))?.clone().into());
-        headers.push(req.cseq_header().hand_err(|msg| warn!("{msg}"))?.clone().into());
+        headers.push(req.call_id_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
+        headers.push(req.cseq_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
         headers.push(Header::ContentLength(Default::default()));
         headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
         let _ = req.contact_header().map(|contact| headers.push(contact.clone().into()));
@@ -205,7 +205,7 @@ impl RequestBuilder {
     /// 构建下发请求头
     async fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
                             -> GlobalResult<(rsip::Headers, Uri)> {
-        let bill = RWSession::get_bill_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_err(|msg| warn!("{msg}"))?;
+        let bill = RWSession::get_bill_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_log(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
         if channel_id.is_some() {
             let channel_id = channel_id.unwrap();
@@ -224,7 +224,7 @@ impl RequestBuilder {
         // let gmv_device = GmvDevice::query_gmv_device_by_device_id(&device_id.to_string())?.ok_or(SysErr(anyhow!("设备：{device_id}-{channel_id:?}未注册或已离线。")))?;
         let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)?
             .ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))
-            .hand_err(|msg| warn!("{msg}"))?;
+            .hand_log(|msg| warn!("{msg}"))?;
         if oauth.get_status() == &0u8 {
             warn!("device id = [{}] 未启用设备,无法下发指令",&device_id);
         }
@@ -233,7 +233,7 @@ impl RequestBuilder {
 
         let transport = bill.get_protocol().get_value();
         let uri_str = format!("sip:{}@{}", dst_id, domain);
-        let uri = uri::Uri::try_from(uri_str).hand_err(|msg| warn!("{msg}"))?;
+        let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
         let mut rng = rand::thread_rng();
         let mut headers: rsip::Headers = Default::default();
         headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}", transport, server_ip, server_port, rng.gen_range(123456789u32..987654321u32))).into());
@@ -313,7 +313,7 @@ impl RequestBuilder {
             headers.iter(),
             Header::From,
             Error::missing_header("From")
-        ).hand_err(|msg| error!("{msg}"))?;
+        ).hand_log(|msg| error!("{msg}"))?;
         headers.push(rsip::headers::Subject::new(format!("{}:{},{}:0", channel_id, ssrc, from.uri().unwrap().auth.unwrap().user)).into());
         headers.push(rsip::headers::ContentType::new("APPLICATION/SDP").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());

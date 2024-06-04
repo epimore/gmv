@@ -23,7 +23,7 @@ use crate::state::cache;
 
 fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
     let ssrc = param_map.get("ssrc")
-        .map(|s| s.parse::<u32>().hand_err(|msg| error!("{msg}")))
+        .map(|s| s.parse::<u32>().hand_log(|msg| error!("{msg}")))
         .ok_or_else(|| GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))??;
     Ok(ssrc)
 }
@@ -54,7 +54,7 @@ pub fn res_401() -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg("401 无token".to_string()).to_json()?;
     let res = Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
-        .status(StatusCode::UNAUTHORIZED).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+        .status(StatusCode::UNAUTHORIZED).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     return Ok(res);
 }
 
@@ -62,14 +62,14 @@ pub fn res_404() -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg("404".to_string()).to_json()?;
     let res = Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
-        .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+        .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     return Ok(res);
 }
 
 pub fn res_422() -> GlobalResult<Response<Body>> {
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
     let json_data = ResMsg::<bool>::build_failed_by_msg("参数错误".to_string()).to_json()?;
-    let res = response.status(StatusCode::UNPROCESSABLE_ENTITY).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+    let res = response.status(StatusCode::UNPROCESSABLE_ENTITY).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     return Ok(res);
 }
 
@@ -80,13 +80,13 @@ pub async fn listen_ssrc(map: HashMap<String, String>, ssrc_tx: Sender<u32>) -> 
             let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
             let res = match cache::insert(ssrc, stream_id, cache::Channel::build()) {
                 Ok(_) => {
-                    ssrc_tx.send(ssrc).await.hand_err(|msg| error!("{msg}"))?;
+                    ssrc_tx.send(ssrc).await.hand_log(|msg| error!("{msg}"))?;
                     let json_data = ResMsg::<bool>::build_success().to_json()?;
-                    response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?
+                    response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
                 }
                 Err(error) => {
                     let json_data = ResMsg::<bool>::build_failed_by_msg(error.to_string()).to_json()?;
-                    response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?
+                    response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
                 }
             };
             Ok(res)
@@ -113,7 +113,7 @@ pub fn get_state(opt_stream_id: Option<String>) -> GlobalResult<Response<Body>> 
     let vec = cache::get_stream_state(opt_stream_id);
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
     let json_data = ResMsg::<Vec<StreamState>>::build_success_data(vec).to_json()?;
-    let res = response.status(StatusCode::OK).body(Body::from(json_data)).hand_err(|msg| error!("{msg}"))?;
+    let res = response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     Ok(res)
 }
 
@@ -126,7 +126,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
             let info = StreamPlayInfo::new(bsi, remote_addr, token.clone(), play_type.clone(), flv_tokens, hls_tokens);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
-            let _ = event_tx.clone().send((Event::onPlay(info), Some(tx))).await.hand_err(|msg| error!("{msg}"));
+            let _ = event_tx.clone().send((Event::onPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
             match rx.await {
                 Ok(res) => {
                     let mut res_builder = Response::builder()
@@ -142,7 +142,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                     None => { res_404() }
                                     Some(rx) => {
                                         let flv_res = res_builder.header("Content-Type", "video/x-flv")
-                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_err(|msg| error!("{msg}"))?;
+                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_log(|msg| error!("{msg}"))?;
                                         //插入用户
                                         cache::update_token(&stream_id, &play_type, token.clone(), true);
                                         //监听连接：当断开连接时,更新正在查看的用户、回调通知
@@ -151,7 +151,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                             cache::update_token(&stream_id, &play_type, token.clone(), false);
                                             if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                                 let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
-                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
+                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });
                                         Ok(flv_res)
@@ -164,7 +164,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                     Some(rx) => {
                                         //Content-Type：返回的数据类型;HLS M3U8,通常是 application/vnd.apple.mpegurl 或 application/x-mpegURL。
                                         let hls_res = res_builder.header("Content-Type", "application/x-mpegURL")
-                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_err(|msg| error!("{msg}"))?;
+                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_log(|msg| error!("{msg}"))?;
                                         cache::update_token(&stream_id, &play_type, token.clone(), true);
                                         //监听连接：当断开连接时,更新正在查看的用户、回调通知
                                         tokio::spawn(async move {
@@ -172,7 +172,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                             cache::update_token(&stream_id, &play_type, token.clone(), false);
                                             if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                                 let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
-                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_err(|msg| error!("{msg}"));
+                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });
                                         Ok(hls_res)

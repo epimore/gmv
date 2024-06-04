@@ -19,7 +19,7 @@ pub async fn run(ssrc: u32, mut rx: FrameDataReceiver) -> GlobalResult<()> {
         //write flv body
         loop {
             if let Some(data) = rx.recv().await {
-                let _ = write_flv_tag(&mut flv_muxer, data, tx.clone()).hand_err(|msg| warn!("{msg}"));
+                let _ = write_flv_tag(&mut flv_muxer, data, tx.clone()).hand_log(|msg| warn!("{msg}"));
             }
         }
     }
@@ -31,7 +31,7 @@ use crate::state::cache;
 fn flush_data(flv_muxer: &mut FlvMuxer, tx: Sender<Bytes>) {
     let data = flv_muxer.writer.extract_current_bytes();
     println!("flv data size = {}", &data.len());
-    let _ = tx.send(data.freeze()).hand_err(|msg| warn!("{msg}"));
+    let _ = tx.send(data.freeze()).hand_log(|msg| warn!("{msg}"));
 }
 
 fn write_flv_tag(flv_muxer: &mut FlvMuxer, data: FrameData, tx: Sender<Bytes>) -> GlobalResult<()> {

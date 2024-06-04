@@ -1,8 +1,9 @@
-use log::info;
+use log::{error, info};
 use poem::FromRequest;
 use poem_openapi::OpenApi;
 use poem_openapi::param::Header;
 use poem_openapi::payload::{Form, Json};
+use common::err::{GlobalError, GlobalResult};
 use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
 use crate::service::{BaseStreamInfo, handler};
 
@@ -18,9 +19,18 @@ impl RestApi {
         let live_model = live.0;
         info!("header = {:?},body = {:?}", &header,&live_model);
         match handler::play_live(live_model, header).await {
-            //todo  返回错误码及错误信息
-            None => { Json(ResultMessageData::build_failure()) }
-            Some(data) => { Json(ResultMessageData::build_success(Some(data))) }
+            Ok(data) => { Json(ResultMessageData::build_success(Some(data))) }
+            Err(err) => {
+                error!("{}",err.to_string());
+                match err {
+                    GlobalError::BizErr(e) => {
+                        Json(ResultMessageData::build_failure_msg(e.get_msg().to_string()))
+                    }
+                    GlobalError::SysErr(e) => {
+                        Json(ResultMessageData::build_failure())
+                    }
+                }
+            }
         }
     }
 

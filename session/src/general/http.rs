@@ -50,7 +50,7 @@ impl Http {
             .nest("/docs", ui);
         info!("GMV-API HTTP服务启动:{http_addr}");
         Server::new(TcpListener::bind(format!("0.0.0.0:{}", &self.port)))
-            .run(route).await.hand_err(|msg| error!("{msg}"))?;
+            .run(route).await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 }

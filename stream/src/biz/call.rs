@@ -47,7 +47,7 @@ impl BaseStreamInfo {
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
-            .hand_err(|msg| error!("{msg}"))
+            .hand_log(|msg| error!("{msg}"))
             .ok().map(|res| res.status().is_success());
         res
     }
@@ -75,7 +75,7 @@ impl StreamPlayInfo {
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
-            .hand_err(|msg| error!("{msg}"));
+            .hand_log(|msg| error!("{msg}"));
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo>().await) {
@@ -100,7 +100,7 @@ impl StreamPlayInfo {
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
-            .hand_err(|msg| error!("{msg}"));
+            .hand_log(|msg| error!("{msg}"));
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo>().await) {
@@ -149,7 +149,7 @@ impl StreamState {
         let res = client.post(uri)
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
-            .hand_err(|msg| error!("{msg}"));
+            .hand_log(|msg| error!("{msg}"));
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo>().await) {

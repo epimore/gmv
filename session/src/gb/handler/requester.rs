@@ -26,7 +26,7 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalR
     let device_id = parser::header::get_device_id_by_request(&req)?;
     //校验设备是否注册
     if req.method == Method::Register {
-        Register::process(&device_id, req, tx, bill).await.hand_err(|msg| error!("设备 = [{}],注册失败",&device_id))?;
+        Register::process(&device_id, req, tx, bill).await.hand_log(|msg| error!("设备 = [{}],注册失败",&device_id))?;
         Ok(())
     } else {
         match State::check_session(&device_id, tx.clone(), bill).await? {
@@ -54,7 +54,7 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalR
             State::Expired => {
                 let unregister_response = ResponseBuilder::build_401_response(&req, bill.get_remote_addr())?;
                 let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(unregister_response)));
-                let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
+                let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
                 Ok(())
             }
             State::Invalid => { Ok(()) }
@@ -123,7 +123,7 @@ impl Register {
     async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
         let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)?
             .ok_or(SysErr(anyhow!("device id = [{}] 未知设备，拒绝接入",device_id)))
-            .hand_err(|msg| warn!("{msg}"))?;
+            .hand_log(|msg| warn!("{msg}"))?;
         if oauth.get_status() == &0u8 {
             warn!("device id = [{}] 未启用设备，拒绝接入",device_id);
         }
@@ -177,7 +177,7 @@ impl Register {
         gmv_device.insert_single_gmv_device_by_register();
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
-        let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
+        let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
         // query subscribe device msg
         cmd::CmdQuery::lazy_query_device_info(device_id).await?;
         cmd::CmdQuery::lazy_query_device_catalog(device_id).await?;
@@ -187,7 +187,7 @@ impl Register {
     async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
         let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
-        let _ = tx.clone().send(zip).await.hand_err(|msg| warn!("{msg}"));
+        let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
         GmvDevice::update_gmv_device_status_by_device_id(device_id, 0);
         RWSession::clean_rw_session_and_net(device_id).await;
         Ok(())
@@ -196,7 +196,7 @@ impl Register {
     async fn unauthorized(req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
         let unauthorized_register_response = ResponseBuilder::unauthorized_register_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(unauthorized_register_response)));
-        let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
+        let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
         Ok(())
     }
 }
@@ -229,14 +229,14 @@ impl Message {
                             }
                         }
                         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(response)));
-                        let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
+                        let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
                         break;
                     }
                 }
                 Ok(())
             }
             Err(err) => {
-                let val = encoding::decode(&req.body, GB18030).hand_err(|msg| error!("{msg}"))?;
+                let val = encoding::decode(&req.body, GB18030).hand_log(|msg| error!("{msg}"))?;
                 Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]",val)))?
             }
         }
@@ -289,14 +289,14 @@ impl Notify {
                             }
                         }
                         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(response)));
-                        let _ = tx.clone().send(zip).await.hand_err(|msg| error!("{msg}"));
+                        let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
                         break;
                     }
                 }
                 Ok(())
             }
             Err(err) => {
-                let val = encoding::decode(&req.body, GB18030).hand_err(|msg| error!("{msg}"))?;
+                let val = encoding::decode(&req.body, GB18030).hand_log(|msg| error!("{msg}"))?;
                 Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]",val)))?
             }
         }

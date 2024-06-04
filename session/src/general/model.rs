@@ -1,10 +1,12 @@
+use poem_openapi::{self, Object};
+use poem_openapi::types::{ParseFromJSON, ToJSON, Type};
+use serde::{Deserialize, Serialize};
+
 use common::anyhow::anyhow;
 use common::err::GlobalError::SysErr;
 use common::err::GlobalResult;
-use poem_openapi::types::{ParseFromJSON, ToJSON, Type};
-use poem_openapi::{self, Object};
-use serde::{Deserialize, Serialize};
 use constructor::Get;
+
 use crate::general;
 
 pub enum StreamMode {
@@ -46,6 +48,9 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
     pub fn build_failure() -> Self {
         Self { code: 500, msg: Some("操作失败".to_string()), data: None }
     }
+    pub fn build_failure_msg(msg: String) -> Self {
+        Self { code: 500, msg: Some(msg), data: None }
+    }
 }
 
 
@@ -66,26 +71,23 @@ pub struct StreamInfo {
 }
 
 impl StreamInfo {
-    pub fn build(streamId: String, node_name: String) -> Option<Self> {
+    pub fn build(streamId: String, node_name: String) -> Self {
         let stream_conf = general::StreamConf::get_session_conf_by_cache();
         match stream_conf.get_proxy_addr() {
             None => {
-                if let Some(node_stream) = stream_conf.get_node_map().get(&node_name) {
-                    Some(Self {
-                        flv: format!("http://{}:{}/{node_name}/{streamId}.flv", node_stream.get_pub_ip(), node_stream.get_pub_port()),
-                        m3u8: format!("http://{}:{}/{node_name}/{streamId}.m3u8", node_stream.get_pub_ip(), node_stream.get_pub_port()),
-                        streamId,
-                    })
-                } else {
-                    None
+                let node_stream = stream_conf.get_node_map().get(&node_name).unwrap();
+                Self {
+                    flv: format!("http://{}:{}/{node_name}/{streamId}.flv", node_stream.get_pub_ip(), node_stream.get_pub_port()),
+                    m3u8: format!("http://{}:{}/{node_name}/{streamId}.m3u8", node_stream.get_pub_ip(), node_stream.get_pub_port()),
+                    streamId,
                 }
             }
             Some(addr) => {
-                Some(Self {
+                Self {
                     flv: format!("{addr}/{node_name}/{streamId}.flv"),
                     m3u8: format!("{addr}/{node_name}/{streamId}.m3u8"),
                     streamId,
-                })
+                }
             }
         }
     }
@@ -95,6 +97,7 @@ impl StreamInfo {
 mod test {
     use poem_openapi::payload::Json;
     use poem_openapi::types::ToJSON;
+
     use crate::general::model::{ResultMessageData, StreamInfo};
 
     #[test]
