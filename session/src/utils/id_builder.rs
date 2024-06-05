@@ -1,6 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
-use common::err::GlobalResult;
+use log::error;
+use common::anyhow::anyhow;
+use common::err::{GlobalError, GlobalResult};
+use common::err::GlobalError::SysErr;
 use crate::storage::entity::GmvOauth;
+use crate::storage::mapper;
 
 const D_DIC: [char; 10] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 //按键盘从上至下，从左到右形成小写、大写字母字典表
@@ -102,9 +106,32 @@ pub fn de_stream_id(stream_id: &str) -> (String, String, String) {
     (ori_str[0..20].to_string(), ori_str[20..40].to_string(), ori_str[40..].to_string())
 }
 
-pub fn build_ssrc(device_id:&String,channel_id:&String,num_ssrc:u16,live:bool)->GlobalResult<String>{
-    let result = GmvOauth::read_gmv_oauth_by_device_id(device_id)?;
-    unimplemented!()
+//为十进制整数字符串,表示SSRC值。格式如下:dddddddddd。其中,第1位为历史或实时
+// 媒体流的标识位,0为实时,1为历史;第2位至第6位取20位SIP监控域ID之中的4到8位作为域标
+// 识,例如“13010000002000000001”中取数字“10000”;第7位至第10位作为域内媒体流标识,是一个与
+// 当前域内产生的媒体流SSRC值后4位不重复的四位十进制整数
+// 返回(ssrc,stream_id)
+pub fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_ssrc: u16, live: bool) -> GlobalResult<(String, String)> {
+    let gmv_oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)?
+        .ok_or_else(|| GlobalError::new_biz_error(1100, "设备不存在", |msg| error!("{msg}")))?;
+    //直播：需校验摄像头是否在线；回放：录像机在线即可
+    let mut front_live_or_back = 1;
+    if live {
+        let channel_status = mapper::get_device_channel_status(device_id, channel_id)?
+            .ok_or_else(|| GlobalError::new_biz_error(1100, "未知设备", |msg| error!("{msg}")))?;
+        match &channel_status.to_ascii_uppercase()[..] {
+            "ON" | "ONLINE" => {}
+            _ => {
+                return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
+            }
+        }
+        front_live_or_back = 0;
+    }
+    let domain_id = gmv_oauth.get_domain_id();
+    let middle_domain_mark = &domain_id[4..=8];
+    let ssrc = format!("{front_live_or_back}{middle_domain_mark}{num_ssrc:04}");
+    let stream_id = en_stream_id(device_id, channel_id, &ssrc);
+    Ok((ssrc, stream_id))
 }
 
 #[test]
@@ -121,9 +148,9 @@ fn test1() {
     println!("stream_id2 = {}", &stream_id2);
     println!("stream_id3 = {}", &stream_id3);
     println!("stream_id4 = {}", &stream_id4);
-    let (d_d_id,d_c_id,d_ssrc) = de_stream_id(&stream_id);
+    let (d_d_id, d_c_id, d_ssrc) = de_stream_id(&stream_id);
     println!("stream_id = {}", &stream_id);
-    assert_eq!(device_id,&d_d_id[..]);
-    assert_eq!(channel_id,&d_c_id[..]);
-    assert_eq!(ssrc,&d_ssrc[..]);
+    assert_eq!(device_id, &d_d_id[..]);
+    assert_eq!(channel_id, &d_c_id[..]);
+    assert_eq!(ssrc, &d_ssrc[..]);
 }

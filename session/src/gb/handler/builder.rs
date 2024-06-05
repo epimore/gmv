@@ -1,11 +1,12 @@
+use std::any::Any;
 use std::net::SocketAddr;
 
 use log::{debug, error};
-use rsip::{Error, Header, header, headers, Method, Param, param, Request, SipMessage, uri, Uri};
+use rsip::{Error, Header, header, headers, Method, Param, param, Request, Response, SipMessage, uri, Uri};
 use rsip::Header::Via;
 use rsip::headers::typed;
 use rsip::message::HeadersExt;
-use rsip::param::{OtherParam, OtherParamValue};
+use rsip::param::{Branch, OtherParam, OtherParamValue};
 use rsip::Param::Other;
 use rsip::prelude::*;
 use uuid::Uuid;
@@ -16,7 +17,8 @@ use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::warn;
 use common::rand;
-use common::rand::Rng;
+use common::rand::prelude::StdRng;
+use common::rand::{Rng, SeedableRng};
 
 use crate::gb::handler::parser;
 use crate::gb::shared::event::Ident;
@@ -29,6 +31,25 @@ use crate::general::SessionConf;
 pub struct ResponseBuilder;
 
 impl ResponseBuilder {
+    pub fn get_tag_by_header_to(response: &Response) -> GlobalResult<String> {
+        let tag = response.to_header()
+            .hand_log_err()?
+            .tag()
+            .hand_log_err()?
+            .ok_or(SysErr(anyhow!("to tag is none")))?
+            .to_string();
+        Ok(tag)
+    }
+    pub fn get_tag_by_header_from(response: &Response) -> GlobalResult<String> {
+        let tag = response.from_header()
+            .hand_log_err()?
+            .tag()
+            .hand_log_err()?
+            .ok_or(SysErr(anyhow!("from tag is none")))?
+            .to_string();
+        Ok(tag)
+    }
+
     pub fn build_401_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let other_header = Header::Other(String::from("X-GB-Ver"), String::from("2.0"));
@@ -105,7 +126,8 @@ impl ResponseBuilder {
         let mut headers: rsip::Headers = Default::default();
         headers.push(Via(via.untyped()));
         headers.push(req.from_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
-        let mut rng = rand::thread_rng();
+        let seed = [0u8; 32]; // Or any other way to seed your RNG
+        let mut rng = StdRng::from_seed(seed);
         let to = req.to_header().hand_log(|msg| warn!("{msg}"))?.typed().hand_log(|msg| warn!("{msg}"))?;
         let to = to.with_tag(rng.gen_range(123456789u32..987654321u32).to_string().into());
         headers.push(to.into());
@@ -141,7 +163,8 @@ impl RequestBuilder {
         let (mut headers, uri) = Self::build_request_header(None, device_id, false, false, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let mut rng = rand::thread_rng();
+        let seed = [0u8; 32]; // Or any other way to seed your RNG
+        let mut rng = StdRng::from_seed(seed);
         let cs_eq_str = format!("{} MESSAGE", rng.gen_range(12u32..21u32));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
@@ -162,7 +185,8 @@ impl RequestBuilder {
         let (mut headers, uri) = Self::build_request_header(None, device_id, true, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let mut rng = rand::thread_rng();
+        let seed = [0u8; 32]; // Or any other way to seed your RNG
+        let mut rng = StdRng::from_seed(seed);
         let cs_eq_str = format!("{} SUBSCRIBE", rng.gen_range(12u32..21u32));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
@@ -184,7 +208,8 @@ impl RequestBuilder {
         let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag)).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let mut rng = rand::thread_rng();
+        let seed = [0u8; 32]; // Or any other way to seed your RNG
+        let mut rng = StdRng::from_seed(seed);
         let cs_eq_str = format!("{} INFO", rng.gen_range(12u32..21u32));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
@@ -204,7 +229,7 @@ impl RequestBuilder {
 
     /// 构建下发请求头
     async fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
-                            -> GlobalResult<(rsip::Headers, Uri)> {
+                                  -> GlobalResult<(rsip::Headers, Uri)> {
         let bill = RWSession::get_bill_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_log(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
         if channel_id.is_some() {
@@ -234,7 +259,8 @@ impl RequestBuilder {
         let transport = bill.get_protocol().get_value();
         let uri_str = format!("sip:{}@{}", dst_id, domain);
         let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
-        let mut rng = rand::thread_rng();
+        let seed = [0u8; 32]; // Or any other way to seed your RNG
+        let mut rng = StdRng::from_seed(seed);
         let mut headers: rsip::Headers = Default::default();
         headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}", transport, server_ip, server_port, rng.gen_range(123456789u32..987654321u32))).into());
         headers.push(rsip::headers::From::new(format!("<sip:{}@{}>;tag={}", domain_id, domain, from_tag.unwrap_or(&rng.gen_range(123456789u32..987654321u32).to_string()))).into());
@@ -255,27 +281,28 @@ impl RequestBuilder {
         Ok((headers, uri))
     }
 
-    pub async fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::play_live(channel_id, dst_ip, dst_port, stream_mode, ssrc)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
 
     // 点播历史视频
-    pub async fn playback(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn playback(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::playback(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
     // 云端录像
-    pub async fn download(device_id: &String, channel_id: &String, dst_ip: &str, dst_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn download(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::download(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
     // 拍照
-// 云台控制
-// 拖动播放
+    // 云台控制
+    // 查询硬盘录像情况
+    // 拖动播放
     pub async fn seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_seek(seek);
         Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
@@ -287,8 +314,7 @@ impl RequestBuilder {
         Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
     }
 
-    // 查询硬盘录像情况
-// 暂停回放
+    // 暂停回放
     pub async fn pause(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_pause();
         Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
@@ -304,7 +330,8 @@ impl RequestBuilder {
         let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let mut rng = rand::thread_rng();
+        let seed = [0u8; 32]; // Or any other way to seed your RNG
+        let mut rng = StdRng::from_seed(seed);
         let cs_eq_str = format!("{} INVITE", rng.gen_range(12u32..21u32));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
@@ -327,6 +354,37 @@ impl RequestBuilder {
         let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
         Ok((ident, msg))
     }
+
+    pub fn build_ack_request_by_response(res: &Response) -> GlobalResult<SipMessage> {
+        let mut headers: rsip::Headers = Default::default();
+        headers.push(res.to_header().hand_log_err()?.clone().into());
+        let from = res.from_header().hand_log_err()?;
+        headers.push(from.clone().into());
+        headers.push(res.call_id_header().hand_log_err()?.clone().into());
+        let seed = [0u8; 32]; // Or any other way to seed your RNG
+        let mut rng = StdRng::from_seed(seed);
+        let via: typed::Via = res.via_header().hand_log_err()?.typed().hand_log(|msg| warn!("{msg}"))?;
+        headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {};rport;branch=z9hG4bK{}",
+                                                     via.transport.to_string(),
+                                                     via.uri.to_string(),
+                                                     rng.gen_range(123456789u32..987654321u32))).into());
+        let seq = res.cseq_header().hand_log_err()?.seq().hand_log_err()?;
+        headers.push(rsip::headers::CSeq::new(format!("{seq} ACK")).into());
+        let uri = from.uri().hand_log_err()?;
+        let uri_str = uri.to_string();
+        headers.push(rsip::headers::Contact::new(format!("<{uri_str}>")).into());
+        headers.push(rsip::headers::MaxForwards::new("70").into());
+        headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
+        headers.push(rsip::headers::ContentLength::default().into());
+        Ok(rsip::Request {
+            method: Method::Ack,
+            uri,
+            headers,
+            version: rsip::common::version::Version::V2,
+            body: Default::default(),
+        }.into())
+    }
+    async fn build_bye() {}
 }
 
 struct XmlBuilder;
@@ -395,24 +453,24 @@ impl SdpBuilder {
         sdp
     }
 
-    pub fn playback(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32) -> GlobalResult<String> {
+    pub fn playback(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
         let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Playback", &st_et, true, None)?;
         Ok(sdp)
     }
 
-    pub fn download(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str, st: u32, et: u32, download_speed: u8) -> GlobalResult<String> {
+    pub fn download(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32, download_speed: u8) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
         let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Download", &st_et, true, Some(download_speed))?;
         Ok(sdp)
     }
-    pub fn play_live(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str) -> GlobalResult<String> {
+    pub fn play_live(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String) -> GlobalResult<String> {
         let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Play", "0 0", false, None)?;
         Ok(sdp)
     }
 
     ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
-    fn build_common_play(channel_id: &String, media_ip: &str, media_port: u16, stream_mode: StreamMode, ssrc: &str, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
+    fn build_common_play(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
         let conf = SessionConf::get_session_conf_by_cache();
         let session_ip = &conf.get_wan_ip().to_string();
         let mut sdp = String::with_capacity(300);

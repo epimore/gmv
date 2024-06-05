@@ -166,6 +166,12 @@ pub mod rw {
     }
 
     impl RequestOutput {
+        pub async fn do_send_off(device_id: &String, msg: SipMessage) -> GlobalResult<()> {
+            let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
+            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(msg)))).await.hand_log_err();
+            Ok(())
+        }
+
         pub async fn do_send(self) -> GlobalResult<()> {
             let device_id = self.ident.get_device_id();
             let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
@@ -296,7 +302,7 @@ pub mod event {
         }
 
         //即时事件监听，延迟事件监听
-        pub(crate) async fn listen_event(ident: &Ident, when: Instant, container: Container)->GlobalResult<()> {
+        pub(crate) async fn listen_event(ident: &Ident, when: Instant, container: Container) -> GlobalResult<()> {
             let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             match state.device_session.entry(ident.call_id.clone()) {
@@ -320,7 +326,7 @@ pub mod event {
             });
         }
 
-        pub async fn handle_response(call_id: String, cs_eq: String, res: Response) ->GlobalResult<()>{
+        pub async fn handle_response(call_id: String, cs_eq: String, res: Response) -> GlobalResult<()> {
             let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             match state.device_session.get(&call_id) {
@@ -334,7 +340,7 @@ pub mod event {
         }
 
         //用于一次请求有多次响应：如点播时，有100-trying，再200-OK两次响应
-        //接收端确认无后继响应时，需调用remove_listen_event()，清理会话
+        //接收端确认无后继响应时，需调用remove_event()，清理会话
         async fn handle_event(ident: &Ident, response: Response, state: &mut State) -> GlobalResult<()> {
             match state.ident_map.get(ident) {
                 None => {

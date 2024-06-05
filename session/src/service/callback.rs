@@ -30,48 +30,49 @@ pub async fn call_stream_state(opt_stream_id: Option<&String>, gmv_token: &Strin
         uri = format!("{uri}{QUERY_STATE}");
     }
 
-    let body = reqwest::Client::builder()
+    let res = reqwest::Client::builder()
         .default_headers(headers)
         .build()
         .hand_log(|msg| error!("{msg}"))?
         .get(&uri)
         .send()
         .await
-        .hand_log(|msg| error!("{msg}"))?
-        .json::<ResMsg<Vec<StreamState>>>()
-        .await
         .hand_log(|msg| error!("{msg}"))?;
-    return if body.code == 0 {
-        if let Some(data) = body.data {
-            return Ok(data);
+    return if res.status().is_success() {
+        let body = res.json::<ResMsg<Vec<StreamState>>>()
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        if body.code == 0 {
+            if let Some(data) = body.data {
+                return Ok(data);
+            }
         }
         Ok(Vec::new())
     } else {
-        Err(SysErr(anyhow!("{}",body.msg)))
+        Err(SysErr(anyhow!("{}",res.status().to_string())))
     };
 }
 
 pub async fn call_listen_ssrc(stream_id: &String, ssrc: &String, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<bool> {
     let (mut uri, headers) = build_uri_header(gmv_token, local_ip, local_port)?;
     uri = format!("{uri}{LISTEN_SSRC}?stream_id={stream_id}&ssrc={ssrc}");
-    let body = reqwest::Client::builder()
+    let res = reqwest::Client::builder()
         .default_headers(headers)
         .build()
         .hand_log(|msg| error!("{msg}"))?
         .get(&uri)
         .send()
         .await
-        .hand_log(|msg| error!("{msg}"))?
-        .json::<ResMsg<bool>>()
-        .await
         .hand_log(|msg| error!("{msg}"))?;
-
-    return if body.code == 0 {
+    return if res.status().is_success() {
+        let body = res.json::<ResMsg<bool>>()
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
         if let Some(data) = body.data {
             return Ok(data);
         }
         Ok(false)
-    } else {
-        Err(SysErr(anyhow!("{}",body.msg)))
+    }else {
+        Err(SysErr(anyhow!("{}",res.status().to_string())))
     };
 }

@@ -5,6 +5,9 @@ use constructor::{Get, New};
 pub mod handler;
 mod callback;
 
+pub const EXPIRES: u64 = 8;
+pub const RELOAD_EXPIRES: u64 = 2;
+
 #[derive(Serialize, Object, Deserialize, Debug)]
 pub struct ResMsg<T: Serialize + Sync + Send + poem_openapi::types::Type + poem_openapi::types::ToJSON + poem_openapi::types::ParseFromJSON> {
     code: i8,

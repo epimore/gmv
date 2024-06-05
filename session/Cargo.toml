@@ -21,3 +21,5 @@ poem = "2.0"
 poem-openapi = { version = "4.0", features = ["swagger-ui"] }
 bimap = "0.6"
 reqwest = {version = "0.12",features = ["json"]}
+sdp-types = "0.1"
+regex = "1.10.4"

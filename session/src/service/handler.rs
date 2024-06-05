@@ -8,11 +8,14 @@ use common::err::{GlobalError, GlobalResult, TransError};
 use common::tokio::sync::mpsc;
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time::Instant;
+use crate::gb::handler::cmd::CmdStream;
 use crate::gb::RWSession;
 
 use crate::general;
-use crate::general::model::{PlayLiveModel, StreamInfo};
-use crate::service::{BaseStreamInfo, callback};
+use crate::general::cache::PlayType;
+use crate::general::model::{PlayLiveModel, StreamInfo, StreamMode};
+use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES};
+use crate::utils::id_builder;
 
 const KEY_STREAM_IN: &str = "KEY_STREAM_IN:";
 
@@ -27,7 +30,6 @@ pub async fn stream_in(base_stream_info: BaseStreamInfo) {
         let bytes = Bytes::from(vec);
         let _ = tx.send(Some(bytes)).await.hand_log(|msg| error!("{msg}"));
     }
-
 }
 
 pub async fn stream_input_timeout() {}
@@ -44,16 +46,34 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
         general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
         return Ok(StreamInfo::build(stream_id, node_name));
     }
-
-    unimplemented!()
+    let (stream_id, node_name) = start_live_stream(device_id, channel_id, &token).await?;
+    general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+    Ok(StreamInfo::build(stream_id, node_name))
 }
 
-async fn start_live_stream(device_id: &String, channel_id: &String, token: &String)->GlobalResult<()>{
+//选择流媒体节点（可用+负载最小）-> 监听流注册
+//发起实时点播 -> 监听设备响应
+//缓存流信息
+async fn start_live_stream(device_id: &String, channel_id: &String, token: &String) -> GlobalResult<(String, String)> {
     let num_ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
     let mut node_sets = general::cache::Cache::stream_map_order_node();
-    while let Some((_,node_name)) = node_sets.pop_first() {
-        let stream_node = general::StreamConf::get_session_conf_by_cache().get_node_map().get(&node_name).unwrap();
-
+    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, num_ssrc, true)?;
+    //选择负载最小的节点开始尝试：节点是否可用;
+    while let Some((_, node_name)) = node_sets.pop_first() {
+        let conf = general::StreamConf::get_session_conf_by_cache();
+        let stream_node = conf.get_node_map().get(&node_name).unwrap();
+        if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
+            let (res, _media_map) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
+            //todo _media_map 可回调给gmv-stream 使其确认媒体类型
+            CmdStream::play_live_ack(device_id, &res).await?;
+            return if let Some(base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
+                general::cache::Cache::stream_map_insert_node_name(stream_id.clone(), node_name.clone());
+                general::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), PlayType::Live);
+                Ok((stream_id, node_name))
+            } else {
+                Err(GlobalError::new_biz_error(1100, "未接收到监控推流", |msg| error!("{msg}")))
+            };
+        }
     }
     Err(GlobalError::new_biz_error(1100, "无可用流媒体服务", |msg| error!("{msg}")))
 }
@@ -75,7 +95,7 @@ async fn enable_live_stream(device_id: &String, channel_id: &String, token: &Str
                         if vec.len() == 0 {
                             //session有流信息,stream无流存在=>进一步判断可能是stream重启导致没有该监听,重启监听等待结果
                             if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
-                                if let Some(_) = listen_stream_by_stream_id(&stream_id, 2).await {
+                                if let Some(_) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
                                     res = Some((stream_id.clone(), node_name));
                                 }
                             }
@@ -98,7 +118,7 @@ async fn enable_live_stream(device_id: &String, channel_id: &String, token: &Str
 
 
 async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<BaseStreamInfo> {
-    let (tx, mut rx) = mpsc::channel(1);
+    let (tx, mut rx) = mpsc::channel(8);
     let when = Instant::now() + Duration::from_secs(secs);
     let key = format!("{KEY_STREAM_IN}{stream_id}");
     general::cache::Cache::state_insert(key.clone(), Bytes::new(), Some(when), Some(tx)).await;
