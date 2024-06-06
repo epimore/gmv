@@ -16,12 +16,12 @@ impl RestApi {
     #[allow(non_snake_case)]
     #[oai(path = "/play/live/stream", method = "post")]
     /// 点播监控实时画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
-    async fn play_live(&self, live: Json<PlayLiveModel>, #[oai(name = "gmv-token")] token: Header<String>) -> Json<ResultMessageData<Option<StreamInfo>>> {
+    async fn play_live(&self, live: Json<PlayLiveModel>, #[oai(name = "gmv-token")] token: Header<String>) -> Json<ResultMessageData<StreamInfo>> {
         let header = token.0;
         let live_model = live.0;
         info!("header = {:?},body = {:?}", &header,&live_model);
         match handler::play_live(live_model, header).await {
-            Ok(data) => { Json(ResultMessageData::build_success(Some(data))) }
+            Ok(data) => { Json(ResultMessageData::build_success(data)) }
             Err(err) => {
                 error!("{}",err.to_string());
                 match err {

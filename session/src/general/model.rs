@@ -46,7 +46,7 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
         Self { code: 200, msg: Some("success".to_string()), data: None }
     }
     pub fn build_failure() -> Self {
-        Self { code: 500, msg: Some("操作失败".to_string()), data: None }
+        Self { code: 500, msg: Some("failure".to_string()), data: None }
     }
     pub fn build_failure_msg(msg: String) -> Self {
         Self { code: 500, msg: Some(msg), data: None }

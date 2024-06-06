@@ -24,25 +24,29 @@ pub struct HookApi;
 #[OpenApi(prefix_path = "/hook")]
 impl HookApi {
     #[oai(path = "/stream/in", method = "post")]
-    async fn stream_in(&self, base_stream_info: Json<BaseStreamInfo>) -> Json<ResultMessageData<Option<bool>>> {
+    async fn stream_in(&self, base_stream_info: Json<BaseStreamInfo>) -> Json<ResultMessageData<bool>> {
         let info = base_stream_info.0;
-        info!("base_stream_info = {:?}", &info);
+        info!("stream_in = {:?}", &info);
         handler::stream_in(info).await;
         Json(ResultMessageData::build_success_none())
     }
     #[oai(path = "/stream/input/timeout", method = "post")]
-    async fn stream_input_timeout(&self, stream_state: Json<StreamState>) -> Json<ResultMessageData<Option<bool>>> {
+    async fn stream_input_timeout(&self, stream_state: Json<StreamState>) -> Json<ResultMessageData<bool>> {
         let info = stream_state.0;
-        info!("stream_state = {:?}", &info);
+        info!("stream_input_timeout = {:?}", &info);
         handler::stream_input_timeout(info);
         Json(ResultMessageData::build_success_none())
     }
     #[oai(path = "/on/play", method = "post")]
-    async fn on_play(&self, stream_play_info: Json<StreamPlayInfo>) -> Json<ResultMessageData<Option<bool>>> {
-        Json(ResultMessageData::build_success_none())
+    async fn on_play(&self, stream_play_info: Json<StreamPlayInfo>) -> Json<ResultMessageData<bool>> {
+        let info = stream_play_info.0;
+        info!("on_play = {:?}", &info);
+        Json(ResultMessageData::build_success(handler::on_play(info)))
     }
     #[oai(path = "/off/play", method = "post")]
-    async fn off_play(&self, stream_play_info: Json<StreamPlayInfo>) -> Json<ResultMessageData<Option<bool>>> {
-        Json(ResultMessageData::build_success_none())
+    async fn off_play(&self, stream_play_info: Json<StreamPlayInfo>) -> Json<ResultMessageData<bool>> {
+        let info = stream_play_info.0;
+        info!("off_play = {:?}", &info);
+        Json(ResultMessageData::build_success(handler::off_play(info)))
     }
 }

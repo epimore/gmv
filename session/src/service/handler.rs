@@ -14,14 +14,34 @@ use crate::gb::RWSession;
 use crate::general;
 use crate::general::cache::PlayType;
 use crate::general::model::{PlayLiveModel, StreamInfo, StreamMode};
-use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES, StreamState};
+use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES, StreamPlayInfo, StreamState};
 use crate::utils::id_builder;
 
 const KEY_STREAM_IN: &str = "KEY_STREAM_IN:";
 
-pub async fn on_play() {}
+pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
+    let gmv_token = stream_play_info.get_token();
+    let stream_id = stream_play_info.base_stream_info.get_stream_id();
+    general::cache::Cache::stream_map_contains_token(stream_id, gmv_token)
+}
 
-pub async fn off_play() {}
+pub fn off_play(stream_play_info: StreamPlayInfo) -> bool {
+    let stream_id = stream_play_info.base_stream_info.get_stream_id();
+    let gmv_token = stream_play_info.get_token();
+    general::cache::Cache::stream_map_remove(stream_id, Some(gmv_token));
+    if (stream_play_info.flv_play_count == 0 && stream_play_info.hls_play_count == 0)
+        || general::cache::Cache::stream_map_query_node_name(stream_id).is_none() {
+        if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(stream_id) {
+            let (device_id, channel_id, ssrc_str) = id_builder::de_stream_id(stream_id);
+            general::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((play_type, &ssrc_str)))));
+        }
+        let ssrc = stream_play_info.base_stream_info.rtp_info.ssrc;
+        let ssrc_num = (ssrc % 10000) as u16;
+        general::cache::Cache::ssrc_sn_set(ssrc_num);
+        return true;
+    }
+    false
+}
 
 pub async fn stream_in(base_stream_info: BaseStreamInfo) {
     let key_stream_in_id = format!("{KEY_STREAM_IN}{}", base_stream_info.get_stream_id());

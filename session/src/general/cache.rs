@@ -148,6 +148,18 @@ impl Cache {
         }
     }
 
+    pub fn stream_map_token_size(stream_id: &String) -> usize {
+        match GENERAL_CACHE.shared.stream_map.get(stream_id) {
+            None => { 0 }
+            Some(inner_ref) => {
+                if let (Some(sets), _, _, _, _) = inner_ref.value() {
+                    return sets.len();
+                }
+                0
+            }
+        }
+    }
+
     //确认流与用户是否建立了关系
     pub fn stream_map_contains_token(stream_id: &String, gmv_token: &String) -> bool {
         match GENERAL_CACHE.shared.stream_map.get(stream_id) {

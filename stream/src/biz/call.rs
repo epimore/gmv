@@ -1,20 +1,30 @@
 use std::net::SocketAddr;
 use std::time::Duration;
+
+use log::{log, warn};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
+
 use common::anyhow::Error;
 use common::err::{GlobalResult, TransError};
 use common::log::error;
 use constructor::{Get, New};
-use log::{log, warn};
+
 use crate::general::mode;
 use crate::general::mode::TIME_OUT;
 use crate::state::cache;
 
-#[derive(Deserialize)]
-struct RespBo {
-    code: i16,
+// #[derive(Deserialize)]
+// struct RespBo {
+//     code: i16,
+//     msg: Option<String>,
+// }
+
+#[derive(Serialize, Deserialize)]
+pub struct RespBo<T> {
+    code: u16,
     msg: Option<String>,
+    data: Option<T>,
 }
 
 #[derive(New, Serialize, Get)]
@@ -77,8 +87,8 @@ impl StreamPlayInfo {
             .hand_log(|msg| error!("{msg}"));
         match res {
             Ok(resp) => {
-                match (resp.status().is_success(), resp.json::<RespBo>().await) {
-                    (true, Ok(RespBo { code: 0, msg: _ })) => {
+                match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
+                    (true, Ok(RespBo { code: 200, msg: _, data: Some(true) })) => {
                         Some(true)
                     }
                     _ => {
@@ -102,8 +112,8 @@ impl StreamPlayInfo {
             .hand_log(|msg| error!("{msg}"));
         match res {
             Ok(resp) => {
-                match (resp.status().is_success(), resp.json::<RespBo>().await) {
-                    (true, Ok(RespBo { code: 1, msg: _ })) => {
+                match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
+                    (true, Ok(RespBo { code: 200, msg: _, data: Some(true) })) => {
                         Some(true)
                     }
                     _ => {
@@ -151,7 +161,7 @@ impl StreamState {
             .hand_log(|msg| error!("{msg}"));
         match res {
             Ok(resp) => {
-                match (resp.status().is_success(), resp.json::<RespBo>().await) {
+                match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
                     (true, Ok(_)) => {
                         Some(true)
                     }
