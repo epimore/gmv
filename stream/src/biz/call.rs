@@ -58,9 +58,8 @@ impl BaseStreamInfo {
 #[derive(New, Serialize, Get)]
 pub struct StreamPlayInfo {
     base_stream_info: BaseStreamInfo,
-    remote_addr: SocketAddr,
+    remote_addr: String,
     token: String,
-    //0-flv,1-hls
     play_type: String,
     //当前观看人数
     flv_play_count: u32,

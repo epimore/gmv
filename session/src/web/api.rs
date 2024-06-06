@@ -3,7 +3,9 @@ use poem::FromRequest;
 use poem_openapi::OpenApi;
 use poem_openapi::param::Header;
 use poem_openapi::payload::{Form, Json};
+
 use common::err::{GlobalError, GlobalResult};
+
 use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
 use crate::service::{BaseStreamInfo, handler};
 
@@ -32,14 +34,6 @@ impl RestApi {
                 }
             }
         }
-    }
-
-    #[oai(path = "/stream/in", method = "post")]
-    async fn stream_in(&self, base_stream_info: Json<BaseStreamInfo>) -> Json<ResultMessageData<Option<bool>>> {
-        let info = base_stream_info.0;
-        info!("base_stream_info = {:?}", &info);
-        handler::stream_in(info).await;
-        Json(ResultMessageData::build_success_none())
     }
 
     //

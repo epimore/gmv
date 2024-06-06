@@ -123,7 +123,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
         None => { res_404() }
         Some((bsi, flv_tokens, hls_tokens)) => {
             let ssrc = *(bsi.get_rtp_info().get_ssrc());
-            let info = StreamPlayInfo::new(bsi, remote_addr, token.clone(), play_type.clone(), flv_tokens, hls_tokens);
+            let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token.clone(), play_type.clone(), flv_tokens, hls_tokens);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
             let _ = event_tx.clone().send((Event::onPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
@@ -150,7 +150,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                             client_connection_cancel.cancelled().await;
                                             cache::update_token(&stream_id, &play_type, token.clone(), false);
                                             if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
-                                                let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
+                                                let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token, play_type, flv_tokens, hls_tokens);
                                                 let _ = event_tx.send((Event::offPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });
@@ -171,7 +171,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                             client_connection_cancel.cancelled().await;
                                             cache::update_token(&stream_id, &play_type, token.clone(), false);
                                             if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
-                                                let info = StreamPlayInfo::new(bsi, remote_addr, token, play_type, flv_tokens, hls_tokens);
+                                                let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token, play_type, flv_tokens, hls_tokens);
                                                 let _ = event_tx.send((Event::offPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });

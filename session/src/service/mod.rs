@@ -1,5 +1,6 @@
 use poem_openapi::Object;
 use serde::{Deserialize, Serialize};
+
 use constructor::{Get, New};
 
 pub mod handler;
@@ -38,4 +39,24 @@ pub struct RtpInfo {
     //媒体流源地址
     origin_addr: Option<String>,
     server_name: String,
+}
+
+#[derive(New, Object, Serialize, Deserialize, Get, Debug)]
+pub struct StreamPlayInfo {
+    base_stream_info: BaseStreamInfo,
+    remote_addr: String,
+    token: String,
+    play_type: String,
+    //当前观看人数
+    flv_play_count: u32,
+    hls_play_count: u32,
+}
+
+#[derive(New, Object, Serialize, Deserialize, Get, Debug)]
+pub struct StreamRecordInfo {
+    base_stream_info: BaseStreamInfo,
+    file_path: String,
+    file_name: String,
+    //单位kb
+    file_size: u32,
 }

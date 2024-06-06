@@ -8,5 +8,5 @@ server:
   rtp-port: 18568 #监听rtp媒体流端口;
   rtcp-port: 18569 #监听rtcp媒体流端口;
   http-port: 18570 #流媒体API端口
-  hook-uri: http://127.0.0.1:18567 #信令服务的地址
+  hook-uri: http://127.0.0.1:18567/session/hook #信令服务的地址
 
