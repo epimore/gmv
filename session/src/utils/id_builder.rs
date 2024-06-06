@@ -154,3 +154,19 @@ fn test1() {
     assert_eq!(channel_id, &d_c_id[..]);
     assert_eq!(ssrc, &d_ssrc[..]);
 }
+
+#[test]
+fn test_ssrc_to_ssrc_num() {
+    let ssrc1: u32 = 1100009001;
+    let ssrc_num1 = (ssrc1 % 10000) as u16;
+    assert_eq!(ssrc_num1,9001);
+    let ssrc2: u32 = 1100000001;
+    let ssrc_num2 = (ssrc2 % 10000) as u16;
+    assert_eq!(ssrc_num2,1);
+    let ssrc3: u32 = 1100000801;
+    let ssrc_num3 = (ssrc3 % 10000) as u16;
+    assert_eq!(ssrc_num3,801);
+    let ssrc4: u32 = 1100019999;
+    let ssrc_num4 = (ssrc4 % 10000) as u16;
+    assert_eq!(ssrc_num4,9999)
+}

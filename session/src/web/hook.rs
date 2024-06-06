@@ -6,7 +6,6 @@ use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
 use crate::service::{BaseStreamInfo, handler, StreamPlayInfo, StreamState};
 
 
-
 ////callback uri start
 // //ssrc流注册
 // pub const STREAM_IN: &str = "/stream/in";
@@ -33,6 +32,9 @@ impl HookApi {
     }
     #[oai(path = "/stream/input/timeout", method = "post")]
     async fn stream_input_timeout(&self, stream_state: Json<StreamState>) -> Json<ResultMessageData<Option<bool>>> {
+        let info = stream_state.0;
+        info!("stream_state = {:?}", &info);
+        handler::stream_input_timeout(info);
         Json(ResultMessageData::build_success_none())
     }
     #[oai(path = "/on/play", method = "post")]

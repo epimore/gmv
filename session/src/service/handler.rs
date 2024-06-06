@@ -14,7 +14,7 @@ use crate::gb::RWSession;
 use crate::general;
 use crate::general::cache::PlayType;
 use crate::general::model::{PlayLiveModel, StreamInfo, StreamMode};
-use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES};
+use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES, StreamState};
 use crate::utils::id_builder;
 
 const KEY_STREAM_IN: &str = "KEY_STREAM_IN:";
@@ -32,7 +32,18 @@ pub async fn stream_in(base_stream_info: BaseStreamInfo) {
     }
 }
 
-pub async fn stream_input_timeout() {}
+//gmv-stream接收流超时:还ssrc_sn,清理stream_map/device_map
+pub fn stream_input_timeout(stream_state: StreamState) {
+    let ssrc = stream_state.base_stream_info.rtp_info.ssrc;
+    let ssrc_num = (ssrc % 10000) as u16;
+    general::cache::Cache::ssrc_sn_set(ssrc_num);
+    let stream_id = stream_state.base_stream_info.get_stream_id();
+    if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(stream_id) {
+        general::cache::Cache::stream_map_remove(stream_id, None);
+        let (device_id, channel_id, ssrc) = id_builder::de_stream_id(stream_id);
+        general::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((play_type, &ssrc)))));
+    }
+}
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = play_live_model.get_deviceId();
@@ -67,7 +78,7 @@ async fn start_live_stream(device_id: &String, channel_id: &String, token: &Stri
             //todo _media_map 可回调给gmv-stream 使其确认媒体类型
             let (call_id, seq) = CmdStream::play_live_ack(device_id, &res).await?;
             return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                general::cache::Cache::stream_map_insert_node_name(stream_id.clone(), node_name.clone(), call_id, seq);
+                general::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, PlayType::Live);
                 general::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), PlayType::Live);
                 Ok((stream_id, node_name))
             } else {
@@ -129,4 +140,3 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
     general::cache::Cache::state_remove(&key).await;
     res
 }
-

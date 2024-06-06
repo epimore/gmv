@@ -66,6 +66,15 @@ pub fn res_404() -> GlobalResult<Response<Body>> {
     return Ok(res);
 }
 
+//todo 获取流超时对点播方响应
+pub fn res_404_stream_timeout() -> GlobalResult<Response<Body>> {
+    let json_data = ResMsg::<bool>::build_failed_by_msg("404:media stream disconnected".to_string()).to_json()?;
+    let res = Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
+    return Ok(res);
+}
+
 pub fn res_422() -> GlobalResult<Response<Body>> {
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
     let json_data = ResMsg::<bool>::build_failed_by_msg("参数错误".to_string()).to_json()?;

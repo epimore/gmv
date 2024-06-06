@@ -353,7 +353,7 @@ pub mod event {
                             if response.status_code.code() < 300 {
                                 info!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
                             } else {
-                                warn!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
+                                error!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
                             }
                             //当tx为some时发送响应结果，不清理会话，由相应rx接收端根据自身业务清理
                             if let Some(tx) = res {

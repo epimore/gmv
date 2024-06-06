@@ -23,6 +23,7 @@ use common::tokio::sync::{Mutex, Notify};
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
+use crate::utils::id_builder;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 
@@ -48,7 +49,7 @@ impl Cache {
     pub fn stream_map_order_node() -> BTreeSet<(u16, String)> {
         let mut map = HashMap::<String, u16>::new();
         while let Some(item) = GENERAL_CACHE.shared.stream_map.iter().next() {
-            let (_, node_name, _, _) = item.value();
+            let (_, node_name, _, _, _) = item.value();
             match map.entry(node_name.clone()) {
                 Occupied(mut occ) => {
                     let count = occ.get_mut();
@@ -72,7 +73,7 @@ impl Cache {
     pub fn stream_map_insert_token(stream_id: String, gmv_token: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(mut occ) => {
-                let (opt_sets, _, _, _) = occ.get_mut();
+                let (opt_sets, _, _, _, _) = occ.get_mut();
                 match opt_sets {
                     None => {
                         let mut sets = HashSet::new();
@@ -93,11 +94,11 @@ impl Cache {
     }
 
     //当媒体流注册时，需插入建立关系,成功插入：true
-    pub fn stream_map_insert_node_name(stream_id: String, stream_node_name: String, call_id: String, seq: u32) -> bool {
+    pub fn stream_map_insert_info(stream_id: String, stream_node_name: String, call_id: String, seq: u32, play_type: PlayType) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => { false }
             Entry::Vacant(vac) => {
-                vac.insert((None, stream_node_name, call_id, seq));
+                vac.insert((None, stream_node_name, call_id, seq, play_type));
                 true
             }
         }
@@ -106,7 +107,7 @@ impl Cache {
     pub fn stream_map_query_node_name(stream_id: &String) -> Option<String> {
         GENERAL_CACHE.shared.stream_map.get(stream_id)
             .map(|item| {
-                let (_, node_name, _, _) = item.value();
+                let (_, node_name, _, _, _) = item.value();
                 node_name.clone()
             })
     }
@@ -123,7 +124,7 @@ impl Cache {
             Some(token) => {
                 match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
                     Entry::Occupied(mut occ) => {
-                        if let (Some(sets), _, _, _) = occ.get_mut() {
+                        if let (Some(sets), _, _, _, _) = occ.get_mut() {
                             match sets.len() {
                                 0 => {
                                     occ.remove();
@@ -152,7 +153,7 @@ impl Cache {
         match GENERAL_CACHE.shared.stream_map.get(stream_id) {
             None => { false }
             Some(inner_ref) => {
-                if let (Some(sets), _, _, _) = inner_ref.value() {
+                if let (Some(sets), _, _, _, _) = inner_ref.value() {
                     return sets.contains(gmv_token);
                 }
                 false
@@ -163,10 +164,17 @@ impl Cache {
     pub fn stream_map_build_call_id_and_seq(stream_id: &String) -> Option<(String, u32)> {
         GENERAL_CACHE.shared.stream_map.get_mut(stream_id)
             .map(|mut ref_mut| {
-                let (_tokens, _node_name, call_id, seq) = ref_mut.value_mut();
+                let (_tokens, _node_name, call_id, seq, _play_type) = ref_mut.value_mut();
                 *seq += 1;
                 (call_id.clone(), *seq)
             })
+    }
+
+    pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<PlayType> {
+        GENERAL_CACHE.shared.stream_map.get(stream_id).map(|res| {
+            let (_, _, _, _, play_type) = res.value();
+            play_type.clone()
+        })
     }
 
     //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
@@ -467,7 +475,7 @@ struct Shared {
     //存放原始可用的ssrc序号
     ssrc_sn: DashSet<u16>,
     //stream_id:(set<gmv_token>,stream_node_name,call_id,seq)
-    stream_map: DashMap<String, (Option<HashSet<String>>, String, String, u32)>,
+    stream_map: DashMap<String, (Option<HashSet<String>>, String, String, u32, PlayType)>,
     //device_id:HashMap<channel_id,HashMap<playType,BiMap<stream_id,ssrc>>
     device_map: DashMap<String, HashMap<String, HashMap<PlayType, BiMap<String, String>>>>,
 }
@@ -505,13 +513,13 @@ mod tests {
 
     #[test]
     fn test_stream_map() {
-        Cache::stream_map_insert_node_name("ID1".to_string(), "NODE1".to_string(), "call_id".to_string(), 1);
+        Cache::stream_map_insert_info("ID1".to_string(), "NODE1".to_string(), "call_id".to_string(), 1, PlayType::Live);
         let opt = Cache::stream_map_build_call_id_and_seq(&"ID1".to_string());
         assert_eq!(opt, Some(("call_id".to_string(), 2)));
 
-        Cache::stream_map_insert_node_name("ID2".to_string(), "NODE2".to_string(), "call_id".to_string(), 1);
-        Cache::stream_map_insert_node_name("ID3".to_string(), "NODE3".to_string(), "call_id".to_string(), 1);
-        Cache::stream_map_insert_node_name("ID4".to_string(), "NODE4".to_string(), "call_id".to_string(), 1);
+        Cache::stream_map_insert_info("ID2".to_string(), "NODE2".to_string(), "call_id".to_string(), 1, PlayType::Live);
+        Cache::stream_map_insert_info("ID3".to_string(), "NODE3".to_string(), "call_id".to_string(), 1, PlayType::Live);
+        Cache::stream_map_insert_info("ID4".to_string(), "NODE4".to_string(), "call_id".to_string(), 1, PlayType::Live);
         Cache::stream_map_insert_token("ID1".to_string(), "TOKEN1".to_string());
         Cache::stream_map_insert_token("ID2".to_string(), "TOKEN2".to_string());
         Cache::stream_map_insert_token("ID1".to_string(), "XXX".to_string());
@@ -529,7 +537,7 @@ mod tests {
         for en in GENERAL_CACHE.shared.stream_map.iter() {
             let key = en.key();
             println!("{key}");
-            if let (Some(sets), _, call_id, seq) = en.value() {
+            if let (Some(sets), _, call_id, seq, _) = en.value() {
                 println!("call_id = {}, seq = {}", call_id, seq);
                 let mut iter = sets.iter();
                 if key[..].eq("ID1") {
