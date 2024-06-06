@@ -65,9 +65,9 @@ async fn start_live_stream(device_id: &String, channel_id: &String, token: &Stri
         if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
             let (res, _media_map) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
             //todo _media_map 可回调给gmv-stream 使其确认媒体类型
-            CmdStream::play_live_ack(device_id, &res).await?;
-            return if let Some(base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                general::cache::Cache::stream_map_insert_node_name(stream_id.clone(), node_name.clone());
+            let (call_id, seq) = CmdStream::play_live_ack(device_id, &res).await?;
+            return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
+                general::cache::Cache::stream_map_insert_node_name(stream_id.clone(), node_name.clone(), call_id, seq);
                 general::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), PlayType::Live);
                 Ok((stream_id, node_name))
             } else {

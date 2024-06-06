@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use log::{error, info};
 use regex::Regex;
+use rsip::prelude::HeadersExt;
 use rsip::Response;
 use common::clap::builder::IntoResettable;
 use common::err::{GlobalError, GlobalResult, TransError};
@@ -92,9 +93,12 @@ impl CmdStream {
         return Err(GlobalError::new_biz_error(1000, "摄像机响应超时", |msg| error!("{msg}")));
     }
 
-    pub async fn play_live_ack(device_id: &String, response: &Response) -> GlobalResult<()> {
+    pub async fn play_live_ack(device_id: &String, response: &Response) -> GlobalResult<(String, u32)> {
         let ack_request = RequestBuilder::build_ack_request_by_response(response)?;
-        RequestOutput::do_send_off(device_id, ack_request).await
+        let call_id = ack_request.call_id_header().hand_log_err()?.to_string();
+        let seq = ack_request.cseq_header().hand_log_err()?.seq().hand_log_err()?;
+        RequestOutput::do_send_off(device_id, ack_request).await.hand_log_err()?;
+        Ok((call_id, seq))
     }
 }
 
