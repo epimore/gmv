@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use webrtc::rtp::packet::Packet;
 
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
@@ -49,7 +50,7 @@ pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()
 }
 
 //返回rtp_tx
-pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>)> {
+pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>)> {
     let guard = SESSION.shared.state.read();
     let mut first_in = false;
     if let Some((on, when, stream_id, expires, channel, reported_time, info)) = guard.sessions.get(&ssrc) {
@@ -129,7 +130,7 @@ pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     }
 }
 
-pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Bytes>> {
+pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Packet>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -139,7 +140,7 @@ pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Bytes>> {
     }
 }
 
-pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Bytes>> {
+pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Packet>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -388,7 +389,7 @@ impl State {
     }
 }
 
-type SyncChannel = (crossbeam_channel::Sender<Bytes>, crossbeam_channel::Receiver<Bytes>);
+type SyncChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
 type BroadcastChannel = (broadcast::Sender<Bytes>, broadcast::Receiver<Bytes>);
 
 #[derive(Debug)]
@@ -409,10 +410,10 @@ impl Channel {
             hls_channel,
         }
     }
-    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Bytes> {
+    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Packet> {
         self.rtp_channel.1.clone()
     }
-    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<Bytes> {
+    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<Packet> {
         self.rtp_channel.0.clone()
     }
     fn get_flv_tx(&self) -> broadcast::Sender<Bytes> {

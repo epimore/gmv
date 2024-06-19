@@ -20,7 +20,7 @@ use crate::state::cache;
 //     msg: Option<String>,
 // }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RespBo<T> {
     code: u16,
     msg: Option<String>,
@@ -85,10 +85,11 @@ impl StreamPlayInfo {
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
             .hand_log(|msg| error!("{msg}"));
+        println!("response = {:?}", &res);
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
-                    (true, Ok(RespBo { code: 200, msg: _, data: Some(true) })) => {
+                    (true, Ok(RespBo { code: 0, msg: _, data: Some(true) })) => {
                         Some(true)
                     }
                     _ => {
@@ -113,7 +114,7 @@ impl StreamPlayInfo {
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
-                    (true, Ok(RespBo { code: 200, msg: _, data: Some(true) })) => {
+                    (true, Ok(RespBo { code: 0, msg: _, data: Some(true) })) => {
                         Some(true)
                     }
                     _ => {

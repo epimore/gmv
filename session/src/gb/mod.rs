@@ -8,7 +8,7 @@ use rsip::message::HeadersExt;
 use common::err::{GlobalResult, TransError};
 use common::log::{debug, error};
 use common::net;
-use common::net::shared::{Zip};
+use common::net::shared::{Package, Zip};
 use crate::gb::handler::parser;
 use crate::gb::shared::event::{EventSession, Ident};
 pub use crate::gb::shared::rw::RWSession;
@@ -19,10 +19,9 @@ pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
     let (output, mut input) = net::init_net(net::shared::Protocol::ALL, socket_addr).await.hand_log(|msg| error!("{msg}")).expect("网络监听失败");
     while let Some(zip) = input.recv().await {
         debug!("receive {:?}",&zip);
-        let bill = zip.get_bill();
         match zip {
-            Zip::Data(package) => {
-                match SipMessage::try_from(package.get_owned_data()) {
+            Zip::Data(Package { bill, data }) => {
+                match SipMessage::try_from(data) {
                     Ok(msg) => {
                         match msg {
                             SipMessage::Request(req) => {
@@ -31,7 +30,7 @@ pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
                             SipMessage::Response(res) => {
                                 let call_id: String = res.call_id_header().hand_log(|msg| error!("{msg}"))?.clone().into();
                                 let cs_eq: String = res.cseq_header().hand_log(|msg| error!("{msg}"))?.clone().into();
-                                EventSession::handle_response(call_id,cs_eq,res).await?;
+                                EventSession::handle_response(call_id, cs_eq, res).await?;
                             }
                         }
                     }

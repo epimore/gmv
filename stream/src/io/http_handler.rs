@@ -106,7 +106,7 @@ async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, 
                         let play_type = &uri[index + 1..];
                         if play_type.eq("flv") || play_type.eq("m3u8") {
                             let stream_id = (&uri[p_len..index]).to_string();
-                            return api::start_play(stream_id, play_type.to_string(), token, remote_addr, client_connection_cancel).await;
+                            return api::start_play(play_type.to_string(),stream_id, token, remote_addr, client_connection_cancel).await;
                         }
                     }
                 }

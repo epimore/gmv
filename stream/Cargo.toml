@@ -1,5 +1,5 @@
 [package]
-name = "stream"
+name = "gmv-stream"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 common = { path = "../../pig/common", features = ["net"] }
 constructor = { path = "../../macros/constructor" }
-discortp = { version = "0.6.0", features = ["discord-full"] }
+#discortp = { version = "0.6.0", features = ["discord-full"] }
 parking_lot = "0.12"
 #ffmpeg-next = { version = "7.0", features = ["default", "static"] }
 crossbeam-channel = "0.5"
@@ -22,10 +22,6 @@ serde_json = "1.0"
 form_urlencoded = "1.2.1"
 tokio-stream = {version = "0.1.15",features = ["sync"]}
 log = "0.4.21"
-xmpegts = {git = "https://github.com/harlanc/xiu.git", branch = "gb28181" }
-rtmp = {git = "https://github.com/harlanc/xiu.git", branch = "gb28181" }
-hls = {git = "https://github.com/harlanc/xiu.git", branch = "gb28181" }
-bytesio = {git = "https://github.com/harlanc/xiu.git", branch = "gb28181" }
-xrtsp = {git = "https://github.com/harlanc/xiu.git", branch = "gb28181" }
-streamhub = {git = "https://github.com/harlanc/xiu.git", branch = "gb28181" }
-xflv = {git = "https://github.com/harlanc/xiu.git", branch = "gb28181" }
+webrtc = "0.11"
+xflv = "0.4.3"
+hls_m3u8 = "0.4"

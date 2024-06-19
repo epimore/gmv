@@ -1,4 +1,3 @@
-use discortp::rtp::RtpType;
 use serde::{Deserialize, Serialize};
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::log::{debug, error};

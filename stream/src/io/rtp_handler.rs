@@ -1,19 +1,17 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use crossbeam_channel::{bounded, Sender, TrySendError};
-use discortp::demux;
-use discortp::demux::Demuxed;
-use discortp::rtp::RtpType;
-use xrtsp::rtp::RtpPacket;
-use xrtsp::rtp::utils::Unmarshal;
+use crossbeam_channel::TrySendError;
+use log::warn;
+use webrtc::rtp::packet::Packet;
+use webrtc::util::{Error, Unmarshal};
 
-use common::bytes::Bytes;
+use common::bytes::{Bytes, BytesMut};
 use common::err::{GlobalResult, TransError};
 use common::log::{debug, error, info};
 use common::log::Level::Debug;
 use common::net;
-use common::net::shared::Zip;
+use common::net::shared::{Package, Zip};
 
 use crate::general::mode::ServerConf;
 use crate::state;
@@ -23,32 +21,32 @@ pub async fn run(port: u16) {
     let (output, mut input) = net::init_net(net::shared::Protocol::ALL, socket_addr).await.hand_log(|msg| error!("{msg}")).expect("网络监听失败");
     while let Some(zip) = input.recv().await {
         match zip {
-            Zip::Data(data) => {
-                //todo 自己解析RTP...
-                match demux::demux(data.get_data()) {
-                    Demuxed::Rtp(rtp_packet) => {
-                        //todo ssrc
-                        match state::cache::refresh(1, data.get_bill()).await {
+            Zip::Data(Package{ bill, mut data }) => {
+                //todo RTP包不完整?
+                match Packet::unmarshal(&mut data) {
+                    Ok(pkt) => {
+                        //todo ssrc:pkt.header.ssrc
+                        let ssrc = pkt.header.ssrc;
+                        match state::cache::refresh(1, &bill).await {
                             None => {
-                                debug!("未知ssrc: {}",rtp_packet.get_ssrc())
+                                debug!("未知ssrc: {}",ssrc);
                             }
                             Some((rtp_tx, rtp_rx)) => {
-                                if let RtpType::Dynamic(v) = rtp_packet.get_payload_type() {
-                                    if v <= 100 {
-                                        //通道满了，删除先入的数据
-                                        if let Err(TrySendError::Full(_)) = rtp_tx.try_send(data.get_owned_data()) {
-                                            let _ = rtp_rx.recv().hand_log(|msg| debug!("{msg}"));
-                                        }
+                                let pt = pkt.header.payload_type;
+                                if pt <= 100 {
+                                    //通道满了，删除先入的数据
+                                    if let Err(TrySendError::Full(_)) = rtp_tx.try_send(pkt) {
+                                        let _ = rtp_rx.recv().hand_log(|msg| debug!("{msg}"));
                                     }
                                 } else {
-                                    info!("暂不支持数据类型: tp = {:?}",rtp_packet.get_payload_type())
+                                    warn!("暂不支持数据类型: {:?}",pt)
                                 }
                             }
                         }
                     }
-                    Demuxed::Rtcp(_) => {}
-                    Demuxed::FailedParse(_) => {}
-                    Demuxed::TooSmall => {}
+                    Err(error) => {
+                        warn!("unmarshal rtp pkt error: {}",error.to_string());
+                    }
                 }
             }
             Zip::Event(event) => {
