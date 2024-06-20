@@ -4,18 +4,12 @@ use common::bytes::{Bytes, BytesMut};
 use common::err::TransError;
 use common::tokio;
 use common::tokio::sync::mpsc::{Receiver, unbounded_channel};
+use crate::coder::FrameData;
 
 use crate::general::mode::BUFFER_SIZE;
 
 mod gb_process;
 mod flv_process;
-
-#[derive(Clone)]
-pub enum FrameData {
-    Video { timestamp: u32, data: Bytes },
-    Audio { timestamp: u32, data: Bytes },
-    MetaData { timestamp: u32, data: Bytes },
-}
 
 pub async fn run(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {

@@ -4,7 +4,6 @@
 
 ffmpeg -re -i E:\book\mv\st\yddz.mp4 -vcodec copy -f rtp rtp://172.18.38.186:18568
 ffmpeg -protocol_whitelist file,udp,rtp -i ./123.sdp -c:v copy -f flv 1.flv
-ffplay -headers "gmv-token: 1243aaa" "http://172.18.38.186:18570/start/play?stream_id=4FEqqz4eqqq0Vzqqq2lsqc4S3Kqqs&play_type=flv"
 ffplay -headers "gmv-token: 1243aaa" "http://172.18.38.186:18570/stream-node-1/play/4FEqqz4eqqq0Vzqqq2lsqc4S3Kqqs.flv"
 34020000002000000001s2000012345r34020000001111141016
 

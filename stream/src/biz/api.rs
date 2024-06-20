@@ -17,6 +17,7 @@ use common::tokio::sync::oneshot;
 use common::tokio::sync::oneshot::error::RecvError;
 
 use crate::biz::call::{BaseStreamInfo, StreamPlayInfo, StreamState};
+use crate::container::flv::FlvHeader;
 use crate::general::mode::{ResMsg, TIME_OUT};
 use crate::io::hook_handler::{Event, EventRes};
 use crate::state::cache;
@@ -143,13 +144,20 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                         .header("Access-Control-Allow-Origin", "*")
                         .header("Transfer-Encoding", "chunked")
                         .header("Connection", "keep-alive")
-                        .header("Cache-Control", "no-cache");//Cache-Control: 根据需求设置，一般可以设为 no-cache 或者 public, max-age=秒数。
+                        .header("Cache-Control", "no-cache"); //Cache-Control: 根据需求设置，一般可以设为 no-cache 或者 public, max-age=秒数。
                     if let EventRes::onPlay(Some(true)) = res {
                         match &play_type[..] {
                             "flv" => {
-                                match cache::get_flv_rx(&ssrc) {
-                                    None => { res_404() }
-                                    Some(rx) => {
+                                match (cache::get_flv_rx(&ssrc), cache::get_flv_tx(&ssrc)) {
+                                    (Some(rx), Some(tx)) => {
+                                        FlvHeader::process(Box::new(
+                                            move |data: Bytes| -> GlobalResult<()> {
+                                                if let Err(err) = tx.send(data) {
+                                                    log::error!("send flv header error: {}", err);
+                                                }
+                                                Ok(())
+                                            },
+                                        ), true, true)?;
                                         let flv_res = res_builder.header("Content-Type", "video/x-flv")
                                             .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_log(|msg| error!("{msg}"))?;
                                         //插入用户
@@ -165,6 +173,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                         });
                                         Ok(flv_res)
                                     }
+                                    _ => { res_404() }
                                 }
                             }
                             "hls" => {

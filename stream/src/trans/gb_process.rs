@@ -8,29 +8,28 @@ use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::tokio::sync::mpsc::UnboundedSender;
 
+use crate::coder;
+use crate::coder::h264::H264Package;
 use crate::state::cache;
 use crate::trans::FrameData;
 
 pub async fn run(ssrc: u32, tx: crossbeam_channel::Sender<FrameData>) -> GlobalResult<()> {
     if let Some(rx) = cache::get_rtp_rx(&ssrc) {
-        let mut h264packet = H264Packet::default();
+        let mut h264package = H264Package::build(Box::new(
+            move |data: FrameData| -> GlobalResult<()> {
+                if let Err(err) = tx.send(data) {
+                    log::error!("send frame error: {}", err);
+                }
+                Ok(())
+            },
+        ));
         loop {
             match rx.recv() {
                 Ok(pkt) => {
                     match pkt.header.payload_type {
                         98 => {}
                         96 => {
-                            match h264packet.depacketize(&pkt.payload) {
-                                Ok(byte) => {
-                                    if byte.len()>0 {
-                                        let frame_data = FrameData::Video { timestamp: pkt.header.timestamp, data: byte };
-                                        let _ = tx.send(frame_data).hand_log_err();
-                                    }
-                                }
-                                Err(error) => {
-                                    println!("h264packet depacketize err = {:?}",error);
-                                }
-                            }
+                            h264package.demuxer_by_rtp_payload(pkt.payload, pkt.header.timestamp).hand_log_err()?;
                         }
                         100 => {}
                         102 => {}
