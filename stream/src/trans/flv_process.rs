@@ -19,6 +19,7 @@ pub async fn run(ssrc: u32, mut rx: crossbeam_channel::Receiver<FrameData>) -> G
             let sender = tx.clone();
             let handle_muxer_data_fn = Box::new(
                 move |data: Bytes| -> GlobalResult<()> {
+                    println!("flv sender channel len = {}",sender.len());
                     if let Err(err) = sender.send(data) {
                         log::error!("send flv tag error: {}", err);
                     }

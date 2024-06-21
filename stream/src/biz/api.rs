@@ -2,18 +2,19 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use hyper::{Body, header, Request, Response, StatusCode};
+use futures_util::SinkExt;
+use hyper::{Body, body, header, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_util::sync::CancellationToken;
 
 use common::bytes::Bytes;
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::log::error;
 use common::tokio;
+use common::tokio::sync::{broadcast, mpsc, oneshot};
 use common::tokio::sync::broadcast::Receiver;
 use common::tokio::sync::mpsc::Sender;
-use common::tokio::sync::oneshot;
 use common::tokio::sync::oneshot::error::RecvError;
 
 use crate::biz::call::{BaseStreamInfo, StreamPlayInfo, StreamState};
@@ -127,6 +128,23 @@ pub fn get_state(opt_stream_id: Option<String>) -> GlobalResult<Response<Body>> 
     Ok(res)
 }
 
+async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
+    let (hdr, tag_size_0) = FlvHeader::get_header_byte_and_previos_tag_size0(true, true);
+    let _ = flv_tx.send_data(hdr).await.hand_log_err();
+    let _ = flv_tx.send_data(tag_size_0).await.hand_log_err();
+    loop {
+        match rx.recv().await {
+            Ok(bytes) => {
+                let _ = flv_tx.send_data(bytes).await.hand_log_err();
+            }
+            Err(broadcast::error::RecvError::Lagged(amt)) => {
+                rx = rx.resubscribe();
+            }
+            Err(..) => {}
+        }
+    }
+}
+
 //开启播放:play_type=flv/hls
 pub async fn start_play(play_type: String, stream_id: String, token: String, remote_addr: SocketAddr, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
@@ -148,18 +166,15 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                     if let EventRes::onPlay(Some(true)) = res {
                         match &play_type[..] {
                             "flv" => {
-                                match (cache::get_flv_rx(&ssrc), cache::get_flv_tx(&ssrc)) {
-                                    (Some(rx), Some(tx)) => {
-                                        FlvHeader::process(Box::new(
-                                            move |data: Bytes| -> GlobalResult<()> {
-                                                if let Err(err) = tx.send(data) {
-                                                    log::error!("send flv header error: {}", err);
-                                                }
-                                                Ok(())
-                                            },
-                                        ), true, true)?;
+                                match cache::get_flv_rx(&ssrc) {
+                                    Some(rx) => {
+                                        let (flv_tx, body) = Body::channel();
+                                        tokio::spawn(async {
+                                            send_flv(flv_tx, rx)
+                                        });
+
                                         let flv_res = res_builder.header("Content-Type", "video/x-flv")
-                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_log(|msg| error!("{msg}"))?;
+                                            .body(Body::wrap_stream(body)).hand_log(|msg| error!("{msg}"))?;
                                         //插入用户
                                         cache::update_token(&stream_id, &play_type, token.clone(), true);
                                         //监听连接：当断开连接时,更新正在查看的用户、回调通知

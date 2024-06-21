@@ -11,6 +11,12 @@ pub struct FlvHeader {
 }
 
 impl FlvHeader {
+    pub fn get_header_byte_and_previos_tag_size0(video: bool, audio: bool) -> (Bytes, Bytes) {
+        let tag_bytes = FlvHeader::build(video, audio).to_bytes();
+        let previos_tag_size = Bytes::from(0u32.to_be_bytes().to_vec());
+        (tag_bytes, previos_tag_size)
+    }
+
     pub fn process(f: HandleMuxerDataFn, video: bool, audio: bool) -> GlobalResult<()> {
         let tag_bytes = FlvHeader::build(video, audio).to_bytes();
         let previos_tag_size = Bytes::from(0u32.to_be_bytes().to_vec());

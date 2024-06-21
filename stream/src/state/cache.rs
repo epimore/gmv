@@ -402,7 +402,8 @@ pub struct Channel {
 impl Channel {
     pub fn build() -> Self {
         let rtp_channel = crossbeam_channel::bounded(BUFFER_SIZE);
-        let flv_channel = broadcast::channel(BUFFER_SIZE);
+        let flv_channel = broadcast::channel(100000);
+        // let flv_channel = broadcast::channel(BUFFER_SIZE);
         let hls_channel = broadcast::channel(BUFFER_SIZE);
         Self {
             rtp_channel,
