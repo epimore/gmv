@@ -1,5 +1,7 @@
 use common::bytes::{BufMut, Bytes, BytesMut};
 use common::err::GlobalResult;
+use constructor::New;
+
 use crate::coder::h264::ANNEXB_NALUSTART_CODE;
 use crate::container::HandleMuxerDataFn;
 
@@ -61,7 +63,7 @@ pub struct FlvTag {
 
 impl FlvTag {
     pub fn process(f: HandleMuxerDataFn, tag_type: TagType, ts: u32, data: Bytes) -> GlobalResult<()> {
-        let tag_bytes = FlvTag::build(tag_type, ts, data).to_bytes();
+        let tag_bytes = FlvTag::build(tag_type, ts, data).to_bytes(0x17, 1);
         let len_vec = (tag_bytes.len() as u32).to_be_bytes().to_vec();
         let previos_tag_size = Bytes::from(len_vec);
         f(tag_bytes)?;
@@ -81,18 +83,17 @@ impl FlvTag {
             data,
         }
     }
-    fn to_bytes(self) -> Bytes {
+    //ft_ci:FrameType 4bit/CodecID 4bit
+    fn to_bytes(self, ft_ci: u8, avc_packet_type: u8) -> Bytes {
         let mut bm = BytesMut::new();
         bm.put_u8(self.tag_type);
         bm.put_slice(&self.data_size);
         bm.put_slice(&self.timestamp);
         bm.put_u8(self.timestamp_ext);
         bm.put_slice(&[0x00, 0x00, 0x00]);
-        //h264
-        if self.data.slice(0..4).eq(&ANNEXB_NALUSTART_CODE) {
-            let flv_tag_h264_data_header = if (self.data.slice(4..5)[0]) & 0x1F == 5 { 0x17u8 } else { 0x27 };
-            bm.put_u8(flv_tag_h264_data_header);
-        }
+        bm.put_u8(avc_packet_type); //AVCPacketType
+        bm.put_slice(&[0u8, 0, 0]); //CompositionTime Offset
+        bm.put_u8(ft_ci);
         bm.put(&self.data[..]);
         bm.freeze()
     }
@@ -111,5 +112,41 @@ impl TagType {
             TagType::Video => { 9 }
             TagType::Script => { 18 }
         }
+    }
+}
+
+#[derive(New)]
+pub struct AVCDecoderConfiguration {
+    sps: Bytes,
+    pps: Bytes,
+    ts: u32,
+}
+
+impl AVCDecoderConfiguration {
+    pub fn to_flv_tag_bytes(self) -> Bytes {
+        let sps = self.sps;
+        let pps = self.pps;
+        let mut video_tag_data = BytesMut::new();
+        // FLV video tag data start
+        // video_tag_data.put_u8(0x17); // FrameType (key frame) + CodecID (AVC)
+        // video_tag_data.put_u8(0x00); // AVC packet type (sequence header)
+        // video_tag_data.put_slice(&[0u8, 0, 0]); // CompositionTime
+
+        // AVCDecoderConfigurationRecord
+        video_tag_data.put_u8(0x01); // ConfigurationVersion
+        video_tag_data.put_u8(sps[1]); // AVCProfileIndication
+        video_tag_data.put_u8(sps[2]); // ProfileCompatibility
+        video_tag_data.put_u8(sps[3]); // AVCLevelIndication
+        video_tag_data.put_u8(0xff); // Reserved + lengthSizeMinusOne
+
+        video_tag_data.put_u8(0xe1); // Reserved + numOfSequenceParameterSets
+        video_tag_data.put_u16(sps.len() as u16); // SPS length
+        video_tag_data.put(sps); // SPS NALU
+
+        video_tag_data.put_u8(0x01); // numOfPictureParameterSets
+        video_tag_data.put_u16(pps.len() as u16); // PPS length
+        video_tag_data.put(pps); // PPS NALU
+
+        FlvTag::build(TagType::Video, self.ts, video_tag_data.freeze()).to_bytes(0x17, 0)
     }
 }

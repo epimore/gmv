@@ -22,6 +22,7 @@ use crate::container::flv::FlvHeader;
 use crate::general::mode::{ResMsg, TIME_OUT};
 use crate::io::hook_handler::{Event, EventRes};
 use crate::state::cache;
+use crate::trans::flv_process;
 
 fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
     let ssrc = param_map.get("ssrc")
@@ -128,23 +129,6 @@ pub fn get_state(opt_stream_id: Option<String>) -> GlobalResult<Response<Body>> 
     Ok(res)
 }
 
-async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
-    let (hdr, tag_size_0) = FlvHeader::get_header_byte_and_previos_tag_size0(true, true);
-    let _ = flv_tx.send_data(hdr).await.hand_log_err();
-    let _ = flv_tx.send_data(tag_size_0).await.hand_log_err();
-    loop {
-        match rx.recv().await {
-            Ok(bytes) => {
-                let _ = flv_tx.send_data(bytes).await.hand_log_err();
-            }
-            Err(broadcast::error::RecvError::Lagged(amt)) => {
-                rx = rx.resubscribe();
-            }
-            Err(..) => {}
-        }
-    }
-}
-
 //开启播放:play_type=flv/hls
 pub async fn start_play(play_type: String, stream_id: String, token: String, remote_addr: SocketAddr, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
@@ -170,11 +154,11 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                     Some(rx) => {
                                         let (flv_tx, body) = Body::channel();
                                         tokio::spawn(async {
-                                            send_flv(flv_tx, rx)
+                                            flv_process::send_flv(flv_tx, rx).await
                                         });
 
                                         let flv_res = res_builder.header("Content-Type", "video/x-flv")
-                                            .body(Body::wrap_stream(body)).hand_log(|msg| error!("{msg}"))?;
+                                            .body(body).hand_log(|msg| error!("{msg}"))?;
                                         //插入用户
                                         cache::update_token(&stream_id, &play_type, token.clone(), true);
                                         //监听连接：当断开连接时,更新正在查看的用户、回调通知

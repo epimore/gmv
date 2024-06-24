@@ -9,7 +9,7 @@ use crate::coder::FrameData;
 use crate::general::mode::BUFFER_SIZE;
 
 mod gb_process;
-mod flv_process;
+pub mod flv_process;
 
 pub async fn run(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {

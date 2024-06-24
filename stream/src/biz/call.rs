@@ -85,7 +85,6 @@ impl StreamPlayInfo {
             .timeout(Duration::from_millis(TIME_OUT))
             .json(self).send().await
             .hand_log(|msg| error!("{msg}"));
-        println!("response = {:?}", &res);
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
