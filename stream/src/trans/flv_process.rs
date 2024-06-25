@@ -70,8 +70,8 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
                         if let (Some(sps), Some(pps)) = (&sps_naul, &pps_naul) {
                             //FLV HEADER
                             let (hdr, tag_size_0) = FlvHeader::get_header_byte_and_previos_tag_size0(true, true);
-                            let _ = flv_tx.send_data(hdr).await.hand_log_err();
-                            let _ = flv_tx.send_data(tag_size_0).await.hand_log_err();
+                            let _ = flv_tx.send_data(hdr).await.hand_log(|msg| warn!("{msg}"));
+                            let _ = flv_tx.send_data(tag_size_0).await.hand_log(|msg| warn!("{msg}"));
                             //FLV BODY
                             // flv script tag
                             if let Ok(Some(h264sps)) = H264SPS::get_sps_info_by_nalu(0, sps) {
@@ -79,16 +79,16 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
                                 println!("---- {c},{w},{h},{r}");
                                 let script_tag_data = ScriptTag::build_script_tag_data(w, h, r);
                                 let script_tag_bytes = ScriptTag::build_script_tag_bytes(script_tag_data);
-                                let _ = flv_tx.send_data(script_tag_bytes).await.hand_log_err();
+                                let _ = flv_tx.send_data(script_tag_bytes).await.hand_log(|msg| warn!("{msg}"));
                             }
 
                             //sps pps
                             let configuration_bytes = AVCDecoderConfiguration::new(sps.slice(..), pps.slice(..), 0).to_flv_tag_bytes();
                             let len = configuration_bytes.len() as u32;
-                            let _ = flv_tx.send_data(configuration_bytes).await.hand_log_err();
-                            let _ = flv_tx.send_data(Bytes::from(len.to_be_bytes().to_vec())).await.hand_log_err();
+                            let _ = flv_tx.send_data(configuration_bytes).await.hand_log(|msg| warn!("{msg}"));
+                            let _ = flv_tx.send_data(Bytes::from(len.to_be_bytes().to_vec())).await.hand_log(|msg| warn!("{msg}"));
                             //idr
-                            let _ = flv_tx.send_data(bytes).await.hand_log_err();
+                            let _ = flv_tx.send_data(bytes).await.hand_log(|msg| warn!("{msg}"));
                             break;
                         }
                     }
@@ -110,7 +110,7 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
     loop {
         match rx.recv().await {
             Ok(bytes) => {
-                let _ = flv_tx.send_data(bytes).await.hand_log_err();
+                let _ = flv_tx.send_data(bytes).await.hand_log(|msg| warn!("{msg}"));
             }
             Err(broadcast::error::RecvError::Lagged(amt)) => {
                 rx = rx.resubscribe();

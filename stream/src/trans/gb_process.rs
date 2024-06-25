@@ -29,7 +29,7 @@ pub async fn run(ssrc: u32, tx: crossbeam_channel::Sender<FrameData>) -> GlobalR
                     match pkt.header.payload_type {
                         98 => {}
                         96 => {
-                            h264package.demuxer_by_rtp_payload(pkt.payload, pkt.header.timestamp).hand_log_err()?;
+                            h264package.demuxer_by_rtp_payload(pkt.payload, pkt.header.timestamp).hand_log(|msg| warn!("{msg}"))?;
                         }
                         100 => {}
                         102 => {}

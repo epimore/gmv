@@ -18,13 +18,13 @@ pub type HandleFrameDataFn = Box<dyn Fn(FrameData) -> GlobalResult<()> + Send + 
 
 pub fn read_uev<R: std::io::Read>(reader: &mut R) -> GlobalResult<u32> {
     let mut leading_zero_bits = 0;
-    while reader.read_u8().hand_log_err()? == 0 {
+    while reader.read_u8().hand_log(|msg| warn!("{msg}"))? == 0 {
         leading_zero_bits += 1;
     }
 
     let mut code_num = 1;
     for _ in 0..leading_zero_bits {
-        code_num = (code_num << 1) | reader.read_u8().hand_log_err()?;
+        code_num = (code_num << 1) | reader.read_u8().hand_log(|msg| warn!("{msg}"))?;
     }
 
     Ok((code_num - 1) as u32)

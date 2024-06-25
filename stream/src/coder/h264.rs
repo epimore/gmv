@@ -69,10 +69,10 @@ impl H264Package {
                 self.hand_single_naul(bytes, timestamp)?;
             }
             STAPA_NALU_TYPE_24 => {
-                self.hand_aggregation_stapa_naul(bytes, timestamp).hand_log_err()?;
+                self.hand_aggregation_stapa_naul(bytes, timestamp).hand_log(|msg| warn!("{msg}"))?;
             }
             FUA_NALU_TYPE_28 => {
-                self.hand_fua_naul(bytes, timestamp).hand_log_err()?;
+                self.hand_fua_naul(bytes, timestamp).hand_log(|msg| warn!("{msg}"))?;
             }
             tp => {
                 warn!("暂不支持nalu type = {tp}");
@@ -100,7 +100,7 @@ impl H264Package {
         naul.put(bytes);
         let data = naul.freeze();
         let fun = &self.f;
-        fun(FrameData::Video { timestamp, data }).hand_log_err()?;
+        fun(FrameData::Video { timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
         Ok(())
     }
 
@@ -139,7 +139,7 @@ impl H264Package {
             curr_offset += nalu_size;
             let data = naul.freeze();
             let fun = &self.f;
-            fun(FrameData::Video { timestamp, data }).hand_log_err()?;
+            fun(FrameData::Video { timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
         }
         Ok(())
     }
@@ -206,7 +206,7 @@ impl H264Package {
                 naul.put(fua_buffer);
                 let data = naul.freeze();
                 let fun = &self.f;
-                fun(FrameData::Video { timestamp, data }).hand_log_err()?;
+                fun(FrameData::Video { timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
             }
         }
         Ok(())
@@ -256,7 +256,7 @@ impl H264SPS {
     pub fn get_sps_info_by_nalu(skip_byte: usize, nalu: &Bytes) -> GlobalResult<Option<Self>> {
         let data = &nalu[skip_byte..];
         let mut reader = Cursor::new(data);
-        if reader.read_u8().hand_log_err()? & NALU_TYPE_BITMASK_31 == 7 {
+        if reader.read_u8().hand_log(|msg| warn!("{msg}"))? & NALU_TYPE_BITMASK_31 == 7 {
             let profile_idc = reader.read_u8().hand_log(|_| warn!("Failed to read profile_idc"))?;
             let constraint_set_flags = reader.read_u8().hand_log(|_| warn!("Failed to read constraint_set flags"))?;
             let level_idc = reader.read_u8().hand_log(|_| warn!( "Failed to read level_idc"))?;
