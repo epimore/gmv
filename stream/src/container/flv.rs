@@ -2,8 +2,9 @@ use common::bytes::{BufMut, Bytes, BytesMut};
 use common::err::GlobalResult;
 use constructor::New;
 
-use crate::coder::h264::ANNEXB_NALUSTART_CODE;
 use crate::container::HandleMuxerDataFn;
+
+const FLV_MTU: usize = 1200;
 
 pub struct FlvHeader {
     signature: [u8; 3], // "FLV"
@@ -63,16 +64,19 @@ pub struct FlvTag {
 
 impl FlvTag {
     pub fn process(f: HandleMuxerDataFn, tag_type: TagType, ts: u32, data: Bytes) -> GlobalResult<()> {
-        let tag_bytes = FlvTag::build(tag_type, ts, data).to_bytes(0x17, 1);
-        let len_vec = (tag_bytes.len() as u32).to_be_bytes().to_vec();
-        let previos_tag_size = Bytes::from(len_vec);
-        f(tag_bytes)?;
-        f(previos_tag_size)
+        for chunk in data.chunks(FLV_MTU) {
+            let sub_tag_bytes = FlvTag::build(tag_type, ts, Bytes::copy_from_slice(chunk)).to_bytes(0x17, 1);
+            let len_vec = (sub_tag_bytes.len() as u32).to_be_bytes().to_vec();
+            let previos_tag_size = Bytes::from(len_vec);
+            f(sub_tag_bytes)?;
+            f(previos_tag_size)?;
+        }
+        Ok(())
     }
 
     fn build(tag_type: TagType, ts: u32, data: Bytes) -> Self {
-        let data_arr = (data.len() as u32).to_be_bytes();
-        let data_size = [data_arr[1], data_arr[2], data_arr[3]];
+        let size_arr = (data.len() as u32).to_be_bytes();
+        let data_size = [size_arr[1], size_arr[2], size_arr[3]];
         let ts_arr = ts.to_be_bytes();
         Self {
             tag_type: tag_type.get_value(),
@@ -91,14 +95,15 @@ impl FlvTag {
         bm.put_slice(&self.timestamp);
         bm.put_u8(self.timestamp_ext);
         bm.put_slice(&[0x00, 0x00, 0x00]);
+        bm.put_u8(ft_ci);
         bm.put_u8(avc_packet_type); //AVCPacketType
         bm.put_slice(&[0u8, 0, 0]); //CompositionTime Offset
-        bm.put_u8(ft_ci);
         bm.put(&self.data[..]);
         bm.freeze()
     }
 }
 
+#[derive(Copy, Clone)]
 pub enum TagType {
     Audio,
     Video,
@@ -127,10 +132,6 @@ impl AVCDecoderConfiguration {
         let sps = self.sps;
         let pps = self.pps;
         let mut video_tag_data = BytesMut::new();
-        // FLV video tag data start
-        // video_tag_data.put_u8(0x17); // FrameType (key frame) + CodecID (AVC)
-        // video_tag_data.put_u8(0x00); // AVC packet type (sequence header)
-        // video_tag_data.put_slice(&[0u8, 0, 0]); // CompositionTime
 
         // AVCDecoderConfigurationRecord
         video_tag_data.put_u8(0x01); // ConfigurationVersion
@@ -148,5 +149,86 @@ impl AVCDecoderConfiguration {
         video_tag_data.put(pps); // PPS NALU
 
         FlvTag::build(TagType::Video, self.ts, video_tag_data.freeze()).to_bytes(0x17, 0)
+    }
+}
+
+pub struct ScriptTag {
+    duration: f64,
+    width: u32,
+    height: u32,
+    videodatarate: u32,
+    framerate: u32,
+    videocodecid: u32,
+    audiodatarate: u32,
+    audiosamplerate: u32,
+    audiosamplesize: u32,
+    stereo: bool,
+    audiocodecid: u32,
+    filesize: u64,
+}
+
+impl ScriptTag {
+    pub fn build_script_tag_bytes(tag_data: Bytes) -> Bytes {
+        let data_size = tag_data.len() as u32;
+        let size_arr = data_size.to_be_bytes();
+        let data_size_slice = [size_arr[1], size_arr[2], size_arr[3]];
+        let mut packet = BytesMut::new();
+        packet.put_u8(0x12); // script tag
+        packet.put_slice(&data_size_slice); // data size
+        packet.put_slice(&[0u8,0,0]); // timestamp
+        packet.put_u32(0); // stream ID
+        packet.put(tag_data);
+        // PreviousTagSize
+        packet.put_u32(11 + data_size);
+        packet.freeze()
+    }
+
+    pub fn build_script_tag_data(width: u32, height: u32, framerate: f64) -> Bytes {
+        let mut tag_data = BytesMut::new();
+
+        // ECMA array with metadata
+        tag_data.put_u8(0x02); // type: string
+        tag_data.put_u16(0x0A); // length: 10
+        tag_data.put_slice(b"onMetaData"); // string: "onMetaData"
+        tag_data.put_u8(0x08); // type: ECMA array
+        tag_data.put_u32(0x00_00_00_0A); // number of elements: 10
+        tag_data.put_slice(&Self::build_amf_string("duration", 0.0)); // duration
+        tag_data.put_slice(&Self::build_amf_string("width", width as f64)); // width
+        tag_data.put_slice(&Self::build_amf_string("height", height as f64)); // height
+        tag_data.put_slice(&Self::build_amf_string("videodatarate", 5000.0)); // videodatarate
+        tag_data.put_slice(&Self::build_amf_string("framerate", framerate)); // framerate
+        tag_data.put_slice(&Self::build_amf_string("videocodecid", 7.0)); // videocodecid (7 for AVC)
+        tag_data.put_slice(&Self::build_amf_string("audiodatarate", 128.0)); // audiodatarate
+        tag_data.put_slice(&Self::build_amf_string("audiosamplerate", 44100.0)); // audiosamplerate
+        tag_data.put_slice(&Self::build_amf_bool("stereo", true)); // stereo
+        tag_data.put_slice(&Self::build_amf_string("audiocodecid", 10.0)); // audiocodecid (10 for AAC)
+
+        tag_data.put_u8(0x00); // object end marker
+        tag_data.put_u8(0x00);
+        tag_data.put_u8(0x09);
+
+        tag_data.freeze()
+    }
+
+    fn build_amf_string(key: &str, value: f64) -> Vec<u8> {
+        let mut amf = Vec::new();
+        amf.push(0x02); // type: string
+        amf.extend(&(key.len() as u16).to_be_bytes()); // length
+        amf.extend(key.as_bytes()); // string
+
+        amf.push(0x00); // type: number
+        amf.extend(&value.to_be_bytes()); // value
+        amf
+    }
+
+    fn build_amf_bool(key: &str, value: bool) -> Vec<u8> {
+        let mut amf = Vec::new();
+        amf.push(0x02); // type: string
+        amf.extend(&(key.len() as u16).to_be_bytes()); // length
+        amf.extend(key.as_bytes()); // string
+
+        amf.push(0x01); // type: bool
+        amf.push(if value { 0x01 } else { 0x00 }); // value
+        amf
     }
 }
