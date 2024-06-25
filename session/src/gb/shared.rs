@@ -168,7 +168,7 @@ pub mod rw {
     impl RequestOutput {
         pub async fn do_send_off(device_id: &String, msg: SipMessage) -> GlobalResult<()> {
             let (request_sender, bill) = RWSession::get_output_sender_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备 {device_id},已下线")))?;
-            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(msg)))).await.hand_log_err();
+            let _ = request_sender.send(Zip::build_data(Package::new(bill, Bytes::from(msg)))).await.hand_log(|msg| warn!("{msg}"));
             Ok(())
         }
 

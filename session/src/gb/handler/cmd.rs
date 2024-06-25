@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
-use log::{error, info};
+use log::{error, info, warn};
 use regex::Regex;
 use rsip::prelude::HeadersExt;
 use rsip::Response;
@@ -59,7 +59,7 @@ impl CmdStream {
     pub async fn play_live_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String)
                                   -> GlobalResult<(Response, HashMap<String, String>)> {
         let (ident, msg) = RequestBuilder::play_live_request(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc)
-            .await.hand_log_err()?;
+            .await.hand_log(|msg| warn!("{msg}"))?;
         let (tx, mut rx) = mpsc::channel(100);
         RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().await?;
         while let Some((Some(res), _)) = rx.recv().await {
@@ -95,9 +95,9 @@ impl CmdStream {
 
     pub async fn play_live_ack(device_id: &String, response: &Response) -> GlobalResult<(String, u32)> {
         let ack_request = RequestBuilder::build_ack_request_by_response(response)?;
-        let call_id = ack_request.call_id_header().hand_log_err()?.to_string();
-        let seq = ack_request.cseq_header().hand_log_err()?.seq().hand_log_err()?;
-        RequestOutput::do_send_off(device_id, ack_request).await.hand_log_err()?;
+        let call_id = ack_request.call_id_header().hand_log(|msg| warn!("{msg}"))?.to_string();
+        let seq = ack_request.cseq_header().hand_log(|msg| warn!("{msg}"))?.seq().hand_log(|msg| warn!("{msg}"))?;
+        RequestOutput::do_send_off(device_id, ack_request).await.hand_log(|msg| warn!("{msg}"))?;
         Ok((call_id, seq))
     }
 }

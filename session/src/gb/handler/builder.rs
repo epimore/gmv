@@ -33,18 +33,18 @@ pub struct ResponseBuilder;
 impl ResponseBuilder {
     pub fn get_tag_by_header_to(response: &Response) -> GlobalResult<String> {
         let tag = response.to_header()
-            .hand_log_err()?
+            .hand_log(|msg| warn!("{msg}"))?
             .tag()
-            .hand_log_err()?
+            .hand_log(|msg| warn!("{msg}"))?
             .ok_or(SysErr(anyhow!("to tag is none")))?
             .to_string();
         Ok(tag)
     }
     pub fn get_tag_by_header_from(response: &Response) -> GlobalResult<String> {
         let tag = response.from_header()
-            .hand_log_err()?
+            .hand_log(|msg| warn!("{msg}"))?
             .tag()
-            .hand_log_err()?
+            .hand_log(|msg| warn!("{msg}"))?
             .ok_or(SysErr(anyhow!("from tag is none")))?
             .to_string();
         Ok(tag)
@@ -357,20 +357,20 @@ impl RequestBuilder {
 
     pub fn build_ack_request_by_response(res: &Response) -> GlobalResult<SipMessage> {
         let mut headers: rsip::Headers = Default::default();
-        headers.push(res.to_header().hand_log_err()?.clone().into());
-        let from = res.from_header().hand_log_err()?;
+        headers.push(res.to_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
+        let from = res.from_header().hand_log(|msg| warn!("{msg}"))?;
         headers.push(from.clone().into());
-        headers.push(res.call_id_header().hand_log_err()?.clone().into());
+        headers.push(res.call_id_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
         let seed = [0u8; 32]; // Or any other way to seed your RNG
         let mut rng = StdRng::from_seed(seed);
-        let via: typed::Via = res.via_header().hand_log_err()?.typed().hand_log(|msg| warn!("{msg}"))?;
+        let via: typed::Via = res.via_header().hand_log(|msg| warn!("{msg}"))?.typed().hand_log(|msg| warn!("{msg}"))?;
         headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {};rport;branch=z9hG4bK{}",
                                                      via.transport.to_string(),
                                                      via.uri.to_string(),
                                                      rng.gen_range(123456789u32..987654321u32))).into());
-        let seq = res.cseq_header().hand_log_err()?.seq().hand_log_err()?;
+        let seq = res.cseq_header().hand_log(|msg| warn!("{msg}"))?.seq().hand_log(|msg| warn!("{msg}"))?;
         headers.push(rsip::headers::CSeq::new(format!("{seq} ACK")).into());
-        let uri = from.uri().hand_log_err()?;
+        let uri = from.uri().hand_log(|msg| warn!("{msg}"))?;
         let uri_str = uri.to_string();
         headers.push(rsip::headers::Contact::new(format!("<{uri_str}>")).into());
         headers.push(rsip::headers::MaxForwards::new("70").into());
