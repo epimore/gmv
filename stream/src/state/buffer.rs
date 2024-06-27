@@ -43,11 +43,11 @@ impl RtpBuffer {
     }
 
     pub async fn next_pkt(&self) -> Option<Packet> {
-        let mut mutex_guard = self.buf.lock().await;
         if self.sliding_counter.load(Ordering::SeqCst) < self.sliding_window.load(Ordering::SeqCst) {
             self.block.notified().await;
         }
         let mut index = 1;
+        let mut mutex_guard = self.buf.lock().await;
         while let Some(item) = mutex_guard.pop_front() {
             mutex_guard.push_back(None);
             if self.sliding_counter.load(Ordering::SeqCst) > 1 {
