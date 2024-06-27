@@ -75,11 +75,11 @@ impl RtpBuffer {
                 self.timestamp.store(item.header.timestamp, Ordering::SeqCst);
                 self.index.store(index as u8, Ordering::Relaxed);
                 let window = self.sliding_window.load(Ordering::SeqCst);
-                if i == 0 {
+                if i == 1 {
                     if window == 2 || window == 4 || window == 8 {
                         self.sliding_window.store(window / 2, Ordering::SeqCst);
                     }
-                } else if i > 2 {
+                } else if i > 3 {
                     if window == 1 || window == 2 || window == 4 {
                         self.sliding_window.store(window * 2, Ordering::SeqCst);
                     }
