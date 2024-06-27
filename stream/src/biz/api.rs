@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use futures_util::SinkExt;
 use hyper::{Body, body, header, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};

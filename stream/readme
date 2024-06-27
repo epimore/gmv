@@ -3,6 +3,7 @@
 /hls/{stream_id}/{token}
 
 ffmpeg -re -i E:\book\mv\st\yddz.mp4 -vcodec copy -f rtp rtp://172.18.38.186:18568
+ffmpeg -re -i E:\code\rust\study\media\rsmpeg\tests\assets\vids\big_buck_bunny_1080p_24fps_h264.h264 -vcodec copy -f rtp rtp://172.18.38.186:18568
 ffmpeg -protocol_whitelist file,udp,rtp -i ./123.sdp -c:v copy -f flv 1.flv
 ffplay -headers "gmv-token: 1243aaa" "http://172.18.38.186:18570/stream-node-1/play/4FEqqz4eqqq0Vzqqq2lsqc4S3Kqqs.flv"
 wget --header="gmv-token: 1243aaa" "http://172.18.38.186:18570/stream-node-1/play/4FEqqz4eqqq0Vzqqq2lsqc4S3Kqqs.flv"
@@ -21,3 +22,56 @@ Contact: <sip:130909113319427420@10.64.49.218:7100>
 Content-Type: Application/SDP
 User-Agent: Hikvision
 Content-Length:   162
+
+
+ffmpeg version 4.4.1-full_build-www.gyan.dev Copyright (c) 2000-2021 the FFmpeg developers
+  built with gcc 11.2.0 (Rev1, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-shared --disable-w32threads --disable-autodetect --enable-fontconfig --enable-iconv --enable-gnutls --enable-libxml2 --enable-gmp --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-sdl2 --enable-libdav1d --enable-libzvbi --enable-librav1e --enable-libsvtav1 --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxvid --enable-libaom --enable-libopenjpeg --enable-libvpx --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-ffnvcodec --enable-nvdec --enable-nvenc --enable-d3d11va --enable-dxva2 --enable-libmfx --enable-libglslang --enable-vulkan --enable-opencl --enable-libcdio --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libilbc --enable-libgsm --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint
+  libavutil      56. 70.100 / 56. 70.100
+  libavcodec     58.134.100 / 58.134.100
+  libavformat    58. 76.100 / 58. 76.100
+  libavdevice    58. 13.100 / 58. 13.100
+  libavfilter     7.110.100 /  7.110.100
+  libswscale      5.  9.100 /  5.  9.100
+  libswresample   3.  9.100 /  3.  9.100
+  libpostproc    55.  9.100 / 55.  9.100
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'E:\book\mv\st\yddz.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    creation_time   : 2023-06-08T02:34:14.000000Z
+  Duration: 00:53:42.94, start: 0.000000, bitrate: 982 kb/s
+  Stream #0:0(und): Video: h264 (Main) (avc1 / 0x31637661), yuv420p, 1920x1080, 980 kb/s, 24.99 fps, 1k tbr, 1k tbn, 2k tbc (default)
+    Metadata:
+      creation_time   : 2023-06-08T02:34:14.000000Z
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+Output #0, rtp, to 'rtp://172.18.38.186:18568':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.76.100
+  Stream #0:0(und): Video: h264 (Main) (avc1 / 0x31637661), yuv420p, 1920x1080, q=2-31, 980 kb/s, 24.99 fps, 1k tbr, 90k tbn, 1k tbc (default)
+    Metadata:
+      creation_time   : 2023-06-08T02:34:14.000000Z
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+SDP:
+v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=No Name
+c=IN IP4 172.18.38.186
+t=0 0
+a=tool:libavformat 58.76.100
+m=video 18568 RTP/AVP 96
+b=AS:980
+a=rtpmap:96 H264/90000
+a=fmtp:96 packetization-mode=1; sprop-parameter-sets=Z00AKpWoHgCJ+VA=,aO48gA==; profile-level-id=4D002A
+
+Stream mapping:
+  Stream #0:0 -> #0:0 (copy)
+Press [q] to stop, [?] for help
+frame=   28 fps= 26 q=-1.0 Lsize=     158kB time=00:00:01.08 bitrate=1191.0kbits/s speed=1.02x
+video:156kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 1.034213%

@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use webrtc::rtp::packet::Packet;
+use rtp::packet::Packet;
 
 use common::anyhow::anyhow;
 use common::bytes::Bytes;

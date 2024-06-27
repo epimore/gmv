@@ -183,6 +183,24 @@ impl H264Package {
     //     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     //
     //     RTP payload format for FU-A
+    //
+    //FU Indicator：
+    // 1 字节
+    //  +---------------+
+    //  |0|1|2|3|4|5|6|7|
+    //  +-+-+-+-+-+-+-+-+
+    //  |F|NRI|  Type   |
+    //  +---------------+
+    // FU Header：
+    // 1 字节
+    // +---------------+
+    // |0|1|2|3|4|5|6|7|
+    // +-+-+-+-+-+-+-+-+
+    // |S|E|R|  Type   |
+    // +---------------+
+    // S: Start bit
+    // E: End bit
+    // R: Reserved bit
     fn hand_fua_naul(&mut self, bytes: Bytes, timestamp: u32) -> GlobalResult<()> {
         match &mut self.fu_buffer {
             None => {

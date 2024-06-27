@@ -1,8 +1,6 @@
 use byteorder::BigEndian;
 use hyper::body;
 use log::warn;
-use xflv::define::tag_type;
-use xflv::muxer::{FlvMuxer, HEADER_LENGTH};
 
 use common::anyhow::anyhow;
 use common::bytes::{BufMut, Bytes, BytesMut};
@@ -22,7 +20,6 @@ pub async fn run(ssrc: u32, mut rx: crossbeam_channel::Receiver<FrameData>) -> G
             let sender = tx.clone();
             let handle_muxer_data_fn = Box::new(
                 move |data: Bytes| -> GlobalResult<()> {
-                    // println!("flv sender channel len = {}", sender.len());
                     if let Err(err) = sender.send(data) {
                         log::error!("send flv tag error: {}", err);
                     }
@@ -69,7 +66,7 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
                     5 => {
                         if let (Some(sps), Some(pps)) = (&sps_naul, &pps_naul) {
                             //FLV HEADER
-                            let (hdr, tag_size_0) = FlvHeader::get_header_byte_and_previos_tag_size0(true, true);
+                            let (hdr, tag_size_0) = FlvHeader::get_header_byte_and_previos_tag_size0(true, false);
                             let _ = flv_tx.send_data(hdr).await.hand_log(|msg| warn!("{msg}"));
                             let _ = flv_tx.send_data(tag_size_0).await.hand_log(|msg| warn!("{msg}"));
                             //FLV BODY
@@ -77,18 +74,19 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
                             if let Ok(Some(h264sps)) = H264SPS::get_sps_info_by_nalu(0, sps) {
                                 let ((c, w, h, r)) = h264sps.get_c_w_h_r();
                                 println!("---- {c},{w},{h},{r}");
-                                let script_tag_data = ScriptTag::build_script_tag_data(w, h, r);
-                                let script_tag_bytes = ScriptTag::build_script_tag_bytes(script_tag_data);
-                                let _ = flv_tx.send_data(script_tag_bytes).await.hand_log(|msg| warn!("{msg}"));
+                                if let Ok(script_tag_data) = ScriptTag::build_script_tag_data(w, h, r) {
+                                    let script_tag_bytes = ScriptTag::build_script_tag_bytes(script_tag_data);
+                                    let _ = flv_tx.send_data(script_tag_bytes).await.hand_log(|msg| warn!("{msg}"));
+                                }
                             }
 
                             //sps pps
-                            let configuration_bytes = AVCDecoderConfiguration::new(sps.slice(..), pps.slice(..), 0).to_flv_tag_bytes();
-                            let len = configuration_bytes.len() as u32;
-                            let _ = flv_tx.send_data(configuration_bytes).await.hand_log(|msg| warn!("{msg}"));
-                            let _ = flv_tx.send_data(Bytes::from(len.to_be_bytes().to_vec())).await.hand_log(|msg| warn!("{msg}"));
-                            //idr
-                            let _ = flv_tx.send_data(bytes).await.hand_log(|msg| warn!("{msg}"));
+                            // let configuration_bytes = AVCDecoderConfiguration::new(sps.slice(..), pps.slice(..), 0).to_flv_tag_bytes();
+                            // let len = configuration_bytes.len() as u32;
+                            // let _ = flv_tx.send_data(configuration_bytes).await.hand_log(|msg| warn!("{msg}"));
+                            // let _ = flv_tx.send_data(Bytes::from(len.to_be_bytes().to_vec())).await.hand_log(|msg| warn!("{msg}"));
+                            // //idr
+                            // let _ = flv_tx.send_data(bytes).await.hand_log(|msg| warn!("{msg}"));
                             break;
                         }
                     }
@@ -107,6 +105,7 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
             }
         }
     }
+    panic!();
     loop {
         match rx.recv().await {
             Ok(bytes) => {

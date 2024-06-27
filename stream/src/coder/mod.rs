@@ -5,6 +5,7 @@ use common::bytes::Bytes;
 use common::err::{GlobalResult, TransError};
 
 pub mod h264;
+mod r264;
 
 
 #[derive(Clone)]
