@@ -14,9 +14,9 @@ use crate::container::flv::{AVCDecoderConfiguration, FlvHeader, FlvTag, ScriptTa
 use crate::state::cache;
 use crate::trans::FrameData;
 
-pub async fn run(ssrc: u32, mut rx: crossbeam_channel::Receiver<FrameData>) -> GlobalResult<()> {
+pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) -> GlobalResult<()> {
     if let Some(tx) = cache::get_flv_tx(&ssrc) {
-        while let Ok(frameData) = rx.recv() {
+        while let Ok(frameData) = rx.recv().await {
             let sender = tx.clone();
             let handle_muxer_data_fn = Box::new(
                 move |data: Bytes| -> GlobalResult<()> {

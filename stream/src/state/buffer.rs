@@ -36,7 +36,7 @@ impl RtpBuffer {
         let ts = self.timestamp.load(Ordering::SeqCst);
         let seq_num = pkt.header.sequence_number;
         //仅插入有效数据包
-        if sn > seq_num || ts > pkt.header.timestamp || Self::check_sn_wrap(sn, seq_num) {
+        if sn > seq_num || ts > pkt.header.timestamp || Self::check_sn_wrap(sn, seq_num) || ts == 0 || ts == 0 {
             let index = seq_num as usize % BUFFER_SIZE;
             let mut item = unsafe { self.buf.get_unchecked(index).lock().await };
             *item = Some(pkt);
@@ -89,6 +89,25 @@ impl RtpBuffer {
             }
         }
         pkt
+    }
+
+    //最后一次获取所有数据?
+    pub async fn flush_pkt(&self) -> Vec<Packet> {
+        let mut vec = Vec::new();
+        let mut index = self.index.load(Ordering::Relaxed) as usize;
+        for i in 0..BUFFER_SIZE {
+            let mut guard = unsafe { self.buf.get_unchecked(index).lock().await };
+            index += 1;
+            if index == BUFFER_SIZE {
+                index = 0;
+            }
+            if let Some(item) = &*guard {
+                let mut pkt = None;
+                std::mem::swap(&mut *guard, &mut pkt);
+                vec.push(pkt.unwrap());
+            }
+        }
+        vec
     }
 
     fn u16_sub_abs(a: u16, b: u16) -> u16 {

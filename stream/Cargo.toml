@@ -11,7 +11,7 @@ constructor = { path = "../../macros/constructor" }
 #discortp = { version = "0.6.0", features = ["discord-full"] }
 parking_lot = "0.12"
 #ffmpeg-next = { version = "7.0", features = ["default", "static"] }
-crossbeam-channel = "0.5"
+#crossbeam-channel = "0.5"
 tokio-util = "0.7"
 futures-util = "0.3"
 hyper = { version = "0.14.26", features = ["full"] }
@@ -28,3 +28,4 @@ hls_m3u8 = "0.4"
 byteorder = "1"
 rml_amf0 = "0.3"
 h264-reader = "=0.7"
+async-channel = "2.3"

@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry;
-use std::f32::consts::E;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -19,7 +18,7 @@ use common::log::{debug, error, info};
 use common::net::shared::{Bill, Zip};
 use common::once_cell::sync::Lazy;
 use common::tokio;
-use common::tokio::sync::{broadcast, mpsc, Notify};
+use common::tokio::sync::{broadcast, mpsc, Mutex, Notify};
 use common::tokio::sync::oneshot::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
@@ -50,7 +49,7 @@ pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()
 }
 
 //返回rtp_tx
-pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>)> {
+pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(async_channel::Sender<Packet>, async_channel::Receiver<Packet>)> {
     let guard = SESSION.shared.state.read();
     let mut first_in = false;
     if let Some((on, when, stream_id, expires, channel, reported_time, info)) = guard.sessions.get(&ssrc) {
@@ -130,7 +129,7 @@ pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     }
 }
 
-pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Packet>> {
+pub fn get_rtp_tx(ssrc: &u32) -> Option<async_channel::Sender<Packet>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -140,7 +139,7 @@ pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Packet>> {
     }
 }
 
-pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Packet>> {
+pub fn get_rtp_rx(ssrc: &u32) -> Option<async_channel::Receiver<Packet>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -389,21 +388,21 @@ impl State {
     }
 }
 
-type SyncChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
+// type SyncChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
+type AsyncChannel = (async_channel::Sender<Packet>, async_channel::Receiver<Packet>);
 type BroadcastChannel = (broadcast::Sender<Bytes>, broadcast::Receiver<Bytes>);
 
 #[derive(Debug)]
 pub struct Channel {
-    rtp_channel: SyncChannel,
+    rtp_channel: AsyncChannel,
     flv_channel: BroadcastChannel,
     hls_channel: BroadcastChannel,
 }
 
 impl Channel {
     pub fn build() -> Self {
-        let rtp_channel = crossbeam_channel::bounded(BUFFER_SIZE);
-        let flv_channel = broadcast::channel(100000);
-        // let flv_channel = broadcast::channel(BUFFER_SIZE);
+        let rtp_channel = async_channel::bounded(BUFFER_SIZE);
+        let flv_channel = broadcast::channel(BUFFER_SIZE);
         let hls_channel = broadcast::channel(BUFFER_SIZE);
         Self {
             rtp_channel,
@@ -411,10 +410,10 @@ impl Channel {
             hls_channel,
         }
     }
-    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Packet> {
+    fn get_rtp_rx(&self) -> async_channel::Receiver<Packet> {
         self.rtp_channel.1.clone()
     }
-    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<Packet> {
+    fn get_rtp_tx(&self) -> async_channel::Sender<Packet> {
         self.rtp_channel.0.clone()
     }
     fn get_flv_tx(&self) -> broadcast::Sender<Bytes> {

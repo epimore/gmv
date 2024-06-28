@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use crossbeam_channel::TrySendError;
 use log::warn;
 use rtp::packet::Packet;
 use webrtc_util::marshal::Unmarshal;
@@ -31,12 +30,12 @@ pub async fn run(port: u16) {
                             None => {
                                 debug!("未知ssrc: {}",ssrc);
                             }
-                            Some((rtp_tx, rtp_rx)) => {
+                            Some((rtp_tx, mut rtp_rx)) => {
                                 let pt = pkt.header.payload_type;
                                 if pt <= 100 {
                                     //通道满了，删除先入的数据
-                                    if let Err(TrySendError::Full(_)) = rtp_tx.try_send(pkt) {
-                                        let _ = rtp_rx.recv().hand_log(|msg| debug!("{msg}"));
+                                    if let Err(async_channel::TrySendError::Full(_)) = rtp_tx.try_send(pkt) {
+                                        let _ = rtp_rx.recv().await.hand_log(|msg| debug!("{msg}"));
                                     }
                                 } else {
                                     warn!("暂不支持数据类型: {:?}",pt)

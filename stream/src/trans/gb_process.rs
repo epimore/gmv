@@ -6,15 +6,15 @@ use common::anyhow::anyhow;
 use common::bytes::{Bytes, BytesMut};
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
-use common::tokio::sync::mpsc::UnboundedSender;
+use common::tokio::sync::broadcast;
 
 use crate::coder;
 use crate::coder::h264::H264Package;
 use crate::state::cache;
 use crate::trans::FrameData;
 
-pub async fn run(ssrc: u32, tx: crossbeam_channel::Sender<FrameData>) -> GlobalResult<()> {
-    if let Some(rx) = cache::get_rtp_rx(&ssrc) {
+pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()> {
+    if let Some(mut rx) = cache::get_rtp_rx(&ssrc) {
         let mut h264package = H264Package::build(Box::new(
             move |data: FrameData| -> GlobalResult<()> {
                 if let Err(err) = tx.send(data) {
@@ -24,7 +24,7 @@ pub async fn run(ssrc: u32, tx: crossbeam_channel::Sender<FrameData>) -> GlobalR
             },
         ));
         loop {
-            match rx.recv() {
+            match rx.recv().await {
                 Ok(pkt) => {
                     match pkt.header.payload_type {
                         98 => {}

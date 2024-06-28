@@ -3,22 +3,30 @@ use log::error;
 use common::bytes::{Bytes, BytesMut};
 use common::err::TransError;
 use common::tokio;
-use common::tokio::sync::mpsc::{Receiver, unbounded_channel};
+use common::tokio::sync::broadcast;
+use common::tokio::sync::mpsc::{Receiver};
 use crate::coder::FrameData;
 
 use crate::general::mode::BUFFER_SIZE;
 
 mod gb_process;
 pub mod flv_process;
+mod hls_process;
 
 pub async fn run(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
-        let (tx, rx) = crossbeam_channel::bounded::<FrameData>(BUFFER_SIZE);
+        let (tx, _rx) = broadcast::channel::<FrameData>(BUFFER_SIZE);
+        let sender = tx.clone();
         tokio::spawn(async move {
-            let _ = gb_process::run(ssrc, tx).await.hand_log(|msg| error!("{msg}"));
+            let _ = gb_process::run(ssrc, sender).await.hand_log(|msg| error!("{msg}"));
         });
+        let flv_rx = tx.subscribe();
         tokio::spawn(async move {
-            let _ = flv_process::run(ssrc, rx).await.hand_log(|msg| error!("{msg}"));
+            let _ = flv_process::run(ssrc, flv_rx).await.hand_log(|msg| error!("{msg}"));
         });
+        // let hls_rx = tx.subscribe();
+        // tokio::spawn(async move {
+        //     let _ = hls_process::run(ssrc, hls_rx).await.hand_log(|msg| error!("{msg}"));
+        // });
     }
 }
