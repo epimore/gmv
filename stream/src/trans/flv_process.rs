@@ -8,14 +8,15 @@ use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::tokio::sync::broadcast;
 use common::tokio::sync::broadcast::{Receiver, Sender};
-use crate::coder::h264::H264SPS;
+use crate::coder::th264::H264SPS;
 
-use crate::container::flv::{AVCDecoderConfiguration, FlvHeader, FlvTag, ScriptTag, TagType};
+use crate::container::flv::{AVCDecoderConfiguration1, FlvHeader, FlvTag, ScriptTag, TagType};
 use crate::state::cache;
 use crate::trans::FrameData;
 
 pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) -> GlobalResult<()> {
     if let Some(tx) = cache::get_flv_tx(&ssrc) {
+
         while let Ok(frameData) = rx.recv().await {
             let sender = tx.clone();
             let handle_muxer_data_fn = Box::new(
@@ -28,7 +29,7 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) -> GlobalRes
             );
             match frameData {
                 FrameData::Video { timestamp, data } => {
-                    FlvTag::process(handle_muxer_data_fn, TagType::Video, timestamp, data)?
+                    // FlvTag::process(handle_muxer_data_fn, TagType::Video, timestamp, data)?
                 }
                 FrameData::Audio { timestamp, data } => { println!("ts = {timestamp}, data len = {}", data.len()); }
                 FrameData::MetaData { timestamp, data } => { println!("ts = {timestamp}, data len = {}", data.len()); }
@@ -49,6 +50,7 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) -> GlobalRes
 //         0x06 (0 00 00110) SEI     不重要        type = 6
 //首帧为IDR帧，实现画面秒开
 pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
+    //缓存sps pps
     //sps
     let mut sps_naul: Option<Bytes> = None;
     //pps
@@ -73,7 +75,6 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
                             // flv script tag
                             if let Ok(Some(h264sps)) = H264SPS::get_sps_info_by_nalu(0, sps) {
                                 let ((c, w, h, r)) = h264sps.get_c_w_h_r();
-                                println!("---- {c},{w},{h},{r}");
                                 if let Ok(script_tag_data) = ScriptTag::build_script_tag_data(w, h, r) {
                                     let script_tag_bytes = ScriptTag::build_script_tag_bytes(script_tag_data);
                                     let _ = flv_tx.send_data(script_tag_bytes).await.hand_log(|msg| warn!("{msg}"));
@@ -81,12 +82,12 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
                             }
 
                             //sps pps
-                            // let configuration_bytes = AVCDecoderConfiguration::new(sps.slice(..), pps.slice(..), 0).to_flv_tag_bytes();
-                            // let len = configuration_bytes.len() as u32;
-                            // let _ = flv_tx.send_data(configuration_bytes).await.hand_log(|msg| warn!("{msg}"));
-                            // let _ = flv_tx.send_data(Bytes::from(len.to_be_bytes().to_vec())).await.hand_log(|msg| warn!("{msg}"));
-                            // //idr
-                            // let _ = flv_tx.send_data(bytes).await.hand_log(|msg| warn!("{msg}"));
+                            let configuration_bytes = AVCDecoderConfiguration1::new(sps.slice(..), pps.slice(..), 0).to_flv_tag_bytes();
+                            let len = configuration_bytes.len() as u32;
+                            let _ = flv_tx.send_data(configuration_bytes).await.hand_log(|msg| warn!("{msg}"));
+                            let _ = flv_tx.send_data(Bytes::from(len.to_be_bytes().to_vec())).await.hand_log(|msg| warn!("{msg}"));
+                            //idr
+                            let _ = flv_tx.send_data(bytes).await.hand_log(|msg| warn!("{msg}"));
                             break;
                         }
                     }
@@ -105,7 +106,6 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: Receiver<Bytes>) {
             }
         }
     }
-    panic!();
     loop {
         match rx.recv().await {
             Ok(bytes) => {

@@ -9,13 +9,21 @@ use common::err::GlobalError::SysErr;
 use common::tokio::sync::broadcast;
 
 use crate::coder;
-use crate::coder::h264::H264Package;
+use crate::coder::h264::H264;
 use crate::state::cache;
 use crate::trans::FrameData;
 
 pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()> {
     if let Some(mut rx) = cache::get_rtp_rx(&ssrc) {
-        let mut h264package = H264Package::build(Box::new(
+        // let mut th264package = TH264Package::build(Box::new(
+        //     move |data: FrameData| -> GlobalResult<()> {
+        //         if let Err(err) = tx.send(data) {
+        //             log::error!("send frame error: {}", err);
+        //         }
+        //         Ok(())
+        //     },
+        // ));
+        let mut h264package = H264::init_avc(Box::new(
             move |data: FrameData| -> GlobalResult<()> {
                 if let Err(err) = tx.send(data) {
                     log::error!("send frame error: {}", err);
@@ -23,13 +31,15 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
                 Ok(())
             },
         ));
+
         loop {
             match rx.recv().await {
                 Ok(pkt) => {
                     match pkt.header.payload_type {
                         98 => {}
                         96 => {
-                            let _ = h264package.demuxer_by_rtp_payload(pkt.payload, pkt.header.timestamp).hand_log(|msg| warn!("{msg}"));
+                            let _ = h264package.handle_demuxer(pkt.payload, pkt.header.timestamp);
+                            // let _ = th264package.demuxer_by_rtp_payload(pkt.payload, pkt.header.timestamp).hand_log(|msg| warn!("{msg}"));
                         }
                         100 => {}
                         102 => {}
