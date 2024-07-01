@@ -226,8 +226,52 @@ pub struct VideoTagDataFirst {
 
 }
 
-pub struct AVCDecoderConfiguration{
+pub struct AvcDecoderConfigurationRecord {
+    configuration_version: u8,
+    avc_profile_indication: u8,
+    profile_compatibility: u8,
+    avc_level_indication: u8,
+    reserved6bit_length_size_minus_one2bit: u8,
+    reserved3bit_num_of_sequence_parameter_sets5bit: u8,
+    sequence_parameter_set_length: u16,
+    sequence_parameter_set_nal_units: Bytes,
+    num_of_picture_parameter_sets: u8,
+    picture_parameter_set_length: u16,
+    picture_parameter_set_nal_units: Bytes,
+}
 
+impl AvcDecoderConfigurationRecord {
+    pub fn build(sps: Bytes, pps: Bytes) -> Self {
+        Self {
+            configuration_version: 1,
+            avc_profile_indication: sps[1],
+            profile_compatibility: sps[2],
+            avc_level_indication: sps[3],
+            reserved6bit_length_size_minus_one2bit: 0xff,
+            reserved3bit_num_of_sequence_parameter_sets5bit: 0xe1,
+            sequence_parameter_set_length: sps.len() as u16,
+            sequence_parameter_set_nal_units: sps,
+            num_of_picture_parameter_sets: 1,
+            picture_parameter_set_length: pps.len() as u16,
+            picture_parameter_set_nal_units: pps,
+        }
+    }
+    //todo 宏实现
+    pub fn to_bytes(self) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(self.configuration_version);
+        bytes.put_u8(self.avc_profile_indication);
+        bytes.put_u8(self.profile_compatibility);
+        bytes.put_u8(self.avc_level_indication);
+        bytes.put_u8(self.reserved6bit_length_size_minus_one2bit);
+        bytes.put_u8(self.reserved3bit_num_of_sequence_parameter_sets5bit);
+        bytes.put_u16(self.sequence_parameter_set_length);
+        bytes.put(self.sequence_parameter_set_nal_units);
+        bytes.put_u8(self.num_of_picture_parameter_sets);
+        bytes.put_u16(self.picture_parameter_set_length);
+        bytes.put(self.picture_parameter_set_nal_units);
+        bytes.freeze()
+    }
 }
 
 pub struct VideoTagDataLast {
@@ -326,6 +370,7 @@ impl VideoTagDataBuffer {
         }
     }
 }
+
 
 pub struct FlvTag {
     tag_type: u8,
