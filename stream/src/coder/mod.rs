@@ -3,19 +3,33 @@ use log::warn;
 
 use common::bytes::Bytes;
 use common::err::{GlobalResult, TransError};
+use constructor::New;
+use crate::coder::h264::H264;
+use crate::general::mode::Coder;
 
-pub mod th264;
 pub mod h264;
 
 
 #[derive(Clone)]
-pub enum FrameData {
-    Video { timestamp: u32, data: Bytes },
-    Audio { timestamp: u32, data: Bytes },
-    MetaData { timestamp: u32, data: Bytes },
+pub struct FrameData {
+    pub pay_type: Coder,
+    pub timestamp: u32,
+    pub data: Bytes,
 }
 
 pub type HandleFrameDataFn = Box<dyn Fn(FrameData) -> GlobalResult<()> + Send + Sync>;
+
+pub struct MediaCoder {
+    pub h264: H264,
+    // pub h265:H265,
+    // pub aac:Aac,
+}
+
+impl MediaCoder {
+    pub fn register_all(handle_fn: HandleFrameDataFn) -> Self {
+        Self { h264: H264::init_avc(handle_fn) }
+    }
+}
 
 pub fn read_uev<R: std::io::Read>(reader: &mut R) -> GlobalResult<u32> {
     let mut leading_zero_bits = 0;
@@ -56,8 +70,8 @@ pub fn parse_vui_parameters<R: std::io::Read>(reader: &mut R) -> GlobalResult<(O
     let chroma_loc_info_present_flag = reader.read_u8().hand_log(|_| warn!( "Failed to read chroma_loc_info_present_flag"))? & 0x1 == 1;
     if chroma_loc_info_present_flag {
         // Skip chroma_sample_loc_type_top_field and chroma_sample_loc_type_bottom_field
-        read_uev(reader) ? ; // chroma_sample_loc_type_top_field
-        read_uev(reader) ? ; // chroma_sample_loc_type_bottom_field
+        read_uev(reader)?; // chroma_sample_loc_type_top_field
+        read_uev(reader)?; // chroma_sample_loc_type_bottom_field
     }
 
     let timing_info_present_flag = reader.read_u8().hand_log(|_| warn!( "Failed to read timing_info_present_flag"))? & 0x1 == 1;

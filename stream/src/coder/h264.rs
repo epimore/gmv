@@ -14,6 +14,7 @@ use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 
 use crate::coder::{FrameData, HandleFrameDataFn};
+use crate::general::mode::Coder;
 
 pub struct H264 {
     handle_fn: HandleFrameDataFn,
@@ -33,7 +34,7 @@ impl H264 {
     pub fn handle_demuxer(&mut self, payload: Bytes, timestamp: u32) -> GlobalResult<()> {
         let data = self.h264packet.depacketize(&payload).hand_log(|msg| warn!("{msg}"))?;
         let fun = &self.handle_fn;
-        fun(FrameData::Video { timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
+        fun(FrameData { pay_type: Coder::H264, timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
         Ok(())
     }
 
@@ -83,14 +84,13 @@ mod test {
 
     #[test]
     fn test_sps() {
-
         let sps = [
             0x67, 0x64, 0x00, 0x0c, 0xac, 0x3b, 0x50, 0xb0,
             0x4b, 0x42, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00,
             0x00, 0x03, 0x00, 0x3d, 0x08,
         ];
         println!("{:?}", H264::get_width_height_frame_rate(&Bytes::from(sps.to_vec())));
-        
+
         let sps = [
             0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50,
             0x05, 0xbb, 0x01, 0x6c, 0x80, 0x00, 0x00, 0x03,
@@ -98,14 +98,14 @@ mod test {
             0xcb,
         ];
         println!("{:?}", H264::get_width_height_frame_rate(&Bytes::from(sps.to_vec())));
-        
+
         let sps = [
             0x67, 0x42, 0xc0, 0x28, 0xd9, 0x00, 0x78, 0x02,
             0x27, 0xe5, 0x84, 0x00, 0x00, 0x03, 0x00, 0x04,
             0x00, 0x00, 0x03, 0x00, 0xf0, 0x3c, 0x60, 0xc9, 0x20,
         ];
         println!("{:?}", H264::get_width_height_frame_rate(&Bytes::from(sps.to_vec())));
-        
+
         let sps = [
             0x67, 0x64, 0x00, 0x28, 0xac, 0xd9, 0x40, 0x78,
             0x02, 0x27, 0xe5, 0x84, 0x00, 0x00, 0x03, 0x00,

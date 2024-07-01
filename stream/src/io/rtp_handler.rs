@@ -20,8 +20,7 @@ pub async fn run(port: u16) {
     let (output, mut input) = net::init_net(net::shared::Protocol::ALL, socket_addr).await.hand_log(|msg| error!("{msg}")).expect("网络监听失败");
     while let Some(zip) = input.recv().await {
         match zip {
-            Zip::Data(Package{ bill, mut data }) => {
-                //todo RTP包不完整?
+            Zip::Data(Package { bill, mut data }) => {
                 match Packet::unmarshal(&mut data) {
                     Ok(pkt) => {
                         //todo ssrc:pkt.header.ssrc
@@ -32,7 +31,7 @@ pub async fn run(port: u16) {
                             }
                             Some((rtp_tx, mut rtp_rx)) => {
                                 let pt = pkt.header.payload_type;
-                                if pt <= 100 {
+                                if matches!(pt,96|98|100|102) {
                                     //通道满了，删除先入的数据
                                     if let Err(async_channel::TrySendError::Full(_)) = rtp_tx.try_send(pkt) {
                                         let _ = rtp_rx.recv().await.hand_log(|msg| debug!("{msg}"));

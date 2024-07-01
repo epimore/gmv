@@ -97,8 +97,10 @@ impl ServerConf {
 
 pub const AV_IO_CTX_BUFFER_SIZE: u16 = 1024 * 4;
 
-#[derive(Debug)]
-pub enum Media {
+
+
+#[derive(Debug, Clone)]
+pub enum Coder {
     ///video
     PS,
     MPEG4,
@@ -114,7 +116,7 @@ pub enum Media {
     AAC,
 }
 
-impl Media {
+impl Coder {
     pub fn gb_check(tp: u8) -> GlobalResult<Self> {
         match tp {
             ///video

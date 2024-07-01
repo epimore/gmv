@@ -33,7 +33,7 @@ pub enum EventRes {
 }
 
 impl Event {
-    pub async fn event_loop(mut rx: Receiver<(Event, Option<Sender<EventRes>>)>) -> GlobalResult<()> {
+    pub async fn event_loop(mut rx: Receiver<(Event, Option<Sender<EventRes>>)>) {
         while let Some((event, tx)) = rx.recv().await {
             match event {
                 Event::streamIn(bsi) => {
@@ -59,6 +59,5 @@ impl Event {
                 Event::endRecord(_) => {}
             }
         }
-        unimplemented!()
     }
 }
