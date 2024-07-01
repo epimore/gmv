@@ -1,12 +1,8 @@
-use std::net::SocketAddr;
 use std::time::Duration;
 
-use log::{log, warn};
-use reqwest::Response;
 use serde::{Deserialize, Serialize};
 
-use common::anyhow::Error;
-use common::err::{GlobalResult, TransError};
+use common::err::{TransError};
 use common::log::error;
 use constructor::{Get, New};
 

@@ -1,16 +1,13 @@
-use std::fmt::Debug;
-
 use h264_reader::{Context, rbsp};
-use h264_reader::annexb::AnnexBReader;
 use h264_reader::nal::pps::PicParameterSet;
-use h264_reader::nal::sps::{SeqParameterSet, SpsError};
-use log::{error, warn};
+use h264_reader::nal::sps::{SeqParameterSet};
+use log::{warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 
 use crate::coder::{FrameData, HandleFrameDataFn};
@@ -76,11 +73,6 @@ impl H264 {
 }
 
 mod test {
-    use std::io::Read;
-
-    use common::bytes::Bytes;
-
-    use crate::coder::h264::H264;
 
     #[test]
     fn test_sps() {

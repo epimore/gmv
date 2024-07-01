@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::log::{debug, error};
 use common::yaml_rust::Yaml;
-use constructor::{Get, Set};
+use constructor::{Get};
 
 //统一响应超时:单位毫秒
 pub const TIME_OUT: u64 = 8000;
@@ -98,16 +98,16 @@ impl ServerConf {
 pub const AV_IO_CTX_BUFFER_SIZE: u16 = 1024 * 4;
 
 
-
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 pub enum Coder {
-    ///video
+    //video
     PS,
     MPEG4,
     H264,
     SVAC_V,
     H265,
-    ///AUDIO
+    //AUDIO
     G711,
     SVAC_A,
     G723_1,
@@ -119,7 +119,7 @@ pub enum Coder {
 impl Coder {
     pub fn gb_check(tp: u8) -> GlobalResult<Self> {
         match tp {
-            ///video
+            //video
             //ps
             96 => { Ok(Self::PS) }
             //mpeg-4
@@ -130,7 +130,7 @@ impl Coder {
             99 => { Ok(Self::SVAC_V) }
             //h265
             100 => { Ok(Self::H265) }
-            ///audio
+            //audio
             //g711
             8 => { Ok(Self::G711) }
             //svac
@@ -151,7 +151,7 @@ impl Coder {
 
     pub fn impl_check(tp: u8) -> GlobalResult<Self> {
         match tp {
-            ///video
+            //video
             //ps
             96 => { Ok(Self::PS) }
             //h264

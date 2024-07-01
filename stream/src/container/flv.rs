@@ -1,15 +1,11 @@
 use std::collections::HashMap;
-use std::io::Cursor;
 
-use byteorder::{BigEndian, WriteBytesExt};
 use log::warn;
-use rml_amf0::{Amf0Value, deserialize, serialize};
+use rml_amf0::{Amf0Value, serialize};
 
 use common::bytes::{BufMut, Bytes, BytesMut};
 use common::err::{GlobalResult, TransError};
 use constructor::{New, Set};
-
-use crate::container::HandleMuxerDataFn;
 
 pub struct MediaFlvContainer {
     pub flv_video_h264: VideoTagDataBuffer,
@@ -299,11 +295,6 @@ impl AvcDecoderConfigurationRecord {
     }
 }
 
-pub struct VideoTagDataLast {
-    tag_header: TagHeader,
-    tag_data: VideoTagData,
-}
-
 #[derive(New)]
 pub struct VideoTagData {
     frame_type_codec_id: u8,
@@ -395,55 +386,55 @@ impl VideoTagDataBuffer {
 }
 
 
-pub struct FlvTag {
-    tag_type: u8,
-    data_size: [u8; 3],
-    timestamp: [u8; 3],
-    timestamp_ext: u8,
-    stream_id: u32,
-    data: Bytes,
-}
-
-impl FlvTag {
-    fn build(tag_type: TagType, ts: u32, data: Bytes) -> Self {
-        let size_arr = (data.len() as u32).to_be_bytes();
-        let data_size = [size_arr[1], size_arr[2], size_arr[3]];
-        let ts_arr = ts.to_be_bytes();
-        Self {
-            tag_type: tag_type.get_value(),
-            data_size,
-            timestamp: [ts_arr[1], ts_arr[2], ts_arr[3]],
-            timestamp_ext: ts_arr[0],
-            stream_id: 0,
-            data,
-        }
-    }
-
-    fn to_bytes(self, frame_type_codec_id: u8) -> Bytes {
-        let mut bm = BytesMut::new();
-        bm.put_u8(self.tag_type); //TagType: TagType：09（Tag的类型，包括音频（0x08）、视频（0x09）、script data（0x12）） 1byte
-        bm.put_slice(&self.data_size); //Tag Data 大小 3 bytes
-        bm.put_slice(&self.timestamp); //时间戳地位3位，大端 3bytes
-        bm.put_u8(self.timestamp_ext); //时间戳的扩展部分，高位 1bytes
-        bm.put_slice(&[0x00, 0x00, 0x00]); //总是0 3 bytes
-        //FrameType:
-        //     1: keyframe (for AVC, a seekableframe)
-        //     2: inter frame(for AVC, a non -seekable frame)
-        //     3 : disposable inter frame(H.263only)
-        //     4 : generated keyframe(reserved forserver use only)
-        //     5 : video info / command frame
-        //CodecID:
-        //     1: JPEG (currently unused)
-        //     2: Sorenson H.263
-        //     3 : Screen video
-        //     4 : On2 VP6
-        //     5 : On2 VP6 with alpha channel
-        //     6 : Screen video version 2
-        //     7 : AVC  H.264 的正式名称，全称是 Advanced Video Coding
-        bm.put_u8(frame_type_codec_id); //FrameType 4bit + CodecID 4bit 共1byte；
-        bm.put_u8(1); //AVCPaketType：0: AVC sequence header; 1: AVC NALU; 2: AVC end of sequence
-        bm.put_slice(&[0u8, 0, 0]); //CompositionTime Offset
-        bm.put(&self.data[..]);
-        bm.freeze()
-    }
-}
+// pub struct FlvTag {
+//     tag_type: u8,
+//     data_size: [u8; 3],
+//     timestamp: [u8; 3],
+//     timestamp_ext: u8,
+//     stream_id: u32,
+//     data: Bytes,
+// }
+//
+// impl FlvTag {
+//     fn build(tag_type: TagType, ts: u32, data: Bytes) -> Self {
+//         let size_arr = (data.len() as u32).to_be_bytes();
+//         let data_size = [size_arr[1], size_arr[2], size_arr[3]];
+//         let ts_arr = ts.to_be_bytes();
+//         Self {
+//             tag_type: tag_type.get_value(),
+//             data_size,
+//             timestamp: [ts_arr[1], ts_arr[2], ts_arr[3]],
+//             timestamp_ext: ts_arr[0],
+//             stream_id: 0,
+//             data,
+//         }
+//     }
+//
+//     fn to_bytes(self, frame_type_codec_id: u8) -> Bytes {
+//         let mut bm = BytesMut::new();
+//         bm.put_u8(self.tag_type); //TagType: TagType：09（Tag的类型，包括音频（0x08）、视频（0x09）、script data（0x12）） 1byte
+//         bm.put_slice(&self.data_size); //Tag Data 大小 3 bytes
+//         bm.put_slice(&self.timestamp); //时间戳地位3位，大端 3bytes
+//         bm.put_u8(self.timestamp_ext); //时间戳的扩展部分，高位 1bytes
+//         bm.put_slice(&[0x00, 0x00, 0x00]); //总是0 3 bytes
+//         //FrameType:
+//         //     1: keyframe (for AVC, a seekableframe)
+//         //     2: inter frame(for AVC, a non -seekable frame)
+//         //     3 : disposable inter frame(H.263only)
+//         //     4 : generated keyframe(reserved forserver use only)
+//         //     5 : video info / command frame
+//         //CodecID:
+//         //     1: JPEG (currently unused)
+//         //     2: Sorenson H.263
+//         //     3 : Screen video
+//         //     4 : On2 VP6
+//         //     5 : On2 VP6 with alpha channel
+//         //     6 : Screen video version 2
+//         //     7 : AVC  H.264 的正式名称，全称是 Advanced Video Coding
+//         bm.put_u8(frame_type_codec_id); //FrameType 4bit + CodecID 4bit 共1byte；
+//         bm.put_u8(1); //AVCPaketType：0: AVC sequence header; 1: AVC NALU; 2: AVC end of sequence
+//         bm.put_slice(&[0u8, 0, 0]); //CompositionTime Offset
+//         bm.put(&self.data[..]);
+//         bm.freeze()
+//     }
+// }

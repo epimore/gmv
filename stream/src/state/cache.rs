@@ -1,32 +1,25 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::collections::hash_map::Entry;
-use std::net::SocketAddr;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use parking_lot::{RawRwLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{RwLock};
 use rtp::packet::Packet;
 
-use common::anyhow::anyhow;
 use common::bytes::Bytes;
-use common::clap::builder::Str;
-use common::err::{BizError, GlobalError, GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
-use common::log::{debug, error, info};
-use common::net::shared::{Bill, Zip};
+use common::err::{GlobalError, GlobalResult, TransError};
+use common::log::{error};
+use common::net::shared::{Bill};
 use common::once_cell::sync::Lazy;
 use common::tokio;
-use common::tokio::sync::{broadcast, mpsc, Mutex, Notify};
+use common::tokio::sync::{broadcast, mpsc, Notify};
 use common::tokio::sync::oneshot::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
-use constructor::Get;
 
 use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamState};
-use crate::general::mode::{BUFFER_SIZE, HALF_TIME_OUT, ServerConf, TIME_OUT};
-use crate::io::hook_handler;
+use crate::general::mode::{BUFFER_SIZE, HALF_TIME_OUT, ServerConf};
 use crate::io::hook_handler::{Event, EventRes};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
@@ -52,8 +45,8 @@ pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()
 pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(async_channel::Sender<Packet>, async_channel::Receiver<Packet>)> {
     let guard = SESSION.shared.state.read();
     let mut first_in = false;
-    if let Some((on, when, stream_id, expires, channel, reported_time, info)) = guard.sessions.get(&ssrc) {
-        if let Some((_ssrc, flv_sets, hls_sets, record)) = guard.inner.get(stream_id) {
+    if let Some((on,_when, stream_id, _expires, channel, reported_time, _info)) = guard.sessions.get(&ssrc) {
+        if let Some((_ssrc, _flv_sets, _hls_sets, _record)) = guard.inner.get(stream_id) {
             //更新流状态：时间轮会扫描流，将其置为false，若使用中则on更改为true;
             //增加判断流是否使用,若使用则更新流状态;目的：流空闲则断流。
             // if flv_sets.len() > 0 || hls_sets.len() > 0 || record.is_some() {
@@ -71,16 +64,15 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(async_channel::Sender<Pa
     drop(guard);
     //流注册时-回调
     if first_in {
-        first_in = false;
         let mut guard = SESSION.shared.state.write();
-        if let Some((on, when, stream_id, expires, channel, reported_time, info)) = guard.sessions.get_mut(&ssrc) {
+        if let Some((_on, _when, stream_id, _expires, channel, reported_time, info)) = guard.sessions.get_mut(&ssrc) {
             let remote_addr_str = bill.get_remote_addr().to_string();
             let protocol_addr = bill.get_protocol().get_value().to_string();
             *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
             let rtp_info = RtpInfo::new(ssrc, Some(protocol_addr), Some(remote_addr_str), SESSION.shared.server_conf.get_name().clone());
             let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
             let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
-            let _ = SESSION.shared.event_tx.clone().send((Event::streamIn(stream_info), None)).await.hand_log(|msg| error!("{msg}"));
+            let _ = SESSION.shared.event_tx.clone().send((Event::StreamIn(stream_info), None)).await.hand_log(|msg| error!("{msg}"));
             *reported_time = time;
             return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
         }
@@ -180,7 +172,7 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
         }
         Some((ssrc, flv_tokens, hls_tokens, _)) => {
             match guard.sessions.get(ssrc) {
-                Some((_, ts, stream_id, dur, ch, stream_in_reported_time, Some((origin_addr, protocol)))) => {
+                Some((_, _ts, stream_id, _dur, _ch, stream_in_reported_time, Some((origin_addr, protocol)))) => {
                     let server_name = SESSION.shared.server_conf.get_name().to_string();
                     let rtp_info = RtpInfo::new(*ssrc, Some(protocol.to_string()), Some(origin_addr.to_string()), server_name);
                     let stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *stream_in_reported_time);
@@ -219,7 +211,7 @@ pub fn get_stream_state(opt_stream_id: Option<String>) -> Vec<StreamState> {
                 let rtp_info = RtpInfo::new(*ssrc, protocol, origin_addr, server_name.clone());
                 let base_stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *report_timestamp);
                 //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
-                if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = guard.inner.get(stream_id) {
+                if let Some((_ssrc, flv_tokens, hls_tokens, record_name)) = guard.inner.get(stream_id) {
                     let state = StreamState::new(base_stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name.clone());
                     vec.push(state);
                 }
@@ -359,7 +351,7 @@ impl Shared {
                         let rtp_info = RtpInfo::new(ssrc, protocol, origin_addr, server_name);
                         let stream_info = BaseStreamInfo::new(rtp_info, stream_id, stream_in_reported_time);
                         let stream_state = StreamState::new(stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name);
-                        let _ = SESSION.shared.event_tx.clone().send((Event::streamTimeout(stream_state), None)).await.hand_log(|msg| error!("{msg}"));
+                        let _ = SESSION.shared.event_tx.clone().send((Event::StreamTimeout(stream_state), None)).await.hand_log(|msg| error!("{msg}"));
                     }
                 }
             }

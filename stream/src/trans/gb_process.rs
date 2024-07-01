@@ -1,19 +1,13 @@
-use std::ops::Deref;
 use std::sync::Arc;
 
-use async_channel::RecvError;
-use log::{debug, error, info, warn};
+use log::{debug, info};
 use rtp::packet::Packet;
 
-use common::anyhow::anyhow;
-use common::bytes::{Bytes, BytesMut};
-use common::err::{GlobalError, GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
+use common::err::{GlobalError, GlobalResult};
 use common::tokio;
 use common::tokio::sync::{broadcast, oneshot};
 
-use crate::{coder, container};
-use crate::coder::h264::H264;
+use crate::{coder};
 use crate::container::rtp::RtpBuffer;
 use crate::state::cache;
 use crate::trans::FrameData;
@@ -32,7 +26,8 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
 }
 
 async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer: &RtpBuffer, flush_tx: oneshot::Sender<bool>) {
-    while let res_pkt = rx.recv().await {
+    loop {
+        let res_pkt = rx.recv().await;
         match res_pkt {
             Ok(pkt) => { rtp_buffer.insert(pkt).await; }
             Err(_) => {

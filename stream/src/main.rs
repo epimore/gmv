@@ -1,4 +1,4 @@
-#![allow(warnings)]
+// #![allow(warnings)]
 use common::err::TransError;
 use common::log::error;
 use common::tokio;

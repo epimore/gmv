@@ -1,6 +1,5 @@
 use log::error;
 
-use common::bytes::{Bytes, BytesMut};
 use common::err::TransError;
 use common::tokio;
 use common::tokio::sync::broadcast;

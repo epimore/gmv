@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU8, Ordering};
 
-use log::{debug, info};
+use log::{debug};
 use rtp::packet::Packet;
 
 use common::tokio::sync::{Mutex, Notify};
@@ -95,13 +95,13 @@ impl RtpBuffer {
     pub async fn flush_pkt(&self) -> Vec<Packet> {
         let mut vec = Vec::new();
         let mut index = self.index.load(Ordering::Relaxed) as usize;
-        for i in 0..BUFFER_SIZE {
+        for _i in 0..BUFFER_SIZE {
             let mut guard = unsafe { self.buf.get_unchecked(index).lock().await };
             index += 1;
             if index == BUFFER_SIZE {
                 index = 0;
             }
-            if let Some(item) = &*guard {
+            if guard.is_some() {
                 let mut pkt = None;
                 std::mem::swap(&mut *guard, &mut pkt);
                 vec.push(pkt.unwrap());

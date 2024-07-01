@@ -8,10 +8,7 @@ edition = "2021"
 [dependencies]
 common = { path = "../../pig/common", features = ["net"] }
 constructor = { path = "../../macros/constructor" }
-#discortp = { version = "0.6.0", features = ["discord-full"] }
 parking_lot = "0.12"
-#ffmpeg-next = { version = "7.0", features = ["default", "static"] }
-#crossbeam-channel = "0.5"
 tokio-util = "0.7"
 futures-util = "0.3"
 hyper = { version = "0.14.26", features = ["full"] }

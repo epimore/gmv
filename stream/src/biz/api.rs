@@ -1,24 +1,18 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Duration;
 
-use hyper::{Body, body, header, Request, Response, StatusCode};
-use serde::{Deserialize, Serialize};
-use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
+use hyper::{Body, header, Response, StatusCode};
+use tokio_stream::wrappers::{BroadcastStream};
 use tokio_util::sync::CancellationToken;
 
-use common::bytes::Bytes;
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::log::error;
 use common::tokio;
-use common::tokio::sync::{broadcast, mpsc, oneshot};
-use common::tokio::sync::broadcast::Receiver;
+use common::tokio::sync::{oneshot};
 use common::tokio::sync::mpsc::Sender;
-use common::tokio::sync::oneshot::error::RecvError;
 
-use crate::biz::call::{BaseStreamInfo, StreamPlayInfo, StreamState};
-use crate::container::flv::FlvHeader;
-use crate::general::mode::{ResMsg, TIME_OUT};
+use crate::biz::call::{StreamPlayInfo, StreamState};
+use crate::general::mode::{ResMsg};
 use crate::io::hook_handler::{Event, EventRes};
 use crate::state::cache;
 use crate::trans::flv_process;
@@ -33,23 +27,6 @@ fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
 fn get_stream_id(param_map: &HashMap<String, String>) -> GlobalResult<String> {
     let stream_id = param_map.get("stream_id").ok_or_else(|| GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))?;
     Ok(stream_id.to_string())
-}
-
-fn get_play_type(param_map: &HashMap<String, String>) -> GlobalResult<String> {
-    let stream_id = param_map.get("play_type").ok_or_else(|| GlobalError::new_biz_error(1100, "play_type 不存在", |msg| error!("{msg}")))?;
-    Ok(stream_id.to_string())
-}
-
-fn get_params_map(req: &Request<Body>) -> Option<HashMap<String, String>> {
-    match req.uri().query() {
-        None => { None }
-        Some(params) => {
-            let map = form_urlencoded::parse(params.as_bytes())
-                .into_owned()
-                .collect::<HashMap<String, String>>();
-            Some(map)
-        }
-    }
 }
 
 pub fn res_401() -> GlobalResult<Response<Body>> {
@@ -68,6 +45,7 @@ pub fn res_404() -> GlobalResult<Response<Body>> {
     return Ok(res);
 }
 
+#[allow(dead_code)]
 //todo 获取流超时对点播方响应
 pub fn res_404_stream_timeout() -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg("404:media stream disconnected".to_string()).to_json()?;
@@ -109,15 +87,15 @@ pub async fn listen_ssrc(map: HashMap<String, String>, ssrc_tx: Sender<u32>) -> 
 }
 
 //删除ssrc，返回正在使用的stream_id/token
-pub async fn drop_ssrc(ssrc: u32) -> GlobalResult<()> {
-    unimplemented!()
-}
+// pub async fn drop_ssrc(ssrc: u32) -> GlobalResult<()> {
+//     unimplemented!()
+// }
 
 //开启录像
-pub async fn start_record(ssrc: u32, file_name: &String) {}
+// pub async fn start_record(ssrc: u32, file_name: &String) {}
 
 //停止录像，是否清理录像文件
-pub async fn stop_record(ssrc: u32, clean: bool) {}
+// pub async fn stop_record(ssrc: u32, clean: bool) {}
 
 //查询流媒体数据状态,hls/flv/record:ResMsg<Vec<StreamState>>
 pub fn get_state(opt_stream_id: Option<String>) -> GlobalResult<Response<Body>> {
@@ -137,16 +115,16 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
             let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token.clone(), play_type.clone(), flv_tokens, hls_tokens);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
-            let _ = event_tx.clone().send((Event::onPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
+            let _ = event_tx.clone().send((Event::OnPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
             match rx.await {
                 Ok(res) => {
-                    let mut res_builder = Response::builder()
+                    let res_builder = Response::builder()
                         .status(StatusCode::OK)
                         .header("Access-Control-Allow-Origin", "*")
                         .header("Transfer-Encoding", "chunked")
                         .header("Connection", "keep-alive")
                         .header("Cache-Control", "no-cache"); //Cache-Control: 根据需求设置，一般可以设为 no-cache 或者 public, max-age=秒数。
-                    if let EventRes::onPlay(Some(true)) = res {
+                    if let EventRes::OnPlay(Some(true)) = res {
                         match &play_type[..] {
                             "flv" => {
                                 match cache::get_flv_rx(&ssrc) {
@@ -166,7 +144,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                             cache::update_token(&stream_id, &play_type, token.clone(), false);
                                             if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                                 let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token, play_type, flv_tokens, hls_tokens);
-                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
+                                                let _ = event_tx.send((Event::OffPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });
                                         Ok(flv_res)
@@ -188,7 +166,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                             cache::update_token(&stream_id, &play_type, token.clone(), false);
                                             if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                                 let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token, play_type, flv_tokens, hls_tokens);
-                                                let _ = event_tx.send((Event::offPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
+                                                let _ = event_tx.send((Event::OffPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });
                                         Ok(hls_res)
@@ -211,4 +189,4 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
 }
 
 //关闭播放，stp:0-all,1-flv,2-hls
-pub async fn stop_play(stream_id: String, token: String, stp: u8) {}
+// pub async fn stop_play(stream_id: String, token: String, stp: u8) {}

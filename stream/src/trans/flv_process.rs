@@ -1,16 +1,13 @@
-use byteorder::BigEndian;
 use hyper::body;
 use log::warn;
 
-use common::anyhow::anyhow;
 use common::bytes::{BufMut, Bytes, BytesMut};
 use common::err::{GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
 use common::tokio::sync::broadcast;
 
 use crate::coder::h264::H264;
 use crate::container::flv;
-use crate::container::flv::{AvcDecoderConfigurationRecord, FlvHeader, FlvTag, PreviousTagSize, ScriptMetaData, TagHeader, TagType, VideoTagDataBuffer, VideoTagDataFirst};
+use crate::container::flv::{AvcDecoderConfigurationRecord, FlvHeader, PreviousTagSize, ScriptMetaData, TagHeader, TagType, VideoTagDataFirst};
 use crate::general::mode::Coder;
 use crate::state::cache;
 use crate::trans::FrameData;
@@ -49,7 +46,7 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) -> GlobalRes
 }
 
 //当前仅支持h264，后面扩展时，需考虑flv script等内容，如添加audio等，是否将流信息放入cache
-async fn first_frame(mut flv_tx: &mut body::Sender, mut rx: &mut broadcast::Receiver<Bytes>) {
+async fn first_frame(flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<Bytes>) {
     while let Ok(bytes) = rx.recv().await {
         //获取带有sps信息的数据包:头信息tag_header(11)+frame_type_codec_id(1)+avc_packet_type(1)+composition_time_offset(3)+nal_size(4) = 20;
         if bytes[20] & 0x1f == 7 {
@@ -110,7 +107,7 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: broadcast::Receiver<Byte
             Ok(bytes) => {
                 let _ = flv_tx.send_data(bytes).await.hand_log(|msg| warn!("{msg}"));
             }
-            Err(broadcast::error::RecvError::Lagged(amt)) => {
+            Err(broadcast::error::RecvError::Lagged(_amt)) => {
                 rx = rx.resubscribe();
             }
             Err(..) => {}

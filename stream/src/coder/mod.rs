@@ -3,7 +3,6 @@ use log::warn;
 
 use common::bytes::Bytes;
 use common::err::{GlobalResult, TransError};
-use constructor::New;
 use crate::coder::h264::H264;
 use crate::general::mode::Coder;
 
