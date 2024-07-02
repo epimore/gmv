@@ -36,7 +36,7 @@ impl RtpBuffer {
         let ts = self.timestamp.load(Ordering::SeqCst);
         let seq_num = pkt.header.sequence_number;
         //仅插入有效数据包
-        if sn > seq_num || ts > pkt.header.timestamp || Self::check_sn_wrap(sn, seq_num) || ts == 0 || ts == 0 {
+        if seq_num > sn || pkt.header.timestamp > ts || Self::check_sn_wrap(sn, seq_num) || ts == 0 || ts == 0 {
             let index = seq_num as usize % BUFFER_SIZE;
             let mut item = unsafe { self.buf.get_unchecked(index).lock().await };
             *item = Some(pkt);
@@ -76,11 +76,11 @@ impl RtpBuffer {
                 self.index.store(index as u8, Ordering::Relaxed);
                 let window = self.sliding_window.load(Ordering::SeqCst);
                 if i == 1 {
-                    if window == 2 || window == 4 || window == 8 {
+                    if matches!(window,2|4|8) {
                         self.sliding_window.store(window / 2, Ordering::SeqCst);
                     }
                 } else if i > 3 {
-                    if window == 1 || window == 2 || window == 4 {
+                    if matches!(window,1|2|4) {
                         self.sliding_window.store(window * 2, Ordering::SeqCst);
                     }
                 }

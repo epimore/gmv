@@ -30,8 +30,10 @@ impl H264 {
 
     pub fn handle_demuxer(&mut self, payload: Bytes, timestamp: u32) -> GlobalResult<()> {
         let data = self.h264packet.depacketize(&payload).hand_log(|msg| warn!("{msg}"))?;
-        let fun = &self.handle_fn;
-        fun(FrameData { pay_type: Coder::H264, timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
+        if data.len()!=0 {
+            let fun = &self.handle_fn;
+            fun(FrameData { pay_type: Coder::H264, timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
+        }
         Ok(())
     }
 

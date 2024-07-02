@@ -22,21 +22,22 @@ pub async fn run(port: u16) {
                     Ok(pkt) => {
                         //todo ssrc:pkt.header.ssrc
                         let ssrc = pkt.header.ssrc;
-                        match state::cache::refresh(1, &bill).await {
-                            None => {
-                                debug!("未知ssrc: {}",ssrc);
-                            }
-                            Some((rtp_tx, rtp_rx)) => {
-                                let pt = pkt.header.payload_type;
-                                if matches!(pt,96|98|100|102) {
+                        let pt = pkt.header.payload_type;
+                        if matches!(pt,96|98|100|102) {
+                            //todo 将pt放入，第一次回调时，检查pt是否符合，不符合以事件的形式发送给信令
+                            match state::cache::refresh(1, &bill).await {
+                                None => {
+                                    debug!("未知ssrc: {}",ssrc);
+                                }
+                                Some((rtp_tx, rtp_rx)) => {
                                     //通道满了，删除先入的数据
                                     if let Err(async_channel::TrySendError::Full(_)) = rtp_tx.try_send(pkt) {
                                         let _ = rtp_rx.recv().await.hand_log(|msg| debug!("{msg}"));
                                     }
-                                } else {
-                                    warn!("暂不支持数据类型: {:?}",pt)
                                 }
                             }
+                        } else {
+                            warn!("ssrc = {}; 暂不支持数据类型: {:?}",ssrc,pt);
                         }
                     }
                     Err(error) => {

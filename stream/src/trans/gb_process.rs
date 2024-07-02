@@ -51,16 +51,18 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
     let mut coder = coder::MediaCoder::register_all(handle_frame);
     loop {
         tokio::select! {
-            Some(pkt) = rtp_buffer.next_pkt() =>{
-                match pkt.header.payload_type {
-                    98 => {}
-                    96 => {
-                        let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp);
-                    }
-                    100 => {}
-                    102 => {}
-                    _ => {
-                        return Err(GlobalError::new_biz_error(4005, "系统暂不支持", |msg| debug!("{msg}")));
+            res_pkt = rtp_buffer.next_pkt() =>{
+                if let Some(pkt) = res_pkt{
+                    match pkt.header.payload_type {
+                        98 => {}
+                        96 => {
+                            let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp);
+                        }
+                        100 => {}
+                        102 => {}
+                        _ => {
+                            return Err(GlobalError::new_biz_error(4005, "系统暂不支持", |msg| debug!("{msg}")));
+                        }
                     }
                 }
             }
@@ -68,6 +70,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                for pkt in rtp_buffer.flush_pkt().await{
                      let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp);
                 }
+                return Ok(());
             }
         }
     }
