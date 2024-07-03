@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use log::warn;
-use rml_amf0::{Amf0Value, serialize};
-
+use amf::{Pair};
+use amf::amf0::Value;
 use common::bytes::{BufMut, Bytes, BytesMut};
 use common::err::{GlobalResult, TransError};
 use constructor::{New, Set};
@@ -159,44 +157,57 @@ pub struct ScriptMetaData {
 
 impl ScriptMetaData {
     pub fn to_bytes(&self) -> GlobalResult<Bytes> {
-        let mut properties = HashMap::new();
+        let mut arr = Vec::<Pair<String, Value>>::new();
         if let Some(duration) = self.duration {
-            properties.insert("duration".to_string(), Amf0Value::Number(duration));
+            let pair = Pair { key: "duration".to_string(), value: Value::Number(duration) };
+            arr.push(pair);
         }
         if let Some(width) = self.width {
-            properties.insert("width".to_string(), Amf0Value::Number(width));
+            let pair = Pair { key: "width".to_string(), value: Value::Number(width) };
+            arr.push(pair);
         }
         if let Some(height) = self.height {
-            properties.insert("height".to_string(), Amf0Value::Number(height));
+            let pair = Pair { key: "height".to_string(), value: Value::Number(height) };
+            arr.push(pair);
         }
         if let Some(videodatarate) = self.videodatarate {
-            properties.insert("videodatarate".to_string(), Amf0Value::Number(videodatarate));
+            let pair = Pair { key: "videodatarate".to_string(), value: Value::Number(videodatarate) };
+            arr.push(pair);
         }
         if let Some(framerate) = self.framerate {
-            properties.insert("framerate".to_string(), Amf0Value::Number(framerate));
+            let pair = Pair { key: "framerate".to_string(), value: Value::Number(framerate) };
+            arr.push(pair);
         }
         if let Some(videocodecid) = self.videocodecid {
-            properties.insert("videocodecid".to_string(), Amf0Value::Number(videocodecid));
+            let pair = Pair { key: "videocodecid".to_string(), value: Value::Number(videocodecid) };
+            arr.push(pair);
         }
         if let Some(audiodatarate) = self.audiodatarate {
-            properties.insert("audiodatarate".to_string(), Amf0Value::Number(audiodatarate));
+            let pair = Pair { key: "audiodatarate".to_string(), value: Value::Number(audiodatarate) };
+            arr.push(pair);
         }
         if let Some(audiosamplerate) = self.audiosamplerate {
-            properties.insert("audiosamplerate".to_string(), Amf0Value::Number(audiosamplerate));
+            let pair = Pair { key: "audiosamplerate".to_string(), value: Value::Number(audiosamplerate) };
+            arr.push(pair);
         }
         if let Some(stereo) = self.stereo {
-            properties.insert("stereo".to_string(), Amf0Value::Boolean(stereo));
+            let pair = Pair { key: "stereo".to_string(), value: Value::Boolean(stereo) };
+            arr.push(pair);
         }
         if let Some(audiocodecid) = self.audiocodecid {
-            properties.insert("audiocodecid".to_string(), Amf0Value::Number(audiocodecid));
+            let pair = Pair { key: "audiocodecid".to_string(), value: Value::Number(audiocodecid) };
+            arr.push(pair);
         }
         if let Some(filesize) = self.filesize {
-            properties.insert("filesize".to_string(), Amf0Value::Number(filesize));
+            let pair = Pair { key: "filesize".to_string(), value: Value::Number(filesize) };
+            arr.push(pair);
         }
-        let amf1 = Amf0Value::Utf8String("onMetaData".to_string());
-        let amf2 = Amf0Value::Object(properties);
-        let bytes = serialize(&vec![amf1, amf2]).hand_log(|msg| warn!("{msg}"))?;
-        Ok(Bytes::from(bytes))
+        let mut buf = Vec::new();
+        let amf1 = Value::from(Value::String("onMetaData".to_string()));
+        amf1.write_to(&mut buf).hand_log(|msg| warn!("{msg}"))?;
+        let amf2 = Value::EcmaArray { entries: arr };
+        amf2.write_to(&mut buf).hand_log(|msg| warn!("{msg}"))?;
+        Ok(Bytes::from(buf))
     }
 }
 
@@ -325,9 +336,27 @@ pub struct VideoTagDataBuffer {
 
 impl VideoTagDataBuffer {
     pub fn init() -> Self {
+        let mut sps_vec = base64::decode("Z00AKpWoHgCJ+VA=").unwrap();
+        let sps_len = sps_vec.len() as u32;
+        let s = sps_len.to_be_bytes();
+        sps_vec.insert(0, s[0]);
+        sps_vec.insert(1, s[1]);
+        sps_vec.insert(2, s[2]);
+        sps_vec.insert(3, s[3]);
+        let sps = Bytes::from(sps_vec);
+
+        let mut pps_vec = base64::decode("aO48gA==").unwrap();
+        let pps_len = pps_vec.len() as u32;
+        let p = pps_len.to_be_bytes();
+        pps_vec.insert(0, p[0]);
+        pps_vec.insert(1, p[1]);
+        pps_vec.insert(2, p[2]);
+        pps_vec.insert(3, p[3]);
+        let pps = Bytes::from(pps_vec);
+
         Self {
-            sps: None,
-            pps: None,
+            sps: Some(sps),
+            pps: Some(pps),
             sei: None,
             aud: None,
         }
@@ -349,7 +378,7 @@ impl VideoTagDataBuffer {
                 }
                 bm.put(nal);
                 let data = bm.freeze();
-                let video_tag_data = VideoTagData::new(17, 1, 0, data);
+                let video_tag_data = VideoTagData::new(0x17, 1, 0, data);
                 Some(video_tag_data)
             }
             6 => {
@@ -378,7 +407,7 @@ impl VideoTagDataBuffer {
                 }
                 bm.put(nal);
                 let data = bm.freeze();
-                let video_tag_data = VideoTagData::new(27, 1, 0, data);
+                let video_tag_data = VideoTagData::new(0x27, 1, 0, data);
                 Some(video_tag_data)
             }
         }
@@ -438,3 +467,83 @@ impl VideoTagDataBuffer {
 //         bm.freeze()
 //     }
 // }
+
+#[cfg(test)]
+mod test {
+    use crate::container::flv::ScriptMetaData;
+
+    #[test]
+    fn test_metadata() {
+        let meta_data = ScriptMetaData {
+            duration: Some(123f64),
+            width: Some(1920f64),
+            height: Some(720f64),
+            videodatarate: None,
+            framerate: Some(25f64),
+            videocodecid: Some(7f64),
+            audiodatarate: None,
+            audiosamplerate: None,
+            audiosamplesize: None,
+            stereo: None,
+            audiocodecid: None,
+            filesize: None,
+        };
+        match meta_data.to_bytes() {
+            Ok(meta) => {
+                println!("{:02x}", meta);
+            }
+            Err(err) => {
+                println!("{:?}", err);
+            }
+        }
+    }
+
+    #[test]
+    fn test_flv_data() {
+        let input = include_bytes!("/home/ubuntu20/code/rs/mv/github/epimore/12.flv");
+        println!("input size = {}", input.len());
+        let input = &input[187..116767];
+        let mut curr_offset = 0;
+        let size_len = 4;
+        while curr_offset < input.len() {
+            println!("nal len {data_size}, type = {:02x}", input[curr_offset + size_len]);
+            let data_size = u32::from_be_bytes([input[curr_offset], input[curr_offset + 1], input[curr_offset + 2], input[curr_offset + 3]]) as usize;
+            curr_offset += size_len + data_size;
+        }
+    }
+}
+//ypedef struct ScriptTagData
+// {
+//   unsigned char MetaDataType;//0x02
+//   unsigned char StringLenth[2];//一般位10，即0x000A；
+//   unsigned char MetaString[10];//值为onMetaDat
+//   unsigned char InfoDataType;//0x08表示数组，也就是第二个AMF包
+//   unsigned char EnumNum[4];//4bytes有多少个元素//18bytes
+//   //1
+//   unsigned char DurationLenth[2];//2bytes,duration的长度
+//   unsigned char DurationName[8];
+//   unsigned char DurationType;
+//   unsigned char DurationData[8];
+//   //2
+//   unsigned char WidthLenth[2];//
+//   unsigned char WidthName[5];
+//   unsigned char WidthType;
+//   unsigned char WidthData[8];
+//   //3
+//   unsigned char HeightLenth[2];
+//   unsigned char HeightName[6];
+//   unsigned char HeightType;
+//   unsigned char HeightData[8];
+//   //4
+//   unsigned char FrameRateLenth[2];
+//   unsigned char FrameRateName[9];
+//   unsigned char FrameRateType;
+//   unsigned char FrameRateData[8];
+//   //5
+//   unsigned char FileSizeLenth[2];
+//   unsigned char FileSizeName[8];
+//   unsigned char FileSizeType;
+//   unsigned char FileSizeData[8];
+//
+//   unsigned char End[3];//0x000009
+// }ScriptTagData;

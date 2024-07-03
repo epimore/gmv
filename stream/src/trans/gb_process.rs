@@ -29,7 +29,9 @@ async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer
     loop {
         let res_pkt = rx.recv().await;
         match res_pkt {
-            Ok(pkt) => { rtp_buffer.insert(pkt).await; }
+            Ok(pkt) => {
+                rtp_buffer.insert(pkt).await;
+            }
             Err(_) => {
                 let _ = flush_tx.send(true);
                 info!("ssrc = {ssrc},流已释放");

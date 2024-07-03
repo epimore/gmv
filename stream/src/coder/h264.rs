@@ -1,7 +1,7 @@
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::{SeqParameterSet};
-use log::{warn};
+use log::{debug, warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 
@@ -29,8 +29,8 @@ impl H264 {
     }
 
     pub fn handle_demuxer(&mut self, payload: Bytes, timestamp: u32) -> GlobalResult<()> {
-        let data = self.h264packet.depacketize(&payload).hand_log(|msg| warn!("{msg}"))?;
-        if data.len()!=0 {
+        let data = self.h264packet.depacketize(&payload).hand_log(|msg| debug!("{msg}"))?;
+        if data.len() != 0 {
             let fun = &self.handle_fn;
             fun(FrameData { pay_type: Coder::H264, timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
         }
@@ -74,7 +74,10 @@ impl H264 {
     }
 }
 
+#[cfg(test)]
 mod test {
+    use common::bytes::Bytes;
+    use crate::coder::h264::H264;
 
     #[test]
     fn test_sps() {
