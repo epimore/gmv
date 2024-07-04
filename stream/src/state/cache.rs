@@ -7,7 +7,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use parking_lot::{RwLock};
 use rtp::packet::Packet;
 
-use common::bytes::Bytes;
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::log::{error};
 use common::net::shared::{Bill};
@@ -19,6 +18,7 @@ use common::tokio::time;
 use common::tokio::time::Instant;
 
 use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamState};
+use crate::coder::FrameData;
 use crate::general::mode::{BUFFER_SIZE, HALF_TIME_OUT, ServerConf};
 use crate::io::hook_handler::{Event, EventRes};
 
@@ -45,7 +45,7 @@ pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()
 pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(async_channel::Sender<Packet>, async_channel::Receiver<Packet>)> {
     let guard = SESSION.shared.state.read();
     let mut first_in = false;
-    if let Some((on,_when, stream_id, _expires, channel, reported_time, _info)) = guard.sessions.get(&ssrc) {
+    if let Some((on, _when, stream_id, _expires, channel, reported_time, _info)) = guard.sessions.get(&ssrc) {
         if let Some((_ssrc, _flv_sets, _hls_sets, _record)) = guard.inner.get(stream_id) {
             //更新流状态：时间轮会扫描流，将其置为false，若使用中则on更改为true;
             //增加判断流是否使用,若使用则更新流状态;目的：流空闲则断流。
@@ -81,7 +81,7 @@ pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(async_channel::Sender<Pa
 }
 
 //外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
-pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
+pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -91,7 +91,7 @@ pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     }
 }
 
-pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
+pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -101,7 +101,7 @@ pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
     }
 }
 
-pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
+pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -111,7 +111,7 @@ pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<Bytes>> {
     }
 }
 
-pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<Bytes>> {
+pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
@@ -382,7 +382,7 @@ impl State {
 
 // type SyncChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
 type AsyncChannel = (async_channel::Sender<Packet>, async_channel::Receiver<Packet>);
-type BroadcastChannel = (broadcast::Sender<Bytes>, broadcast::Receiver<Bytes>);
+type BroadcastChannel = (broadcast::Sender<FrameData>, broadcast::Receiver<FrameData>);
 
 #[derive(Debug)]
 pub struct Channel {
@@ -408,16 +408,16 @@ impl Channel {
     fn get_rtp_tx(&self) -> async_channel::Sender<Packet> {
         self.rtp_channel.0.clone()
     }
-    fn get_flv_tx(&self) -> broadcast::Sender<Bytes> {
+    fn get_flv_tx(&self) -> broadcast::Sender<FrameData> {
         self.flv_channel.0.clone()
     }
-    fn get_flv_rx(&self) -> broadcast::Receiver<Bytes> {
+    fn get_flv_rx(&self) -> broadcast::Receiver<FrameData> {
         self.flv_channel.0.subscribe()
     }
-    fn get_hls_tx(&self) -> broadcast::Sender<Bytes> {
+    fn get_hls_tx(&self) -> broadcast::Sender<FrameData> {
         self.hls_channel.0.clone()
     }
-    fn get_hls_rx(&self) -> broadcast::Receiver<Bytes> {
+    fn get_hls_rx(&self) -> broadcast::Receiver<FrameData> {
         self.hls_channel.0.subscribe()
     }
 }

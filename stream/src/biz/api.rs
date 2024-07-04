@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use hyper::{Body, header, Response, StatusCode};
-use tokio_stream::wrappers::{BroadcastStream};
 use tokio_util::sync::CancellationToken;
 
 use common::err::{GlobalError, GlobalResult, TransError};
@@ -155,10 +154,16 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                             "hls" => {
                                 match cache::get_hls_rx(&ssrc) {
                                     None => { res_404() }
-                                    Some(rx) => {
+                                    Some(_rx) => {
+                                        let (_hls_tx, body) = Body::channel();
+                                        tokio::spawn(async {
+                                            unimplemented!()
+                                            // hls_process::send_hls(hls_tx, rx).await
+                                        });
+
                                         //Content-Type：返回的数据类型;HLS M3U8,通常是 application/vnd.apple.mpegurl 或 application/x-mpegURL。
                                         let hls_res = res_builder.header("Content-Type", "application/x-mpegURL")
-                                            .body(Body::wrap_stream(BroadcastStream::new(rx))).hand_log(|msg| error!("{msg}"))?;
+                                            .body(body).hand_log(|msg| error!("{msg}"))?;
                                         cache::update_token(&stream_id, &play_type, token.clone(), true);
                                         //监听连接：当断开连接时,更新正在查看的用户、回调通知
                                         tokio::spawn(async move {

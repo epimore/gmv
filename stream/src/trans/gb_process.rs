@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use log::{debug, info, warn};
 use rtp::packet::Packet;
+use common::anyhow::anyhow;
 
 use common::err::{GlobalError, GlobalResult, TransError};
+use common::err::GlobalError::SysErr;
 use common::tokio;
 use common::tokio::sync::{broadcast, oneshot};
 
@@ -44,10 +46,7 @@ async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer
 async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, mut flush_rx: oneshot::Receiver<bool>) -> GlobalResult<()> {
     let handle_frame = Box::new(
         move |data: FrameData| -> GlobalResult<()> {
-            if let Err(err) = tx.send(data) {
-                log::error!("send frame error: {}", err);
-            }
-            Ok(())
+            tx.send(data).map_err(|err| SysErr(anyhow!(err.to_string()))).map(|_| ())
         },
     );
     let mut coder = coder::MediaCoder::register_all(handle_frame);
@@ -70,7 +69,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
             }
             _ = &mut flush_rx =>{
                for pkt in rtp_buffer.flush_pkt().await{
-                     let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp);
+                     let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
                 }
                 return Ok(());
             }
