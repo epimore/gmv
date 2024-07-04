@@ -68,7 +68,7 @@ async fn first_frame(flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<Byt
                 meta_data.set_videocodecid(7f64); //H.264视频编码的ID通常为 7
                 meta_data.set_framerate(fr);
                 if let Ok(meta_data_bytes) = meta_data.to_bytes() {
-                    let script_header_bytes = TagHeader::build(TagType::Video, ts, meta_data_bytes.len() as u32).to_bytes();
+                    let script_header_bytes = TagHeader::build(TagType::Script, ts, meta_data_bytes.len() as u32).to_bytes();
                     let tag_size_bytes = PreviousTagSize::new((script_header_bytes.len() + meta_data_bytes.len()) as u32).previous_tag_size();
                     first_pkg.put(script_header_bytes);
                     first_pkg.put(meta_data_bytes);

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use log::{debug, info};
+use log::{debug, info, warn};
 use rtp::packet::Packet;
 
-use common::err::{GlobalError, GlobalResult};
+use common::err::{GlobalError, GlobalResult, TransError};
 use common::tokio;
 use common::tokio::sync::{broadcast, oneshot};
 
@@ -58,7 +58,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                     match pkt.header.payload_type {
                         98 => {}
                         96 => {
-                            let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp);
+                            let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
                         }
                         100 => {}
                         102 => {}

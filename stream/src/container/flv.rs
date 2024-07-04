@@ -470,6 +470,7 @@ impl VideoTagDataBuffer {
 
 #[cfg(test)]
 mod test {
+    use byteorder::{BigEndian, ByteOrder};
     use crate::container::flv::ScriptMetaData;
 
     #[test]
@@ -500,16 +501,29 @@ mod test {
 
     #[test]
     fn test_flv_data() {
+        let sps_vec = base64::decode("Z00AKpWoHgCJ+VA=").unwrap();
+        let pps_vec = base64::decode("aO48gA==").unwrap();
+        println!("{:02x?}", sps_vec);
+        println!("{:02x?}", pps_vec);
         let input = include_bytes!("/home/ubuntu20/code/rs/mv/github/epimore/12.flv");
         println!("input size = {}", input.len());
-        let input = &input[187..116767];
+        let input = &input[187..52401];
         let mut curr_offset = 0;
         let size_len = 4;
         while curr_offset < input.len() {
-            println!("nal len {data_size}, type = {:02x}", input[curr_offset + size_len]);
             let data_size = u32::from_be_bytes([input[curr_offset], input[curr_offset + 1], input[curr_offset + 2], input[curr_offset + 3]]) as usize;
+            println!("nal len {data_size}, type = {:02x}", input[curr_offset + size_len]);
             curr_offset += size_len + data_size;
         }
+    }
+
+    #[test]
+    fn byte_to_number() {
+        let fbytes = [0x40, 0x9E, 00, 00, 00, 00, 00, 00];
+        println!("f64 = {}", BigEndian::read_f64(&fbytes));
+
+        let nbytes = [0x00, 0x02, 0x59,0xD3];
+        println!("num = {}",BigEndian::read_u32(&nbytes));
     }
 }
 //ypedef struct ScriptTagData

@@ -1,3 +1,4 @@
+use byteorder::{BigEndian, ByteOrder};
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::{SeqParameterSet};
@@ -29,10 +30,22 @@ impl H264 {
     }
 
     pub fn handle_demuxer(&mut self, payload: Bytes, timestamp: u32) -> GlobalResult<()> {
-        let data = self.h264packet.depacketize(&payload).hand_log(|msg| debug!("{msg}"))?;
-        if data.len() != 0 {
-            let fun = &self.handle_fn;
-            fun(FrameData { pay_type: Coder::H264, timestamp, data }).hand_log(|msg| warn!("{msg}"))?;
+        let raw_data = self.h264packet.depacketize(&payload).hand_log(|msg| debug!("{msg}"))?;
+        let raw_data_len = raw_data.len();
+        let nal_data_size_len = 4;
+        let mut curr_offset = 0;
+        while curr_offset + nal_data_size_len < raw_data_len {
+            let size_data = raw_data.slice(curr_offset..curr_offset + 4);
+            let size_data_len = BigEndian::read_u32(size_data.as_ref()) as usize;
+            let last_offset = curr_offset + nal_data_size_len + size_data_len;
+            if last_offset > raw_data_len {
+                return Err(SysErr(anyhow!("nal size larger than raw buffer")));
+            } else {
+                let nal_data = raw_data.slice(curr_offset..last_offset);
+                let fun = &self.handle_fn;
+                fun(FrameData { pay_type: Coder::H264, timestamp, data: nal_data }).hand_log(|msg| warn!("{msg}"))?;
+                curr_offset = last_offset;
+            }
         }
         Ok(())
     }
@@ -110,5 +123,17 @@ mod test {
             0xc6, 0x58,
         ];
         println!("{:?}", H264::get_width_height_frame_rate(&Bytes::from(sps.to_vec())));
+    }
+
+    #[test]
+    fn test_if_else() {
+        let a = 2;
+        let b = true;
+        if a == 2 {
+            println!("a==2");
+        } else if b {
+            println!("a != 2 and b is true");
+        }
+        println!("end");
     }
 }
