@@ -505,7 +505,7 @@ mod test {
         let pps_vec = base64::decode("aO48gA==").unwrap();
         println!("{:02x?}", sps_vec);
         println!("{:02x?}", pps_vec);
-        let input = include_bytes!("/home/ubuntu20/code/rs/mv/github/epimore/12.flv");
+        let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/12.flv");
         println!("input size = {}", input.len());
         let input = &input[187..52401];
         let mut curr_offset = 0;

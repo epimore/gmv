@@ -35,7 +35,7 @@ impl H264 {
         let nal_data_size_len = 4;
         let mut curr_offset = 0;
         while curr_offset + nal_data_size_len < raw_data_len {
-            let size_data = raw_data.slice(curr_offset..curr_offset + 4);
+            let size_data = raw_data.slice(curr_offset..curr_offset + nal_data_size_len);
             let size_data_len = BigEndian::read_u32(size_data.as_ref()) as usize;
             let last_offset = curr_offset + nal_data_size_len + size_data_len;
             if last_offset > raw_data_len {

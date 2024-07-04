@@ -76,3 +76,13 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn parse_frame_nal() {
+        let tp = 0x7c & 0x1f;
+        println!("frame type: nal_ref_idc = {}, type = {}", 0x7c >> 5 & 0x03, tp);
+        println!("fu-a type: s = {}, e = {}, type = {}", 0x81 >> 7 & 0x01, 0x81 >> 6 & 0x01, 0x81 & 0x1f);
+    }
+}

@@ -71,21 +71,28 @@ impl RtpBuffer {
                 index = 0;
             }
             if let Some(item) = &*guard {
-                self.sequence_number.store(item.header.sequence_number, Ordering::SeqCst);
-                self.timestamp.store(item.header.timestamp, Ordering::SeqCst);
-                self.index.store(index as u8, Ordering::Relaxed);
-                let window = self.sliding_window.load(Ordering::SeqCst);
-                if i == 1 {
-                    if matches!(window,2|4|8) {
-                        self.sliding_window.store(window / 2, Ordering::SeqCst);
+                // 验证有效包,防止暂停后数据错乱
+                if item.header.sequence_number > sn
+                    || item.header.timestamp > ts
+                    || Self::check_sn_wrap(sn, item.header.sequence_number)
+                    || ts == 0
+                    || ts == 0 {
+                    self.sequence_number.store(item.header.sequence_number, Ordering::SeqCst);
+                    self.timestamp.store(item.header.timestamp, Ordering::SeqCst);
+                    self.index.store(index as u8, Ordering::Relaxed);
+                    let window = self.sliding_window.load(Ordering::SeqCst);
+                    if i == 1 {
+                        if matches!(window,2|4|8) {
+                            self.sliding_window.store(window / 2, Ordering::SeqCst);
+                        }
+                    } else if i > 3 {
+                        if matches!(window,1|2|4) {
+                            self.sliding_window.store(window * 2, Ordering::SeqCst);
+                        }
                     }
-                } else if i > 3 {
-                    if matches!(window,1|2|4) {
-                        self.sliding_window.store(window * 2, Ordering::SeqCst);
-                    }
+                    std::mem::swap(&mut *guard, &mut pkt);
+                    return pkt;
                 }
-                std::mem::swap(&mut *guard, &mut pkt);
-                return pkt;
             }
         }
         pkt
