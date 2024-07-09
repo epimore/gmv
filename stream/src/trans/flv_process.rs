@@ -1,4 +1,3 @@
-use byteorder::{BigEndian, ByteOrder};
 use hyper::body;
 use log::{info, warn};
 use common::anyhow::anyhow;
@@ -23,11 +22,11 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) -> GlobalRes
             match pay_type {
                 Coder::PS => {}
                 Coder::MPEG4 => {}
-                Coder::H264 => {
-                    if let Some(pkg) = container.flv_video_h264.packaging(data) {
+                Coder::H264(..) => {
+                    if let Some((pkg, sps, pps, idr)) = container.flv_video_h264.packaging(data) {
                         let data = pkg.to_bytes();
                         let frame_data = FrameData {
-                            pay_type,
+                            pay_type: Coder::H264(sps, pps, idr),
                             timestamp,
                             data,
                         };
@@ -56,21 +55,14 @@ async fn first_frame(flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<Fra
         match pay_type {
             Coder::PS => {}
             Coder::MPEG4 => {}
-            Coder::H264 => { //获取带有sps信息的数据包:frame_type_codec_id(1)+avc_packet_type(1)+composition_time_offset(3)+nal_size(4) = 9;
-                if data[9] & 0x1f == 7 {
-                    let mut curr_offset = 5; //frame_type_codec_id(1)+avc_packet_type(1)+composition_time_offset(3)
-                    let size_len = 4;
+            Coder::H264(sps,pps,idr) => {
+                if let (Some(sps), Some(pps), true) = (sps, pps, idr) {
+                    //flv header
                     let mut first_pkg = BytesMut::new();
                     let flv_header_bytes = FlvHeader::build(true, false).to_bytes();
                     first_pkg.put(flv_header_bytes);
-                    let sps_size = BigEndian::read_u32(data.slice(curr_offset..curr_offset + size_len).as_ref()) as usize;
-                    curr_offset += size_len;
-                    let sps_nal = data.slice(curr_offset..curr_offset + sps_size);
-                    curr_offset += sps_size;
-                    let pps_size = BigEndian::read_u32(data.slice(curr_offset..curr_offset + size_len).as_ref()) as usize;
-                    curr_offset += size_len;
-                    let pps_nal = data.slice(curr_offset..curr_offset + pps_size);
-
+                    let sps_nal = sps.slice(4..);
+                    let pps_nal = pps.slice(4..);
                     //Script Tag
                     if let Ok((w, h, fr)) = H264::get_width_height_frame_rate(&sps_nal) {
                         let mut meta_data = ScriptMetaData::default();
@@ -95,7 +87,7 @@ async fn first_frame(flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<Fra
                     first_pkg.put(header_tag0_bytes);
                     first_pkg.put(data_tag0_bytes);
                     first_pkg.put(tag_size_bytes);
-                    //sps+pps+...+idr ->Video Tag[1]
+                    //idr frame ->Video Tag[1]
                     let header_bytes = TagHeader::build(TagType::Video, 0, data.len() as u32).to_bytes();
                     let size_bytes = PreviousTagSize::new((header_bytes.len() + data.len()) as u32).previous_tag_size();
                     first_pkg.put(header_bytes);
@@ -135,8 +127,9 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: broadcast::Receiver<Fram
                 match pay_type {
                     Coder::PS => {}
                     Coder::MPEG4 => {}
-                    Coder::H264 => {
-                        let header_bytes = TagHeader::build(TagType::Video, timestamp.wrapping_sub(start_time), data.len() as u32).to_bytes();
+                    Coder::H264(..) => {
+                        //a=rtpmap:96 H264/90000,->video_clock_rate=90000,单位毫秒 90000/1000 = 90
+                        let header_bytes = TagHeader::build(TagType::Video, (timestamp - start_time) / 90, data.len() as u32).to_bytes();
                         let size_bytes = PreviousTagSize::new((header_bytes.len() + data.len()) as u32).previous_tag_size();
                         let mut bytes = BytesMut::with_capacity(header_bytes.len() + data.len() + size_bytes.len());
                         bytes.put(header_bytes);

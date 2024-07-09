@@ -4,6 +4,7 @@ use amf::amf0::Value;
 use common::bytes::{BufMut, Bytes, BytesMut};
 use common::err::{GlobalResult, TransError};
 use constructor::{New, Set};
+use crate::coder::h264::H264;
 
 pub struct MediaFlvContainer {
     pub flv_video_h264: VideoTagDataBuffer,
@@ -326,12 +327,11 @@ impl VideoTagData {
 }
 
 pub struct VideoTagDataBuffer {
-    sei: Option<Bytes>, //6
     sps: Option<Bytes>, //7
     pps: Option<Bytes>, //8
-    aud: Option<Bytes>, //9
-    // idr: Option<Bytes>, //5
-    // other_frame: Option<Bytes>,
+    idr: bool,
+    vcl: u8,
+    buf: BytesMut,
 }
 
 impl VideoTagDataBuffer {
@@ -357,116 +357,45 @@ impl VideoTagDataBuffer {
         Self {
             sps: Some(sps),
             pps: Some(pps),
-            sei: None,
-            aud: None,
+            // sei: None,
+            // aud: None,
+            idr: false,
+            vcl: 0,
+            buf: Default::default(),
         }
     }
-
-    pub fn packaging(&mut self, nal: Bytes) -> Option<VideoTagData> {
-        match nal[4] & 0x1F {
-            5 => {
-                let mut bm = BytesMut::new();
-                if let (Some(sps), Some(pps)) = (&self.sps, &self.pps) {
-                    bm.put(sps.clone());
-                    bm.put(pps.clone());
-                }
-                if let Some(aud) = &mut self.aud {
-                    bm.put(std::mem::take(aud));
-                }
-                if let Some(sei) = &mut self.sei {
-                    bm.put(std::mem::take(sei));
-                }
-                bm.put(nal);
-                let data = bm.freeze();
-                let video_tag_data = VideoTagData::new(0x17, 1, 0, data);
-                Some(video_tag_data)
-            }
-            6 => {
-                self.sei = Some(nal);
-                None
-            }
+    pub fn packaging(&mut self, nal: Bytes) -> Option<(VideoTagData, Option<Bytes>, Option<Bytes>, bool)> {
+        let nal_type = nal[4] & 0x1F;
+        let first_mb = nal[5] & 0x80;
+        if self.vcl > 0 && H264::is_new_access_unit(nal_type, first_mb) {
+            let data = std::mem::take(&mut self.buf).freeze();
+            let mut frame_type_codec_id = 0x27;
+            if self.vcl == 1 { frame_type_codec_id = 0x17; }
+            let video_tag_data = VideoTagData::new(frame_type_codec_id, 1, 0, data);
+            let res = Some((video_tag_data, self.sps.clone(), self.pps.clone(), self.idr));
+            self.vcl = 0;
+            self.idr = false;
+            return res;
+        }
+        match nal_type {
             7 => {
-                self.sps = Some(nal);
-                None
+                self.sps = Some(nal.clone());
             }
             8 => {
-                self.pps = Some(nal);
-                None
+                self.pps = Some(nal.clone());
             }
-            9 => {
-                self.aud = Some(nal);
-                None
+            5 => {
+                self.idr = true;
             }
-            _ => {
-                let mut bm = BytesMut::new();
-                if let Some(aud) = &mut self.aud {
-                    bm.put(std::mem::take(aud));
-                }
-                if let Some(sei) = &mut self.sei {
-                    bm.put(std::mem::take(sei));
-                }
-                bm.put(nal);
-                let data = bm.freeze();
-                let video_tag_data = VideoTagData::new(0x27, 1, 0, data);
-                Some(video_tag_data)
-            }
+            _ => {}
         }
+        self.buf.put(nal);
+        if matches!(nal_type,1..=5) {
+            self.vcl += 1;
+        }
+        None
     }
 }
-
-
-// pub struct FlvTag {
-//     tag_type: u8,
-//     data_size: [u8; 3],
-//     timestamp: [u8; 3],
-//     timestamp_ext: u8,
-//     stream_id: u32,
-//     data: Bytes,
-// }
-//
-// impl FlvTag {
-//     fn build(tag_type: TagType, ts: u32, data: Bytes) -> Self {
-//         let size_arr = (data.len() as u32).to_be_bytes();
-//         let data_size = [size_arr[1], size_arr[2], size_arr[3]];
-//         let ts_arr = ts.to_be_bytes();
-//         Self {
-//             tag_type: tag_type.get_value(),
-//             data_size,
-//             timestamp: [ts_arr[1], ts_arr[2], ts_arr[3]],
-//             timestamp_ext: ts_arr[0],
-//             stream_id: 0,
-//             data,
-//         }
-//     }
-//
-//     fn to_bytes(self, frame_type_codec_id: u8) -> Bytes {
-//         let mut bm = BytesMut::new();
-//         bm.put_u8(self.tag_type); //TagType: TagType：09（Tag的类型，包括音频（0x08）、视频（0x09）、script data（0x12）） 1byte
-//         bm.put_slice(&self.data_size); //Tag Data 大小 3 bytes
-//         bm.put_slice(&self.timestamp); //时间戳地位3位，大端 3bytes
-//         bm.put_u8(self.timestamp_ext); //时间戳的扩展部分，高位 1bytes
-//         bm.put_slice(&[0x00, 0x00, 0x00]); //总是0 3 bytes
-//         //FrameType:
-//         //     1: keyframe (for AVC, a seekableframe)
-//         //     2: inter frame(for AVC, a non -seekable frame)
-//         //     3 : disposable inter frame(H.263only)
-//         //     4 : generated keyframe(reserved forserver use only)
-//         //     5 : video info / command frame
-//         //CodecID:
-//         //     1: JPEG (currently unused)
-//         //     2: Sorenson H.263
-//         //     3 : Screen video
-//         //     4 : On2 VP6
-//         //     5 : On2 VP6 with alpha channel
-//         //     6 : Screen video version 2
-//         //     7 : AVC  H.264 的正式名称，全称是 Advanced Video Coding
-//         bm.put_u8(frame_type_codec_id); //FrameType 4bit + CodecID 4bit 共1byte；
-//         bm.put_u8(1); //AVCPaketType：0: AVC sequence header; 1: AVC NALU; 2: AVC end of sequence
-//         bm.put_slice(&[0u8, 0, 0]); //CompositionTime Offset
-//         bm.put(&self.data[..]);
-//         bm.freeze()
-//     }
-// }
 
 #[cfg(test)]
 mod test {
@@ -522,8 +451,18 @@ mod test {
         let fbytes = [0x40, 0x9E, 00, 00, 00, 00, 00, 00];
         println!("f64 = {}", BigEndian::read_f64(&fbytes));
 
-        let nbytes = [0x00, 0x02, 0x59,0xD3];
-        println!("num = {}",BigEndian::read_u32(&nbytes));
+        let nbytes = [0x00, 0x02, 0x59, 0xD3];
+        println!("num = {}", BigEndian::read_u32(&nbytes));
+    }
+
+
+    fn borrow() {
+        struct Model {
+            a: u8,
+            b: Option<String>,
+            c: bool,
+        }
+        let mut m1 = Model { a: 123, b: None, c: false };
     }
 }
 //ypedef struct ScriptTagData

@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ByteOrder};
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
-use h264_reader::nal::sps::{SeqParameterSet};
+use h264_reader::nal::sps::SeqParameterSet;
 use log::{debug, warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
@@ -20,6 +20,16 @@ pub struct H264 {
 }
 
 impl H264 {
+    pub fn is_new_access_unit(nal_type: u8, first_mb: u8) -> bool {
+        if matches!(nal_type,6..=9|14..=18) {
+            return true;
+        }
+        if matches!(nal_type,1|2|5) {
+            return first_mb != 0;
+        }
+        false
+    }
+
     pub fn init_annexb(handle_fn: HandleFrameDataFn) -> Self {
         Self { handle_fn, h264packet: H264Packet::default() }
     }
@@ -43,7 +53,7 @@ impl H264 {
             } else {
                 let nal_data = raw_data.slice(curr_offset..last_offset);
                 let fun = &self.handle_fn;
-                fun(FrameData { pay_type: Coder::H264, timestamp, data: nal_data }).hand_log(|msg| warn!("{msg}"))?;
+                fun(FrameData { pay_type: Coder::H264(None, None, false), timestamp, data: nal_data }).hand_log(|msg| warn!("{msg}"))?;
                 curr_offset = last_offset;
             }
         }
@@ -90,6 +100,7 @@ impl H264 {
 #[cfg(test)]
 mod test {
     use common::bytes::Bytes;
+
     use crate::coder::h264::H264;
 
     #[test]

@@ -57,7 +57,6 @@ impl RtpBuffer {
             self.block.notified().await;
         }
         let mut index = self.index.load(Ordering::Relaxed) as usize;
-        let mut pkt = None;
         let sn = self.sequence_number.load(Ordering::SeqCst);
         let ts = self.timestamp.load(Ordering::SeqCst);
         for i in 0..BUFFER_SIZE {
@@ -70,7 +69,8 @@ impl RtpBuffer {
             if index == BUFFER_SIZE {
                 index = 0;
             }
-            if let Some(item) = &*guard {
+            let state = &mut *guard;
+            if let Some(item) = state {
                 // 验证有效包,防止暂停后数据错乱
                 if item.header.sequence_number > sn
                     || item.header.timestamp > ts
@@ -90,28 +90,33 @@ impl RtpBuffer {
                             self.sliding_window.store(window * 2, Ordering::SeqCst);
                         }
                     }
-                    std::mem::swap(&mut *guard, &mut pkt);
-                    return pkt;
+                    return std::mem::take(state);
                 }
             }
         }
-        pkt
+        None
     }
 
-    //最后一次获取所有数据?
+    //最后一次获取所有数据
     pub async fn flush_pkt(&self) -> Vec<Packet> {
         let mut vec = Vec::new();
         let mut index = self.index.load(Ordering::Relaxed) as usize;
+        let sn = self.sequence_number.load(Ordering::SeqCst);
+        let ts = self.timestamp.load(Ordering::SeqCst);
         for _i in 0..BUFFER_SIZE {
             let mut guard = unsafe { self.buf.get_unchecked(index).lock().await };
             index += 1;
             if index == BUFFER_SIZE {
                 index = 0;
             }
-            if guard.is_some() {
-                let mut pkt = None;
-                std::mem::swap(&mut *guard, &mut pkt);
-                vec.push(pkt.unwrap());
+            if let Some(pkt) = &mut *guard {
+                if pkt.header.sequence_number > sn
+                    || pkt.header.timestamp > ts
+                    || Self::check_sn_wrap(sn, pkt.header.sequence_number)
+                    || ts == 0
+                    || ts == 0  {
+                    vec.push(std::mem::take(pkt));
+                }
             }
         }
         vec
