@@ -90,8 +90,8 @@ impl H264 {
             .map_err(|err| SysErr(anyhow!("{:?}",err)))
             .hand_log(|msg| warn!("{msg}"))?;
         let fps = sps.fps().unwrap_or_else(|| {
-            warn!("fps 未知;使用默认 30");
-            30.0
+            warn!("fps 未知;使用默认 25");
+            25.0
         });
         Ok((width, height, fps))
     }

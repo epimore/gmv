@@ -28,11 +28,16 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
 }
 
 async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer: &RtpBuffer, flush_tx: oneshot::Sender<bool>) {
+    let mut last = 0;
     loop {
         let res_pkt = rx.recv().await;
         match res_pkt {
             Ok(pkt) => {
-                rtp_buffer.insert(pkt).await;
+                if pkt.header.sequence_number-last != 1 {
+                    println!("gb produce ------------------------------:   {},last = {}, curr = {}", pkt.header.sequence_number as i32 - last as i32, last, pkt.header.sequence_number);
+                }
+                last = pkt.header.sequence_number;
+                rtp_buffer.insert(pkt);
             }
             Err(_) => {
                 let _ = flush_tx.send(true);
@@ -50,6 +55,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
         },
     );
     let mut coder = coder::MediaCoder::register_all(handle_frame);
+    let mut last_seq = 0;
     loop {
         tokio::select! {
             res_pkt = rtp_buffer.next_pkt() =>{
@@ -57,6 +63,10 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                     match pkt.header.payload_type {
                         98 => {}
                         96 => {
+                            if pkt.header.sequence_number-last_seq != 1{
+                                println!("gb consume: {},last = {},curr = {}",pkt.header.sequence_number-last_seq,last_seq,pkt.header.sequence_number);
+                            }
+                            last_seq = pkt.header.sequence_number;
                             let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
                         }
                         100 => {}
@@ -68,7 +78,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                 }
             }
             _ = &mut flush_rx =>{
-               for pkt in rtp_buffer.flush_pkt().await{
+               for pkt in rtp_buffer.flush_pkt(){
                      let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
                 }
                 return Ok(());

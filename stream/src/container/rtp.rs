@@ -2,16 +2,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use log::{debug};
+use parking_lot::RwLock;
 use rtp::packet::Packet;
 
-use common::tokio::sync::{Mutex, Notify};
+use common::tokio::sync::{Notify};
 
-const BUFFER_SIZE: usize = 32;
+const BUFFER_SIZE: usize = 128;
 
 pub struct RtpBuffer {
     sequence_number: AtomicU16,
     timestamp: AtomicU32,
-    buf: Arc<[Mutex<Option<Packet>>; BUFFER_SIZE]>,
+    buf: Arc<[RwLock<Option<Packet>>; BUFFER_SIZE]>,
     block: Notify,
     index: AtomicU8,
     sliding_window: AtomicU8,
@@ -23,7 +24,7 @@ impl RtpBuffer {
         Self {
             sequence_number: AtomicU16::new(0),
             timestamp: AtomicU32::new(0),
-            buf: Arc::new(std::array::from_fn(|_| Mutex::new(None))),
+            buf: Arc::new(std::array::from_fn(|_| RwLock::new(None))),
             block: Notify::new(),
             index: AtomicU8::new(0),
             sliding_window: AtomicU8::new(1),
@@ -31,14 +32,14 @@ impl RtpBuffer {
         }
     }
 
-    pub async fn insert(&self, pkt: Packet) {
+    pub fn insert(&self, pkt: Packet) {
         let sn = self.sequence_number.load(Ordering::SeqCst);
         let ts = self.timestamp.load(Ordering::SeqCst);
         let seq_num = pkt.header.sequence_number;
         //仅插入有效数据包
-        if seq_num > sn || pkt.header.timestamp > ts || Self::check_sn_wrap(sn, seq_num) || ts == 0 || ts == 0 {
+        if seq_num > sn || pkt.header.timestamp >= ts || Self::check_sn_wrap(sn, seq_num) || ts == 0 || ts == 0 {
             let index = seq_num as usize % BUFFER_SIZE;
-            let mut item = unsafe { self.buf.get_unchecked(index).lock().await };
+            let mut item = unsafe { self.buf.get_unchecked(index).write() };
             *item = Some(pkt);
             drop(item);
             if self.sliding_counter.load(Ordering::SeqCst) < BUFFER_SIZE as u8 {
@@ -60,25 +61,24 @@ impl RtpBuffer {
         let sn = self.sequence_number.load(Ordering::SeqCst);
         let ts = self.timestamp.load(Ordering::SeqCst);
         for i in 0..BUFFER_SIZE {
-            //首次/回绕获取包时，不减少计数
-            if self.sliding_counter.load(Ordering::SeqCst) > 1 && (sn != 0 || ts != 0) {
-                self.sliding_counter.fetch_sub(1, Ordering::SeqCst);
-            }
-            let mut guard = unsafe { self.buf.get_unchecked(index).lock().await };
+            let guard = unsafe { self.buf.get_unchecked(index).read() };
             index += 1;
             if index == BUFFER_SIZE {
                 index = 0;
             }
-            let state = &mut *guard;
-            if let Some(item) = state {
+            if let Some(item) = &*guard {
+                let seq_num = item.header.sequence_number;
+                //首次/回绕/计数器大于1；获取包时，不减少计数
+                if self.sliding_counter.load(Ordering::SeqCst) > 1 && Self::check_sn_wrap(sn, seq_num) {
+                    self.sliding_counter.fetch_sub(1, Ordering::SeqCst);
+                }
+                let timestamp = item.header.timestamp;
                 // 验证有效包,防止暂停后数据错乱
-                if item.header.sequence_number > sn
-                    || item.header.timestamp > ts
-                    || Self::check_sn_wrap(sn, item.header.sequence_number)
-                    || ts == 0
-                    || ts == 0 {
-                    self.sequence_number.store(item.header.sequence_number, Ordering::SeqCst);
-                    self.timestamp.store(item.header.timestamp, Ordering::SeqCst);
+                if seq_num > sn || timestamp >= ts || Self::check_sn_wrap(sn, seq_num) {
+                    let pkt = item.clone();
+                    drop(guard);
+                    self.sequence_number.store(seq_num, Ordering::SeqCst);
+                    self.timestamp.store(timestamp, Ordering::SeqCst);
                     self.index.store(index as u8, Ordering::Relaxed);
                     let window = self.sliding_window.load(Ordering::SeqCst);
                     if i == 1 {
@@ -90,7 +90,7 @@ impl RtpBuffer {
                             self.sliding_window.store(window * 2, Ordering::SeqCst);
                         }
                     }
-                    return std::mem::take(state);
+                    return Some(pkt);
                 }
             }
         }
@@ -98,24 +98,24 @@ impl RtpBuffer {
     }
 
     //最后一次获取所有数据
-    pub async fn flush_pkt(&self) -> Vec<Packet> {
+    pub fn flush_pkt(&self) -> Vec<Packet> {
         let mut vec = Vec::new();
         let mut index = self.index.load(Ordering::Relaxed) as usize;
         let sn = self.sequence_number.load(Ordering::SeqCst);
         let ts = self.timestamp.load(Ordering::SeqCst);
         for _i in 0..BUFFER_SIZE {
-            let mut guard = unsafe { self.buf.get_unchecked(index).lock().await };
+            let guard = unsafe { self.buf.get_unchecked(index).read() };
             index += 1;
             if index == BUFFER_SIZE {
                 index = 0;
             }
-            if let Some(pkt) = &mut *guard {
+            if let Some(pkt) = &*guard {
                 if pkt.header.sequence_number > sn
                     || pkt.header.timestamp > ts
                     || Self::check_sn_wrap(sn, pkt.header.sequence_number)
                     || ts == 0
-                    || ts == 0  {
-                    vec.push(std::mem::take(pkt));
+                    || ts == 0 {
+                    vec.push(pkt.clone());
                 }
             }
         }

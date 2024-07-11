@@ -329,9 +329,9 @@ impl VideoTagData {
 pub struct VideoTagDataBuffer {
     sps: Option<Bytes>, //7
     pps: Option<Bytes>, //8
-    idr: bool,
     vcl: u8,
     buf: BytesMut,
+    idr: bool,
 }
 
 impl VideoTagDataBuffer {
@@ -357,23 +357,53 @@ impl VideoTagDataBuffer {
         Self {
             sps: Some(sps),
             pps: Some(pps),
-            idr: false,
             vcl: 0,
             buf: Default::default(),
+            idr: false,
         }
     }
     pub fn packaging(&mut self, nal: Bytes) -> Option<(VideoTagData, Option<Bytes>, Option<Bytes>, bool)> {
+        // let nal_type = nal[4] & 0x1F;
+        // match nal_type {
+        //     7 => {
+        //         self.sps = Some(nal.clone());
+        //         self.buf.put(nal);
+        //         None
+        //     }
+        //     8 => {
+        //         self.pps = Some(nal.clone());
+        //         self.buf.put(nal);
+        //         None
+        //     }
+        //     //composition_time_offset ->cts = pts - dts/90 低延迟无B帧，故pts=dts，即总为0
+        //     5 => {
+        //         self.buf.put(nal);
+        //         let data = std::mem::take(&mut self.buf).freeze();
+        //         let video_tag_data = VideoTagData::new(0x17, 1, 0, data);
+        //         Some((video_tag_data, self.sps.clone(), self.pps.clone(), true))
+        //     }
+        //     _ => {
+        //         let video_tag_data = VideoTagData::new(0x27, 1, 0, nal);
+        //         Some((video_tag_data, self.sps.clone(), self.pps.clone(), false))
+        //     }
+        // }
+
+
         let nal_type = nal[4] & 0x1F;
         let first_mb = nal[5] & 0x80;
         let mut res = None;
         if self.vcl > 0 && H264::is_new_access_unit(nal_type, first_mb) {
             let data = std::mem::take(&mut self.buf).freeze();
             let mut frame_type_codec_id = 0x27;
-            if self.vcl == 1 { frame_type_codec_id = 0x17; }
+            if self.idr { frame_type_codec_id = 0x17; }
+            //composition_time_offset ->cts = pts - dts/90 低延迟无B帧，故pts=dts，即总为0
             let video_tag_data = VideoTagData::new(frame_type_codec_id, 1, 0, data);
             res = Some((video_tag_data, self.sps.clone(), self.pps.clone(), self.idr));
             self.vcl = 0;
             self.idr = false;
+        }
+        if matches!(nal_type,1..=5) {
+            self.vcl += 1;
         }
         match nal_type {
             7 => {
@@ -388,9 +418,6 @@ impl VideoTagDataBuffer {
             _ => {}
         }
         self.buf.put(nal);
-        if matches!(nal_type,1..=5) {
-            self.vcl += 1;
-        }
         res
     }
 }

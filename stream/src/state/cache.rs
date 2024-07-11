@@ -393,7 +393,7 @@ pub struct Channel {
 
 impl Channel {
     pub fn build() -> Self {
-        let rtp_channel = async_channel::bounded(BUFFER_SIZE);
+        let rtp_channel = async_channel::bounded(BUFFER_SIZE * 10);
         let flv_channel = broadcast::channel(BUFFER_SIZE);
         let hls_channel = broadcast::channel(BUFFER_SIZE);
         Self {

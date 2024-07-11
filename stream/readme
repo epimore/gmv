@@ -76,3 +76,15 @@ Stream mapping:
 Press [q] to stop, [?] for help
 frame=   28 fps= 26 q=-1.0 Lsize=     158kB time=00:00:01.08 bitrate=1191.0kbits/s speed=1.02x
 video:156kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 1.034213%
+
+
+gb consume: 33,last = 1562,curr = 1595
+gb consume: 33,last = 1765,curr = 1798
+gb consume: 33,last = 2350,curr = 2383
+gb consume: 33,last = 2504,curr = 2537
+gb consume: 33,last = 3699,curr = 3732
+gb consume: 33,last = 4110,curr = 4143
+gb consume: 33,last = 6154,curr = 6187
+gb consume: 33,last = 6321,curr = 6354
+gb consume: 33,last = 6361,curr = 6394
+gb consume: 33,last = 6552,curr = 6585
