@@ -21,7 +21,7 @@ pub async fn run(mut rx: Receiver<u32>) {
         });
         let flv_rx = tx.subscribe();
         tokio::spawn(async move {
-            let _ = flv_process::run(ssrc, flv_rx).await.hand_log(|msg| error!("{msg}"));
+            flv_process::run(ssrc, flv_rx).await;
         });
         // let hls_rx = tx.subscribe();
         // tokio::spawn(async move {

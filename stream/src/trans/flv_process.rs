@@ -3,7 +3,7 @@ use log::{info, warn};
 use common::anyhow::anyhow;
 
 use common::bytes::{BufMut, BytesMut};
-use common::err::{GlobalResult, TransError};
+use common::err::{TransError};
 use common::err::GlobalError::SysErr;
 use common::tokio::sync::broadcast;
 use common::tokio::sync::broadcast::error::RecvError;
@@ -15,99 +15,117 @@ use crate::general::mode::Coder;
 use crate::state::cache;
 use crate::trans::FrameData;
 
-pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) -> GlobalResult<()> {
+pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
     if let Some(tx) = cache::get_flv_tx(&ssrc) {
         let mut container = flv::MediaFlvContainer::register_all();
-        while let Ok(FrameData { pay_type, timestamp, data }) = rx.recv().await {
-            match pay_type {
-                Coder::PS => {}
-                Coder::MPEG4 => {}
-                Coder::H264(..) => {
-                    if let Some((pkg, sps, pps, idr)) = container.flv_video_h264.packaging(data) {
-                        let data = pkg.to_bytes();
-                        let frame_data = FrameData {
-                            pay_type: Coder::H264(sps, pps, idr),
-                            timestamp,
-                            data,
-                        };
-                        let _ = tx.send(frame_data)
-                            .map_err(|err| SysErr(anyhow!(err.to_string())))
-                            .hand_log(|msg| warn!("{msg}"));
+        loop {
+            match rx.recv().await {
+                Ok(FrameData { pay_type, timestamp, data }) => {
+                    match pay_type {
+                        Coder::PS => {}
+                        Coder::MPEG4 => {}
+                        Coder::H264(..) => {
+                            if let Some((pkg, sps, pps, idr)) = container.flv_video_h264.packaging(data) {
+                                let data = pkg.to_bytes();
+                                let frame_data = FrameData {
+                                    pay_type: Coder::H264(sps, pps, idr),
+                                    timestamp,
+                                    data,
+                                };
+                                let _ = tx.send(frame_data)
+                                    .map_err(|err| SysErr(anyhow!(err.to_string())))
+                                    .hand_log(|msg| warn!("{msg}"));
+                            }
+                        }
+                        Coder::SVAC_V => {}
+                        Coder::H265 => {}
+                        Coder::G711 => {}
+                        Coder::SVAC_A => {}
+                        Coder::G723_1 => {}
+                        Coder::G729 => {}
+                        Coder::G722_1 => {}
+                        Coder::AAC => {}
                     }
                 }
-                Coder::SVAC_V => {}
-                Coder::H265 => {}
-                Coder::G711 => {}
-                Coder::SVAC_A => {}
-                Coder::G723_1 => {}
-                Coder::G729 => {}
-                Coder::G722_1 => {}
-                Coder::AAC => {}
+                Err(RecvError::Lagged(amt)) => {
+                    warn!("ssrc={ssrc},数据包消费滞后{amt}条，Flv打包跳过.");
+                }
+                Err(RecvError::Closed) => {
+                    return;
+                }
             }
         }
     }
-    Ok(())
 }
 
 //当前仅支持h264，后面扩展时，需考虑flv script等内容，如添加audio等，是否将流信息放入cache
-async fn first_frame(flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<FrameData>) -> u32 {
-    while let Ok(FrameData { pay_type, timestamp, data }) = rx.recv().await {
-        match pay_type {
-            Coder::PS => {}
-            Coder::MPEG4 => {}
-            Coder::H264(sps,pps,idr) => {
-                if let (Some(sps), Some(pps), true) = (sps, pps, idr) {
-                    //flv header
-                    let mut first_pkg = BytesMut::new();
-                    let flv_header_bytes = FlvHeader::build(true, false).to_bytes();
-                    first_pkg.put(flv_header_bytes);
-                    let sps_nal = sps.slice(4..);
-                    let pps_nal = pps.slice(4..);
-                    //Script Tag
-                    if let Ok((w, h, fr)) = H264::get_width_height_frame_rate(&sps_nal) {
-                        let mut meta_data = ScriptMetaData::default();
-                        meta_data.set_height(h as f64);
-                        meta_data.set_width(w as f64);
-                        // meta_data.set_videodatarate()
-                        meta_data.set_videocodecid(7f64); //H.264视频编码的ID通常为 7
-                        meta_data.set_framerate(fr);
-                        if let Ok(meta_data_bytes) = meta_data.to_bytes() {
-                            let script_header_bytes = TagHeader::build(TagType::Script, 0, meta_data_bytes.len() as u32).to_bytes();
-                            let tag_size_bytes = PreviousTagSize::new((script_header_bytes.len() + meta_data_bytes.len()) as u32).previous_tag_size();
-                            first_pkg.put(script_header_bytes);
-                            first_pkg.put(meta_data_bytes);
+async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<FrameData>) -> u32 {
+    loop {
+        match rx.recv().await {
+            Ok(FrameData { pay_type, timestamp, data }) => {
+                match pay_type {
+                    Coder::PS => {}
+                    Coder::MPEG4 => {}
+                    Coder::H264(sps, pps, idr) => {
+                        if let (Some(sps), Some(pps), true) = (sps, pps, idr) {
+                            //flv header
+                            let mut first_pkg = BytesMut::new();
+                            let flv_header_bytes = FlvHeader::build(true, false).to_bytes();
+                            first_pkg.put(flv_header_bytes);
+                            let sps_nal = sps.slice(4..);
+                            let pps_nal = pps.slice(4..);
+                            //Script Tag
+                            if let Ok((w, h, fr)) = H264::get_width_height_frame_rate(&sps_nal) {
+                                let mut meta_data = ScriptMetaData::default();
+                                meta_data.set_height(h as f64);
+                                meta_data.set_width(w as f64);
+                                // meta_data.set_videodatarate()
+                                meta_data.set_videocodecid(7f64); //H.264视频编码的ID通常为 7
+                                meta_data.set_framerate(fr);
+                                if let Ok(meta_data_bytes) = meta_data.to_bytes() {
+                                    let script_header_bytes = TagHeader::build(TagType::Script, 0, meta_data_bytes.len() as u32).to_bytes();
+                                    let tag_size_bytes = PreviousTagSize::new((script_header_bytes.len() + meta_data_bytes.len()) as u32).previous_tag_size();
+                                    first_pkg.put(script_header_bytes);
+                                    first_pkg.put(meta_data_bytes);
+                                    first_pkg.put(tag_size_bytes);
+                                }
+                            }
+                            //Video Tag[0]
+                            let con_record = AvcDecoderConfigurationRecord::build(sps_nal, pps_nal);
+                            let data_tag0_bytes = VideoTagDataFirst::build(con_record).to_bytes();
+                            let header_tag0_bytes = TagHeader::build(TagType::Video, 0, data_tag0_bytes.len() as u32).to_bytes();
+                            let tag_size_bytes = PreviousTagSize::new((header_tag0_bytes.len() + data_tag0_bytes.len()) as u32).previous_tag_size();
+                            first_pkg.put(header_tag0_bytes);
+                            first_pkg.put(data_tag0_bytes);
                             first_pkg.put(tag_size_bytes);
+                            //idr frame ->Video Tag[1]
+                            let header_bytes = TagHeader::build(TagType::Video, 0, data.len() as u32).to_bytes();
+                            let size_bytes = PreviousTagSize::new((header_bytes.len() + data.len()) as u32).previous_tag_size();
+                            first_pkg.put(header_bytes);
+                            first_pkg.put(data);
+                            first_pkg.put(size_bytes);
+                            let _ = flv_tx.send_data(first_pkg.freeze()).await.hand_log(|msg| warn!("{msg}"));
+                            return timestamp;
                         }
                     }
-                    //Video Tag[0]
-                    let con_record = AvcDecoderConfigurationRecord::build(sps_nal, pps_nal);
-                    let data_tag0_bytes = VideoTagDataFirst::build(con_record).to_bytes();
-                    let header_tag0_bytes = TagHeader::build(TagType::Video, 0, data_tag0_bytes.len() as u32).to_bytes();
-                    let tag_size_bytes = PreviousTagSize::new((header_tag0_bytes.len() + data_tag0_bytes.len()) as u32).previous_tag_size();
-                    first_pkg.put(header_tag0_bytes);
-                    first_pkg.put(data_tag0_bytes);
-                    first_pkg.put(tag_size_bytes);
-                    //idr frame ->Video Tag[1]
-                    let header_bytes = TagHeader::build(TagType::Video, 0, data.len() as u32).to_bytes();
-                    let size_bytes = PreviousTagSize::new((header_bytes.len() + data.len()) as u32).previous_tag_size();
-                    first_pkg.put(header_bytes);
-                    first_pkg.put(data);
-                    first_pkg.put(size_bytes);
-                    let _ = flv_tx.send_data(first_pkg.freeze()).await.hand_log(|msg| warn!("{msg}"));
-                    return timestamp;
+                    Coder::SVAC_V => {}
+                    Coder::H265 => {}
+                    Coder::G711 => {}
+                    Coder::SVAC_A => {}
+                    Coder::G723_1 => {}
+                    Coder::G729 => {}
+                    Coder::G722_1 => {}
+                    Coder::AAC => {}
                 }
             }
-            Coder::SVAC_V => {}
-            Coder::H265 => {}
-            Coder::G711 => {}
-            Coder::SVAC_A => {}
-            Coder::G723_1 => {}
-            Coder::G729 => {}
-            Coder::G722_1 => {}
-            Coder::AAC => {}
+            Err(RecvError::Lagged(amt)) => {
+                warn!("ssrc={ssrc},first_frame:数据包消费滞后{amt}条，Flv打包跳过.");
+            }
+            Err(RecvError::Closed) => {
+                return 0;
+            }
         }
     }
-    0
 }
 
 //h264
@@ -119,8 +137,8 @@ async fn first_frame(flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<Fra
 //         0x01 (0 00 00001) B帧     不重要        type = 1
 //         0x06 (0 00 00110) SEI     不重要        type = 6
 //首帧为IDR帧，实现画面秒开
-pub async fn send_flv(mut flv_tx: body::Sender, mut rx: broadcast::Receiver<FrameData>) {
-    let start_time = first_frame(&mut flv_tx, &mut rx).await;
+pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Receiver<FrameData>) {
+    let start_time = first_frame(ssrc, &mut flv_tx, &mut rx).await;
     loop {
         match rx.recv().await {
             Ok(FrameData { pay_type, timestamp, data }) => {
@@ -148,9 +166,7 @@ pub async fn send_flv(mut flv_tx: body::Sender, mut rx: broadcast::Receiver<Fram
                 }
             }
             Err(RecvError::Lagged(amt)) => {
-                if amt > 8 {
-                    rx = rx.resubscribe();
-                }
+                warn!("ssrc={ssrc},跳过{amt}条数据");
             }
             Err(RecvError::Closed) => {
                 return;

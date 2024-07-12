@@ -129,8 +129,8 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                 match cache::get_flv_rx(&ssrc) {
                                     Some(rx) => {
                                         let (flv_tx, body) = Body::channel();
-                                        tokio::spawn(async {
-                                            flv_process::send_flv(flv_tx, rx).await
+                                        tokio::spawn(async move{
+                                            flv_process::send_flv(ssrc, flv_tx, rx).await
                                         });
 
                                         let flv_res = res_builder.header("Content-Type", "video/x-flv")

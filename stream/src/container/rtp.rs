@@ -1,17 +1,18 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
-use log::{debug};
+use log::debug;
 use parking_lot::RwLock;
 use rtp::packet::Packet;
 
-use common::tokio::sync::{Notify};
+use common::tokio::sync::Notify;
 
 const BUFFER_SIZE: usize = 128;
+//检查sn是否回绕；sn变小，且差值的绝对值大于u16的一半。65535/2=32767
+const ROUND_SIZE: u16 = 32767;
 
 pub struct RtpBuffer {
     sequence_number: AtomicU16,
-    timestamp: AtomicU32,
     buf: Arc<[RwLock<Option<Packet>>; BUFFER_SIZE]>,
     block: Notify,
     index: AtomicU8,
@@ -23,7 +24,6 @@ impl RtpBuffer {
     pub fn init() -> Self {
         Self {
             sequence_number: AtomicU16::new(0),
-            timestamp: AtomicU32::new(0),
             buf: Arc::new(std::array::from_fn(|_| RwLock::new(None))),
             block: Notify::new(),
             index: AtomicU8::new(0),
@@ -34,10 +34,9 @@ impl RtpBuffer {
 
     pub fn insert(&self, pkt: Packet) {
         let sn = self.sequence_number.load(Ordering::SeqCst);
-        let ts = self.timestamp.load(Ordering::SeqCst);
         let seq_num = pkt.header.sequence_number;
         //仅插入有效数据包
-        if seq_num > sn || pkt.header.timestamp >= ts || Self::check_sn_wrap(sn, seq_num) || ts == 0 || ts == 0 {
+        if seq_num > sn || sn.wrapping_sub(seq_num) > ROUND_SIZE || sn == 0 {
             let index = seq_num as usize % BUFFER_SIZE;
             let mut item = unsafe { self.buf.get_unchecked(index).write() };
             *item = Some(pkt);
@@ -59,7 +58,6 @@ impl RtpBuffer {
         }
         let mut index = self.index.load(Ordering::Relaxed) as usize;
         let sn = self.sequence_number.load(Ordering::SeqCst);
-        let ts = self.timestamp.load(Ordering::SeqCst);
         for i in 0..BUFFER_SIZE {
             let guard = unsafe { self.buf.get_unchecked(index).read() };
             index += 1;
@@ -68,17 +66,18 @@ impl RtpBuffer {
             }
             if let Some(item) = &*guard {
                 let seq_num = item.header.sequence_number;
-                //首次/回绕/计数器大于1；获取包时，不减少计数
-                if self.sliding_counter.load(Ordering::SeqCst) > 1 && Self::check_sn_wrap(sn, seq_num) {
-                    self.sliding_counter.fetch_sub(1, Ordering::SeqCst);
+                let sub = seq_num as i32 - sn as i32;
+                //非首次/非回绕/计数器大于1；获取包时，不减少计数
+                if self.sliding_counter.load(Ordering::SeqCst) > 1 {
+                    if sub.abs() < ROUND_SIZE as i32 {
+                        self.sliding_counter.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
-                let timestamp = item.header.timestamp;
-                // 验证有效包,防止暂停后数据错乱
-                if seq_num > sn || timestamp >= ts || Self::check_sn_wrap(sn, seq_num) {
+                // 验证有效包:回绕、首次
+                if Self::check_valid(sub) || (sn == 0 && seq_num == 0) {
                     let pkt = item.clone();
                     drop(guard);
                     self.sequence_number.store(seq_num, Ordering::SeqCst);
-                    self.timestamp.store(timestamp, Ordering::SeqCst);
                     self.index.store(index as u8, Ordering::Relaxed);
                     let window = self.sliding_window.load(Ordering::SeqCst);
                     if i == 1 {
@@ -96,13 +95,15 @@ impl RtpBuffer {
         }
         None
     }
+    fn check_valid(sub: i32) -> bool {
+        (sub > 0 && sub <= ROUND_SIZE as i32) || (sub >= -(u16::MAX as i32) && sub <= -(ROUND_SIZE as i32))
+    }
 
     //最后一次获取所有数据
     pub fn flush_pkt(&self) -> Vec<Packet> {
         let mut vec = Vec::new();
         let mut index = self.index.load(Ordering::Relaxed) as usize;
         let sn = self.sequence_number.load(Ordering::SeqCst);
-        let ts = self.timestamp.load(Ordering::SeqCst);
         for _i in 0..BUFFER_SIZE {
             let guard = unsafe { self.buf.get_unchecked(index).read() };
             index += 1;
@@ -110,27 +111,13 @@ impl RtpBuffer {
                 index = 0;
             }
             if let Some(pkt) = &*guard {
-                if pkt.header.sequence_number > sn
-                    || pkt.header.timestamp > ts
-                    || Self::check_sn_wrap(sn, pkt.header.sequence_number)
-                    || ts == 0
-                    || ts == 0 {
+                let sub = pkt.header.sequence_number as i32 - sn as i32;
+                if Self::check_valid(sub) {
                     vec.push(pkt.clone());
                 }
             }
         }
         vec
-    }
-
-    fn u16_sub_abs(a: u16, b: u16) -> u16 {
-        if a > b {
-            return a - b;
-        }
-        b - a
-    }
-    //检查sn是否回绕；sn变小，且差值的绝对值大于u16。65535/2=32767
-    fn check_sn_wrap(a: u16, b: u16) -> bool {
-        Self::u16_sub_abs(a, b) > 32767
     }
 }
 
