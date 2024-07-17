@@ -1,5 +1,5 @@
 use hyper::body;
-use log::{info, warn};
+use common::log::{info, warn};
 use common::anyhow::anyhow;
 
 use common::bytes::{BufMut, BytesMut};

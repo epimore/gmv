@@ -1,4 +1,4 @@
-use log::warn;
+use common::log::warn;
 use amf::{Pair};
 use amf::amf0::Value;
 use common::bytes::{BufMut, Bytes, BytesMut};
@@ -453,23 +453,23 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_flv_data() {
-        let sps_vec = base64::decode("Z00AKpWoHgCJ+VA=").unwrap();
-        let pps_vec = base64::decode("aO48gA==").unwrap();
-        println!("{:02x?}", sps_vec);
-        println!("{:02x?}", pps_vec);
-        let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/12.flv");
-        println!("input size = {}", input.len());
-        let input = &input[187..52401];
-        let mut curr_offset = 0;
-        let size_len = 4;
-        while curr_offset < input.len() {
-            let data_size = u32::from_be_bytes([input[curr_offset], input[curr_offset + 1], input[curr_offset + 2], input[curr_offset + 3]]) as usize;
-            println!("nal len {data_size}, type = {:02x}", input[curr_offset + size_len]);
-            curr_offset += size_len + data_size;
-        }
-    }
+    // #[test]
+    // fn test_flv_data() {
+    //     let sps_vec = base64::decode("Z00AKpWoHgCJ+VA=").unwrap();
+    //     let pps_vec = base64::decode("aO48gA==").unwrap();
+    //     println!("{:02x?}", sps_vec);
+    //     println!("{:02x?}", pps_vec);
+    //     let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/12.flv");
+    //     println!("input size = {}", input.len());
+    //     let input = &input[187..52401];
+    //     let mut curr_offset = 0;
+    //     let size_len = 4;
+    //     while curr_offset < input.len() {
+    //         let data_size = u32::from_be_bytes([input[curr_offset], input[curr_offset + 1], input[curr_offset + 2], input[curr_offset + 3]]) as usize;
+    //         println!("nal len {data_size}, type = {:02x}", input[curr_offset + size_len]);
+    //         curr_offset += size_len + data_size;
+    //     }
+    // }
 
     #[test]
     fn byte_to_number() {

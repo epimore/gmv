@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
-use log::debug;
+use common::log::debug;
 use parking_lot::RwLock;
 use rtp::packet::Packet;
 

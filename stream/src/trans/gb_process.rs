@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use log::{debug, info, warn};
+use common::log::{debug, info, warn};
 use rtp::packet::Packet;
 use common::anyhow::anyhow;
 
@@ -49,7 +49,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
             tx.send(data).map_err(|err| SysErr(anyhow!(err.to_string()))).map(|_| ())
         },
     );
-    let mut coder = coder::MediaCoder::register_all(handle_frame);
+    let mut coder = coder::MediaInfo::register_all(handle_frame);
     loop {
         tokio::select! {
             res_pkt = rtp_buffer.next_pkt() =>{
@@ -59,7 +59,15 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                         96 => {
                             let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
                         }
-                        100 => {}
+                        100 => {
+                            let mut ts = 0;
+                           if let Ok(Some(vec)) = coder.ps.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
+                                for val in vec{
+                                let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
+                                }
+                            }
+                              ts = pkt.header.timestamp;
+                        }
                         102 => {}
                         _ => {
                             return Err(GlobalError::new_biz_error(4005, "系统暂不支持", |msg| debug!("{msg}")));

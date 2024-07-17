@@ -1,13 +1,14 @@
-use byteorder::{BigEndian, ByteOrder};
+use std::io::{Cursor, Read};
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
-use log::{debug, warn};
+use common::log::{debug, info, warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 
 use common::anyhow::anyhow;
-use common::bytes::Bytes;
+use common::bytes::{Buf, BufMut, Bytes, BytesMut};
 use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 
@@ -95,6 +96,59 @@ impl H264 {
         });
         Ok((width, height, fps))
     }
+    pub fn extract_nal_by_annexb(bytes_annexb: Bytes) -> Vec<Bytes> {
+        let len = bytes_annexb.len() as u64;
+        let mut nals = Vec::new();
+        let mut nal = BytesMut::new();
+        let mut cursor = Cursor::new(bytes_annexb);
+        let mut count_zero = 0u8;
+        while cursor.position() < len {
+            let val = cursor.get_u8();
+            match val {
+                0 => {
+                    if count_zero == 3 {
+                        nal.put_u8(val);
+                    } else {
+                        count_zero += 1;
+                    }
+                }
+                1 => {
+                    match count_zero {
+                        0 => {
+                            nal.put_u8(val);
+                        }
+                        1 => {
+                            nal.put_u8(0);
+                            nal.put_u8(val);
+                            count_zero = 0;
+                        }
+                        _ => {
+                            if nal.len()>0 {
+                                let bytes_mut = std::mem::take(&mut nal);
+                                nals.push(bytes_mut.freeze());
+                            }
+                            count_zero = 0;
+                        }
+                    }
+                }
+                _ => {
+                    while count_zero > 0 {
+                        nal.put_u8(0);
+                        count_zero -= 1;
+                    }
+                    nal.put_u8(val);
+                }
+            }
+        }
+        while count_zero > 0 {
+            nal.put_u8(0);
+            count_zero -= 1;
+        }
+        if nal.len() > 0 {
+            nals.push(nal.freeze());
+        }
+        nals
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +200,17 @@ mod test {
             println!("a != 2 and b is true");
         }
         println!("end");
+    }
+
+    #[test]
+    fn test_extract_nal_by_annexb() {
+        let bytes_annexb = Bytes::from_static(&[
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1e,
+            0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x06, 0xf2,
+            0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00, 0x0a, 0x00
+        ]);
+
+        let extracted_nals = H264::extract_nal_by_annexb(bytes_annexb);
+        extracted_nals.iter().map(|iter| println!("{:02x?}", iter.to_vec())).count();
     }
 }
