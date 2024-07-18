@@ -14,8 +14,14 @@ use crate::coder::h264::H264;
 const PS_PACK_START_CODE: u32 = 0x000001BA;
 const PS_SYS_START_CODE: u32 = 0x000001BB;
 const PS_SYS_MAP_START_CODE: u32 = 0x000001BC;
-const PES_HEADER_START_CODE_VIDEO: u32 = 0x000001E0;
-const PES_HEADER_START_CODE_AUDIO: u32 = 0x000001C0;
+// const PES_HEADER_START_CODE_VIDEO: u32 = 0x000001E0;
+// const PES_HEADER_START_CODE_AUDIO: u32 = 0x000001C0;
+
+#[derive(Default)]
+pub struct Ps {
+    pub ts: u32,
+    pub ps_packet: PsPacket,
+}
 
 #[derive(Default)]
 pub struct PsPacket {
@@ -149,6 +155,7 @@ impl PsPacket {
 // VER|SCR_B|M|        SCR_B:[29..15]       |M|        SCR_B:[14..0]        |M|      SCR_E      |M
 //    |32-30|
 */
+#[allow(dead_code)]
 pub struct PsHeader {
     start_code: u32,
     ver_system_clock_reference_base_marker: [u8; 6],
@@ -189,6 +196,7 @@ impl PsHeader {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PsSysHeader {
     start_code: u32,
     len: u16,
@@ -229,12 +237,14 @@ impl PsSysHeader {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PsStream {
     stream_id: u8,
     p_psd: [u8; 2],
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PsSysMap {
     start_code3_map_stream_id8: u32,
     ps_map_length: u16,
@@ -286,6 +296,7 @@ impl PsSysMap {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct EsInfo {
     stream_type: u8,
     es_info_length: u16,
@@ -314,6 +325,7 @@ impl EsInfo {
 
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Descriptor {
     descriptor_tag: u8,
     descriptor_length: u8,
@@ -335,6 +347,7 @@ impl Descriptor {
     }
 }
 
+#[allow(dead_code)]
 pub struct PesPacket {
     start_code_prefix: [u8; 3],
     stream_id: u8,
@@ -433,6 +446,7 @@ pub enum PesInnerData {
     PesAllPadding(Bytes),
 }
 
+#[allow(dead_code)]
 pub struct PesPtsDtsInfo {
     m2_p2_p1_d1_c1_o1: u8,
     flags2_e1_e1_d1_a1_p1_p1: u8,

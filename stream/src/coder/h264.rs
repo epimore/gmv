@@ -1,9 +1,9 @@
-use std::io::{Cursor, Read};
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use std::io::{Cursor};
+use byteorder::{BigEndian, ByteOrder};
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
-use common::log::{debug, info, warn};
+use common::log::{debug, warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 

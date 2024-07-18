@@ -59,13 +59,13 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                             let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
                         }
                         96 => {
-                             let mut ts = 0;
-                             if let Ok(Some(vec)) = coder.ps.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
+                             let ts = coder.ps.ts;
+                             if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
                                 for val in vec{
                                 let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
                                 }
                             }
-                             ts = pkt.header.timestamp;
+                             coder.ps.ts = pkt.header.timestamp;
                         }
                         100 => {
 

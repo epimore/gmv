@@ -1,7 +1,7 @@
 use common::bytes::Bytes;
 use common::err::{GlobalResult};
 use crate::coder::h264::H264;
-use crate::container::ps::PsPacket;
+use crate::container::ps::{Ps};
 use crate::general::mode::Coder;
 
 pub mod h264;
@@ -18,7 +18,7 @@ pub type HandleFrameDataFn = Box<dyn Fn(FrameData) -> GlobalResult<()> + Send + 
 
 pub struct MediaInfo {
     pub h264: H264,
-    pub ps: PsPacket,
+    pub ps: Ps,
     // pub h265:H265,
     // pub aac:Aac,
 }
