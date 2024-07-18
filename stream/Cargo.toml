@@ -18,7 +18,6 @@ reqwest = { version = "0.12", features = ["json"] }
 serde_json = "1.0"
 form_urlencoded = "1.2.1"
 tokio-stream = {version = "0.1.15",features = ["sync"]}
-#log = "0.4.21"
 rtp = "0.11"
 webrtc-util = "0.9"
 hls_m3u8 = "0.4"
@@ -26,8 +25,9 @@ byteorder = "1"
 amf = "1.0"
 h264-reader = "=0.7"
 async-channel = "2.3"
-base64 = "0.13"
-#mpeg2ts-reader = "0.16"
+#log = "0.4.21"
+#base64 = "0.13"
+#mpeg2ts-reader = "0.16"cd
 #bitstream-io = "2.5"
 #bytes = "1.6.0"
 #mpeg2next = { path = "../../mpeg2next" }
