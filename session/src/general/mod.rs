@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::net::Ipv4Addr;
 use std::ops::Index;
 use common::yaml_rust::Yaml;

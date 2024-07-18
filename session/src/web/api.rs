@@ -1,4 +1,4 @@
-use log::{error, info};
+use common::log::{error, info};
 use poem::FromRequest;
 use poem_openapi::OpenApi;
 use poem_openapi::param::Header;

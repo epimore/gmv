@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use bimap::BiMap;
-use log::{error, warn};
+use common::log::{error, warn};
 use mysql::serde_json;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;

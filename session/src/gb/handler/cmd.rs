@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
-use log::{error, info, warn};
+use common::log::{error, info, warn};
 use regex::Regex;
 use rsip::prelude::HeadersExt;
 use rsip::Response;

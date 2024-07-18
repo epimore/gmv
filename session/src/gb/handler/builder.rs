@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::net::SocketAddr;
 
-use log::{debug, error};
+use common::log::{debug, error};
 use rsip::{Error, Header, header, headers, Method, Param, param, Request, Response, SipMessage, uri, Uri};
 use rsip::Header::Via;
 use rsip::headers::typed;

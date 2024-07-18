@@ -1,5 +1,5 @@
 use encoding_rs::GB18030;
-use log::{debug, info, LevelFilter};
+use common::log::{debug, info, LevelFilter};
 use quick_xml::encoding;
 use rsip::{Method, Request};
 use rsip::headers::ToTypedHeader;
@@ -243,7 +243,7 @@ impl Message {
     }
     async fn keep_alive(device_id: &String, vs: Vec<(String, String)>, bill: &Bill) {
         use parser::xml::{NOTIFY_DEVICE_ID, NOTIFY_STATUS};
-        if log::max_level() <= LevelFilter::Info {
+        if common::log::max_level() <= LevelFilter::Info {
             let (mut device_id, mut status) = (String::new(), String::new());
             for (k, v) in &vs {
                 match &k[..] {
@@ -305,7 +305,7 @@ impl Notify {
 
 #[cfg(test)]
 mod tests {
-    use log::LevelFilter;
+    use common::log::LevelFilter;
     use common::chrono::Local;
 
     #[test]
@@ -316,14 +316,14 @@ mod tests {
     #[test]
     fn test_log_level() {
         // 设置日志级别为 Info
-        log::set_max_level(LevelFilter::Info);
+        common::log::set_max_level(LevelFilter::Info);
 
         // 获取当前日志级别
-        let max_level = log::max_level();
+        let max_level = common::log::max_level();
         println!("Current log level: {:?}", max_level);
 
         // 判断当前级别是否达到指定级别
-        if log::max_level() >= LevelFilter::Debug {
+        if common::log::max_level() >= LevelFilter::Debug {
             println!("Debug messages are enabled");
         } else {
             println!("Debug messages are disabled");

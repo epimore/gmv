@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use log::error;
+use common::log::error;
 use mysql::serde_json;
 
 use common::bytes::Bytes;

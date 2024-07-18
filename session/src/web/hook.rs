@@ -1,4 +1,4 @@
-use log::info;
+use common::log::info;
 use poem::FromRequest;
 use poem_openapi::OpenApi;
 use poem_openapi::payload::{Form, Json};

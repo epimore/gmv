@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use log::error;
+use common::log::error;
 use reqwest::header;
 use reqwest::header::HeaderMap;
 use common::anyhow::anyhow;

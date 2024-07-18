@@ -5,7 +5,7 @@ mod web;
 mod service;
 mod utils;
 
-use log::error;
+use common::log::error;
 use common::err::TransError;
 use common::tokio;
 

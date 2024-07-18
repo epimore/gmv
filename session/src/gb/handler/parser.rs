@@ -90,7 +90,7 @@ pub mod xml {
     use std::ops::Deref;
     use std::str::from_utf8;
     use encoding_rs::GB18030;
-    use log::{debug, error};
+    use common::log::{debug, error};
     use quick_xml::events::Event;
     use quick_xml::{encoding, Reader};
     use common::anyhow::{anyhow};

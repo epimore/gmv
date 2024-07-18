@@ -1,5 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
-use log::error;
+use common::log::error;
 use common::anyhow::anyhow;
 use common::err::{GlobalError, GlobalResult};
 use common::err::GlobalError::SysErr;
@@ -140,14 +140,6 @@ fn test1() {
     let channel_id = "34020000001320000101";
     let ssrc = "1100000001";
     let stream_id = en_stream_id(device_id, channel_id, ssrc);
-    let stream_id1 = en_stream_id(device_id, channel_id, ssrc);
-    let stream_id2 = en_stream_id(device_id, channel_id, ssrc);
-    let stream_id3 = en_stream_id(device_id, channel_id, ssrc);
-    let stream_id4 = en_stream_id(device_id, channel_id, ssrc);
-    println!("stream_id1 = {}", &stream_id1);
-    println!("stream_id2 = {}", &stream_id2);
-    println!("stream_id3 = {}", &stream_id3);
-    println!("stream_id4 = {}", &stream_id4);
     let (d_d_id, d_c_id, d_ssrc) = de_stream_id(&stream_id);
     println!("stream_id = {}", &stream_id);
     assert_eq!(device_id, &d_d_id[..]);

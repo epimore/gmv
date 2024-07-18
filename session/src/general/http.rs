@@ -1,4 +1,4 @@
-use log::{error, info};
+use common::log::{error, info};
 use common::err::{GlobalResult, TransError};
 use common::yaml_rust::Yaml;
 
