@@ -1,7 +1,11 @@
 log:
-  level: debug
-  suffix: server
+  level: info
+  suffix: session
   store_path: ./logs
+  specify:
+    - crate: poem::server
+      level: warn
+
 
 http:
   port: 18567
@@ -12,7 +16,7 @@ http:
 
 db:
   mysql:
-    host_or_ip: imysql
+    host_or_ip: idb
     port: 33061
     db_name: gmv
     user: epimore

@@ -48,7 +48,7 @@ impl Http {
             .nest(&self.prefix, service
                 .with(Cors::new().allow_methods([Method::GET, Method::POST])))
             .nest("/docs", ui);
-        info!("GMV-API HTTP服务启动:{http_addr}");
+        println!("Listen to http web addr = 0.0.0.0:{}\n ... GMV:SESSION started.\r\n", &self.port);
         Server::new(TcpListener::bind(format!("0.0.0.0:{}", &self.port)))
             .run(route).await.hand_log(|msg| error!("{msg}"))?;
         Ok(())

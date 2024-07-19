@@ -16,6 +16,7 @@ use crate::general::SessionConf;
 
 pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
     let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", session_conf.get_wan_port())).hand_log(|msg| error! {"{msg}"}).expect("监听地址无效");
+    print_start(session_conf);
     let (output, mut input) = net::init_net(net::shared::Protocol::ALL, socket_addr).await.hand_log(|msg| error!("{msg}")).expect("网络监听失败");
     while let Some(zip) = input.recv().await {
         debug!("receive {:?}",&zip);
@@ -47,4 +48,8 @@ pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
         }
     }
     Ok(())
+}
+
+fn print_start(session_conf: &SessionConf) {
+    println!("Listen to gb28181 session over tcp and udp,listen ip : {} port: {}", session_conf.get_wan_ip(), session_conf.get_wan_port());
 }
