@@ -1,9 +1,13 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
 use common::log::debug;
 use parking_lot::RwLock;
 use rtp::packet::Packet;
+use common::bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use common::tokio::sync::Notify;
 
@@ -121,9 +125,63 @@ impl RtpBuffer {
     }
 }
 
+pub struct TcpRtpBuffer {
+    inner: HashMap<(SocketAddr, SocketAddr), BytesMut>,
+}
+
+impl TcpRtpBuffer {
+    pub fn register_buffer() -> Self {
+        Self { inner: Default::default() }
+    }
+
+    pub fn fresh_data(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr, data: Bytes) -> Option<Bytes> {
+        match self.inner.entry((local_addr, remote_addr)) {
+            Entry::Occupied(mut occ) => {
+                let buffer_mut = occ.get_mut();
+                buffer_mut.put(data);
+                let buffer_len = buffer_mut.len();
+                //2 len + 12 rtp header len
+                if buffer_len > 14 {
+                    let data_len = buffer_mut.get_u16() as usize;
+                    if data_len + 2 <= buffer_len {
+                        let rtp_data = buffer_mut.split_to(data_len);
+                        Some(rtp_data.freeze())
+                    } else { None }
+                } else {
+                    None
+                }
+            }
+            Entry::Vacant(vac) => {
+                let mut buffer_mut = BytesMut::with_capacity(4096);
+                buffer_mut.put(data);
+                let buffer_len = buffer_mut.len();
+                if buffer_len > 14 {
+                    let data_len = buffer_mut.get_u16() as usize;
+                    if data_len + 2 <= buffer_len {
+                        let rtp_data = buffer_mut.split_to(data_len);
+                        vac.insert(buffer_mut);
+                        Some(rtp_data.freeze())
+                    } else {
+                        vac.insert(buffer_mut);
+                        None
+                    }
+                } else {
+                    vac.insert(buffer_mut);
+                    None
+                }
+            }
+        }
+    }
+    pub fn remove_map(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) {
+        self.inner.remove(&(local_addr, remote_addr));
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::VecDeque;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use common::bytes::{Buf, BytesMut};
 
     #[test]
     fn test_deque_vec() {
@@ -145,5 +203,22 @@ mod test {
         d.insert(0, 444);
         assert_eq!(d.pop_front(), Some(444));
         d.push_back(1);
+    }
+
+    #[test]
+    fn test_socket_addr_to_string() {
+        let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+        println!("{}", socket.to_string());
+    }
+
+    #[test]
+    fn test_tcp_rtp_buffer() {
+        let mut buffer = BytesMut::with_capacity(2048);
+        buffer.extend_from_slice(&[0x00, 0x10]); // 长度字段：16
+        buffer.extend_from_slice(&[0x90, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00]); // RTP 数据示例
+        let data_len = buffer.get_u16() as usize;
+        let rtp_data = buffer.split_to(data_len).freeze();
+        println!("{:02x?}", rtp_data.to_vec());
+        println!("buffer len: {}, data: {:02x?}", buffer.len(), buffer.to_vec());
     }
 }
