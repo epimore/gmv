@@ -51,7 +51,7 @@ pub struct StreamNode {
 }
 
 impl StreamConf {
-    pub fn get_session_conf(cfg: &Yaml) -> Self {
+    pub fn get_stream_conf(cfg: &Yaml) -> Self {
         if cfg.is_badvalue() || cfg["server"].is_badvalue() || cfg["server"]["stream"].is_badvalue() {
             panic!("server stream config is invalid");
         }
@@ -71,8 +71,8 @@ impl StreamConf {
             }
             let pub_ip = val.index("pub_ip").as_str().expect(&format!("node-{index}:公网ip错误")).parse::<Ipv4Addr>().expect("server session pub_ip IPV4 is invalid");
             let pub_port = val.index("pub_port").as_i64().expect(&format!("node-{index}:公网端口错误")) as u16;
-            let local_ip = val.index("pub_ip").as_str().expect(&format!("node-{index}:局域网ip错误")).parse::<Ipv4Addr>().expect("server session local_ip IPV4 is invalid");
-            let local_port = val.index("pub_port").as_i64().expect(&format!("node-{index}:局域网端口错误")) as u16;
+            let local_ip = val.index("local_ip").as_str().expect(&format!("node-{index}:局域网ip错误")).parse::<Ipv4Addr>().expect("server session local_ip IPV4 is invalid");
+            let local_port = val.index("local_port").as_i64().expect(&format!("node-{index}:局域网端口错误")) as u16;
             let node = StreamNode {
                 local_ip,
                 local_port,
@@ -84,9 +84,9 @@ impl StreamConf {
         Self { proxy_addr, node_map }
     }
 
-    pub fn get_session_conf_by_cache() -> Self {
+    pub fn get_stream_conf_by_cache() -> Self {
         let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
-        Self::get_session_conf(&cfg)
+        Self::get_stream_conf(&cfg)
     }
 }
 

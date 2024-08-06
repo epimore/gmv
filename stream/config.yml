@@ -4,7 +4,7 @@ log:
   store_path: ./logs
 
 server:
-  name: stream-node-1 #服务标识身份,流媒体集群唯一标识
+  name: s1 #服务标识身份,流媒体集群唯一标识
   rtp-port: 18568 #监听rtp媒体流端口;
   rtcp-port: 18569 #监听rtcp媒体流端口;
   http-port: 18570 #流媒体API端口

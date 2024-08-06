@@ -57,7 +57,7 @@ pub struct CmdStream;
 
 impl CmdStream {
     pub async fn play_live_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String)
-                                  -> GlobalResult<(Response, HashMap<String, String>)> {
+                                  -> GlobalResult<(Response, HashMap<u8, String>)> {
         let (ident, msg) = RequestBuilder::play_live_request(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc)
             .await.hand_log(|msg| warn!("{msg}"))?;
         let (tx, mut rx) = mpsc::channel(100);
@@ -77,11 +77,15 @@ impl CmdStream {
                 info!("{ident:?} :{:#?}",&session);
                 let re = Regex::new(r"\s+").unwrap();
                 let mut media_map = HashMap::new();
-                for attr in session.attributes {
-                    if attr.attribute.eq("rtpmap") {
-                        if let Some(info) = attr.value {
-                            if let Some((key, val)) = re.replace_all(info.trim(), " ").split_once(" ") {
-                                media_map.insert(key.to_string(), val.to_string());
+                for media in session.medias {
+                    for attr in media.attributes {
+                        if attr.attribute.eq("rtpmap") {
+                            if let Some(info) = attr.value {
+                                if let Some((key, val)) = re.replace_all(info.trim(), " ").split_once(" ") {
+                                    let tp = key.parse::<u8>().hand_log(|msg| error!("{msg}"))?;
+                                    let i = val.find('/').unwrap_or(val.len());
+                                    media_map.insert(tp, val[0..i].to_uppercase());
+                                }
                             }
                         }
                     }

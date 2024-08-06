@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use common::log::{debug, info, warn};
+use common::log::{debug, error, info, warn};
 use rtp::packet::Packet;
 use common::anyhow::anyhow;
 
@@ -8,9 +10,11 @@ use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::tokio;
 use common::tokio::sync::{broadcast, oneshot};
+use common::tokio::time::timeout;
 
 use crate::{coder};
 use crate::container::rtp::RtpBuffer;
+use crate::general::mode::Media;
 use crate::state::cache;
 use crate::trans::FrameData;
 
@@ -22,7 +26,20 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
         tokio::spawn(async move {
             produce_data(ssrc, rx, &produce_buffer, flush_tx).await;
         });
-        consume_data(&rtp_buffer, tx, flush_rx).await?;
+        match cache::get_media_type(&ssrc) {
+            None => {
+                return Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},媒体映射：未查询到ssrc", ssrc), |msg| error!("{msg}")))
+            }
+            Some((nt, mut map)) => {
+                if map.is_empty() {
+                    if let Ok(()) = timeout(Duration::from_secs(2), nt.notified()).await {
+                        map = cache::get_media_type(&ssrc)
+                            .ok_or_else(|| SysErr(anyhow!("ssrc = {},已释放",ssrc)))?.1;
+                    }
+                }
+                consume_data(&rtp_buffer, tx, flush_rx, map).await?;
+            }
+        }
     }
     Ok(())
 }
@@ -43,7 +60,7 @@ async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer
     }
 }
 
-async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, mut flush_rx: oneshot::Receiver<bool>) -> GlobalResult<()> {
+async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, mut flush_rx: oneshot::Receiver<bool>, media_map: HashMap<u8, Media>) -> GlobalResult<()> {
     let handle_frame = Box::new(
         move |data: FrameData| -> GlobalResult<()> {
             tx.send(data).map_err(|err| SysErr(anyhow!(err.to_string()))).map(|_| ())
@@ -54,26 +71,39 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
         tokio::select! {
             res_pkt = rtp_buffer.next_pkt() =>{
                 if let Some(pkt) = res_pkt{
-                    match pkt.header.payload_type {
-                        98 => {
-                            let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
-                        }
-                        96 => {
-                             let ts = coder.ps.ts;
-                             if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
-                                for val in vec{
-                                let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
+                   let media_type = pkt.header.payload_type;
+                    if let Some(media) = media_map.get(&media_type){
+                        match *media{
+                            Media::PS => {
+                                let ts = coder.ps.ts;
+                                if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
+                                   for val in vec{
+                                   let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
+                                   }
                                 }
+                                coder.ps.ts = pkt.header.timestamp;
                             }
-                             coder.ps.ts = pkt.header.timestamp;
-                        }
-                        100 => {
-
-                        }
-                        102 => {}
-                        _ => {
-                            return Err(GlobalError::new_biz_error(4005, "系统暂不支持", |msg| debug!("{msg}")));
-                        }
+                            Media::H264 => {
+                                let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
+                            }}
+                    }else{
+                         match media_type{
+                            98 => {
+                                let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
+                            }
+                            96 => {
+                                 let ts = coder.ps.ts;
+                                 if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
+                                    for val in vec{
+                                    let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
+                                    }
+                                }
+                                 coder.ps.ts = pkt.header.timestamp;
+                            }
+                            _ => {
+                                return Err(GlobalError::new_biz_error(4005, "系统暂不支持", |msg| debug!("{msg}")));
+                            }
+                    }
                     }
                 }
             }

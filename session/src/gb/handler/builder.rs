@@ -236,7 +236,7 @@ impl RequestBuilder {
             let channel_id = channel_id.unwrap();
             let channel_status = mapper::get_device_channel_status(device_id, channel_id)?.ok_or(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，未知或无效")))?;
             match &channel_status.to_ascii_uppercase()[..] {
-                "ON" | "ONLINE" => { dst_id = channel_id }
+                "ON" | "ONLINE" | "ONLY" => { dst_id = channel_id }
                 _ => {
                     Err(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，已下线")))?
                 }

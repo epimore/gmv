@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
+use common::anyhow::anyhow;
 use common::bytes::Bytes;
 use common::err::{GlobalResult, TransError};
+use common::err::GlobalError::SysErr;
 use common::log::{error};
 use common::yaml_rust::Yaml;
 use constructor::{Get};
@@ -101,7 +103,7 @@ pub const AV_IO_CTX_BUFFER_SIZE: u16 = 1024 * 4;
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
-pub enum Coder {//av1??
+pub enum Coder { //av1??
     //video
     PS,
     MPEG4,
@@ -166,6 +168,37 @@ pub enum Coder {//av1??
 //         }
 //     }
 // }
+
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone, Debug)]
+pub enum Media { //av1??
+    //video
+    PS,
+    // MPEG4,
+    //sps,pps,idr
+    H264,
+    // SVAC_V,
+    // H265,
+    // //AUDIO
+    // G711,
+    // SVAC_A,
+    // G723_1,
+    // G729,
+    // G722_1,
+    // AAC,
+}
+
+impl Media {
+    pub fn build(ident_str: &str) -> GlobalResult<Self> {
+        match ident_str {
+            "PS" => { Ok(Self::PS) }
+            "H264" => { Ok(Self::H264) }
+            other => {
+                Err(SysErr(anyhow!("暂不支持的数据类型-{other}")))
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

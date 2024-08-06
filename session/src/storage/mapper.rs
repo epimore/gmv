@@ -4,7 +4,7 @@ use common::err::{GlobalResult, TransError};
 use common::log::error;
 
 pub fn get_device_channel_status(device_id: &String, channel_id: &String) -> GlobalResult<Option<String>> {
-    let sql = String::from("select `STATUS` from GMV_DEVICE_CHANNEL where device_id=:device_id and channel_id=:channel_id");
+    let sql = String::from("SELECT IFNULL(c.`STATUS`,'ONLY') FROM GMV_DEVICE d LEFT JOIN GMV_DEVICE_CHANNEL c on d.DEVICE_ID=c.DEVICE_ID and c.CHANNEL_ID=:channel_id WHERE d.DEVICE_ID=:device_id");
     let mut conn = idb::get_mysql_conn().unwrap();
     let option_status = conn.exec_first(sql, params! {device_id,channel_id}).hand_log(|msg| error!("{msg}"))?;
     Ok(option_status)

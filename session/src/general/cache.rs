@@ -23,6 +23,7 @@ use common::tokio::sync::{Mutex, Notify};
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
+use crate::general;
 use crate::utils::id_builder;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
@@ -61,8 +62,10 @@ impl Cache {
             }
         }
         let mut set = BTreeSet::new();
-        for (k, v) in map {
-            set.insert((v, k));
+        let conf = general::StreamConf::get_stream_conf_by_cache();
+        for (k, _v) in conf.node_map {
+            let count = map.get(&k).unwrap_or(&0);
+            set.insert((*count, k));
         }
         set
     }
@@ -113,8 +116,8 @@ impl Cache {
     }
 
     //移除流与用户关系
-//1.当gmv_token为None时-直接删除
-//2.当gmv_token为Some时-删除set<gmv_token>中的gmv_token：如果set<gmv_token>中只有一条该gmv_token,则如第1项
+    //1.当gmv_token为None时-直接删除
+    //2.当gmv_token为Some时-删除set<gmv_token>中的gmv_token：如果set<gmv_token>中只有一条该gmv_token,则如第1项
     pub fn stream_map_remove(stream_id: &String, gmv_token: Option<&String>) -> bool {
         match gmv_token {
             None => {
@@ -190,7 +193,7 @@ impl Cache {
     }
 
     //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
-//层层插入
+    //层层插入
     pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, play_type: PlayType) -> bool {
         match GENERAL_CACHE.shared.device_map.entry(device_id) {
             Entry::Occupied(mut occ) => {
@@ -243,7 +246,7 @@ impl Cache {
     }
 
     //层层删除：若最终device_id对应的都无数据，则整体删除
-//device_id: String, channel_id: String, ssrc: String
+    //device_id: String, channel_id: String, ssrc: String
     pub fn device_map_remove(device_id: &String, opt_channel_ssrc: Option<(&String, Option<(PlayType, &String)>)>) {
         match opt_channel_ssrc {
             None => {

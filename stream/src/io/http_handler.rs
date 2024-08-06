@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use hyper::{Body, Method, Request, Response, server::accept::Accept, service::{make_service_fn, service_fn}, StatusCode};
 use tokio_util::sync::CancellationToken;
 
-use common::anyhow::anyhow;
+use common::anyhow::{anyhow};
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::{error, info};
@@ -16,6 +16,7 @@ use common::tokio::{self,
 use common::tokio::sync::mpsc::Sender;
 
 use crate::biz::{api};
+use crate::biz::api::RtpMap;
 use crate::general::mode::{INDEX};
 
 const DROP_SSRC: &str = "/drop/ssrc";
@@ -25,6 +26,7 @@ const START_RECORD: &str = "/start/record";
 const PLAY: &str = "/play/";
 const STOP_PLAY: &str = "/stop/play";
 const QUERY_STATE: &str = "/query/state";
+const RTP_MEDIA: &str = "/rtp/media";
 
 async fn handle(
     node_name: &String,
@@ -65,12 +67,31 @@ async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, 
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
         (&Method::GET, LISTEN_SSRC) => {
-            let param_map_res = get_param_map(&req);
-            if param_map_res.is_err() {
-                return api::res_422();
+            match get_param_map(&req) {
+                Ok(param_map) => {
+                    api::listen_ssrc(param_map, ssrc_tx).await
+                }
+                Err(_err) => {
+                    api::res_422()
+                }
             }
-            let param_map = param_map_res.unwrap();
-            api::listen_ssrc(param_map, ssrc_tx).await
+        }
+        (&Method::POST, RTP_MEDIA) => {
+            match hyper::body::to_bytes(req.into_body()).await.hand_log(|msg| error!("{msg}")) {
+                Ok(body_bytes) => {
+                    match serde_json::from_slice::<RtpMap>(&body_bytes).hand_log(|msg| error!("{msg}")) {
+                        Ok(rtp_map) => {
+                            api::RtpMap::rtp_map(rtp_map)
+                        }
+                        Err(_) => {
+                            api::res_422()
+                        }
+                    }
+                }
+                Err(_) => {
+                    api::res_422()
+                }
+            }
         }
         (&Method::GET, DROP_SSRC) => {
             unimplemented!()
@@ -103,7 +124,7 @@ async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, 
                         let play_type = &uri[index + 1..];
                         if play_type.eq("flv") || play_type.eq("m3u8") {
                             let stream_id = (&uri[p_len..index]).to_string();
-                            return api::start_play(play_type.to_string(),stream_id, token, remote_addr, client_connection_cancel).await;
+                            return api::start_play(play_type.to_string(), stream_id, token, remote_addr, client_connection_cancel).await;
                         }
                     }
                 }

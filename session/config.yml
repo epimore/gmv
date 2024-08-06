@@ -16,7 +16,7 @@ http:
 
 db:
   mysql:
-    host_or_ip: idb
+    host_or_ip: 175.178.243.153
     port: 33061
     db_name: gmv
     user: epimore
@@ -30,8 +30,8 @@ db:
       connection_timeout: 30     # 默认30秒，连接超时时间
 server:
   session:
-    lan_ip: 172.16.21.36  # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
-    wan_ip: 172.16.21.36  # 公网IP
+    lan_ip: 172.18.38.186  # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
+    wan_ip: 172.18.38.186  # 公网IP
     lan_port: 25600  #lan端口
     wan_port: 25600  #wan端口
   stream:
@@ -39,15 +39,15 @@ server:
     proxy_addr: https://epimore.cn #流代理地址;eg:https://epimore.cn/s1/start/play?stream_id=stream_id1111&play_type=flv
     node:
       - name: s1 #流媒体服务的标识，节点名称，唯一值，不能与其他节点重复
-        pub_ip: 175.178.243.153 #流媒体服务接收rtp流的公网地址
+        pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
         pub_port: 18568 #流媒体服务接收rtp流的端口
         local_ip: 127.0.0.1 #节点局域网IP，用于流媒体服务之间通信
         local_port: 18570 #节点局域网端口，用于流媒体服务之间通信
-      - name: s2 #流媒体服务的标识，节点名称，唯一值，不能与其他节点重复
-        pub_ip: 175.178.243.153 #流媒体服务接收rtp流的公网地址
-        pub_port: 19568 #流媒体服务接收rtp流的端口
-        local_ip: 127.0.0.1 #节点局域网IP，用于流媒体服务之间通信
-        local_port: 18570 #节点局域网端口，用于流媒体服务之间通信
+#      - name: s2 #流媒体服务的标识，节点名称，唯一值，不能与其他节点重复
+#        pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
+#        pub_port: 19568 #流媒体服务接收rtp流的端口
+#        local_ip: 127.0.0.1 #节点局域网IP，用于流媒体服务之间通信
+#        local_port: 18570 #节点局域网端口，用于流媒体服务之间通信
 
 
 

@@ -58,7 +58,7 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
 #[derive(Debug, Deserialize, Object, Serialize, Get)]
 pub struct PlayLiveModel {
     #[oai(validator(min_length = "20", max_length = "20"))] deviceId: String,
-    #[oai(validator(min_length = "20", max_length = "20"))] channelId: String,
+    #[oai(validator(min_length = "20", max_length = "20"))] channelId: Option<String>,
     #[oai(validator(maximum(value = "2"), minimum(value = "0")))] transMode: Option<u8>,
 }
 
@@ -72,7 +72,7 @@ pub struct StreamInfo {
 
 impl StreamInfo {
     pub fn build(streamId: String, node_name: String) -> Self {
-        let stream_conf = general::StreamConf::get_session_conf_by_cache();
+        let stream_conf = general::StreamConf::get_stream_conf_by_cache();
         match stream_conf.get_proxy_addr() {
             None => {
                 let node_stream = stream_conf.get_node_map().get(&node_name).unwrap();

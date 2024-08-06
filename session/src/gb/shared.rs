@@ -152,7 +152,7 @@ pub mod rw {
             opt
         }
 
-        pub async fn check_session_by_device_id(device_id: &String) -> bool {
+        pub async fn has_session_by_device_id(device_id: &String) -> bool {
             let guard = RW_SESSION.shared.state.lock().await;
             guard.sessions.contains_key(device_id)
         }

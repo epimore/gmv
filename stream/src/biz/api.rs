@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use hyper::{Body, header, Response, StatusCode};
+use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use common::err::{GlobalError, GlobalResult, TransError};
@@ -11,7 +12,7 @@ use common::tokio::sync::{oneshot};
 use common::tokio::sync::mpsc::Sender;
 
 use crate::biz::call::{StreamPlayInfo, StreamState};
-use crate::general::mode::{ResMsg};
+use crate::general::mode::{Media, ResMsg};
 use crate::io::hook_handler::{Event, EventRes};
 use crate::state::cache;
 use crate::trans::flv_process;
@@ -38,6 +39,15 @@ pub fn res_401() -> GlobalResult<Response<Body>> {
 
 pub fn res_404() -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg("404".to_string()).to_json()?;
+    let res = Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
+    return Ok(res);
+}
+
+#[allow(dead_code)]
+pub fn res_500(msg: &str) -> GlobalResult<Response<Body>> {
+    let json_data = ResMsg::<bool>::build_failed_by_msg(msg.to_string()).to_json()?;
     let res = Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
         .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
@@ -85,6 +95,42 @@ pub async fn listen_ssrc(map: HashMap<String, String>, ssrc_tx: Sender<u32>) -> 
     }
 }
 
+#[derive(Deserialize, Debug)]
+pub struct RtpMap {
+    ssrc: u32,
+    map: HashMap<u8, String>,
+}
+
+impl RtpMap {
+    //指定媒体流类型映射
+    pub fn rtp_map(rtp_map: RtpMap) -> GlobalResult<Response<Body>> {
+        let mut map = HashMap::new();
+        for (tp, val) in rtp_map.map {
+            match Media::build(&val).hand_log(|msg| error!("{msg}")) {
+                Ok(media) => {
+                    map.insert(tp, media);
+                }
+                Err(_err) => {
+                    return res_422();
+                }
+            }
+        }
+        println!("----------------------{:?}",map);
+        let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
+        let res = match cache::insert_media_type(rtp_map.ssrc, map) {
+            Ok(_) => {
+                let json_data = ResMsg::<bool>::build_success().to_json()?;
+                response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
+            }
+            Err(error) => {
+                let json_data = ResMsg::<bool>::build_failed_by_msg(error.to_string()).to_json()?;
+                response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
+            }
+        };
+        Ok(res)
+    }
+}
+
 //删除ssrc，返回正在使用的stream_id/token
 // pub async fn drop_ssrc(ssrc: u32) -> GlobalResult<()> {
 //     unimplemented!()
@@ -129,7 +175,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                 match cache::get_flv_rx(&ssrc) {
                                     Some(rx) => {
                                         let (flv_tx, body) = Body::channel();
-                                        tokio::spawn(async move{
+                                        tokio::spawn(async move {
                                             flv_process::send_flv(ssrc, flv_tx, rx).await
                                         });
 

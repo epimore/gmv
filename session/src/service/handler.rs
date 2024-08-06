@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use common::log::error;
+use common::log::{error, info};
 use mysql::serde_json;
 
 use common::bytes::Bytes;
@@ -67,11 +67,14 @@ pub fn stream_input_timeout(stream_state: StreamState) {
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = play_live_model.get_deviceId();
-    if RWSession::check_session_by_device_id(device_id).await {
+    if !RWSession::has_session_by_device_id(device_id).await {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
-
-    let channel_id = play_live_model.get_channelId();
+    let channel_id = if let Some(channel_id) = play_live_model.get_channelId() {
+        channel_id
+    } else {
+        device_id
+    };
     //查看直播流是否已存在,有则直接返回
     if let Some((stream_id, node_name)) = enable_live_stream(device_id, channel_id, &token).await {
         general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
@@ -88,14 +91,16 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
 async fn start_live_stream(device_id: &String, channel_id: &String, token: &String) -> GlobalResult<(String, String)> {
     let num_ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
     let mut node_sets = general::cache::Cache::stream_map_order_node();
+    println!("node sets len = {}", node_sets.len());
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, num_ssrc, true)?;
     //选择负载最小的节点开始尝试：节点是否可用;
     while let Some((_, node_name)) = node_sets.pop_first() {
-        let conf = general::StreamConf::get_session_conf_by_cache();
+        let conf = general::StreamConf::get_stream_conf_by_cache();
         let stream_node = conf.get_node_map().get(&node_name).unwrap();
         if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
-            let (res, _media_map) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
-            //todo _media_map 可回调给gmv-stream 使其确认媒体类型
+            let (res, media_map) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
+            //回调给gmv-stream 使其确认媒体类型
+            let _ = callback::ident_rtp_media_info(&ssrc,media_map,token, stream_node.get_local_ip(), stream_node.get_local_port()).await;
             let (call_id, seq) = CmdStream::play_live_ack(device_id, &res).await?;
             return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
                 general::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, PlayType::Live);
@@ -121,7 +126,7 @@ async fn enable_live_stream(device_id: &String, channel_id: &String, token: &Str
             let mut res = None;
             if let Some(node_name) = general::cache::Cache::stream_map_query_node_name(&stream_id) {
                 //确认stream是否存在
-                if let Some(stream_node) = general::StreamConf::get_session_conf_by_cache().get_node_map().get(&node_name) {
+                if let Some(stream_node) = general::StreamConf::get_stream_conf_by_cache().get_node_map().get(&node_name) {
                     if let Ok(vec) = callback::call_stream_state(Some(&stream_id), token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
                         if vec.len() == 0 {
                             //session有流信息,stream无流存在=>进一步判断可能是stream重启导致没有该监听,重启监听等待结果

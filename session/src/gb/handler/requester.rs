@@ -26,7 +26,7 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalR
     let device_id = parser::header::get_device_id_by_request(&req)?;
     //校验设备是否注册
     if req.method == Method::Register {
-        Register::process(&device_id, req, tx, bill).await.hand_log(|msg| error!("设备 = [{}],注册失败",&device_id))?;
+        let _ = Register::process(&device_id, req, tx, bill).await.hand_log(|msg| error!("设备 = [{}],注册失败",&device_id));
         Ok(())
     } else {
         match State::check_session(&device_id, tx.clone(), bill).await? {
@@ -83,7 +83,7 @@ impl State {
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
     async fn check_session(device_id: &String, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<State> {
-        let rw_session = RWSession::check_session_by_device_id(device_id).await;
+        let rw_session = RWSession::has_session_by_device_id(device_id).await;
         if rw_session {
             Ok(State::Usable)
         } else {
