@@ -26,12 +26,10 @@ pub async fn run(port: u16) {
                             continue;
                         }
                         Some(rtp_data) => {
-                            println!("tcp data ....");
                             data = rtp_data;
                         }
                     }
                 }
-                println!("--------- data in len {}",data.len());
                 match Packet::unmarshal(&mut data) {
                     Ok(pkt) => {
                         let ssrc = pkt.header.ssrc;

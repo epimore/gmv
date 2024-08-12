@@ -64,6 +64,9 @@ impl PsPacket {
                         let ps_sys_map = PsSysMap::parse(&mut cursor).hand_log(|msg| info!("{msg}"))?;
                         self.ps_sys_header = Some(ps_sys_header);
                         self.ps_sys_map = Some(ps_sys_map);
+                    } else {
+                        self.ps_sys_header = None;
+                        self.ps_sys_map = None;
                     }
                     let pes_buf_len = bytes_len - cursor.position() as usize;
                     let mut pes_buf_data = BytesMut::with_capacity(pes_buf_len);
@@ -80,50 +83,60 @@ impl PsPacket {
         }
     }
     fn parse_to_nalu(&self, bytes: Bytes) -> GlobalResult<Vec<Bytes>> {
+        info!("pes data = {:02x?}",&bytes.to_vec());
+        let pes_packets = PesPacket::read_es_data(bytes)?;
         let mut nalus = Vec::new();
-        if let Some(sys_map) = &self.ps_sys_map {
-            let pes_packets = PesPacket::read_es_data(bytes)?;
-            for pes_packet in pes_packets {
-                let stream_type = &sys_map.es_map_info.get(&pes_packet.stream_id).ok_or_else(|| SysErr(anyhow!("stream id in es not found in ps sys map.")))?.stream_type;
-                match stream_type {
-                    //H264
-                    &0x1B => {
-                        match pes_packet.pes_inner_data {
-                            PesInnerData::PesPtsDtsInfo(PesPtsDtsInfo { pes_payload, .. }) => {
-                                let nals = H264::extract_nal_by_annexb(pes_payload);
-                                nalus.extend(nals);
+        match &self.ps_sys_map {
+            // P/B帧
+            None => {
+
+
+
+            }
+            // I帧
+            Some(sys_map) => {
+                for pes_packet in pes_packets {
+                    let stream_type = &sys_map.es_map_info.get(&pes_packet.stream_id).ok_or_else(|| SysErr(anyhow!("stream id in es not found in ps sys map.")))?.stream_type;
+                    match stream_type {
+                        //H264
+                        &0x1B => {
+                            match pes_packet.pes_inner_data {
+                                PesInnerData::PesPtsDtsInfo(PesPtsDtsInfo { pes_payload, .. }) => {
+                                    let nals = H264::extract_nal_by_annexb(pes_payload);
+                                    nalus.extend(nals);
+                                }
+                                PesInnerData::PesAllData(pes_payload) => {
+                                    let nals = H264::extract_nal_by_annexb(pes_payload);
+                                    nalus.extend(nals);
+                                }
+                                PesInnerData::PesAllPadding(_) => {}
                             }
-                            PesInnerData::PesAllData(pes_payload) => {
-                                let nals = H264::extract_nal_by_annexb(pes_payload);
-                                nalus.extend(nals);
-                            }
-                            PesInnerData::PesAllPadding(_) => {}
                         }
-                    }
-                    /* //MPEG-4
-                     &0x10 => {}
-                     //SVAC-VIDEO
-                     &0x80 => {}
-                     //H265
-                     &0x24 => {}
-                     //G711-A
-                     &0x90 => {}
-                     //G711-U
-                     &0x91 => {}
-                     //G722-1
-                     &0x92 => {}
-                     //G723-1
-                     &0x93 => {}
-                     //G729
-                     &0x99 => {}
-                     //SVAC-AUDIO
-                     &0x9B => {}
-                     //AAC
-                     &0x0F => {}*/
-                    &_ => {
-                        return Err(SysErr(anyhow!("系统暂不支持类型：{stream_type}")));
-                    }
-                };
+                        /* //MPEG-4
+                         &0x10 => {}
+                         //SVAC-VIDEO
+                         &0x80 => {}
+                         //H265
+                         &0x24 => {}
+                         //G711-A
+                         &0x90 => {}
+                         //G711-U
+                         &0x91 => {}
+                         //G722-1
+                         &0x92 => {}
+                         //G723-1
+                         &0x93 => {}
+                         //G729
+                         &0x99 => {}
+                         //SVAC-AUDIO
+                         &0x9B => {}
+                         //AAC
+                         &0x0F => {}*/
+                        &_ => {
+                            return Err(SysErr(anyhow!("系统暂不支持类型：{stream_type}")));
+                        }
+                    };
+                }
             }
         }
         Ok(nalus)

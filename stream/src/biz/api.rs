@@ -115,7 +115,6 @@ impl RtpMap {
                 }
             }
         }
-        println!("----------------------{:?}",map);
         let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
         let res = match cache::insert_media_type(rtp_map.ssrc, map) {
             Ok(_) => {

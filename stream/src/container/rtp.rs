@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
-use common::log::debug;
+use common::log::{debug, info};
 use parking_lot::RwLock;
 use rtp::packet::Packet;
 use common::bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -93,6 +93,7 @@ impl RtpBuffer {
                             self.sliding_window.store(window * 2, Ordering::SeqCst);
                         }
                     }
+                    info!("index = {index} ---------- seq = {seq_num} --------- size = {} ---------- payload = {:02x?}",pkt.payload.len(),&pkt.payload.to_vec()[..12]);
                     return Some(pkt);
                 }
             }
