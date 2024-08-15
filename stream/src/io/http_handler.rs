@@ -35,7 +35,7 @@ async fn handle(
     ssrc_tx: Sender<u32>,
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
-    let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败")))?;
+    let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败"))).hand_log(|msg| error!("{msg}"))?;
 
     match get_token(&req) {
         Ok(token) => {

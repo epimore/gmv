@@ -93,7 +93,7 @@ impl RtpBuffer {
                             self.sliding_window.store(window * 2, Ordering::SeqCst);
                         }
                     }
-                    info!("index = {index} ---------- seq = {seq_num} --------- size = {} ---------- payload = {:02x?}",pkt.payload.len(),&pkt.payload.to_vec()[..12]);
+                    // info!("index = {index} ---- seq = {seq_num} ---- marker = {} ---- size = {} ---- payload = {:02x?}",pkt.header.marker,pkt.payload.len(),&pkt.payload.to_vec()[..12]);
                     return Some(pkt);
                 }
             }

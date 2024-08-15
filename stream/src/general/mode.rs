@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
-use common::err::{GlobalResult, TransError};
+use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
-use common::log::{error};
+use common::log::{error, warn};
 use common::yaml_rust::Yaml;
 use constructor::{Get};
 
@@ -194,7 +194,7 @@ impl Media {
             "PS" => { Ok(Self::PS) }
             "H264" => { Ok(Self::H264) }
             other => {
-                Err(SysErr(anyhow!("暂不支持的数据类型-{other}")))
+                return Err(GlobalError::new_sys_error(&format!("暂不支持的数据类型-{other}"),|msg| warn!("{msg}")));
             }
         }
     }

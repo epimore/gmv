@@ -25,6 +25,8 @@ byteorder = "1"
 amf = "1.0"
 h264-reader = "=0.7"
 async-channel = "2.3"
+memchr = "2.7"
+bytes = "1.6.0"
 #log = "0.4.21"
 #base64 = "0.13"
 #mpeg2ts-reader = "0.16"cd

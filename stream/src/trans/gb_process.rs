@@ -76,9 +76,9 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                         match *media{
                             Media::PS => {
                                 let ts = coder.ps.ts;
-                                if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
+                                if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.header.marker,pkt.payload).hand_log(|msg|warn!("{msg}")){
                                    for val in vec{
-                                   let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
+                                        let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
                                    }
                                 }
                                 coder.ps.ts = pkt.header.timestamp;
@@ -93,7 +93,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                             }
                             96 => {
                                  let ts = coder.ps.ts;
-                                 if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.payload).hand_log(|msg|warn!("{msg}")){
+                                 if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.header.marker,pkt.payload).hand_log(|msg|warn!("{msg}")){
                                     for val in vec{
                                     let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
                                     }
