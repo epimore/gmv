@@ -61,12 +61,12 @@ async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer
 }
 
 async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, mut flush_rx: oneshot::Receiver<bool>, media_map: HashMap<u8, Media>) -> GlobalResult<()> {
-    let handle_frame = Box::new(
-        move |data: FrameData| -> GlobalResult<()> {
-            tx.send(data).map_err(|err| SysErr(anyhow!(err.to_string()))).map(|_| ())
-        },
-    );
-    let mut coder = coder::MediaInfo::register_all(handle_frame);
+    // let handle_frame = Box::new(
+    //     move |data: FrameData| -> GlobalResult<()> {
+    //         tx.send(data).map_err(|err| SysErr(anyhow!(err.to_string()))).map(|_| ())
+    //     },
+    // );
+    let mut coder = coder::MediaInfo::register_all(tx);
     loop {
         tokio::select! {
             res_pkt = rtp_buffer.next_pkt() =>{
@@ -75,13 +75,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                     if let Some(media) = media_map.get(&media_type){
                         match *media{
                             Media::PS => {
-                                let ts = coder.ps.ts;
-                                if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.header.marker,pkt.payload).hand_log(|msg|warn!("{msg}")){
-                                   for val in vec{
-                                        let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
-                                   }
-                                }
-                                coder.ps.ts = pkt.header.timestamp;
+                                let _ = coder.ps.handle_demuxer(pkt.header.marker,pkt.header.timestamp,pkt.payload).hand_log(|msg|warn!("{msg}"));
                             }
                             Media::H264 => {
                                 let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
@@ -92,13 +86,7 @@ async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, 
                                 let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
                             }
                             96 => {
-                                 let ts = coder.ps.ts;
-                                 if let Ok(Some(vec)) = coder.ps.ps_packet.parse(pkt.header.marker,pkt.payload).hand_log(|msg|warn!("{msg}")){
-                                    for val in vec{
-                                    let _ = coder.h264.handle_demuxer(val, ts).hand_log(|msg|warn!("{msg}"));
-                                    }
-                                }
-                                 coder.ps.ts = pkt.header.timestamp;
+                                let _ = coder.ps.handle_demuxer(pkt.header.marker,pkt.header.timestamp,pkt.payload).hand_log(|msg|warn!("{msg}"));
                             }
                             _ => {
                                 return Err(GlobalError::new_biz_error(4005, "系统暂不支持", |msg| debug!("{msg}")));
@@ -124,5 +112,12 @@ mod test {
         let tp = 0x7c & 0x1f;
         println!("frame type: nal_ref_idc = {}, type = {}", 0x7c >> 5 & 0x03, tp);
         println!("fu-a type: s = {}, e = {}, type = {}", 0x81 >> 7 & 0x01, 0x81 >> 6 & 0x01, 0x81 & 0x1f);
+    }
+
+    #[test]
+    fn parse_rfind() {
+        let uri = "http://172.18.38.186:18570/s1/4FEqqz1Dqsq0Vzqq3K2m0tqq4Zqq6m0s.flv";
+        let index = uri.rfind('.').unwrap();
+        println!("{}", &uri[index..]);
     }
 }

@@ -1,4 +1,4 @@
-use common::log::warn;
+use common::log::{info, warn};
 use amf::{Pair};
 use amf::amf0::Value;
 use common::bytes::{BufMut, Bytes, BytesMut};
@@ -308,7 +308,7 @@ impl AvcDecoderConfigurationRecord {
     }
 }
 
-#[derive(New)]
+#[derive(New, Debug)]
 pub struct VideoTagData {
     frame_type_codec_id: u8,
     avc_packet_type: u8,
@@ -400,6 +400,7 @@ impl VideoTagDataBuffer {
             //composition_time_offset ->cts = pts - dts/90 低延迟无B帧，故pts=dts，即总为0
             let video_tag_data = VideoTagData::new(frame_type_codec_id, 1, 0, data);
             res = Some((video_tag_data, self.sps.clone(), self.pps.clone(), self.idr));
+            info!("frame -----> {:?}",&res);
             self.vcl = 0;
             self.idr = false;
         }

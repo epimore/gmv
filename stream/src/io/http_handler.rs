@@ -116,7 +116,8 @@ async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, 
         }
         (method, uri) => {
             if method.eq(&Method::GET) {
-                if let Some(index) = uri.find('.') {
+                info!("uri = {}",uri);
+                if let Some(index) = uri.rfind('.') {
                     let start_play = &format!("/{node_name}{PLAY}");
                     let p_len = start_play.len();
                     //stream_id最小20位

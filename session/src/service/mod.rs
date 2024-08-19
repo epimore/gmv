@@ -11,7 +11,7 @@ pub const RELOAD_EXPIRES: u64 = 2;
 
 #[derive(Serialize, Object, Deserialize, Debug)]
 pub struct ResMsg<T: Serialize + Sync + Send + poem_openapi::types::Type + poem_openapi::types::ToJSON + poem_openapi::types::ParseFromJSON> {
-    code: i8,
+    code: u16,
     msg: String,
     data: Option<T>,
 }

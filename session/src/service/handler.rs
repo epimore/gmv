@@ -97,6 +97,7 @@ async fn start_live_stream(device_id: &String, channel_id: &String, token: &Stri
     while let Some((_, node_name)) = node_sets.pop_first() {
         let conf = general::StreamConf::get_stream_conf_by_cache();
         let stream_node = conf.get_node_map().get(&node_name).unwrap();
+        //next 将sdp支持从session固定的，转为stream支持的
         if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
             let (res, media_map) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
             //回调给gmv-stream 使其确认媒体类型

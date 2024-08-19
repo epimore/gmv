@@ -84,7 +84,7 @@ impl StreamPlayInfo {
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
-                    (true, Ok(RespBo { code: 0, msg: _, data: Some(true) })) => {
+                    (true, Ok(RespBo { code: 200, msg: _, data: Some(true) })) => {
                         Some(true)
                     }
                     _ => {
@@ -109,7 +109,7 @@ impl StreamPlayInfo {
         match res {
             Ok(resp) => {
                 match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
-                    (true, Ok(RespBo { code: 0, msg: _, data: Some(true) })) => {
+                    (true, Ok(RespBo { code: 200, msg: _, data: Some(true) })) => {
                         Some(true)
                     }
                     _ => {

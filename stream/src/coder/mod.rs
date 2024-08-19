@@ -1,5 +1,6 @@
 use common::bytes::Bytes;
 use common::err::{GlobalResult};
+use common::tokio::sync::broadcast;
 use crate::coder::h264::H264;
 use crate::container::ps::{Ps};
 use crate::general::mode::Coder;
@@ -24,7 +25,11 @@ pub struct MediaInfo {
 }
 
 impl MediaInfo {
-    pub fn register_all(handle_fn: HandleFrameDataFn) -> Self {
-        Self { h264: H264::init_avc(handle_fn), ps: Default::default() }
+    pub fn register_all(tx: broadcast::Sender<FrameData>) -> Self {
+        Self { h264: H264::init_avc(tx.clone()), ps: Ps::init(tx) }
     }
+}
+
+pub trait HandleFrame {
+    fn next_step(&self, frame_data: FrameData) -> GlobalResult<()>;
 }

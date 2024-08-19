@@ -77,15 +77,15 @@ impl StreamInfo {
             None => {
                 let node_stream = stream_conf.get_node_map().get(&node_name).unwrap();
                 Self {
-                    flv: format!("http://{}:{}/{node_name}/{streamId}.flv", node_stream.get_pub_ip(), node_stream.get_pub_port()),
-                    m3u8: format!("http://{}:{}/{node_name}/{streamId}.m3u8", node_stream.get_pub_ip(), node_stream.get_pub_port()),
+                    flv: format!("http://{}:{}/{node_name}/play/{streamId}.flv", node_stream.get_pub_ip(), node_stream.get_local_port()),
+                    m3u8: format!("http://{}:{}/{node_name}/play/{streamId}.m3u8", node_stream.get_pub_ip(), node_stream.get_local_port()),
                     streamId,
                 }
             }
             Some(addr) => {
                 Self {
-                    flv: format!("{addr}/{node_name}/{streamId}.flv"),
-                    m3u8: format!("{addr}/{node_name}/{streamId}.m3u8"),
+                    flv: format!("{addr}/{node_name}/play/{streamId}.flv"),
+                    m3u8: format!("{addr}/{node_name}/play/{streamId}.m3u8"),
                     streamId,
                 }
             }

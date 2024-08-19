@@ -4,7 +4,7 @@ use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
 use memchr::memmem;
-use common::log::{debug, warn};
+use common::log::{debug, info, warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 
@@ -12,13 +12,22 @@ use common::anyhow::anyhow;
 use common::bytes::{Buf, BufMut, Bytes, BytesMut};
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
+use common::tokio::sync::broadcast;
 
-use crate::coder::{FrameData, HandleFrameDataFn};
+use crate::coder::{FrameData, HandleFrame};
 use crate::general::mode::Coder;
 
 pub struct H264 {
-    handle_fn: HandleFrameDataFn,
+    tx: broadcast::Sender<FrameData>,
     h264packet: H264Packet,
+}
+
+impl HandleFrame for H264 {
+    fn next_step(&self, frame_data: FrameData) -> GlobalResult<()> {
+        self.tx.send(frame_data)
+            .map_err(|err| GlobalError::new_sys_error(&err.to_string(), |msg| warn!("{msg}")))
+            .map(|_| ())
+    }
 }
 
 impl H264 {
@@ -32,13 +41,13 @@ impl H264 {
         false
     }
 
-    pub fn init_annexb(handle_fn: HandleFrameDataFn) -> Self {
-        Self { handle_fn, h264packet: H264Packet::default() }
+    pub fn init_annexb(tx: broadcast::Sender<FrameData>) -> Self {
+        Self { tx, h264packet: H264Packet::default() }
     }
-    pub fn init_avc(handle_fn: HandleFrameDataFn) -> Self {
+    pub fn init_avc(tx: broadcast::Sender<FrameData>) -> Self {
         let mut h264packet = H264Packet::default();
         h264packet.is_avc = true;
-        Self { handle_fn, h264packet }
+        Self { tx, h264packet }
     }
 
     pub fn handle_demuxer(&mut self, payload: Bytes, timestamp: u32) -> GlobalResult<()> {
@@ -51,11 +60,11 @@ impl H264 {
             let size_data_len = BigEndian::read_u32(size_data.as_ref()) as usize;
             let last_offset = curr_offset + nal_data_size_len + size_data_len;
             if last_offset > raw_data_len {
-                return Err(GlobalError::new_sys_error("nal size larger than raw buffer",|msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error("nal size larger than raw buffer", |msg| warn!("{msg}")));
             } else {
                 let nal_data = raw_data.slice(curr_offset..last_offset);
-                let fun = &self.handle_fn;
-                fun(FrameData { pay_type: Coder::H264(None, None, false), timestamp, data: nal_data }).hand_log(|msg| warn!("{msg}"))?;
+                let frame_data = FrameData { pay_type: Coder::H264(None, None, false), timestamp, data: nal_data };
+                self.next_step(frame_data)?;
                 curr_offset = last_offset;
             }
         }
@@ -98,9 +107,9 @@ impl H264 {
         Ok((width, height, fps))
     }
 
-    pub fn extract_nal_by_annexb(nals: &mut Vec<Bytes>, bytes_annexb: Bytes) -> GlobalResult<()> {
+    pub fn extract_nal_annexb_to_len(nals: &mut Vec<Bytes>, bytes_annexb: Bytes) -> GlobalResult<()> {
         if !bytes_annexb.starts_with(&[0]) {
-            return Err(GlobalError::new_sys_error("h264 invalid start annexb code",|msg| warn!("{msg}")));
+            return Err(GlobalError::new_sys_error("h264 invalid start annexb code", |msg| warn!("{msg}")));
         }
         const annexb: [u8; 3] = [0x00u8, 00, 01];
         // let mut nals = Vec::new();
@@ -110,7 +119,7 @@ impl H264 {
             if index == 1 {
                 start = 4;
             } else if index > 1 {
-                return Err(GlobalError::new_sys_error("h264 invalid start annexb code",|msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error("h264 invalid start annexb code", |msg| warn!("{msg}")));
             }
         }
         while let Some(index) = iter.next() {
@@ -118,12 +127,24 @@ impl H264 {
             if bytes_annexb[index - 1] == 0 {
                 end -= 1;
             }
-            let nal = Bytes::copy_from_slice(&bytes_annexb[start..end]);
-            nals.push(nal);
+            let mut nal = BytesMut::new();
+
+            // info!("nalu type = {:02x},scope = {:02x?}",bytes_annexb[start],bytes_annexb[start-3..start+10].to_vec());
+
+            nal.put_u32((end - start) as u32);
+            nal.put_slice(&bytes_annexb[start..end]);
+            // let nal = Bytes::copy_from_slice(&bytes_annexb[start..end]);
+            nals.push(nal.freeze());
             start = index + 3;
         }
-        let nal = Bytes::copy_from_slice(&bytes_annexb[start..bytes_annexb.len()]);
-        nals.push(nal);
+
+        // info!("nalu type = {:02x},scope = {:02x?}",bytes_annexb[start],bytes_annexb[start-3..start+10].to_vec());
+
+        let mut nal = BytesMut::new();
+        nal.put_u32((bytes_annexb.len() - start) as u32);
+        nal.put_slice(&bytes_annexb[start..bytes_annexb.len()]);
+        // let nal = Bytes::copy_from_slice(&bytes_annexb[start..bytes_annexb.len()]);
+        nals.push(nal.freeze());
         Ok(())
     }
 
@@ -245,7 +266,7 @@ mod test {
         ]);
 
         let mut vec = Vec::new();
-        H264::extract_nal_by_annexb(&mut vec, bytes_annexb).unwrap();
+        H264::extract_nal_annexb_to_len(&mut vec, bytes_annexb).unwrap();
         vec.iter().map(|iter| println!("{:02x?}", iter.to_vec())).count();
     }
 
@@ -263,11 +284,11 @@ mod test {
 
     #[test]
     fn test_es() {
-        let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/all.dump");
+        let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/es1.dump");
         let bytes = Bytes::copy_from_slice(input);
         let mut vec = Vec::new();
-        H264::extract_nal_by_annexb(&mut vec, bytes).unwrap();
-        println!("vec len = {}",vec.len());
+        H264::extract_nal_annexb_to_len(&mut vec, bytes).unwrap();
+        println!("vec len = {}", vec.len());
         vec.iter().map(|iter| {
             if iter.len() <= 2 {
                 println!("1111");

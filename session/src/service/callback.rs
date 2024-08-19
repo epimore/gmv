@@ -49,7 +49,7 @@ pub async fn call_stream_state(opt_stream_id: Option<&String>, gmv_token: &Strin
         let body = res.json::<ResMsg<Vec<StreamState>>>()
             .await
             .hand_log(|msg| error!("{msg}"))?;
-        if body.code == 0 {
+        if body.code == 200 {
             if let Some(data) = body.data {
                 return Ok(data);
             }
@@ -78,7 +78,7 @@ pub async fn call_listen_ssrc(stream_id: &String, ssrc: &String, gmv_token: &Str
             .await
             .hand_log(|msg| error!("{msg}"))?;
         println!("body = {:?}", &body);
-        Ok(body.code == 0)
+        Ok(body.code == 200)
     } else {
         Err(SysErr(anyhow!("{}",res.status().to_string())))
     };
@@ -109,7 +109,7 @@ pub async fn ident_rtp_media_info(ssrc: &String, map: HashMap<u8, String>, gmv_t
             .await
             .hand_log(|msg| error!("{msg}"))?;
         println!("body = {:?}", &body);
-        Ok(body.code == 0)
+        Ok(body.code == 200)
     } else {
         Err(SysErr(anyhow!("{}",res.status().to_string())))
     };

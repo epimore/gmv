@@ -35,24 +35,24 @@ pub const STREAM_INPUT_TIMEOUT: &str = "/stream/input/timeout";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ResMsg<T: Serialize> {
-    code: i8,
+    code: u16,
     msg: String,
     data: Option<T>,
 }
 
 impl<T: Serialize> ResMsg<T> {
     pub fn build_success() -> Self {
-        Self { code: 0, msg: "success".to_string(), data: None }
+        Self { code: 200, msg: "success".to_string(), data: None }
     }
     pub fn build_failed() -> Self {
-        Self { code: -1, msg: "failed".to_string(), data: None }
+        Self { code: 500, msg: "failed".to_string(), data: None }
     }
 
     pub fn build_failed_by_msg(msg: String) -> Self {
-        Self { code: -1, msg, data: None }
+        Self { code: 500, msg, data: None }
     }
 
-    pub fn define_res(code: i8, msg: String) -> Self {
+    pub fn define_res(code: u16, msg: String) -> Self {
         Self { code, msg, data: None }
     }
 
