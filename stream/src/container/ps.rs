@@ -13,7 +13,6 @@ use common::log::{info, warn};
 use common::tokio::sync::broadcast;
 use crate::coder::h264::H264;
 use crate::coder::{FrameData, HandleFrame};
-use crate::general;
 use crate::general::mode::Coder;
 
 const PS_PACK_START_CODE: u32 = 0x000001BA;
@@ -187,7 +186,6 @@ impl PsPacket {
                 };
             }
             if payload.len() > 4 {
-                general::util::dump("es1", &payload, false).hand_log(|msg| warn!("{msg}"))?;
                 H264::extract_nal_annexb_to_len(&mut nalus, payload.freeze()).hand_log(|msg| warn!("{msg}"))?;
             }
         }
