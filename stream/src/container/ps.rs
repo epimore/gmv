@@ -5,7 +5,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use memchr::memmem;
 
 use common::anyhow::anyhow;
-use common::bytes::{Buf, BufMut};
+use common::bytes::{BufMut};
 use common::bytes::{Bytes, BytesMut};
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
@@ -25,7 +25,7 @@ const PS_PES_START_CODE_VIDEO_LAST: u8 = 0xEF;
 const PS_PES_START_CODE_AUDIO_FIRST: u8 = 0xC0;
 const PS_PES_START_CODE_AUDIO_LAST: u8 = 0xDF;
 const PS_BASE_LEN: usize = 6; //ps len min = pes header
-const PS_HEADER_BASE_LEN: usize = 14; //ps header
+// const PS_HEADER_BASE_LEN: usize = 14; //ps header
 const PS_START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01u8];
 
 // #[derive(Default)]
@@ -73,14 +73,10 @@ impl PsPacket {
         self.payload.put(bytes);
         if marker {
             let payload = std::mem::take(&mut self.payload).freeze();
-
-            general::util::dump("ps1", &payload, false).hand_log(|msg| warn!("{msg}"))?;
-
             let len = (payload.len() - PS_BASE_LEN) as u64;
             let mut cursor = Cursor::new(payload);
             let mut pes_packets = Vec::new();
             while cursor.position() < len {
-                let pos = cursor.position();
                 let mut start_code = [0u8; 3];
                 cursor.read_exact(&mut start_code).hand_log(|msg| warn!("{msg}"))?;
                 if start_code == PS_START_CODE_PREFIX {
@@ -395,6 +391,7 @@ impl EsInfo {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct DescriptorUnType(Bytes);
 
@@ -480,8 +477,6 @@ impl PesPacket {
         let remain_len = if packet_len == 0 { Self::get_pkt_len(cursor) } else { packet_len as usize };
         // let remain_len = if matches!(packet_len,0|65535) { Self::get_pkt_len(cursor) } else { packet_len as usize };
         if Self::check_stream_id_pts_dts_info(stream_id) {
-            let p0 = cursor.position() - 6;
-
             let m2_p2_p1_d1_c1_o1 = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
             let flags2_e1_e1_d1_a1_p1_p1 = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
             let header_len = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
@@ -489,19 +484,12 @@ impl PesPacket {
             unsafe { mut_header_main_info.set_len(header_len as usize); }
             cursor.read_exact(&mut *mut_header_main_info).hand_log(|msg| warn!("{msg}"))?;
 
-            let p1 = cursor.position();
-
             let payload_len = remain_len - header_len as usize - 3; //去掉2个字节flag + 1 header_len
             let mut mut_pes_payload = BytesMut::with_capacity(payload_len);
             unsafe { mut_pes_payload.set_len(payload_len); }
             cursor.read_exact(&mut *mut_pes_payload).hand_log(|msg| {
                 warn!("{msg}");
             })?;
-
-            let p2 = cursor.position();
-            // if !(&mut_pes_payload[..3] == &[0, 0, 1u8] || &mut_pes_payload[..4] == &[0, 0, 0, 1u8]) {
-            //     panic!();
-            // }
 
             let pts_dts_info = PesPtsDtsInfo {
                 m2_p2_p1_d1_c1_o1,

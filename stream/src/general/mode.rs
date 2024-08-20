@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
-use common::anyhow::anyhow;
 use common::bytes::Bytes;
 use common::err::{GlobalError, GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
 use common::log::{error, warn};
 use common::yaml_rust::Yaml;
 use constructor::{Get};

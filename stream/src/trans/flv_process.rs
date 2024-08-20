@@ -17,7 +17,6 @@ use crate::trans::FrameData;
 
 pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
     if let Some(tx) = cache::get_flv_tx(&ssrc) {
-        info!("flv process run ssrc = {ssrc}");
         let mut container = flv::MediaFlvContainer::register_all();
         loop {
             match rx.recv().await {
@@ -26,7 +25,6 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
                         Coder::PS => {}
                         Coder::MPEG4 => {}
                         Coder::H264(..) => {
-                            info!("flv rx data len = {}",data.len());
                             if let Some((pkg, sps, pps, idr)) = container.flv_video_h264.packaging(data) {
                                 let data = pkg.to_bytes();
                                 let frame_data = FrameData {
@@ -107,7 +105,6 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
                             first_pkg.put(data);
                             first_pkg.put(size_bytes);
                             let _ = flv_tx.send_data(first_pkg.freeze()).await.hand_log(|msg| warn!("{msg}"));
-                            info!("11111111111");
                             return timestamp;
                         }
                     }
@@ -156,7 +153,6 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
                         bytes.put(header_bytes);
                         bytes.put(data);
                         bytes.put(size_bytes);
-                        info!("22222222");
                         let _ = flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("{msg}"));
                     }
                     Coder::SVAC_V => {}

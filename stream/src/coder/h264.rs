@@ -4,7 +4,7 @@ use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
 use memchr::memmem;
-use common::log::{debug, info, warn};
+use common::log::{warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 
@@ -107,6 +107,7 @@ impl H264 {
         Ok((width, height, fps))
     }
 
+    #[allow(non_upper_case_globals)]
     pub fn extract_nal_annexb_to_len(nals: &mut Vec<Bytes>, bytes_annexb: Bytes) -> GlobalResult<()> {
         if !bytes_annexb.starts_with(&[0]) {
             return Err(GlobalError::new_sys_error("h264 invalid start annexb code", |msg| warn!("{msg}")));
@@ -282,18 +283,18 @@ mod test {
         vec.iter().map(|iter| println!("{:02x?}", iter.to_vec())).count();
     }
 
-    #[test]
-    fn test_es() {
-        let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/es1.dump");
-        let bytes = Bytes::copy_from_slice(input);
-        let mut vec = Vec::new();
-        H264::extract_nal_annexb_to_len(&mut vec, bytes).unwrap();
-        println!("vec len = {}", vec.len());
-        vec.iter().map(|iter| {
-            if iter.len() <= 2 {
-                println!("1111");
-            }
-        }
-        ).count();
-    }
+    // #[test]
+    // fn test_es() {
+    //     let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/es1.dump");
+    //     let bytes = Bytes::copy_from_slice(input);
+    //     let mut vec = Vec::new();
+    //     H264::extract_nal_annexb_to_len(&mut vec, bytes).unwrap();
+    //     println!("vec len = {}", vec.len());
+    //     vec.iter().map(|iter| {
+    //         if iter.len() <= 2 {
+    //             println!("1111");
+    //         }
+    //     }
+    //     ).count();
+    // }
 }

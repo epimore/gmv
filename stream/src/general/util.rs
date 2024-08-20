@@ -1,7 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use common::bytes::{Bytes, BytesMut};
 use common::err::{GlobalResult, TransError};
 use common::log::error;
 
