@@ -2,17 +2,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::log::{debug, error, info, warn};
+use common::log::{error, info, warn};
 use rtp::packet::Packet;
 use common::anyhow::anyhow;
 
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::err::{BizError, GlobalError, GlobalResult};
 use common::err::GlobalError::SysErr;
 use common::tokio;
 use common::tokio::sync::{broadcast, oneshot};
 use common::tokio::time::timeout;
 
 use crate::{coder};
+use crate::coder::MediaInfo;
 use crate::container::rtp::RtpBuffer;
 use crate::general::mode::Media;
 use crate::state::cache;
@@ -37,7 +38,7 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
                             .ok_or_else(|| SysErr(anyhow!("ssrc = {},已释放",ssrc)))?.1;
                     }
                 }
-                consume_data(&rtp_buffer, tx, flush_rx, map).await?;
+                consume_data(&rtp_buffer, tx, flush_rx, map).await;
             }
         }
     }
@@ -53,53 +54,57 @@ async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer
             }
             Err(_) => {
                 let _ = flush_tx.send(true);
-                info!("ssrc = {ssrc},流已释放");
+                info!("ssrc = {ssrc},设备端流结束.");
                 return;
             }
         }
     }
 }
 
-async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, mut flush_rx: oneshot::Receiver<bool>, media_map: HashMap<u8, Media>) -> GlobalResult<()> {
-    // let handle_frame = Box::new(
-    //     move |data: FrameData| -> GlobalResult<()> {
-    //         tx.send(data).map_err(|err| SysErr(anyhow!(err.to_string()))).map(|_| ())
-    //     },
-    // );
+async fn consume_data(rtp_buffer: &RtpBuffer, tx: broadcast::Sender<FrameData>, mut flush_rx: oneshot::Receiver<bool>, media_map: HashMap<u8, Media>) {
     let mut coder = coder::MediaInfo::register_all(tx);
     loop {
         tokio::select! {
             res_pkt = rtp_buffer.next_pkt() =>{
                 if let Some(pkt) = res_pkt{
-                   let media_type = pkt.header.payload_type;
-                    if let Some(media) = media_map.get(&media_type){
-                        match *media{
-                            Media::PS => {
-                                let _ = coder.ps.handle_demuxer(pkt.header.marker,pkt.header.timestamp,pkt.payload).hand_log(|msg|warn!("{msg}"));
-                            }
-                            Media::H264 => {
-                                let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
-                            }}
-                    }else{
-                         match media_type{
-                            98 => {
-                                let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
-                            }
-                            96 => {
-                                let _ = coder.ps.handle_demuxer(pkt.header.marker,pkt.header.timestamp,pkt.payload).hand_log(|msg|warn!("{msg}"));
-                            }
-                            _ => {
-                                return Err(GlobalError::new_biz_error(4005, "系统暂不支持", |msg| debug!("{msg}")));
-                            }
-                    }
+                    if let Err(GlobalError::BizErr(BizError { code: 1199, .. }))  = demux_data(&mut coder,pkt,&media_map){
+                        break;
                     }
                 }
             }
             _ = &mut flush_rx =>{
                for pkt in rtp_buffer.flush_pkt(){
-                     let _ = coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp).hand_log(|msg|warn!("{msg}"));
+                     if let Err(GlobalError::BizErr(BizError { code: 1199, .. }))  = demux_data(&mut coder,pkt,&media_map){
+                        break;
+                    }
                 }
-                return Ok(());
+                break;
+            }
+        }
+    }
+}
+
+fn demux_data(coder: &mut MediaInfo, pkt: Packet, media_map: &HashMap<u8, Media>) -> GlobalResult<()> {
+    let media_type = pkt.header.payload_type;
+    if let Some(media) = media_map.get(&media_type) {
+        match *media {
+            Media::PS => {
+                coder.ps.handle_demuxer(pkt.header.marker, pkt.header.timestamp, pkt.payload)
+            }
+            Media::H264 => {
+                coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp)
+            }
+        }
+    } else {
+        match media_type {
+            98 => {
+                coder.h264.handle_demuxer(pkt.payload, pkt.header.timestamp)
+            }
+            96 => {
+                coder.ps.handle_demuxer(pkt.header.marker, pkt.header.timestamp, pkt.payload)
+            }
+            other => {
+                Err(GlobalError::new_biz_error(1199, &format!("系统暂不支持RTP负载类型:{other}"), |msg| warn!("{msg}")))
             }
         }
     }

@@ -5,7 +5,7 @@ use hyper::{Body, header, Response, StatusCode};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::err::{BizError, GlobalError, GlobalResult, TransError};
 use common::log::error;
 use common::tokio;
 use common::tokio::sync::{oneshot};
@@ -42,6 +42,13 @@ pub fn res_404() -> GlobalResult<Response<Body>> {
     let res = Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
         .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
+    return Ok(res);
+}
+pub fn res_204() -> GlobalResult<Response<Body>> {
+    let json_data = ResMsg::<String>::build_success_data("No Content;设备端结束媒体流".to_string()).to_json()?;
+    let res = Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .status(StatusCode::NO_CONTENT).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     return Ok(res);
 }
 
@@ -175,7 +182,10 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                     Some(rx) => {
                                         let (flv_tx, body) = Body::channel();
                                         tokio::spawn(async move {
-                                            flv_process::send_flv(ssrc, flv_tx, rx).await
+                                            if let Err(GlobalError::BizErr(BizError { code: 1199, .. })) = flv_process::send_flv(ssrc, flv_tx, rx).await {
+                                                return res_204();
+                                            }
+                                            Ok(Default::default())
                                         });
 
                                         let flv_res = res_builder.header("Content-Type", "video/x-flv")

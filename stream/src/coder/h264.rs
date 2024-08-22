@@ -4,7 +4,7 @@ use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
 use memchr::memmem;
-use common::log::{warn};
+use common::log::{info, warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 
@@ -25,7 +25,7 @@ pub struct H264 {
 impl HandleFrame for H264 {
     fn next_step(&self, frame_data: FrameData) -> GlobalResult<()> {
         self.tx.send(frame_data)
-            .map_err(|err| GlobalError::new_sys_error(&err.to_string(), |msg| warn!("{msg}")))
+            .map_err(|err| GlobalError::new_biz_error(1199, &err.to_string(), |msg| info!("http handler 关闭通道:{msg}")))
             .map(|_| ())
     }
 }

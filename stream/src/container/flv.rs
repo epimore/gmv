@@ -336,31 +336,6 @@ pub struct VideoTagDataBuffer {
 
 impl VideoTagDataBuffer {
     pub fn init() -> Self {
-        // let mut sps_vec = base64::decode("Z00AKpWoHgCJ+VA=").unwrap();
-        // let sps_len = sps_vec.len() as u32;
-        // let s = sps_len.to_be_bytes();
-        // sps_vec.insert(0, s[0]);
-        // sps_vec.insert(1, s[1]);
-        // sps_vec.insert(2, s[2]);
-        // sps_vec.insert(3, s[3]);
-        // let sps = Bytes::from(sps_vec);
-        //
-        // let mut pps_vec = base64::decode("aO48gA==").unwrap();
-        // let pps_len = pps_vec.len() as u32;
-        // let p = pps_len.to_be_bytes();
-        // pps_vec.insert(0, p[0]);
-        // pps_vec.insert(1, p[1]);
-        // pps_vec.insert(2, p[2]);
-        // pps_vec.insert(3, p[3]);
-        // let pps = Bytes::from(pps_vec);
-        //
-        // Self {
-        //     sps: Some(sps),
-        //     pps: Some(pps),
-        //     vcl: 0,
-        //     buf: Default::default(),
-        //     idr: false,
-        // }
         Self {
             sps: None,
             pps: None,
@@ -370,32 +345,6 @@ impl VideoTagDataBuffer {
         }
     }
     pub fn packaging(&mut self, nal: Bytes) -> Option<(VideoTagData, Option<Bytes>, Option<Bytes>, bool)> {
-        // let nal_type = nal[4] & 0x1F;
-        // match nal_type {
-        //     7 => {
-        //         self.sps = Some(nal.clone());
-        //         self.buf.put(nal);
-        //         None
-        //     }
-        //     8 => {
-        //         self.pps = Some(nal.clone());
-        //         self.buf.put(nal);
-        //         None
-        //     }
-        //     //composition_time_offset ->cts = pts - dts/90 低延迟无B帧，故pts=dts，即总为0
-        //     5 => {
-        //         self.buf.put(nal);
-        //         let data = std::mem::take(&mut self.buf).freeze();
-        //         let video_tag_data = VideoTagData::new(0x17, 1, 0, data);
-        //         Some((video_tag_data, self.sps.clone(), self.pps.clone(), true))
-        //     }
-        //     _ => {
-        //         let video_tag_data = VideoTagData::new(0x27, 1, 0, nal);
-        //         Some((video_tag_data, self.sps.clone(), self.pps.clone(), false))
-        //     }
-        // }
-
-
         let nal_type = nal[4] & 0x1F;
         let first_mb = nal[5] & 0x80;
         let mut res = None;

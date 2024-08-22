@@ -142,17 +142,6 @@ impl TcpRtpBuffer {
                 let buffer = occ.get_mut();
                 buffer.put(data);
                 Self::split_data(buffer)
-                // let buffer_len = buffer_mut.len();
-                // //2 len + 12 rtp header len
-                // if buffer_len > 14 {
-                //     let data_len = buffer_mut.get_u16() as usize;
-                //     if data_len + 2 <= buffer_len {
-                //         let rtp_data = buffer_mut.split_to(data_len);
-                //         Some(rtp_data.freeze())
-                //     } else { None }
-                // } else {
-                //     None
-                // }
             }
             Entry::Vacant(vac) => {
                 let mut buffer = BytesMut::with_capacity(10240);
@@ -160,23 +149,6 @@ impl TcpRtpBuffer {
                 let vec = Self::split_data(&mut buffer);
                 vac.insert(buffer);
                 vec
-
-
-                // let buffer_len = buffer.len();
-                // if buffer_len > 14 {
-                //     let data_len = buffer.get_u16() as usize;
-                //     if data_len + 2 <= buffer_len {
-                //         let rtp_data = buffer.split_to(data_len);
-                //         vac.insert(buffer);
-                //         Some(rtp_data.freeze())
-                //     } else {
-                //         vac.insert(buffer);
-                //         None
-                //     }
-                // } else {
-                //     vac.insert(buffer);
-                //     None
-                // }
             }
         }
     }

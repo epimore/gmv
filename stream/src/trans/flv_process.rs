@@ -1,10 +1,8 @@
 use hyper::body;
 use common::log::{info, warn};
-use common::anyhow::anyhow;
 
 use common::bytes::{BufMut, BytesMut};
-use common::err::{TransError};
-use common::err::GlobalError::SysErr;
+use common::err::{GlobalError, GlobalResult, TransError};
 use common::tokio::sync::broadcast;
 use common::tokio::sync::broadcast::error::RecvError;
 
@@ -32,9 +30,10 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
                                     timestamp,
                                     data,
                                 };
-                                let _ = tx.send(frame_data)
-                                    .map_err(|err| SysErr(anyhow!(err.to_string())))
-                                    .hand_log(|msg| warn!("{msg}"));
+                                if tx.send(frame_data).is_err() {
+                                    info!("http 用户端已全部断开连接.");
+                                    break;
+                                }
                             }
                         }
                         Coder::SVAC_V => {}
@@ -51,7 +50,8 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
                     warn!("ssrc={ssrc},数据包消费滞后{amt}条，Flv打包跳过.");
                 }
                 Err(RecvError::Closed) => {
-                    return;
+                    info!("ssrc={ssrc},设备端流结束.");
+                    break;
                 }
             }
         }
@@ -59,7 +59,7 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
 }
 
 //当前仅支持h264，后面扩展时，需考虑flv script等内容，如添加audio等，是否将流信息放入cache
-async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<FrameData>) -> u32 {
+async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<FrameData>) -> GlobalResult<u32> {
     loop {
         match rx.recv().await {
             Ok(FrameData { pay_type, timestamp, data }) => {
@@ -104,8 +104,8 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
                             first_pkg.put(header_bytes);
                             first_pkg.put(data);
                             first_pkg.put(size_bytes);
-                            let _ = flv_tx.send_data(first_pkg.freeze()).await.hand_log(|msg| warn!("{msg}"));
-                            return timestamp;
+                            flv_tx.send_data(first_pkg.freeze()).await.hand_log(|msg| warn!("{msg}"))?;
+                            return Ok(timestamp);
                         }
                     }
                     Coder::SVAC_V => {}
@@ -122,7 +122,7 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
                 warn!("ssrc={ssrc},first_frame:数据包消费滞后{amt}条，Flv打包跳过.");
             }
             Err(RecvError::Closed) => {
-                return 0;
+                return Err(GlobalError::new_biz_error(1199, "RecvError::Closed", |msg| info!("设备端流结束:{msg}")));
             }
         }
     }
@@ -137,8 +137,8 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
 //         0x01 (0 00 00001) B帧     不重要        type = 1
 //         0x06 (0 00 00110) SEI     不重要        type = 6
 //首帧为IDR帧，实现画面秒开
-pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Receiver<FrameData>) {
-    let start_time = first_frame(ssrc, &mut flv_tx, &mut rx).await;
+pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Receiver<FrameData>) ->GlobalResult<()>{
+    let start_time = first_frame(ssrc, &mut flv_tx, &mut rx).await?;
     loop {
         match rx.recv().await {
             Ok(FrameData { pay_type, timestamp, data }) => {
@@ -153,7 +153,7 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
                         bytes.put(header_bytes);
                         bytes.put(data);
                         bytes.put(size_bytes);
-                        let _ = flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("{msg}"));
+                        flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("{msg}"))?;
                     }
                     Coder::SVAC_V => {}
                     Coder::H265 => {}
@@ -169,7 +169,7 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
                 warn!("ssrc={ssrc},跳过{amt}条数据");
             }
             Err(RecvError::Closed) => {
-                return;
+                return Err(GlobalError::new_biz_error(1199, "RecvError::Closed", |msg| info!("设备端流结束:{msg}")));
             }
         }
     }

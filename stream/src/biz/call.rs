@@ -10,12 +10,6 @@ use crate::general::mode;
 use crate::general::mode::TIME_OUT;
 use crate::state::cache;
 
-// #[derive(Deserialize)]
-// struct RespBo {
-//     code: i16,
-//     msg: Option<String>,
-// }
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RespBo<T> {
     code: u16,
