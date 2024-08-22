@@ -54,7 +54,6 @@ async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer
             }
             Err(_) => {
                 let _ = flush_tx.send(true);
-                info!("ssrc = {ssrc},设备端流结束.");
                 return;
             }
         }

@@ -50,7 +50,6 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
                     warn!("ssrc={ssrc},数据包消费滞后{amt}条，Flv打包跳过.");
                 }
                 Err(RecvError::Closed) => {
-                    info!("ssrc={ssrc},设备端流结束.");
                     break;
                 }
             }
@@ -104,7 +103,7 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
                             first_pkg.put(header_bytes);
                             first_pkg.put(data);
                             first_pkg.put(size_bytes);
-                            flv_tx.send_data(first_pkg.freeze()).await.hand_log(|msg| warn!("{msg}"))?;
+                            flv_tx.send_data(first_pkg.freeze()).await.hand_log(|msg| warn!("http用户端断开媒体流:{msg}"))?;
                             return Ok(timestamp);
                         }
                     }
@@ -153,7 +152,7 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
                         bytes.put(header_bytes);
                         bytes.put(data);
                         bytes.put(size_bytes);
-                        flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("{msg}"))?;
+                        flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("http用户端断开媒体流:{msg}"))?;
                     }
                     Coder::SVAC_V => {}
                     Coder::H265 => {}
