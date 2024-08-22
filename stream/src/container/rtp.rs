@@ -136,44 +136,71 @@ impl TcpRtpBuffer {
         Self { inner: Default::default() }
     }
 
-    pub fn fresh_data(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr, data: Bytes) -> Option<Bytes> {
+    pub fn fresh_data(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr, data: Bytes) -> Vec<Bytes> {
         match self.inner.entry((local_addr, remote_addr)) {
             Entry::Occupied(mut occ) => {
-                let buffer_mut = occ.get_mut();
-                buffer_mut.put(data);
-                let buffer_len = buffer_mut.len();
-                //2 len + 12 rtp header len
-                if buffer_len > 14 {
-                    let data_len = buffer_mut.get_u16() as usize;
-                    if data_len + 2 <= buffer_len {
-                        let rtp_data = buffer_mut.split_to(data_len);
-                        Some(rtp_data.freeze())
-                    } else { None }
-                } else {
-                    None
-                }
+                let buffer = occ.get_mut();
+                buffer.put(data);
+                Self::split_data(buffer)
+                // let buffer_len = buffer_mut.len();
+                // //2 len + 12 rtp header len
+                // if buffer_len > 14 {
+                //     let data_len = buffer_mut.get_u16() as usize;
+                //     if data_len + 2 <= buffer_len {
+                //         let rtp_data = buffer_mut.split_to(data_len);
+                //         Some(rtp_data.freeze())
+                //     } else { None }
+                // } else {
+                //     None
+                // }
             }
             Entry::Vacant(vac) => {
-                let mut buffer_mut = BytesMut::with_capacity(4096);
-                buffer_mut.put(data);
-                let buffer_len = buffer_mut.len();
-                if buffer_len > 14 {
-                    let data_len = buffer_mut.get_u16() as usize;
-                    if data_len + 2 <= buffer_len {
-                        let rtp_data = buffer_mut.split_to(data_len);
-                        vac.insert(buffer_mut);
-                        Some(rtp_data.freeze())
-                    } else {
-                        vac.insert(buffer_mut);
-                        None
-                    }
-                } else {
-                    vac.insert(buffer_mut);
-                    None
-                }
+                let mut buffer = BytesMut::with_capacity(10240);
+                buffer.put(data);
+                let vec = Self::split_data(&mut buffer);
+                vac.insert(buffer);
+                vec
+
+
+                // let buffer_len = buffer.len();
+                // if buffer_len > 14 {
+                //     let data_len = buffer.get_u16() as usize;
+                //     if data_len + 2 <= buffer_len {
+                //         let rtp_data = buffer.split_to(data_len);
+                //         vac.insert(buffer);
+                //         Some(rtp_data.freeze())
+                //     } else {
+                //         vac.insert(buffer);
+                //         None
+                //     }
+                // } else {
+                //     vac.insert(buffer);
+                //     None
+                // }
             }
         }
     }
+    const TCP_RTP_DATA_LEN: usize = 2;
+    //tcp封装的Rtp包：2 bytes Data_len + N bytes Rtp_data(rtp_base_header_len = 12)
+    const TCP_DATA_BASE_LEN: usize = 14;
+    fn split_data(buffer: &mut BytesMut) -> Vec<Bytes> {
+        let mut vec = Vec::new();
+        loop {
+            let buffer_len = buffer.len();
+            if buffer_len < Self::TCP_DATA_BASE_LEN {
+                break;
+            }
+            let split_len = buffer.get_u16() as usize + Self::TCP_RTP_DATA_LEN;
+            if buffer_len < split_len {
+                break;
+            }
+            let mut split_data = buffer.split_to(split_len);
+            let rtp_data = split_data.split_off(Self::TCP_RTP_DATA_LEN).freeze();
+            vec.push(rtp_data);
+        }
+        vec
+    }
+
     pub fn remove_map(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) {
         self.inner.remove(&(local_addr, remote_addr));
     }
