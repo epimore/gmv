@@ -121,7 +121,7 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
                 warn!("ssrc={ssrc},first_frame:数据包消费滞后{amt}条，Flv打包跳过.");
             }
             Err(RecvError::Closed) => {
-                return Err(GlobalError::new_biz_error(1199, "RecvError::Closed", |msg| info!("设备端流结束:{msg}")));
+                return Err(GlobalError::new_biz_error(1199, "RecvError::Closed", |msg| info!("结束媒体流:{msg}")));
             }
         }
     }
@@ -136,8 +136,9 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
 //         0x01 (0 00 00001) B帧     不重要        type = 1
 //         0x06 (0 00 00110) SEI     不重要        type = 6
 //首帧为IDR帧，实现画面秒开
-pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Receiver<FrameData>) ->GlobalResult<()>{
+pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Receiver<FrameData>) -> GlobalResult<()> {
     let start_time = first_frame(ssrc, &mut flv_tx, &mut rx).await?;
+    info!("ssrc = {ssrc} start send flv stream");
     loop {
         match rx.recv().await {
             Ok(FrameData { pay_type, timestamp, data }) => {
@@ -152,7 +153,7 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
                         bytes.put(header_bytes);
                         bytes.put(data);
                         bytes.put(size_bytes);
-                        flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("http用户端断开媒体流:{msg}"))?;
+                        flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("http端断开媒体流:{msg}"))?;
                     }
                     Coder::SVAC_V => {}
                     Coder::H265 => {}
@@ -168,7 +169,7 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
                 warn!("ssrc={ssrc},跳过{amt}条数据");
             }
             Err(RecvError::Closed) => {
-                return Err(GlobalError::new_biz_error(1199, "RecvError::Closed", |msg| info!("设备端流结束:{msg}")));
+                return Err(GlobalError::new_biz_error(1199, "RecvError::Closed", |msg| info!("结束媒体流:{msg}")));
             }
         }
     }

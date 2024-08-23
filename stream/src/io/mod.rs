@@ -18,11 +18,7 @@ pub async fn run() -> GlobalResult<()> {
     let rtp_port = *(conf.get_rtp_port());
     let http_port = *(conf.get_http_port());
     let (tx, rx) = mpsc::channel(100);
-    thread::spawn(|| {
-        tokio::runtime::Runtime::new().map(|rt| {
-            rt.block_on(trans::run(rx));
-        }).expect("TRANS:IO 运行时创建异常；err ={}");
-    });
+    tokio::spawn(async move{ trans::run(rx).await; });
     thread::spawn(move || {
         tokio::runtime::Runtime::new().map(|rt| {
             rt.block_on(rtp_handler::run(rtp_port));

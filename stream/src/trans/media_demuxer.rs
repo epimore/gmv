@@ -2,12 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::log::{error, info, warn};
+use common::log::{error, warn};
 use rtp::packet::Packet;
-use common::anyhow::anyhow;
 
 use common::err::{BizError, GlobalError, GlobalResult};
-use common::err::GlobalError::SysErr;
 use common::tokio;
 use common::tokio::sync::{broadcast, oneshot};
 use common::tokio::time::timeout;
@@ -25,7 +23,7 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
         let produce_buffer = rtp_buffer.clone();
         let (flush_tx, flush_rx) = oneshot::channel();
         tokio::spawn(async move {
-            produce_data(ssrc, rx, &produce_buffer, flush_tx).await;
+            produce_data(rx, &produce_buffer, flush_tx).await;
         });
         match cache::get_media_type(&ssrc) {
             None => {
@@ -35,7 +33,7 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
                 if map.is_empty() {
                     if let Ok(()) = timeout(Duration::from_secs(2), nt.notified()).await {
                         map = cache::get_media_type(&ssrc)
-                            .ok_or_else(|| SysErr(anyhow!("ssrc = {},已释放",ssrc)))?.1;
+                            .ok_or_else(|| GlobalError::new_sys_error(&format!("ssrc = {ssrc},已释放"),|msg| error!("{msg}")))?.1;
                     }
                 }
                 consume_data(&rtp_buffer, tx, flush_rx, map).await;
@@ -45,7 +43,7 @@ pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()
     Ok(())
 }
 
-async fn produce_data(ssrc: u32, rx: async_channel::Receiver<Packet>, rtp_buffer: &RtpBuffer, flush_tx: oneshot::Sender<bool>) {
+async fn produce_data(rx: async_channel::Receiver<Packet>, rtp_buffer: &RtpBuffer, flush_tx: oneshot::Sender<bool>) {
     loop {
         let res_pkt = rx.recv().await;
         match res_pkt {

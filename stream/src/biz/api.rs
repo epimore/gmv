@@ -6,7 +6,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use common::err::{BizError, GlobalError, GlobalResult, TransError};
-use common::log::error;
+use common::log::{error, info};
 use common::tokio;
 use common::tokio::sync::{oneshot};
 use common::tokio::sync::mpsc::Sender;
@@ -15,7 +15,7 @@ use crate::biz::call::{StreamPlayInfo, StreamState};
 use crate::general::mode::{Media, ResMsg};
 use crate::io::hook_handler::{Event, EventRes};
 use crate::state::cache;
-use crate::trans::flv_process;
+use crate::trans::flv_muxer;
 
 fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
     let ssrc = param_map.get("ssrc")
@@ -182,7 +182,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                     Some(rx) => {
                                         let (flv_tx, body) = Body::channel();
                                         tokio::spawn(async move {
-                                            if let Err(GlobalError::BizErr(BizError { code: 1199, .. })) = flv_process::send_flv(ssrc, flv_tx, rx).await {
+                                            if let Err(GlobalError::BizErr(BizError { code: 1199, .. })) = flv_muxer::send_flv(ssrc, flv_tx, rx).await {
                                                 return res_204();
                                             }
                                             Ok(Default::default())
@@ -195,6 +195,7 @@ pub async fn start_play(play_type: String, stream_id: String, token: String, rem
                                         //监听连接：当断开连接时,更新正在查看的用户、回调通知
                                         tokio::spawn(async move {
                                             client_connection_cancel.cancelled().await;
+                                            info!("HTTP 用户端断开FLV媒体流：ssrc={},stream_id={},gmv_token={}",ssrc,&stream_id,&token);
                                             cache::update_token(&stream_id, &play_type, token.clone(), false);
                                             if let Some((bsi, flv_tokens, hls_tokens)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                                 let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token, play_type, flv_tokens, hls_tokens);
