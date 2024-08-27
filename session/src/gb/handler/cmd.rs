@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::process::id;
 use std::time::Duration;
 use common::log::{error, info, warn};
 use regex::Regex;
-use rsip::prelude::HeadersExt;
-use rsip::Response;
+use rsip::prelude::{HeadersExt, UntypedHeader};
+use rsip::{Response, StatusCodeKind};
 use common::clap::builder::IntoResettable;
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::tokio::sync::mpsc;
@@ -57,10 +58,10 @@ pub struct CmdStream;
 
 impl CmdStream {
     pub async fn play_live_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String)
-                                  -> GlobalResult<(Response, HashMap<u8, String>)> {
+                                  -> GlobalResult<(Response, HashMap<u8, String>, String, String)> {
         let (ident, msg) = RequestBuilder::play_live_request(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc)
             .await.hand_log(|msg| warn!("{msg}"))?;
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, mut rx) = mpsc::channel(10);
         RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().await?;
         while let Some((Some(res), _)) = rx.recv().await {
             let code = res.status_code.code();
@@ -71,10 +72,8 @@ impl CmdStream {
                 return Err(GlobalError::new_biz_error(3000, &code_msg, |msg| error!("{msg}")));
             }
             if code == 200 {
-                let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
-                let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
                 let session = sdp_types::Session::parse(res.body()).unwrap();
-                info!("{ident:?} :{:#?}",&session);
+                info!("{ident:?} :{:?}",&session);
                 let re = Regex::new(r"\s+").unwrap();
                 let mut media_map = HashMap::new();
                 for media in session.medias {
@@ -90,7 +89,10 @@ impl CmdStream {
                         }
                     }
                 }
-                return Ok((res, media_map));
+                let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
+                let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
+                EventSession::remove_event(&ident).await;
+                return Ok((res, media_map, from_tag, to_tag));
             }
         }
         EventSession::remove_event(&ident).await;
@@ -99,10 +101,27 @@ impl CmdStream {
 
     pub async fn play_live_ack(device_id: &String, response: &Response) -> GlobalResult<(String, u32)> {
         let ack_request = RequestBuilder::build_ack_request_by_response(response)?;
-        let call_id = ack_request.call_id_header().hand_log(|msg| warn!("{msg}"))?.to_string();
+        let call_id = ack_request.call_id_header().hand_log(|msg| warn!("{msg}"))?.value().to_string();
         let seq = ack_request.cseq_header().hand_log(|msg| warn!("{msg}"))?.seq().hand_log(|msg| warn!("{msg}"))?;
         RequestOutput::do_send_off(device_id, ack_request).await.hand_log(|msg| warn!("{msg}"))?;
         Ok((call_id, seq))
+    }
+
+    pub async fn play_bye(seq: u32, call_id: String, device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<()> {
+        let (ident, msg) = RequestBuilder::build_bye_request(seq, call_id, device_id, channel_id, from_tag, to_tag).await?;
+        let (tx, mut rx) = mpsc::channel(10);
+
+        RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().await.hand_log(|msg| error!("未响应：{msg}"))?;
+
+        if let Some((Some(res), _)) = rx.recv().await {
+            if res.status_code.code() == 200 {
+                EventSession::remove_event(&ident).await;
+                return Ok(());
+            }
+            error!("关闭摄像机: ident = {:?},channel_id = {},res = {}",&ident,channel_id,res.status_code);
+        }
+        EventSession::remove_event(&ident).await;
+        return Err(GlobalError::new_biz_error(1000, "关闭摄像机直播未响应或超时", |msg| error!("{msg}")));
     }
 }
 

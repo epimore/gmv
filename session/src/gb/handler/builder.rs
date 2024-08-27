@@ -18,7 +18,7 @@ use common::err::GlobalError::SysErr;
 use common::log::warn;
 use common::rand;
 use common::rand::prelude::StdRng;
-use common::rand::{Rng, SeedableRng};
+use common::rand::{Rng, SeedableRng, thread_rng};
 
 use crate::gb::handler::parser;
 use crate::gb::shared::event::Ident;
@@ -126,8 +126,7 @@ impl ResponseBuilder {
         let mut headers: rsip::Headers = Default::default();
         headers.push(Via(via.untyped()));
         headers.push(req.from_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
-        let seed = [0u8; 32]; // Or any other way to seed your RNG
-        let mut rng = StdRng::from_seed(seed);
+        let mut rng = thread_rng();
         let to = req.to_header().hand_log(|msg| warn!("{msg}"))?.typed().hand_log(|msg| warn!("{msg}"))?;
         let to = to.with_tag(rng.gen_range(123456789u32..987654321u32).to_string().into());
         headers.push(to.into());
@@ -163,9 +162,8 @@ impl RequestBuilder {
         let (mut headers, uri) = Self::build_request_header(None, device_id, false, false, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let seed = [0u8; 32]; // Or any other way to seed your RNG
-        let mut rng = StdRng::from_seed(seed);
-        let cs_eq_str = format!("{} MESSAGE", rng.gen_range(12u32..21u32));
+        let mut rng = thread_rng();
+        let cs_eq_str = format!("{} MESSAGE", rng.gen_range(12u8..255u8));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
         headers.push(rsip::headers::ContentType::new("APPLICATION/MANSCDP+xml").into());
@@ -185,9 +183,8 @@ impl RequestBuilder {
         let (mut headers, uri) = Self::build_request_header(None, device_id, true, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let seed = [0u8; 32]; // Or any other way to seed your RNG
-        let mut rng = StdRng::from_seed(seed);
-        let cs_eq_str = format!("{} SUBSCRIBE", rng.gen_range(12u32..21u32));
+        let mut rng = thread_rng();
+        let cs_eq_str = format!("{} SUBSCRIBE", rng.gen_range(12u8..255u8));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
         headers.push(rsip::headers::Event::new(format!("Catalog;id={}", rng.gen_range(123456789u32..987654321u32))).into());
@@ -204,13 +201,13 @@ impl RequestBuilder {
         Ok((ident, request_msg))
     }
 
-    pub async fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+
+    async fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
         let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag)).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let seed = [0u8; 32]; // Or any other way to seed your RNG
-        let mut rng = StdRng::from_seed(seed);
-        let cs_eq_str = format!("{} INFO", rng.gen_range(12u32..21u32));
+        let mut rng = thread_rng();
+        let cs_eq_str = format!("{} INFO", rng.gen_range(12u8..255u8));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
 
@@ -236,7 +233,7 @@ impl RequestBuilder {
             let channel_id = channel_id.unwrap();
             let channel_status = mapper::get_device_channel_status(device_id, channel_id)?.ok_or(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，未知或无效")))?;
             match &channel_status.to_ascii_uppercase()[..] {
-                "ON" | "ONLINE" | "ONLY" => { dst_id = channel_id }
+                "ON" | "ONLINE" | "ONLY" | ""=> { dst_id = channel_id }
                 _ => {
                     Err(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，已下线")))?
                 }
@@ -259,8 +256,7 @@ impl RequestBuilder {
         let transport = bill.get_protocol().get_value();
         let uri_str = format!("sip:{}@{}", dst_id, domain);
         let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
-        let seed = [0u8; 32]; // Or any other way to seed your RNG
-        let mut rng = StdRng::from_seed(seed);
+        let mut rng = StdRng::from_entropy();
         let mut headers: rsip::Headers = Default::default();
         headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}", transport, server_ip, server_port, rng.gen_range(123456789u32..987654321u32))).into());
         headers.push(rsip::headers::From::new(format!("<sip:{}@{}>;tag={}", domain_id, domain, from_tag.unwrap_or(&rng.gen_range(123456789u32..987654321u32).to_string()))).into());
@@ -299,6 +295,23 @@ impl RequestBuilder {
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
+    pub async fn build_bye_request(seq: u32, call_id: String, device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag)).await?;
+        headers.push(rsip::headers::CallId::new(&call_id).into());
+        let cs_eq_str = format!("{} BYE", seq);
+        let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
+        headers.push(cs_eq);
+        let msg = Request {
+            method: Method::Bye,
+            uri,
+            headers,
+            version: rsip::common::version::Version::V2,
+            body: Default::default(),
+        }.into();
+        let ident = Ident::new(device_id.to_string(), call_id, cs_eq_str);
+        Ok((ident, msg))
+    }
+
     // 拍照
     // 云台控制
     // 查询硬盘录像情况
@@ -330,9 +343,8 @@ impl RequestBuilder {
         let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let seed = [0u8; 32]; // Or any other way to seed your RNG
-        let mut rng = StdRng::from_seed(seed);
-        let cs_eq_str = format!("{} INVITE", rng.gen_range(12u32..21u32));
+        let mut rng = thread_rng();
+        let cs_eq_str = format!("{} INVITE", rng.gen_range(12u8..255u8));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
 
@@ -361,8 +373,7 @@ impl RequestBuilder {
         let from = res.from_header().hand_log(|msg| warn!("{msg}"))?;
         headers.push(from.clone().into());
         headers.push(res.call_id_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
-        let seed = [0u8; 32]; // Or any other way to seed your RNG
-        let mut rng = StdRng::from_seed(seed);
+        let mut rng = thread_rng();
         let via: typed::Via = res.via_header().hand_log(|msg| warn!("{msg}"))?.typed().hand_log(|msg| warn!("{msg}"))?;
         headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {};rport;branch=z9hG4bK{}",
                                                      via.transport.to_string(),

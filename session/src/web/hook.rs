@@ -47,6 +47,6 @@ impl HookApi {
     async fn off_play(&self, stream_play_info: Json<StreamPlayInfo>) -> Json<ResultMessageData<bool>> {
         let info = stream_play_info.0;
         info!("off_play = {:?}", &info);
-        Json(ResultMessageData::build_success(handler::off_play(info)))
+        Json(ResultMessageData::build_success(handler::off_play(info).await))
     }
 }

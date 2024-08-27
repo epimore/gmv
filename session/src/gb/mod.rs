@@ -3,6 +3,7 @@ pub mod handler;
 
 use std::net::SocketAddr;
 use std::str::FromStr;
+use encoding_rs::GB18030;
 use rsip::{SipMessage};
 use rsip::message::HeadersExt;
 use common::err::{GlobalResult, TransError};
@@ -26,12 +27,16 @@ pub async fn gb_run(session_conf: &SessionConf) -> GlobalResult<()> {
                     Ok(msg) => {
                         match msg {
                             SipMessage::Request(req) => {
+                                debug!("request header:\n{}\nrequest body:\n{}",&req.headers,GB18030.decode(&req.body).0);
                                 handler::requester::hand_request(req, output.clone(), &bill).await?;
                             }
                             SipMessage::Response(res) => {
+                                debug!("Response header:\n{}\nResponse body:\n{}",&res.headers,GB18030.decode(&res.body).0);
                                 let call_id: String = res.call_id_header().hand_log(|msg| error!("{msg}"))?.clone().into();
                                 let cs_eq: String = res.cseq_header().hand_log(|msg| error!("{msg}"))?.clone().into();
-                                EventSession::handle_response(call_id, cs_eq, res).await?;
+                                let to_device_id = parser::header::get_device_id_by_response(&res).hand_log(|msg| error!("{msg}"))?;
+
+                                EventSession::handle_response(to_device_id, call_id, cs_eq, res).await?;
                             }
                         }
                     }

@@ -25,15 +25,19 @@ pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
     general::cache::Cache::stream_map_contains_token(stream_id, gmv_token)
 }
 
-pub fn off_play(stream_play_info: StreamPlayInfo) -> bool {
+pub async fn off_play(stream_play_info: StreamPlayInfo) -> bool {
     let stream_id = stream_play_info.base_stream_info.get_stream_id();
     let gmv_token = stream_play_info.get_token();
+    let cst_info = general::cache::Cache::stream_map_build_call_id_seq_from_to_tag(stream_id);
     general::cache::Cache::stream_map_remove(stream_id, Some(gmv_token));
     if (stream_play_info.flv_play_count == 0 && stream_play_info.hls_play_count == 0)
         || general::cache::Cache::stream_map_query_node_name(stream_id).is_none() {
+        let (device_id, channel_id, ssrc_str) = id_builder::de_stream_id(stream_id);
         if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(stream_id) {
-            let (device_id, channel_id, ssrc_str) = id_builder::de_stream_id(stream_id);
             general::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((play_type, &ssrc_str)))));
+        }
+        if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
+            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
         }
         let ssrc = stream_play_info.base_stream_info.rtp_info.ssrc;
         let ssrc_num = (ssrc % 10000) as u16;
@@ -91,23 +95,23 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
 async fn start_live_stream(device_id: &String, channel_id: &String, token: &String) -> GlobalResult<(String, String)> {
     let num_ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
     let mut node_sets = general::cache::Cache::stream_map_order_node();
-    println!("node sets len = {}", node_sets.len());
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, num_ssrc, true)?;
+    let conf = general::StreamConf::get_stream_conf_by_cache();
     //选择负载最小的节点开始尝试：节点是否可用;
     while let Some((_, node_name)) = node_sets.pop_first() {
-        let conf = general::StreamConf::get_stream_conf_by_cache();
         let stream_node = conf.get_node_map().get(&node_name).unwrap();
         //next 将sdp支持从session固定的，转为stream支持的
         if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
-            let (res, media_map) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
+            let (res, media_map, from_tag, to_tag) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
             //回调给gmv-stream 使其确认媒体类型
-            let _ = callback::ident_rtp_media_info(&ssrc,media_map,token, stream_node.get_local_ip(), stream_node.get_local_port()).await;
+            let _ = callback::ident_rtp_media_info(&ssrc, media_map, token, stream_node.get_local_ip(), stream_node.get_local_port()).await;
             let (call_id, seq) = CmdStream::play_live_ack(device_id, &res).await?;
             return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                general::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, PlayType::Live);
+                general::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, PlayType::Live, from_tag, to_tag);
                 general::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), PlayType::Live);
                 Ok((stream_id, node_name))
             } else {
+                CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await?;
                 Err(GlobalError::new_biz_error(1100, "未接收到监控推流", |msg| error!("{msg}")))
             };
         }

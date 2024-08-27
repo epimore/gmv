@@ -244,6 +244,7 @@ pub mod rw {
 pub mod event {
     use std::collections::{BTreeSet, HashMap};
     use std::collections::hash_map::Entry;
+    use std::process::id;
     use std::sync::Arc;
     use std::thread;
 
@@ -306,9 +307,10 @@ pub mod event {
             let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             match state.device_session.entry(ident.call_id.clone()) {
-                Entry::Occupied(_o) => { Err(SysErr(anyhow!("{:?},事件重复-添加监听无效",ident))) }
+                Entry::Occupied(o) => {
+                    Err(SysErr(anyhow!("new = {:?},事件重复-添加监听无效",ident)))
+                }
                 Entry::Vacant(en) => {
-                    //todo device_session根据value的device_id数量,可设置设备并行处理阈值
                     en.insert(ident.device_id.clone());
                     state.expirations.insert((when, ident.clone()));
                     state.ident_map.insert(ident.clone(), (when, container));
@@ -322,15 +324,15 @@ pub mod event {
             let state = &mut *guard;
             state.ident_map.remove(ident).map(|(when, _container)| {
                 state.expirations.remove(&(when, ident.clone()));
-                state.device_session.remove(ident.get_device_id())
+                state.device_session.remove(ident.get_call_id())
             });
         }
 
-        pub async fn handle_response(call_id: String, cs_eq: String, res: Response) -> GlobalResult<()> {
+        pub async fn handle_response(to_device_id: String, call_id: String, cs_eq: String, res: Response) -> GlobalResult<()> {
             let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             match state.device_session.get(&call_id) {
-                None => { warn!("超时或未知响应:call_id={}",call_id); }
+                None => { warn!("丢弃：超时或未知响应。device_id={to_device_id},call_id={call_id},cs_eq={cs_eq}"); }
                 Some(device_id) => {
                     let ident = Ident::new(device_id.clone(), call_id, cs_eq);
                     Self::handle_event(&ident, res, state).await?;
@@ -350,11 +352,6 @@ pub mod event {
                 Some((when, container)) => {
                     match container {
                         Container::Res(res) => {
-                            if response.status_code.code() < 300 {
-                                info!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
-                            } else {
-                                error!("ident = {ident:?},response status = {:?},status kind = {:?}",response.status_code,response.status_code.kind())
-                            }
                             //当tx为some时发送响应结果，不清理会话，由相应rx接收端根据自身业务清理
                             if let Some(tx) = res {
                                 let _ = tx.clone().send((Some(response), *when)).await.hand_log(|msg| error!("{msg}"));
@@ -393,7 +390,7 @@ pub mod event {
                 }
                 if let Some((ident, (when, container))) = state.ident_map.remove_entry(expire_ident) {
                     state.expirations.remove(&(when, expire_ident.clone()));
-                    state.device_session.remove(ident.get_device_id());
+                    state.device_session.remove(ident.get_call_id());
                     match container {
                         Container::Res(res) => {
                             warn!("{:?},响应超时。",&ident);
@@ -433,6 +430,7 @@ pub mod event {
 
     //Res : 请求响应，当需要做后继处理时，Sender不为None,接收端收到数据时如果后继不再接收数据，需调用清理state
     //Actor : 延时之后所做操作,对设备Bill发送请求数据
+    #[derive(Debug)]
     pub enum Container {
         //Option<Response> 可能无响应
         //实时事件

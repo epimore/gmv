@@ -1,6 +1,6 @@
-use encoding_rs::GB18030;
 use common::log::{debug, info, LevelFilter};
 use quick_xml::encoding;
+use encoding_rs::GB18030;
 use rsip::{Method, Request};
 use rsip::headers::ToTypedHeader;
 use rsip::message::HeadersExt;
@@ -178,10 +178,11 @@ impl Register {
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
+
         // query subscribe device msg
         cmd::CmdQuery::lazy_query_device_info(device_id).await?;
-        cmd::CmdQuery::lazy_query_device_catalog(device_id).await?;
-        cmd::CmdQuery::lazy_subscribe_device_catalog(device_id).await
+        // cmd::CmdQuery::lazy_subscribe_device_catalog(device_id).await?;
+        cmd::CmdQuery::lazy_query_device_catalog(device_id).await
     }
 
     async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
@@ -256,7 +257,6 @@ impl Message {
                     _ => {}
                 }
             }
-            info!("keep_alive: device_id = {},status = {}",&device_id,&status);
         }
         RWSession::heart(device_id, bill.clone()).await;
     }
@@ -285,7 +285,7 @@ impl Notify {
                                 GmvDeviceChannel::insert_gmv_device_channel(device_id, vs);
                             }
                             _ => {
-                                warn!("notify cmdType 暂不支持;{:?}", &req);
+                                debug!("cmdType暂不支持;{k} : {v}");
                             }
                         }
                         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(response)));

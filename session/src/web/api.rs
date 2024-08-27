@@ -19,7 +19,7 @@ impl RestApi {
     async fn play_live(&self, live: Json<PlayLiveModel>, #[oai(name = "gmv-token")] token: Header<String>) -> Json<ResultMessageData<StreamInfo>> {
         let header = token.0;
         let live_model = live.0;
-        info!("header = {:?},body = {:?}", &header,&live_model);
+        info!("play_live:header = {:?},body = {:?}", &header,&live_model);
         match handler::play_live(live_model, header).await {
             Ok(data) => { Json(ResultMessageData::build_success(data)) }
             Err(err) => {

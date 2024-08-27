@@ -120,7 +120,7 @@ pub fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_ssrc: u
         let channel_status = mapper::get_device_channel_status(device_id, channel_id)?
             .ok_or_else(|| GlobalError::new_biz_error(1100, "未知设备", |msg| error!("{msg}")))?;
         match &channel_status.to_ascii_uppercase()[..] {
-            "ON" | "ONLINE" | "ONLY" => {}
+            "ON" | "ONLINE" | "ONLY" | "" => {}
             _ => {
                 return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
             }

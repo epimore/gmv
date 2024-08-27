@@ -50,7 +50,7 @@ impl Cache {
     pub fn stream_map_order_node() -> BTreeSet<(u16, String)> {
         let mut map = HashMap::<String, u16>::new();
         while let Some(item) = GENERAL_CACHE.shared.stream_map.iter().next() {
-            let (_, node_name, _, _, _) = item.value();
+            let (_, node_name, _, _, _, _, _) = item.value();
             match map.entry(node_name.clone()) {
                 Occupied(mut occ) => {
                     let count = occ.get_mut();
@@ -76,7 +76,7 @@ impl Cache {
     pub fn stream_map_insert_token(stream_id: String, gmv_token: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(mut occ) => {
-                let (opt_sets, _, _, _, _) = occ.get_mut();
+                let (opt_sets, _, _, _, _, _, _) = occ.get_mut();
                 match opt_sets {
                     None => {
                         let mut sets = HashSet::new();
@@ -97,11 +97,11 @@ impl Cache {
     }
 
     //当媒体流注册时，需插入建立关系,成功插入：true
-    pub fn stream_map_insert_info(stream_id: String, stream_node_name: String, call_id: String, seq: u32, play_type: PlayType) -> bool {
+    pub fn stream_map_insert_info(stream_id: String, stream_node_name: String, call_id: String, seq: u32, play_type: PlayType, from_tag: String, to_tag: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => { false }
             Entry::Vacant(vac) => {
-                vac.insert((None, stream_node_name, call_id, seq, play_type));
+                vac.insert((None, stream_node_name, call_id, seq, play_type, from_tag, to_tag));
                 true
             }
         }
@@ -110,7 +110,7 @@ impl Cache {
     pub fn stream_map_query_node_name(stream_id: &String) -> Option<String> {
         GENERAL_CACHE.shared.stream_map.get(stream_id)
             .map(|item| {
-                let (_, node_name, _, _, _) = item.value();
+                let (_, node_name, _, _, _, _, _) = item.value();
                 node_name.clone()
             })
     }
@@ -127,7 +127,7 @@ impl Cache {
             Some(token) => {
                 match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
                     Entry::Occupied(mut occ) => {
-                        if let (Some(sets), _, _, _, _) = occ.get_mut() {
+                        if let (Some(sets), _, _, _, _, _, _) = occ.get_mut() {
                             match sets.len() {
                                 0 => {
                                     occ.remove();
@@ -155,7 +155,7 @@ impl Cache {
         match GENERAL_CACHE.shared.stream_map.get(stream_id) {
             None => { 0 }
             Some(inner_ref) => {
-                if let (Some(sets), _, _, _, _) = inner_ref.value() {
+                if let (Some(sets), _, _, _, _, _, _) = inner_ref.value() {
                     return sets.len();
                 }
                 0
@@ -168,7 +168,7 @@ impl Cache {
         match GENERAL_CACHE.shared.stream_map.get(stream_id) {
             None => { false }
             Some(inner_ref) => {
-                if let (Some(sets), _, _, _, _) = inner_ref.value() {
+                if let (Some(sets), _, _, _, _, _, _) = inner_ref.value() {
                     return sets.contains(gmv_token);
                 }
                 false
@@ -176,18 +176,18 @@ impl Cache {
         }
     }
 
-    pub fn stream_map_build_call_id_and_seq(stream_id: &String) -> Option<(String, u32)> {
+    pub fn stream_map_build_call_id_seq_from_to_tag(stream_id: &String) -> Option<(String, u32, String, String)> {
         GENERAL_CACHE.shared.stream_map.get_mut(stream_id)
             .map(|mut ref_mut| {
-                let (_tokens, _node_name, call_id, seq, _play_type) = ref_mut.value_mut();
+                let (_tokens, _node_name, call_id, seq, _play_type, from_tag, to_tag) = ref_mut.value_mut();
                 *seq += 1;
-                (call_id.clone(), *seq)
+                (call_id.clone(), *seq, from_tag.clone(), to_tag.clone())
             })
     }
 
     pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<PlayType> {
         GENERAL_CACHE.shared.stream_map.get(stream_id).map(|res| {
-            let (_, _, _, _, play_type) = res.value();
+            let (_, _, _, _, play_type, _, _) = res.value();
             play_type.clone()
         })
     }
@@ -484,13 +484,18 @@ impl State {
     }
 }
 
+//下个大版本-抽象会话
+//voice  发言
+//dialog  对话
+//context  上下文
+//session  会话
 struct Shared {
     state: Mutex<State>,
     background_task: Notify,
     //存放原始可用的ssrc序号
     ssrc_sn: DashSet<u16>,
-    //stream_id:(set<gmv_token>,stream_node_name,call_id,seq)
-    stream_map: DashMap<String, (Option<HashSet<String>>, String, String, u32, PlayType)>,
+    //stream_id:(set<gmv_token>,stream_node_name,call_id,seq,PlayType,from_tag,to_tag)
+    stream_map: DashMap<String, (Option<HashSet<String>>, String, String, u32, PlayType, String, String)>,
     //device_id:HashMap<channel_id,HashMap<playType,BiMap<stream_id,ssrc>>
     device_map: DashMap<String, HashMap<String, HashMap<PlayType, BiMap<String, String>>>>,
 }
@@ -528,13 +533,13 @@ mod tests {
 
     #[test]
     fn test_stream_map() {
-        Cache::stream_map_insert_info("ID1".to_string(), "NODE1".to_string(), "call_id".to_string(), 1, PlayType::Live);
-        let opt = Cache::stream_map_build_call_id_and_seq(&"ID1".to_string());
-        assert_eq!(opt, Some(("call_id".to_string(), 2)));
+        Cache::stream_map_insert_info("ID1".to_string(), "NODE1".to_string(), "call_id".to_string(), 1, PlayType::Live, "form_tag".to_string(), "to_tag".to_string());
+        let opt = Cache::stream_map_build_call_id_seq_from_to_tag(&"ID1".to_string());
+        assert_eq!(opt, Some(("call_id".to_string(), 2, "form_tag".to_string(), "to_tag".to_string())));
 
-        Cache::stream_map_insert_info("ID2".to_string(), "NODE2".to_string(), "call_id".to_string(), 1, PlayType::Live);
-        Cache::stream_map_insert_info("ID3".to_string(), "NODE3".to_string(), "call_id".to_string(), 1, PlayType::Live);
-        Cache::stream_map_insert_info("ID4".to_string(), "NODE4".to_string(), "call_id".to_string(), 1, PlayType::Live);
+        Cache::stream_map_insert_info("ID2".to_string(), "NODE2".to_string(), "call_id".to_string(), 1, PlayType::Live, "form_tag".to_string(), "to_tag".to_string());
+        Cache::stream_map_insert_info("ID3".to_string(), "NODE3".to_string(), "call_id".to_string(), 1, PlayType::Live, "form_tag".to_string(), "to_tag".to_string());
+        Cache::stream_map_insert_info("ID4".to_string(), "NODE4".to_string(), "call_id".to_string(), 1, PlayType::Live, "form_tag".to_string(), "to_tag".to_string());
         Cache::stream_map_insert_token("ID1".to_string(), "TOKEN1".to_string());
         Cache::stream_map_insert_token("ID2".to_string(), "TOKEN2".to_string());
         Cache::stream_map_insert_token("ID1".to_string(), "XXX".to_string());
@@ -552,7 +557,7 @@ mod tests {
         for en in GENERAL_CACHE.shared.stream_map.iter() {
             let key = en.key();
             println!("{key}");
-            if let (Some(sets), _, call_id, seq, _) = en.value() {
+            if let (Some(sets), _, call_id, seq, _, _, _) = en.value() {
                 println!("call_id = {}, seq = {}", call_id, seq);
                 let mut iter = sets.iter();
                 if key[..].eq("ID1") {

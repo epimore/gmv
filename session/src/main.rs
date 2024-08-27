@@ -1,3 +1,4 @@
+#![allow(warnings)]
 pub mod storage;
 pub mod gb;
 pub mod general;
@@ -8,6 +9,7 @@ mod utils;
 use common::log::error;
 use common::err::TransError;
 use common::tokio;
+
 
 
 #[tokio::main]
