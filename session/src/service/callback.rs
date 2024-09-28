@@ -6,12 +6,11 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 
 use common::anyhow::anyhow;
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::error;
 
 use crate::service::{ResMsg, StreamState};
-
 const DROP_SSRC: &str = "/drop/ssrc";
 const LISTEN_SSRC: &str = "/listen/ssrc";
 const START_RECORD: &str = "/start/record";
@@ -19,7 +18,6 @@ const STOP_RECORD: &str = "/stop/record";
 const START_PLAY: &str = "/start/play";
 const STOP_PLAY: &str = "/stop/play";
 const QUERY_STATE: &str = "/query/state";
-
 const RTP_MEDIA: &str = "/rtp/media";
 
 fn build_uri_header(gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<(String, HeaderMap)> {

@@ -1,6 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::ops::Deref;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -14,8 +13,6 @@ use serde::de::DeserializeOwned;
 use common::bytes::Bytes;
 use common::dashmap::{DashMap, DashSet};
 use common::dashmap::mapref::entry::Entry;
-use common::dashmap::mapref::one::{Ref, RefMut};
-use common::dashmap::setref::multiple::RefMulti;
 use common::err::{GlobalResult, TransError};
 use common::once_cell::sync::Lazy;
 use common::tokio;
@@ -24,7 +21,6 @@ use common::tokio::sync::mpsc::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
 use crate::general;
-use crate::utils::id_builder;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 
@@ -90,7 +86,7 @@ impl Cache {
                     }
                 }
             }
-            Entry::Vacant(vac) => {
+            Entry::Vacant(_vac) => {
                 false
             }
         }
@@ -145,7 +141,7 @@ impl Cache {
                         }
                         false
                     }
-                    Entry::Vacant(vac) => { false }
+                    Entry::Vacant(_vac) => { false }
                 }
             }
         }
@@ -267,7 +263,7 @@ impl Cache {
                         }
                     }
                     //与device_id不匹配，不做处理
-                    Entry::Vacant(m_vac) => {}
+                    Entry::Vacant(_m_vac) => {}
                 }
             }
             //存在SSRC:删除里层SSRC,若删除时，device_id对应的map将无数据,则直接删除device_id
@@ -303,14 +299,14 @@ impl Cache {
                                             }
                                         }
                                     }
-                                    Vacant(i_vac) => {}
+                                    Vacant(_i_vac) => {}
                                 }
                             }
-                            Vacant(s_vac) => {}
+                            Vacant(_s_vac) => {}
                         }
                     }
                     //与device_id不匹配，不做处理
-                    Entry::Vacant(m_vac) => {}
+                    Entry::Vacant(_m_vac) => {}
                 }
             }
         }
@@ -478,6 +474,7 @@ struct State {
     expirations: BTreeSet<(Instant, String)>,
 }
 
+#[allow(unused)]
 impl State {
     fn next_expiration(&self) -> Option<Instant> {
         self.expirations.first().map(|expiration| expiration.0)

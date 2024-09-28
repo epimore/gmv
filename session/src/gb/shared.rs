@@ -9,7 +9,7 @@ pub mod rw {
 
     use rsip::{Response, SipMessage};
 
-    use common::anyhow::{anyhow};
+    use common::anyhow::anyhow;
     use common::bytes::Bytes;
     use common::err::{GlobalResult, TransError};
     use common::err::GlobalError::SysErr;
@@ -17,9 +17,9 @@ pub mod rw {
     use common::net::shared::{Bill, Event, Package, Protocol, Zip};
     use common::once_cell::sync::Lazy;
     use common::tokio;
-    use common::tokio::{time};
-    use common::tokio::sync::{mpsc, Mutex, MutexGuard, Notify};
+    use common::tokio::sync::{mpsc, Mutex, Notify};
     use common::tokio::sync::mpsc::{Receiver, Sender};
+    use common::tokio::time;
     use common::tokio::time::Instant;
     use constructor::New;
 
@@ -244,7 +244,6 @@ pub mod rw {
 pub mod event {
     use std::collections::{BTreeSet, HashMap};
     use std::collections::hash_map::Entry;
-    use std::process::id;
     use std::sync::Arc;
     use std::thread;
 
@@ -253,15 +252,16 @@ pub mod event {
     use common::anyhow::anyhow;
     use common::err::{GlobalResult, TransError};
     use common::err::GlobalError::SysErr;
-    use common::log::{error, info, warn};
+    use common::log::{error, warn};
     use common::once_cell::sync::Lazy;
     use common::tokio;
-    use common::tokio::sync::{Mutex, MutexGuard, Notify};
+    use common::tokio::sync::{Mutex, Notify};
     use common::tokio::sync::mpsc::Sender;
     use common::tokio::time;
     use common::tokio::time::Instant;
     use constructor::{Get, New};
-    use crate::gb::shared::rw::{RequestOutput};
+
+    use crate::gb::shared::rw::RequestOutput;
 
     /// 会话超时 8s
     pub const EXPIRES: u64 = 8;
@@ -307,7 +307,7 @@ pub mod event {
             let mut guard = EVENT_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             match state.device_session.entry(ident.call_id.clone()) {
-                Entry::Occupied(o) => {
+                Entry::Occupied(_o) => {
                     Err(SysErr(anyhow!("new = {:?},事件重复-添加监听无效",ident)))
                 }
                 Entry::Vacant(en) => {

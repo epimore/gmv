@@ -1,12 +1,11 @@
-use std::any::Any;
 use std::net::SocketAddr;
 
-use common::log::{debug, error};
+use common::log::{error};
 use rsip::{Error, Header, header, headers, Method, Param, param, Request, Response, SipMessage, uri, Uri};
 use rsip::Header::Via;
 use rsip::headers::typed;
 use rsip::message::HeadersExt;
-use rsip::param::{Branch, OtherParam, OtherParamValue};
+use rsip::param::{OtherParam, OtherParamValue};
 use rsip::Param::Other;
 use rsip::prelude::*;
 use uuid::Uuid;
@@ -16,7 +15,6 @@ use common::chrono::Local;
 use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::warn;
-use common::rand;
 use common::rand::prelude::StdRng;
 use common::rand::{Rng, SeedableRng, thread_rng};
 
@@ -141,6 +139,7 @@ impl ResponseBuilder {
 
 pub struct RequestBuilder;
 
+#[allow(unused)]
 impl RequestBuilder {
     pub async fn query_device_info(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::query_device_info(device_id);
@@ -428,6 +427,7 @@ impl XmlBuilder {
 
 struct SdpBuilder;
 
+#[allow(unused)]
 impl SdpBuilder {
     pub fn info_pause() -> String {
         let mut sdp = String::with_capacity(100);

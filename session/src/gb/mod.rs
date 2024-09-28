@@ -11,7 +11,7 @@ use common::log::{debug, error};
 use common::net;
 use common::net::shared::{Package, Zip};
 use crate::gb::handler::parser;
-use crate::gb::shared::event::{EventSession, Ident};
+use crate::gb::shared::event::{EventSession};
 pub use crate::gb::shared::rw::RWSession;
 use crate::general::SessionConf;
 

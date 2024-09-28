@@ -8,7 +8,7 @@ use rsip::services::DigestGenerator;
 
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
-use common::chrono::{Local, Timelike};
+use common::chrono::{Local};
 use common::err::{GlobalResult, TransError};
 use common::err::GlobalError::SysErr;
 use common::log::{error, warn};
@@ -17,7 +17,6 @@ use common::tokio::sync::mpsc::Sender;
 
 use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
-use crate::gb::handler::parser::xml::MESSAGE_TYPE;
 use crate::gb::shared::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
@@ -26,7 +25,7 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalR
     let device_id = parser::header::get_device_id_by_request(&req)?;
     //校验设备是否注册
     if req.method == Method::Register {
-        let _ = Register::process(&device_id, req, tx, bill).await.hand_log(|msg| error!("设备 = [{}],注册失败",&device_id));
+        let _ = Register::process(&device_id, req, tx, bill).await.hand_log(|msg| error!("设备 = [{}],注册失败;err={}",&device_id,msg));
         Ok(())
     } else {
         match State::check_session(&device_id, tx.clone(), bill).await? {
@@ -257,6 +256,7 @@ impl Message {
                     _ => {}
                 }
             }
+            info!("keep_alive: device_id = {},status = {}",&device_id,&status);
         }
         RWSession::heart(device_id, bill.clone()).await;
     }

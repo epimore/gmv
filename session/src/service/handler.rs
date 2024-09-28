@@ -1,12 +1,11 @@
 use std::time::Duration;
 
-use common::log::{error, info};
+use common::log::{error};
 use mysql::serde_json;
 
 use common::bytes::Bytes;
 use common::err::{GlobalError, GlobalResult, TransError};
 use common::tokio::sync::mpsc;
-use common::tokio::sync::mpsc::Sender;
 use common::tokio::time::Instant;
 use crate::gb::handler::cmd::CmdStream;
 use crate::gb::RWSession;

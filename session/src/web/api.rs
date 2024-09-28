@@ -1,13 +1,12 @@
 use common::log::{error, info};
-use poem::FromRequest;
 use poem_openapi::OpenApi;
 use poem_openapi::param::Header;
-use poem_openapi::payload::{Form, Json};
+use poem_openapi::payload::{Json};
 
-use common::err::{GlobalError, GlobalResult};
+use common::err::{GlobalError};
 
 use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
-use crate::service::{BaseStreamInfo, handler};
+use crate::service::{handler};
 
 pub struct RestApi;
 
@@ -28,7 +27,7 @@ impl RestApi {
                     GlobalError::BizErr(e) => {
                         Json(ResultMessageData::build_failure_msg(e.get_msg().to_string()))
                     }
-                    GlobalError::SysErr(e) => {
+                    GlobalError::SysErr(_e) => {
                         Json(ResultMessageData::build_failure())
                     }
                 }

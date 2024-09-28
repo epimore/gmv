@@ -54,16 +54,18 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
 }
 
 
-#[allow(non_snake_case)]
+
 #[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[allow(non_snake_case)]
 pub struct PlayLiveModel {
     #[oai(validator(min_length = "20", max_length = "20"))] deviceId: String,
     #[oai(validator(min_length = "20", max_length = "20"))] channelId: Option<String>,
     #[oai(validator(maximum(value = "2"), minimum(value = "0")))] transMode: Option<u8>,
 }
 
-#[allow(non_snake_case)]
+
 #[derive(Debug, Deserialize, Object, Serialize)]
+#[allow(non_snake_case)]
 pub struct StreamInfo {
     streamId: String,
     flv: String,
@@ -71,22 +73,22 @@ pub struct StreamInfo {
 }
 
 impl StreamInfo {
-    pub fn build(streamId: String, node_name: String) -> Self {
+    pub fn build(stream_id: String, node_name: String) -> Self {
         let stream_conf = general::StreamConf::get_stream_conf_by_cache();
         match stream_conf.get_proxy_addr() {
             None => {
                 let node_stream = stream_conf.get_node_map().get(&node_name).unwrap();
                 Self {
-                    flv: format!("http://{}:{}/{node_name}/play/{streamId}.flv", node_stream.get_pub_ip(), node_stream.get_local_port()),
-                    m3u8: format!("http://{}:{}/{node_name}/play/{streamId}.m3u8", node_stream.get_pub_ip(), node_stream.get_local_port()),
-                    streamId,
+                    flv: format!("http://{}:{}/{node_name}/play/{stream_id}.flv", node_stream.get_pub_ip(), node_stream.get_local_port()),
+                    m3u8: format!("http://{}:{}/{node_name}/play/{stream_id}.m3u8", node_stream.get_pub_ip(), node_stream.get_local_port()),
+                    streamId: stream_id,
                 }
             }
             Some(addr) => {
                 Self {
-                    flv: format!("{addr}/{node_name}/play/{streamId}.flv"),
-                    m3u8: format!("{addr}/{node_name}/play/{streamId}.m3u8"),
-                    streamId,
+                    flv: format!("{addr}/{node_name}/play/{stream_id}.flv"),
+                    m3u8: format!("{addr}/{node_name}/play/{stream_id}.m3u8"),
+                    streamId: stream_id,
                 }
             }
         }
