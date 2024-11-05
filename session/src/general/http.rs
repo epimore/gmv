@@ -1,39 +1,39 @@
+use common::serde::{Deserialize};
+use common::cfg_lib;
+use common::cfg_lib::conf;
+use common::serde_yaml;
 use common::log::{error};
-use common::err::{GlobalResult, TransError};
-use common::yaml_rust::Yaml;
+use common::exception::{GlobalResult, TransError};
+use common::serde_default;
+use crate::web;
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[conf(prefix = "http")]
 pub struct Http {
+    #[serde(default = "default_port")]
     pub port: u16,
-    pub timeout: u32,
+    #[serde(default = "default_timeout")]
+    pub timeout: u16,
+    #[serde(default = "default_prefix")]
     pub prefix: String,
+    #[serde(default = "default_server_name")]
     pub server_name: String,
+    #[serde(default = "default_version")]
     pub version: String,
 }
-
+serde_default!(default_port, u16, 8080);
+serde_default!(default_timeout, u16, 30);
+serde_default!(default_prefix, String, "/gmv".to_string());
+serde_default!(default_server_name, String, "web-server".to_string());
+serde_default!(default_version, String, "v0.1".to_string());
 impl Http {
-    pub fn build(cfg: &Yaml) -> Self {
-        if cfg.is_badvalue() || cfg["http"].is_badvalue() {
-            Http {
-                port: 8080,
-                timeout: 30000,
-                prefix: "gmv".to_string(),
-                server_name: "web-server".to_string(),
-                version: "v0.1".to_string(),
-            }
-        } else {
-            let http = &cfg["http"];
-            Http {
-                port: http["port"].as_i64().unwrap_or(8080) as u16,
-                timeout: http["timeout"].as_i64().unwrap_or(30000) as u32,
-                prefix: http["prefix"].as_str().unwrap_or("gmv").to_string(),
-                server_name: http["server_name"].as_str().unwrap_or("web-server").to_string(),
-                version: http["version"].as_str().unwrap_or("v0.1").to_string(),
-            }
-        }
+    pub async fn init_http_server() {
+        let http: Http = Http::conf();
+        let _ = http.init_web_server((web::api::RestApi, web::hook::HookApi)).await;
+        error!("http server exception:exited");
     }
 
-    pub async fn init_web_server<T: 'static + poem_openapi::OpenApi>(&self, api: T) -> GlobalResult<()> {
+    async fn init_web_server<T: 'static + poem_openapi::OpenApi>(&self, api: T) -> GlobalResult<()> {
         use poem::{Server, Route, EndpointExt};
         use poem::listener::TcpListener;
         use poem::middleware::Cors;

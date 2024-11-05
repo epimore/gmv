@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use common::log::{error};
-use mysql::serde_json;
 
 use common::bytes::Bytes;
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, TransError};
+use common::serde_json;
 use common::tokio::sync::mpsc;
 use common::tokio::time::Instant;
 use crate::gb::handler::cmd::CmdStream;
@@ -69,11 +69,11 @@ pub fn stream_input_timeout(stream_state: StreamState) {
 }
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
-    let device_id = play_live_model.get_deviceId();
+    let device_id = play_live_model.get_device_id();
     if !RWSession::has_session_by_device_id(device_id).await {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
-    let channel_id = if let Some(channel_id) = play_live_model.get_channelId() {
+    let channel_id = if let Some(channel_id) = play_live_model.get_channel_id() {
         channel_id
     } else {
         device_id
@@ -94,8 +94,8 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
 async fn start_live_stream(device_id: &String, channel_id: &String, token: &String) -> GlobalResult<(String, String)> {
     let num_ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
     let mut node_sets = general::cache::Cache::stream_map_order_node();
-    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, num_ssrc, true)?;
-    let conf = general::StreamConf::get_stream_conf_by_cache();
+    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, num_ssrc, true).await?;
+    let conf = general::StreamConf::get_stream_conf();
     //选择负载最小的节点开始尝试：节点是否可用;
     while let Some((_, node_name)) = node_sets.pop_first() {
         let stream_node = conf.get_node_map().get(&node_name).unwrap();
@@ -130,7 +130,7 @@ async fn enable_live_stream(device_id: &String, channel_id: &String, token: &Str
             let mut res = None;
             if let Some(node_name) = general::cache::Cache::stream_map_query_node_name(&stream_id) {
                 //确认stream是否存在
-                if let Some(stream_node) = general::StreamConf::get_stream_conf_by_cache().get_node_map().get(&node_name) {
+                if let Some(stream_node) = general::StreamConf::get_stream_conf().get_node_map().get(&node_name) {
                     if let Ok(vec) = callback::call_stream_state(Some(&stream_id), token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
                         if vec.len() == 0 {
                             //session有流信息,stream无流存在=>进一步判断可能是stream重启导致没有该监听,重启监听等待结果

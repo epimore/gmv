@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use common::log::error;
-use common::err::{GlobalError, GlobalResult};
+use common::exception::{GlobalError, GlobalResult};
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
 
@@ -109,13 +109,13 @@ pub fn de_stream_id(stream_id: &str) -> (String, String, String) {
 // 识,例如“13010000002000000001”中取数字“10000”;第7位至第10位作为域内媒体流标识,是一个与
 // 当前域内产生的媒体流SSRC值后4位不重复的四位十进制整数
 // 返回(ssrc,stream_id)
-pub fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_ssrc: u16, live: bool) -> GlobalResult<(String, String)> {
-    let gmv_oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)?
+pub async  fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_ssrc: u16, live: bool) -> GlobalResult<(String, String)> {
+    let gmv_oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
         .ok_or_else(|| GlobalError::new_biz_error(1100, "设备不存在", |msg| error!("{msg}")))?;
     //直播：需校验摄像头是否在线；回放：录像机在线即可
     let mut front_live_or_back = 1;
     if live {
-        let channel_status = mapper::get_device_channel_status(device_id, channel_id)?
+        let channel_status = mapper::get_device_channel_status(device_id, channel_id).await?
             .ok_or_else(|| GlobalError::new_biz_error(1100, "未知设备", |msg| error!("{msg}")))?;
         match &channel_status.to_ascii_uppercase()[..] {
             "ON" | "ONLINE" | "ONLY" | "" => {}

@@ -3,7 +3,7 @@ use poem_openapi::OpenApi;
 use poem_openapi::param::Header;
 use poem_openapi::payload::{Json};
 
-use common::err::{GlobalError};
+use common::exception::{GlobalError};
 
 use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
 use crate::service::{handler};
@@ -25,7 +25,7 @@ impl RestApi {
                 error!("{}",err.to_string());
                 match err {
                     GlobalError::BizErr(e) => {
-                        Json(ResultMessageData::build_failure_msg(e.get_msg().to_string()))
+                        Json(ResultMessageData::build_failure_msg(e.msg))
                     }
                     GlobalError::SysErr(_e) => {
                         Json(ResultMessageData::build_failure())

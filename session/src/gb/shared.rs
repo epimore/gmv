@@ -11,17 +11,17 @@ pub mod rw {
 
     use common::anyhow::anyhow;
     use common::bytes::Bytes;
-    use common::err::{GlobalResult, TransError};
-    use common::err::GlobalError::SysErr;
+    use common::exception::{GlobalResult, TransError};
+    use common::exception::GlobalError::SysErr;
     use common::log::{error, warn};
-    use common::net::shared::{Bill, Event, Package, Protocol, Zip};
+    use common::net::state::{Association, Event, Package, Protocol, Zip};
     use common::once_cell::sync::Lazy;
     use common::tokio;
     use common::tokio::sync::{mpsc, Mutex, Notify};
     use common::tokio::sync::mpsc::{Receiver, Sender};
     use common::tokio::time;
     use common::tokio::time::Instant;
-    use constructor::New;
+    use common::constructor::New;
 
     use crate::gb::shared::event::{Container, EventSession, EXPIRES, Ident};
     use crate::storage::entity::GmvDevice;
@@ -56,7 +56,7 @@ pub mod rw {
         }
         async fn do_update_device_status(mut rx: Receiver<String>) {
             while let Some(device_id) = rx.recv().await {
-                GmvDevice::update_gmv_device_status_by_device_id(&device_id, 0);
+                let _ = GmvDevice::update_gmv_device_status_by_device_id(&device_id, 0).await.hand_log(|msg| error!("{msg}"));
             }
         }
 
@@ -73,7 +73,7 @@ pub mod rw {
             }
         }
 
-        pub async fn insert(device_id: &String, tx: Sender<Zip>, heartbeat: u8, bill: &Bill) {
+        pub async fn insert(device_id: &String, tx: Sender<Zip>, heartbeat: u8, bill: &Association) {
             let expires = Duration::from_secs(heartbeat as u64 * 3);
             let when = Instant::now() + expires;
             let mut state = RW_SESSION.shared.state.lock().await;
@@ -92,7 +92,7 @@ pub mod rw {
         }
 
         //用于收到网络出口对端连接断开时，清理rw_session数据
-        pub async fn clean_rw_session_by_bill(bill: &Bill) {
+        pub async fn clean_rw_session_by_bill(bill: &Association) {
             let mut guard = RW_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             state.bill_map.remove(bill).map(|device_id| {
@@ -117,7 +117,7 @@ pub mod rw {
             }
         }
 
-        pub async fn heart(device_id: &String, new_bill: Bill) {
+        pub async fn heart(device_id: &String, new_bill: Association) {
             let mut guard = RW_SESSION.shared.state.lock().await;
             let state = &mut *guard;
             state.sessions.get_mut(device_id).map(|(_tx, when, expires, bill)| {
@@ -134,7 +134,7 @@ pub mod rw {
             });
         }
 
-        pub async fn get_bill_by_device_id(device_id: &String) -> Option<Bill> {
+        pub async fn get_bill_by_device_id(device_id: &String) -> Option<Association> {
             let guard = RW_SESSION.shared.state.lock().await;
             let option_bill = guard.sessions.get(device_id).map(|(_tx, _when, _expires, bill)| bill.clone());
             option_bill
@@ -146,7 +146,7 @@ pub mod rw {
             option_expires
         }
 
-        async fn get_output_sender_by_device_id(device_id: &String) -> Option<(Sender<Zip>, Bill)> {
+        async fn get_output_sender_by_device_id(device_id: &String) -> Option<(Sender<Zip>, Association)> {
             let guard = RW_SESSION.shared.state.lock().await;
             let opt = guard.sessions.get(device_id).map(|(sender, _, _, bill)| (sender.clone(), bill.clone()));
             opt
@@ -224,11 +224,11 @@ pub mod rw {
 
     struct State {
         //映射设备ID，会话发送端，过期瞬时，心跳周期，网络三元组，device_id,msg,dst_addr,time,duration,bill
-        sessions: HashMap<String, (Sender<Zip>, Instant, Duration, Bill)>,
+        sessions: HashMap<String, (Sender<Zip>, Instant, Duration, Association)>,
         //标识设备状态过期时刻，instant,device_id
         expirations: BTreeSet<(Instant, String)>,
         //映射网络三元组与设备ID，bill,device_id
-        bill_map: HashMap<Bill, String>,
+        bill_map: HashMap<Association, String>,
     }
 
     impl State {
@@ -250,8 +250,8 @@ pub mod event {
     use rsip::{Response, SipMessage};
 
     use common::anyhow::anyhow;
-    use common::err::{GlobalResult, TransError};
-    use common::err::GlobalError::SysErr;
+    use common::exception::{GlobalResult, TransError};
+    use common::exception::GlobalError::SysErr;
     use common::log::{error, warn};
     use common::once_cell::sync::Lazy;
     use common::tokio;
@@ -259,7 +259,7 @@ pub mod event {
     use common::tokio::sync::mpsc::Sender;
     use common::tokio::time;
     use common::tokio::time::Instant;
-    use constructor::{Get, New};
+    use common::constructor::{Get, New};
 
     use crate::gb::shared::rw::RequestOutput;
 

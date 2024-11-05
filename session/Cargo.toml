@@ -7,18 +7,22 @@ edition = "2021"
 
 [dependencies]
 rsip = "0.4"
-serde = "1.0"
-constructor = { path = "../../macros/constructor" }
-ezsql = { path = "../../macros/ezsql" }
-common = { path = "../../pig/common", features = ["net"] }
-idb = { path = "../../pig/idb" }
-mysql = "24.0"
+#通过common三方库引入的包为啥还要重新引入一次???
+serde = { version = "1.0", features = ["derive"] }
+sqlx = { version = "0.8", features = ["mysql", "runtime-tokio-native-tls", "default"] }
+#serde = "1.0"
+#constructor = { path = "../../pig/macros/constructor" }
+#ezsql = { path = "../../pig/macros/ezsql" }
+common = { path = "../../pig/common", features = ["net", "mysqlx"] }
+#idb = { path = "../../pig/idb" }
+#mysql = "24.0"
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"
 poem = "3.0"
 poem-openapi = { version = "5.0", features = ["swagger-ui"] }
 bimap = "0.6"
-reqwest = {version = "0.12",features = ["json"]}
+reqwest = { version = "0.12", features = ["json"] }
 sdp-types = "0.1"
 regex = "1.10.4"
+#validator = "0.18.1"

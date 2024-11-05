@@ -1,4 +1,8 @@
- // #![allow(warnings)]
+use common::{logger, tokio};
+use common::dbx::mysqlx;
+use crate::general::http;
+
+// #![allow(warnings)]
 pub mod storage;
 pub mod gb;
 pub mod general;
@@ -6,25 +10,15 @@ mod web;
 mod service;
 mod utils;
 
-use common::log::error;
-use common::err::TransError;
-use common::tokio;
-
-
-
 #[tokio::main]
 async fn main() {
     banner();
-    let tripe = common::init();
-    let cfg = tripe.get_cfg().get(0).clone().expect("config file is invalid");
-    idb::init_mysql(cfg);
-    let yaml = cfg.clone();
+    logger::Logger::init();
+    mysqlx::init_conn_pool();
     tokio::spawn(async move {
-        let http = general::http::Http::build(&yaml);
-        http.init_web_server((web::api::RestApi, web::hook::HookApi)).await
+        http::Http::init_http_server().await;
     });
-    let conf = general::SessionConf::get_session_conf(cfg);
-    let _ = gb::gb_run(&conf).await.hand_log(|msg| error!("GB RUN FAILED <<< [{msg}]"));
+    gb::init_gb_server().await;
 }
 
 fn banner() {

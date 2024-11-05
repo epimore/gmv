@@ -9,10 +9,10 @@ use rsip::services::DigestGenerator;
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
 use common::chrono::{Local};
-use common::err::{GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
+use common::exception::{GlobalResult, TransError};
+use common::exception::GlobalError::SysErr;
 use common::log::{error, warn};
-use common::net::shared::{Bill, Package, Zip};
+use common::net::state::{Association, Package, Zip};
 use common::tokio::sync::mpsc::Sender;
 
 use crate::gb::handler::{cmd, parser};
@@ -21,7 +21,7 @@ use crate::gb::shared::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
 
-pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
+pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
     let device_id = parser::header::get_device_id_by_request(&req)?;
     //校验设备是否注册
     if req.method == Method::Register {
@@ -81,12 +81,12 @@ impl State {
     /// 2)设备未在注册有效期内，重新注册
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
-    async fn check_session(device_id: &String, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<State> {
+    async fn check_session(device_id: &String, tx: Sender<Zip>, bill: &Association) -> GlobalResult<State> {
         let rw_session = RWSession::has_session_by_device_id(device_id).await;
         if rw_session {
             Ok(State::Usable)
         } else {
-            match mapper::get_device_status_info(device_id)? {
+            match mapper::get_device_status_info(device_id).await? {
                 None => {
                     warn!("未知设备：{device_id}");
                     Ok(State::Invalid)
@@ -102,7 +102,7 @@ impl State {
                             RWSession::insert(device_id, tx, heart, bill).await;
                             //如果设备是离线状态，则更新为在线
                             if on == 0 {
-                                GmvDevice::update_gmv_device_status_by_device_id(device_id, 1);
+                                GmvDevice::update_gmv_device_status_by_device_id(device_id, 1).await?;
                             }
                             Ok(State::ReCache)
                         } else {
@@ -119,8 +119,8 @@ impl State {
 struct Register;
 
 impl Register {
-    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
-        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)?
+    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
+        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
             .ok_or(SysErr(anyhow!("device id = [{}] 未知设备，拒绝接入",device_id)))
             .hand_log(|msg| warn!("{msg}"))?;
         if oauth.get_status() == &0u8 {
@@ -170,10 +170,10 @@ impl Register {
             }
         }
     }
-    async fn login_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill, oauth: GmvOauth) -> GlobalResult<()> {
+    async fn login_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Association, oauth: GmvOauth) -> GlobalResult<()> {
         RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill).await;
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
-        gmv_device.insert_single_gmv_device_by_register();
+        gmv_device.insert_single_gmv_device_by_register().await?;
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
@@ -184,16 +184,16 @@ impl Register {
         cmd::CmdQuery::lazy_query_device_catalog(device_id).await
     }
 
-    async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
+    async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
         let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
-        GmvDevice::update_gmv_device_status_by_device_id(device_id, 0);
+        GmvDevice::update_gmv_device_status_by_device_id(device_id, 0).await?;
         RWSession::clean_rw_session_and_net(device_id).await;
         Ok(())
     }
 
-    async fn unauthorized(req: &Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
+    async fn unauthorized(req: &Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
         let unauthorized_register_response = ResponseBuilder::unauthorized_register_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(unauthorized_register_response)));
         let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
@@ -204,7 +204,7 @@ impl Register {
 struct Message;
 
 impl Message {
-    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
+    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
         use parser::xml::*;
         match parse_xlm_to_vec(&req.body) {
             Ok(vs) => {
@@ -214,8 +214,8 @@ impl Message {
                         match &v[..] {
                             MESSAGE_KEEP_ALIVE => { Self::keep_alive(device_id, vs, bill).await; }
                             MESSAGE_CONFIG_DOWNLOAD => {}
-                            MESSAGE_NOTIFY_CATALOG => { Self::notify_catalog(device_id, vs) }
-                            MESSAGE_DEVICE_INFO => { Self::device_info(vs); }
+                            MESSAGE_NOTIFY_CATALOG => { Self::notify_catalog(device_id, vs).await; }
+                            MESSAGE_DEVICE_INFO => { Self::device_info(vs).await; }
                             MESSAGE_ALARM => {}
                             MESSAGE_RECORD_INFO => {}
                             MESSAGE_MEDIA_STATUS => {}
@@ -241,7 +241,7 @@ impl Message {
             }
         }
     }
-    async fn keep_alive(device_id: &String, vs: Vec<(String, String)>, bill: &Bill) {
+    async fn keep_alive(device_id: &String, vs: Vec<(String, String)>, bill: &Association) {
         use parser::xml::{NOTIFY_DEVICE_ID, NOTIFY_STATUS};
         if common::log::max_level() <= LevelFilter::Info {
             let (mut device_id, mut status) = (String::new(), String::new());
@@ -261,19 +261,19 @@ impl Message {
         RWSession::heart(device_id, bill.clone()).await;
     }
 
-    fn device_info(vs: Vec<(String, String)>) {
-        GmvDeviceExt::update_gmv_device_ext_info(vs)
+    async fn device_info(vs: Vec<(String, String)>) {
+        let _ = GmvDeviceExt::update_gmv_device_ext_info(vs).await.hand_log(|msg| error!("{msg}"));
     }
 
-    fn notify_catalog(device_id: &String, vs: Vec<(String, String)>) {
-        GmvDeviceChannel::insert_gmv_device_channel(device_id, vs)
+    async fn notify_catalog(device_id: &String, vs: Vec<(String, String)>) {
+        let _ = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs).await.hand_log(|msg| error!("{msg}"));
     }
 }
 
 struct Notify;
 
 impl Notify {
-    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Bill) -> GlobalResult<()> {
+    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
         use parser::xml::*;
         match parse_xlm_to_vec(&req.body) {
             Ok(vs) => {
@@ -282,7 +282,7 @@ impl Notify {
                     if MESSAGE_TYPE.contains(&&**k) {
                         match &v[..] {
                             MESSAGE_NOTIFY_CATALOG => {
-                                GmvDeviceChannel::insert_gmv_device_channel(device_id, vs);
+                                GmvDeviceChannel::insert_gmv_device_channel(device_id, vs).await?;
                             }
                             _ => {
                                 debug!("cmdType暂不支持;{k} : {v}");

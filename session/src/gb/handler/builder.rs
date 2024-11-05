@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use common::anyhow::anyhow;
 use common::chrono::Local;
-use common::err::{GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
+use common::exception::{GlobalResult, TransError};
+use common::exception::GlobalError::SysErr;
 use common::log::warn;
 use common::rand::prelude::StdRng;
 use common::rand::{Rng, SeedableRng, thread_rng};
@@ -230,7 +230,7 @@ impl RequestBuilder {
         let mut dst_id = device_id;
         if channel_id.is_some() {
             let channel_id = channel_id.unwrap();
-            let channel_status = mapper::get_device_channel_status(device_id, channel_id)?.ok_or(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，未知或无效")))?;
+            let channel_status = mapper::get_device_channel_status(device_id, channel_id).await?.ok_or(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，未知或无效")))?;
             match &channel_status.to_ascii_uppercase()[..] {
                 "ON" | "ONLINE" | "ONLY" | ""=> { dst_id = channel_id }
                 _ => {
@@ -238,12 +238,12 @@ impl RequestBuilder {
                 }
             }
         }
-        let conf = SessionConf::get_session_conf_by_cache();
+        let conf = SessionConf::get_session_conf();
         let server_ip = &conf.get_wan_ip().to_string();
         let server_port = conf.get_wan_port();
         //domain宜采用ID统一编码的前十位编码,扩展支持十位编码加“.spvmn.cn”后缀格式,或采用IP:port格式,port宜采用5060;这里统一使用device_id的前十位,不再调用DB进行判断原设备的使用方式
         // let gmv_device = GmvDevice::query_gmv_device_by_device_id(&device_id.to_string())?.ok_or(SysErr(anyhow!("设备：{device_id}-{channel_id:?}未注册或已离线。")))?;
-        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)?
+        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
             .ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))
             .hand_log(|msg| warn!("{msg}"))?;
         if oauth.get_status() == &0u8 {
@@ -482,7 +482,7 @@ impl SdpBuilder {
 
     ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
     fn build_common_play(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
-        let conf = SessionConf::get_session_conf_by_cache();
+        let conf = SessionConf::get_session_conf();
         let session_ip = &conf.get_wan_ip().to_string();
         let mut sdp = String::with_capacity(300);
         sdp.push_str("v=0\r\n");

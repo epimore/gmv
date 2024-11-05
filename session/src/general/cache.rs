@@ -6,16 +6,15 @@ use std::time::Duration;
 
 use bimap::BiMap;
 use common::log::{error, warn};
-use mysql::serde_json;
-use serde::{Deserialize, Serialize};
-use serde::de::DeserializeOwned;
+use common::serde::{Deserialize, Serialize};
+use common::serde::de::DeserializeOwned;
 
 use common::bytes::Bytes;
 use common::dashmap::{DashMap, DashSet};
 use common::dashmap::mapref::entry::Entry;
-use common::err::{GlobalResult, TransError};
+use common::exception::{GlobalResult, TransError};
 use common::once_cell::sync::Lazy;
-use common::tokio;
+use common::{serde_json, tokio};
 use common::tokio::sync::{Mutex, Notify};
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time;
@@ -58,10 +57,10 @@ impl Cache {
             }
         }
         let mut set = BTreeSet::new();
-        let conf = general::StreamConf::get_stream_conf_by_cache();
-        for (k, _v) in conf.node_map {
-            let count = map.get(&k).unwrap_or(&0);
-            set.insert((*count, k));
+        let conf = general::StreamConf::get_stream_conf();
+        for (k, _v) in conf.node_map.iter() {
+            let count = map.get(k).unwrap_or(&0);
+            set.insert((*count, k.clone()));
         }
         set
     }

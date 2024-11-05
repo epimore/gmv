@@ -4,7 +4,7 @@ use common::log::{error, info, warn};
 use regex::Regex;
 use rsip::prelude::{HeadersExt, UntypedHeader};
 use rsip::{Response};
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, TransError};
 use common::tokio::sync::mpsc;
 use common::tokio::time::Instant;
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};

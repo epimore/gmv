@@ -3,21 +3,29 @@ use std::net::Ipv4Addr;
 
 use reqwest::header;
 use reqwest::header::HeaderMap;
-use serde::{Deserialize, Serialize};
+use common::serde::{Deserialize,Serialize};
 
 use common::anyhow::anyhow;
-use common::err::{GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
+use common::exception::{GlobalResult, TransError};
+use common::exception::GlobalError::SysErr;
 use common::log::error;
 
 use crate::service::{ResMsg, StreamState};
+#[allow(dead_code)]
 const DROP_SSRC: &str = "/drop/ssrc";
+#[allow(dead_code)]
 const LISTEN_SSRC: &str = "/listen/ssrc";
+#[allow(dead_code)]
 const START_RECORD: &str = "/start/record";
+#[allow(dead_code)]
 const STOP_RECORD: &str = "/stop/record";
+#[allow(dead_code)]
 const START_PLAY: &str = "/start/play";
+#[allow(dead_code)]
 const STOP_PLAY: &str = "/stop/play";
+#[allow(dead_code)]
 const QUERY_STATE: &str = "/query/state";
+#[allow(dead_code)]
 const RTP_MEDIA: &str = "/rtp/media";
 
 fn build_uri_header(gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<(String, HeaderMap)> {

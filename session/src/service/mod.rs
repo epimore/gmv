@@ -1,7 +1,7 @@
 use poem_openapi::Object;
-use serde::{Deserialize, Serialize};
+use common::serde::{Deserialize,Serialize};
 
-use constructor::{Get, New};
+use common::constructor::{Get, New};
 
 pub mod handler;
 mod callback;
@@ -9,7 +9,7 @@ mod callback;
 pub const EXPIRES: u64 = 8;
 pub const RELOAD_EXPIRES: u64 = 2;
 
-#[derive(Serialize, Object, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug,Object)]
 pub struct ResMsg<T: Serialize + Sync + Send + poem_openapi::types::Type + poem_openapi::types::ToJSON + poem_openapi::types::ParseFromJSON> {
     code: u16,
     msg: String,

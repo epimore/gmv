@@ -1,14 +1,18 @@
 use std::collections::{HashMap};
 use std::net::Ipv4Addr;
-use std::ops::Index;
-use common::yaml_rust::Yaml;
-use constructor::Get;
+use common::cfg_lib;
+use common::cfg_lib::conf;
+use common::serde_yaml;
+use common::constructor::Get;
+use common::once_cell::sync::OnceCell;
+use common::serde::{Deserialize};
 
 pub mod model;
 pub mod cache;
 pub mod http;
 
-#[derive(Debug, Get)]
+#[derive(Debug, Get, Deserialize)]
+#[conf(prefix = "server.session")]
 pub struct SessionConf {
     lan_ip: Ipv4Addr,
     wan_ip: Ipv4Addr,
@@ -17,76 +21,47 @@ pub struct SessionConf {
 }
 
 impl SessionConf {
-    pub fn get_session_conf(cfg: &Yaml) -> Self {
-        if cfg.is_badvalue() || cfg["server"].is_badvalue() || cfg["server"]["session"].is_badvalue() {
-            panic!("server session config is invalid");
-        }
-        SessionConf {
-            lan_ip: cfg["server"]["session"]["lan_ip"].as_str().expect("server session lan_ip config is invalid").parse::<Ipv4Addr>().expect("server session lan_ip IPV4 is invalid"),
-            wan_ip: cfg["server"]["session"]["wan_ip"].as_str().expect("server session wan_ip config is invalid").parse::<Ipv4Addr>().expect("server session wan_ip IPV4 is invalid"),
-            lan_port: cfg["server"]["session"]["lan_port"].as_i64().expect("server session lan_port config is invalid") as u16,
-            wan_port: cfg["server"]["session"]["wan_port"].as_i64().expect("server session wan_port config is invalid") as u16,
-        }
-    }
-
-    pub fn get_session_conf_by_cache() -> Self {
-        let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
-        Self::get_session_conf(&cfg)
+    pub fn get_session_conf() -> Self {
+        SessionConf::conf()
     }
 }
 
-#[derive(Get)]
+#[derive(Debug, Get, Deserialize)]
+#[conf(prefix = "server.stream")]
 pub struct StreamConf {
+    proxy_enable: bool,
     proxy_addr: Option<String>,
     //node_name:StreamNode
     node_map: HashMap<String, StreamNode>,
+    nodes: Vec<StreamNode>,
 }
 
-#[derive(Get)]
+#[derive(Debug, Get, Deserialize, Clone)]
 pub struct StreamNode {
+    name: String,
     local_ip: Ipv4Addr,
     local_port: u16,
     pub_ip: Ipv4Addr,
     pub_port: u16,
 }
-
+static CELL: OnceCell<StreamConf> = OnceCell::new();
 impl StreamConf {
-    pub fn get_stream_conf(cfg: &Yaml) -> Self {
-        if cfg.is_badvalue() || cfg["server"].is_badvalue() || cfg["server"]["stream"].is_badvalue() {
-            panic!("server stream config is invalid");
-        }
-        let en_proxy = cfg["server"]["stream"]["proxy_enable"].as_bool().expect("server stream config:proxy_enable is invalid");
-        let mut proxy_addr = None;
-        if en_proxy {
-            let addr = cfg["server"]["stream"]["proxy_addr"].as_str().expect("server stream config:proxy_addr is invalid");
-            proxy_addr = Some(addr.to_string())
-        }
-        let media = &cfg["server"]["stream"]["node"];
-        let arr = media.as_vec().expect("server stream node config is invalid");
-        let mut node_map = HashMap::new();
-        for (index, val) in arr.iter().enumerate() {
-            let name = val.index("name").as_str().expect(&format!("node-{index}: 获取name失败")).to_string();
-            if node_map.contains_key(&name) {
-                panic!("node-{index}:name重复，建议使用s1,s2,s3等连续编号");
-            }
-            let pub_ip = val.index("pub_ip").as_str().expect(&format!("node-{index}:公网ip错误")).parse::<Ipv4Addr>().expect("server session pub_ip IPV4 is invalid");
-            let pub_port = val.index("pub_port").as_i64().expect(&format!("node-{index}:公网端口错误")) as u16;
-            let local_ip = val.index("local_ip").as_str().expect(&format!("node-{index}:局域网ip错误")).parse::<Ipv4Addr>().expect("server session local_ip IPV4 is invalid");
-            let local_port = val.index("local_port").as_i64().expect(&format!("node-{index}:局域网端口错误")) as u16;
-            let node = StreamNode {
-                local_ip,
-                local_port,
-                pub_ip,
-                pub_port,
-            };
-            node_map.insert(name, node);
-        }
-        Self { proxy_addr, node_map }
-    }
 
-    pub fn get_stream_conf_by_cache() -> Self {
-        let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
-        Self::get_stream_conf(&cfg)
+    pub fn get_stream_conf() -> &'static Self {
+        CELL.get_or_init(||{
+            let mut conf: Self = StreamConf::conf();
+            let mut node_map = HashMap::new();
+            for node in &conf.nodes {
+                if let Some(old) = node_map.insert(node.name.clone(), node.clone()) {
+                    panic!("配置server.stream.nodes.name重复:{}:，建议使用s1,s2,s3等连续编号", old.name);
+                }
+            }
+            if node_map.is_empty() {
+                panic!("未配置流媒体信息")
+            }
+            conf.node_map = node_map;
+            conf
+        })
     }
 }
 
@@ -97,8 +72,7 @@ mod tests {
 
     #[test]
     fn test_map_conf() {
-        let cfg = common::get_config().clone().get(0).expect("config file is invalid").clone();
-        println!("{:?}", SessionConf::get_session_conf(&cfg));
+        println!("{:?}", SessionConf::get_session_conf());
     }
 
     fn print_banner(c: char) {
