@@ -1,11 +1,11 @@
 use rsip::Request;
 
-use common::chrono::Local;
+use common::chrono::{DateTime, Local, NaiveDateTime};
 use common::constructor::{Get, New, Set};
 use common::dbx::mysqlx::get_conn_by_pool;
 use common::exception::{GlobalResult, TransError};
 use common::log::error;
-use common::serde::{Deserialize,Serialize};
+use common::serde::{Deserialize, Serialize};
 use common::sqlx;
 use common::sqlx::FromRow;
 
@@ -28,8 +28,8 @@ pub struct GmvOauth {
 impl GmvOauth {
     pub async fn read_gmv_oauth_by_device_id(device_id: &String) -> GlobalResult<Option<GmvOauth>> {
         let pool = get_conn_by_pool()?;
-        let res = sqlx::query_as::<_, GmvOauth>("select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=$1")
-            .bind(device_id).fetch_optional(pool).await.hand_log(|msg|error!("{msg}"))?;
+        let res = sqlx::query_as::<_, GmvOauth>("select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=?")
+            .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 }
@@ -39,7 +39,7 @@ pub struct GmvDevice {
     device_id: String,
     transport: String,
     register_expires: u32,
-    register_time: u32,
+    register_time: NaiveDateTime,
     local_addr: String,
     sip_from: String,
     sip_to: String,
@@ -52,33 +52,34 @@ impl GmvDevice {
     pub async fn query_gmv_device_by_device_id(device_id: &String) -> GlobalResult<Option<GmvDevice>> {
         let pool = get_conn_by_pool()?;
         let res = sqlx::query_as::<_, Self>(r#"select device_id,transport,register_expires,
-        register_time,local_addr,sip_from,sip_to,status,gb_version from GMV_DEVICE where device_id=$1"#)
-            .bind(device_id).fetch_optional(pool).await.hand_log(|msg|error!("{msg}"))?;
+        register_time,local_addr,sip_from,sip_to,status,gb_version from GMV_DEVICE where device_id=?"#)
+            .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 
     pub async fn insert_single_gmv_device_by_register(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
-        let mut builder = sqlx::query_builder::QueryBuilder::new("insert into GMV_DEVICE (device_id,transport,register_expires,
-        register_time,local_addr,sip_from,sip_to,status,gb_version) values (?,?,?,?,?,?,?,?,?)");
-        builder.push_bind(&self.device_id)
-            .push_bind(&self.transport)
-            .push_bind(&self.register_expires)
-            .push_bind(&self.register_time)
-            .push_bind(&self.local_addr)
-            .push_bind(&self.sip_from)
-            .push_bind(&self.sip_to)
-            .push_bind(&self.status)
-            .push_bind(&self.gb_version);
-        builder.build().execute(pool)
-            .await.hand_log(|msg|error!("{msg}"))?;
+        sqlx::query(r#"insert into GMV_DEVICE (device_id,transport,register_expires,
+        register_time,local_addr,sip_from,sip_to,status,gb_version) values (?,?,?,?,?,?,?,?,?)"#)
+            .bind(&self.device_id)
+            .bind(&self.transport)
+            .bind(&self.register_expires)
+            .bind(&self.register_time)
+            .bind(&self.local_addr)
+            .bind(&self.sip_from)
+            .bind(&self.sip_to)
+            .bind(&self.status)
+            .bind(&self.gb_version)
+            .execute(pool)
+            .await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
     pub async fn update_gmv_device_status_by_device_id(device_id: &String, status: u8) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
-        let mut builder = sqlx::query_builder::QueryBuilder::new("update GMV_DEVICE set status=? where device_id=?");
-        builder.push_bind(status).push_bind(device_id);
-        builder.build().execute(pool).await.hand_log(|msg|error!("{msg}"))?;
+        sqlx::query("update GMV_DEVICE set status=? where device_id=?")
+            .bind(status)
+            .bind(device_id)
+            .execute(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 
@@ -87,7 +88,7 @@ impl GmvDevice {
             device_id: parser::header::get_device_id_by_request(req)?,
             transport: parser::header::get_transport(req)?,
             register_expires: parser::header::get_expires(req)?,
-            register_time: Local::now().timestamp() as u32,
+            register_time: Local::now().naive_local(),
             local_addr: parser::header::get_local_addr(req)?,
             sip_from: parser::header::get_from(req)?,
             sip_to: parser::header::get_to(req)?,
@@ -112,10 +113,15 @@ impl GmvDeviceExt {
     pub async fn update_gmv_device_ext_info(vs: Vec<(String, String)>) -> GlobalResult<()> {
         let ext = Self::build(vs);
         let pool = get_conn_by_pool()?;
-        let mut builder = sqlx::query_builder::QueryBuilder::new("update GMV_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?");
-        builder.push_bind(ext.device_type).push_bind(ext.manufacturer).push_bind(ext.model).push_bind(ext.firmware).push_bind(ext.max_camera).push_bind(ext.device_id);
-        builder.build().execute(pool)
-            .await.hand_log(|msg|error!("{msg}"))?;
+        sqlx::query("update GMV_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?")
+            .bind(ext.device_type)
+            .bind(ext.manufacturer)
+            .bind(ext.model)
+            .bind(ext.firmware)
+            .bind(ext.max_camera)
+            .bind(ext.device_id)
+            .execute(pool)
+            .await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 
@@ -208,7 +214,7 @@ impl GmvDeviceChannel {
         address=VALUES(address),parental=VALUES(parental),block=VALUES(block),parent_id=VALUES(parent_id),ip_address=VALUES(ip_address),
         port=VALUES(port),password=VALUES(password),longitude=VALUES(longitude),latitude=VALUES(latitude),ptz_type=VALUES(ptz_type),
         supply_light_type=VALUES(supply_light_type),alias_name=VALUES(alias_name)");
-        builder.build().execute(pool).await.hand_log(|msg|error!("{msg}"))?;
+        builder.build().execute(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
     fn build(device_id: &String, vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
@@ -296,13 +302,105 @@ mod tests {
     #[common::tokio::test]
     async fn test_read_gmv_oauth_by_device_id() {
         mysqlx::init_conn_pool();
-        let res = GmvOauth::read_gmv_oauth_by_device_id(&"device_id_1".to_string()).await;
+        let res = GmvOauth::read_gmv_oauth_by_device_id(&"34020000001320000003".to_string()).await;
         println!("{res:?}");
     }
 
     #[common::tokio::test]
-    async fn test_update_gmv_device_status_by_device_id() {
+    async fn test_query_gmv_device_by_device_id() {
         mysqlx::init_conn_pool();
-        let _ = GmvDevice::update_gmv_device_status_by_device_id(&"device_id_1".to_string(), 1).await;
+        let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
+        println!("{res:?}");
+    }
+
+    #[common::tokio::test]
+    async fn test_insert_single_gmv_device_by_register() {
+        mysqlx::init_conn_pool();
+        let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
+        if let Ok(Some(gd)) = res {
+            let a = GmvDevice { device_id: "34020000001320000004".to_string(), ..gd };
+            println!("{a:?}");
+            common::logger::Logger::init();
+            let result = a.insert_single_gmv_device_by_register().await;
+            println!("{:?}", result)
+        }
+    }
+
+    #[common::tokio::test]
+    async fn test_update_gmv_device_status_by_device_id() {
+        common::logger::Logger::init();
+        mysqlx::init_conn_pool();
+        let res = GmvDevice::update_gmv_device_status_by_device_id(&"34020000001320000003".to_string(), 1).await;
+        println!("{:?}", res);
+    }
+
+    #[common::tokio::test]
+    async fn test_update_gmv_device_ext_info() {
+        common::logger::Logger::init();
+        let ext = GmvDeviceExt {
+            device_id: "34020000001110000001".to_string(),
+            ..Default::default()
+        };
+        mysqlx::init_conn_pool();
+        let pool = get_conn_by_pool().unwrap();
+        let res = sqlx::query("update GMV_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?")
+            .bind(ext.device_type)
+            .bind(ext.manufacturer)
+            .bind(ext.model)
+            .bind(ext.firmware)
+            .bind(ext.max_camera)
+            .bind(ext.device_id)
+            .execute(pool)
+            .await;
+        println!("{:?}", res);
+    }
+
+    #[common::tokio::test]
+    async fn test_insert_gmv_device_channel() {
+        common::logger::Logger::init();
+        let dc_ls = (0..10).map(|i| GmvDeviceChannel {
+            device_id: "34020000001320000004".to_string(),
+            channel_id: format!("3402000000132000010{}", i),
+            ..Default::default()
+        });
+
+        let ext = GmvDeviceExt {
+            device_id: "34020000001110000001".to_string(),
+            ..Default::default()
+        };
+        mysqlx::init_conn_pool();
+        let pool = get_conn_by_pool().unwrap();
+        let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
+         model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
+         longitude,latitude,ptz_type,supply_light_type,alias_name) ");
+        builder.push_values(dc_ls, |mut b, dc| {
+            b.push_bind(dc.device_id)
+                .push_bind(dc.channel_id)
+                .push_bind(dc.name)
+                .push_bind(dc.manufacturer)
+                .push_bind(dc.model)
+                .push_bind(dc.owner)
+                .push_bind(dc.status)
+                .push_bind(dc.civil_code)
+                .push_bind(dc.address)
+                .push_bind(dc.parental)
+                .push_bind(dc.block)
+                .push_bind(dc.parent_id)
+                .push_bind(dc.ip_address)
+                .push_bind(dc.port)
+                .push_bind(dc.password)
+                .push_bind(dc.longitude)
+                .push_bind(dc.latitude)
+                .push_bind(dc.ptz_type)
+                .push_bind(dc.supply_light_type)
+                .push_bind(dc.alias_name);
+        });
+        builder.push(" ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),channel_id=VALUES(channel_id),name=VALUES(name),
+        manufacturer=VALUES(manufacturer),model=VALUES(model),owner=VALUES(owner),status=VALUES(status),civil_code=VALUES(civil_code),
+        address=VALUES(address),parental=VALUES(parental),block=VALUES(block),parent_id=VALUES(parent_id),ip_address=VALUES(ip_address),
+        port=VALUES(port),password=VALUES(password),longitude=VALUES(longitude),latitude=VALUES(latitude),ptz_type=VALUES(ptz_type),
+        supply_light_type=VALUES(supply_light_type),alias_name=VALUES(alias_name)");
+        let res = builder.build().execute(pool).await;
+        println!("{:?}", res);
     }
 }

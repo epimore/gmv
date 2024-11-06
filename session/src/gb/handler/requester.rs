@@ -8,7 +8,7 @@ use rsip::services::DigestGenerator;
 
 use common::anyhow::anyhow;
 use common::bytes::Bytes;
-use common::chrono::{Local};
+use common::chrono::{Duration, Local};
 use common::exception::{GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
 use common::log::{error, warn};
@@ -97,7 +97,7 @@ impl State {
                         Ok(State::Invalid)
                     } else {
                         //判断是否在注册有效期内
-                        if reg_ts + expire > Local::now().timestamp() as u32 {
+                        if reg_ts + Duration::seconds(expire as i64) >  Local::now().naive_local() {
                             //刷新缓存
                             RWSession::insert(device_id, tx, heart, bill).await;
                             //如果设备是离线状态，则更新为在线
