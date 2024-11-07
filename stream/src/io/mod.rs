@@ -1,6 +1,6 @@
 use std::thread;
 
-use common::err::{GlobalResult};
+use common::exception::{GlobalResult};
 use common::tokio;
 use common::tokio::sync::mpsc;
 

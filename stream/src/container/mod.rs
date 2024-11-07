@@ -1,5 +1,5 @@
 use common::bytes::Bytes;
-use common::err::GlobalResult;
+use common::exception::GlobalResult;
 
 pub mod rtp;
 pub mod flv;

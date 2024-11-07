@@ -5,8 +5,8 @@ log:
 
 server:
   name: s1 #服务标识身份,流媒体集群唯一标识
-  rtp-port: 18568 #监听rtp媒体流端口;
-  rtcp-port: 18569 #监听rtcp媒体流端口;
-  http-port: 18570 #流媒体API端口
-  hook-uri: http://127.0.0.1:18567/session/hook #信令服务的地址
+  rtp_port: 18568 #监听rtp媒体流端口;
+  rtcp_port: 18569 #监听rtcp媒体流端口;
+  http_port: 18570 #流媒体API端口
+  hook_uri: http://127.0.0.1:18567/session/hook #信令服务的地址
 

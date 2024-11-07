@@ -5,7 +5,7 @@ use hyper::{Body, header, Response, StatusCode};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
-use common::err::{BizError, GlobalError, GlobalResult, TransError};
+use common::exception::{BizError, GlobalError, GlobalResult, TransError};
 use common::log::{error, info};
 use common::tokio;
 use common::tokio::sync::{oneshot};

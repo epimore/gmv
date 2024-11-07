@@ -1,4 +1,4 @@
-use common::err::TransError;
+use common::exception::TransError;
 use common::log::error;
 use common::tokio;
 use common::tokio::sync::broadcast;

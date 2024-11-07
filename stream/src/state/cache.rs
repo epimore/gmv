@@ -8,9 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 use rtp::packet::Packet;
 
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, TransError};
 use common::log::error;
-use common::net::shared::Bill;
+use common::net::state::Association;
 use common::once_cell::sync::Lazy;
 use common::tokio;
 use common::tokio::sync::{broadcast, mpsc, Notify};
@@ -63,7 +63,7 @@ pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()
 }
 
 //返回rtp_tx
-pub async fn refresh(ssrc: u32, bill: &Bill) -> Option<(async_channel::Sender<Packet>, async_channel::Receiver<Packet>)> {
+pub async fn refresh(ssrc: u32, bill: &Association) -> Option<(async_channel::Sender<Packet>, async_channel::Receiver<Packet>)> {
     let guard = SESSION.shared.state.read();
     let mut first_in = false;
     if let Some((on, _when, stream_id, _expires, channel, reported_time, _info, _media)) = guard.sessions.get(&ssrc) {
@@ -265,9 +265,7 @@ struct Session {
 
 impl Session {
     fn init() -> Self {
-        let tripe = common::init();
-        let cfg_yaml = tripe.get_cfg().get(0).clone().expect("config file is invalid");
-        let server_conf = ServerConf::build(cfg_yaml);
+        let server_conf = ServerConf::init_by_conf();
         banner();
         let (tx, rx) = mpsc::channel(10000);
         let session = Session {

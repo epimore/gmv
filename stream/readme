@@ -12,7 +12,7 @@ wget --header="gmv-token: 1243aaa" "http://172.18.38.186:18570/stream-node-1/pla
 
 76gujiu04do00
 
-ffplay -headers "gmv-token: 1111aazz" http://172.18.38.186:18570/s1/4FEqqz1Dqsq0Vzqq3K2m0tqq4Zqq6m0s.flv
+ffplay -headers "gmv-token: user001-gmv-token"-headers "gmv-token: user001-gmv-token" http://172.18.38.186:18570/s1/4FEqqz1Dqsq0Vzqq3K2m0tqq4Zqq6m0s.flv
 http://172.18.38.186:18568/s1/4FEqqz1Dqsq0Vzqq3K2m0tqq4Zqq6m0s.flv
 
 

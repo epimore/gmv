@@ -6,8 +6,8 @@ use hyper::{Body, Method, Request, Response, server::accept::Accept, service::{m
 use tokio_util::sync::CancellationToken;
 
 use common::anyhow::{anyhow};
-use common::err::{GlobalError, GlobalResult, TransError};
-use common::err::GlobalError::SysErr;
+use common::exception::{GlobalError, GlobalResult, TransError};
+use common::exception::GlobalError::SysErr;
 use common::log::{error, info};
 use common::tokio::{self,
                     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -49,10 +49,14 @@ async fn handle(
 }
 
 fn get_token(req: &Request<Body>) -> GlobalResult<String> {
-    let token_str = req.headers().get("gmv-token")
-        .ok_or_else(|| GlobalError::new_biz_error(1100, "header无gmv-token", |msg| info!("{msg}")))?
-        .to_str().hand_log(|msg| info!("获取gmv-token失败;err = {msg}"))?;
-    Ok(token_str.to_string())
+    let h_res = req.headers().get("gmv-token")
+        .or_else(|| req.headers().get("Gmv-Token"));
+    let token = if h_res.is_none() {
+        get_param_map(req)?.get("gmv-token").ok_or_else(|| GlobalError::new_biz_error(1100, "url参数获取gmv-token失败;", |msg| error!("{msg}")))?.to_string()
+    }else {
+        h_res.unwrap().to_str().hand_log(|msg| info!("header获取gmv-token失败;err = {msg}"))?.to_string()
+    };
+    Ok(token)
 }
 
 fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {

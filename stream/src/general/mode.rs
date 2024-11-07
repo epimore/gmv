@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use common::bytes::Bytes;
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::cfg_lib;
+use common::cfg_lib::conf;
+use common::serde_yaml;
+use common::exception::{GlobalError, GlobalResult, TransError};
 use common::log::{error, warn};
-use common::yaml_rust::Yaml;
-use constructor::{Get};
+use common::constructor::{Get};
+use common::serde_default;
 
 //统一响应超时:单位毫秒
 pub const TIME_OUT: u64 = 8000;
@@ -64,7 +67,8 @@ impl<T: Serialize> ResMsg<T> {
     }
 }
 
-#[derive(Debug, Get, Clone)]
+#[derive(Debug, Get, Clone, Deserialize)]
+#[conf(prefix = "server")]
 pub struct ServerConf {
     name: String,
     rtp_port: u16,
@@ -72,27 +76,33 @@ pub struct ServerConf {
     http_port: u16,
     hook_uri: String,
 }
-
+serde_default!(default_name, String, "stream-node-1".to_string());
+serde_default!(default_rtp_port, u16, 18568);
+serde_default!(default_rtcp_port, u16, 18569);
+serde_default!(default_http_port, u16, 18570);
+serde_default!(default_hook_uri, String, "http://127.0.0.1:18567".to_string());
 impl ServerConf {
-    pub fn build(cfg: &Yaml) -> Self {
-        if cfg.is_badvalue() || cfg["server"].is_badvalue() {
-            Self {
-                name: "stream-node-1".to_string(),
-                rtp_port: 18568,
-                rtcp_port: 18569,
-                http_port: 18570,
-                hook_uri: "http://127.0.0.1:18567".to_string(),
-            }
-        } else {
-            let server = &cfg["server"];
-            Self {
-                name: server["name"].as_str().map(|str| str.to_string()).unwrap_or("stream-node-1".to_string()),
-                rtp_port: server["rtp-port"].as_i64().unwrap_or(18568) as u16,
-                rtcp_port: server["rtcp-port"].as_i64().unwrap_or(18569) as u16,
-                http_port: server["http-port"].as_i64().unwrap_or(18570) as u16,
-                hook_uri: server["hook-uri"].as_str().map(|str| str.to_string()).unwrap_or("http://127.0.0.1:18567".to_string()),
-            }
-        }
+    pub fn init_by_conf() -> Self {
+        ServerConf::conf()
+
+        // if cfg.is_badvalue() || cfg["server"].is_badvalue() {
+        //     Self {
+        //         name: "stream-node-1".to_string(),
+        //         rtp_port: 18568,
+        //         rtcp_port: 18569,
+        //         http_port: 18570,
+        //         hook_uri: "http://127.0.0.1:18567".to_string(),
+        //     }
+        // } else {
+        //     let server = &cfg["server"];
+        //     Self {
+        //         name: server["name"].as_str().map(|str| str.to_string()).unwrap_or("stream-node-1".to_string()),
+        //         rtp_port: server["rtp-port"].as_i64().unwrap_or(18568) as u16,
+        //         rtcp_port: server["rtcp-port"].as_i64().unwrap_or(18569) as u16,
+        //         http_port: server["http-port"].as_i64().unwrap_or(18570) as u16,
+        //         hook_uri: server["hook-uri"].as_str().map(|str| str.to_string()).unwrap_or("http://127.0.0.1:18567".to_string()),
+        //     }
+        // }
     }
 }
 
@@ -192,7 +202,7 @@ impl Media {
             "PS" => { Ok(Self::PS) }
             "H264" => { Ok(Self::H264) }
             other => {
-                return Err(GlobalError::new_sys_error(&format!("暂不支持的数据类型-{other}"),|msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(&format!("暂不支持的数据类型-{other}"), |msg| warn!("{msg}")));
             }
         }
     }
@@ -204,8 +214,6 @@ mod tests {
 
     #[test]
     pub fn test_build_stream() {
-        let binding = common::get_config();
-        let cfg = binding.get(0).unwrap();
-        println!("{:?}", ServerConf::build(cfg));
+        println!("{:?}", ServerConf::init_by_conf());
     }
 }

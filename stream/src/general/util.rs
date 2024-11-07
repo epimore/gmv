@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use common::err::{GlobalResult, TransError};
+use common::exception::{GlobalResult, TransError};
 use common::log::error;
 
 static INDEX: AtomicUsize = AtomicUsize::new(0);

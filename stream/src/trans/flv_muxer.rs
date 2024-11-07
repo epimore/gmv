@@ -2,7 +2,7 @@ use hyper::body;
 use common::log::{info, warn};
 
 use common::bytes::{BufMut, BytesMut};
-use common::err::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, TransError};
 use common::tokio::sync::broadcast;
 use common::tokio::sync::broadcast::error::RecvError;
 
