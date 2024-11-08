@@ -84,25 +84,6 @@ serde_default!(default_hook_uri, String, "http://127.0.0.1:18567".to_string());
 impl ServerConf {
     pub fn init_by_conf() -> Self {
         ServerConf::conf()
-
-        // if cfg.is_badvalue() || cfg["server"].is_badvalue() {
-        //     Self {
-        //         name: "stream-node-1".to_string(),
-        //         rtp_port: 18568,
-        //         rtcp_port: 18569,
-        //         http_port: 18570,
-        //         hook_uri: "http://127.0.0.1:18567".to_string(),
-        //     }
-        // } else {
-        //     let server = &cfg["server"];
-        //     Self {
-        //         name: server["name"].as_str().map(|str| str.to_string()).unwrap_or("stream-node-1".to_string()),
-        //         rtp_port: server["rtp-port"].as_i64().unwrap_or(18568) as u16,
-        //         rtcp_port: server["rtcp-port"].as_i64().unwrap_or(18569) as u16,
-        //         http_port: server["http-port"].as_i64().unwrap_or(18570) as u16,
-        //         hook_uri: server["hook-uri"].as_str().map(|str| str.to_string()).unwrap_or("http://127.0.0.1:18567".to_string()),
-        //     }
-        // }
     }
 }
 

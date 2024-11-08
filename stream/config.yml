@@ -1,7 +1,12 @@
 log:
-  level: info
-  suffix: stream
+  level: error
+  prefix: stream
   store_path: ./logs
+  specify:
+    - crate_name: gmv_stream::biz,gmv_stream::io::http_handler
+      level: debug
+      file_name_prefix: biz #日志文件前缀
+      additivity: false #是否记录到默认日志文件中
 
 server:
   name: s1 #服务标识身份,流媒体集群唯一标识
