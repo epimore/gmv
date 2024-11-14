@@ -83,10 +83,10 @@ async fn write(mut output_rx: Receiver<Zip>, output: Sender<Zip>) {
     while let Some(zip) = output_rx.recv().await {
         match &zip {
             Zip::Data(pkg) => {
-                info!("发送数据: 网络组={:?},数据={:?}",pkg.get_association(),String::from_utf8(pkg.get_data().to_vec()));
+                info!("发送数据: 网络组={:?},数据={:#?}",pkg.get_association(),String::from_utf8(pkg.get_data().to_vec()));
             }
             Zip::Event(ent) => {
-                info!("发送事件: 网络组={:?},事件code={:?}",ent.get_association(),ent.get_type_code());
+                info!("发送事件: 网络组={:?},事件code={:#?}",ent.get_association(),ent.get_type_code());
             }
         }
         let _ = output.send(zip).await.hand_log(|msg| error!("数据发送失败:{msg}"));

@@ -256,7 +256,7 @@ impl Message {
                     _ => {}
                 }
             }
-            info!("keep_alive: device_id = {},status = {}",&device_id,&status);
+            debug!("keep_alive: device_id = {},status = {}",&device_id,&status);
         }
         RWSession::heart(device_id, bill.clone()).await;
     }

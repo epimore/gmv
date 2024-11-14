@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::time::Duration;
-use common::log::{error, info, warn};
+
 use regex::Regex;
 use rsip::prelude::{HeadersExt, UntypedHeader};
-use rsip::{Response};
+use rsip::Response;
+
 use common::exception::{GlobalError, GlobalResult, TransError};
+use common::log::{debug, error, warn};
 use common::tokio::sync::mpsc;
 use common::tokio::time::Instant;
+
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
 use crate::gb::shared::event::{Container, EventSession};
 use crate::gb::shared::rw::RequestOutput;
@@ -62,14 +65,14 @@ impl CmdStream {
         while let Some((Some(res), _)) = rx.recv().await {
             let code = res.status_code.code();
             let code_msg = res.status_code.to_string();
-            info!("{ident:?} : {code} => {code_msg}");
+            debug!("{ident:?} : {code} => {code_msg}");
             if code >= 300 {
                 EventSession::remove_event(&ident).await;
                 return Err(GlobalError::new_biz_error(3000, &code_msg, |msg| error!("{msg}")));
             }
             if code == 200 {
                 let session = sdp_types::Session::parse(res.body()).unwrap();
-                info!("{ident:?} :{:?}",&session);
+                debug!("{ident:?} :{:?}",&session);
                 let re = Regex::new(r"\s+").unwrap();
                 let mut media_map = HashMap::new();
                 for media in session.medias {
