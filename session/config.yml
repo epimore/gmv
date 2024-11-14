@@ -8,8 +8,12 @@ log:
       file_name_prefix: sql #日志文件前缀
       additivity: false #是否记录到默认日志文件中
     - crate_name: sqlx  #sqlx用指全部，可sqlx::xxx
-      level: debug #日志等级
+      level: info #日志等级
       file_name_prefix: sql #日志文件前缀
+      additivity: false #是否记录到其默认日志文件中
+    - crate_name: gmv_session::gb  #信令日志
+      level: debug #日志等级
+      file_name_prefix: gb #日志文件前缀
       additivity: false #是否记录到其默认日志文件中
 
 http:
@@ -31,7 +35,7 @@ db:
       log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
       timezone: "Asia/Shanghai"
       charset: utf8mb4
-      ssl_level: 1 #加密等级，默认1，取值[0,1]，0-不加密，1-可选加密：服务端支持则加密、否则不加密，2-必选加密，服务端不支持则不建立连接，3-满足2外还需验证主机名，4-满足2外还需验证CA证书
+      ssl_level: 0 #加密等级，默认1，取值[0,1]，0-不加密，1-可选加密：服务端支持则加密、否则不加密，2-必选加密，服务端不支持则不建立连接，3-满足2外还需验证主机名，4-满足2外还需验证CA证书
       ssl_ca_crt_file: path/to/ca.crt #CA 证书 ssl_level:3 生效
       ssl_ca_client_cert_file: path/to/client.crt #SSL 客户端证书 ssl_level:3 生效
       ssl_ca_client_key_file: path/to/client.key #SSL 客户端密钥 ssl_level:3 生效

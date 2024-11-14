@@ -60,7 +60,9 @@ impl GmvDevice {
     pub async fn insert_single_gmv_device_by_register(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
         sqlx::query(r#"insert into GMV_DEVICE (device_id,transport,register_expires,
-        register_time,local_addr,sip_from,sip_to,status,gb_version) values (?,?,?,?,?,?,?,?,?)"#)
+        register_time,local_addr,sip_from,sip_to,status,gb_version) values (?,?,?,?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),transport=VALUES(transport),register_expires=VALUES(register_expires),
+        register_time=VALUES(register_time),local_addr=VALUES(local_addr),sip_from=VALUES(sip_from),sip_to=VALUES(sip_to),status=VALUES(status),gb_version=VALUES(gb_version)"#)
             .bind(&self.device_id)
             .bind(&self.transport)
             .bind(&self.register_expires)

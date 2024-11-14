@@ -47,11 +47,11 @@ async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>) {
                     Ok(msg) => {
                         match msg {
                             SipMessage::Request(req) => {
-                                debug!("request header:\n{}\nrequest body:\n{}",&req.headers,GB18030.decode(&req.body).0);
+                                info!("request header:\n{}\nrequest body:\n{}",&req.headers,GB18030.decode(&req.body).0);
                                 let _ = handler::requester::hand_request(req, output_tx.clone(), &association).await;
                             }
                             SipMessage::Response(res) => {
-                                debug!("Response header:\n{}\nResponse body:\n{}",&res.headers,GB18030.decode(&res.body).0);
+                                info!("Response header:\n{}\nResponse body:\n{}",&res.headers,GB18030.decode(&res.body).0);
                                 match (res.call_id_header(), res.cseq_header(), parser::header::get_device_id_by_response(&res)) {
                                     (Ok(call_id), Ok(cs_eq), Ok(to_device_id)) => {
                                         let _ = EventSession::handle_response(to_device_id, call_id.clone().into(), cs_eq.clone().into(), res).await;
@@ -69,10 +69,10 @@ async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>) {
                 }
             }
             Zip::Event(event) => {
-                debug!("receive event code={:?},from={:?}",event.type_code,event.association);
+                info!("receive event code={:?},from={:?}",event.type_code,event.association);
                 if event.get_type_code() == &0u8 {
                     RWSession::clean_rw_session_by_bill(event.get_association()).await;
-                    break;
+                    // break;
                 }
             }
         }
