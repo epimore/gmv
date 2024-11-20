@@ -12,21 +12,6 @@ pub mod cache;
 pub mod http;
 
 #[derive(Debug, Get, Deserialize)]
-#[conf(prefix = "server.session")]
-pub struct SessionConf {
-    lan_ip: Ipv4Addr,
-    wan_ip: Ipv4Addr,
-    lan_port: u16,
-    wan_port: u16,
-}
-
-impl SessionConf {
-    pub fn get_session_conf() -> Self {
-        SessionConf::conf()
-    }
-}
-
-#[derive(Debug, Get, Deserialize)]
 #[conf(prefix = "server.stream")]
 pub struct StreamConf {
     proxy_enable: bool,
@@ -68,11 +53,11 @@ impl StreamConf {
 
 #[cfg(test)]
 mod tests {
-    use crate::general::SessionConf;
+    use crate::gb::SessionConf;
 
     #[test]
     fn test_map_conf() {
-        println!("{:?}", SessionConf::get_session_conf());
+        println!("{:?}", SessionConf::get_session_by_conf());
     }
 
     fn print_banner(c: char) {
