@@ -50,41 +50,8 @@ impl Http {
                 .with(Cors::new().allow_methods([Method::GET, Method::POST])))
             .nest("/docs", ui);
         let acceptor = TcpAcceptor::from_std(listener).hand_log(|msg| error!("{msg}"))?;
-        info!("Web server start running 1111111111");
         Server::new_with_acceptor(acceptor).run(route).await.hand_log(|msg| error!("{msg}"))?;
         error!("http server exception:exited");
         Ok(())
     }
-    //
-    // pub async fn process_http_server() -> GlobalResult<()> {
-    //     let http: Http = Http::conf();
-    //     http.init_web_server((web::api::RestApi, web::hook::HookApi)).await?;
-    //     error!("http server exception:exited");
-    //     Ok(())
-    // }
-    //
-    // async fn init_web_server<T: 'static + poem_openapi::OpenApi>(&self, api: T) -> GlobalResult<()> {
-    //     use poem::{Server, Route, EndpointExt};
-    //     use poem::listener::TcpListener;
-    //     use poem::middleware::Cors;
-    //     use poem::http::Method;
-    //     use poem_openapi::OpenApiService;
-    //
-    //     let http_addr = format!("http://0.0.0.0:{}{}", &self.port, &self.prefix);
-    //     let service = OpenApiService::new(api, &self.server_name, &self.version)
-    //         .server(&http_addr);
-    //     let ui = service.swagger_ui();
-    //     let route = Route::new()
-    //         .nest(&self.prefix, service
-    //             .with(Cors::new().allow_methods([Method::GET, Method::POST])))
-    //         .nest("/docs", ui);
-    //     let acceptor = TcpListener::bind(format!("0.0.0.0:{}", &self.port)).into_acceptor().await.hand_log(|msg| error!("web start failed: {msg}")).unwrap();
-    //     info!("Listen to http web addr = 0.0.0.0:{} ...\r\n", &self.port);
-    //     eprintln!("Listen to http web addr = 0.0.0.0:{} ...\r\n", &self.port);
-    //     Server::new_with_acceptor(acceptor)
-    //         .run(route).await.hand_log(|msg| error!("{msg}"))?;
-    //     // Server::new(TcpListener::bind(format!("0.0.0.0:{}", &self.port)))
-    //     //     .run(route).await.hand_log(|msg| error!("{msg}"))?;
-    //     Ok(())
-    // }
 }

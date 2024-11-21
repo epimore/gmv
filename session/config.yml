@@ -11,7 +11,7 @@ log:
       level: info #日志等级
       file_name_prefix: sql #日志文件前缀
       additivity: false #是否记录到其默认日志文件中
-    - crate_name: gmv_session::gb  #信令日志
+    - crate_name: gmv_session::gb::io$  #信令日志
       level: debug #日志等级
       file_name_prefix: gb #日志文件前缀
       additivity: false #是否记录到其默认日志文件中
