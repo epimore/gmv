@@ -40,10 +40,10 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
             .unwrap()
             .block_on(async {
                 mysqlx::init_conn_pool()?;
-                let gb = tokio::spawn(async move {
-                    info!("Gb server start running...");
+                let se = tokio::spawn(async move {
+                    info!("Session server start running...");
                     SessionConf::run(tu).await?;
-                    error!("Gb server stop");
+                    error!("Session server stop");
                     Ok::<(), GlobalError>(())
                 });
                 let web = tokio::spawn(async move {
@@ -52,7 +52,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
                     error!("Web server stop");
                     Ok::<(), GlobalError>(())
                 });
-                gb.await.hand_log(|msg| error!("GB:{msg}"))??;
+                se.await.hand_log(|msg| error!("Session:{msg}"))??;
                 web.await.hand_log(|msg| error!("WEB:{msg}"))??;
                 Ok::<(), GlobalError>(())
             })?;

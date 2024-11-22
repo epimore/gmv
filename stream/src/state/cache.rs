@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use parking_lot::RwLock;
 use rtp::packet::Packet;
 
 use common::exception::{GlobalError, GlobalResult, TransError};
@@ -13,7 +12,7 @@ use common::log::error;
 use common::net::state::Association;
 use common::once_cell::sync::Lazy;
 use common::tokio;
-use common::tokio::sync::{broadcast, mpsc, Notify};
+use common::tokio::sync::{broadcast, mpsc, Notify, RwLock};
 use common::tokio::sync::oneshot::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
@@ -25,8 +24,8 @@ use crate::io::hook_handler::{Event, EventRes};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> GlobalResult<()> {
-    let mut state = SESSION.shared.state.write();
+pub async fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> GlobalResult<()> {
+    let mut state = SESSION.shared.state.write().await;
     match state.sessions.entry(ssrc) {
         Entry::Occupied(mut occ) => {
             let (.., (notify, mt)) = occ.get_mut();
@@ -40,13 +39,13 @@ pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> GlobalRes
     }
 }
 
-pub fn get_media_type(ssrc: &u32) -> Option<(Arc<Notify>, HashMap<u8, Media>)> {
-    let state = SESSION.shared.state.read();
+pub async fn get_media_type(ssrc: &u32) -> Option<(Arc<Notify>, HashMap<u8, Media>)> {
+    let state = SESSION.shared.state.read().await;
     state.sessions.get(ssrc).map(|(.., mt)| mt.clone())
 }
 
-pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()> {
-    let mut state = SESSION.shared.state.write();
+pub async fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()> {
+    let mut state = SESSION.shared.state.write().await;
     if !state.sessions.contains_key(&ssrc) {
         let expires = Duration::from_millis(HALF_TIME_OUT);
         let when = Instant::now() + expires;
@@ -64,7 +63,7 @@ pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()
 
 //返回rtp_tx
 pub async fn refresh(ssrc: u32, bill: &Association) -> Option<(async_channel::Sender<Packet>, async_channel::Receiver<Packet>)> {
-    let guard = SESSION.shared.state.read();
+    let guard = SESSION.shared.state.read().await;
     let mut first_in = false;
     if let Some((on, _when, stream_id, _expires, channel, reported_time, _info, _media)) = guard.sessions.get(&ssrc) {
         if let Some((_ssrc, _flv_sets, _hls_sets, _record)) = guard.inner.get(stream_id) {
@@ -85,7 +84,7 @@ pub async fn refresh(ssrc: u32, bill: &Association) -> Option<(async_channel::Se
     drop(guard);
     //流注册时-回调
     if first_in {
-        let mut guard = SESSION.shared.state.write();
+        let mut guard = SESSION.shared.state.write().await;
         if let Some((_on, _when, stream_id, _expires, channel, reported_time, info, _)) = guard.sessions.get_mut(&ssrc) {
             let remote_addr_str = bill.get_remote_addr().to_string();
             let protocol_addr = bill.get_protocol().get_value().to_string();
@@ -102,8 +101,8 @@ pub async fn refresh(ssrc: u32, bill: &Association) -> Option<(async_channel::Se
 }
 
 //外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
-pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-    let guard = SESSION.shared.state.read();
+pub async fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
+    let guard = SESSION.shared.state.read().await;
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -112,8 +111,8 @@ pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     }
 }
 
-pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
-    let guard = SESSION.shared.state.read();
+pub async fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
+    let guard = SESSION.shared.state.read().await;
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -122,8 +121,8 @@ pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
     }
 }
 
-pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-    let guard = SESSION.shared.state.read();
+pub async fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
+    let guard = SESSION.shared.state.read().await;
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -132,8 +131,8 @@ pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     }
 }
 
-pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
-    let guard = SESSION.shared.state.read();
+pub async fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
+    let guard = SESSION.shared.state.read().await;
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -142,8 +141,8 @@ pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
     }
 }
 
-pub fn get_rtp_tx(ssrc: &u32) -> Option<async_channel::Sender<Packet>> {
-    let guard = SESSION.shared.state.read();
+pub async fn get_rtp_tx(ssrc: &u32) -> Option<async_channel::Sender<Packet>> {
+    let guard = SESSION.shared.state.read().await;
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -152,8 +151,8 @@ pub fn get_rtp_tx(ssrc: &u32) -> Option<async_channel::Sender<Packet>> {
     }
 }
 
-pub fn get_rtp_rx(ssrc: &u32) -> Option<async_channel::Receiver<Packet>> {
-    let guard = SESSION.shared.state.read();
+pub async fn get_rtp_rx(ssrc: &u32) -> Option<async_channel::Receiver<Packet>> {
+    let guard = SESSION.shared.state.read().await;
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -172,8 +171,8 @@ pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
 }
 
 //更新用户数据:in_out:true-插入,false-移除
-pub fn update_token(stream_id: &String, play_type: &String, user_token: String, in_out: bool) {
-    let mut guard = SESSION.shared.state.write();
+pub async fn update_token(stream_id: &String, play_type: &String, user_token: String, in_out: bool) {
+    let mut guard = SESSION.shared.state.write().await;
     let state = &mut *guard;
     if let Some((_, flv_sets, hls_sets, _)) = state.inner.get_mut(stream_id) {
         match &play_type[..] {
@@ -185,8 +184,8 @@ pub fn update_token(stream_id: &String, play_type: &String, user_token: String, 
 }
 
 //返回BaseStreamInfo,flv_count,hls_count
-pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStreamInfo, u32, u32)> {
-    let guard = SESSION.shared.state.read();
+pub async fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStreamInfo, u32, u32)> {
+    let guard = SESSION.shared.state.read().await;
     match guard.inner.get(stream_id) {
         None => {
             None
@@ -205,8 +204,8 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
     }
 }
 
-pub fn remove_by_stream_id(stream_id: &String) {
-    let mut guard = SESSION.shared.state.write();
+pub async fn remove_by_stream_id(stream_id: &String) {
+    let mut guard = SESSION.shared.state.write().await;
     let state = &mut *guard;
     if let Some((ssrc, _, _, _)) = state.inner.remove(stream_id) {
         if let Some((_, when, _, _, _, _, _, _)) = state.sessions.remove(&ssrc) {
@@ -215,9 +214,9 @@ pub fn remove_by_stream_id(stream_id: &String) {
     }
 }
 
-pub fn get_stream_state(opt_stream_id: Option<String>) -> Vec<StreamState> {
+pub async fn get_stream_state(opt_stream_id: Option<String>) -> Vec<StreamState> {
     let mut vec = Vec::new();
-    let guard = SESSION.shared.state.read();
+    let guard = SESSION.shared.state.read().await;
     let server_name = SESSION.shared.server_conf.get_name().to_string();
     match opt_stream_id {
         None => {
@@ -266,7 +265,6 @@ struct Session {
 impl Session {
     fn init() -> Self {
         let server_conf = ServerConf::init_by_conf();
-        banner();
         let (tx, rx) = mpsc::channel(10000);
         let session = Session {
             shared: Arc::new(Shared {
@@ -289,17 +287,6 @@ impl Session {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().thread_name("HOOK-EVENT").build().hand_log(|msg| error!("{msg}")).unwrap();
             let _ = rt.block_on(Event::event_loop(rx));
         });
-        println!("Server node name = {}\n\
-        Listen to http web addr = 0.0.0.0:{}\n\
-        Listen to rtp over tcp and udp,stream addr = 0.0.0.0:{}\n\
-        Listen to rtcp over tcp and udp,message addr = 0.0.0.0:{}\n\
-        Hook to http addr = {}\n\
-        ... GMV:STREAM started.",
-                 server_conf.get_name(),
-                 server_conf.get_http_port(),
-                 server_conf.get_rtp_port(),
-                 server_conf.get_rtcp_port(),
-                 server_conf.get_hook_uri());
         session
     }
 
@@ -330,7 +317,7 @@ impl Shared {
     // 有:on=true变false;重新插入计时队列，更新时刻
     // 无：on->false；清理state，并回调通知timeout
     async fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
-        let mut guard = SESSION.shared.state.write();
+        let mut guard = SESSION.shared.state.write().await;
         let state = &mut *guard;
         let now = Instant::now();
         let mut notify_one = false;
@@ -438,16 +425,4 @@ impl Channel {
     fn get_hls_rx(&self) -> broadcast::Receiver<FrameData> {
         self.hls_channel.0.subscribe()
     }
-}
-
-fn banner() {
-    let br = r#"
-            ___   __  __  __   __    _      ___    _____    ___     ___     ___   __  __
-    o O O  / __| |  \/  | \ \ / /   (_)    / __|  |_   _|  | _ \   | __|   /   \ |  \/  |
-   o      | (_ | | |\/| |  \ V /     _     \__ \    | |    |   /   | _|    | - | | |\/| |
-  oO__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   _|_|_   |_|_\   |___|   |_|_| |_|__|_|
- {======|_|""G""|_|""M""|_|""V""|_|"":""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|
-./0--000'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
-"#;
-    println!("{}", br);
 }

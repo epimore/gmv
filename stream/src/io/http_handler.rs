@@ -29,7 +29,7 @@ const QUERY_STATE: &str = "/query/state";
 const RTP_MEDIA: &str = "/rtp/media";
 
 async fn handle(
-    node_name: &String,
+    node_name: String,
     opt_addr: Option<SocketAddr>,
     req: Request<Body>,
     ssrc_tx: Sender<u32>,
@@ -53,7 +53,7 @@ fn get_token(req: &Request<Body>) -> GlobalResult<String> {
         .or_else(|| req.headers().get("Gmv-Token"));
     let token = if h_res.is_none() {
         get_param_map(req)?.get("gmv-token").ok_or_else(|| GlobalError::new_biz_error(1100, "url参数获取gmv-token失败;", |msg| error!("{msg}")))?.to_string()
-    }else {
+    } else {
         h_res.unwrap().to_str().hand_log(|msg| info!("header获取gmv-token失败;err = {msg}"))?.to_string()
     };
     Ok(token)
@@ -67,7 +67,7 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
     Ok(map)
 }
 
-async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
+async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
         (&Method::GET, LISTEN_SSRC) => {
@@ -85,7 +85,7 @@ async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, 
                 Ok(body_bytes) => {
                     match serde_json::from_slice::<RtpMap>(&body_bytes).hand_log(|msg| error!("{msg}")) {
                         Ok(rtp_map) => {
-                            api::RtpMap::rtp_map(rtp_map)
+                            api::RtpMap::rtp_map(rtp_map).await
                         }
                         Err(_) => {
                             api::res_422()
@@ -111,10 +111,10 @@ async fn biz(node_name: &String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, 
         }
         (&Method::GET, QUERY_STATE) => {
             match req.uri().query() {
-                None => { api::get_state(None) }
+                None => { api::get_state(None).await }
                 Some(param) => {
                     let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
-                    api::get_state(map.get("stream_id").map(|stream_id_ref| stream_id_ref.clone()))
+                    api::get_state(map.get("stream_id").map(|stream_id_ref| stream_id_ref.clone())).await
                 }
             }
         }
@@ -153,17 +153,24 @@ impl Drop for ClientConnection {
     }
 }
 
-pub async fn run(node_name: &'static String, port: u16, tx: Sender<u32>) -> GlobalResult<()> {
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await.hand_log(|msg| error!("{msg}")).unwrap();
+pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
+    info!("Listen to http web addr = 0.0.0.0:{} ...", port);
+    Ok(listener)
+}
+
+pub async fn run(node_name: String, std_http_listener: std::net::TcpListener, tx: Sender<u32>) -> GlobalResult<()> {
+    std_http_listener.set_nonblocking(true).hand_log(|msg| error!("{msg}"))?;
+    let listener = TcpListener::from_std(std_http_listener).hand_log(|msg| error!("{msg}"))?;
 
     let make_service = make_service_fn(|conn: &ClientConnection| {
         let opt_addr = conn.conn.peer_addr().ok();
         let client_connection_cancel = conn.cancel.clone();
         let tx_cl = tx.clone();
-
+        let value = node_name.clone();
         async move {
             Ok::<_, GlobalError>(service_fn(move |req| {
-                handle(node_name, opt_addr, req, tx_cl.clone(), client_connection_cancel.clone())
+                handle(value.clone(), opt_addr, req, tx_cl.clone(), client_connection_cancel.clone())
             }))
         }
     });

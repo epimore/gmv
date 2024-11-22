@@ -18,21 +18,21 @@ use crate::state::cache;
 use crate::trans::FrameData;
 
 pub async fn run(ssrc: u32, tx: broadcast::Sender<FrameData>) -> GlobalResult<()> {
-    if let Some(rx) = cache::get_rtp_rx(&ssrc) {
+    if let Some(rx) = cache::get_rtp_rx(&ssrc).await {
         let rtp_buffer = Arc::new(RtpBuffer::init());
         let produce_buffer = rtp_buffer.clone();
         let (flush_tx, flush_rx) = oneshot::channel();
         tokio::spawn(async move {
             produce_data(rx, &produce_buffer, flush_tx).await;
         });
-        match cache::get_media_type(&ssrc) {
+        match cache::get_media_type(&ssrc).await {
             None => {
                 return Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},媒体映射：未查询到ssrc", ssrc), |msg| error!("{msg}")))
             }
             Some((nt, mut map)) => {
                 if map.is_empty() {
                     if let Ok(()) = timeout(Duration::from_secs(2), nt.notified()).await {
-                        map = cache::get_media_type(&ssrc)
+                        map = cache::get_media_type(&ssrc).await
                             .ok_or_else(|| GlobalError::new_sys_error(&format!("ssrc = {ssrc},已释放"),|msg| error!("{msg}")))?.1;
                     }
                 }

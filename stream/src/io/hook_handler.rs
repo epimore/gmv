@@ -52,7 +52,7 @@ impl Event {
                 Event::OffPlay(spi) => {
                     if let Some(true) = spi.off_play().await {
                         let stream_id = spi.get_base_stream_info().get_stream_id();
-                        cache::remove_by_stream_id(stream_id);
+                        cache::remove_by_stream_id(stream_id).await;
                     }
                 }
                 Event::EndRecord(_) => {}

@@ -14,7 +14,7 @@ use crate::state::cache;
 use crate::trans::FrameData;
 
 pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
-    if let Some(tx) = cache::get_flv_tx(&ssrc) {
+    if let Some(tx) = cache::get_flv_tx(&ssrc).await {
         let mut container = flv::MediaFlvContainer::register_all();
         loop {
             match rx.recv().await {
