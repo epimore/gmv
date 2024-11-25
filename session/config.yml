@@ -4,8 +4,8 @@ log:
   store_path: ./logs
   specify:
     - crate_name: poem::server
-      level: warn
-      file_name_prefix: sql #日志文件前缀
+      level: debug
+      file_name_prefix: poem #日志文件前缀
       additivity: false #是否记录到默认日志文件中
     - crate_name: sqlx  #sqlx用指全部，可sqlx::xxx
       level: info #日志等级
@@ -15,6 +15,11 @@ log:
       level: debug #日志等级
       file_name_prefix: gb #日志文件前缀
       additivity: false #是否记录到其默认日志文件中
+    - crate_name: gmv_session::web  #请求日志
+      level: info #日志等级
+      file_name_prefix: web #日志文件前缀
+      additivity: false #是否记录到其默认日志文件中
+
 
 http:
   port: 18567

@@ -49,6 +49,7 @@ impl Http {
             .nest(&self.prefix, service
                 .with(Cors::new().allow_methods([Method::GET, Method::POST])))
             .nest("/docs", ui);
+        listener.set_nonblocking(true).hand_log(|msg| error!("{msg}"))?;
         let acceptor = TcpAcceptor::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         Server::new_with_acceptor(acceptor).run(route).await.hand_log(|msg| error!("{msg}"))?;
         error!("http server exception:exited");

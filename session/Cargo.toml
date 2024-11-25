@@ -20,8 +20,8 @@ tokio = "1.41"
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"
-poem = "3.0"
-poem-openapi = { version = "5.0", features = ["swagger-ui"] }
+poem = "3.1"
+poem-openapi = { version = "5.1", features = ["swagger-ui"] }
 bimap = "0.6"
 reqwest = { version = "0.12", features = ["json"] }
 sdp-types = "0.1"

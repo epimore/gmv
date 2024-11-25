@@ -1,6 +1,4 @@
-
-use common::{daemon};
-
+use common::daemon;
 use crate::app::AppInfo;
 
 // #![allow(warnings)]

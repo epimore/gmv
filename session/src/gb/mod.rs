@@ -36,7 +36,7 @@ impl SessionConf {
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
         let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.get_wan_port())).hand_log(|msg| error! {"{msg}"})?;
         let res = net::sdx::listen(net::state::Protocol::ALL, socket_addr);
-        info!("Listen to gb28181 session over tcp and udp,listen ip : {} port: {}", self.get_wan_ip(), self.get_wan_port());
+        info!("Listen to gb28181 session over tcp and udp,listen: 0.0.0.0:{}; wan ip: {}", self.get_wan_port(), self.get_wan_ip());
         res
     }
 
@@ -53,6 +53,5 @@ impl SessionConf {
         write_task.await.hand_log(|msg| error!("写出数据异常:{msg}"))?;
         Ok(())
     }
-
 }
 
