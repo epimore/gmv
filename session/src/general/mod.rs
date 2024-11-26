@@ -1,6 +1,6 @@
 use std::collections::{HashMap};
 use std::net::Ipv4Addr;
-use common::cfg_lib;
+use common::{cfg_lib, serde_default};
 use common::cfg_lib::conf;
 use common::serde_yaml;
 use common::constructor::Get;
@@ -16,11 +16,11 @@ pub mod http;
 pub struct StreamConf {
     proxy_enable: bool,
     proxy_addr: Option<String>,
-    //node_name:StreamNode
+    #[serde(default = "default_node_map")]
     node_map: HashMap<String, StreamNode>,
     nodes: Vec<StreamNode>,
 }
-
+serde_default!(default_node_map, HashMap<String, StreamNode>, HashMap::new());
 #[derive(Debug, Get, Deserialize, Clone)]
 pub struct StreamNode {
     name: String,
@@ -35,16 +35,14 @@ impl StreamConf {
     pub fn get_stream_conf() -> &'static Self {
         CELL.get_or_init(||{
             let mut conf: Self = StreamConf::conf();
-            let mut node_map = HashMap::new();
             for node in &conf.nodes {
-                if let Some(old) = node_map.insert(node.name.clone(), node.clone()) {
+                if let Some(old) = conf.node_map.insert(node.name.clone(), node.clone()) {
                     panic!("配置server.stream.nodes.name重复:{}:，建议使用s1,s2,s3等连续编号", old.name);
                 }
             }
-            if node_map.is_empty() {
+            if conf.node_map.is_empty() {
                 panic!("未配置流媒体信息")
             }
-            conf.node_map = node_map;
             conf
         })
     }
@@ -53,11 +51,11 @@ impl StreamConf {
 
 #[cfg(test)]
 mod tests {
-    use crate::gb::SessionConf;
 
     #[test]
     fn test_map_conf() {
-        println!("{:?}", SessionConf::get_session_by_conf());
+
+        println!("{:?}", super::StreamConf::get_stream_conf());
     }
 
     fn print_banner(c: char) {
