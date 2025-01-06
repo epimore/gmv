@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use bimap::BiMap;
+use parking_lot::Mutex;
 use common::log::{error, warn};
 use common::serde::{Deserialize, Serialize};
 use common::serde::de::DeserializeOwned;
@@ -15,7 +16,7 @@ use common::dashmap::mapref::entry::Entry;
 use common::exception::{GlobalResult, TransError};
 use common::once_cell::sync::Lazy;
 use common::{serde_json, tokio};
-use common::tokio::sync::{Mutex, Notify};
+use common::tokio::sync::{Notify};
 use common::tokio::sync::mpsc::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
@@ -29,7 +30,9 @@ pub struct Cache {
 
 impl Cache {
     pub fn ssrc_sn_get() -> Option<u16> {
-        let opt_ssrc_sn = { GENERAL_CACHE.shared.ssrc_sn.iter().next().map(|item| *item.key()) };
+        let opt_ssrc_sn = {
+            let mut iter = GENERAL_CACHE.shared.ssrc_sn.iter();
+            iter.next().map(|item| *item.key()) };
         match opt_ssrc_sn {
             None => { None }
             Some(ssrc_sn) => {
@@ -44,7 +47,8 @@ impl Cache {
 
     pub fn stream_map_order_node() -> BTreeSet<(u16, String)> {
         let mut map = HashMap::<String, u16>::new();
-        while let Some(item) = GENERAL_CACHE.shared.stream_map.iter().next() {
+        let mut dash_iter = GENERAL_CACHE.shared.stream_map.iter();
+        while let Some(item) = dash_iter.next() {
             let (_, node_name, _, _, _, _, _) = item.value();
             match map.entry(node_name.clone()) {
                 Occupied(mut occ) => {
@@ -322,7 +326,8 @@ impl Cache {
                         match s_map.get(&PlayType::Live) {
                             None => { None }
                             Some(i_map) => {
-                                match i_map.iter().next() {
+                                let mut iter = i_map.iter();
+                                match iter.next() {
                                     None => { None }
                                     Some((stream_id, ssrc)) => {
                                         Some((stream_id.to_string(), ssrc.to_string()))
@@ -364,8 +369,8 @@ impl Cache {
         }
     }
 
-    pub async fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
-        let mut guard = GENERAL_CACHE.shared.state.lock().await;
+    pub fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
+        let mut guard = GENERAL_CACHE.shared.state.lock();
         match expire {
             None => { guard.entities.insert(key, (data, None, call_tx)); }
             Some(ins) => {
@@ -375,8 +380,8 @@ impl Cache {
         }
     }
 
-    pub async fn state_get(key: &str) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
-        let guard = GENERAL_CACHE.shared.state.lock().await;
+    pub fn state_get(key: &str) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
+        let guard = GENERAL_CACHE.shared.state.lock();
         match guard.entities.get(key) {
             None => { None }
             Some((val, _, opt_tx)) => {
@@ -385,23 +390,23 @@ impl Cache {
         }
     }
 
-    pub async fn state_insert_obj<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, call_tx: Option<Sender<Option<Bytes>>>) {
+    pub fn state_insert_obj<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, call_tx: Option<Sender<Option<Bytes>>>) {
         //此处不会panic，obj满足序列化与反序列化
         let vec = serde_json::to_vec(obj).unwrap();
         let bytes = Bytes::from(vec);
-        Self::state_insert(key, bytes, None, call_tx).await;
+        Self::state_insert(key, bytes, None, call_tx);
     }
 
-    pub async fn state_insert_obj_by_timer<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, expire: Duration, call_tx: Option<Sender<Option<Bytes>>>) {
+    pub fn state_insert_obj_by_timer<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, expire: Duration, call_tx: Option<Sender<Option<Bytes>>>) {
         //此处不会panic，obj满足序列化与反序列化
         let vec = serde_json::to_vec(obj).unwrap();
         let bytes = Bytes::from(vec);
         let when = Instant::now() + expire;
-        Self::state_insert(key, bytes, Some(when), call_tx).await;
+        Self::state_insert(key, bytes, Some(when), call_tx);
     }
 
-    pub async fn state_remove(key: &String) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
-        let mut guard = GENERAL_CACHE.shared.state.lock().await;
+    pub fn state_remove(key: &String) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
+        let mut guard = GENERAL_CACHE.shared.state.lock();
         if let Some((data, Some(when), opt_tx)) = guard.entities.remove(key) {
             guard.expirations.remove(&(when, key.to_string()));
             return Some((data, opt_tx));
@@ -409,8 +414,8 @@ impl Cache {
         None
     }
 
-    pub async fn state_get_obj<T: Serialize + DeserializeOwned>(key: &str) -> GlobalResult<Option<(T, Option<Sender<Option<Bytes>>>)>> {
-        let guard = GENERAL_CACHE.shared.state.lock().await;
+    pub fn state_get_obj<T: Serialize + DeserializeOwned>(key: &str) -> GlobalResult<Option<(T, Option<Sender<Option<Bytes>>>)>> {
+        let guard = GENERAL_CACHE.shared.state.lock();
         match guard.entities.get(key) {
             None => { Ok(None) }
             Some((val, _, opt_tx)) => {
@@ -499,7 +504,7 @@ struct Shared {
 impl Shared {
     async fn purge_expired_keys(&self) -> Option<Instant> {
         let now = Instant::now();
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock();
         let state = &mut *state;
         while let Some((when, key)) = state.expirations.iter().next() {
             if *when > now {

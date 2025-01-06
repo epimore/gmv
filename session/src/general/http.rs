@@ -5,8 +5,8 @@ use poem::{EndpointExt, Route, Server};
 use poem_openapi::OpenApiService;
 use common::serde::{Deserialize};
 use common::cfg_lib;
-use common::cfg_lib::conf;
 use common::serde_yaml;
+use common::cfg_lib::conf;
 use common::log::{error, info};
 use common::exception::{GlobalResult, TransError};
 use common::serde_default;
@@ -36,13 +36,13 @@ impl Http {
         Http::conf()
     }
     pub fn listen_http_server(&self) -> GlobalResult<std::net::TcpListener> {
-        let listener =std::net::TcpListener::bind(format!("0.0.0.0:{}", self.port)).hand_log(|msg| error!("{msg}"))?;
+        let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", self.port)).hand_log(|msg| error!("{msg}"))?;
         info!("Listen to http web addr = 0.0.0.0:{} ...", self.port);
         Ok(listener)
     }
 
     pub async fn run(&self, listener: std::net::TcpListener) -> GlobalResult<()> {
-        let service = OpenApiService::new((web::api::RestApi, web::hook::HookApi), &self.server_name, &self.version)
+        let service = OpenApiService::new((web::api::RestApi, web::hook::HookApi, web::se::SeApi), &self.server_name, &self.version)
             .server(format!("http://0.0.0.0:{}{}", &self.port, &self.prefix));
         let ui = service.swagger_ui();
         let route = Route::new()

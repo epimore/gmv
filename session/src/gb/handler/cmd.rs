@@ -14,6 +14,7 @@ use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
 use crate::gb::shared::event::{Container, EventSession};
 use crate::gb::shared::rw::RequestOutput;
 use crate::general::model::StreamMode;
+use crate::storage::entity::GmvDevice;
 
 pub struct CmdResponse;
 
@@ -35,21 +36,38 @@ impl CmdQuery {
     pub async fn lazy_query_device_info(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::query_device_info(device_id).await?;
         let when = Instant::now() + Duration::from_secs(2);
-        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None)).await
+        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
     }
     pub async fn lazy_query_device_catalog(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::query_device_catalog(device_id).await?;
         let when = Instant::now() + Duration::from_secs(2);
-        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None)).await
+        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
     }
     pub async fn lazy_subscribe_device_catalog(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::subscribe_device_catalog(device_id).await?;
         let when = Instant::now() + Duration::from_secs(2);
-        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None)).await
+        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
     }
 }
 
 pub struct CmdControl;
+
+impl CmdControl {
+    //device_id: &String, channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32
+    pub async fn snapshot_image(device_id: &String, _channel_id: &String) -> GlobalResult<()> {
+        let device = GmvDevice::query_gmv_device_by_device_id(device_id).await?.ok_or_else(|| GlobalError::new_sys_error(&format!("未知设备: {device_id}"), |msg| error!("{msg}")))?;
+        match device.get_gb_version().as_deref() {
+            Some("3.0") => {
+                //RequestBuilder::control_snapshot_image()
+                Ok(())
+            },
+            _ => {
+                Err(GlobalError::new_sys_error(&format!("未知设备: {device_id}"), |msg| error!("{msg}")))
+            }
+        }
+
+    }
+}
 
 pub struct CmdNotify;
 
@@ -67,7 +85,7 @@ impl CmdStream {
             let code_msg = res.status_code.to_string();
             debug!("{ident:?} : {code} => {code_msg}");
             if code >= 300 {
-                EventSession::remove_event(&ident).await;
+                EventSession::remove_event(&ident);
                 return Err(GlobalError::new_biz_error(3000, &code_msg, |msg| error!("{msg}")));
             }
             if code == 200 {
@@ -90,11 +108,11 @@ impl CmdStream {
                 }
                 let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
                 let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
-                EventSession::remove_event(&ident).await;
+                EventSession::remove_event(&ident);
                 return Ok((res, media_map, from_tag, to_tag));
             }
         }
-        EventSession::remove_event(&ident).await;
+        EventSession::remove_event(&ident);
         return Err(GlobalError::new_biz_error(1000, "摄像机响应超时", |msg| error!("{msg}")));
     }
 
@@ -114,12 +132,12 @@ impl CmdStream {
 
         if let Some((Some(res), _)) = rx.recv().await {
             if res.status_code.code() == 200 {
-                EventSession::remove_event(&ident).await;
+                EventSession::remove_event(&ident);
                 return Ok(());
             }
             error!("关闭摄像机: ident = {:?},channel_id = {},res = {}",&ident,channel_id,res.status_code);
         }
-        EventSession::remove_event(&ident).await;
+        EventSession::remove_event(&ident);
         return Err(GlobalError::new_biz_error(1000, "关闭摄像机直播未响应或超时", |msg| error!("{msg}")));
     }
 }

@@ -7,6 +7,25 @@ use crate::storage::mapper;
 const D_DIC: [char; 10] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 //按键盘从上至下，从左到右形成小写、大写字母字典表
 const A_DIC: [char; 52] = ['q', 'a', 'z', 'w', 's', 'x', 'e', 'd', 'c', 'r', 'f', 'v', 't', 'g', 'b', 'y', 'h', 'n', 'u', 'j', 'm', 'i', 'k', 'o', 'l', 'p', 'Q', 'A', 'Z', 'W', 'S', 'X', 'E', 'D', 'C', 'R', 'F', 'V', 'T', 'G', 'B', 'Y', 'H', 'N', 'U', 'J', 'M', 'I', 'K', 'O', 'L', 'P'];
+// const E_DIC: [char; 2] = ['_', '.'];
+
+// pub fn en_short_id_from_digit_str(digit_str: &str) -> GlobalResult<String> {
+//     let dic = [&E_DIC[..], &D_DIC[..], &A_DIC[..]].concat();
+//     let mut tmp_key0 = String::new();
+//     for ch in digit_str.chars() {
+//         let digit = ch.to_digit(10).ok_or_else(|| GlobalError::new_sys_error(&format!("{ch} not digit"), |msg| error!("{msg}")))?;
+//         tmp_key0.push_str(&format!("{:04b}", digit));
+//     }
+//     let short_id: String = tmp_key0.chars().collect::<Vec<_>>().chunks(6)
+//         .map(|cs| dic.get(usize::from_str_radix(&cs.iter().collect::<String>(), 2).unwrap())).flatten().collect();
+//     Ok(short_id)
+// }
+//
+// #[test]
+// fn t1() {
+//     let str = en_short_id_from_digit_str("1238978766700465046540897056104511120658").unwrap();
+//     println!("{str}");
+// }
 
 //生成stream_id,参数由调用方校验,简单对称加密算法
 // device_id 20位十进制纯数字
@@ -109,7 +128,7 @@ pub fn de_stream_id(stream_id: &str) -> (String, String, String) {
 // 识,例如“13010000002000000001”中取数字“10000”;第7位至第10位作为域内媒体流标识,是一个与
 // 当前域内产生的媒体流SSRC值后4位不重复的四位十进制整数
 // 返回(ssrc,stream_id)
-pub async  fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_ssrc: u16, live: bool) -> GlobalResult<(String, String)> {
+pub async fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_ssrc: u16, live: bool) -> GlobalResult<(String, String)> {
     let gmv_oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
         .ok_or_else(|| GlobalError::new_biz_error(1100, "设备不存在", |msg| error!("{msg}")))?;
     //直播：需校验摄像头是否在线；回放：录像机在线即可

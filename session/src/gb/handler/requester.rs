@@ -82,7 +82,7 @@ impl State {
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
     async fn check_session(device_id: &String, tx: Sender<Zip>, bill: &Association) -> GlobalResult<State> {
-        let rw_session = RWSession::has_session_by_device_id(device_id).await;
+        let rw_session = RWSession::has_session_by_device_id(device_id);
         if rw_session {
             Ok(State::Usable)
         } else {
@@ -99,7 +99,7 @@ impl State {
                         //判断是否在注册有效期内
                         if reg_ts + Duration::seconds(expire as i64) >  Local::now().naive_local() {
                             //刷新缓存
-                            RWSession::insert(device_id, tx, heart, bill).await;
+                            RWSession::insert(device_id, tx, heart, bill);
                             //如果设备是离线状态，则更新为在线
                             if on == 0 {
                                 GmvDevice::update_gmv_device_status_by_device_id(device_id, 1).await?;
@@ -171,7 +171,7 @@ impl Register {
         }
     }
     async fn login_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Association, oauth: GmvOauth) -> GlobalResult<()> {
-        RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill).await;
+        RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register().await?;
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
@@ -258,7 +258,7 @@ impl Message {
             }
             debug!("keep_alive: device_id = {},status = {}",&device_id,&status);
         }
-        RWSession::heart(device_id, bill.clone()).await;
+        RWSession::heart(device_id, bill.clone());
     }
 
     async fn device_info(vs: Vec<(String, String)>) {
@@ -305,6 +305,10 @@ impl Notify {
 
 #[cfg(test)]
 mod tests {
+    use rsip::headers::Authorization;
+    use rsip::headers::ToTypedHeader;
+    use rsip::{headers, Method};
+    use rsip::services::DigestGenerator;
     use common::log::LevelFilter;
     use common::chrono::Local;
 
@@ -328,5 +332,15 @@ mod tests {
         } else {
             println!("Debug messages are disabled");
         }
+    }
+
+    #[test]
+    fn test_authorization(){
+        let auth = r#"Digest username="34020000001110000009", realm="3402000000", nonce="3ca91737e8d546edbc86ff1c0042dde8", uri="sip:34020000002000000001@3402000000", response="5ffa4f2a5445d462b5a862a5b6366b9a", algorithm=MD5, cnonce="0a4f113b", qop=auth, nc=00000001"#;
+        let authorization = Authorization::try_from(auth).unwrap();
+        let au:headers::typed::Authorization = authorization.typed().unwrap();
+        let dsg = DigestGenerator::from(&au, "Ab123456", &Method::Register);
+        let x = dsg.verify(&au.response);
+        println!("{:?}",x);
     }
 }

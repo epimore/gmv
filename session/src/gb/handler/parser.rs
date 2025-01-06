@@ -70,13 +70,14 @@ pub mod header {
             match header {
                 Header::Other(key, val) => {
                     if key.eq("X-GB-Ver") {
-                        return match &val[..] {
-                            "1.0" => Some("GB/T 28181—2011".to_string()),
-                            "1.1" => Some("GB/T 28181—2011-1".to_string()),
-                            "2.0" => Some("GB/T 28181—2016".to_string()),
-                            "3.0" => Some("GB/T 28181—2022".to_string()),
-                            &_ => Some(val.to_string())
-                        };
+                        return Some(val.to_string());
+                        // return match &val[..] {
+                        //     "1.0" => Some("GB/T 28181—2011".to_string()),
+                        //     "1.1" => Some("GB/T 28181—2011-1".to_string()),
+                        //     "2.0" => Some("GB/T 28181—2016".to_string()),
+                        //     "3.0" => Some("GB/T 28181—2022".to_string()),
+                        //     &_ => Some(val.to_string())
+                        // };
                     }
                 }
                 _ => { continue; }

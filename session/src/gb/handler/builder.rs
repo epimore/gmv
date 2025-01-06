@@ -50,7 +50,7 @@ impl ResponseBuilder {
 
     pub fn build_401_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
-        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("2.0"));
+        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
         Ok(rsip::Response {
             status_code: 401.into(),
@@ -62,7 +62,7 @@ impl ResponseBuilder {
 
     pub fn unauthorized_register_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
-        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("2.0"));
+        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
         let domain = parser::header::get_domain(&req)?;
         response_header.push(typed::WwwAuthenticate {
@@ -82,7 +82,7 @@ impl ResponseBuilder {
 
     pub fn build_register_ok_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
-        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("2.0"));
+        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
         Ok(rsip::Response {
             status_code: 200.into(),
@@ -157,6 +157,12 @@ impl RequestBuilder {
         message_request
     }
 
+    pub async fn control_snapshot_image(device_id: &String, channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32) -> GlobalResult<(Ident, SipMessage)> {
+        let xml = XmlBuilder::control_snapshot_image(channel_id, num, interval, uri, session_id);
+        let message_request = Self::build_message_request(device_id, xml).await;
+        message_request
+    }
+
     async fn build_message_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
         let (mut headers, uri) = Self::build_request_header(None, device_id, false, false, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
@@ -226,13 +232,13 @@ impl RequestBuilder {
     /// 构建下发请求头
     async fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
                                   -> GlobalResult<(rsip::Headers, Uri)> {
-        let bill = RWSession::get_bill_by_device_id(device_id).await.ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_log(|msg| warn!("{msg}"))?;
+        let bill = RWSession::get_bill_by_device_id(device_id).ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_log(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
         if channel_id.is_some() {
             let channel_id = channel_id.unwrap();
             let channel_status = mapper::get_device_channel_status(device_id, channel_id).await?.ok_or(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，未知或无效")))?;
             match &channel_status.to_ascii_uppercase()[..] {
-                "ON" | "ONLINE" | "ONLY" | ""=> { dst_id = channel_id }
+                "ON" | "ONLINE" | "ONLY" | "" => { dst_id = channel_id }
                 _ => {
                     Err(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，已下线")))?
                 }
@@ -265,7 +271,7 @@ impl RequestBuilder {
             || { headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, domain)).into()) }
         );
         if expires {
-            let expires = RWSession::get_expires_by_device_id(device_id).await.ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))?;
+            let expires = RWSession::get_expires_by_device_id(device_id).ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))?;
             headers.push(rsip::headers::Expires::new(expires.as_secs().to_string()).into());
         }
         if contact {
@@ -402,6 +408,23 @@ struct XmlBuilder;
 ///编码格式：2022 GB18030
 /// 2016 GB2312
 impl XmlBuilder {
+    pub fn control_snapshot_image(channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32) -> String {
+        let mut xml = String::new();
+        xml.push_str("<?xml version=\"1.0\" encoding=\"GB18030\"?>\r\n");
+        xml.push_str("<Control>\r\n");
+        xml.push_str("<CmdType>DeviceConfig</CmdType>\r\n");
+        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
+        xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", channel_id));
+        xml.push_str("<SnapShotConfig>\r\n");
+        xml.push_str(&*format!("<SnapNum>{}</SnapNum>\r\n", num));
+        xml.push_str(&*format!("<Interval>{}</Interval>\r\n", interval));
+        xml.push_str(&*format!("<UploadURI>{}</UploadURI>\r\n", uri));
+        xml.push_str(&*format!("<SessionId>{}</SessionId>\r\n", session_id));
+        xml.push_str("</SnapShotConfig>\r\n");
+        xml.push_str("</Control>\r\n");
+        xml
+    }
+
     pub fn query_device_info(device_id: &String) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");

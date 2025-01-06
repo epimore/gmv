@@ -57,6 +57,13 @@ server:
     wan_ip: 172.18.38.186  # 公网IP
     lan_port: 25600  #lan端口
     wan_port: 25600  #wan端口
+  pics:
+    enable: true #是否开启循环拍照,默认true
+    cycle: 300 #循环拍照周期秒 max u16 默认300
+    num: 1 #连拍张数,最大10 默认1
+    interval: 5 #连拍间隔秒
+    raw_path: ./pics/raw  #原始图片存储地址
+    snapshot_path: ./pics/snapshot  #快照存储地址
   stream:
     proxy_enable: false #是否统一代理流出口，否-使用流媒体服务的公网ip返回结果
     proxy_addr: https://epimore.cn #流代理地址;eg:https://epimore.cn/s1/start/play?stream_id=stream_id1111&play_type=flv

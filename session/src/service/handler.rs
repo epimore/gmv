@@ -48,7 +48,7 @@ pub async fn off_play(stream_play_info: StreamPlayInfo) -> bool {
 
 pub async fn stream_in(base_stream_info: BaseStreamInfo) {
     let key_stream_in_id = format!("{KEY_STREAM_IN}{}", base_stream_info.get_stream_id());
-    if let Some((_, Some(tx))) = general::cache::Cache::state_get(&key_stream_in_id).await {
+    if let Some((_, Some(tx))) = general::cache::Cache::state_get(&key_stream_in_id) {
         let vec = serde_json::to_vec(&base_stream_info).unwrap();
         let bytes = Bytes::from(vec);
         let _ = tx.send(Some(bytes)).await.hand_log(|msg| error!("{msg}"));
@@ -68,9 +68,15 @@ pub fn stream_input_timeout(stream_state: StreamState) {
     }
 }
 
+/*
+1.检查设备状态：是否在线
+2.判断通道是否为单IPC
+3.开启直播流
+4.建立流与用户关系
+*/
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = play_live_model.get_device_id();
-    if !RWSession::has_session_by_device_id(device_id).await {
+    if !RWSession::has_session_by_device_id(device_id) {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
     let channel_id = if let Some(channel_id) = play_live_model.get_channel_id() {
@@ -161,11 +167,38 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
     let (tx, mut rx) = mpsc::channel(8);
     let when = Instant::now() + Duration::from_secs(secs);
     let key = format!("{KEY_STREAM_IN}{stream_id}");
-    general::cache::Cache::state_insert(key.clone(), Bytes::new(), Some(when), Some(tx)).await;
+    general::cache::Cache::state_insert(key.clone(), Bytes::new(), Some(when), Some(tx));
     let mut res = None;
     if let Some(Some(bytes)) = rx.recv().await {
         res = serde_json::from_slice::<BaseStreamInfo>(&*bytes).ok();
     }
-    general::cache::Cache::state_remove(&key).await;
+    general::cache::Cache::state_remove(&key);
     res
+}
+
+#[test]
+mod test{
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::time::{Instant, sleep_until};
+    use common::chrono::Local;
+
+    #[tokio::test]
+    async fn test() {
+        let (tx, mut rx) = mpsc::channel::<Option<u32>>(8);
+        let init = Local::now().timestamp_millis();
+        println!("{} : {}", "first init", init);
+        tokio::spawn(async move{
+            sleep_until(Instant::now() + Duration::from_secs(2)).await;
+            tx.send(None).await.unwrap();
+            let current = Local::now().timestamp_millis();
+            println!("{} : {}", "sub", current - init);
+        });
+        if let Some(Some(data)) = rx.recv().await {
+            println!("res = {}", data);
+        }
+        let current = Local::now().timestamp_millis();
+        println!("{} : {}", "main", current - init);
+        sleep_until(Instant::now() + Duration::from_secs(6)).await;
+    }
 }
