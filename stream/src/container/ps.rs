@@ -110,7 +110,7 @@ impl PsPacket {
                     return Err(GlobalError::new_sys_error(&format!("invalid data:ps_start_code_prefix is not 0x000001,val = {:02x?}", start_code), |msg| warn!("{msg}")));
                 }
             }
-            let vec = self.parse_to_nalu(pes_packets).hand_log(|msg| warn!("{msg}"))?;
+            let vec = self.parse_to_nalu(pes_packets)?;
             return Ok(Some(vec));
         }
         Ok(None)
