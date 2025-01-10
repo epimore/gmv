@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use byteorder::{BigEndian, ReadBytesExt};
+use log::error;
 use memchr::memmem;
 
 use common::anyhow::anyhow;
@@ -10,7 +11,6 @@ use common::bytes::{Bytes, BytesMut};
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
 use common::log::{info, warn};
-use common::tokio::sync::broadcast;
 use crate::coder::h264::H264;
 use crate::coder::{FrameData, HandleFrame};
 use crate::general::mode::Coder;
@@ -29,22 +29,37 @@ const PS_START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01u8];
 
 // #[derive(Default)]
 pub struct Ps {
-    tx: broadcast::Sender<FrameData>,
+    flv_tx: Option<crossbeam_channel::Sender<FrameData>>,
+    hls_tx: Option<crossbeam_channel::Sender<FrameData>>,
     pub ps_packet: PsPacket,
 }
 
 impl HandleFrame for Ps {
     fn next_step(&self, frame_data: FrameData) -> GlobalResult<()> {
-        self.tx.send(frame_data)
-            .map_err(|err| GlobalError::new_biz_error(1199, &err.to_string(), |msg| info!("http handler 关闭通道:{msg}")))
-            .map(|_| ())
+        match (&self.flv_tx, &self.hls_tx) {
+            (Some(flv_tx), Some(hls_tx)) => {
+                flv_tx.send(frame_data.clone()).hand_log(|msg| error!("{msg}"))?;
+                hls_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
+            }
+            (Some(flv_tx), None) => {
+                flv_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
+            }
+            (None, Some(hls_tx)) => {
+                hls_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
+            }
+            (None, None) => {
+                Err(GlobalError::new_sys_error("无frame发送端", |msg| error!("{msg}")))?;
+            }
+        }
+        Ok(())
     }
 }
 
 impl Ps {
-    pub fn init(tx: broadcast::Sender<FrameData>) -> Self {
+    pub fn init(flv_tx: Option<crossbeam_channel::Sender<FrameData>>, hls_tx: Option<crossbeam_channel::Sender<FrameData>>) -> Self {
         Self {
-            tx,
+            flv_tx,
+            hls_tx,
             ps_packet: PsPacket::default(),
         }
     }

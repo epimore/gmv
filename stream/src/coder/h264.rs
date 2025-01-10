@@ -3,8 +3,9 @@ use byteorder::{BigEndian, ByteOrder};
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
+use log::error;
 use memchr::memmem;
-use common::log::{info, warn};
+use common::log::{warn};
 use rtp::codecs::h264::H264Packet;
 use rtp::packetizer::Depacketizer;
 
@@ -12,21 +13,34 @@ use common::anyhow::anyhow;
 use common::bytes::{Buf, BufMut, Bytes, BytesMut};
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
-use common::tokio::sync::broadcast;
 
 use crate::coder::{FrameData, HandleFrame};
 use crate::general::mode::Coder;
 
 pub struct H264 {
-    tx: broadcast::Sender<FrameData>,
+    flv_tx: Option<crossbeam_channel::Sender<FrameData>>,
+    hls_tx: Option<crossbeam_channel::Sender<FrameData>>,
     h264packet: H264Packet,
 }
 
 impl HandleFrame for H264 {
     fn next_step(&self, frame_data: FrameData) -> GlobalResult<()> {
-        self.tx.send(frame_data)
-            .map_err(|err| GlobalError::new_biz_error(1199, &err.to_string(), |msg| info!("http handler 关闭通道:{msg}")))
-            .map(|_| ())
+        match (&self.flv_tx, &self.hls_tx) {
+            (Some(flv_tx), Some(hls_tx)) => {
+                flv_tx.send(frame_data.clone()).hand_log(|msg| error!("{msg}"))?;
+                hls_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
+            }
+            (Some(flv_tx), None) => {
+                flv_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
+            }
+            (None, Some(hls_tx)) => {
+                hls_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
+            }
+            (None, None) => {
+                Err(GlobalError::new_sys_error("无frame发送端", |msg| error!("{msg}")))?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -41,13 +55,13 @@ impl H264 {
         false
     }
 
-    pub fn init_annexb(tx: broadcast::Sender<FrameData>) -> Self {
-        Self { tx, h264packet: H264Packet::default() }
+    pub fn init_annexb(flv_tx: Option<crossbeam_channel::Sender<FrameData>>, hls_tx: Option<crossbeam_channel::Sender<FrameData>>) -> Self {
+        Self { flv_tx, hls_tx, h264packet: H264Packet::default() }
     }
-    pub fn init_avc(tx: broadcast::Sender<FrameData>) -> Self {
+    pub fn init_avc(flv_tx: Option<crossbeam_channel::Sender<FrameData>>, hls_tx: Option<crossbeam_channel::Sender<FrameData>>) -> Self {
         let mut h264packet = H264Packet::default();
         h264packet.is_avc = true;
-        Self { tx, h264packet }
+        Self { flv_tx, hls_tx, h264packet }
     }
 
     pub fn handle_demuxer(&mut self, payload: Bytes, timestamp: u32) -> GlobalResult<()> {

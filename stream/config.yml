@@ -14,4 +14,7 @@ server:
   rtcp_port: 18569 #监听rtcp媒体流端口;  暂未实现
   http_port: 18570 #流媒体API端口
   hook_uri: http://127.0.0.1:18567/session/hook #信令服务的地址
+stream:
+  flv: true
+  hls: false
 

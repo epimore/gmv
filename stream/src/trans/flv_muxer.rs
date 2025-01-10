@@ -1,8 +1,8 @@
 use hyper::body;
-use common::log::{info, warn};
 
 use common::bytes::{BufMut, BytesMut};
 use common::exception::{GlobalError, GlobalResult, TransError};
+use common::log::{info, warn};
 use common::tokio::sync::broadcast;
 use common::tokio::sync::broadcast::error::RecvError;
 
@@ -13,11 +13,11 @@ use crate::general::mode::Coder;
 use crate::state::cache;
 use crate::trans::FrameData;
 
-pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
-    if let Some(tx) = cache::get_flv_tx(&ssrc).await {
+pub fn run(ssrc: u32, rx: crossbeam_channel::Receiver<FrameData>) {
+    if let Some(tx) = cache::get_flv_tx(&ssrc) {
         let mut container = flv::MediaFlvContainer::register_all();
         loop {
-            match rx.recv().await {
+            match rx.recv() {
                 Ok(FrameData { pay_type, timestamp, data }) => {
                     match pay_type {
                         Coder::PS => {}
@@ -46,10 +46,8 @@ pub async fn run(ssrc: u32, mut rx: broadcast::Receiver<FrameData>) {
                         Coder::AAC => {}
                     }
                 }
-                Err(RecvError::Lagged(amt)) => {
-                    warn!("ssrc={ssrc},数据包消费滞后{amt}条，Flv打包跳过.");
-                }
-                Err(RecvError::Closed) => {
+                Err(_e) => {
+                    info!("ssrc：{ssrc} 解复用端流关闭");
                     break;
                 }
             }

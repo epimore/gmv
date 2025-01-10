@@ -1,8 +1,10 @@
+use crossbeam_channel::Sender;
+
 use common::bytes::Bytes;
-use common::exception::{GlobalResult};
-use common::tokio::sync::broadcast;
+use common::exception::GlobalResult;
+
 use crate::coder::h264::H264;
-use crate::container::ps::{Ps};
+use crate::container::ps::Ps;
 use crate::general::mode::Coder;
 
 pub mod h264;
@@ -25,8 +27,8 @@ pub struct MediaInfo {
 }
 
 impl MediaInfo {
-    pub fn register_all(tx: broadcast::Sender<FrameData>) -> Self {
-        Self { h264: H264::init_avc(tx.clone()), ps: Ps::init(tx) }
+    pub fn register_all(flv_tx: Option<Sender<FrameData>>, hls_tx: Option<Sender<FrameData>>) -> Self {
+        Self { h264: H264::init_avc(flv_tx.clone(), hls_tx.clone()), ps: Ps::init(flv_tx.clone(), hls_tx.clone()) }
     }
 }
 

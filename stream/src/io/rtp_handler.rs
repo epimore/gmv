@@ -1,6 +1,7 @@
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 use bytes::Bytes;
+use crossbeam_channel::TrySendError;
 
 use rtp::packet::Packet;
 use webrtc_util::marshal::Unmarshal;
@@ -52,15 +53,15 @@ async fn demux_rtp(mut rtp_data: Bytes, association: &Association) {
     match Packet::unmarshal(&mut rtp_data) {
         Ok(pkt) => {
             let ssrc = pkt.header.ssrc;
-            match state::cache::refresh(ssrc, association).await {
+            match state::cache::refresh(ssrc, association) {
                 None => {
                     debug!("未知ssrc: {}",ssrc);
                 }
                 Some((rtp_tx, rtp_rx)) => {
                     //通道满了，删除先入的数据
-                    if let Err(async_channel::TrySendError::Full(_)) = rtp_tx.try_send(pkt) {
-                        let d_pkg = rtp_rx.recv().await.hand_log(|msg| info!("{msg}"));
-                        warn!("Err Full:丢弃ssrc={ssrc}.seq={}",d_pkg.unwrap().header.sequence_number);
+                    if let Err(TrySendError::Full(_)) = rtp_tx.try_send(pkt) {
+                        let _ = rtp_rx.recv().hand_log(|msg| info!("{msg}"));
+                        warn!("Err Full:丢弃ssrc={ssrc}");
                     }
                 }
             }

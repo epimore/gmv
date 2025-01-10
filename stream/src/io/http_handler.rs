@@ -73,7 +73,7 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
         (&Method::GET, LISTEN_SSRC) => {
             match get_param_map(&req) {
                 Ok(param_map) => {
-                    api::listen_ssrc(param_map, ssrc_tx).await
+                    api::listen_ssrc(param_map)
                 }
                 Err(_err) => {
                     api::res_422()
@@ -85,7 +85,7 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
                 Ok(body_bytes) => {
                     match serde_json::from_slice::<RtpMap>(&body_bytes).hand_log(|msg| error!("{msg}")) {
                         Ok(rtp_map) => {
-                            api::RtpMap::rtp_map(rtp_map).await
+                            api::RtpMap::rtp_map(rtp_map,ssrc_tx).await
                         }
                         Err(_) => {
                             api::res_422()
@@ -111,10 +111,10 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
         }
         (&Method::GET, QUERY_STATE) => {
             match req.uri().query() {
-                None => { api::get_state(None).await }
+                None => { api::get_state(None) }
                 Some(param) => {
                     let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
-                    api::get_state(map.get("stream_id").map(|stream_id_ref| stream_id_ref.clone())).await
+                    api::get_state(map.get("stream_id").map(|stream_id_ref| stream_id_ref.clone()))
                 }
             }
         }

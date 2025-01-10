@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use parking_lot::RwLock;
 
 use rtp::packet::Packet;
 
@@ -12,7 +13,7 @@ use common::log::error;
 use common::net::state::Association;
 use common::once_cell::sync::Lazy;
 use common::tokio;
-use common::tokio::sync::{broadcast, mpsc, Notify, RwLock};
+use common::tokio::sync::{broadcast, mpsc, Notify};
 use common::tokio::sync::oneshot::Sender;
 use common::tokio::time;
 use common::tokio::time::Instant;
@@ -24,13 +25,12 @@ use crate::io::hook_handler::{Event, EventRes};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-pub async fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> GlobalResult<()> {
-    let mut state = SESSION.shared.state.write().await;
+pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> GlobalResult<()> {
+    let mut state = SESSION.shared.state.write();
     match state.sessions.entry(ssrc) {
         Entry::Occupied(mut occ) => {
-            let (.., (notify, mt)) = occ.get_mut();
+            let (.., mt) = occ.get_mut();
             *mt = media_type;
-            notify.notify_one();
             Ok(())
         }
         Entry::Vacant(_) => {
@@ -39,19 +39,19 @@ pub async fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> Glo
     }
 }
 
-pub async fn get_media_type(ssrc: &u32) -> Option<(Arc<Notify>, HashMap<u8, Media>)> {
-    let state = SESSION.shared.state.read().await;
-    state.sessions.get(ssrc).map(|(.., mt)| mt.clone())
+pub fn get_rx_media_type(ssrc: &u32) -> Option<(crossbeam_channel::Receiver<Packet>, HashMap<u8, Media>)> {
+    let state = SESSION.shared.state.read();
+    state.sessions.get(ssrc).map(|mt| (mt.4.get_rtp_rx(), mt.7.clone()))
 }
 
-pub async fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()> {
-    let mut state = SESSION.shared.state.write().await;
+pub fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalResult<()> {
+    let mut state = SESSION.shared.state.write();
     if !state.sessions.contains_key(&ssrc) {
         let expires = Duration::from_millis(HALF_TIME_OUT);
         let when = Instant::now() + expires;
         let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
         state.expirations.insert((when, ssrc));
-        state.sessions.insert(ssrc, (AtomicBool::new(true), when, stream_id.clone(), expires, channel, 0, None, (Arc::new(Notify::new()), HashMap::new())));
+        state.sessions.insert(ssrc, (AtomicBool::new(true), when, stream_id.clone(), expires, channel, 0, None, HashMap::new()));
         state.inner.insert(stream_id, (ssrc, HashSet::new(), HashSet::new(), None));
         drop(state);
         if notify {
@@ -62,9 +62,8 @@ pub async fn insert(ssrc: u32, stream_id: String, channel: Channel) -> GlobalRes
 }
 
 //返回rtp_tx
-pub async fn refresh(ssrc: u32, bill: &Association) -> Option<(async_channel::Sender<Packet>, async_channel::Receiver<Packet>)> {
-    let guard = SESSION.shared.state.read().await;
-    let mut first_in = false;
+pub fn refresh(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>)> {
+    let guard = SESSION.shared.state.read();
     if let Some((on, _when, stream_id, _expires, channel, reported_time, _info, _media)) = guard.sessions.get(&ssrc) {
         if let Some((_ssrc, _flv_sets, _hls_sets, _record)) = guard.inner.get(stream_id) {
             //更新流状态：时间轮会扫描流，将其置为false，若使用中则on更改为true;
@@ -75,34 +74,36 @@ pub async fn refresh(ssrc: u32, bill: &Association) -> Option<(async_channel::Se
             }
             // }
         }
-        if reported_time == &0 {
-            first_in = true;
+        return if reported_time == &0 {
+            drop(guard);
+            //回调流注册时-事件
+            event_stream_in(ssrc, bill)
         } else {
-            return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
-        }
-    }
-    drop(guard);
-    //流注册时-回调
-    if first_in {
-        let mut guard = SESSION.shared.state.write().await;
-        if let Some((_on, _when, stream_id, _expires, channel, reported_time, info, _)) = guard.sessions.get_mut(&ssrc) {
-            let remote_addr_str = bill.get_remote_addr().to_string();
-            let protocol_addr = bill.get_protocol().get_value().to_string();
-            *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
-            let rtp_info = RtpInfo::new(ssrc, Some(protocol_addr), Some(remote_addr_str), SESSION.shared.server_conf.get_name().clone());
-            let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
-            let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
-            let _ = SESSION.shared.event_tx.clone().send((Event::StreamIn(stream_info), None)).await.hand_log(|msg| error!("{msg}"));
-            *reported_time = time;
-            return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
+            Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()))
         }
     }
     None
 }
 
+fn event_stream_in(ssrc: u32, bill: &Association) ->Option<(crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>)>{
+    let mut guard = SESSION.shared.state.write();
+    if let Some((_on, _when, stream_id, _expires, channel, reported_time, info, _)) = guard.sessions.get_mut(&ssrc) {
+        let remote_addr_str = bill.get_remote_addr().to_string();
+        let protocol_addr = bill.get_protocol().get_value().to_string();
+        *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
+        let rtp_info = RtpInfo::new(ssrc, Some(protocol_addr), Some(remote_addr_str), SESSION.shared.server_conf.get_name().clone());
+        let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
+        let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
+        let _ = SESSION.shared.event_tx.clone().try_send((Event::StreamIn(stream_info), None)).hand_log(|msg| error!("{msg}"));
+        *reported_time = time;
+        return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
+    }
+    return None;
+}
+
 //外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
-pub async fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-    let guard = SESSION.shared.state.read().await;
+pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
+    let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -111,8 +112,8 @@ pub async fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     }
 }
 
-pub async fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
-    let guard = SESSION.shared.state.read().await;
+pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
+    let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -121,8 +122,8 @@ pub async fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
     }
 }
 
-pub async fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-    let guard = SESSION.shared.state.read().await;
+pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
+    let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -131,8 +132,8 @@ pub async fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     }
 }
 
-pub async fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
-    let guard = SESSION.shared.state.read().await;
+pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
+    let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -141,8 +142,8 @@ pub async fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
     }
 }
 
-pub async fn get_rtp_tx(ssrc: &u32) -> Option<async_channel::Sender<Packet>> {
-    let guard = SESSION.shared.state.read().await;
+pub fn get_rtp_tx(ssrc: &u32) -> Option<crossbeam_channel::Sender<Packet>> {
+    let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -151,8 +152,8 @@ pub async fn get_rtp_tx(ssrc: &u32) -> Option<async_channel::Sender<Packet>> {
     }
 }
 
-pub async fn get_rtp_rx(ssrc: &u32) -> Option<async_channel::Receiver<Packet>> {
-    let guard = SESSION.shared.state.read().await;
+pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<Packet>> {
+    let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => { None }
         Some((_, _, _, _, channel, _, _, _)) => {
@@ -171,8 +172,8 @@ pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
 }
 
 //更新用户数据:in_out:true-插入,false-移除
-pub async fn update_token(stream_id: &String, play_type: &String, user_token: String, in_out: bool) {
-    let mut guard = SESSION.shared.state.write().await;
+pub fn update_token(stream_id: &String, play_type: &String, user_token: String, in_out: bool) {
+    let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     if let Some((_, flv_sets, hls_sets, _)) = state.inner.get_mut(stream_id) {
         match &play_type[..] {
@@ -184,8 +185,8 @@ pub async fn update_token(stream_id: &String, play_type: &String, user_token: St
 }
 
 //返回BaseStreamInfo,flv_count,hls_count
-pub async fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStreamInfo, u32, u32)> {
-    let guard = SESSION.shared.state.read().await;
+pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStreamInfo, u32, u32)> {
+    let guard = SESSION.shared.state.read();
     match guard.inner.get(stream_id) {
         None => {
             None
@@ -204,8 +205,8 @@ pub async fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(Ba
     }
 }
 
-pub async fn remove_by_stream_id(stream_id: &String) {
-    let mut guard = SESSION.shared.state.write().await;
+pub fn remove_by_stream_id(stream_id: &String) {
+    let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     if let Some((ssrc, _, _, _)) = state.inner.remove(stream_id) {
         if let Some((_, when, _, _, _, _, _, _)) = state.sessions.remove(&ssrc) {
@@ -214,9 +215,9 @@ pub async fn remove_by_stream_id(stream_id: &String) {
     }
 }
 
-pub async fn get_stream_state(opt_stream_id: Option<String>) -> Vec<StreamState> {
+pub fn get_stream_state(opt_stream_id: Option<String>) -> Vec<StreamState> {
     let mut vec = Vec::new();
-    let guard = SESSION.shared.state.read().await;
+    let guard = SESSION.shared.state.read();
     let server_name = SESSION.shared.server_conf.get_name().to_string();
     match opt_stream_id {
         None => {
@@ -317,7 +318,7 @@ impl Shared {
     // 有:on=true变false;重新插入计时队列，更新时刻
     // 无：on->false；清理state，并回调通知timeout
     async fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
-        let mut guard = SESSION.shared.state.write().await;
+        let mut guard = SESSION.shared.state.write();
         let state = &mut *guard;
         let now = Instant::now();
         let mut notify_one = false;
@@ -371,7 +372,7 @@ impl Shared {
 ///自定义会话信息
 struct State {
     //ssrc,(on,ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol),notify-(media_type,media_type_enum))
-    sessions: HashMap<u32, (AtomicBool, Instant, String, Duration, Channel, u32, Option<(String, String)>, (Arc<Notify>, HashMap<u8, Media>))>,
+    sessions: HashMap<u32, (AtomicBool, Instant, String, Duration, Channel, u32, Option<(String, String)>, HashMap<u8, Media>)>,
     //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
     inner: HashMap<String, (u32, HashSet<String>, HashSet<String>, Option<String>)>,
     //(ts,ssrc)
@@ -385,20 +386,20 @@ impl State {
     }
 }
 
-// type SyncChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
-type AsyncChannel = (async_channel::Sender<Packet>, async_channel::Receiver<Packet>);
+type CrossbeamChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
+// type AsyncChannel = (async_channel::Sender<Packet>, async_channel::Receiver<Packet>);
 type BroadcastChannel = (broadcast::Sender<FrameData>, broadcast::Receiver<FrameData>);
 
 #[derive(Debug)]
 pub struct Channel {
-    rtp_channel: AsyncChannel,
+    rtp_channel: CrossbeamChannel,
     flv_channel: BroadcastChannel,
     hls_channel: BroadcastChannel,
 }
 
 impl Channel {
     pub fn build() -> Self {
-        let rtp_channel = async_channel::bounded(BUFFER_SIZE * 10);
+        let rtp_channel = crossbeam_channel::bounded(BUFFER_SIZE * 10);
         let flv_channel = broadcast::channel(BUFFER_SIZE);
         let hls_channel = broadcast::channel(BUFFER_SIZE);
         Self {
@@ -407,10 +408,10 @@ impl Channel {
             hls_channel,
         }
     }
-    fn get_rtp_rx(&self) -> async_channel::Receiver<Packet> {
+    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Packet> {
         self.rtp_channel.1.clone()
     }
-    fn get_rtp_tx(&self) -> async_channel::Sender<Packet> {
+    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<Packet> {
         self.rtp_channel.0.clone()
     }
     fn get_flv_tx(&self) -> broadcast::Sender<FrameData> {

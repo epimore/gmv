@@ -34,3 +34,5 @@ log = "0.4.22"
 #bitstream-io = "2.5"
 #bytes = "1.6.0"
 #mpeg2next = { path = "../../mpeg2next" }
+rayon = "1.10"
+crossbeam-channel = "0.5"
