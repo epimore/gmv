@@ -103,6 +103,11 @@ pub mod rw {
             });
         }
 
+        pub fn get_device_id_by_association(bill: &Association) -> Option<String> {
+            let guard = RW_SESSION.shared.state.lock();
+            guard.bill_map.get(bill).map(|device_id| device_id.clone())
+        }
+
         //用于清理rw_session数据及端口TCP网络连接
         //todo 禁用设备时需调用
         pub async fn clean_rw_session_and_net(device_id: &String) {
