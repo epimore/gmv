@@ -29,7 +29,6 @@ pub struct MediaHandler {
 
 pub struct DemuxContext {
     last_read_rtp_sn: u16, // 上一个读取的 RTP 包的序列号
-    // last_read_rtp_ts: u32, // 上一次读取的 RTP 包的时间戳
     last_read_time: i64, // 上一次读取时间
     last_read_queue_index: usize,  // 上一次读取缓冲区索引
 
@@ -44,7 +43,6 @@ impl DemuxContext {
     pub fn init(packet_rx: Receiver<Packet>, media_handler: MediaHandler) -> Self {
         Self {
             last_read_rtp_sn: 0,
-            // last_read_rtp_ts: 0,
             last_read_time: 0,
             queue: std::array::from_fn(|_| None),
             last_read_queue_index: 0,
@@ -54,35 +52,17 @@ impl DemuxContext {
             media_handler,
         }
     }
+
     //1 判断缓冲区数据数量：[queue_count <  queue_window]? 1.1 : 1.2
     //1.1阻塞线程等待数据+超时
     //1.2直接取数据
-    fn reduce_packet(&mut self) -> GlobalResult<()> {
-        loop {
-            let pkt = self.packet_rx.recv().hand_log(|msg| error!("{msg}"))?;
-            let seq_num = pkt.header.sequence_number;
-            //检查是否为有效的数据包
-            if seq_num > self.last_read_rtp_sn || self.last_read_rtp_sn.wrapping_sub(seq_num) > ROUND_SIZE || self.last_read_rtp_sn == 0 {
-                let index = seq_num as usize % BUFFER_SIZE;
-                let item = unsafe { self.queue.get_unchecked_mut(index) };
-                *item = Some(pkt);
-                self.queue_count += 1;
-
-                //检查是否已达缓冲区一半 或 等待超时
-                if self.queue_count == BLOCK_BUFFER_SIZE || Local::now().timestamp_millis() >= self.last_read_time + BASE_TIMEOUT {
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-    pub fn demux_packet(&mut self) ->GlobalResult<()>{
+    pub fn demux_packet(&mut self) -> GlobalResult<()> {
         if self.queue_count < self.queue_window {
             self.reduce_packet()?;
         }
         let mut index = self.last_read_queue_index;
         let count = self.queue_count;
-        for i in 0..BLOCK_BUFFER_SIZE {
+        for i in 0..BUFFER_SIZE {
             index += 1;
             if index == BUFFER_SIZE {
                 index = 0;
@@ -93,7 +73,7 @@ impl DemuxContext {
                 self.queue_count -= 1;
                 self.last_read_rtp_sn = pkt.header.sequence_number;
 
-                //todo 处理数据
+                //处理数据
                 Self::demux_data(&mut self.media_handler.media_info, pkt, &self.media_handler.media_map)?;
 
                 if self.queue_count == 0 {
@@ -104,13 +84,36 @@ impl DemuxContext {
                         if matches!(self.queue_window,2|4|8) {
                             self.queue_window *= 2;
                         }
-                    }else {
+                    } else {
                         if matches!(self.queue_window,4|8|16) {
                             self.queue_window /= 2;
                         }
                     }
                     break;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn reduce_packet(&mut self) -> GlobalResult<()> {
+        loop {
+            let pkt = self.packet_rx.recv().hand_log(|msg| error!("{msg}"))?;
+            let seq_num = pkt.header.sequence_number;
+            //检查是否为有效的数据包
+            if seq_num > self.last_read_rtp_sn || self.last_read_rtp_sn.wrapping_sub(seq_num) > ROUND_SIZE || self.last_read_rtp_sn == 0 {
+                let index = seq_num as usize % BUFFER_SIZE;
+                let item = unsafe { self.queue.get_unchecked_mut(index) };
+                *item = Some(pkt);
+                self.queue_count += 1;
+                //检查是否已充满一个缓冲块
+                if self.queue_count == BLOCK_BUFFER_SIZE {
+                    break;
+                }
+            }
+            //等待超时
+            if Local::now().timestamp_millis() >= self.last_read_time + BASE_TIMEOUT {
+                break;
             }
         }
         Ok(())
@@ -141,5 +144,11 @@ impl DemuxContext {
             }
         }
     }
+}
 
+#[test]
+fn test() {
+    let mut i = 4;
+    i /= 2;
+    println!("{i}");
 }

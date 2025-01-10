@@ -10,11 +10,6 @@ pub mod flv_muxer;
 mod hls_muxer;
 mod demuxer;
 
-// //rtp数据包 包装类型；当为None时 》》》 已达数据结束
-// pub type RtpPacketWrap = Option<Packet>;
-// //原始数据帧 包装类型；当为None时 》》》 已达数据结束
-// pub type FrameDataWrap = Option<FrameData>;
-
 pub async fn run(mut rx: Receiver<u32>) {
     let r = rayon::ThreadPoolBuilder::new().build().expect("pics: rayon init failed");
     while let Some(ssrc) = rx.recv().await {

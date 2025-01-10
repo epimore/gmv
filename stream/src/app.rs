@@ -32,30 +32,6 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
         let (http_listener, tu) = t;
         let conf = self.conf;
         let node_name = conf.get_name().clone();
-        // let (cc_tx,cc_rx) = crossbeam_channel::bounded(100);
-        // let rt = tokio::runtime::Builder::new_multi_thread()
-        //     .enable_all()
-        //     .build()
-        //     .unwrap();
-        // rt.spawn(async {
-        //     info!("Stream server start running...");
-        //     rtp_handler::run(tu).await?;
-        //     error!("Stream server stop");
-        //     // Ok::<(), GlobalError>(())
-        // });
-        // rt.spawn(async {
-        //     info!("Web server start running...");
-        //     http_handler::run(node_name, http_listener, cc_tx).await?;
-        //     error!("Web server stop");
-        //     // Ok::<(), GlobalError>(())
-        // });
-        // info!("Trans server start running...");
-        // trans::run(cc_rx);
-        // info!("Trans server start running...");
-
-
-
-
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()

@@ -371,7 +371,7 @@ impl Shared {
 
 ///自定义会话信息
 struct State {
-    //ssrc,(on,ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol),notify-(media_type,media_type_enum))
+    //ssrc,(on,ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol),(media_type,media_type_enum))
     sessions: HashMap<u32, (AtomicBool, Instant, String, Duration, Channel, u32, Option<(String, String)>, HashMap<u8, Media>)>,
     //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
     inner: HashMap<String, (u32, HashSet<String>, HashSet<String>, Option<String>)>,
@@ -387,7 +387,6 @@ impl State {
 }
 
 type CrossbeamChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
-// type AsyncChannel = (async_channel::Sender<Packet>, async_channel::Receiver<Packet>);
 type BroadcastChannel = (broadcast::Sender<FrameData>, broadcast::Receiver<FrameData>);
 
 #[derive(Debug)]

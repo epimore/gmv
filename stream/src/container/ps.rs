@@ -64,7 +64,7 @@ impl Ps {
         }
     }
     pub fn handle_demuxer(&mut self, marker: bool, timestamp: u32, bytes: Bytes) -> GlobalResult<()> {
-        if let Some(raws) = self.ps_packet.parse(marker, bytes)? {
+        if let Ok(Some(raws)) = self.ps_packet.parse(marker, bytes) {
             for raw in raws {
                 let frame_data = FrameData { pay_type: Coder::H264(None, None, false), timestamp, data: raw };
                 self.next_step(frame_data)?;

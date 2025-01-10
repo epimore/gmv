@@ -3,7 +3,7 @@ use byteorder::{BigEndian, ByteOrder};
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
-use log::error;
+use log::{error, info};
 use memchr::memmem;
 use common::log::{warn};
 use rtp::codecs::h264::H264Packet;
@@ -65,21 +65,23 @@ impl H264 {
     }
 
     pub fn handle_demuxer(&mut self, payload: Bytes, timestamp: u32) -> GlobalResult<()> {
-        let raw_data = self.h264packet.depacketize(&payload).hand_log(|msg| warn!("{msg}"))?;
-        let raw_data_len = raw_data.len();
-        let nal_data_size_len = 4;
-        let mut curr_offset = 0;
-        while curr_offset + nal_data_size_len < raw_data_len {
-            let size_data = raw_data.slice(curr_offset..curr_offset + nal_data_size_len);
-            let size_data_len = BigEndian::read_u32(size_data.as_ref()) as usize;
-            let last_offset = curr_offset + nal_data_size_len + size_data_len;
-            if last_offset > raw_data_len {
-                return Err(GlobalError::new_sys_error("nal size larger than raw buffer", |msg| warn!("{msg}")));
-            } else {
-                let nal_data = raw_data.slice(curr_offset..last_offset);
-                let frame_data = FrameData { pay_type: Coder::H264(None, None, false), timestamp, data: nal_data };
-                self.next_step(frame_data)?;
-                curr_offset = last_offset;
+        if let Ok(raw_data) = self.h264packet.depacketize(&payload).hand_log(|msg| warn!("{msg}")) {
+            let raw_data_len = raw_data.len();
+            let nal_data_size_len = 4;
+            let mut curr_offset = 0;
+            while curr_offset + nal_data_size_len < raw_data_len {
+                let size_data = raw_data.slice(curr_offset..curr_offset + nal_data_size_len);
+                let size_data_len = BigEndian::read_u32(size_data.as_ref()) as usize;
+                let last_offset = curr_offset + nal_data_size_len + size_data_len;
+                if last_offset > raw_data_len {
+                    info!("nal size larger than raw buffer");
+                    break;
+                } else {
+                    let nal_data = raw_data.slice(curr_offset..last_offset);
+                    let frame_data = FrameData { pay_type: Coder::H264(None, None, false), timestamp, data: nal_data };
+                    self.next_step(frame_data)?;
+                    curr_offset = last_offset;
+                }
             }
         }
         Ok(())
