@@ -32,10 +32,10 @@ pub async fn run(tu: (Option<std::net::TcpListener>, Option<UdpSocket>)) -> Glob
                 if association.protocol.eq(&Protocol::TCP) {
                     let vec = tcp_rtp_buffer.fresh_data(association.local_addr, association.remote_addr, data);
                     for rtp_data in vec {
-                        demux_rtp(rtp_data, &association).await;
+                        demux_rtp(rtp_data, &association);
                     }
                 } else {
-                    demux_rtp(data, &association).await;
+                    demux_rtp(data, &association);
                 }
             }
             Zip::Event(event) => {
@@ -49,7 +49,7 @@ pub async fn run(tu: (Option<std::net::TcpListener>, Option<UdpSocket>)) -> Glob
     Ok(())
 }
 
-async fn demux_rtp(mut rtp_data: Bytes, association: &Association) {
+fn demux_rtp(mut rtp_data: Bytes, association: &Association) {
     match Packet::unmarshal(&mut rtp_data) {
         Ok(pkt) => {
             let ssrc = pkt.header.ssrc;
