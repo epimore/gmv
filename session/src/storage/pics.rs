@@ -60,7 +60,7 @@ impl ImageInfo {
     pub fn sender() -> Sender<Self> {
         static SENDER: Lazy<Sender<ImageInfo>> = Lazy::new(|| {
             let (tx, rx) = crossbeam_channel::bounded(1000);
-            thread::spawn(move||{
+            thread::Builder::new().name("Shared:rw".to_string()).spawn(move||{
                 let r = rayon::ThreadPoolBuilder::new().build().expect("pics: rayon init failed");
                 r.scope(|s|{
                     s.spawn(move|_|{
@@ -69,7 +69,7 @@ impl ImageInfo {
                         })
                     })
                 })
-            });
+            }).expect("Storage:pic background thread create failed");
             tx
         });
         SENDER.clone()

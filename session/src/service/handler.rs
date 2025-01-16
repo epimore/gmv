@@ -51,7 +51,7 @@ pub async fn stream_in(base_stream_info: BaseStreamInfo) {
     if let Some((_, Some(tx))) = general::cache::Cache::state_get(&key_stream_in_id) {
         let vec = serde_json::to_vec(&base_stream_info).unwrap();
         let bytes = Bytes::from(vec);
-        let _ = tx.send(Some(bytes)).await.hand_log(|msg| error!("{msg}"));
+        let _ = tx.try_send(Some(bytes)).hand_log(|msg| error!("{msg}"));
     }
 }
 
@@ -110,7 +110,7 @@ async fn start_live_stream(device_id: &String, channel_id: &String, token: &Stri
             let (res, media_map, from_tag, to_tag) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
             //回调给gmv-stream 使其确认媒体类型
             let _ = callback::ident_rtp_media_info(&ssrc, media_map, token, stream_node.get_local_ip(), stream_node.get_local_port()).await;
-            let (call_id, seq) = CmdStream::play_live_ack(device_id, &res).await?;
+            let (call_id, seq) = CmdStream::play_live_ack(device_id, &res)?;
             return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
                 general::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, PlayType::Live, from_tag, to_tag);
                 general::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), PlayType::Live);

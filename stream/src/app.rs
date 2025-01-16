@@ -21,8 +21,8 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
         let app = App {
             conf: cache::get_server_conf().clone()
         };
-        banner();
         logger::Logger::init()?;
+        banner();
         let http_listener = http_handler::listen_http_server(*(app.conf.get_http_port()))?;
         let tu = rtp_handler::listen_gb_server(*(app.conf.get_rtp_port()))?;
         Ok((app, (http_listener, tu)))
@@ -74,5 +74,5 @@ fn banner() {
  {======|_|""G""|_|""M""|_|""V""|_|"":""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|
 ./0--000'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
 "#;
-    println!("{}", br);
+    info!("{}", br);
 }

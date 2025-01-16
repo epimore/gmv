@@ -28,7 +28,7 @@ pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Association) -> 
         let _ = Register::process(&device_id, req, tx, bill).await.hand_log(|msg| error!("设备 = [{}],注册失败;err={}",&device_id,msg));
         Ok(())
     } else {
-        match State::check_session(tx.clone(), bill).await? {
+        match State::check_session(tx.clone(), bill, &device_id).await? {
             State::Usable | State::ReCache => {
                 match req.method {
                     Method::Ack => { Ok(()) }
@@ -81,36 +81,32 @@ impl State {
     /// 2)设备未在注册有效期内，重新注册
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
-    async fn check_session(tx: Sender<Zip>, bill: &Association) -> GlobalResult<State> {
-        match &RWSession::get_device_id_by_association(bill) {
-            None => {
-                warn!("非法地址：{:?}",bill);
-                Ok(State::Invalid)
-            }
-            Some(device_id) => {
-                match mapper::get_device_status_info(device_id).await? {
-                    None => {
-                        warn!("未知设备：{device_id}");
+    async fn check_session(tx: Sender<Zip>, bill: &Association, device_id: &String) -> GlobalResult<State> {
+        if RWSession::get_device_id_by_association(bill).is_some() || RWSession::has_session_by_device_id(device_id) {
+            Ok(State::Usable)
+        } else {
+            match mapper::get_device_status_info(device_id).await? {
+                None => {
+                    warn!("未知设备：{device_id}");
+                    Ok(State::Invalid)
+                }
+                Some((heart, enable, expire, reg_ts, on)) => {
+                    if enable == 0 {
+                        warn!("未启用设备: {device_id}");
                         Ok(State::Invalid)
-                    }
-                    Some((heart, enable, expire, reg_ts, on)) => {
-                        if enable == 0 {
-                            warn!("未启用设备: {device_id}");
-                            Ok(State::Invalid)
-                        } else {
-                            //判断是否在注册有效期内
-                            if reg_ts + Duration::seconds(expire as i64) >  Local::now().naive_local() {
-                                //刷新缓存
-                                RWSession::insert(device_id, tx, heart, bill);
-                                //如果设备是离线状态，则更新为在线
-                                if on == 0 {
-                                    GmvDevice::update_gmv_device_status_by_device_id(device_id, 1).await?;
-                                }
-                                Ok(State::ReCache)
-                            } else {
-                                //401告知对端重新注册
-                                Ok(State::Expired)
+                    } else {
+                        //判断是否在注册有效期内
+                        if reg_ts + Duration::seconds(expire as i64) > Local::now().naive_local() {
+                            //刷新缓存
+                            RWSession::insert(device_id, tx, heart, bill);
+                            //如果设备是离线状态，则更新为在线
+                            if on == 0 {
+                                GmvDevice::update_gmv_device_status_by_device_id(device_id, 1).await?;
                             }
+                            Ok(State::ReCache)
+                        } else {
+                            //401告知对端重新注册
+                            Ok(State::Expired)
                         }
                     }
                 }
@@ -338,12 +334,12 @@ mod tests {
     }
 
     #[test]
-    fn test_authorization(){
+    fn test_authorization() {
         let auth = r#"Digest username="34020000001110000009", realm="3402000000", nonce="3ca91737e8d546edbc86ff1c0042dde8", uri="sip:34020000002000000001@3402000000", response="5ffa4f2a5445d462b5a862a5b6366b9a", algorithm=MD5, cnonce="0a4f113b", qop=auth, nc=00000001"#;
         let authorization = Authorization::try_from(auth).unwrap();
-        let au:headers::typed::Authorization = authorization.typed().unwrap();
+        let au: headers::typed::Authorization = authorization.typed().unwrap();
         let dsg = DigestGenerator::from(&au, "Ab123456", &Method::Register);
         let x = dsg.verify(&au.response);
-        println!("{:?}",x);
+        println!("{:?}", x);
     }
 }

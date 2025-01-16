@@ -6,20 +6,21 @@ use std::time::Duration;
 
 use bimap::BiMap;
 use parking_lot::Mutex;
-use common::log::{error, warn};
-use common::serde::{Deserialize, Serialize};
-use common::serde::de::DeserializeOwned;
 
+use common::{serde_json, tokio};
 use common::bytes::Bytes;
 use common::dashmap::{DashMap, DashSet};
 use common::dashmap::mapref::entry::Entry;
 use common::exception::{GlobalResult, TransError};
+use common::log::{error, warn};
 use common::once_cell::sync::Lazy;
-use common::{serde_json, tokio};
-use common::tokio::sync::{Notify};
+use common::serde::{Deserialize, Serialize};
+use common::serde::de::DeserializeOwned;
 use common::tokio::sync::mpsc::Sender;
+use common::tokio::sync::Notify;
 use common::tokio::time;
 use common::tokio::time::Instant;
+
 use crate::general;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
@@ -32,7 +33,8 @@ impl Cache {
     pub fn ssrc_sn_get() -> Option<u16> {
         let opt_ssrc_sn = {
             let mut iter = GENERAL_CACHE.shared.ssrc_sn.iter();
-            iter.next().map(|item| *item.key()) };
+            iter.next().map(|item| *item.key())
+        };
         match opt_ssrc_sn {
             None => { None }
             Some(ssrc_sn) => {
@@ -371,6 +373,7 @@ impl Cache {
 
     pub fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
         let mut guard = GENERAL_CACHE.shared.state.lock();
+
         match expire {
             None => { guard.entities.insert(key, (data, None, call_tx)); }
             Some(ins) => {
@@ -382,8 +385,11 @@ impl Cache {
 
     pub fn state_get(key: &str) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
         let guard = GENERAL_CACHE.shared.state.lock();
+
         match guard.entities.get(key) {
-            None => { None }
+            None => {
+                None
+            }
             Some((val, _, opt_tx)) => {
                 Some((val.clone(), opt_tx.clone()))
             }
@@ -407,19 +413,26 @@ impl Cache {
 
     pub fn state_remove(key: &String) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
         let mut guard = GENERAL_CACHE.shared.state.lock();
+
         if let Some((data, Some(when), opt_tx)) = guard.entities.remove(key) {
             guard.expirations.remove(&(when, key.to_string()));
+
             return Some((data, opt_tx));
         }
+
         None
     }
 
     pub fn state_get_obj<T: Serialize + DeserializeOwned>(key: &str) -> GlobalResult<Option<(T, Option<Sender<Option<Bytes>>>)>> {
         let guard = GENERAL_CACHE.shared.state.lock();
+
         match guard.entities.get(key) {
-            None => { Ok(None) }
+            None => {
+                Ok(None)
+            }
             Some((val, _, opt_tx)) => {
                 let data: T = serde_json::from_slice(&val.clone()).hand_log(|msg| error!("{msg}"))?;
+
                 Ok(Some((data, opt_tx.clone())))
             }
         }
@@ -504,17 +517,20 @@ struct Shared {
 impl Shared {
     async fn purge_expired_keys(&self) -> Option<Instant> {
         let now = Instant::now();
+
         let mut state = self.state.lock();
+
         let state = &mut *state;
         while let Some((when, key)) = state.expirations.iter().next() {
             if *when > now {
                 return Some(*when);
             }
             if let Some((_, _, Some(tx))) = state.entities.remove(key) {
-                let _ = tx.send(None).await.hand_log(|msg| warn!("{msg}"));
+                let _ = tx.try_send(None).hand_log(|msg| warn!("{msg}"));
             }
             state.expirations.remove(&(*when, key.clone()));
         }
+
         None
     }
 }

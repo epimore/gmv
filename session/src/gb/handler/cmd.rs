@@ -23,15 +23,15 @@ pub struct CmdQuery;
 impl CmdQuery {
     pub async fn query_device_info(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::query_device_info(device_id).await?;
-        RequestOutput::new(ident, msg, None).do_send().await
+        RequestOutput::new(ident, msg, None).do_send()
     }
     pub async fn query_device_catalog(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::query_device_catalog(device_id).await?;
-        RequestOutput::new(ident, msg, None).do_send().await
+        RequestOutput::new(ident, msg, None).do_send()
     }
     pub async fn subscribe_device_catalog(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::subscribe_device_catalog(device_id).await?;
-        RequestOutput::new(ident, msg, None).do_send().await
+        RequestOutput::new(ident, msg, None).do_send()
     }
     pub async fn lazy_query_device_info(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::query_device_info(device_id).await?;
@@ -79,7 +79,7 @@ impl CmdStream {
         let (ident, msg) = RequestBuilder::play_live_request(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc)
             .await.hand_log(|msg| warn!("{msg}"))?;
         let (tx, mut rx) = mpsc::channel(10);
-        RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().await?;
+        RequestOutput::new(ident.clone(), msg, Some(tx)).do_send()?;
         while let Some((Some(res), _)) = rx.recv().await {
             let code = res.status_code.code();
             let code_msg = res.status_code.to_string();
@@ -116,11 +116,11 @@ impl CmdStream {
         return Err(GlobalError::new_biz_error(1000, "摄像机响应超时", |msg| error!("{msg}")));
     }
 
-    pub async fn play_live_ack(device_id: &String, response: &Response) -> GlobalResult<(String, u32)> {
+    pub fn play_live_ack(device_id: &String, response: &Response) -> GlobalResult<(String, u32)> {
         let ack_request = RequestBuilder::build_ack_request_by_response(response)?;
         let call_id = ack_request.call_id_header().hand_log(|msg| warn!("{msg}"))?.value().to_string();
         let seq = ack_request.cseq_header().hand_log(|msg| warn!("{msg}"))?.seq().hand_log(|msg| warn!("{msg}"))?;
-        RequestOutput::do_send_off(device_id, ack_request).await.hand_log(|msg| warn!("{msg}"))?;
+        RequestOutput::do_send_off(device_id, ack_request).hand_log(|msg| warn!("{msg}"))?;
         Ok((call_id, seq))
     }
 
@@ -128,7 +128,7 @@ impl CmdStream {
         let (ident, msg) = RequestBuilder::build_bye_request(seq, call_id, device_id, channel_id, from_tag, to_tag).await?;
         let (tx, mut rx) = mpsc::channel(10);
 
-        RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().await.hand_log(|msg| error!("未响应：{msg}"))?;
+        RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().hand_log(|msg| error!("未响应：{msg}"))?;
 
         if let Some((Some(res), _)) = rx.recv().await {
             if res.status_code.code() == 200 {
