@@ -5,7 +5,7 @@ use poem_openapi::payload::{Json};
 
 use common::exception::{GlobalError};
 
-use crate::general::model::{PlayLiveModel, ResultMessageData, StreamInfo};
+use crate::general::model::{PlayLiveModel, PlayBackModel, ResultMessageData, StreamInfo};
 use crate::service::{handler};
 
 pub struct RestApi;
@@ -15,11 +15,38 @@ impl RestApi {
     #[allow(non_snake_case)]
     #[oai(path = "/play/live/stream", method = "post")]
     /// 点播监控实时画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
-    async fn play_live(&self, live: Json<PlayLiveModel>, #[oai(name = "gmv-token")] token: Header<String>) -> Json<ResultMessageData<StreamInfo>> {
+    async fn play_live(&self, live: Json<PlayLiveModel>, #[oai(
+        name = "gmv-token"
+    )] token: Header<String>) -> Json<ResultMessageData<StreamInfo>> {
         let header = token.0;
         let live_model = live.0;
         info!("play_live:header = {:?},body = {:?}", &header,&live_model);
         match handler::play_live(live_model, header).await {
+            Ok(data) => { Json(ResultMessageData::build_success(data)) }
+            Err(err) => {
+                error!("{}",err.to_string());
+                match err {
+                    GlobalError::BizErr(e) => {
+                        Json(ResultMessageData::build_failure_msg(e.msg))
+                    }
+                    GlobalError::SysErr(_e) => {
+                        Json(ResultMessageData::build_failure())
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(non_snake_case)]
+    #[oai(path = "/play/back/stream", method = "post")]
+    /// 点播监控历史画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
+    async fn play_back(&self, back: Json<PlayBackModel>, #[oai(
+        name = "gmv-token"
+    )] token: Header<String>) -> Json<ResultMessageData<StreamInfo>> {
+        let header = token.0;
+        let back_model = back.0;
+        info!("back_model:header = {:?},body = {:?}", &header,&back_model);
+        match handler::play_back(back_model, header).await {
             Ok(data) => { Json(ResultMessageData::build_success(data)) }
             Err(err) => {
                 error!("{}",err.to_string());

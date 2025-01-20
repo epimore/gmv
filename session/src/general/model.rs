@@ -54,7 +54,6 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
 }
 
 
-
 #[derive(Debug, Deserialize, Object, Serialize, Get)]
 pub struct PlayLiveModel {
     #[oai(validator(min_length = "20", max_length = "20"))]
@@ -63,6 +62,18 @@ pub struct PlayLiveModel {
     channel_id: Option<String>,
     #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     trans_mode: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, Object, Serialize, Get)]
+pub struct PlayBackModel {
+    #[oai(validator(min_length = "20", max_length = "20"))]
+    device_id: String,
+    #[oai(validator(min_length = "20", max_length = "20"))]
+    channel_id: Option<String>,
+    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
+    trans_mode: Option<u8>,
+    st: u32,
+    et: u32,
 }
 
 

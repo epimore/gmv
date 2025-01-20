@@ -1,18 +1,17 @@
 use std::time::Duration;
 
-use common::log::{error};
-
 use common::bytes::Bytes;
 use common::exception::{GlobalError, GlobalResult, TransError};
+use common::log::error;
 use common::serde_json;
 use common::tokio::sync::mpsc;
 use common::tokio::time::Instant;
+
 use crate::gb::handler::cmd::CmdStream;
 use crate::gb::RWSession;
-
 use crate::general;
 use crate::general::cache::PlayType;
-use crate::general::model::{PlayLiveModel, StreamInfo, StreamMode};
+use crate::general::model::{PlayBackModel, PlayLiveModel, StreamInfo, StreamMode};
 use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES, StreamPlayInfo, StreamState};
 use crate::utils::id_builder;
 
@@ -84,20 +83,45 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     } else {
         device_id
     };
+    let play_type = PlayType::Live;
     //查看直播流是否已存在,有则直接返回
-    if let Some((stream_id, node_name)) = enable_live_stream(device_id, channel_id, &token).await {
+    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &token, &play_type).await {
         general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
         return Ok(StreamInfo::build(stream_id, node_name));
     }
-    let (stream_id, node_name) = start_live_stream(device_id, channel_id, &token).await?;
+    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, play_type, 0, 0).await?;
     general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
     Ok(StreamInfo::build(stream_id, node_name))
 }
 
+pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
+    let device_id = play_back_model.get_device_id();
+    if !RWSession::has_session_by_device_id(device_id) {
+        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
+    }
+    let channel_id = if let Some(channel_id) = play_back_model.get_channel_id() {
+        channel_id
+    } else {
+        device_id
+    };
+    let play_type = PlayType::Back;
+    //查看流是否已存在,有则直接返回
+    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &token, &play_type).await {
+        general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+        return Ok(StreamInfo::build(stream_id, node_name));
+    }
+    let st = play_back_model.get_st();
+    let et = play_back_model.get_et();
+    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, play_type, *st, *et).await?;
+    general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+    Ok(StreamInfo::build(stream_id, node_name))
+}
+
+
 //选择流媒体节点（可用+负载最小）-> 监听流注册
 //发起实时点播 -> 监听设备响应
 //缓存流信息
-async fn start_live_stream(device_id: &String, channel_id: &String, token: &String) -> GlobalResult<(String, String)> {
+async fn start_invite_stream(device_id: &String, channel_id: &String, token: &String, play_type: PlayType, st: u32, et: u32) -> GlobalResult<(String, String)> {
     let num_ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
     let mut node_sets = general::cache::Cache::stream_map_order_node();
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, num_ssrc, true).await?;
@@ -107,13 +131,22 @@ async fn start_live_stream(device_id: &String, channel_id: &String, token: &Stri
         let stream_node = conf.get_node_map().get(&node_name).unwrap();
         //next 将sdp支持从session固定的，转为stream支持的
         if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
-            let (res, media_map, from_tag, to_tag) = CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?;
+            let (res, media_map, from_tag, to_tag) = match play_type {
+                PlayType::Live => {
+                    CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?
+                }
+                PlayType::Back => {
+                    CmdStream::play_back_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc, st, et).await?
+                }
+                // PlayType::Down => {}
+            };
+
             //回调给gmv-stream 使其确认媒体类型
             let _ = callback::ident_rtp_media_info(&ssrc, media_map, token, stream_node.get_local_ip(), stream_node.get_local_port()).await;
-            let (call_id, seq) = CmdStream::play_live_ack(device_id, &res)?;
+            let (call_id, seq) = CmdStream::invite_ack(device_id, &res)?;
             return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                general::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, PlayType::Live, from_tag, to_tag);
-                general::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), PlayType::Live);
+                general::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, play_type, from_tag, to_tag);
+                general::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), play_type);
                 Ok((stream_id, node_name))
             } else {
                 CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await?;
@@ -128,8 +161,8 @@ async fn start_live_stream(device_id: &String, channel_id: &String, token: &Stri
 //首先查看session缓存中是否有映射关系,然后看stream中是否有相应数据:都为true时返回数据
 //当session有,stream无时：session调用stream->使其重新监听ssrc
 //(避免stream重启后,数据不一致)
-async fn enable_live_stream(device_id: &String, channel_id: &String, token: &String) -> Option<(String, String)> {
-    match general::cache::Cache::device_map_get_live_info(device_id, channel_id) {
+async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &String, play_type: &PlayType) -> Option<(String, String)> {
+    match general::cache::Cache::device_map_get_invite_info(device_id, channel_id, play_type) {
         None => { None }
         //session -> true
         Some((stream_id, ssrc)) => {
@@ -176,11 +209,13 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
     res
 }
 
-#[test]
-mod test{
+#[cfg(test)]
+mod test {
     use std::time::Duration;
+
     use tokio::sync::mpsc;
     use tokio::time::{Instant, sleep_until};
+
     use common::chrono::Local;
 
     #[tokio::test]
@@ -188,7 +223,7 @@ mod test{
         let (tx, mut rx) = mpsc::channel::<Option<u32>>(8);
         let init = Local::now().timestamp_millis();
         println!("{} : {}", "first init", init);
-        tokio::spawn(async move{
+        tokio::spawn(async move {
             sleep_until(Instant::now() + Duration::from_secs(2)).await;
             tx.send(None).await.unwrap();
             let current = Local::now().timestamp_millis();
