@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 
 use common::serde::Deserialize;
-use tokio::sync::mpsc;
+use common::tokio::sync::mpsc;
 use common::cfg_lib;
 use common::cfg_lib::conf;
 use common::serde_yaml;
@@ -44,10 +44,10 @@ impl SessionConf {
     pub async fn run(tu: (Option<std::net::TcpListener>, Option<UdpSocket>)) -> GlobalResult<()> {
         let (output, input) = net::sdx::run_by_tokio(tu).await?;
         let (output_tx, output_rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        let read_task = tokio::spawn(async move {
+        let read_task = common::tokio::spawn(async move {
             io::read(input, output_tx).await;
         });
-        let write_task = tokio::spawn(async move {
+        let write_task = common::tokio::spawn(async move {
             io::write(output_rx, output).await;
         });
         read_task.await.hand_log(|msg| error!("读取数据异常:{msg}"))?;

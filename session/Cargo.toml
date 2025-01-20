@@ -9,7 +9,6 @@ edition = "2021"
 rsip = "0.4"
 sqlx = { version = "0.8"}
 common = { path = "../../pig/common", features = ["net", "mysqlx"] }
-tokio = "1.41"
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"

@@ -1,7 +1,7 @@
 use encoding_rs::GB18030;
 use rsip::message::HeadersExt;
 use rsip::SipMessage;
-use tokio::sync::mpsc::{Receiver, Sender};
+use common::tokio::sync::mpsc::{Receiver, Sender};
 
 use common::exception::{TransError};
 use common::log::{debug, error, info};
