@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use byteorder::{BigEndian, ReadBytesExt};
-use log::error;
+use common::log::error;
 use memchr::memmem;
 
 use common::anyhow::anyhow;

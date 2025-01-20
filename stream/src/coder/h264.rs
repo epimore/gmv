@@ -3,7 +3,7 @@ use byteorder::{BigEndian, ByteOrder};
 use h264_reader::{Context, rbsp};
 use h264_reader::nal::pps::PicParameterSet;
 use h264_reader::nal::sps::SeqParameterSet;
-use log::{error, info};
+use common::log::{error, info};
 use memchr::memmem;
 use common::log::{warn};
 use rtp::codecs::h264::H264Packet;

@@ -1,6 +1,6 @@
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
-use bytes::Bytes;
+use common::bytes::Bytes;
 use crossbeam_channel::TrySendError;
 
 use rtp::packet::Packet;

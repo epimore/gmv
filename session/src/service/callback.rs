@@ -91,6 +91,7 @@ pub async fn call_listen_ssrc(stream_id: &String, ssrc: &String, gmv_token: &Str
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
 struct RtpMap {
     ssrc: u32,
     map: HashMap<u8, String>,

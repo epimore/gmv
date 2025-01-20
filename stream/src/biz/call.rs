@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use common::serde::{Deserialize, Serialize};
 
 use common::exception::{TransError};
 use common::log::error;
@@ -11,6 +11,7 @@ use crate::general::mode::TIME_OUT;
 use crate::state::cache;
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
 pub struct RespBo<T> {
     code: u16,
     msg: Option<String>,
@@ -18,6 +19,7 @@ pub struct RespBo<T> {
 }
 
 #[derive(New, Serialize, Get)]
+#[serde(crate = "common::serde")]
 pub struct RtpInfo {
     ssrc: u32,
     //tcp/udp
@@ -33,6 +35,7 @@ impl RtpInfo {
 }
 
 #[derive(New, Serialize, Get)]
+#[serde(crate = "common::serde")]
 pub struct BaseStreamInfo {
     rtp_info: RtpInfo,
     stream_id: String,
@@ -56,6 +59,7 @@ impl BaseStreamInfo {
 }
 
 #[derive(New, Serialize, Get)]
+#[serde(crate = "common::serde")]
 pub struct StreamPlayInfo {
     base_stream_info: BaseStreamInfo,
     remote_addr: String,
@@ -119,6 +123,7 @@ impl StreamPlayInfo {
 }
 
 #[derive(New, Serialize)]
+#[serde(crate = "common::serde")]
 pub struct StreamRecordInfo {
     base_stream_info: BaseStreamInfo,
     file_path: String,
@@ -133,6 +138,7 @@ impl StreamRecordInfo {
 }
 
 #[derive(New, Serialize)]
+#[serde(crate = "common::serde")]
 pub struct StreamState {
     base_stream_info: BaseStreamInfo,
     flv_play_count: u32,

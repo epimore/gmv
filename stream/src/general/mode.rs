@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use common::serde::{Deserialize, Serialize};
 use common::bytes::Bytes;
 use common::cfg_lib;
 use common::cfg_lib::conf;
@@ -35,6 +35,7 @@ pub const STREAM_INPUT_TIMEOUT: &str = "/stream/input/timeout";
 //callback uri end
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
 pub struct ResMsg<T: Serialize> {
     code: u16,
     msg: String,
@@ -58,7 +59,7 @@ impl<T: Serialize> ResMsg<T> {
     }
 
     pub fn to_json(&self) -> GlobalResult<String> {
-        let json_str = serde_json::to_string(self).hand_log(|msg| error!("{msg}"))?;
+        let json_str = common::serde_json::to_string(self).hand_log(|msg| error!("{msg}"))?;
         Ok(json_str)
     }
 
@@ -68,6 +69,7 @@ impl<T: Serialize> ResMsg<T> {
 }
 
 #[derive(Debug, Get, Clone, Deserialize)]
+#[serde(crate = "common::serde")]
 #[conf(prefix = "server")]
 pub struct ServerConf {
     name: String,

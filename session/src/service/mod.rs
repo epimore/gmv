@@ -11,6 +11,7 @@ pub const EXPIRES: u64 = 8;
 pub const RELOAD_EXPIRES: u64 = 2;
 
 #[derive(Serialize, Deserialize, Debug,Object)]
+#[serde(crate = "common::serde")]
 pub struct ResMsg<T: Serialize + Sync + Send + poem_openapi::types::Type + poem_openapi::types::ToJSON + poem_openapi::types::ParseFromJSON> {
     code: u16,
     msg: String,
@@ -18,6 +19,7 @@ pub struct ResMsg<T: Serialize + Sync + Send + poem_openapi::types::Type + poem_
 }
 
 #[derive(New, Serialize, Object, Deserialize, Get, Debug)]
+#[serde(crate = "common::serde")]
 pub struct StreamState {
     base_stream_info: BaseStreamInfo,
     flv_play_count: u32,
@@ -26,6 +28,7 @@ pub struct StreamState {
 }
 
 #[derive(New, Serialize, Object, Deserialize, Get, Debug)]
+#[serde(crate = "common::serde")]
 pub struct BaseStreamInfo {
     rtp_info: RtpInfo,
     stream_id: String,
@@ -33,6 +36,7 @@ pub struct BaseStreamInfo {
 }
 
 #[derive(New, Object, Serialize, Deserialize, Get, Debug)]
+#[serde(crate = "common::serde")]
 pub struct RtpInfo {
     ssrc: u32,
     //tcp/udp
@@ -43,6 +47,7 @@ pub struct RtpInfo {
 }
 
 #[derive(New, Object, Serialize, Deserialize, Get, Debug)]
+#[serde(crate = "common::serde")]
 pub struct StreamPlayInfo {
     base_stream_info: BaseStreamInfo,
     remote_addr: String,
@@ -54,6 +59,7 @@ pub struct StreamPlayInfo {
 }
 
 #[derive(New, Object, Serialize, Deserialize, Get, Debug)]
+#[serde(crate = "common::serde")]
 pub struct StreamRecordInfo {
     base_stream_info: BaseStreamInfo,
     file_path: String,

@@ -13,6 +13,7 @@ use common::serde_default;
 use crate::{web};
 
 #[derive(Debug, Deserialize)]
+#[serde(crate = "common::serde")]
 #[conf(prefix = "http")]
 pub struct Http {
     #[serde(default = "default_port")]

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::thread;
 use crossbeam_channel::Sender;
 use image::{ImageFormat};
-use serde::Deserialize;
+use common::serde::Deserialize;
 use common::cfg_lib;
 use common::serde_yaml;
 use common::cfg_lib::conf;
@@ -14,6 +14,7 @@ use common::serde_default;
 
 
 #[derive(Debug, Get, Deserialize)]
+#[serde(crate = "common::serde")]
 #[conf(prefix = "server.pics")]
 pub struct Pics {
     #[serde(default = "default_enable")]

@@ -1,5 +1,5 @@
 use std::net::UdpSocket;
-use log::{error, info};
+use common::log::{error, info};
 use common::daemon::Daemon;
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::{logger, tokio};

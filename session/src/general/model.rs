@@ -55,6 +55,7 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
 
 
 #[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[serde(crate = "common::serde")]
 pub struct PlayLiveModel {
     #[oai(validator(min_length = "20", max_length = "20"))]
     device_id: String,
@@ -65,6 +66,7 @@ pub struct PlayLiveModel {
 }
 
 #[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[serde(crate = "common::serde")]
 pub struct PlayBackModel {
     #[oai(validator(min_length = "20", max_length = "20"))]
     device_id: String,
@@ -78,6 +80,7 @@ pub struct PlayBackModel {
 
 
 #[derive(Debug, Deserialize, Object, Serialize)]
+#[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct StreamInfo {
     streamId: String,

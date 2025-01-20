@@ -12,6 +12,7 @@ use common::sqlx::FromRow;
 use crate::gb::handler::parser;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
+#[serde(crate = "common::serde")]
 pub struct GmvOauth {
     device_id: String,
     domain_id: String,
@@ -35,6 +36,7 @@ impl GmvOauth {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
+#[serde(crate = "common::serde")]
 pub struct GmvDevice {
     device_id: String,
     transport: String,

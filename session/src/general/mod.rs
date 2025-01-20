@@ -12,6 +12,7 @@ pub mod cache;
 pub mod http;
 
 #[derive(Debug, Get, Deserialize)]
+#[serde(crate = "common::serde")]
 #[conf(prefix = "server.stream")]
 pub struct StreamConf {
     proxy_enable: bool,
@@ -22,6 +23,7 @@ pub struct StreamConf {
 }
 serde_default!(default_node_map, HashMap<String, StreamNode>, HashMap::new());
 #[derive(Debug, Get, Deserialize, Clone)]
+#[serde(crate = "common::serde")]
 pub struct StreamNode {
     name: String,
     local_ip: Ipv4Addr,

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use hyper::{Body, header, Response, StatusCode};
-use serde::Deserialize;
+use common::serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use common::exception::{BizError, GlobalError, GlobalResult, TransError};
@@ -103,6 +103,7 @@ pub fn listen_ssrc(map: HashMap<String, String>) -> GlobalResult<Response<Body>>
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(crate = "common::serde")]
 pub struct RtpMap {
     ssrc: u32,
     map: HashMap<u8, String>,

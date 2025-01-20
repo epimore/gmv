@@ -1,7 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 
-use serde::Deserialize;
+use common::serde::Deserialize;
 use tokio::sync::mpsc;
 use common::cfg_lib;
 use common::cfg_lib::conf;
@@ -20,6 +20,7 @@ pub mod handler;
 mod io;
 
 #[derive(Debug, Get, Deserialize)]
+#[serde(crate = "common::serde")]
 #[conf(prefix = "server.session")]
 pub struct SessionConf {
     lan_ip: Ipv4Addr,
