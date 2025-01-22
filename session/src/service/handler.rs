@@ -23,26 +23,30 @@ pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
     general::cache::Cache::stream_map_contains_token(stream_id, gmv_token)
 }
 
+//无人观看则关闭流
+pub async fn stream_idle(base_stream_info: BaseStreamInfo) -> bool {
+    let stream_id = base_stream_info.get_stream_id();
+    let cst_info = general::cache::Cache::stream_map_build_call_id_seq_from_to_tag(stream_id);
+
+    let (device_id, channel_id, ssrc_str) = id_builder::de_stream_id(stream_id);
+    if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
+        let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
+    }
+    if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(stream_id) {
+        general::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((play_type, &ssrc_str)))));
+        general::cache::Cache::stream_map_remove(stream_id, None);
+    }
+    let ssrc = base_stream_info.rtp_info.ssrc;
+    let ssrc_num = (ssrc % 10000) as u16;
+    general::cache::Cache::ssrc_sn_set(ssrc_num);
+    return true;
+}
+
 pub async fn off_play(stream_play_info: StreamPlayInfo) -> bool {
     let stream_id = stream_play_info.base_stream_info.get_stream_id();
     let gmv_token = stream_play_info.get_token();
-    let cst_info = general::cache::Cache::stream_map_build_call_id_seq_from_to_tag(stream_id);
     general::cache::Cache::stream_map_remove(stream_id, Some(gmv_token));
-    if (stream_play_info.flv_play_count == 0 && stream_play_info.hls_play_count == 0)
-        || general::cache::Cache::stream_map_query_node_name(stream_id).is_none() {
-        let (device_id, channel_id, ssrc_str) = id_builder::de_stream_id(stream_id);
-        if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(stream_id) {
-            general::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((play_type, &ssrc_str)))));
-        }
-        if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
-            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
-        }
-        let ssrc = stream_play_info.base_stream_info.rtp_info.ssrc;
-        let ssrc_num = (ssrc % 10000) as u16;
-        general::cache::Cache::ssrc_sn_set(ssrc_num);
-        return true;
-    }
-    false
+    return true;
 }
 
 pub async fn stream_in(base_stream_info: BaseStreamInfo) {
@@ -130,7 +134,7 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, token: &St
     while let Some((_, node_name)) = node_sets.pop_first() {
         let stream_node = conf.get_node_map().get(&node_name).unwrap();
         //next 将sdp支持从session固定的，转为stream支持的
-        if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
+        if let Ok(true) = callback::call_listen_ssrc(stream_id.clone(), &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
             let (res, media_map, from_tag, to_tag) = match play_type {
                 PlayType::Live => {
                     CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?
@@ -170,10 +174,10 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &S
             if let Some(node_name) = general::cache::Cache::stream_map_query_node_name(&stream_id) {
                 //确认stream是否存在
                 if let Some(stream_node) = general::StreamConf::get_stream_conf().get_node_map().get(&node_name) {
-                    if let Ok(vec) = callback::call_stream_state(Some(&stream_id), token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
-                        if vec.len() == 0 {
+                    if let Ok(count) = callback::get_stream_count(Some(&stream_id), token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
+                        if count == 0 {
                             //session有流信息,stream无流存在=>进一步判断可能是stream重启导致没有该监听,重启监听等待结果
-                            if let Ok(true) = callback::call_listen_ssrc(&stream_id, &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
+                            if let Ok(true) = callback::call_listen_ssrc(stream_id.clone(), &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
                                 if let Some(_) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
                                     res = Some((stream_id.clone(), node_name));
                                 }
@@ -213,17 +217,16 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
 mod test {
     use std::time::Duration;
 
-    use tokio::sync::mpsc;
-    use tokio::time::{Instant, sleep_until};
-
     use common::chrono::Local;
+    use common::tokio::sync::mpsc;
+    use common::tokio::time::{Instant, sleep_until};
 
-    #[tokio::test]
+    #[common::tokio::test]
     async fn test() {
         let (tx, mut rx) = mpsc::channel::<Option<u32>>(8);
         let init = Local::now().timestamp_millis();
         println!("{} : {}", "first init", init);
-        tokio::spawn(async move {
+        common::tokio::spawn(async move {
             sleep_until(Instant::now() + Duration::from_secs(2)).await;
             tx.send(None).await.unwrap();
             let current = Local::now().timestamp_millis();

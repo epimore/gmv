@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use reqwest::header;
 use reqwest::header::HeaderMap;
-use common::serde::{Deserialize,Serialize};
-
+use common::serde::{Deserialize, Serialize};
 use common::anyhow::anyhow;
 use common::exception::{GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
 use common::log::error;
 
-use crate::service::{EXPIRES, ResMsg, StreamState};
+use crate::service::{EXPIRES, ResMsg};
+
 #[allow(dead_code)]
 const DROP_SSRC: &str = "/drop/ssrc";
 #[allow(dead_code)]
@@ -36,7 +36,7 @@ fn build_uri_header(gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -
     Ok((uri, headers))
 }
 
-pub async fn call_stream_state(opt_stream_id: Option<&String>, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<Vec<StreamState>> {
+pub async fn get_stream_count(opt_stream_id: Option<&String>, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<u32> {
     let (mut uri, headers) = build_uri_header(gmv_token, local_ip, local_port)?;
     if let Some(stream_id) = opt_stream_id {
         uri = format!("{uri}{QUERY_STATE}?stream_id={stream_id}");
@@ -54,7 +54,7 @@ pub async fn call_stream_state(opt_stream_id: Option<&String>, gmv_token: &Strin
         .await
         .hand_log(|msg| error!("{msg}"))?;
     return if res.status().is_success() {
-        let body = res.json::<ResMsg<Vec<StreamState>>>()
+        let body = res.json::<ResMsg<u32>>()
             .await
             .hand_log(|msg| error!("{msg}"))?;
         if body.code == 200 {
@@ -62,21 +62,39 @@ pub async fn call_stream_state(opt_stream_id: Option<&String>, gmv_token: &Strin
                 return Ok(data);
             }
         }
-        Ok(Vec::new())
+        Err(SysErr(anyhow!("{}",body.msg)))
     } else {
         Err(SysErr(anyhow!("{}",res.status().to_string())))
     };
 }
 
-pub async fn call_listen_ssrc(stream_id: &String, ssrc: &String, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<bool> {
+#[derive(Deserialize, Serialize, Debug, Default)]
+#[serde(crate = "common::serde")]
+pub struct SsrcLisDto {
+    pub ssrc: u32,
+    pub stream_id: String,
+    //当为None时，默认配置,负数-立马关闭
+    pub expires: Option<i32>,
+    pub flv: Option<bool>,
+    pub hls: Option<bool>,
+}
+
+pub async fn call_listen_ssrc(stream_id: String, ssrc: &String, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<bool> {
+    let ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
+    let ssrc_lis_dto = SsrcLisDto {
+        ssrc,
+        stream_id,
+        ..Default::default()
+    };
     let (mut uri, headers) = build_uri_header(gmv_token, local_ip, local_port)?;
-    uri = format!("{uri}{LISTEN_SSRC}?stream_id={stream_id}&ssrc={ssrc}");
+    uri = format!("{uri}{LISTEN_SSRC}");
     let res = reqwest::Client::builder()
         .timeout(Duration::from_secs(EXPIRES))
         .default_headers(headers)
         .build()
         .hand_log(|msg| error!("{msg}"))?
-        .get(&uri)
+        .post(&uri)
+        .json(&ssrc_lis_dto)
         .send()
         .await
         .hand_log(|msg| error!("{msg}"))?;

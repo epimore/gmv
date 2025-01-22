@@ -22,6 +22,7 @@ pub struct HookApi;
 
 #[OpenApi(prefix_path = "/hook")]
 impl HookApi {
+    ///流媒体监听ssrc：接收到流输入，发送一次流注册事件；信令回调/api/play/xxx返回播放流信息
     #[oai(path = "/stream/in", method = "post")]
     async fn stream_in(&self, base_stream_info: Json<BaseStreamInfo>) -> Json<ResultMessageData<bool>> {
         let info = base_stream_info.0;
@@ -29,6 +30,8 @@ impl HookApi {
         handler::stream_in(info).await;
         Json(ResultMessageData::build_success_none())
     }
+    ///流媒体监听ssrc：等待流8秒，超时未接收到；发送一次接收流超时事件；信令下发设备取消推流，并清理缓存会话；
+    /// 【流注册等待超时，信令回调/api/play/xxx返回响应超时信息】
     #[oai(path = "/stream/input/timeout", method = "post")]
     async fn stream_input_timeout(&self, stream_state: Json<StreamState>) -> Json<ResultMessageData<bool>> {
         let info = stream_state.0;
@@ -36,16 +39,25 @@ impl HookApi {
         handler::stream_input_timeout(info);
         Json(ResultMessageData::build_success_none())
     }
+    ///流媒体监测到用户点播流：发送一次用户点播流事件，用于鉴权
     #[oai(path = "/on/play", method = "post")]
     async fn on_play(&self, stream_play_info: Json<StreamPlayInfo>) -> Json<ResultMessageData<bool>> {
         let info = stream_play_info.0;
         info!("on_play = {:?}", &info);
         Json(ResultMessageData::build_success(handler::on_play(info)))
     }
+    ///流媒体监测到用户断开点播流：发送一次用户关闭流事件：
     #[oai(path = "/off/play", method = "post")]
     async fn off_play(&self, stream_play_info: Json<StreamPlayInfo>) -> Json<ResultMessageData<bool>> {
         let info = stream_play_info.0;
         info!("off_play = {:?}", &info);
         Json(ResultMessageData::build_success(handler::off_play(info).await))
+    }
+    ///流媒体监测到无人连接媒体流：发送一次流空闲事件【配置为不关闭流，则不发送】：信令下发设备关闭推流，并清理缓存会话
+    #[oai(path = "/stream/idle", method = "post")]
+    async fn stream_idle(&self, stream_play_info: Json<BaseStreamInfo>) -> Json<ResultMessageData<bool>> {
+        let info = stream_play_info.0;
+        info!("off_play = {:?}", &info);
+        Json(ResultMessageData::build_success(handler::stream_idle(info).await))
     }
 }

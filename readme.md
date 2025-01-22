@@ -41,6 +41,7 @@
 2. 图片AI识别-插件化业务场景
 3. 多数据库配置
 
+![0](./sources/swagger.png "API文档")
 ![1](./sources/d_list.png "设备目录")
 ![2](./sources/d_add.png "设备添加")
 ![3](./sources/c_list.png "设备目录通道")

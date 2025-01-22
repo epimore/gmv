@@ -21,7 +21,7 @@ use common::tokio::time;
 use common::tokio::time::Instant;
 
 use crate::biz::api::SsrcLisDto;
-use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamState};
+use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamState};
 use crate::coder::FrameData;
 use crate::container::PlayType;
 use crate::general::cfg;
@@ -186,7 +186,8 @@ fn event_stream_in(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
         let remote_addr_str = bill.get_remote_addr().to_string();
         let protocol = bill.get_protocol().get_value().to_string();
         stream_trace.origin_trans = Some((remote_addr_str.clone(), protocol.clone()));
-        let rtp_info = RtpInfo::new(ssrc, Some((remote_addr_str, protocol)), SESSION.shared.server_conf.get_name().clone());
+        let net_source = NetSource::new(remote_addr_str, protocol);
+        let rtp_info = RtpInfo::new(ssrc, Some(net_source), SESSION.shared.server_conf.get_name().clone());
         let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
         let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id.clone(), time);
         let _ = SESSION.shared.event_tx.clone().try_send((Event::StreamIn(stream_info), None)).hand_log(|msg| error!("{msg}"));
@@ -308,7 +309,8 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
             if let Some((protocol, origin_addr)) = &stream_trace.origin_trans {
                 let stream_in_reported_time = stream_trace.register_ts;
                 let server_name = SESSION.shared.server_conf.get_name().to_string();
-                let rtp_info = RtpInfo::new(*ssrc, Some((origin_addr.to_string(), protocol.to_string())), server_name);
+                let net_source = NetSource::new(origin_addr.to_string(), protocol.to_string());
+                let rtp_info = RtpInfo::new(*ssrc, Some(net_source), server_name);
                 let stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), stream_in_reported_time);
                 return Some((stream_info, user_map.len() as u32));
             }
@@ -502,10 +504,11 @@ impl Shared {
                                 //     origin_addr = Some(origin_addr_s);
                                 //     protocol = Some(protocol_s);
                                 // }
-                                let rtp_info = RtpInfo::new(ssrc, origin_trans, server_name);
+                                let opt_net = origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
+                                let rtp_info = RtpInfo::new(ssrc, opt_net, server_name);
                                 let stream_info = BaseStreamInfo::new(rtp_info, stream_id, register_ts);
                                 let stream_state = StreamState::new(stream_info, user_map.len() as u32);
-                                let _ = SESSION.shared.event_tx.clone().send((Event::StreamTimeout(stream_state), None)).await.hand_log(|msg| error!("{msg}"));
+                                let _ = SESSION.shared.event_tx.clone().send((Event::StreamInTimeout(stream_state), None)).await.hand_log(|msg| error!("{msg}"));
                             }
                         }
                     }
@@ -516,9 +519,10 @@ impl Shared {
                             if user_map.len() == 0 {
                                 state.inner.remove(stream_id);
                                 if let Some(stream_trace) = state.sessions.remove(&ssrc) {
-                                    let rtp_info = RtpInfo::new(ssrc, stream_trace.origin_trans, SESSION.shared.server_conf.get_name().clone());
+                                    let opt_net = stream_trace.origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
+                                    let rtp_info = RtpInfo::new(ssrc, opt_net, SESSION.shared.server_conf.get_name().clone());
                                     let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id, stream_trace.register_ts);
-                                    let _ = SESSION.shared.event_tx.clone().try_send((Event::StreamIdle(stream_info), None)).hand_log(|msg| error!("{msg}"));
+                                    let _ = SESSION.shared.event_tx.clone().try_send((Event::StreamOutIdle(stream_info), None)).hand_log(|msg| error!("{msg}"));
                                 }
                             }
                         }

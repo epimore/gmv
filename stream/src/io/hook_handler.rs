@@ -4,8 +4,8 @@ use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo
 
 pub enum Event {
     StreamIn(BaseStreamInfo),
-    StreamIdle(BaseStreamInfo),
-    StreamTimeout(StreamState),
+    StreamOutIdle(BaseStreamInfo),
+    StreamInTimeout(StreamState),
     StreamUnknown(RtpInfo),
     OnPlay(StreamPlayInfo),
     OffPlay(StreamPlayInfo),
@@ -17,9 +17,9 @@ pub enum EventRes {
     //收到国标媒体流事件：响应内容不敏感;some-成功接收;None-未成功接收
     StreamIn(Option<bool>),
     //无人观看时，关闭流
-    StreamIdle(Option<u8>),
+    StreamOutIdle(Option<u8>),
     //接收国标媒体流超时事件：取消监听该SSRC,响应内容不敏感;
-    StreamTimeout(Option<bool>),
+    StreamInTimeout(Option<bool>),
     //未知ssrc流事件；响应内容不敏感,some-成功接收;None-未成功接收
     StreamUnknown(Option<bool>),
     //用户点播媒体流事件,none与false-回复用户401，true-写入流
@@ -37,10 +37,10 @@ impl Event {
                 Event::StreamIn(bsi) => {
                     bsi.stream_in().await;
                 }
-                Event::StreamIdle(bsi) => {
+                Event::StreamOutIdle(bsi) => {
                     bsi.stream_idle().await;
                 }
-                Event::StreamTimeout(ss) => {
+                Event::StreamInTimeout(ss) => {
                     let _ = ss.stream_input_timeout().await;
                 }
                 Event::StreamUnknown(_) => {}

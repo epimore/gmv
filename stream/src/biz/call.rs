@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use common::constructor::{Get, New};
@@ -21,10 +20,17 @@ pub struct RespBo<T> {
 
 #[derive(New, Serialize, Get)]
 #[serde(crate = "common::serde")]
+pub struct NetSource {
+    remote_addr: String,
+    protocol: String,
+}
+
+#[derive(New, Serialize, Get)]
+#[serde(crate = "common::serde")]
 pub struct RtpInfo {
     ssrc: u32,
     //媒体流源地址,tcp/udp
-    origin_trans: Option<(String, String)>,
+    origin_trans: Option<NetSource>,
     // //媒体流源地址
     // origin_addr: Option<String>,
     // //tcp/udp
@@ -74,7 +80,7 @@ impl BaseStreamInfo {
 #[serde(crate = "common::serde")]
 pub struct StreamPlayInfo {
     base_stream_info: BaseStreamInfo,
-    remote_addr: SocketAddr,
+    remote_addr: String,
     token: String,
     play_type: PlayType,
     //当前观看人数

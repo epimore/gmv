@@ -9,6 +9,7 @@ pub struct SeApi;
 impl SeApi {
     #[allow(non_snake_case)]
     #[oai(path = "/pic/upload", method = "post")]
+    ///设备抓图上传 todo
     async fn pic_upload(&self,
                         #[oai(name = "uk")] uk: Query<String>,
                         #[oai(name = "sessionId")] sessionId: Query<Option<String>>,

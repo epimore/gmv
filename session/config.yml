@@ -25,7 +25,7 @@ http:
   port: 18567
   timeout: 30   #请求超时 单位秒
   prefix: /session
-  server_name: gb28181-session
+  server_name: GMV:SESSION
   version: v0.2
 
 db:

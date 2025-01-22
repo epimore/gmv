@@ -14,7 +14,7 @@ pub struct RestApi;
 impl RestApi {
     #[allow(non_snake_case)]
     #[oai(path = "/play/live/stream", method = "post")]
-    /// 点播监控实时画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
+    /// 点播监控实时画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式
     async fn play_live(&self, live: Json<PlayLiveModel>, #[oai(
         name = "gmv-token"
     )] token: Header<String>) -> Json<ResultMessageData<StreamInfo>> {
@@ -39,7 +39,7 @@ impl RestApi {
 
     #[allow(non_snake_case)]
     #[oai(path = "/play/back/stream", method = "post")]
-    /// 点播监控历史画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式， 目前只支持 0
+    /// 点播监控历史画面 transMode 默认0 udp 模式, 1 tcp 被动模式,2 tcp 主动模式
     async fn play_back(&self, back: Json<PlayBackModel>, #[oai(
         name = "gmv-token"
     )] token: Header<String>) -> Json<ResultMessageData<StreamInfo>> {
