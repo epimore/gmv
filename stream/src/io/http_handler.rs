@@ -1,6 +1,6 @@
 use std::{pin::Pin, task::{Context, Poll}};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr};
 
 use hyper::{Body, Method, Request, Response, server::accept::Accept, service::{make_service_fn, service_fn}, StatusCode};
 use tokio_util::sync::CancellationToken;
@@ -9,6 +9,7 @@ use common::anyhow::{anyhow};
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
 use common::log::{error, info};
+use common::serde::de::DeserializeOwned;
 use common::tokio::{self,
                     io::{AsyncRead, AsyncWrite, ReadBuf},
                     net::{TcpListener, TcpStream},
@@ -16,7 +17,8 @@ use common::tokio::{self,
 use common::tokio::sync::mpsc::Sender;
 
 use crate::biz::{api};
-use crate::biz::api::RtpMap;
+use crate::biz::api::{RtpMap, SsrcLisDto};
+use crate::container::PlayType;
 use crate::general::mode::{INDEX};
 
 const DROP_SSRC: &str = "/drop/ssrc";
@@ -25,7 +27,7 @@ const STOP_RECORD: &str = "/stop/record";
 const START_RECORD: &str = "/start/record";
 const PLAY: &str = "/play/";
 const STOP_PLAY: &str = "/stop/play";
-const QUERY_STATE: &str = "/query/state";
+const QUERY_COUNT: &str = "/query/count";
 const RTP_MEDIA: &str = "/rtp/media";
 
 async fn handle(
@@ -70,32 +72,50 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
 async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
-        (&Method::GET, LISTEN_SSRC) => {
-            match get_param_map(&req) {
-                Ok(param_map) => {
-                    api::listen_ssrc(param_map)
-                }
-                Err(_err) => {
-                    api::res_422()
-                }
-            }
-        }
-        (&Method::POST, RTP_MEDIA) => {
-            match hyper::body::to_bytes(req.into_body()).await.hand_log(|msg| error!("{msg}")) {
-                Ok(body_bytes) => {
-                    match common::serde_json::from_slice::<RtpMap>(&body_bytes).hand_log(|msg| error!("{msg}")) {
-                        Ok(rtp_map) => {
-                            api::RtpMap::rtp_map(rtp_map,ssrc_tx).await
-                        }
-                        Err(_) => {
-                            api::res_422()
-                        }
-                    }
+        (&Method::POST, LISTEN_SSRC) => {
+            match body_to_model::<SsrcLisDto>(req).await {
+                Ok(ssrc_lis) => {
+                    api::listen_ssrc(ssrc_lis)
                 }
                 Err(_) => {
                     api::res_422()
                 }
             }
+
+            // match get_param_map(&req) {
+            //     Ok(param_map) => {
+            //         api::listen_ssrc(param_map)
+            //     }
+            //     Err(_err) => {
+            //         api::res_422()
+            //     }
+            // }
+        }
+        (&Method::POST, RTP_MEDIA) => {
+            match body_to_model::<RtpMap>(req).await {
+                Ok(rtp_map) => {
+                    api::RtpMap::rtp_map(rtp_map, ssrc_tx).await
+                }
+                Err(_) => {
+                    api::res_422()
+                }
+            }
+
+            // match hyper::body::to_bytes(req.into_body()).await.hand_log(|msg| error!("{msg}")) {
+            //     Ok(body_bytes) => {
+            //         match common::serde_json::from_slice::<RtpMap>(&body_bytes).hand_log(|msg| error!("{msg}")) {
+            //             Ok(rtp_map) => {
+            //                 api::RtpMap::rtp_map(rtp_map, ssrc_tx).await
+            //             }
+            //             Err(_) => {
+            //                 api::res_422()
+            //             }
+            //         }
+            //     }
+            //     Err(_) => {
+            //         api::res_422()
+            //     }
+            // }
         }
         (&Method::GET, DROP_SSRC) => {
             unimplemented!()
@@ -109,12 +129,12 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
         (&Method::GET, STOP_PLAY) => {
             unimplemented!()
         }
-        (&Method::GET, QUERY_STATE) => {
+        (&Method::GET, QUERY_COUNT) => {
             match req.uri().query() {
-                None => { api::get_state(None) }
+                None => { api::get_stream_count(None) }
                 Some(param) => {
                     let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
-                    api::get_state(map.get("stream_id").map(|stream_id_ref| stream_id_ref.clone()))
+                    api::get_stream_count(map.get("stream_id").map(|stream_id_ref| stream_id_ref))
                 }
             }
         }
@@ -126,10 +146,20 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
                     //stream_id最小20位
                     if index > p_len + 20 {
                         let play_type = &uri[index + 1..];
-                        if play_type.eq("flv") || play_type.eq("m3u8") {
-                            let stream_id = (&uri[p_len..index]).to_string();
-                            return api::start_play(play_type.to_string(), stream_id, token, remote_addr, client_connection_cancel).await;
-                        }
+                        let pt = match play_type {
+                            "flv" => {
+                                PlayType::Flv
+                            }
+                            "m3u8" => {
+                                PlayType::Hls
+                            }
+                            other => {
+                                error!("无效的流参数格式:{}",other);
+                                return api::res_404();
+                            }
+                        };
+                        let stream_id = (&uri[p_len..index]).to_string();
+                        return api::start_play(pt, stream_id, token, remote_addr, client_connection_cancel).await;
                     }
                 }
                 Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap())
@@ -229,4 +259,13 @@ impl Accept for ServerListener {
             cancel: CancellationToken::new(),
         })))
     }
+}
+
+async fn body_to_model<T>(req: Request<Body>) -> GlobalResult<T>
+where
+    T: DeserializeOwned,
+{
+    let body = hyper::body::to_bytes(req.into_body()).await.hand_log(|msg| error!("{msg}"))?;
+    let model = common::serde_json::from_slice::<T>(&body).hand_log(|msg| error!("{msg}"))?;
+    Ok(model)
 }

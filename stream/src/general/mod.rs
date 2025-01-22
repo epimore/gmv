@@ -1,3 +1,3 @@
 pub mod mode;
 pub mod util;
-mod cfg;
+pub mod cfg;

@@ -1,10 +1,11 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
-use common::serde::{Deserialize, Serialize};
-
-use common::exception::{TransError};
-use common::log::error;
 use common::constructor::{Get, New};
+use common::exception::TransError;
+use common::log::error;
+use common::serde::{Deserialize, Serialize};
+use crate::container::PlayType;
 
 use crate::general::mode;
 use crate::general::mode::TIME_OUT;
@@ -22,10 +23,12 @@ pub struct RespBo<T> {
 #[serde(crate = "common::serde")]
 pub struct RtpInfo {
     ssrc: u32,
-    //tcp/udp
-    protocol: Option<String>,
-    //媒体流源地址
-    origin_addr: Option<String>,
+    //媒体流源地址,tcp/udp
+    origin_trans: Option<(String, String)>,
+    // //媒体流源地址
+    // origin_addr: Option<String>,
+    // //tcp/udp
+    // protocol: Option<String>,
     server_name: String,
 }
 
@@ -54,20 +57,28 @@ impl BaseStreamInfo {
             .ok().map(|res| res.status().is_success());
         res
     }
-    // //当流闲置时（无观看、无录制），依旧接收到ssrc流输入时，间隔8秒回调一次
-    // pub async fn stream_idle(&self) {}
+    // 当流闲置时（无观看、无录制）
+    pub async fn stream_idle(&self) -> Option<bool> {
+        let client = reqwest::Client::new();
+        let uri = format!("{}{}", cache::get_server_conf().get_hook_uri(), mode::STREAM_IDLE);
+        let res = client.post(uri)
+            .timeout(Duration::from_millis(TIME_OUT))
+            .json(self).send().await
+            .hand_log(|msg| error!("{msg}"))
+            .ok().map(|res| res.status().is_success());
+        res
+    }
 }
 
 #[derive(New, Serialize, Get)]
 #[serde(crate = "common::serde")]
 pub struct StreamPlayInfo {
     base_stream_info: BaseStreamInfo,
-    remote_addr: String,
+    remote_addr: SocketAddr,
     token: String,
-    play_type: String,
+    play_type: PlayType,
     //当前观看人数
-    flv_play_count: u32,
-    hls_play_count: u32,
+    user_count: u32,
 }
 
 impl StreamPlayInfo {
@@ -141,9 +152,8 @@ impl StreamRecordInfo {
 #[serde(crate = "common::serde")]
 pub struct StreamState {
     base_stream_info: BaseStreamInfo,
-    flv_play_count: u32,
-    hls_play_count: u32,
-    record_name: Option<String>,
+    user_count: u32,
+    // record_name: Option<String>,
 }
 
 impl StreamState {
