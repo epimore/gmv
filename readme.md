@@ -1,6 +1,8 @@
 # 这是一个基于GB28181的视频监控实现：兼容2016、2022版本。采用纯RUST语言编码，高效、安全、无惧并发。
 
 **<font color=yellow>TCP/UDP端口复用、单机/集群部署、SWAGGER接口文档、不做破坏性更新【接口稳定】、开箱即用【无需编译链接各种依赖】</font>**
+#### 仓库：https://github.com/epimore?tab=repositories 示例服务及common，macros依赖在仓库里
+#### 仓库跳转 [示例及依赖](https://github.com/epimore?tab=repositories)。
 
 ## GMV:SESSION 信令服务实现：
 1. 设备注册
