@@ -619,16 +619,16 @@ mod test {
     }
 
     // #[test]
-    fn test_ps_parse() {
-        let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/ps.raw");
-        let bytes = Bytes::copy_from_slice(input);
-        let mut ps_packet = PsPacket::default();
-        if let Ok(Some(vec)) = ps_packet.parse(true, bytes) {
-            println!("len_1 = {}", vec.len());
-            // vec.iter().map(|iter| println!("data len = {}", iter.len())).count();
-            // vec.iter().map(|iter| println!("data = {:02x?}", iter.to_vec())).count();
-        }
-    }
+    // fn test_ps_parse() {
+    //     let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/ps.raw");
+    //     let bytes = Bytes::copy_from_slice(input);
+    //     let mut ps_packet = PsPacket::default();
+    //     if let Ok(Some(vec)) = ps_packet.parse(true, bytes) {
+    //         println!("len_1 = {}", vec.len());
+    //         vec.iter().map(|iter| println!("data len = {}", iter.len())).count();
+    //         vec.iter().map(|iter| println!("data = {:02x?}", iter.to_vec())).count();
+    //     }
+    // }
 
 
     #[test]
