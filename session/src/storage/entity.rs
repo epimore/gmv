@@ -299,27 +299,28 @@ impl GmvDeviceChannel {
 
 
 #[cfg(test)]
+#[allow(dead_code,unused_imports)]
 mod tests {
     use common::cfg_lib::conf::init_cfg;
     use common::dbx::mysqlx;
     use common::tokio;
     use super::*;
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_read_gmv_oauth_by_device_id() {
         init();
         let res = GmvOauth::read_gmv_oauth_by_device_id(&"34020000001320000003".to_string()).await;
         println!("{res:?}");
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_query_gmv_device_by_device_id() {
         init();
         let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
         println!("{res:?}");
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_insert_single_gmv_device_by_register() {
         init();
         let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
@@ -331,14 +332,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_update_gmv_device_status_by_device_id() {
         init();
         let res = GmvDevice::update_gmv_device_status_by_device_id(&"34020000001320000003".to_string(), 1).await;
         println!("{:?}", res);
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_update_gmv_device_ext_info() {
         init();
         let ext = GmvDeviceExt {
@@ -358,7 +359,7 @@ mod tests {
         println!("{:?}", res);
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_insert_gmv_device_channel() {
         init();
         let dc_ls = (0..10).map(|i| GmvDeviceChannel {

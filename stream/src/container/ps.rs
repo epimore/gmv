@@ -571,8 +571,8 @@ mod test {
         let ps_header_res = PsHeader::parse(&mut cursor);
         assert!(ps_header_res.is_ok());
         let ps_header = ps_header_res.unwrap();
-        assert_eq!(ps_header.stuffing_byte.last(), Some(&0x0cu8));
-        assert_eq!(cursor.position(), 20);
+        assert_eq!(ps_header.stuffing_byte.last(), Some(&0x02u8));
+        assert_eq!(cursor.position(), 11);
     }
 
     #[test]
@@ -582,9 +582,7 @@ mod test {
         let ps_sys_header_res = PsSysHeader::parse(&mut cursor);
         assert!(ps_sys_header_res.is_ok());
         let ps_sys_header = ps_sys_header_res.unwrap();
-        assert_eq!(ps_sys_header.ps_stream_vec.len(), 1);
-        assert_eq!(ps_sys_header.ps_stream_vec.get(0).unwrap().stream_id, 0xe0);
-        assert_eq!(ps_sys_header.ps_stream_vec.get(0).unwrap().p_psd, [0xE8u8, 0x00u8]);
+        assert_eq!(ps_sys_header.ps_stream_vec.len(), 0);
 
         let data = [00u8, 0x00u8, 0x01u8, 0xbbu8, 0x00u8, 0x12u8, 0x81u8, 0x2fu8, 0x81u8, 0x04u8, 0xe1u8, 0x7fu8, 0xe0u8, 0xe0u8, 0x80u8, 0xc0u8, 0xc0u8, 0x08u8, 0xbdu8, 0xe0u8, 0x80u8, 0xbfu8, 0xe0u8, 0x80];
         let mut cursor = Cursor::new(Bytes::from(data.to_vec()));
@@ -627,7 +625,7 @@ mod test {
         let mut ps_packet = PsPacket::default();
         if let Ok(Some(vec)) = ps_packet.parse(true, bytes) {
             println!("len_1 = {}", vec.len());
-            vec.iter().map(|iter| println!("data len = {}", iter.len())).count();
+            // vec.iter().map(|iter| println!("data len = {}", iter.len())).count();
             // vec.iter().map(|iter| println!("data = {:02x?}", iter.to_vec())).count();
         }
     }

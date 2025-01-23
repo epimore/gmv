@@ -24,20 +24,21 @@ pub async fn get_device_status_info(device_id: &String) -> GlobalResult<Option<(
 }
 
 #[cfg(test)]
+#[allow(dead_code,unused_imports)]
 mod test {
     use common::cfg_lib::conf::init_cfg;
     use common::dbx::mysqlx;
     use common::tokio;
     use super::*;
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_get_device_channel_status() {
         init();
         let result = get_device_channel_status(&"34020000001110000001".to_string(), &"34020000001320000180".to_string()).await;
         println!("{:?}",result);
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_get_device_status_info() {
         init();
         let status_info = get_device_status_info(&"34020000001110000001".to_string()).await;

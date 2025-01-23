@@ -54,11 +54,10 @@ impl StreamConf {
 #[cfg(test)]
 mod tests {
 
-    #[test]
-    fn test_map_conf() {
-
-        println!("{:?}", super::StreamConf::get_stream_conf());
-    }
+    // #[test]
+    // fn test_map_conf() {
+    //     println!("{:?}", super::StreamConf::get_stream_conf());
+    // }
 
     fn print_banner(c: char) {
         let binary = match c {

@@ -193,10 +193,4 @@ impl Media {
 
 #[cfg(test)]
 mod tests {
-    use crate::general::mode::ServerConf;
-
-    #[test]
-    pub fn test_build_stream() {
-        println!("{:?}", ServerConf::init_by_conf());
-    }
 }

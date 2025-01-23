@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["session", "stream"]
+
+[profile.dev]
+debug = true
+opt-level = 0
