@@ -222,11 +222,9 @@ impl H264 {
 
 #[cfg(test)]
 mod test {
-    use memchr::memmem;
     use common::bytes::Bytes;
 
     use crate::coder::h264::H264;
-    use crate::container::ps::PsPacket;
 
     #[test]
     fn test_sps() {

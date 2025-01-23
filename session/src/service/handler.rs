@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use common::bytes::Bytes;
 use common::exception::{GlobalError, GlobalResult, TransError};
-use common::log::{error, info};
+use common::log::{error};
 use common::serde_json;
 use common::tokio::sync::mpsc;
 use common::tokio::time::Instant;
@@ -218,17 +218,17 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
 #[cfg(test)]
 mod test {
     use std::time::Duration;
-
+    use common::tokio;
     use common::chrono::Local;
     use common::tokio::sync::mpsc;
     use common::tokio::time::{Instant, sleep_until};
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test() {
         let (tx, mut rx) = mpsc::channel::<Option<u32>>(8);
         let init = Local::now().timestamp_millis();
         println!("{} : {}", "first init", init);
-        common::tokio::spawn(async move {
+        tokio::spawn(async move {
             sleep_until(Instant::now() + Duration::from_secs(2)).await;
             tx.send(None).await.unwrap();
             let current = Local::now().timestamp_millis();

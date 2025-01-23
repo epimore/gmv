@@ -511,6 +511,7 @@ impl Channel {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod test {
     use std::collections::HashMap;
 

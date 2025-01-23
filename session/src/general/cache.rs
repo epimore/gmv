@@ -453,7 +453,7 @@ mod tests {
             from_tag: "".to_string(),
             to_tag: "".to_string(),
         };
-        let mut map = DashMap::new();
+        let map = DashMap::new();
         map.insert(1, table);
         map.get_mut(&1)
             .map(|mut ref_mut| {

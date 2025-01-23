@@ -6,7 +6,7 @@ mod tests {
 
     #[test]
     fn test_map() {
-        let mut empty_map = HashMap::<String, u8>::new();
+        let empty_map = HashMap::<String, u8>::new();
         let res = empty_map.get("a").or_else(||empty_map.get("b")).or_else(||empty_map.get("c"));
         assert_eq!(res, None);
 

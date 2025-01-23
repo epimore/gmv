@@ -25,20 +25,27 @@ pub async fn get_device_status_info(device_id: &String) -> GlobalResult<Option<(
 
 #[cfg(test)]
 mod test {
+    use common::cfg_lib::conf::init_cfg;
     use common::dbx::mysqlx;
+    use common::tokio;
     use super::*;
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_get_device_channel_status() {
-        mysqlx::init_conn_pool();
+        init();
         let result = get_device_channel_status(&"34020000001110000001".to_string(), &"34020000001320000180".to_string()).await;
         println!("{:?}",result);
     }
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_get_device_status_info() {
-        mysqlx::init_conn_pool();
+        init();
         let status_info = get_device_status_info(&"34020000001110000001".to_string()).await;
         println!("{:?}",status_info);
+    }
+
+    fn init(){
+        init_cfg("/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/config.yml".to_string());
+        let _ = mysqlx::init_conn_pool();
     }
 }

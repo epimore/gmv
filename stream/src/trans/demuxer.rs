@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::ops::Sub;
+use std::thread::sleep;
+use std::time::{Duration, SystemTime};
 use crossbeam_channel::{Receiver};
 use common::log::{error, warn};
 use rtp::packet::Packet;
-use common::chrono::Local;
 use common::constructor::New;
 use common::exception::{GlobalError, GlobalResult, TransError};
 use crate::coder::{MediaInfo};
@@ -14,7 +16,7 @@ use crate::general::mode::Media;
  时间戳增量单位：1/90000(秒/个) ，特别注意RTP时间戳是有单位的 每帧对应的采样： 90000 / 25 = 3600 (个/帧)
 */
 //rtp包读取超时(8帧)：毫秒
-const BASE_TIMEOUT: i64 = 320;
+const BASE_TIMEOUT: Duration = Duration::from_millis(320);
 //缓冲区大小
 const BUFFER_SIZE: usize = 64;
 const BLOCK_BUFFER_SIZE: usize = 32;
@@ -29,7 +31,7 @@ pub struct MediaHandler {
 
 pub struct DemuxContext {
     last_read_rtp_sn: u16, // 上一个读取的 RTP 包的序列号
-    last_read_time: i64, // 上一次读取时间
+    last_read_time: SystemTime, // 上一次读取时间
     last_read_queue_index: usize,  // 上一次读取缓冲区索引
 
     queue: [Option<Packet>; BUFFER_SIZE],
@@ -43,7 +45,7 @@ impl DemuxContext {
     pub fn init(packet_rx: Receiver<Packet>, media_handler: MediaHandler) -> Self {
         Self {
             last_read_rtp_sn: 0,
-            last_read_time: 0,
+            last_read_time: SystemTime::now(),
             queue: std::array::from_fn(|_| None),
             last_read_queue_index: 0,
             queue_count: 0,
@@ -77,7 +79,7 @@ impl DemuxContext {
                 Self::demux_data(&mut self.media_handler.media_info, pkt, &self.media_handler.media_map)?;
 
                 if self.queue_count == 0 {
-                    self.last_read_time = Local::now().timestamp_millis();
+                    self.last_read_time = SystemTime::now();
                     self.last_read_queue_index = index;
                     //遍历次数大于有效数据数量,则中间有不连续，需增加缓存窗口
                     if i > count {
@@ -111,8 +113,9 @@ impl DemuxContext {
                     break;
                 }
             }
+
             //等待超时
-            if Local::now().timestamp_millis() >= self.last_read_time + BASE_TIMEOUT {
+            if SystemTime::now().sub(BASE_TIMEOUT).ge(&self.last_read_time) {
                 break;
             }
         }
@@ -148,7 +151,9 @@ impl DemuxContext {
 
 #[test]
 fn test() {
-    let mut i = 4;
-    i /= 2;
-    println!("{i}");
+    let last_read_time = SystemTime::now();
+    sleep(Duration::from_millis(310));
+    if SystemTime::now().sub(BASE_TIMEOUT).ge(&last_read_time) {
+        println!("已超时");
+    } else { println!("未超时"); }
 }

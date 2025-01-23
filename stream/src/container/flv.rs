@@ -435,16 +435,6 @@ mod test {
         let nbytes = [0x00, 0x02, 0x59, 0xD3];
         println!("num = {}", BigEndian::read_u32(&nbytes));
     }
-
-
-    fn borrow() {
-        struct Model {
-            a: u8,
-            b: Option<String>,
-            c: bool,
-        }
-        let mut m1 = Model { a: 123, b: None, c: false };
-    }
 }
 //ypedef struct ScriptTagData
 // {

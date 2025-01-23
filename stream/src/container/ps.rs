@@ -554,6 +554,7 @@ pub struct PesPtsDtsInfo {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod test {
     use std::io::{Cursor, Read, Seek, SeekFrom};
     use byteorder::ReadBytesExt;
@@ -624,7 +625,7 @@ mod test {
         let input = include_bytes!("/mnt/e/code/rust/study/media/rsmpeg/tests/assets/vids/ps.raw");
         let bytes = Bytes::copy_from_slice(input);
         let mut ps_packet = PsPacket::default();
-        if let Ok(Some(mut vec)) = ps_packet.parse(true, bytes) {
+        if let Ok(Some(vec)) = ps_packet.parse(true, bytes) {
             println!("len_1 = {}", vec.len());
             vec.iter().map(|iter| println!("data len = {}", iter.len())).count();
             // vec.iter().map(|iter| println!("data = {:02x?}", iter.to_vec())).count();
@@ -643,7 +644,7 @@ mod test {
         let packet_len = 10;
         let mut mut_pes_payload = BytesMut::with_capacity(packet_len);
         unsafe { mut_pes_payload.set_len(packet_len); }
-        let result = cursor.read_exact(&mut *mut_pes_payload);
+        let _result = cursor.read_exact(&mut *mut_pes_payload);
         println!("{:02x?}", mut_pes_payload.to_vec());
         println!("position = {}", cursor.position());
     }
@@ -652,7 +653,7 @@ mod test {
     fn test_mem_find() {
         let data = Bytes::from_static(&[0x12, 0x34, 0x00, 0x00, 0x01, 0xAB, 0xCD]);
         let mut cursor = Cursor::new(data);
-        let first = cursor.read_u8().unwrap();
+        let _first = cursor.read_u8().unwrap();
         let bytes = cursor.get_ref();
         println!("{:02?}", bytes.to_vec());
         let pos = cursor.position() as usize;

@@ -152,6 +152,7 @@ impl CmdStream {
 
 
 #[cfg(test)]
+#[allow(unused)]
 mod test {
     use regex::Regex;
 

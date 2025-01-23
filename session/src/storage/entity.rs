@@ -300,52 +300,51 @@ impl GmvDeviceChannel {
 
 #[cfg(test)]
 mod tests {
+    use common::cfg_lib::conf::init_cfg;
     use common::dbx::mysqlx;
+    use common::tokio;
     use super::*;
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_read_gmv_oauth_by_device_id() {
-        mysqlx::init_conn_pool();
+        init();
         let res = GmvOauth::read_gmv_oauth_by_device_id(&"34020000001320000003".to_string()).await;
         println!("{res:?}");
     }
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_query_gmv_device_by_device_id() {
-        mysqlx::init_conn_pool();
+        init();
         let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
         println!("{res:?}");
     }
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_insert_single_gmv_device_by_register() {
-        mysqlx::init_conn_pool();
+        init();
         let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
         if let Ok(Some(gd)) = res {
             let a = GmvDevice { device_id: "34020000001320000004".to_string(), ..gd };
             println!("{a:?}");
-            common::logger::Logger::init();
             let result = a.insert_single_gmv_device_by_register().await;
             println!("{:?}", result)
         }
     }
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_update_gmv_device_status_by_device_id() {
-        common::logger::Logger::init();
-        mysqlx::init_conn_pool();
+        init();
         let res = GmvDevice::update_gmv_device_status_by_device_id(&"34020000001320000003".to_string(), 1).await;
         println!("{:?}", res);
     }
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_update_gmv_device_ext_info() {
-        common::logger::Logger::init();
+        init();
         let ext = GmvDeviceExt {
             device_id: "34020000001110000001".to_string(),
             ..Default::default()
         };
-        mysqlx::init_conn_pool();
         let pool = get_conn_by_pool().unwrap();
         let res = sqlx::query("update GMV_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?")
             .bind(ext.device_type)
@@ -359,20 +358,19 @@ mod tests {
         println!("{:?}", res);
     }
 
-    #[common::tokio::test]
+    #[tokio::test]
     async fn test_insert_gmv_device_channel() {
-        common::logger::Logger::init();
+        init();
         let dc_ls = (0..10).map(|i| GmvDeviceChannel {
             device_id: "34020000001320000004".to_string(),
             channel_id: format!("3402000000132000010{}", i),
             ..Default::default()
         });
 
-        let ext = GmvDeviceExt {
+        let _ext = GmvDeviceExt {
             device_id: "34020000001110000001".to_string(),
             ..Default::default()
         };
-        mysqlx::init_conn_pool();
         let pool = get_conn_by_pool().unwrap();
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
          model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
@@ -406,5 +404,10 @@ mod tests {
         supply_light_type=VALUES(supply_light_type),alias_name=VALUES(alias_name)");
         let res = builder.build().execute(pool).await;
         println!("{:?}", res);
+    }
+
+    fn init(){
+        init_cfg("/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/config.yml".to_string());
+        let _ = mysqlx::init_conn_pool();
     }
 }
