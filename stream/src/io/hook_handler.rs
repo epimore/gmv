@@ -50,9 +50,6 @@ impl Event {
                 }
                 Event::OffPlay(spi) => {
                     let _ = spi.off_play().await;
-
-                    // let stream_id = spi.get_base_stream_info().get_stream_id();
-                    // cache::remove_user(stream_id, spi.get_remote_addr());
                 }
                 Event::EndRecord(_) => {}
             }

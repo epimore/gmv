@@ -31,15 +31,11 @@ pub struct RtpInfo {
     ssrc: u32,
     //媒体流源地址,tcp/udp
     origin_trans: Option<NetSource>,
-    // //媒体流源地址
-    // origin_addr: Option<String>,
-    // //tcp/udp
-    // protocol: Option<String>,
     server_name: String,
 }
 
 impl RtpInfo {
-    //未知流，每隔8秒提示一次
+    //未知流，每隔8秒提示一次?
     pub async fn stream_unknown(&self) {}
 }
 

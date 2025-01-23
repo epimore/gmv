@@ -66,7 +66,6 @@ pub fn res_500(msg: &str) -> GlobalResult<Response<Body>> {
 }
 
 #[allow(dead_code)]
-//todo 获取流超时对点播方响应
 pub fn res_404_stream_timeout() -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg("404:media stream disconnected".to_string()).to_json()?;
     let res = Response::builder()
@@ -82,7 +81,7 @@ pub fn res_422() -> GlobalResult<Response<Body>> {
     return Ok(res);
 }
 
-//监听ssrc,接收流放入通道缓存,返回状态.next step >>> rtp_map
+//监听ssrc,接收流放入通道缓存
 pub fn listen_ssrc(ssrc_lis: SsrcLisDto) -> GlobalResult<Response<Body>> {
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
     let res = match cache::insert(ssrc_lis, cache::Channel::build()) {
@@ -96,27 +95,6 @@ pub fn listen_ssrc(ssrc_lis: SsrcLisDto) -> GlobalResult<Response<Body>> {
         }
     };
     Ok(res)
-
-
-    // match (get_ssrc(&map), get_stream_id(&map)) {
-    //     (Ok(ssrc), Ok(stream_id)) => {
-    //         let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
-    //         let res = match cache::insert(ssrc, stream_id, cache::Channel::build()) {
-    //             Ok(_) => {
-    //                 let json_data = ResMsg::<bool>::build_success().to_json()?;
-    //                 response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
-    //             }
-    //             Err(error) => {
-    //                 let json_data = ResMsg::<bool>::build_failed_by_msg(error.to_string()).to_json()?;
-    //                 response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
-    //             }
-    //         };
-    //         Ok(res)
-    //     }
-    //     _ => {
-    //         res_422()
-    //     }
-    // }
 }
 
 #[derive(Deserialize, Debug)]

@@ -117,7 +117,7 @@ impl Cache {
 
     //移除流与用户关系
     //1.当gmv_token为None时-直接删除
-    //2.当gmv_token为Some时-删除set<gmv_token>中的gmv_token：如果set<gmv_token>中只有一条该gmv_token,则如第1项
+    //2.当gmv_token为Some时-删除set<gmv_token>中的gmv_token：
     pub fn stream_map_remove(stream_id: &String, gmv_token: Option<&String>) {
         match gmv_token {
             None => {
@@ -127,19 +127,7 @@ impl Cache {
                 match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
                     Entry::Occupied(mut occ) => {
                         let sets = &mut occ.get_mut().gmv_token_sets;
-                        match sets.len() {
-                            0 => {
-                                occ.remove();
-                            }
-                            1 => {
-                                if sets.contains(token) {
-                                    occ.remove();
-                                }
-                            }
-                            _ => {
-                                sets.remove(token);
-                            }
-                        }
+                        sets.remove(token);
                     }
                     Entry::Vacant(_vac) => {}
                 }

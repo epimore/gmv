@@ -64,7 +64,7 @@ impl<T: Serialize> ResMsg<T> {
     }
 
     pub fn build_success_data(data: T) -> Self {
-        Self { code: 0, msg: "success".to_string(), data: Some(data) }
+        Self { code: 200, msg: "success".to_string(), data: Some(data) }
     }
 }
 

@@ -57,7 +57,7 @@ impl HookApi {
     #[oai(path = "/stream/idle", method = "post")]
     async fn stream_idle(&self, stream_play_info: Json<BaseStreamInfo>) -> Json<ResultMessageData<bool>> {
         let info = stream_play_info.0;
-        info!("off_play = {:?}", &info);
+        info!("stream_idle = {:?}", &info);
         Json(ResultMessageData::build_success(handler::stream_idle(info).await))
     }
 }

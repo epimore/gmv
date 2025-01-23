@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use common::bytes::Bytes;
 use common::exception::{GlobalError, GlobalResult, TransError};
-use common::log::error;
+use common::log::{error, info};
 use common::serde_json;
 use common::tokio::sync::mpsc;
 use common::tokio::time::Instant;
@@ -167,7 +167,9 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, token: &St
 //(避免stream重启后,数据不一致)
 async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &String, play_type: &PlayType) -> Option<(String, String)> {
     match general::cache::Cache::device_map_get_invite_info(device_id, channel_id, play_type) {
-        None => { None }
+        None => {
+            None
+        }
         //session -> true
         Some((stream_id, ssrc)) => {
             let mut res = None;

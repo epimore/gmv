@@ -27,7 +27,7 @@ const STOP_RECORD: &str = "/stop/record";
 const START_RECORD: &str = "/start/record";
 const PLAY: &str = "/play/";
 const STOP_PLAY: &str = "/stop/play";
-const QUERY_COUNT: &str = "/query/count";
+const QUERY_STREAM_COUNT: &str = "/query/stream/count";
 const RTP_MEDIA: &str = "/rtp/media";
 
 async fn handle(
@@ -38,7 +38,8 @@ async fn handle(
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
     let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败"))).hand_log(|msg| error!("{msg}"))?;
-
+    info!("Method: {}, Uri: {}, Header: {:?}, Remote addr: {}",
+    req.method(),req.uri(),req.headers(),remote_addr);
     match get_token(&req) {
         Ok(token) => {
             let response = biz(node_name, remote_addr, ssrc_tx, token, req, client_connection_cancel).await?;
@@ -71,7 +72,9 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
 
 async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
     match (req.method(), req.uri().path()) {
-        (&Method::GET, "/") | (&Method::GET, "") => Ok(Response::new(Body::from(INDEX))),
+        (&Method::GET, "/") | (&Method::GET, "") => {
+            Ok(Response::new(Body::from(INDEX)))
+        }
         (&Method::POST, LISTEN_SSRC) => {
             match body_to_model::<SsrcLisDto>(req).await {
                 Ok(ssrc_lis) => {
@@ -81,15 +84,6 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
                     api::res_422()
                 }
             }
-
-            // match get_param_map(&req) {
-            //     Ok(param_map) => {
-            //         api::listen_ssrc(param_map)
-            //     }
-            //     Err(_err) => {
-            //         api::res_422()
-            //     }
-            // }
         }
         (&Method::POST, RTP_MEDIA) => {
             match body_to_model::<RtpMap>(req).await {
@@ -100,22 +94,6 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
                     api::res_422()
                 }
             }
-
-            // match hyper::body::to_bytes(req.into_body()).await.hand_log(|msg| error!("{msg}")) {
-            //     Ok(body_bytes) => {
-            //         match common::serde_json::from_slice::<RtpMap>(&body_bytes).hand_log(|msg| error!("{msg}")) {
-            //             Ok(rtp_map) => {
-            //                 api::RtpMap::rtp_map(rtp_map, ssrc_tx).await
-            //             }
-            //             Err(_) => {
-            //                 api::res_422()
-            //             }
-            //         }
-            //     }
-            //     Err(_) => {
-            //         api::res_422()
-            //     }
-            // }
         }
         (&Method::GET, DROP_SSRC) => {
             unimplemented!()
@@ -129,7 +107,7 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
         (&Method::GET, STOP_PLAY) => {
             unimplemented!()
         }
-        (&Method::GET, QUERY_COUNT) => {
+        (&Method::GET, QUERY_STREAM_COUNT) => {
             match req.uri().query() {
                 None => { api::get_stream_count(None) }
                 Some(param) => {

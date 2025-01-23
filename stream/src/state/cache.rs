@@ -140,27 +140,6 @@ pub fn refresh(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::Send
         };
     }
     None
-
-
-    // if let Some((on, _when, stream_id, _expires, channel, reported_time, _info, _media)) = guard.sessions.get(&ssrc) {
-    //     if let Some((_ssrc, _flv_sets, _hls_sets, _record)) = guard.inner.get(stream_id) {
-    //         //更新流状态：时间轮会扫描流，将其置为false，若使用中则on更改为true;
-    //         //增加判断流是否使用,若使用则更新流状态;目的：流空闲则断流。
-    //         // if flv_sets.len() > 0 || hls_sets.len() > 0 || record.is_some() {
-    //         if !on.load(Ordering::SeqCst) {
-    //             on.store(true, Ordering::SeqCst);
-    //         }
-    //         // }
-    //     }
-    //     return if reported_time == &0 {
-    //         drop(guard);
-    //         //回调流注册时-事件
-    //         event_stream_in(ssrc, bill)
-    //     } else {
-    //         Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()))
-    //     };
-    // }
-    // None
 }
 
 pub fn get_stream_id(ssrc: &u32) -> Option<String> {
@@ -195,22 +174,9 @@ fn event_stream_in(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
         return Some((stream_trace.stream_ch.get_rtp_tx(), stream_trace.stream_ch.get_rtp_rx()));
     }
     None
-
-    // if let Some((_on, _when, stream_id, _expires, channel, reported_time, info, _)) = guard.sessions.get_mut(&ssrc) {
-    //     let remote_addr_str = bill.get_remote_addr().to_string();
-    //     let protocol_addr = bill.get_protocol().get_value().to_string();
-    //     *info = Some((remote_addr_str.clone(), protocol_addr.clone()));
-    //     let rtp_info = RtpInfo::new(ssrc, Some(protocol_addr), Some(remote_addr_str), SESSION.shared.server_conf.get_name().clone());
-    //     let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
-    //     let stream_info = BaseStreamInfo::new(rtp_info, stream_id.clone(), time);
-    //     let _ = SESSION.shared.event_tx.clone().try_send((Event::StreamIn(stream_info), None)).hand_log(|msg| error!("{msg}"));
-    //     *reported_time = time;
-    //     return Some((channel.rtp_channel.0.clone(), channel.rtp_channel.1.clone()));
-    // }
-    // return None;
 }
 
-//外层option判断ssrc是否存在，里层判断是否需要rtp/hls协议
+
 pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
@@ -291,14 +257,6 @@ pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String,
             }
         }
     }
-
-    // if let Some((_, flv_sets, hls_sets, _)) = state.inner.get_mut(stream_id) {
-    //     match &play_type[..] {
-    //         "flv" => { if in_out { flv_sets.insert(user_token); } else { flv_sets.remove(&user_token); } }
-    //         "hls" => { if in_out { hls_sets.insert(user_token); } else { hls_sets.remove(&user_token); } }
-    //         _ => {}
-    //     }
-    // }
 }
 
 //返回BaseStreamInfo,user_count
@@ -317,39 +275,7 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
         }
     }
     None
-
-
-    // match guard.inner.get(stream_id) {
-    //     None => {
-    //         None
-    //     }
-    //     Some((ssrc, flv_tokens, hls_tokens, _)) => {
-    //         match guard.sessions.get(ssrc) {
-    //             Some((_, _ts, stream_id, _dur, _ch, stream_in_reported_time, Some((origin_addr, protocol)), _)) => {
-    //                 let server_name = SESSION.shared.server_conf.get_name().to_string();
-    //                 let rtp_info = RtpInfo::new(*ssrc, Some(protocol.to_string()), Some(origin_addr.to_string()), server_name);
-    //                 let stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *stream_in_reported_time);
-    //                 Some((stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32))
-    //             }
-    //             _ => { None }
-    //         }
-    //     }
-    // }
 }
-
-// pub fn remove_user(stream_id: &String, remote_addr: &SocketAddr) {
-//     let mut guard = SESSION.shared.state.write();
-//     let state = &mut *guard;
-//     if let Some(InnerTrace { user_map, .. }) = state.inner.get_mut(stream_id) {
-//         user_map.remove(remote_addr);
-//     }
-
-// if let Some(InnerTrace { ssrc, .. }) = state.inner.remove(stream_id) {
-//     if let Some((_, when, _, _, _, _, _, _)) = state.sessions.remove(&ssrc) {
-//         state.expirations.remove(&(when, ssrc));
-//     }
-// }
-// }
 
 pub fn get_stream_count(opt_stream_id: Option<&String>) -> u32 {
     let guard = SESSION.shared.state.read();
@@ -362,46 +288,6 @@ pub fn get_stream_count(opt_stream_id: Option<&String>) -> u32 {
             if guard.inner.get(stream_id).is_none() { 0 } else { 1 }
         }
     }
-
-    // let mut vec = Vec::new();
-    // let server_name = SESSION.shared.server_conf.get_name().to_string();
-    // match opt_stream_id {
-    //     None => {
-    //         //ssrc,(on,ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol))
-    //         for (ssrc, (_, _, stream_id, _, _, report_timestamp, opt_addr_protocol, _)) in &guard.sessions {
-    //             let mut origin_addr = None;
-    //             let mut protocol = None;
-    //             if let Some((addr, proto)) = opt_addr_protocol {
-    //                 origin_addr = Some(addr.clone());
-    //                 protocol = Some(proto.clone());
-    //             }
-    //             let rtp_info = RtpInfo::new(*ssrc, protocol, origin_addr, server_name.clone());
-    //             let base_stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *report_timestamp);
-    //             //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
-    //             if let Some((_ssrc, flv_tokens, hls_tokens, record_name)) = guard.inner.get(stream_id) {
-    //                 let state = StreamState::new(base_stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name.clone());
-    //                 vec.push(state);
-    //             }
-    //         }
-    //     }
-    //     Some(stream_id) => {
-    //         if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = &guard.inner.get(&stream_id) {
-    //             if let Some((_, _, stream_id, _, _, report_timestamp, opt_addr_protocol, _)) = &guard.sessions.get(ssrc) {
-    //                 let mut origin_addr = None;
-    //                 let mut protocol = None;
-    //                 if let Some((addr, proto)) = opt_addr_protocol {
-    //                     origin_addr = Some(addr.clone());
-    //                     protocol = Some(proto.clone());
-    //                 }
-    //                 let rtp_info = RtpInfo::new(*ssrc, protocol, origin_addr, server_name.clone());
-    //                 let base_stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), *report_timestamp);
-    //                 let state = StreamState::new(base_stream_info, flv_tokens.len() as u32, hls_tokens.len() as u32, record_name.clone());
-    //                 vec.push(state);
-    //             }
-    //         }
-    //     }
-    // }
-    // vec
 }
 
 
@@ -493,17 +379,8 @@ impl Shared {
                     }
                     if del {
                         if let Some(StreamTrace { stream_id, register_ts, origin_trans, .. }) = state.sessions.remove(&ssrc) {
-                            // if let Some((_, _, stream_id, _, _, stream_in_reported_time, op, _)) = state.sessions.remove(&ssrc) {
                             if let Some(InnerTrace { ssrc, user_map }) = state.inner.remove(&stream_id) {
-                                // if let Some((ssrc, flv_tokens, hls_tokens, record_name)) = state.inner.remove(&stream_id) {
-                                //callback stream timeout
                                 let server_name = SESSION.shared.server_conf.get_name().to_string();
-                                // let mut origin_addr = None;
-                                // let mut protocol = None;
-                                // if let Some((origin_addr_s, protocol_s)) = origin_trans {
-                                //     origin_addr = Some(origin_addr_s);
-                                //     protocol = Some(protocol_s);
-                                // }
                                 let opt_net = origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
                                 let rtp_info = RtpInfo::new(ssrc, opt_net, server_name);
                                 let stream_info = BaseStreamInfo::new(rtp_info, stream_id, register_ts);
@@ -577,11 +454,9 @@ enum StreamDirection {
 
 ///自定义会话信息
 struct State {
-    //ssrc,(on,ts,stream_id,dur,ch,stream_in_reported_time,(origin_addr,protocol),(media_type,media_type_enum))
-    // sessions: HashMap<u32, (AtomicBool, Instant, String, Duration, Channel, u32, Option<(String, String)>, HashMap<u8, Media>)>,
+    //ssrc:StreamTrace
     sessions: HashMap<u32, StreamTrace>,
-    //stream_id:(ssrc,flv-tokens,hls-tokens,record_name)
-    // inner: HashMap<String, (u32, HashSet<String>, HashSet<String>, Option<String>)>,
+    //stream_id:InnerTrace
     inner: HashMap<String, InnerTrace>,
     //(ts,ssrc,StreamDirection)
     expirations: BTreeSet<(Instant, u32, StreamDirection)>,
