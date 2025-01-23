@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::ops::Sub;
-use std::thread::sleep;
 use std::time::{Duration, SystemTime};
 use crossbeam_channel::{Receiver};
 use common::log::{error, warn};
@@ -149,11 +148,20 @@ impl DemuxContext {
     }
 }
 
-#[test]
-fn test() {
-    let last_read_time = SystemTime::now();
-    sleep(Duration::from_millis(310));
-    if SystemTime::now().sub(BASE_TIMEOUT).ge(&last_read_time) {
-        println!("已超时");
-    } else { println!("未超时"); }
+
+#[cfg(test)]
+mod test{
+    use std::ops::Sub;
+    use std::thread::sleep;
+    use std::time::{Duration, SystemTime};
+    use crate::trans::demuxer::BASE_TIMEOUT;
+
+    #[test]
+    fn test() {
+        let last_read_time = SystemTime::now();
+        sleep(Duration::from_millis(310));
+        if SystemTime::now().sub(BASE_TIMEOUT).ge(&last_read_time) {
+            println!("已超时");
+        } else { println!("未超时"); }
+    }
 }
