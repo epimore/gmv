@@ -1,5 +1,6 @@
 use std::{pin::Pin, task::{Context, Poll}};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::net::{SocketAddr};
 
 use hyper::{Body, Method, Request, Response, server::accept::Accept, service::{make_service_fn, service_fn}, StatusCode};
@@ -8,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use common::anyhow::{anyhow};
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
-use common::log::{error, info};
+use common::log::{error, info, warn};
 use common::serde::de::DeserializeOwned;
 use common::tokio::{self,
                     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -38,8 +39,6 @@ async fn handle(
     client_connection_cancel: CancellationToken,
 ) -> GlobalResult<Response<Body>> {
     let remote_addr = opt_addr.ok_or(SysErr(anyhow!("连接时获取客户端地址失败"))).hand_log(|msg| error!("{msg}"))?;
-    info!("Method: {}, Uri: {}, Header: {:?}, Remote addr: {}",
-    req.method(),req.uri(),req.headers(),remote_addr);
     match get_token(&req) {
         Ok(token) => {
             let response = biz(node_name, remote_addr, ssrc_tx, token, req, client_connection_cancel).await?;
@@ -71,79 +70,92 @@ fn get_param_map(req: &Request<Body>) -> GlobalResult<HashMap<String, String>> {
 }
 
 async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, token: String, req: Request<Body>, client_connection_cancel: CancellationToken) -> GlobalResult<Response<Body>> {
-    match (req.method(), req.uri().path()) {
-        (&Method::GET, "/") | (&Method::GET, "") => {
-            Ok(Response::new(Body::from(INDEX)))
-        }
-        (&Method::POST, LISTEN_SSRC) => {
-            match body_to_model::<SsrcLisDto>(req).await {
-                Ok(ssrc_lis) => {
-                    api::listen_ssrc(ssrc_lis)
+    match req.method() {
+        &Method::GET => {
+            info!("Uri: {}",req.uri());
+            match req.uri().path() {
+                "/" | "" => {
+                    Ok(Response::new(Body::from(INDEX)))
                 }
-                Err(_) => {
-                    api::res_422()
+                DROP_SSRC => {
+                    unimplemented!()
                 }
-            }
-        }
-        (&Method::POST, RTP_MEDIA) => {
-            match body_to_model::<RtpMap>(req).await {
-                Ok(rtp_map) => {
-                    api::RtpMap::rtp_map(rtp_map, ssrc_tx).await
+                START_RECORD => {
+                    unimplemented!()
                 }
-                Err(_) => {
-                    api::res_422()
+                STOP_RECORD => {
+                    unimplemented!()
                 }
-            }
-        }
-        (&Method::GET, DROP_SSRC) => {
-            unimplemented!()
-        }
-        (&Method::GET, START_RECORD) => {
-            unimplemented!()
-        }
-        (&Method::GET, STOP_RECORD) => {
-            unimplemented!()
-        }
-        (&Method::GET, STOP_PLAY) => {
-            unimplemented!()
-        }
-        (&Method::GET, QUERY_STREAM_COUNT) => {
-            match req.uri().query() {
-                None => { api::get_stream_count(None) }
-                Some(param) => {
-                    let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
-                    api::get_stream_count(map.get("stream_id").map(|stream_id_ref| stream_id_ref))
+                STOP_PLAY => {
+                    unimplemented!()
                 }
-            }
-        }
-        (method, uri) => {
-            if method.eq(&Method::GET) {
-                if let Some(index) = uri.rfind('.') {
-                    let start_play = &format!("/{node_name}{PLAY}");
-                    let p_len = start_play.len();
-                    //stream_id最小20位
-                    if index > p_len + 20 {
-                        let play_type = &uri[index + 1..];
-                        let pt = match play_type {
-                            "flv" => {
-                                PlayType::Flv
-                            }
-                            "m3u8" => {
-                                PlayType::Hls
-                            }
-                            other => {
-                                error!("无效的流参数格式:{}",other);
-                                return api::res_404();
-                            }
-                        };
-                        let stream_id = (&uri[p_len..index]).to_string();
-                        return api::start_play(pt, stream_id, token, remote_addr, client_connection_cancel).await;
+                QUERY_STREAM_COUNT => {
+                    match req.uri().query() {
+                        None => { api::get_stream_count(None) }
+                        Some(param) => {
+                            let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
+                            api::get_stream_count(map.get("stream_id").map(|stream_id_ref| stream_id_ref))
+                        }
                     }
                 }
-                Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap())
-            } else {
-                Ok(Response::builder().status(StatusCode::METHOD_NOT_ALLOWED).body(Body::from("GMV::METHOD_NOT_ALLOWED")).unwrap())
+                uri => {
+                    if let Some(index) = uri.rfind('.') {
+                        let start_play = &format!("/{node_name}{PLAY}");
+                        let p_len = start_play.len();
+                        //stream_id最小20位
+                        if index > p_len + 20 {
+                            let play_type = &uri[index + 1..];
+                            let pt = match play_type {
+                                "flv" => {
+                                    PlayType::Flv
+                                }
+                                "m3u8" => {
+                                    PlayType::Hls
+                                }
+                                other => {
+                                    error!("无效的流参数格式:{}",other);
+                                    return api::res_404();
+                                }
+                            };
+                            let stream_id = (&uri[p_len..index]).to_string();
+                            return api::start_play(pt, stream_id, token, remote_addr, client_connection_cancel).await;
+                        }
+                    }
+                    Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap())
+                }
             }
+        }
+        &Method::POST => {
+            match req.uri().path() {
+                LISTEN_SSRC => {
+                    match body_to_model::<SsrcLisDto>(req).await {
+                        Ok(ssrc_lis) => {
+                            api::listen_ssrc(ssrc_lis)
+                        }
+                        Err(_) => {
+                            api::res_422()
+                        }
+                    }
+                }
+                RTP_MEDIA => {
+                    match body_to_model::<RtpMap>(req).await {
+                        Ok(rtp_map) => {
+                            api::RtpMap::rtp_map(rtp_map, ssrc_tx).await
+                        }
+                        Err(_) => {
+                            api::res_422()
+                        }
+                    }
+                }
+                _uri => {
+                    warn!("request:POST, uri = {}",req.uri());
+                    Ok(Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("GMV::NOTFOUND")).unwrap())
+                }
+            }
+        }
+        &_ => {
+            warn!("request:{}, uri = {}",req.method(),req.uri());
+            Ok(Response::builder().status(StatusCode::METHOD_NOT_ALLOWED).body(Body::from("GMV::METHOD_NOT_ALLOWED")).unwrap())
         }
     }
 }
@@ -241,9 +253,11 @@ impl Accept for ServerListener {
 
 async fn body_to_model<T>(req: Request<Body>) -> GlobalResult<T>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Debug,
 {
+    let uri = req.uri().to_string();
     let body = hyper::body::to_bytes(req.into_body()).await.hand_log(|msg| error!("{msg}"))?;
     let model = common::serde_json::from_slice::<T>(&body).hand_log(|msg| error!("{msg}"))?;
+    info!("uri: {}\nbody: {:?}",uri,model);
     Ok(model)
 }

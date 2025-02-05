@@ -14,7 +14,7 @@ use common::tokio::sync::mpsc::Sender;
 use crate::biz::call::{StreamPlayInfo};
 use crate::container::PlayType;
 use crate::general::mode::{Media, ResMsg};
-use crate::io::hook_handler::{Event, EventRes};
+use crate::io::hook_handler::{OutEvent, OutEventRes};
 use crate::state::cache;
 use crate::trans::flv_muxer;
 
@@ -84,7 +84,7 @@ pub fn res_422() -> GlobalResult<Response<Body>> {
 //监听ssrc,接收流放入通道缓存
 pub fn listen_ssrc(ssrc_lis: SsrcLisDto) -> GlobalResult<Response<Body>> {
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
-    let res = match cache::insert(ssrc_lis, cache::Channel::build()) {
+    let res = match cache::insert(ssrc_lis) {
         Ok(_) => {
             let json_data = ResMsg::<bool>::build_success().to_json()?;
             response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
@@ -174,7 +174,7 @@ pub async fn start_play(play_type: PlayType, stream_id: String, token: String, r
             let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token.clone(), play_type, user_count);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
-            let _ = event_tx.clone().send((Event::OnPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
+            let _ = event_tx.clone().send((OutEvent::OnPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
             match rx.await {
                 Ok(res) => {
                     let res_builder = Response::builder()
@@ -183,7 +183,7 @@ pub async fn start_play(play_type: PlayType, stream_id: String, token: String, r
                         .header("Transfer-Encoding", "chunked")
                         .header("Connection", "keep-alive")
                         .header("Cache-Control", "no-cache"); //Cache-Control: 根据需求设置，一般可以设为 no-cache 或者 public, max-age=秒数。
-                    if let EventRes::OnPlay(Some(true)) = res {
+                    if let OutEventRes::OnPlay(Some(true)) = res {
                         match play_type {
                             PlayType::Flv => {
                                 match cache::get_flv_rx(&ssrc) {
@@ -207,7 +207,7 @@ pub async fn start_play(play_type: PlayType, stream_id: String, token: String, r
                                             cache::update_token(&stream_id, play_type, token.clone(), false, remote_addr);
                                             if let Some((bsi, user_count)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                                 let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token, play_type, user_count);
-                                                let _ = event_tx.send((Event::OffPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
+                                                let _ = event_tx.send((OutEvent::OffPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });
                                         Ok(flv_res)
@@ -235,7 +235,7 @@ pub async fn start_play(play_type: PlayType, stream_id: String, token: String, r
                                             cache::update_token(&stream_id, play_type, token.clone(), false, remote_addr);
                                             if let Some((bsi, user_count)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                                 let info = StreamPlayInfo::new(bsi, remote_addr.to_string(), token, play_type, user_count);
-                                                let _ = event_tx.send((Event::OffPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
+                                                let _ = event_tx.send((OutEvent::OffPlay(info), None)).await.hand_log(|msg| error!("{msg}"));
                                             }
                                         });
                                         Ok(hls_res)

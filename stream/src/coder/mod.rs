@@ -1,14 +1,25 @@
-use crossbeam_channel::Sender;
-
 use common::bytes::Bytes;
 use common::exception::GlobalResult;
+use rtp::packet::Packet;
 
-use crate::coder::h264::H264;
-use crate::container::ps::Ps;
 use crate::general::mode::Coder;
 
 pub mod h264;
 
+
+pub enum VideoCodec {
+    H264,
+    H265,
+}
+
+pub enum AudioCodec {
+    G711,
+    // SVAC_A,
+    // G723_1,
+    // G729,
+    // G722_1,
+    // AAC,
+}
 
 #[derive(Clone)]
 pub struct FrameData {
@@ -19,19 +30,15 @@ pub struct FrameData {
 
 pub type HandleFrameDataFn = Box<dyn Fn(FrameData) -> GlobalResult<()> + Send + Sync>;
 
-pub struct MediaInfo {
-    pub h264: H264,
-    pub ps: Ps,
-    // pub h265:H265,
-    // pub aac:Aac,
+#[derive(Default)]
+pub struct CodecPayload {
+    //codec,data,timestamp
+    pub video_payload: (Option<VideoCodec>, Vec<Bytes>, u32),
+    pub audio_payload: (Option<AudioCodec>, Vec<Bytes>, u32),
+    // pub other_payload:(Vec<Bytes>,u32),#字幕/私有信息...
 }
 
-impl MediaInfo {
-    pub fn register_all(flv_tx: Option<Sender<FrameData>>, hls_tx: Option<Sender<FrameData>>) -> Self {
-        Self { h264: H264::init_avc(flv_tx.clone(), hls_tx.clone()), ps: Ps::init(flv_tx.clone(), hls_tx.clone()) }
-    }
-}
 
-pub trait HandleFrame {
-    fn next_step(&self, frame_data: FrameData) -> GlobalResult<()>;
+pub trait ToFrame {
+    fn parse(&mut self, pkt: Packet, codec_payload: &mut CodecPayload) -> GlobalResult<()>;
 }

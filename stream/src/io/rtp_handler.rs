@@ -53,7 +53,7 @@ fn demux_rtp(mut rtp_data: Bytes, association: &Association) {
     match Packet::unmarshal(&mut rtp_data) {
         Ok(pkt) => {
             let ssrc = pkt.header.ssrc;
-            match state::cache::refresh(ssrc, association) {
+            match state::cache::refresh(ssrc, association, &pkt) {
                 None => {
                     debug!("未知ssrc: {}",ssrc);
                 }

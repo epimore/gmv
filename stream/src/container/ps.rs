@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use byteorder::{BigEndian, ReadBytesExt};
-use common::log::error;
 use memchr::memmem;
 
 use common::anyhow::anyhow;
@@ -11,9 +10,9 @@ use common::bytes::{Bytes, BytesMut};
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
 use common::log::{info, warn};
-use crate::coder::h264::H264;
-use crate::coder::{FrameData, HandleFrame};
-use crate::general::mode::Coder;
+use rtp::packet::Packet;
+use crate::coder::h264::H264Context;
+use crate::coder::{CodecPayload, ToFrame, VideoCodec};
 
 const PS_PACK_START_CODE: u32 = 0x000001BA;
 const PS_PACK_START_IDENT: u8 = 0xBA;
@@ -27,53 +26,6 @@ const PS_BASE_LEN: usize = 6; //ps len min = pes header
 // const PS_HEADER_BASE_LEN: usize = 14; //ps header
 const PS_START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01u8];
 
-// #[derive(Default)]
-pub struct Ps {
-    flv_tx: Option<crossbeam_channel::Sender<FrameData>>,
-    hls_tx: Option<crossbeam_channel::Sender<FrameData>>,
-    pub ps_packet: PsPacket,
-}
-
-impl HandleFrame for Ps {
-    fn next_step(&self, frame_data: FrameData) -> GlobalResult<()> {
-        match (&self.flv_tx, &self.hls_tx) {
-            (Some(flv_tx), Some(hls_tx)) => {
-                flv_tx.send(frame_data.clone()).hand_log(|msg| error!("{msg}"))?;
-                hls_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
-            }
-            (Some(flv_tx), None) => {
-                flv_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
-            }
-            (None, Some(hls_tx)) => {
-                hls_tx.send(frame_data).hand_log(|msg| error!("{msg}"))?;
-            }
-            (None, None) => {
-                Err(GlobalError::new_sys_error("无frame发送端", |msg| error!("{msg}")))?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Ps {
-    pub fn init(flv_tx: Option<crossbeam_channel::Sender<FrameData>>, hls_tx: Option<crossbeam_channel::Sender<FrameData>>) -> Self {
-        Self {
-            flv_tx,
-            hls_tx,
-            ps_packet: PsPacket::default(),
-        }
-    }
-    pub fn handle_demuxer(&mut self, marker: bool, timestamp: u32, bytes: Bytes) -> GlobalResult<()> {
-        if let Ok(Some(raws)) = self.ps_packet.parse(marker, bytes) {
-            for raw in raws {
-                let frame_data = FrameData { pay_type: Coder::H264(None, None, false), timestamp, data: raw };
-                self.next_step(frame_data)?;
-            }
-        }
-        Ok(())
-    }
-}
-
 #[derive(Default)]
 pub struct PsPacket {
     ps_header: Option<PsHeader>,
@@ -82,10 +34,10 @@ pub struct PsPacket {
     payload: BytesMut,
 }
 
-impl PsPacket {
-    pub fn parse(&mut self, marker: bool, bytes: Bytes) -> GlobalResult<Option<Vec<Bytes>>> {
-        self.payload.put(bytes);
-        if marker {
+impl ToFrame for PsPacket {
+    fn parse(&mut self, pkt: Packet, codec_payload: &mut CodecPayload) -> GlobalResult<()> {
+        self.payload.put(pkt.payload);
+        if pkt.header.marker {
             let payload = std::mem::take(&mut self.payload).freeze();
             let len = (payload.len() - PS_BASE_LEN) as u64;
             let mut cursor = Cursor::new(payload);
@@ -125,13 +77,16 @@ impl PsPacket {
                     return Err(GlobalError::new_sys_error(&format!("invalid data:ps_start_code_prefix is not 0x000001,val = {:02x?}", start_code), |msg| warn!("{msg}")));
                 }
             }
-            let vec = self.parse_to_nalu(pes_packets)?;
-            return Ok(Some(vec));
+            self.parse_to_nalu(pes_packets, codec_payload, pkt.header.timestamp)?;
         }
-        Ok(None)
+        Ok(())
     }
-    fn parse_to_nalu(&self, pes_packets: Vec<PesPacket>) -> GlobalResult<Vec<Bytes>> {
-        let mut nalus = Vec::new();
+}
+
+impl PsPacket {
+    //分离音视频字幕私有信息...
+    //(video,audio,other)
+    fn parse_to_nalu(&self, pes_packets: Vec<PesPacket>, codec_payload: &mut CodecPayload, timestamp: u32) -> GlobalResult<()> {
         if let Some(sys_map) = &self.ps_sys_map {
             let mut payload = BytesMut::new();
             for pes_packet in pes_packets {
@@ -139,6 +94,9 @@ impl PsPacket {
                 match stream_type {
                     //H264
                     &0x1B => {
+                        if codec_payload.video_payload.0.is_none() {
+                            codec_payload.video_payload.0 = Some(VideoCodec::H264);
+                        }
                         match pes_packet.pes_inner_data {
                             PesInnerData::PesPtsDtsInfo(PesPtsDtsInfo { pes_payload, .. }) => {
                                 payload.put(pes_payload);
@@ -170,15 +128,21 @@ impl PsPacket {
                      //AAC
                      &0x0F => {}*/
                     &_ => {
-                        return Err(GlobalError::new_sys_error(&format!("系统暂不支持类型：{stream_type}"), |msg| warn!("{msg}")));
+                        return Err(GlobalError::new_biz_error(10010, &format!("系统暂不支持类型：{stream_type}"), |msg| warn!("{msg}")));
                     }
                 };
             }
             if payload.len() > 4 {
-                H264::extract_nal_annexb_to_len(&mut nalus, payload.freeze()).hand_log(|msg| warn!("{msg}"))?;
+                match &mut codec_payload.video_payload {
+                    (Some(VideoCodec::H264), video_payload, ts) => {
+                        *ts = timestamp;
+                        H264Context::extract_nal_annexb_to_len(video_payload, payload.freeze()).hand_log(|msg| warn!("{msg}"))?;
+                    }
+                    _ => {}
+                }
             }
         }
-        Ok(nalus)
+        Ok(())
     }
 }
 
@@ -562,7 +526,7 @@ mod test {
 
     use common::bytes::{Bytes, BytesMut};
 
-    use crate::container::ps::{PsHeader, PsPacket, PsSysHeader, PsSysMap};
+    use crate::container::ps::{PsHeader, PsSysHeader, PsSysMap};
 
     #[test]
     fn test_parse_ps_header() {

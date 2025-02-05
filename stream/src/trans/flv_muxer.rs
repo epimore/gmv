@@ -6,54 +6,10 @@ use common::log::{info, warn};
 use common::tokio::sync::broadcast;
 use common::tokio::sync::broadcast::error::RecvError;
 
-use crate::coder::h264::H264;
-use crate::container::flv;
-use crate::container::flv::{AvcDecoderConfigurationRecord, FlvHeader, PreviousTagSize, ScriptMetaData, TagHeader, TagType, VideoTagDataFirst};
+use crate::coder::h264::H264Context;
+use crate::container::flv::flv_h264::{AvcDecoderConfigurationRecord, FlvHeader, PreviousTagSize, ScriptMetaData, TagHeader, TagType, VideoTagDataFirst};
 use crate::general::mode::Coder;
-use crate::state::cache;
 use crate::trans::FrameData;
-
-pub fn run(ssrc: u32, rx: crossbeam_channel::Receiver<FrameData>) {
-    if let Some(tx) = cache::get_flv_tx(&ssrc) {
-        let mut container = flv::MediaFlvContainer::register_all();
-        loop {
-            match rx.recv() {
-                Ok(FrameData { pay_type, timestamp, data }) => {
-                    match pay_type {
-                        Coder::PS => {}
-                        Coder::MPEG4 => {}
-                        Coder::H264(..) => {
-                            if let Some((pkg, sps, pps, idr)) = container.flv_video_h264.packaging(data) {
-                                let data = pkg.to_bytes();
-                                let frame_data = FrameData {
-                                    pay_type: Coder::H264(sps, pps, idr),
-                                    timestamp,
-                                    data,
-                                };
-                                if tx.send(frame_data).is_err() {
-                                    info!("http 用户端已全部断开连接.");
-                                    break;
-                                }
-                            }
-                        }
-                        Coder::SVAC_V => {}
-                        Coder::H265 => {}
-                        Coder::G711 => {}
-                        Coder::SVAC_A => {}
-                        Coder::G723_1 => {}
-                        Coder::G729 => {}
-                        Coder::G722_1 => {}
-                        Coder::AAC => {}
-                    }
-                }
-                Err(_e) => {
-                    info!("ssrc：{ssrc} 解复用端流关闭");
-                    break;
-                }
-            }
-        }
-    }
-}
 
 //当前仅支持h264，后面扩展时，需考虑flv script等内容，如添加audio等，是否将流信息放入cache
 async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::Receiver<FrameData>) -> GlobalResult<u32> {
@@ -61,8 +17,8 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
         match rx.recv().await {
             Ok(FrameData { pay_type, timestamp, data }) => {
                 match pay_type {
-                    Coder::PS => {}
-                    Coder::MPEG4 => {}
+                    // Coder::PS => {}
+                    // Coder::MPEG4 => {}
                     Coder::H264(sps, pps, idr) => {
                         if let (Some(sps), Some(pps), true) = (sps, pps, idr) {
                             //flv header
@@ -72,7 +28,7 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
                             let sps_nal = sps.slice(4..);
                             let pps_nal = pps.slice(4..);
                             //Script Tag
-                            if let Ok((w, h, fr)) = H264::get_width_height_frame_rate(&sps_nal) {
+                            if let Ok((w, h, fr)) = H264Context::get_width_height_frame_rate(&sps_nal) {
                                 let mut meta_data = ScriptMetaData::default();
                                 meta_data.set_height(h as f64);
                                 meta_data.set_width(w as f64);
@@ -105,14 +61,14 @@ async fn first_frame(ssrc: u32, flv_tx: &mut body::Sender, rx: &mut broadcast::R
                             return Ok(timestamp);
                         }
                     }
-                    Coder::SVAC_V => {}
+                    // Coder::SVAC_V => {}
                     Coder::H265 => {}
                     Coder::G711 => {}
-                    Coder::SVAC_A => {}
-                    Coder::G723_1 => {}
-                    Coder::G729 => {}
-                    Coder::G722_1 => {}
-                    Coder::AAC => {}
+                    // Coder::SVAC_A => {}
+                    // Coder::G723_1 => {}
+                    // Coder::G729 => {}
+                    // Coder::G722_1 => {}
+                    // Coder::AAC => {}
                 }
             }
             Err(RecvError::Lagged(amt)) => {
@@ -141,8 +97,6 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
         match rx.recv().await {
             Ok(FrameData { pay_type, timestamp, data }) => {
                 match pay_type {
-                    Coder::PS => {}
-                    Coder::MPEG4 => {}
                     Coder::H264(..) => {
                         //a=rtpmap:96 H264/90000,->video_clock_rate=90000,单位毫秒 90000/1000 = 90
                         let header_bytes = TagHeader::build(TagType::Video, (timestamp - start_time) / 90, data.len() as u32).to_bytes();
@@ -151,16 +105,10 @@ pub async fn send_flv(ssrc: u32, mut flv_tx: body::Sender, mut rx: broadcast::Re
                         bytes.put(header_bytes);
                         bytes.put(data);
                         bytes.put(size_bytes);
-                        flv_tx.send_data(bytes.freeze()).await.hand_log(|msg| info!("http端断开媒体流:{msg}"))?;
+                        flv_tx.send_data(bytes.freeze()).await.hand_log(|_msg| info!("ssrc:{}, http端断开媒体流",ssrc))?;
                     }
-                    Coder::SVAC_V => {}
                     Coder::H265 => {}
                     Coder::G711 => {}
-                    Coder::SVAC_A => {}
-                    Coder::G723_1 => {}
-                    Coder::G729 => {}
-                    Coder::G722_1 => {}
-                    Coder::AAC => {}
                 }
             }
             Err(RecvError::Lagged(amt)) => {
