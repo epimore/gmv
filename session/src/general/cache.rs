@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use common::{serde_json, tokio};
+use common::{rand, serde_json, tokio};
 use common::bytes::Bytes;
 use common::dashmap::{DashMap, DashSet};
 use common::dashmap::mapref::entry::Entry;
 use common::exception::{GlobalResult, TransError};
 use common::log::{error, warn};
 use common::once_cell::sync::Lazy;
+use common::rand::seq::IteratorRandom;
 use common::serde::{Deserialize, Serialize};
 use common::serde::de::DeserializeOwned;
 use common::tokio::sync::mpsc::Sender;
@@ -30,16 +31,11 @@ pub struct Cache {
 
 impl Cache {
     pub fn ssrc_sn_get() -> Option<u16> {
-        let opt_ssrc_sn = {
-            let mut iter = GENERAL_CACHE.shared.ssrc_sn.iter();
-            iter.next().map(|item| *item.key())
-        };
-        match opt_ssrc_sn {
-            None => { None }
-            Some(ssrc_sn) => {
-                GENERAL_CACHE.shared.ssrc_sn.remove(&ssrc_sn)
-            }
+        let mut rng = rand::thread_rng();
+        if let Some(val) = GENERAL_CACHE.shared.ssrc_sn.iter().choose(&mut rng).map(|v| *v) {
+            return GENERAL_CACHE.shared.ssrc_sn.remove(&val);
         }
+        None
     }
 
     pub fn ssrc_sn_set(ssrc_sn: u16) -> bool {
@@ -439,7 +435,9 @@ impl PlayType {}
 
 #[cfg(test)]
 mod tests {
-    use common::dashmap::DashMap;
+    use common::dashmap::{DashMap, DashSet};
+    use common::{rand};
+    use common::rand::prelude::IteratorRandom;
     use crate::general::cache::{Cache, GENERAL_CACHE, PlayType, StreamTable};
 
     #[test]
@@ -472,5 +470,26 @@ mod tests {
         assert_eq!(GENERAL_CACHE.shared.ssrc_sn.contains(&ssrc_sn), false);
         Cache::ssrc_sn_set(ssrc_sn);
         assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9999);
+    }
+
+    #[test]
+    fn test_rand_remove() {
+        let sets = DashSet::new();
+        for i in 1..10000 {
+            sets.insert(i);
+        }
+
+        let mut rng = rand::thread_rng();
+        for _i in 0..10 {
+            if let Some(val) = sets.iter().choose(&mut rng).map(|v| *v) {
+                match sets.remove(&val) {
+                    None => { println!("end"); }
+                    Some(val) => {
+                        println!("val = {}", val);
+                        sets.insert(val);
+                    }
+                }
+            };
+        }
     }
 }

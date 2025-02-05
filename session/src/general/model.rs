@@ -63,6 +63,9 @@ pub struct PlayLiveModel {
     channel_id: Option<String>,
     #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     trans_mode: Option<u8>,
+    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
+    /// 媒体类型，默认flv,hls开启,(todo 2-mp4 3-webrtc ...)
+    media_type: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Object, Serialize, Get)]
