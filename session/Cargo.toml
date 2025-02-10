@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 rsip = "0.4"
 sqlx = { version = "0.8"}
-common = { git = "https://github.com/epimore/pigs.git", features = ["net", "mysqlx"] }
+common = { git = "https://github.com/epimore/pigs.git",rev = "837e2bbda634fb007cce2b9e253756c957d61a36", features = ["net", "mysqlx"] }
 #common = { path = "../../pigs/common", features = ["net", "mysqlx"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }

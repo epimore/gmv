@@ -4,10 +4,11 @@ use common::exception::{GlobalError, GlobalResult};
 use common::log::error;
 use common::serde::Deserialize;
 use common::serde_default;
+use common::cfg_lib::conf::CheckFromConf;
 
 #[derive(Debug, Get, Clone, Deserialize)]
 #[serde(crate = "common::serde")]
-#[conf(prefix = "stream", path = "config.yml")]
+#[conf(prefix = "stream", check)]
 pub struct StreamConf {
     expires: i32,
     flv: bool,
@@ -19,19 +20,27 @@ serde_default!(default_hls, bool, true);
 impl StreamConf {
     pub fn init_by_conf() -> GlobalResult<Self> {
         let cf: StreamConf = StreamConf::conf();
-        if !cf.hls && !cf.flv {
-            return Err(GlobalError::new_biz_error(1200, "未启用媒体类型", |msg| error!("{msg}")));
-        }
         Ok(cf)
+    }
+}
+
+impl CheckFromConf for StreamConf {
+    fn _field_check(&self) {
+        if !self.hls && !self.flv {
+            return panic!("未启用媒体类型");
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use common::cfg_lib::conf::init_cfg;
     use crate::general::cfg::StreamConf;
 
+    //   hls 与 flv: 都为false时，触发panic
     #[test]
-    fn test_init_conf() {
+    fn test_check_init_conf() {
+        init_cfg("config.yml".to_string());
         let cf: StreamConf = StreamConf::conf();
         println!("{:?}", cf);
     }
