@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-common = { git = "https://github.com/epimore/pigs.git", features = ["net"] }
-#common = { path = "../../pig/common", features = ["net"] }
+#common = { git = "https://github.com/epimore/pigs.git", features = ["net"] }
+common = { path = "../../pigs/common", features = ["net"] }
 parking_lot = "0.12"
 tokio-util = "0.7"
 futures-util = "0.3"
@@ -19,8 +19,8 @@ tokio-stream = {version = "0.1.15",features = ["sync"]}
 rtp = "0.11"
 webrtc-util = "0.9"
 mpeg2ts = "0.3"
-m3u8-rs = "6.0"
-#hls_m3u8 = "0.4"
+#m3u8-rs = "6.0"
+hls_m3u8 = "0.5"
 byteorder = "1"
 amf = "1.0"
 h264-reader = "=0.7"

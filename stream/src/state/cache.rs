@@ -19,7 +19,7 @@ use common::tokio::time::Instant;
 use parking_lot::RwLock;
 use rtp::packet::Packet;
 
-use crate::biz::api::SsrcLisDto;
+use crate::biz::api::{HlsPiece, SsrcLisDto};
 use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamState};
 use crate::coder::FrameData;
 use crate::container::PlayType;
@@ -100,7 +100,7 @@ pub fn insert(ssrc_lis: SsrcLisDto) -> GlobalResult<()> {
         let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
         state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
         let stream_id = ssrc_lis.stream_id;
-        let stream_conf = cfg::StreamConf::init_by_conf();
+        let stream_conf = cfg::StreamConf::init_by_conf()?;
         let out_expires: &i32 = stream_conf.get_expires();
         let out_expires = match ssrc_lis.expires {
             None => {
@@ -123,6 +123,8 @@ pub fn insert(ssrc_lis: SsrcLisDto) -> GlobalResult<()> {
             media_map: Default::default(),
             rtp_payload_type: 0,
             event_channel: (tx, Arc::new(Mutex::new(rx))),
+            flv: false,
+            hls: None,
         };
         state.sessions.insert(ssrc, stream_trace);
         let inner = InnerTrace { ssrc, user_map: Default::default() };
@@ -452,6 +454,9 @@ struct StreamTrace {
     // 缓存视音频编码类型？
     //video
     //audio
+    //转换流协议
+    flv:bool,
+    hls:Option<HlsPiece>,
 }
 
 struct InnerTrace {

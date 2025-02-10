@@ -316,7 +316,7 @@ pub mod flv_h264 {
                 picture_parameter_set_nal_units: pps,
             }
         }
-        
+
         pub fn to_bytes(self) -> Bytes {
             let mut bytes = BytesMut::new();
             bytes.put_u8(self.configuration_version);

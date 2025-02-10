@@ -5,6 +5,7 @@ use common::serde::{Deserialize, Serialize};
 pub mod rtp;
 pub mod flv;
 pub mod ps;
+pub mod hls;
 
 ///rtp /flv等容器封装h264时,需剔除0000000001/000001开始符
 pub type HandleMuxerDataFn = Box<dyn Fn(Bytes) -> GlobalResult<()> + Send + Sync>;

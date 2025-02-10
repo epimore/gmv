@@ -9,6 +9,7 @@ mod trans;
 pub mod coder;
 pub mod container;
 mod app;
+mod comm;
 
 fn main() {
     daemon::run::<app::App, _>();

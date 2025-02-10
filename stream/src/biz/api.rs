@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use hyper::{Body, header, Response, StatusCode};
-use common::serde::Deserialize;
+use common::serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use common::exception::{BizError, GlobalError, GlobalResult, TransError};
@@ -97,15 +97,23 @@ pub fn listen_ssrc(ssrc_lis: SsrcLisDto) -> GlobalResult<Response<Body>> {
     Ok(res)
 }
 
+#[derive(Deserialize, Serialize, Debug, Default)]
+#[serde(crate = "common::serde")]
+pub struct HlsPiece {
+    //片时间长度 S
+    pub duration: u8,
+    pub live: bool,
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(crate = "common::serde")]
 pub struct SsrcLisDto {
     pub ssrc: u32,
     pub stream_id: String,
-    //当为None时，默认配置,负数-立马关闭
+    //当为None时，默认配置,负数-立即关闭
     pub expires: Option<i32>,
     pub flv: Option<bool>,
-    pub hls: Option<bool>,
+    pub hls: Option<HlsPiece>,
 }
 
 #[derive(Deserialize, Debug)]

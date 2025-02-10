@@ -62,7 +62,7 @@ impl ToFrame for PsPacket {
                             }
                         }
                         PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST => {
-                            if let Some(pes_pkt) = PesPacket::read_video_pes_data(&mut cursor, ident).hand_log(|msg| warn!("{msg}"))? {
+                            if let Some(pes_pkt) = PesPacket::read_video_pes_data(&mut cursor, ident)? {
                                 pes_packets.push(pes_pkt);
                             }
                         }
