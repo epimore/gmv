@@ -3,8 +3,6 @@ use std::thread;
 use crossbeam_channel::Sender;
 use image::{ImageFormat};
 use common::serde::Deserialize;
-use common::cfg_lib;
-use common::serde_yaml;
 use common::cfg_lib::conf;
 use common::constructor::{Get, New};
 use common::exception::{GlobalError, GlobalResult, TransError};

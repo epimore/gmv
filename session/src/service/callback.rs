@@ -62,10 +62,18 @@ pub async fn get_stream_count(opt_stream_id: Option<&String>, gmv_token: &String
                 return Ok(data);
             }
         }
-        Err(SysErr(anyhow!("{}",body.msg))).hand_log(|msg|error!("{msg}"))?
+        Err(SysErr(anyhow!("{}",body.msg))).hand_log(|msg| error!("{msg}"))?
     } else {
-        Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg|error!("{msg}"))?
+        Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
     };
+}
+
+#[derive(Deserialize, Serialize, Debug, Default)]
+#[serde(crate = "common::serde")]
+pub struct HlsDto {
+    //片时间长度 S
+    pub duration: u8,
+    pub live: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -76,7 +84,7 @@ pub struct SsrcLisDto {
     //当为None时，默认配置,负数-立马关闭
     pub expires: Option<i32>,
     pub flv: Option<bool>,
-    pub hls: Option<bool>,
+    pub hls: Option<HlsDto>,
 }
 
 pub async fn call_listen_ssrc(stream_id: String, ssrc: &String, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<bool> {
@@ -104,7 +112,7 @@ pub async fn call_listen_ssrc(stream_id: String, ssrc: &String, gmv_token: &Stri
             .hand_log(|msg| error!("{msg}"))?;
         Ok(body.code == 200)
     } else {
-        Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg|error!("{msg}"))?
+        Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
     };
 }
 
@@ -135,6 +143,6 @@ pub async fn ident_rtp_media_info(ssrc: &String, map: HashMap<u8, String>, gmv_t
             .hand_log(|msg| error!("{msg}"))?;
         Ok(body.code == 200)
     } else {
-        Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg|error!("{msg}"))?
+        Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
     };
 }
