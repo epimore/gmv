@@ -4,7 +4,7 @@ use common::exception::{GlobalError, GlobalResult};
 use common::log::error;
 use common::serde::Deserialize;
 use common::serde_default;
-use common::cfg_lib::conf::CheckFromConf;
+use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 
 #[derive(Debug, Get, Clone, Deserialize)]
 #[serde(crate = "common::serde")]
@@ -25,12 +25,14 @@ impl StreamConf {
 }
 
 impl CheckFromConf for StreamConf {
-    fn _field_check(&self) {
+    fn _field_check(&self) -> Result<(), FieldCheckError> {
         if !self.hls && !self.flv {
-            return panic!("未启用媒体类型");
+            return Err(FieldCheckError::BizError("未启用输出媒体类型".to_string()));
         }
+        Ok(())
     }
 }
+
 
 #[cfg(test)]
 mod tests {

@@ -473,7 +473,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=837e2bbda634fb007cce2b9e253756c957d61a36#837e2bbda634fb007cce2b9e253756c957d61a36"
+source = "git+https://github.com/epimore/pigs.git?rev=c893fd9a65a0ec13e49ddcd5229f7520b9373c92#c893fd9a65a0ec13e49ddcd5229f7520b9373c92"
 dependencies = [
  "cfg_macro",
  "clap",
@@ -483,7 +483,7 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=837e2bbda634fb007cce2b9e253756c957d61a36#837e2bbda634fb007cce2b9e253756c957d61a36"
+source = "git+https://github.com/epimore/pigs.git?rev=c893fd9a65a0ec13e49ddcd5229f7520b9373c92#c893fd9a65a0ec13e49ddcd5229f7520b9373c92"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -566,7 +566,7 @@ checksum = "d3fd119d74b830634cea2a0f58bbd0d54540518a14397557951e79340abc28c0"
 [[package]]
 name = "common"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=837e2bbda634fb007cce2b9e253756c957d61a36#837e2bbda634fb007cce2b9e253756c957d61a36"
+source = "git+https://github.com/epimore/pigs.git?rev=c893fd9a65a0ec13e49ddcd5229f7520b9373c92#c893fd9a65a0ec13e49ddcd5229f7520b9373c92"
 dependencies = [
  "aes 0.7.5",
  "base64 0.13.1",
@@ -589,9 +589,17 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sqlx",
  "tokio",
  "users",
+]
+
+[[package]]
+name = "common_db"
+version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=c893fd9a65a0ec13e49ddcd5229f7520b9373c92#c893fd9a65a0ec13e49ddcd5229f7520b9373c92"
+dependencies = [
+ "common",
+ "sqlx",
 ]
 
 [[package]]
@@ -612,7 +620,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "constructor"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=837e2bbda634fb007cce2b9e253756c957d61a36#837e2bbda634fb007cce2b9e253756c957d61a36"
+source = "git+https://github.com/epimore/pigs.git?rev=c893fd9a65a0ec13e49ddcd5229f7520b9373c92#c893fd9a65a0ec13e49ddcd5229f7520b9373c92"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1015,7 +1023,7 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=837e2bbda634fb007cce2b9e253756c957d61a36#837e2bbda634fb007cce2b9e253756c957d61a36"
+source = "git+https://github.com/epimore/pigs.git?rev=c893fd9a65a0ec13e49ddcd5229f7520b9373c92#c893fd9a65a0ec13e49ddcd5229f7520b9373c92"
 dependencies = [
  "anyhow",
  "thiserror 2.0.0",
@@ -1268,7 +1276,7 @@ checksum = "40ecd4077b5ae9fd2e9e169b102c6c330d0605168eb0e8bf79952b256dbefffd"
 name = "gmv-session"
 version = "0.1.0"
 dependencies = [
- "common",
+ "common_db",
  "crossbeam-channel",
  "encoding_rs",
  "image",
