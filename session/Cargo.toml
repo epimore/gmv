@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 rsip = "0.4"
 sqlx = { version = "0.8" }
-common = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "c893fd9a65a0ec13e49ddcd5229f7520b9373c92", features = ["net"] }
+common = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "175cfb83eae9b95bbf8338b414e05c9279db1a28", features = ["net"] }
 #common = { package = "common_db", path = "../../pigs/common_db", features = ["net"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }

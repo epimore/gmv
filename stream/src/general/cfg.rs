@@ -27,7 +27,7 @@ impl StreamConf {
 impl CheckFromConf for StreamConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         if !self.hls && !self.flv {
-            return Err(FieldCheckError::BizError("未启用输出媒体类型".to_string()));
+            return Err(FieldCheckError::BizError("HLS/FLV未启用,请至少开启一个媒体输出".to_string()));
         }
         Ok(())
     }
