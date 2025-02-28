@@ -47,7 +47,7 @@ impl ToFrame for PsPacket {
 
             while let Some(pos) = iter.next() {
                 if pos as u64 != cursor.position() {
-                    warn!("iter pos: {} , crusor index: {} , pass {} byte",pos,cursor.position(),pos as u64-cursor.position());
+                    warn!("PS buffer with start code position: {} , crusor index: {} , discarding {} bytes",pos,cursor.position(),pos as u64-cursor.position());
                 }
 
                 let mut ps_header_reader = || {
@@ -71,7 +71,7 @@ impl ToFrame for PsPacket {
                 let _ = PsPacket::split_pes_pkt(&mut pes_packets, &mut cursor);
             }
             if cursor.position() == 0 {
-                warn!("pass {} byte",self.payload.len());
+                warn!("PS buffer without start code, discarding {} bytes",self.payload.len());
                 self.payload.clear();
             } else {
                 self.payload.advance(cursor.position() as usize);
