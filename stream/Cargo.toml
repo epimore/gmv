@@ -1,7 +1,7 @@
 [package]
 name = "gmv-stream"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,9 +18,9 @@ form_urlencoded = "1.2.1"
 tokio-stream = {version = "0.1.15",features = ["sync"]}
 rtp = "0.11"
 webrtc-util = "0.9"
-mpeg2ts = "0.3"
+#mpeg2ts = "0.3"
 #m3u8-rs = "6.0"
-hls_m3u8 = "0.5"
+#hls_m3u8 = "0.5"
 byteorder = "1"
 amf = "1.0"
 h264-reader = "=0.7"

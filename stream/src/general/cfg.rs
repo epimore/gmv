@@ -1,7 +1,5 @@
 use common::cfg_lib::conf;
 use common::constructor::Get;
-use common::exception::{GlobalError, GlobalResult};
-use common::log::error;
 use common::serde::Deserialize;
 use common::serde_default;
 use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
@@ -18,9 +16,8 @@ serde_default!(default_expires, i32, 6);
 serde_default!(default_flv, bool, true);
 serde_default!(default_hls, bool, true);
 impl StreamConf {
-    pub fn init_by_conf() -> GlobalResult<Self> {
-        let cf: StreamConf = StreamConf::conf();
-        Ok(cf)
+    pub fn init_by_conf() -> Self {
+        StreamConf::conf()
     }
 }
 

@@ -100,7 +100,7 @@ pub fn insert(ssrc_lis: SsrcLisDto) -> GlobalResult<()> {
         let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
         state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
         let stream_id = ssrc_lis.stream_id;
-        let stream_conf = cfg::StreamConf::init_by_conf()?;
+        let stream_conf = cfg::StreamConf::init_by_conf();
         let out_expires: &i32 = stream_conf.get_expires();
         let out_expires = match ssrc_lis.expires {
             None => {

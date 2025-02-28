@@ -32,6 +32,8 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
         let (http_listener, tu) = t;
         let conf = self.conf;
         let node_name = conf.get_name().clone();
+        let (tx, rx) = mpsc::channel(100);
+        trans::trans_run(rx);
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -43,21 +45,15 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
                     error!("Stream server stop");
                     Ok::<(), GlobalError>(())
                 });
-                let (tx, rx) = mpsc::channel(100);
+
                 let web = tokio::spawn(async move {
                     info!("Web server start running...");
                     http_handler::run(node_name, http_listener, tx).await?;
                     error!("Web server stop");
                     Ok::<(), GlobalError>(())
                 });
-                let tr = tokio::spawn(async move {
-                    info!("Trans server start running...");
-                    trans::run(rx).await;
-                    info!("Trans server start running...");
-                });
                 st.await.hand_log(|msg| error!("Stream:{msg}"))??;
                 web.await.hand_log(|msg| error!("WEB:{msg}"))??;
-                tr.await.hand_log(|msg| error!("Trans:{msg}"))?;
                 Ok::<(), GlobalError>(())
             })?;
         error!("系统异常退出...");

@@ -32,8 +32,20 @@ async fn get_stream_in(in_event_rx: Arc<Mutex<broadcast::Receiver<InEvent>>>) ->
     Ok(())
 }
 
+pub fn trans_run(rx: Receiver<u32>) {
+   std::thread::spawn(|| {
+       tokio::runtime::Builder::new_multi_thread()
+           .enable_all()
+           .thread_name("TRANS_RUN")
+           .build()
+           .hand_log(|msg| error!("{msg}"))
+           .unwrap()
+           .block_on(handle_run(rx));
+   });
+}
+
 //todo 动态自适应编码切换
-pub async fn run(mut rx: Receiver<u32>) {
+async fn handle_run(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
         if let Some(in_event_rx) = cache::get_in_event_shard_rx(&ssrc) {
             match timeout(Duration::from_millis(HALF_TIME_OUT), get_stream_in(in_event_rx)).await {

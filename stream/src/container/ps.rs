@@ -5,7 +5,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use memchr::memmem;
 
 use common::anyhow::anyhow;
-use common::bytes::{BufMut};
+use common::bytes::{Buf, BufMut};
 use common::bytes::{Bytes, BytesMut};
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
@@ -15,7 +15,7 @@ use crate::coder::h264::H264Context;
 use crate::coder::{CodecPayload, ToFrame, VideoCodec};
 
 const PS_PACK_START_CODE: u32 = 0x000001BA;
-const PS_PACK_START_IDENT: u8 = 0xBA;
+// const PS_PACK_START_IDENT: u8 = 0xBA;
 const PS_SYS_START_CODE: u32 = 0x000001BB;
 const PS_SYS_MAP_START_CODE: u32 = 0x000001BC;
 const PS_PES_START_CODE_VIDEO_FIRST: u8 = 0xE0;
@@ -24,7 +24,9 @@ const PS_PES_START_CODE_AUDIO_FIRST: u8 = 0xC0;
 const PS_PES_START_CODE_AUDIO_LAST: u8 = 0xDF;
 const PS_BASE_LEN: usize = 6; //ps len min = pes header
 // const PS_HEADER_BASE_LEN: usize = 14; //ps header
-const PS_START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01u8];
+const SPLIT_START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01u8];
+const PS_START_CODE_PREFIX: [u8; 4] = [0x00, 0x00, 0x01u8, 0xBA];
+const BUFFER_SIZE: usize = 1024 * 1024;
 
 #[derive(Default)]
 pub struct PsPacket {
@@ -37,45 +39,42 @@ pub struct PsPacket {
 impl ToFrame for PsPacket {
     fn parse(&mut self, pkt: Packet, codec_payload: &mut CodecPayload) -> GlobalResult<()> {
         self.payload.put(pkt.payload);
-        if pkt.header.marker {
-            let payload = std::mem::take(&mut self.payload).freeze();
-            let len = (payload.len() - PS_BASE_LEN) as u64;
-            let mut cursor = Cursor::new(payload);
+        let payload_len = self.payload.len();
+        if pkt.header.marker || payload_len > BUFFER_SIZE {
             let mut pes_packets = Vec::new();
-            while cursor.position() < len {
-                let mut start_code = [0u8; 3];
-                cursor.read_exact(&mut start_code).hand_log(|msg| warn!("{msg}"))?;
-                if start_code == PS_START_CODE_PREFIX {
-                    let ident = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
-                    match ident {
-                        PS_PACK_START_IDENT => {
-                            let ps_header = PsHeader::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
-                            self.ps_header = Some(ps_header);
-                            let sys_start_code = cursor.read_u32::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
-                            if sys_start_code == PS_SYS_START_CODE {
-                                let ps_sys_header = PsSysHeader::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
-                                let ps_sys_map = PsSysMap::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
-                                self.ps_sys_header = Some(ps_sys_header);
-                                self.ps_sys_map = Some(ps_sys_map);
-                            } else {
-                                cursor.seek(SeekFrom::Current(-4)).hand_log(|msg| warn!("{msg}"))?;
-                            }
-                        }
-                        PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST => {
-                            if let Some(pes_pkt) = PesPacket::read_video_pes_data(&mut cursor, ident)? {
-                                pes_packets.push(pes_pkt);
-                            }
-                        }
-                        PS_PES_START_CODE_AUDIO_FIRST..=PS_PES_START_CODE_AUDIO_LAST => {
-                            PesPacket::read_audio_pes_data(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
-                        }
-                        _ => {
-                            return Err(GlobalError::new_sys_error("invalid data:ps start code ident is not 0xba|0xe0|0xc0..", |msg| warn!("{msg}")));
-                        }
-                    }
-                } else {
-                    return Err(GlobalError::new_sys_error(&format!("invalid data:ps_start_code_prefix is not 0x000001,val = {:02x?}", start_code), |msg| warn!("{msg}")));
+            let mut iter = memmem::find_iter(&self.payload[..], &PS_START_CODE_PREFIX);
+            let mut cursor = Cursor::new(&self.payload);
+
+            while let Some(pos) = iter.next() {
+                if pos as u64 != cursor.position() {
+                    warn!("iter pos: {} , crusor index: {} , pass {} byte",pos,cursor.position(),pos as u64-cursor.position());
                 }
+
+                let mut ps_header_reader = || {
+                    cursor.set_position(4 + pos as u64);
+                    let in_ps_header = PsHeader::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
+                    self.ps_header = Some(in_ps_header);
+                    let sys_start_code = cursor.read_u32::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
+                    if sys_start_code == PS_SYS_START_CODE {
+                        let in_ps_sys_header = PsSysHeader::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
+                        let in_ps_sys_map = PsSysMap::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
+                        self.ps_sys_header = Some(in_ps_sys_header);
+                        self.ps_sys_map = Some(in_ps_sys_map);
+                    } else {
+                        cursor.seek(SeekFrom::Current(-4)).hand_log(|msg| warn!("{msg}"))?;
+                    }
+                    Ok::<(), GlobalError>(())
+                };
+                if let Err(_) = ps_header_reader() {
+                    continue;
+                }
+                let _ = PsPacket::split_pes_pkt(&mut pes_packets, &mut cursor);
+            }
+            if cursor.position() == 0 {
+                warn!("pass {} byte",self.payload.len());
+                self.payload.clear();
+            } else {
+                self.payload.advance(cursor.position() as usize);
             }
             self.parse_to_nalu(pes_packets, codec_payload, pkt.header.timestamp)?;
         }
@@ -84,6 +83,31 @@ impl ToFrame for PsPacket {
 }
 
 impl PsPacket {
+    fn split_pes_pkt(pes_packets: &mut Vec<PesPacket>, cursor: &mut Cursor<&BytesMut>) -> GlobalResult<()> {
+        let byte_len = (cursor.get_ref().len() - PS_BASE_LEN) as u64;
+        while cursor.position() < byte_len {
+            cursor.seek(SeekFrom::Current(3)).hand_log(|msg| warn!("{msg}"))?;
+            let ident = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
+            match ident {
+                PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST => {
+                    match PesPacket::read_video_pes_data(cursor, ident)? {
+                        None => { break; }
+                        Some(pes_pkt) => {
+                            pes_packets.push(pes_pkt);
+                        }
+                    }
+                }
+                PS_PES_START_CODE_AUDIO_FIRST..=PS_PES_START_CODE_AUDIO_LAST => {
+                    PesPacket::read_audio_pes_data(cursor).hand_log(|msg| warn!("{msg}"))?;
+                }
+                other => {
+                    return Err(GlobalError::new_sys_error(&format!("invalid data:ident is {other}"), |msg| warn!("{msg}")));
+                }
+            }
+        }
+        Ok(())
+    }
+
     //分离音视频字幕私有信息...
     //(video,audio,other)
     fn parse_to_nalu(&self, pes_packets: Vec<PesPacket>, codec_payload: &mut CodecPayload, timestamp: u32) -> GlobalResult<()> {
@@ -181,7 +205,7 @@ pub struct PsHeader {
 }
 
 impl PsHeader {
-    pub fn parse(cursor: &mut Cursor<Bytes>) -> GlobalResult<Self> {
+    pub fn parse(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<Self> {
         let mut ver_system_clock_reference_base_marker = [0u8; 6];
         cursor.read_exact(&mut ver_system_clock_reference_base_marker).hand_log(|msg| warn!("{msg}"))?;
         let mut program_mux_rate22_marker_bit1_x2 = [0u8; 3];
@@ -213,7 +237,7 @@ pub struct PsSysHeader {
 }
 
 impl PsSysHeader {
-    pub fn parse(cursor: &mut Cursor<Bytes>) -> GlobalResult<Self> {
+    pub fn parse(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<Self> {
         let len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
         let index = cursor.position() + len as u64;
         let mut rate_audio_video_band_flag = [0u8; 6];
@@ -262,7 +286,7 @@ pub struct PsSysMap {
 }
 
 impl PsSysMap {
-    pub fn parse(cursor: &mut Cursor<Bytes>) -> GlobalResult<Self> {
+    pub fn parse(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<Self> {
         let start_code3_map_stream_id8 = cursor.read_u32::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
         if start_code3_map_stream_id8 != PS_SYS_MAP_START_CODE {
             return Err(GlobalError::new_sys_error("invalid ps_sys_map_start_code", |msg| warn!("{msg}")));
@@ -311,7 +335,7 @@ pub struct EsInfo {
 
 impl EsInfo {
     //stream_id:EsInfo
-    pub fn parse(cursor: &mut Cursor<Bytes>) -> GlobalResult<(u8, Self)> {
+    pub fn parse(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<(u8, Self)> {
         let stream_type = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
         let es_id = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
         let es_info_length = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
@@ -334,9 +358,8 @@ impl EsInfo {
 #[derive(Debug)]
 pub struct DescriptorUnType(Bytes);
 
-
 impl DescriptorUnType {
-    fn parse(cursor: &mut Cursor<Bytes>, descriptor_length: usize) -> GlobalResult<Self> {
+    fn parse(cursor: &mut Cursor<&BytesMut>, descriptor_length: usize) -> GlobalResult<Self> {
         let mut descriptor_data = BytesMut::with_capacity(descriptor_length);
         unsafe { descriptor_data.set_len(descriptor_length); }
         cursor.read_exact(&mut *descriptor_data).hand_log(|msg| warn!("{msg}"))?;
@@ -376,43 +399,22 @@ pub struct PesPacket {
 }
 
 impl PesPacket {
-    pub fn parse_data(bytes: Bytes) -> GlobalResult<Vec<Self>> {
-        let data_len = bytes.len() as u64;
-        let mut cursor = Cursor::new(bytes);
-        let mut pes_packets = Vec::new();
-        let index = data_len - PS_BASE_LEN as u64;
-        while cursor.position() < index {
-            let mut start_code_prefix = [0u8; 3];
-            cursor.read_exact(&mut start_code_prefix).hand_log(|msg| warn!("{msg}"))?;
-            let stream_id = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
-            match stream_id {
-                PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST => {
-                    if let Some(pes_pkt) = Self::read_video_pes_data(&mut cursor, stream_id).hand_log(|msg| warn!("{msg}"))? {
-                        pes_packets.push(pes_pkt);
-                    }
-                }
-                PS_PES_START_CODE_AUDIO_FIRST..=PS_PES_START_CODE_AUDIO_LAST => {
-                    Self::read_audio_pes_data(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
-                }
-                _ => {
-                    return Err(GlobalError::new_sys_error(&format!("invalid data:start_code+ident = 0x000001{:02x}", stream_id), |msg| warn!("{msg}")));
-                }
-            }
-        }
-        Ok(pes_packets)
-    }
-
     //audio 暂不支持读取内容，仅做字节跳过,
-    fn read_audio_pes_data(cursor: &mut Cursor<Bytes>) -> GlobalResult<()> {
-        let packet_len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
-        let remain_len = if packet_len == 0 { Self::get_pkt_len(cursor) } else { packet_len as usize };
+    fn read_audio_pes_data(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<()> {
+        let remain_len = Self::get_pkt_len(cursor)?;
+        if remain_len == 0 {
+            return Ok(());
+        }
         cursor.seek(SeekFrom::Current(remain_len as i64)).hand_log(|msg| info!("pes packet len greater data len:{msg}"))?;
         Ok(())
     }
 
-    fn read_video_pes_data(cursor: &mut Cursor<Bytes>, stream_id: u8) -> GlobalResult<Option<Self>> {
-        let packet_len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
-        let remain_len = if packet_len == 0 { Self::get_pkt_len(cursor) } else { packet_len as usize };
+    fn read_video_pes_data(cursor: &mut Cursor<&BytesMut>, stream_id: u8) -> GlobalResult<Option<Self>> {
+        let packet_len = Self::get_pkt_len(cursor)?;
+        if packet_len == 0 {
+            return Ok(None);
+        }
+
         if Self::check_stream_id_pts_dts_info(stream_id) {
             let m2_p2_p1_d1_c1_o1 = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
             let flags2_e1_e1_d1_a1_p1_p1 = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
@@ -421,7 +423,7 @@ impl PesPacket {
             unsafe { mut_header_main_info.set_len(header_len as usize); }
             cursor.read_exact(&mut *mut_header_main_info).hand_log(|msg| warn!("{msg}"))?;
 
-            let payload_len = remain_len - header_len as usize - 3; //去掉2个字节flag + 1 header_len
+            let payload_len = packet_len - header_len as usize - 3; //去掉2个字节flag + 1 header_len
             let mut mut_pes_payload = BytesMut::with_capacity(payload_len);
             unsafe { mut_pes_payload.set_len(payload_len); }
             cursor.read_exact(&mut *mut_pes_payload).hand_log(|msg| {
@@ -436,33 +438,33 @@ impl PesPacket {
                 pes_payload: mut_pes_payload.freeze(),
             };
             let pes_packet = Self {
-                start_code_prefix: PS_START_CODE_PREFIX,
+                start_code_prefix: SPLIT_START_CODE_PREFIX,
                 stream_id,
-                packet_len,
+                packet_len: packet_len as u16,
                 pes_inner_data: PesInnerData::PesPtsDtsInfo(pts_dts_info),
             };
             return Ok(Some(pes_packet));
         } else if Self::check_stream_id_pes_packet_data(stream_id) {
-            let mut mut_pes_payload = BytesMut::with_capacity(remain_len);
-            unsafe { mut_pes_payload.set_len(remain_len); }
+            let mut mut_pes_payload = BytesMut::with_capacity(packet_len);
+            unsafe { mut_pes_payload.set_len(packet_len); }
             cursor.read_exact(&mut *mut_pes_payload).hand_log(|msg| warn!("{msg}"))?;
 
             let pes_packet = Self {
-                start_code_prefix: PS_START_CODE_PREFIX,
+                start_code_prefix: SPLIT_START_CODE_PREFIX,
                 stream_id,
-                packet_len,
+                packet_len: packet_len as u16,
                 pes_inner_data: PesInnerData::PesAllData(mut_pes_payload.freeze()),
             };
             return Ok(Some(pes_packet));
         } else if Self::check_stream_id_padding(stream_id) {
-            let mut mut_pes_payload = BytesMut::with_capacity(remain_len);
-            unsafe { mut_pes_payload.set_len(remain_len); }
+            let mut mut_pes_payload = BytesMut::with_capacity(packet_len);
+            unsafe { mut_pes_payload.set_len(packet_len); }
             cursor.read_exact(&mut *mut_pes_payload).hand_log(|msg| warn!("{msg}"))?;
 
             let pes_packet = Self {
-                start_code_prefix: PS_START_CODE_PREFIX,
+                start_code_prefix: SPLIT_START_CODE_PREFIX,
                 stream_id,
-                packet_len,
+                packet_len: packet_len as u16,
                 pes_inner_data: PesInnerData::PesAllPadding(mut_pes_payload.freeze()),
             };
             return Ok(Some(pes_packet));
@@ -471,19 +473,25 @@ impl PesPacket {
     }
 
     //PES_packet_length == 0|0xFFFF,读取数据直到下一个PES包头0x000001+ident,或到数据流的结束
-    fn get_pkt_len(cursor: &Cursor<Bytes>) -> usize {
+    fn get_pkt_len(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<usize> {
+        let packet_len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
         let bytes = cursor.get_ref();
         let pos = cursor.position() as usize;
-        let mut iter = memmem::find_iter(&bytes[pos..], &PS_START_CODE_PREFIX);
-        while let Some(index) = iter.next() {
-            let i = pos + index + 3;
-            if matches!(bytes[i],PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST
+        if pos + packet_len as usize > bytes.len() {
+            cursor.set_position(pos as u64 - 6); //回退到0x00 00 01 ideint(u8) len(u16)
+            return Ok(0);
+        } else if packet_len == 0 || packet_len == 0xFFFF {
+            let mut iter = memmem::find_iter(&bytes[pos..], &SPLIT_START_CODE_PREFIX);
+            while let Some(index) = iter.next() {
+                let i = pos + index + 3;
+                if matches!(bytes[i],PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST
                         | PS_PES_START_CODE_AUDIO_FIRST..=PS_PES_START_CODE_AUDIO_LAST)
-            {
-                return index;
+                {
+                    return Ok(index);
+                }
             }
         }
-        bytes.len() - pos
+        Ok(packet_len as usize)
     }
 
     fn check_stream_id_pts_dts_info(stream_id: u8) -> bool {
@@ -521,17 +529,18 @@ pub struct PesPtsDtsInfo {
 #[allow(dead_code)]
 mod test {
     use std::io::{Cursor, Read, Seek, SeekFrom};
+    use byteorder::BigEndian;
     use byteorder::ReadBytesExt;
     use memchr::memmem;
 
     use common::bytes::{Bytes, BytesMut};
-
-    use crate::container::ps::{PsHeader, PsSysHeader, PsSysMap};
+    use crate::container::ps::{PsHeader, PsPacket, PsSysHeader, PsSysMap};
 
     #[test]
     fn test_parse_ps_header() {
         let data = [00u8, 0x00u8, 0x01u8, 0xbau8, 0x44u8, 0xf0u8, 0x4fu8, 0x69u8, 0x64u8, 0x01u8, 0x02u8, 0x5fu8, 0x03u8, 0xfeu8, 0xffu8, 0xffu8, 0x00u8, 0x01u8, 0x11u8, 0x0cu8];
-        let mut cursor = Cursor::new(Bytes::from(data.to_vec()));
+        let bytes_mut = BytesMut::from(&data[..]);
+        let mut cursor = Cursor::new(&bytes_mut);
         let ps_header_res = PsHeader::parse(&mut cursor);
         assert!(ps_header_res.is_ok());
         let ps_header = ps_header_res.unwrap();
@@ -542,14 +551,16 @@ mod test {
     #[test]
     fn test_parse_ps_sys_header() {
         let data = [00u8, 0x00u8, 0x01u8, 0xBBu8, 0x00u8, 0x09u8, 0x81u8, 0x86u8, 0xA1u8, 0x05u8, 0xE1u8, 0x7Eu8, 0xE0u8, 0xE8u8, 0x00u8];
-        let mut cursor = Cursor::new(Bytes::from(data.to_vec()));
+        let bytes_mut = BytesMut::from(&data[..]);
+        let mut cursor = Cursor::new(&bytes_mut);
         let ps_sys_header_res = PsSysHeader::parse(&mut cursor);
         assert!(ps_sys_header_res.is_ok());
         let ps_sys_header = ps_sys_header_res.unwrap();
         assert_eq!(ps_sys_header.ps_stream_vec.len(), 0);
 
         let data = [00u8, 0x00u8, 0x01u8, 0xbbu8, 0x00u8, 0x12u8, 0x81u8, 0x2fu8, 0x81u8, 0x04u8, 0xe1u8, 0x7fu8, 0xe0u8, 0xe0u8, 0x80u8, 0xc0u8, 0xc0u8, 0x08u8, 0xbdu8, 0xe0u8, 0x80u8, 0xbfu8, 0xe0u8, 0x80];
-        let mut cursor = Cursor::new(Bytes::from(data.to_vec()));
+        let bytes_mut = BytesMut::from(&data[..]);
+        let mut cursor = Cursor::new(&bytes_mut);
         let ps_sys_header_res = PsSysHeader::parse(&mut cursor);
         println!("{:?}", ps_sys_header_res);
         assert!(ps_sys_header_res.is_ok());
@@ -576,7 +587,8 @@ mod test {
             0x1e, 0xda, 0x01, 0xe0, 0x08, 0x9f, 0x96, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00,
             0x03, 0x03, 0x20, 0xf1, 0x62, 0xea, 0x01, 0x00, 0x05, 0x68, 0xce, 0x0f, 0x2c, 0x80, 0x0f,
             0xc0, 0x00, 0x05, 0x11, 0x90, 0x56, 0xe5, 0x00, 0x1e, 0xb3, 0x9f, 0x92, 0x00u8, 0x00, 0x01, 0xe0];
-        let mut cursor = Cursor::new(Bytes::from(data1.to_vec()));
+        let bytes_mut = BytesMut::from(&data1[..]);
+        let mut cursor = Cursor::new(&bytes_mut);
         let ps_sys_map_res = PsSysMap::parse(&mut cursor);
         println!("{:?}", ps_sys_map_res);
         // assert_eq!(cursor.position(), 100);
@@ -626,5 +638,48 @@ mod test {
         }
         cursor.seek(SeekFrom::End(0)).unwrap();
         println!("{}", cursor.position());
+    }
+
+    use common::bytes::BufMut;
+    use common::bytes::Buf;
+    use rtp::packet::Packet;
+    use crate::coder::{CodecPayload, ToFrame};
+
+    #[test]
+    fn test_bytes_advance() {
+        let mut bytes = BytesMut::new();
+        bytes.put_u8(123);
+        bytes.put_u16(512);
+        bytes.put_u32(1024);
+        bytes.put_u64(2048);
+        let first_len = bytes.len();
+        println!("first_len = {}", first_len);
+        let mut cursor = Cursor::new(&bytes);
+        assert_eq!(cursor.read_u8().unwrap(), 123);
+        assert_eq!(cursor.read_u16::<BigEndian>().unwrap(), 512);
+        assert_eq!(cursor.read_u32::<BigEndian>().unwrap(), 1024);
+        bytes.advance(cursor.position() as usize);
+
+        let last_len = bytes.len();
+        println!("first_len = {}", last_len);
+
+        bytes.put_u16(1111);
+        bytes.put_u64(646464);
+        let mut cursor = Cursor::new(&bytes);
+        assert_eq!(cursor.read_u64::<BigEndian>().unwrap(), 2048);
+        assert_eq!(cursor.read_u16::<BigEndian>().unwrap(), 1111);
+        assert_eq!(cursor.read_u64::<BigEndian>().unwrap(), 646464);
+    }
+
+    // #[test]
+    fn test_parse_ps_pkt() {
+        let mut rtp_packet = Packet::default();
+        let input = include_bytes!("/home/ubuntu20/code/rs/mv/github/epimore/unuse/gmv/stream/h264ps.dump");
+        let bytes = Bytes::copy_from_slice(input);
+        rtp_packet.payload = bytes;
+        rtp_packet.header.marker = true;
+        let mut ps_packet = PsPacket::default();
+        let mut codec_payload = CodecPayload::default();
+        let _ = ps_packet.parse(rtp_packet, &mut codec_payload);
     }
 }

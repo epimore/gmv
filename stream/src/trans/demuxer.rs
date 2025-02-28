@@ -1,5 +1,3 @@
-use std::ops::Sub;
-use std::time::{Duration, SystemTime};
 use crossbeam_channel::{Receiver};
 use common::log::{info};
 use rtp::packet::Packet;
@@ -11,23 +9,19 @@ use crate::coder::{CodecPayload, ToFrame};
  两视频帧的间隔为：1 秒/ 25帧 = 0.04(秒/帧) = 40(毫秒/帧)
  时间戳增量单位：1/90000(秒/个) ，特别注意RTP时间戳是有单位的 每帧对应的采样： 90000 / 25 = 3600 (个/帧)
 */
-//rtp包读取超时(8帧)：毫秒
-const BASE_TIMEOUT: Duration = Duration::from_millis(320);
 //缓冲区大小
-const BUFFER_SIZE: usize = 64;
-const BLOCK_BUFFER_SIZE: usize = 32;
+const BUFFER_SIZE: usize = 32;
 //检查sn是否回绕；sn变小，且差值的绝对值大于u16的一半。65535/2=32767
 const ROUND_SIZE: u16 = 32767;
 
 pub struct DemuxContext {
     ssrc: u32,
     last_read_rtp_sn: u16, // 上一个读取的 RTP 包的序列号
-    last_read_time: SystemTime, // 上一次读取时间
     last_read_queue_index: usize,  // 上一次读取缓冲区索引
 
     queue: [Option<Packet>; BUFFER_SIZE],
     queue_count: usize,  // 缓冲区有效的包数量
-    queue_window: usize,  //缓冲区窗口大小:2/4/8/16
+    queue_window: usize,  //缓冲区窗口大小:4/8/16
     packet_rx: Receiver<Packet>, //数据接收句柄
 }
 
@@ -36,11 +30,11 @@ impl DemuxContext {
         Self {
             ssrc,
             last_read_rtp_sn: 0,
-            last_read_time: SystemTime::now(),
+            // last_read_time: SystemTime::now(),
             queue: std::array::from_fn(|_| None),
             last_read_queue_index: 0,
             queue_count: 0,
-            queue_window: 2,
+            queue_window: 1,
             packet_rx,
         }
     }
@@ -52,9 +46,7 @@ impl DemuxContext {
     where
         P: ToFrame,
     {
-        if self.queue_count < self.queue_window {
-            self.reduce_packet()?;
-        }
+        self.reduce_packet()?;
         let mut index = self.last_read_queue_index;
         let count = self.queue_count;
         for i in 0..BUFFER_SIZE {
@@ -79,15 +71,15 @@ impl DemuxContext {
                 }
 
                 if self.queue_count == 0 {
-                    self.last_read_time = SystemTime::now();
+                    // self.last_read_time = SystemTime::now();
                     self.last_read_queue_index = index;
                     //遍历次数大于有效数据数量,则中间有不连续，需增加缓存窗口
                     if i > count {
-                        if matches!(self.queue_window,2|4|8) {
+                        if matches!(self.queue_window,1|2|4|8) {
                             self.queue_window *= 2;
                         }
                     } else {
-                        if matches!(self.queue_window,4|8|16) {
+                        if matches!(self.queue_window,8|16) {
                             self.queue_window /= 2;
                         }
                     }
@@ -108,15 +100,10 @@ impl DemuxContext {
                 let item = unsafe { self.queue.get_unchecked_mut(index) };
                 *item = Some(pkt);
                 self.queue_count += 1;
-                //检查是否已充满一个缓冲块
-                if self.queue_count == BLOCK_BUFFER_SIZE {
+                //检查是否已充满一个缓冲窗口
+                if self.queue_count == self.queue_window {
                     break;
                 }
-            }
-
-            //等待超时
-            if SystemTime::now().sub(BASE_TIMEOUT).ge(&self.last_read_time) {
-                break;
             }
         }
         Ok(())
@@ -126,17 +113,4 @@ impl DemuxContext {
 
 #[cfg(test)]
 mod test {
-    use std::ops::Sub;
-    use std::thread::sleep;
-    use std::time::{Duration, SystemTime};
-    use crate::trans::demuxer::BASE_TIMEOUT;
-
-    #[test]
-    fn test() {
-        let last_read_time = SystemTime::now();
-        sleep(Duration::from_millis(310));
-        if SystemTime::now().sub(BASE_TIMEOUT).ge(&last_read_time) {
-            println!("已超时");
-        } else { println!("未超时"); }
-    }
 }
