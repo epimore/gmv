@@ -207,12 +207,15 @@ impl RequestBuilder {
     }
 
 
-    async fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    async fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str, seq: Option<u32>, call_id: Option<String>) -> GlobalResult<(Ident, SipMessage)> {
         let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag)).await?;
-        let call_id_str = Uuid::new_v4().as_simple().to_string();
-        headers.push(rsip::headers::CallId::new(&call_id_str).into());
-        let mut rng = thread_rng();
-        let cs_eq_str = format!("{} INFO", rng.gen_range(12u8..255u8));
+        let call_id = call_id.unwrap_or_else(|| Uuid::new_v4().as_simple().to_string());
+        headers.push(rsip::headers::CallId::new(&call_id).into());
+        let seq = seq.map(|seq| seq).unwrap_or_else(|| {
+            let mut rng = thread_rng();
+            rng.gen_range(12u32..255u32)
+        });
+        let cs_eq_str = format!("{} INFO", seq);
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
 
@@ -225,7 +228,7 @@ impl RequestBuilder {
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
         }.into();
-        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
+        let ident = Ident::new(device_id.to_string(), call_id, cs_eq_str);
         Ok((ident, msg))
     }
 
@@ -321,27 +324,27 @@ impl RequestBuilder {
     // 云台控制
     // 查询硬盘录像情况
     // 拖动播放
-    pub async fn seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_seek(seek);
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
     }
 
     // 倍速播放
-    pub async fn speed(device_id: &String, channel_id: &String, speed: u8, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn speed(device_id: &String, channel_id: &String, speed: f32, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_speed(speed);
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
     }
 
     // 暂停回放
-    pub async fn pause(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn pause(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_pause();
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
     }
 
     // 恢复回放
-    pub async fn replay(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn replay(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::info_replay();
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag).await
+        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
     }
 
     async fn build_stream_request(device_id: &String, channel_id: &String, ssrc: &str, body: String) -> GlobalResult<(Ident, SipMessage)> {
@@ -400,7 +403,6 @@ impl RequestBuilder {
             body: Default::default(),
         }.into())
     }
-    async fn build_bye() {}
 }
 
 struct XmlBuilder;
@@ -470,7 +472,7 @@ impl SdpBuilder {
     }
 
     //倍速播放
-    pub fn info_speed(speed: u8) -> String {
+    pub fn info_speed(speed: f32) -> String {
         let mut sdp = String::with_capacity(100);
         sdp.push_str("PLAY RTSP/1.0\r\n");
         sdp.push_str(&format!("CSeq: {}\r\n", Local::now().timestamp()));

@@ -5,7 +5,7 @@ use poem_openapi::payload::{Json};
 
 use common::exception::{GlobalError};
 
-use crate::general::model::{PlayLiveModel, PlayBackModel, ResultMessageData, StreamInfo};
+use crate::general::model::{PlayLiveModel, PlayBackModel, ResultMessageData, StreamInfo, PlaySeekModel,PlaySpeedModel};
 use crate::service::{handler};
 
 pub struct RestApi;
@@ -61,6 +61,59 @@ impl RestApi {
             }
         }
     }
+
+    #[allow(non_snake_case)]
+    #[oai(path = "/play/back/seek", method = "post")]
+    /// 拖动播放录像 seek 拖动秒 [1-86400]
+    async fn playback_seek(&self,
+                           seek: Json<PlaySeekModel>,
+                           #[oai(name = "gmv-token")] token: Header<String>)
+                           -> Json<ResultMessageData<bool>> {
+        let header = token.0;
+        let seek_model = seek.0;
+        info!("back-seek:header = {:?},body = {:?}", &header,&seek_model);
+        match handler::seek(seek_model, header).await {
+            Err(err) => {
+                let err_msg = format!("拖动失败；{}", err);
+                error!("{}",&err_msg);
+                Json(ResultMessageData::build_failure_msg(err_msg))
+            }
+            Ok(_) => { Json(ResultMessageData::build_success(true)) }
+        }
+    }
+    #[allow(non_snake_case)]
+    #[oai(path = "/play/back/speed", method = "post")]
+    /// 倍速播放历史视频 speed [1,2,4]
+    async fn playback_speed(&self,
+                           speed: Json<PlaySpeedModel>,
+                           #[oai(name = "gmv-token")] token: Header<String>)
+                           -> Json<ResultMessageData<bool>> {
+        let header = token.0;
+        let speed_model = speed.0;
+        info!("back-speed:header = {:?},body = {:?}", &header,&speed_model);
+        match handler::speed(speed_model, header).await {
+            Err(err) => {
+                let err_msg = format!("倍速播放失败；{}", err);
+                error!("{}",&err_msg);
+                Json(ResultMessageData::build_failure_msg(err_msg))
+            }
+            Ok(_) => { Json(ResultMessageData::build_success(true)) }
+        }
+    }
+    // #[allow(non_snake_case)]
+    // #[oai(path = "/play/back/speed", method = "get")]
+    // /// 倍速播放历史视频 speed [1,2,4]
+    // async fn playback_speed(&self,
+    //                         #[oai(name = "streamId", validator(min_length = "32", max_length = "32"))] streamId: Query<String>,
+    //                         #[oai(name = "speed", validator(maximum(value = "4"), minimum(value = "1")))] speed: Query<u8>) -> Json<ResultMessageData<Option<ResMsg>>> {
+    //     match handler::speed(&streamId.0, speed.0).await {
+    //         Err(err) => {
+    //             error!("倍速播放失败；{}",err);
+    //             Json(ResultMessageData::build_failure())
+    //         }
+    //         Ok(msg) => { Json(ResultMessageData::build_success(Some(msg))) }
+    //     }
+    // }
 
     //
     // #[allow(non_snake_case)]
@@ -133,34 +186,7 @@ impl RestApi {
     //         Ok(info) => { Json(ResultMessageData::build_success(Some(info))) }
     //     }
     // }
-    // #[allow(non_snake_case)]
-    // #[oai(path = "/play/back/seek", method = "get")]
-    // /// 拖动播放录像 seek 拖动秒 [1-86400]
-    // async fn playback_seek(&self,
-    //                        #[oai(name = "streamId", validator(min_length = "32", max_length = "32"))] streamId: Query<String>,
-    //                        #[oai(name = "seek", validator(maximum(value = "86400"), minimum(value = "1")))] seek: Query<u32>) -> Json<ResultMessageData<Option<ResMsg>>> {
-    //     match handler::seek(&streamId.0, seek.0).await {
-    //         Err(err) => {
-    //             error!("拖动失败；{}",err);
-    //             Json(ResultMessageData::build_failure())
-    //         }
-    //         Ok(msg) => { Json(ResultMessageData::build_success(Some(msg))) }
-    //     }
-    // }
-    // #[allow(non_snake_case)]
-    // #[oai(path = "/play/back/speed", method = "get")]
-    // /// 倍速播放历史视频 speed [1,2,4]
-    // async fn playback_speed(&self,
-    //                         #[oai(name = "streamId", validator(min_length = "32", max_length = "32"))] streamId: Query<String>,
-    //                         #[oai(name = "speed", validator(maximum(value = "4"), minimum(value = "1")))] speed: Query<u8>) -> Json<ResultMessageData<Option<ResMsg>>> {
-    //     match handler::speed(&streamId.0, speed.0).await {
-    //         Err(err) => {
-    //             error!("倍速播放失败；{}",err);
-    //             Json(ResultMessageData::build_failure())
-    //         }
-    //         Ok(msg) => { Json(ResultMessageData::build_success(Some(msg))) }
-    //     }
-    // }
+
     // #[allow(non_snake_case)]
     // #[oai(path = "/play/back/pause", method = "get")]
     // /// 暂停播放历史视频

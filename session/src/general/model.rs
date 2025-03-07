@@ -81,6 +81,28 @@ pub struct PlayBackModel {
     et: u32,
 }
 
+#[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[serde(crate = "common::serde")]
+#[allow(non_snake_case)]
+pub struct PlaySeekModel {
+    #[oai(validator(min_length = "24", max_length = "32")
+    )]
+    streamId: String,
+    #[oai(validator(maximum(value = "86400"), minimum(value = "1")))]
+    seekSecond: u32,
+}
+
+#[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[serde(crate = "common::serde")]
+#[allow(non_snake_case)]
+pub struct PlaySpeedModel {
+    #[oai(validator(min_length = "24", max_length = "32")
+    )]
+    streamId: String,
+    #[oai(validator(maximum(value = "8"), minimum(value = "0.25")))]
+    speedRate: f32,
+}
+
 
 #[derive(Debug, Deserialize, Object, Serialize)]
 #[serde(crate = "common::serde")]

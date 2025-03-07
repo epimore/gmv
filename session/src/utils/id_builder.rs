@@ -179,3 +179,10 @@ fn test_ssrc_to_ssrc_num() {
     let ssrc_num4 = (ssrc4 % 10000) as u16;
     assert_eq!(ssrc_num4, 9999)
 }
+
+#[test]
+fn test_de_stream_id() {
+    let stream_id = "4FEqqzfqqa0Vzqq3K2lsqc4ZqqH5Z";
+    let (device_id, channel_id, ssrc) = de_stream_id(stream_id);
+    println!("device_id = {},channel_id = {},ssrc = {}", &device_id, &channel_id, &ssrc, );
+}

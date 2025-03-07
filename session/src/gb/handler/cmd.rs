@@ -93,6 +93,34 @@ impl CmdStream {
         RequestOutput::do_send_off(device_id, ack_request).hand_log(|msg| warn!("{msg}"))?;
         Ok((call_id, seq))
     }
+    pub async fn play_speed(device_id: &String, channel_id: &String, speed: f32, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<()> {
+        let (ident, msg) = RequestBuilder::speed(device_id, channel_id, speed, from_tag, to_tag, seq, call_id).await?;
+        let (tx, mut rx) = mpsc::channel(10);
+        RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().hand_log(|msg| error!("未响应：{msg}"))?;
+        if let Some((Some(res), _)) = rx.recv().await {
+            if res.status_code.code() == 200 {
+                EventSession::remove_event(&ident);
+                return Ok(());
+            }
+            error!("speed: ident = {:?},channel_id = {},res = {}",&ident,channel_id,res.status_code);
+        }
+        EventSession::remove_event(&ident);
+        return Err(GlobalError::new_biz_error(1000, "speed倍速未响应或超时", |msg| error!("{msg}")));
+    }
+    pub async fn play_seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<()> {
+        let (ident, msg) = RequestBuilder::seek(device_id, channel_id, seek, from_tag, to_tag, seq, call_id).await?;
+        let (tx, mut rx) = mpsc::channel(10);
+        RequestOutput::new(ident.clone(), msg, Some(tx)).do_send().hand_log(|msg| error!("未响应：{msg}"))?;
+        if let Some((Some(res), _)) = rx.recv().await {
+            if res.status_code.code() == 200 {
+                EventSession::remove_event(&ident);
+                return Ok(());
+            }
+            error!("seek: ident = {:?},channel_id = {},res = {}",&ident,channel_id,res.status_code);
+        }
+        EventSession::remove_event(&ident);
+        return Err(GlobalError::new_biz_error(1000, "seek拖动未响应或超时", |msg| error!("{msg}")));
+    }
 
     pub async fn play_bye(seq: u32, call_id: String, device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::build_bye_request(seq, call_id, device_id, channel_id, from_tag, to_tag).await?;
