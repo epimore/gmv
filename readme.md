@@ -47,3 +47,4 @@
 ![3](./sources/c_list.png "设备目录通道")
 ![4](./sources/c_d_list.png "通道目录操作")
 ![5](./sources/c_play.png "通道点播")
+![5](./sources/playback.png "历史回放")
