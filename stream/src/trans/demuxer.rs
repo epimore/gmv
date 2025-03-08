@@ -95,7 +95,7 @@ impl DemuxContext {
                 self.queue_count += 1;
                 //检查是否已充满2个缓冲窗口-1
                 //初始化缓冲窗口为1，以便消费时定位到正确的有效数据包
-                if self.queue_count == self.queue_window * 2 - 1 {
+                if self.queue_count >= self.queue_window * 2 - 1 {
                     break;
                 }
             }

@@ -42,10 +42,10 @@ impl ToFrame for PsPacket {
         let payload_len = self.payload.len();
         if pkt.header.marker || payload_len > BUFFER_SIZE {
             let mut pes_packets = Vec::new();
-            let mut iter = memmem::find_iter(&self.payload[..], &PS_START_CODE_PREFIX);
+            let positions = memmem::find_iter(&self.payload[..], &PS_START_CODE_PREFIX).collect::<Vec<_>>();
             let mut cursor = Cursor::new(&self.payload);
 
-            while let Some(pos) = iter.next() {
+            for pos in positions {
                 if pos as u64 != cursor.position() {
                     warn!("PS buffer with start code position: {} , crusor index: {} , discarding {} bytes",pos,cursor.position(),pos as u64-cursor.position());
                 }
@@ -534,7 +534,7 @@ mod test {
     use memchr::memmem;
 
     use common::bytes::{Bytes, BytesMut};
-    use crate::container::ps::{PsHeader, PsPacket, PsSysHeader, PsSysMap};
+    use crate::container::ps::{PS_START_CODE_PREFIX, PsHeader, PsPacket, PsSysHeader, PsSysMap};
 
     #[test]
     fn test_parse_ps_header() {
@@ -682,4 +682,18 @@ mod test {
     //     let mut codec_payload = CodecPayload::default();
     //     let _ = ps_packet.parse(rtp_packet, &mut codec_payload);
     // }
+
+    #[test]
+    fn test_iter_continue() {
+        let arr = [1, 2, 3, 1, 2, 3, 1, 5, 1, 7, 8, 9, 10];
+        let mut iter = memmem::find_iter(&arr[..], &[1]);
+        while let Some(pos) = iter.next() {
+            println!("pos = {}", pos);
+            if arr[pos + 1] == 7 {
+                println!("{}", arr[pos + 1]);
+                continue;
+            }
+        }
+        println!("end");
+    }
 }
