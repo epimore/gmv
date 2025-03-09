@@ -481,8 +481,8 @@ impl PesPacket {
             cursor.set_position(pos as u64 - 6); //回退到0x00 00 01 ideint(u8) len(u16)
             return Ok(0);
         } else if packet_len == 0 || packet_len == 0xFFFF {
-            let mut iter = memmem::find_iter(&bytes[pos..], &SPLIT_START_CODE_PREFIX);
-            while let Some(index) = iter.next() {
+            let positions = memmem::find_iter(&bytes[pos..], &SPLIT_START_CODE_PREFIX).collect::<Vec<_>>();
+            for index in positions {
                 let i = pos + index + 3;
                 if matches!(bytes[i],PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST
                         | PS_PES_START_CODE_AUDIO_FIRST..=PS_PES_START_CODE_AUDIO_LAST)
