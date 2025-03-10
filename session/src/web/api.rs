@@ -5,7 +5,7 @@ use poem_openapi::payload::{Json};
 
 use common::exception::{GlobalError};
 
-use crate::general::model::{PlayLiveModel, PlayBackModel, ResultMessageData, StreamInfo, PlaySeekModel,PlaySpeedModel};
+use crate::general::model::*;
 use crate::service::{handler};
 
 pub struct RestApi;
@@ -85,9 +85,9 @@ impl RestApi {
     #[oai(path = "/play/back/speed", method = "post")]
     /// 倍速播放历史视频 speed [1,2,4]
     async fn playback_speed(&self,
-                           speed: Json<PlaySpeedModel>,
-                           #[oai(name = "gmv-token")] token: Header<String>)
-                           -> Json<ResultMessageData<bool>> {
+                            speed: Json<PlaySpeedModel>,
+                            #[oai(name = "gmv-token")] token: Header<String>)
+                            -> Json<ResultMessageData<bool>> {
         let header = token.0;
         let speed_model = speed.0;
         info!("back-speed:header = {:?},body = {:?}", &header,&speed_model);
@@ -100,6 +100,28 @@ impl RestApi {
             Ok(_) => { Json(ResultMessageData::build_success(true)) }
         }
     }
+
+    #[allow(non_snake_case)]
+    #[oai(path = "/control/ptz", method = "post")]
+    /// 云台控制
+    async fn control_ptz(&self,
+                         ptz: Json<PtzControlModel>,
+                         #[oai(name = "gmv-token")] token: Header<String>)
+                         -> Json<ResultMessageData<bool>> {
+        let header = token.0;
+        let ptz_model = ptz.0;
+        info!("control_ptz:header = {:?},body = {:?}", &header,&ptz_model);
+        match handler::ptz(ptz_model, header).await {
+            Err(err) => {
+                let err_msg = format!("云台控制失败；{}", err);
+                error!("{}",&err_msg);
+                Json(ResultMessageData::build_failure_msg(err_msg))
+            }
+            Ok(_) => { Json(ResultMessageData::build_success(true)) }
+        }
+    }
+
+
     // #[allow(non_snake_case)]
     // #[oai(path = "/play/back/speed", method = "get")]
     // /// 倍速播放历史视频 speed [1,2,4]

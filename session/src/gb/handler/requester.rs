@@ -17,6 +17,7 @@ use common::tokio::sync::mpsc::Sender;
 
 use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
+use crate::gb::handler::cmd::{CmdQuery};
 use crate::gb::shared::rw::RWSession;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
@@ -213,7 +214,7 @@ impl Message {
                         match &v[..] {
                             MESSAGE_KEEP_ALIVE => { Self::keep_alive(device_id, vs, bill).await; }
                             MESSAGE_CONFIG_DOWNLOAD => {}
-                            MESSAGE_NOTIFY_CATALOG => { Self::notify_catalog(device_id, vs).await; }
+                            MESSAGE_NOTIFY_CATALOG => { Self::device_catalog(device_id, vs).await; }
                             MESSAGE_DEVICE_INFO => { Self::device_info(vs).await; }
                             MESSAGE_ALARM => {}
                             MESSAGE_RECORD_INFO => {}
@@ -264,8 +265,13 @@ impl Message {
         let _ = GmvDeviceExt::update_gmv_device_ext_info(vs).await.hand_log(|msg| error!("{msg}"));
     }
 
-    async fn notify_catalog(device_id: &String, vs: Vec<(String, String)>) {
-        let _ = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs).await.hand_log(|msg| error!("{msg}"));
+    async fn device_catalog(device_id: &String, vs: Vec<(String, String)>) {
+        if let Ok(_arr) = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs).await.hand_log(|msg| error!("{msg}")) {
+            //通过预置位探测是否有云台可用
+            // for dc in arr {
+            //     let _ = CmdQuery::query_preset(&dc.device_id, Some(&dc.channel_id)).await.hand_log(|msg| error!("{msg}"));
+            // }
+        }
     }
 }
 

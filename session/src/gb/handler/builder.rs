@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-
+use std::fmt::Write;
 use common::log::{error};
 use rsip::{Error, Header, header, headers, Method, Param, param, Request, Response, SipMessage, uri, Uri};
 use rsip::Header::Via;
@@ -24,7 +24,7 @@ use crate::gb::shared::event::Ident;
 use crate::gb::shared::rw::RWSession;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
-use crate::general::model::StreamMode;
+use crate::general::model::{PtzControlModel, StreamMode};
 
 pub struct ResponseBuilder;
 
@@ -141,14 +141,19 @@ pub struct RequestBuilder;
 
 #[allow(unused)]
 impl RequestBuilder {
+    pub async fn query_preset(device_id: &String, channel_id_opt: Option<&String>) -> GlobalResult<(Ident, SipMessage)> {
+        let xml = XmlBuilder::query_preset(channel_id_opt.unwrap_or(device_id));
+        let message_request = Self::build_message_request(channel_id_opt, device_id, xml).await;
+        message_request
+    }
     pub async fn query_device_info(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::query_device_info(device_id);
-        let message_request = Self::build_message_request(device_id, xml).await;
+        let message_request = Self::build_message_request(None, device_id, xml).await;
         message_request
     }
     pub async fn query_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::query_device_catalog(device_id);
-        let message_request = Self::build_message_request(device_id, xml).await;
+        let message_request = Self::build_message_request(None, device_id, xml).await;
         message_request
     }
     pub async fn subscribe_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
@@ -159,12 +164,17 @@ impl RequestBuilder {
 
     pub async fn control_snapshot_image(device_id: &String, channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::control_snapshot_image(channel_id, num, interval, uri, session_id);
-        let message_request = Self::build_message_request(device_id, xml).await;
+        let message_request = Self::build_message_request(None, device_id, xml).await;
+        message_request
+    }
+    pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<(Ident, SipMessage)> {
+        let xml = XmlBuilder::control_ptz(ptz_control_model);
+        let message_request = Self::build_message_request(Some(&ptz_control_model.channelId), &ptz_control_model.deviceId, xml).await;
         message_request
     }
 
-    async fn build_message_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(None, device_id, false, false, None, None).await?;
+    async fn build_message_request(channel_id_opt: Option<&String>, device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
+        let (mut headers, uri) = Self::build_request_header(channel_id_opt, device_id, false, false, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = thread_rng();
@@ -410,12 +420,60 @@ struct XmlBuilder;
 ///编码格式：2022 GB18030
 /// 2016 GB2312
 impl XmlBuilder {
+    pub fn control_ptz(ptz_control_model: &PtzControlModel) -> String {
+        let mut xml = String::with_capacity(200);
+        xml.push_str("<?xml version=\"1.0\" encoding=\"GB18030\"?>\r\n");
+        xml.push_str("<Control>\r\n");
+        xml.push_str("<CmdType>DeviceControl</CmdType>\r\n");
+        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp()));
+        xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", ptz_control_model.channelId));
+        xml.push_str(&*format!("<PTZCmd>{}</PTZCmd>\r\n", Self::build_cmd_ptz_line(ptz_control_model)));
+        xml.push_str("<Info>\r\n");
+        xml.push_str("<ControlPriority>5</ControlPriority>\r\n");
+        xml.push_str("</Info>\r\n");
+        xml.push_str("</Control>\r\n");
+        xml
+    }
+    fn build_cmd_ptz_line(ptz_control_model: &PtzControlModel) -> String {
+        //前三字节：
+        // byte1: A5 start header 固定
+        // byte2: 0F 组合码1 与版本信息相关 固定
+        // byte3: 01 地址位 前端控制时可以不管 可使用01-FF 固定
+        // let mut builder = String::from("A50F00");
+        let mut bytes = [0xA5, 0x0F, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00];
+        if ptz_control_model.leftRight == 2 {
+            bytes[3] |= 0x01; // 右移
+        } else if ptz_control_model.leftRight == 1 {
+            bytes[3] |= 0x02; // 左移
+        }
+
+        if ptz_control_model.upDown == 2 {
+            bytes[3] |= 0x04; // 下移
+        } else if ptz_control_model.upDown == 1 {
+            bytes[3] |= 0x08; // 上移
+        }
+
+        if ptz_control_model.inOut == 2 {
+            bytes[3] |= 0x10; // 放大
+        } else if ptz_control_model.inOut == 1 {
+            bytes[3] |= 0x20; // 缩小
+        }
+        bytes[4] = ptz_control_model.horizonSpeed;
+        bytes[5] = ptz_control_model.verticalSpeed;
+        bytes[6] = ptz_control_model.zoomSpeed << 4;
+        bytes[7] = (bytes.iter().copied().map(|x| x as u16).sum::<u16>() % 256) as u8;
+        let mut cmd_line = String::new();
+        for byte in &bytes {
+            write!(&mut cmd_line, "{:02X}", byte).unwrap();
+        }
+        cmd_line
+    }
     pub fn control_snapshot_image(channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB18030\"?>\r\n");
         xml.push_str("<Control>\r\n");
         xml.push_str("<CmdType>DeviceConfig</CmdType>\r\n");
-        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
+        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp()));
         xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", channel_id));
         xml.push_str("<SnapShotConfig>\r\n");
         xml.push_str(&*format!("<SnapNum>{}</SnapNum>\r\n", num));
@@ -427,6 +485,16 @@ impl XmlBuilder {
         xml
     }
 
+    pub fn query_preset(device_id: &String) -> String {
+        let mut xml = String::new();
+        xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
+        xml.push_str("<Query>\r\n");
+        xml.push_str("<CmdType>PresetQuery</CmdType>\r\n");
+        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
+        xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", device_id));
+        xml.push_str("</Query>\r\n");
+        xml
+    }
     pub fn query_device_info(device_id: &String) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
@@ -548,6 +616,7 @@ impl SdpBuilder {
 #[cfg(test)]
 mod tests {
     use common::chrono::Local;
+    use crate::general::model::PtzControlModel;
 
     #[test]
     fn test_date_format() {
@@ -560,5 +629,41 @@ mod tests {
     fn test_region() {
         let device_id = &String::from("34020000001111131043");
         assert_eq!("3402000000", &device_id[0..10]);
+    }
+
+    #[test]
+    fn test_x_code() {
+        let msg = format!("{:x}0", 12);
+        println!("{}", msg);
+    }
+
+    #[test]
+    fn test_ptz_cmd() {
+        let mut model = PtzControlModel {
+            deviceId: "".to_string(),
+            channelId: "".to_string(),
+            leftRight: 0,
+            upDown: 0,
+            inOut: 0,
+            horizonSpeed: 0,
+            verticalSpeed: 0,
+            zoomSpeed: 0,
+        };
+        let stop_cmd = super::XmlBuilder::build_cmd_ptz_line(&model);
+        assert_eq!(stop_cmd, "A50F0100000000B5");
+        {
+            model.upDown = 1;
+            model.verticalSpeed = 250;
+            let up_cmd = super::XmlBuilder::build_cmd_ptz_line(&model);
+            assert_eq!(up_cmd, "A50F010800FA00B7");
+            model.upDown = 0;
+            model.verticalSpeed = 0;
+        }
+        {
+            model.inOut = 1;
+            model.zoomSpeed = 10;
+            let out_cmd = super::XmlBuilder::build_cmd_ptz_line(&model);
+            assert_eq!(out_cmd, "A50F01200000A075");
+        }
     }
 }

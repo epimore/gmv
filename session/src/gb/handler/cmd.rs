@@ -13,7 +13,7 @@ use common::tokio::time::Instant;
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
 use crate::gb::shared::event::{Container, EventSession, Ident};
 use crate::gb::shared::rw::RequestOutput;
-use crate::general::model::StreamMode;
+use crate::general::model::{PtzControlModel, StreamMode};
 use crate::storage::entity::GmvDevice;
 
 pub struct CmdResponse;
@@ -21,6 +21,10 @@ pub struct CmdResponse;
 pub struct CmdQuery;
 
 impl CmdQuery {
+    pub async fn query_preset(device_id: &String, channel_id_opt: Option<&String>) -> GlobalResult<()> {
+        let (ident, msg) = RequestBuilder::query_preset(device_id, channel_id_opt).await?;
+        RequestOutput::new(ident, msg, None).do_send()
+    }
     pub async fn query_device_info(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::query_device_info(device_id).await?;
         RequestOutput::new(ident, msg, None).do_send()
@@ -43,6 +47,7 @@ impl CmdQuery {
         let when = Instant::now() + Duration::from_secs(2);
         EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
     }
+
     pub async fn lazy_subscribe_device_catalog(device_id: &String) -> GlobalResult<()> {
         let (ident, msg) = RequestBuilder::subscribe_device_catalog(device_id).await?;
         let when = Instant::now() + Duration::from_secs(2);
@@ -53,6 +58,11 @@ impl CmdQuery {
 pub struct CmdControl;
 
 impl CmdControl {
+    pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<()> {
+        let (ident, msg) = RequestBuilder::control_ptz(ptz_control_model).await?;
+        RequestOutput::new(ident, msg, None).do_send()
+    }
+
     //device_id: &String, channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32
     pub async fn snapshot_image(device_id: &String, _channel_id: &String) -> GlobalResult<()> {
         let device = GmvDevice::query_gmv_device_by_device_id(device_id).await?.ok_or_else(|| GlobalError::new_sys_error(&format!("未知设备: {device_id}"), |msg| error!("{msg}")))?;

@@ -160,58 +160,58 @@ impl GmvDeviceExt {
     }
 }
 
-#[derive(Debug, Clone, Default, Get, FromRow)]
+#[derive(Debug, Clone, Default, FromRow)]
 pub struct GmvDeviceChannel {
-    device_id: String,
-    channel_id: String,
-    name: Option<String>,
-    manufacturer: Option<String>,
-    model: Option<String>,
-    owner: Option<String>,
-    status: String,
-    civil_code: Option<String>,
-    address: Option<String>,
-    parental: Option<u8>,
-    block: Option<String>,
-    parent_id: Option<String>,
-    ip_address: Option<String>,
-    port: Option<u16>,
-    password: Option<String>,
-    longitude: Option<f32>,
-    latitude: Option<f32>,
-    ptz_type: Option<u8>,
-    supply_light_type: Option<u8>,
-    alias_name: Option<String>,
+    pub device_id: String,
+    pub channel_id: String,
+    pub name: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub owner: Option<String>,
+    pub status: String,
+    pub civil_code: Option<String>,
+    pub address: Option<String>,
+    pub parental: Option<u8>,
+    pub block: Option<String>,
+    pub parent_id: Option<String>,
+    pub ip_address: Option<String>,
+    pub port: Option<u16>,
+    pub password: Option<String>,
+    pub longitude: Option<f32>,
+    pub latitude: Option<f32>,
+    pub ptz_type: Option<u8>,
+    pub supply_light_type: Option<u8>,
+    pub alias_name: Option<String>,
 }
 
 impl GmvDeviceChannel {
-    pub async fn insert_gmv_device_channel(device_id: &String, vs: Vec<(String, String)>) -> GlobalResult<()> {
+    pub async fn insert_gmv_device_channel(device_id: &String, vs: Vec<(String, String)>) -> GlobalResult<Vec<GmvDeviceChannel>> {
         let dc_ls = Self::build(device_id, vs);
         let pool = get_conn_by_pool()?;
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
          model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
          longitude,latitude,ptz_type,supply_light_type,alias_name) ");
-        builder.push_values(dc_ls, |mut b, dc| {
-            b.push_bind(dc.device_id)
-                .push_bind(dc.channel_id)
-                .push_bind(dc.name)
-                .push_bind(dc.manufacturer)
-                .push_bind(dc.model)
-                .push_bind(dc.owner)
-                .push_bind(dc.status)
-                .push_bind(dc.civil_code)
-                .push_bind(dc.address)
-                .push_bind(dc.parental)
-                .push_bind(dc.block)
-                .push_bind(dc.parent_id)
-                .push_bind(dc.ip_address)
-                .push_bind(dc.port)
-                .push_bind(dc.password)
-                .push_bind(dc.longitude)
-                .push_bind(dc.latitude)
-                .push_bind(dc.ptz_type)
-                .push_bind(dc.supply_light_type)
-                .push_bind(dc.alias_name);
+        builder.push_values(&dc_ls, |mut b, dc| {
+            b.push_bind(&dc.device_id)
+                .push_bind(&dc.channel_id)
+                .push_bind(&dc.name)
+                .push_bind(&dc.manufacturer)
+                .push_bind(&dc.model)
+                .push_bind(&dc.owner)
+                .push_bind(&dc.status)
+                .push_bind(&dc.civil_code)
+                .push_bind(&dc.address)
+                .push_bind(&dc.parental)
+                .push_bind(&dc.block)
+                .push_bind(&dc.parent_id)
+                .push_bind(&dc.ip_address)
+                .push_bind(&dc.port)
+                .push_bind(&dc.password)
+                .push_bind(&dc.longitude)
+                .push_bind(&dc.latitude)
+                .push_bind(&dc.ptz_type)
+                .push_bind(&dc.supply_light_type)
+                .push_bind(&dc.alias_name);
         });
         builder.push(" ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),channel_id=VALUES(channel_id),name=VALUES(name),
         manufacturer=VALUES(manufacturer),model=VALUES(model),owner=VALUES(owner),status=VALUES(status),civil_code=VALUES(civil_code),
@@ -219,7 +219,7 @@ impl GmvDeviceChannel {
         port=VALUES(port),password=VALUES(password),longitude=VALUES(longitude),latitude=VALUES(latitude),ptz_type=VALUES(ptz_type),
         supply_light_type=VALUES(supply_light_type),alias_name=VALUES(alias_name)");
         builder.build().execute(pool).await.hand_log(|msg| error!("{msg}"))?;
-        Ok(())
+        Ok(dc_ls)
     }
     fn build(device_id: &String, vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
         use crate::gb::handler::parser::xml::*;

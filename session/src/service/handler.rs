@@ -5,13 +5,13 @@ use common::exception::{GlobalError, GlobalResult, TransError};
 use common::log::{error};
 use common::serde_json;
 use common::tokio::sync::mpsc;
-use common::tokio::time::Instant;
+use common::tokio::time::{Instant, sleep};
 
-use crate::gb::handler::cmd::CmdStream;
+use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWSession;
 use crate::general;
 use crate::general::cache::PlayType;
-use crate::general::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, StreamInfo, StreamMode};
+use crate::general::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamMode};
 use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES, StreamPlayInfo, StreamState};
 use crate::utils::id_builder;
 
@@ -134,6 +134,16 @@ pub async fn speed(speed_mode: PlaySpeedModel, _token: String) -> GlobalResult<b
     let (call_id, seq, from_tag, to_tag) = general::cache::Cache::stream_map_build_call_id_seq_from_to_tag(speed_mode.get_streamId())
         .ok_or_else(|| GlobalError::new_biz_error(1100, "流不存在", |msg| error!("{msg}")))?;
     CmdStream::play_speed(&device_id, &channel_id, *speed_mode.get_speedRate(), &from_tag, &to_tag, seq, call_id).await?;
+    Ok(true)
+}
+
+pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalResult<bool> {
+    CmdControl::control_ptz(&ptz_control_model).await?;
+    let mut model = PtzControlModel::default();
+    model.deviceId = ptz_control_model.deviceId.clone();
+    sleep(Duration::from_millis(1000)).await;
+    model.channelId = ptz_control_model.channelId.clone();
+    CmdControl::control_ptz(&model).await?;
     Ok(true)
 }
 

@@ -129,7 +129,7 @@ pub mod xml {
     pub const RESPONSE_DEVICE_LIST_ITEM_PARENT_ID: &str = "Response,DeviceList,Item,ParentID";
     pub const RESPONSE_DEVICE_LIST_ITEM_LONGITUDE: &str = "Response,DeviceList,Item,Longitude";
     pub const RESPONSE_DEVICE_LIST_ITEM_LATITUDE: &str = "Response,DeviceList,Item,Latitude";
-    pub const RESPONSE_DEVICE_LIST_ITEM_PTZ_TYPE: &str = "Response,DeviceList,Item,PTZType";
+    pub const RESPONSE_DEVICE_LIST_ITEM_PTZ_TYPE: &str = "Response,DeviceList,Item,Info,PTZType";
     pub const RESPONSE_DEVICE_LIST_ITEM_SUPPLY_LIGHT_TYPE: &str = "Response,DeviceList,Item,SupplyLightType";
     pub const RESPONSE_DEVICE_LIST_ITEM_IP_ADDRESS: &str = "Response,DeviceList,Item,IPAddress";
     pub const RESPONSE_DEVICE_LIST_ITEM_PORT: &str = "Response,DeviceList,Item,Port";
