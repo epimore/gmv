@@ -140,6 +140,12 @@ pub mod xml {
     pub const NOTIFY_STATUS: &str = "Notify,Status";
     pub const NOTIFY_TYPE: &str = "Notify,NotifyType";
 
+
+    pub const NOTIFY_ALARM_PRIORITY: &str = "Notify,AlarmPriority";
+    pub const NOTIFY_ALARM_TIME: &str = "Notify,AlarmTime";
+    pub const NOTIFY_ALARM_METHOD: &str = "Notify,AlarmMethod";
+    pub const NOTIFY_INFO_ALARM_TYPE: &str = "Notify,Info,AlarmType";
+
     pub fn parse_xlm_to_vec(xml: &[u8]) -> GlobalResult<Vec<(String, String)>> {
         let mut xml_reader = Reader::from_reader(xml);
         xml_reader.trim_text(true);
@@ -183,5 +189,11 @@ pub mod xml {
         }
         debug!("{:?}", &vec);
         Ok(vec)
+    }
+
+    pub trait KV2Model {
+        fn kv_to_model(arr: Vec<(String, String)>) -> GlobalResult<Self>
+        where
+            Self: Sized;
     }
 }

@@ -17,8 +17,9 @@ poem = "3.1"
 poem-openapi = { version = "5.1", features = ["swagger-ui"] }
 reqwest = { version = "0.12", features = ["json"] }
 sdp-types = "0.1"
-regex = "1.10.4"
+regex = "1.10"
 image = "0.25"
 rayon = "1.10"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
+url="2.5"

@@ -57,6 +57,10 @@ server:
     wan_ip: 172.18.38.186  # 公网IP
     lan_port: 25600  #lan端口
     wan_port: 25600  #wan端口
+  alarm:
+    enable: true #是否开启告警推送,默认true
+    push_url: http://127.0.0.1:38888/event/alarm #推送地址
+    priority: 4 #告警等级推送 1-4,默认最低4
   pics:
     enable: true #是否开启循环拍照,默认true
     cycle: 300 #循环拍照周期秒 max u16 默认300

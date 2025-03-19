@@ -4,7 +4,7 @@ use common::serde::{Deserialize, Serialize};
 use common::constructor::{Get, New};
 
 pub mod handler;
-mod callback;
+pub mod callback;
 pub mod control;
 
 pub const EXPIRES: u64 = 8;

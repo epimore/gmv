@@ -17,8 +17,10 @@ use common::tokio::sync::mpsc::Sender;
 
 use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
-use crate::gb::handler::cmd::{CmdQuery};
+use crate::gb::handler::parser::xml::KV2Model;
 use crate::gb::shared::rw::RWSession;
+use crate::general::model::AlarmInfo;
+use crate::service::callback;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
 
@@ -216,7 +218,7 @@ impl Message {
                             MESSAGE_CONFIG_DOWNLOAD => {}
                             MESSAGE_NOTIFY_CATALOG => { Self::device_catalog(device_id, vs).await; }
                             MESSAGE_DEVICE_INFO => { Self::device_info(vs).await; }
-                            MESSAGE_ALARM => {}
+                            MESSAGE_ALARM => { let _ = Self::message_notify_alarm(device_id, vs).await; }
                             MESSAGE_RECORD_INFO => {}
                             MESSAGE_MEDIA_STATUS => {}
                             MESSAGE_BROADCAST => {}
@@ -272,6 +274,13 @@ impl Message {
             //     let _ = CmdQuery::query_preset(&dc.device_id, Some(&dc.channel_id)).await.hand_log(|msg| error!("{msg}"));
             // }
         }
+    }
+
+    async fn message_notify_alarm(device_id: &String, vs: Vec<(String, String)>) -> GlobalResult<()> {
+        let mut info = AlarmInfo::kv_to_model(vs)?;
+        info.deviceId = device_id.clone();
+        callback::call_alarm_info(&info).await?;
+        Ok(())
     }
 }
 

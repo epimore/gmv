@@ -9,6 +9,8 @@ use common::anyhow::anyhow;
 use common::exception::{GlobalResult, TransError};
 use common::exception::GlobalError::SysErr;
 use common::log::error;
+use crate::general::AlarmConf;
+use crate::general::model::AlarmInfo;
 
 use crate::service::{EXPIRES, ResMsg};
 
@@ -134,6 +136,27 @@ pub async fn ident_rtp_media_info(ssrc: &String, map: HashMap<u8, String>, gmv_t
         .hand_log(|msg| error!("{msg}"))?
         .post(format!("{uri}{RTP_MEDIA}"))
         .json(&rtp_map)
+        .send()
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    return if res.status().is_success() {
+        let body = res.json::<ResMsg<bool>>()
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        Ok(body.code == 200)
+    } else {
+        Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
+    };
+}
+
+pub async fn call_alarm_info(info: &AlarmInfo) -> GlobalResult<bool> {
+    let conf = AlarmConf::get_alarm_conf();
+    let res = reqwest::Client::builder()
+        .timeout(Duration::from_secs(EXPIRES))
+        .build()
+        .hand_log(|msg| error!("{msg}"))?
+        .post(conf.push_url.as_ref().unwrap())
+        .json(info)
         .send()
         .await
         .hand_log(|msg| error!("{msg}"))?;
