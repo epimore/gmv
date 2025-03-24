@@ -1,10 +1,11 @@
 # 这是一个基于GB28181的视频监控实现：兼容2016、2022版本。采用纯RUST语言编码，高效、安全、无惧并发。
 
-**<font color=yellow>TCP/UDP端口复用、单机/集群部署、SWAGGER接口文档、不做破坏性更新【接口稳定】、开箱即用【无需编译链接各种依赖】</font>**
-**<font color=blue>
-前端场景界面demo【VUE项目】：https://github.com/epimore/simple-app
-自定义业务场景demo【JAVA项目】：https://github.com/epimore/simple-biz
-</font>**
+## 🌟 TCP/UDP端口复用、单机/集群部署、SWAGGER接口文档、不做破坏性更新【接口稳定】、开箱即用【无需编译链接各种依赖】
+
+### 🔗 1. 前端场景界面 demo（VUE 项目）：[simple-app](https://github.com/epimore/simple-app)
+### 🔗 2. 自定义业务场景 demo（JAVA 项目）：[simple-biz](https://github.com/epimore/simple-biz)
+
+
 ## GMV:SESSION 信令服务实现：
 1. 设备注册
 2. 设备心跳
