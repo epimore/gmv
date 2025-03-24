@@ -1,7 +1,10 @@
 # 这是一个基于GB28181的视频监控实现：兼容2016、2022版本。采用纯RUST语言编码，高效、安全、无惧并发。
 
 **<font color=yellow>TCP/UDP端口复用、单机/集群部署、SWAGGER接口文档、不做破坏性更新【接口稳定】、开箱即用【无需编译链接各种依赖】</font>**
-
+**<font color=blue>
+前端场景界面demo【VUE项目】：https://github.com/epimore/simple-app
+自定义业务场景demo【JAVA项目】：https://github.com/epimore/simple-biz
+</font>**
 ## GMV:SESSION 信令服务实现：
 1. 设备注册
 2. 设备心跳
@@ -28,7 +31,7 @@
 2. 云台控制 - 完成
     1. 转向 - 完成
     2. 焦距调整 - 完成
-3. 事件配置
+3. 事件配置 - 完成
 4. 手动抓拍、自动抓拍、定时抓拍
 5. 图片上传
 6. 视频下载
