@@ -162,9 +162,9 @@ impl RequestBuilder {
         message_request
     }
 
-    pub async fn control_snapshot_image(device_id: &String, channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn control_snapshot_image(device_id: &String, channel_id: &String, num: u8, interval: u8, uri: &String, session_id: &String) -> GlobalResult<(Ident, SipMessage)> {
         let xml = XmlBuilder::control_snapshot_image(channel_id, num, interval, uri, session_id);
-        let message_request = Self::build_message_request(None, device_id, xml).await;
+        let message_request = Self::build_message_request(Some(channel_id), device_id, xml).await;
         message_request
     }
     pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<(Ident, SipMessage)> {
@@ -468,7 +468,7 @@ impl XmlBuilder {
         }
         cmd_line
     }
-    pub fn control_snapshot_image(channel_id: &String, num: u8, interval: u8, uri: &String, session_id: u32) -> String {
+    pub fn control_snapshot_image(channel_id: &String, num: u8, interval: u8, uri: &String, session_id: &String) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB18030\"?>\r\n");
         xml.push_str("<Control>\r\n");

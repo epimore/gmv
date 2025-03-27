@@ -63,7 +63,7 @@ server:
     priority: 4 #告警等级推送 1-4,默认最低4
   pics:
     enable: true #是否开启循环拍照,默认true
-    cycle: 300 #循环拍照周期秒 max u16 默认300
+    cron_cycle: 0 */5 * * * * #拍照周期cron表达式，默认每分钟执行一次
     num: 1 #连拍张数,最大10 默认1
     interval: 1 #连拍间隔秒 max u8
     storage_path: ./pics/raw  #原始图片存储地址

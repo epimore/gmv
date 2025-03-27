@@ -12,6 +12,7 @@ use url::Url;
 pub mod model;
 pub mod cache;
 pub mod http;
+mod schedule;
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "common::serde")]

@@ -1,4 +1,6 @@
 use std::{fs};
+use std::str::FromStr;
+use cron::Schedule;
 
 use common::cfg_lib::conf;
 use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
@@ -15,8 +17,8 @@ use common::serde_default;
 pub struct Pics {
     #[serde(default = "default_enable")]
     pub enable: bool,
-    #[serde(default = "default_cycle")]
-    pub cycle: u16,
+    #[serde(default = "default_cron_cycle")]
+    pub cron_cycle: String,
     #[serde(default = "default_num")]
     pub num: u8,
     #[serde(default = "default_interval")]
@@ -27,7 +29,7 @@ pub struct Pics {
     pub storage_format: String,
 }
 serde_default!(default_enable, bool, true);
-serde_default!(default_cycle, u16, 300);
+serde_default!(default_cron_cycle, String, String::from("0 */5 * * * *"));
 serde_default!(default_num, u8, 1);
 serde_default!(default_interval, u8, 1);
 serde_default!(default_storage_path, String, "./pics/raw".to_string());
@@ -42,7 +44,15 @@ impl CheckFromConf for Pics {
                 return Err(FieldCheckError::BizError("storage_format must be in [AVIF,BMP,FARBFELD,GIF,HDR,ICO,JPEG,EXR,PNG,PNM,QOI,TGA,TIFF,WEBP]".to_string()));
             }
         }
-        let _ = fs::create_dir_all(&pics.storage_path).hand_log(|msg| error!("create raw_path dir failed: {msg}"));
+        if Schedule::from_str(&pics.cron_cycle).is_err() {
+            return Err(FieldCheckError::BizError("storage_format must be in [AVIF,BMP,FARBFELD,GIF,HDR,ICO,JPEG,EXR,PNG,PNM,QOI,TGA,TIFF,WEBP]".to_string()));
+        }
+        if let Err(e) = Schedule::from_str(&pics.cron_cycle) {
+            return Err(FieldCheckError::BizError(format!("Invalid cron expression: {}", e.to_string())));
+        }
+        if let Err(e) = fs::create_dir_all(&pics.storage_path) {
+            return Err(FieldCheckError::BizError(format!("create raw_path dir failed: {}", e.to_string())));
+        }
         Ok(())
     }
 }
@@ -133,11 +143,9 @@ impl Pics {
 
 #[cfg(test)]
 mod test {
-    use std::path::{PathBuf};
     use common::chrono::Local;
     use image::ImageFormat;
     use image::ImageFormat::Jpeg;
-    use crate::storage::pics::ImageInfo;
 
     #[test]
     fn test() {
