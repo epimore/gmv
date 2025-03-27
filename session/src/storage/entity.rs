@@ -1,3 +1,4 @@
+use crate::gb::handler::parser;
 use rsip::Request;
 
 use common::chrono::{Local, NaiveDateTime};
@@ -6,10 +7,8 @@ use common::dbx::mysqlx::get_conn_by_pool;
 use common::exception::{GlobalResult, TransError};
 use common::log::error;
 use common::serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use common::sqlx;
-use common::sqlx::FromRow;
-
-use crate::gb::handler::parser;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
 #[serde(crate = "common::serde")]
@@ -297,14 +296,129 @@ impl GmvDeviceChannel {
     }
 }
 
+#[derive(Debug, FromRow, Default)]
+pub struct GmvFileInfo {
+    pub id: Option<i64>,
+    pub device_id: String,
+    pub channel_id: String,
+    pub biz_time: Option<NaiveDateTime>,
+    pub biz_id: String,
+    pub file_type: Option<i32>,
+    pub file_size: Option<u64>,
+    pub file_name: String,
+    pub file_format: Option<String>,
+    pub dir_path: String,
+    pub note: Option<String>,
+    pub is_del: Option<i32>,
+    pub create_time: Option<NaiveDateTime>,
+}
+
+impl GmvFileInfo {
+    pub async fn insert_gmv_file_info(arr: Vec<Self>) -> GlobalResult<()> {
+        if arr.is_empty() {
+            return Ok(());
+        }
+        let pool = get_conn_by_pool()?;
+        let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_FILE_INFO
+                (DEVICE_ID, CHANNEL_ID, BIZ_TIME, BIZ_ID, FILE_TYPE, FILE_SIZE,
+                 FILE_NAME, FILE_FORMAT, DIR_PATH, NOTE, IS_DEL, CREATE_TIME) ");
+        builder.push_values(arr.iter(), |mut b, info| {
+            b.push_bind(&info.device_id)
+                .push_bind(&info.channel_id)
+                .push_bind(&info.biz_time)
+                .push_bind(&info.biz_id)
+                .push_bind(&info.file_type)
+                .push_bind(&info.file_size)
+                .push_bind(&info.file_name)
+                .push_bind(&info.file_format)
+                .push_bind(&info.dir_path)
+                .push_bind(&info.note)
+                .push_bind(&info.is_del)
+                .push_bind(&info.create_time);
+        });
+        builder.build().execute(pool).await.hand_log(|msg| error!("{msg}"))?;
+        Ok(())
+    }
+}
+
 
 #[cfg(test)]
-#[allow(dead_code,unused_imports)]
+#[allow(dead_code, unused_imports)]
 mod tests {
     use common::cfg_lib::conf::init_cfg;
     use common::dbx::mysqlx;
     use common::tokio;
     use super::*;
+
+
+    // #[tokio::test]
+    async fn test_batch_insert_gmv_file_info() {
+        let files = vec![
+            GmvFileInfo {
+                id: None,
+                device_id: "D001".into(),
+                channel_id: "C001".into(),
+                biz_time: Some(Local::now().naive_local()),
+                biz_id: "BIZ123".into(),
+                file_type: Some(0),
+                file_size: Some(1024),
+                file_name: "file1".into(),
+                file_format: Some("jpg".into()),
+                dir_path: "/path/to/file1".into(),
+                note: Some("test1".into()),
+                is_del: Some(0),
+                create_time: Some(Local::now().naive_local()),
+            },
+            GmvFileInfo {
+                id: None,
+                device_id: "D002".into(),
+                channel_id: "C002".into(),
+                biz_time: Some(Local::now().naive_local()),
+                biz_id: "BIZ124".into(),
+                file_type: Some(1),
+                file_size: Some(2048),
+                file_name: "file2".into(),
+                file_format: Some("mp4".into()),
+                dir_path: "/path/to/file2".into(),
+                note: Some("test2".into()),
+                is_del: Some(0),
+                create_time: Some(Local::now().naive_local()),
+            },
+            GmvFileInfo {
+                id: None,
+                device_id: "D003".into(),
+                channel_id: "C003".into(),
+                biz_time: Some(Local::now().naive_local()),
+                biz_id: "BIZ125".into(),
+                file_type: Some(2),
+                file_size: Some(512),
+                file_name: "file3".into(),
+                file_format: Some("mp3".into()),
+                dir_path: "/path/to/file3".into(),
+                note: Some("test3".into()),
+                is_del: Some(0),
+                create_time: Some(Local::now().naive_local()),
+            },
+            GmvFileInfo {
+                id: None,
+                device_id: "D004".into(),
+                channel_id: "C004".into(),
+                biz_time: Some(Local::now().naive_local()),
+                biz_id: "BIZ126".into(),
+                file_type: Some(0),
+                file_size: Some(3072),
+                file_name: "file4".into(),
+                file_format: Some("png".into()),
+                dir_path: "/path/to/file4".into(),
+                note: Some("test4".into()),
+                is_del: Some(0),
+                create_time: Some(Local::now().naive_local()),
+            },
+        ];
+        init();
+        let res = GmvFileInfo::insert_gmv_file_info(files).await;
+        println!("{res:?}");
+    }
 
     // #[tokio::test]
     async fn test_read_gmv_oauth_by_device_id() {
@@ -407,7 +521,7 @@ mod tests {
         println!("{:?}", res);
     }
 
-    fn init(){
+    fn init() {
         init_cfg("/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/config.yml".to_string());
         let _ = mysqlx::init_conn_pool();
     }

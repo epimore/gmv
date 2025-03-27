@@ -1,7 +1,6 @@
+// #![allow(warnings)]
 use common::daemon;
 use crate::app::AppInfo;
-
-// #![allow(warnings)]
 pub mod storage;
 pub mod gb;
 pub mod general;

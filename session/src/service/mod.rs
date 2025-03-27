@@ -5,7 +5,7 @@ use common::constructor::{Get, New};
 
 pub mod handler;
 pub mod callback;
-pub mod control;
+pub mod biz;
 
 pub const EXPIRES: u64 = 8;
 pub const RELOAD_EXPIRES: u64 = 2;

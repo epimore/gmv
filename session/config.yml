@@ -7,7 +7,7 @@ log:
       level: debug
       file_name_prefix: poem #日志文件前缀
       additivity: false #是否记录到默认日志文件中
-    - crate_name: sqlx  #sqlx用指全部，可sqlx::xxx
+    - crate_name: sqlx  #sqlx用指全部,可sqlx::xxx
       level: info #日志等级
       file_name_prefix: sql #日志文件前缀
       additivity: false #是否记录到其默认日志文件中
@@ -30,7 +30,7 @@ http:
 
 db:
   mysql:
-    host_or_ip: 175.178.243.153
+    host_or_ip: 101.33.200.169
     port: 33061
     db_name: gmv
     user: epimore
@@ -40,17 +40,17 @@ db:
       log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
       timezone: "Asia/Shanghai"
       charset: utf8mb4
-      ssl_level: 0 #加密等级，默认1，取值[0,1]，0-不加密，1-可选加密：服务端支持则加密、否则不加密，2-必选加密，服务端不支持则不建立连接，3-满足2外还需验证主机名，4-满足2外还需验证CA证书
+      ssl_level: 0 #加密等级,默认1,取值[0,1],0-不加密,1-可选加密：服务端支持则加密、否则不加密,2-必选加密,服务端不支持则不建立连接,3-满足2外还需验证主机名,4-满足2外还需验证CA证书
       ssl_ca_crt_file: path/to/ca.crt #CA 证书 ssl_level:3 生效
       ssl_ca_client_cert_file: path/to/client.crt #SSL 客户端证书 ssl_level:3 生效
       ssl_ca_client_key_file: path/to/client.key #SSL 客户端密钥 ssl_level:3 生效
     pool:
-      max_connections: 100  # 默认100，最大连接池值，即峰值时，操作进行排队
-      min_connections: 60   # 默认等同于max_size，最小连接池值，即空闲时也维持
-      connection_timeout: 30     # 默认8秒，连接超时时间(最大255)
+      max_connections: 100  # 默认100,最大连接池值,即峰值时,操作进行排队
+      min_connections: 60   # 默认等同于max_size,最小连接池值,即空闲时也维持
+      connection_timeout: 30     # 默认8秒,连接超时时间(最大255)
       max_lifetime: 1800     # 默认30 秒,连接最大存活时间
-      idle_timeout: 1800     # 默认8 秒，连接空闲回收
-      check_health: true    # 默认true，连接池维持健康测试
+      idle_timeout: 1800     # 默认8 秒,连接空闲回收
+      check_health: true    # 默认true,连接池维持健康测试
 server:
   session:
     lan_ip: 172.18.38.186  # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
@@ -65,23 +65,23 @@ server:
     enable: true #是否开启循环拍照,默认true
     cycle: 300 #循环拍照周期秒 max u16 默认300
     num: 1 #连拍张数,最大10 默认1
-    interval: 5 #连拍间隔秒
-    raw_path: ./pics/raw  #原始图片存储地址
-    snapshot_path: ./pics/snapshot  #快照存储地址
+    interval: 1 #连拍间隔秒 max u8
+    storage_path: ./pics/raw  #原始图片存储地址
+    storage_format: WEBP  #图片存储格式：JPEG,BMP,FARBFELD,GIF,HDR,ICO,EXR,PNG,PNM,QOI,TGA,TIFF,AVIF,WEBP;默认WEBP
   stream:
-    proxy_enable: false #是否统一代理流出口，否-使用流媒体服务的公网ip返回结果
+    proxy_enable: false #是否统一代理流出口,否-使用流媒体服务的公网ip返回结果
     proxy_addr: https://epimore.cn #流代理地址;eg:https://epimore.cn/s1/play/4FEqqzfqsa0Vzqqq2lqqc1lqq4fa.flv?gmv-token=uxxx
     nodes:
-      - name: s1 #流媒体服务的标识，节点名称，唯一值，不能与其他节点重复
+      - name: s1 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
         pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
         pub_port: 18568 #流媒体服务接收rtp流的端口
-        local_ip: 127.0.0.1 #节点局域网IP，用于流媒体服务之间通信
-        local_port: 18570 #节点局域网端口，用于流媒体服务之间通信
-#      - name: s2 #流媒体服务的标识，节点名称，唯一值，不能与其他节点重复
+        local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
+        local_port: 18570 #节点局域网端口,用于流媒体服务之间通信
+#      - name: s2 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
 #        pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
 #        pub_port: 19568 #流媒体服务接收rtp流的端口
-#        local_ip: 127.0.0.1 #节点局域网IP，用于流媒体服务之间通信
-#        local_port: 18570 #节点局域网端口，用于流媒体服务之间通信
+#        local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
+#        local_port: 18570 #节点局域网端口,用于流媒体服务之间通信
 
 
 
