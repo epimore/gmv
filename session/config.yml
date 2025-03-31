@@ -23,14 +23,15 @@ log:
 
 http:
   port: 18567
-  timeout: 30   #请求超时 单位秒
+  timeout: 30000   #请求超时 单位秒
   prefix: /session
   server_name: GMV:SESSION
   version: v0.2
 
 db:
   mysql:
-    host_or_ip: 101.33.200.169
+    host_or_ip: 175.178.243.153
+#    host_or_ip: 101.33.200.169
     port: 33061
     db_name: gmv
     user: epimore
@@ -62,12 +63,13 @@ server:
     push_url: http://127.0.0.1:38888/event/alarm #推送地址
     priority: 4 #告警等级推送 1-4,默认最低4
   pics:
-    enable: true #是否开启循环拍照,默认true
-    cron_cycle: 0 */5 * * * * #拍照周期cron表达式，默认每分钟执行一次
+    enable: true #是否开启采集拍照,默认false
+    push_url: https://epimore.cn/session/api/es/pic/upload
+    cron_cycle: 0 */5 * * * * #拍照周期cron表达式，默认每5分钟执行一次
     num: 1 #连拍张数,最大10 默认1
     interval: 1 #连拍间隔秒 max u8
-    storage_path: ./pics/raw  #原始图片存储地址
-    storage_format: WEBP  #图片存储格式：JPEG,BMP,FARBFELD,GIF,HDR,ICO,EXR,PNG,PNM,QOI,TGA,TIFF,AVIF,WEBP;默认WEBP
+    storage_path: ./pics/raw  #图片存储地址
+    storage_format: jpeg  #图片存储格式：jpeg,bmp,farbfeld,gif,hdr,ico,exr,png,pnm,qoi,tga,tiff,avif,webp;默认jpeg
   stream:
     proxy_enable: false #是否统一代理流出口,否-使用流媒体服务的公网ip返回结果
     proxy_addr: https://epimore.cn #流代理地址;eg:https://epimore.cn/s1/play/4FEqqzfqsa0Vzqqq2lqqc1lqq4fa.flv?gmv-token=uxxx

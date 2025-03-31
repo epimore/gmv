@@ -9,6 +9,7 @@ use common::tokio;
 
 use crate::gb::SessionConf;
 use crate::general::http::Http;
+use crate::general::runner::{PicsRunner, Runner};
 
 #[derive(Debug)]
 pub struct AppInfo {
@@ -53,6 +54,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
                     error!("Session server stop");
                     Ok::<(), GlobalError>(())
                 });
+                PicsRunner::next().await;
                 se.await.hand_log(|msg| error!("Session:{msg}"))??;
                 web.await.hand_log(|msg| error!("WEB:{msg}"))??;
                 Ok::<(), GlobalError>(())

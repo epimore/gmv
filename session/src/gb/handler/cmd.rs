@@ -14,7 +14,6 @@ use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
 use crate::gb::shared::event::{Container, EventSession, Ident};
 use crate::gb::shared::rw::RequestOutput;
 use crate::general::model::{PtzControlModel, StreamMode};
-use crate::storage::entity::GmvDevice;
 
 pub struct CmdResponse;
 

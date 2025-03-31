@@ -8,8 +8,8 @@ edition = "2024"
 [dependencies]
 rsip = "0.4"
 sqlx = { version = "0.8",default-features = false}
-#common = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "cc5a6b10", features = ["net"] }
-common = { package = "common_db", path = "../../pigs/common_db", features = ["net"] }
+common = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "1d9f477e", features = ["net"] }
+#common = { package = "common_db", path = "../../pigs/common_db", features = ["net"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"

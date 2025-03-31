@@ -437,9 +437,9 @@ mod tests {
     // #[tokio::test]
     async fn test_insert_single_gmv_device_by_register() {
         init();
-        let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
+        let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000004".to_string()).await;
         if let Ok(Some(gd)) = res {
-            let a = GmvDevice { device_id: "34020000001320000004".to_string(), ..gd };
+            let a = GmvDevice { device_id: "34020000001320000004".to_string(),register_time: Local::now().naive_local(), ..gd };
             println!("{a:?}");
             let result = a.insert_single_gmv_device_by_register().await;
             println!("{:?}", result)

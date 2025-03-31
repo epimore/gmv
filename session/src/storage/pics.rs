@@ -1,22 +1,22 @@
 use std::{fs};
 use std::str::FromStr;
 use cron::Schedule;
+use url::Url;
 
 use common::cfg_lib::conf;
 use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use common::constructor::{Get};
-use common::exception::{TransError};
-use common::log::error;
 use common::once_cell::sync::Lazy;
 use common::serde::Deserialize;
 use common::serde_default;
 
 #[derive(Debug, Get, Deserialize)]
 #[serde(crate = "common::serde")]
-#[conf(prefix = "server.pics")]
+#[conf(prefix = "server.pics", check)]
 pub struct Pics {
     #[serde(default = "default_enable")]
     pub enable: bool,
+    pub push_url: Option<String>,
     #[serde(default = "default_cron_cycle")]
     pub cron_cycle: String,
     #[serde(default = "default_num")]
@@ -28,31 +28,28 @@ pub struct Pics {
     #[serde(default = "default_storage_format")]
     pub storage_format: String,
 }
-serde_default!(default_enable, bool, true);
+serde_default!(default_enable, bool, false);
 serde_default!(default_cron_cycle, String, String::from("0 */5 * * * *"));
 serde_default!(default_num, u8, 1);
 serde_default!(default_interval, u8, 1);
 serde_default!(default_storage_path, String, "./pics/raw".to_string());
-serde_default!(default_storage_format, String, "WEBP".to_string());
+serde_default!(default_storage_format, String, "jpeg".to_string());
 
 impl CheckFromConf for Pics {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         let pics: Pics = Pics::conf();
-        match &*pics.storage_format.to_uppercase() {
-            "AVIF" | "BMP" | "FARBFELD" | "GIF" | "HDR" | "ICO" | "JPEG" | "EXR" | "PNG" | "PNM" | "QOI" | "TGA" | "TIFF" | "WEBP" => {}
+        if pics.enable {
+            let uri = self.push_url.as_ref().ok_or(FieldCheckError::BizError("push_url is required".to_string()))?;
+            Url::parse(uri).map_err(|e| FieldCheckError::BizError(format!("Invalid push_url: {}", e.to_string())))?;
+        }
+        match &*pics.storage_format.to_ascii_lowercase() {
+            "avif" | "bmp" | "farbfeld" | "gif" | "hdr" | "ico" | "jpeg" | "exr" | "png" | "pnm" | "qoi" | "tga" | "tiff" | "webp" => {}
             _ => {
-                return Err(FieldCheckError::BizError("storage_format must be in [AVIF,BMP,FARBFELD,GIF,HDR,ICO,JPEG,EXR,PNG,PNM,QOI,TGA,TIFF,WEBP]".to_string()));
+                return Err(FieldCheckError::BizError("storage_format must be in [avif,bmp,farbfeld,gif,hdr,ico,jpeg,exr,png,pnm,qoi,tga,tiff,webp]".to_string()));
             }
         }
-        if Schedule::from_str(&pics.cron_cycle).is_err() {
-            return Err(FieldCheckError::BizError("storage_format must be in [AVIF,BMP,FARBFELD,GIF,HDR,ICO,JPEG,EXR,PNG,PNM,QOI,TGA,TIFF,WEBP]".to_string()));
-        }
-        if let Err(e) = Schedule::from_str(&pics.cron_cycle) {
-            return Err(FieldCheckError::BizError(format!("Invalid cron expression: {}", e.to_string())));
-        }
-        if let Err(e) = fs::create_dir_all(&pics.storage_path) {
-            return Err(FieldCheckError::BizError(format!("create raw_path dir failed: {}", e.to_string())));
-        }
+        Schedule::from_str(&pics.cron_cycle).map_err(|e| FieldCheckError::BizError(format!("Invalid cron expression: {}", e.to_string())))?;
+        fs::create_dir_all(&pics.storage_path).map_err(|e| FieldCheckError::BizError(format!("create raw_path dir failed: {}", e.to_string())))?;
         Ok(())
     }
 }
@@ -146,6 +143,8 @@ mod test {
     use common::chrono::Local;
     use image::ImageFormat;
     use image::ImageFormat::Jpeg;
+    use common::cfg_lib::conf::init_cfg;
+    use crate::storage::pics::Pics;
 
     #[test]
     fn test() {
@@ -161,9 +160,9 @@ mod test {
     }
 
     // #[test]
-    // fn test_file_path() {
-    //     let file = "/data/pics/2024/07/19/11111aasfa.jpg";
-    //     let (name, ext) = ImageInfo::split_file_name(&PathBuf::from(file));
-    //     println!("文件名: {}, 后缀: {:?}", name, ext);
-    // }
+    fn test_pics_conf() {
+        init_cfg("config.yml".to_string());
+        let conf = Pics::get_pics_by_conf();
+        println!("{:?}", conf);
+    }
 }

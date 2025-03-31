@@ -181,7 +181,7 @@ impl RequestBuilder {
         let cs_eq_str = format!("{} MESSAGE", rng.gen_range(12u8..255u8));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
-        headers.push(rsip::headers::ContentType::new("APPLICATION/MANSCDP+xml").into());
+        headers.push(rsip::headers::ContentType::new("Application/MANSCDP+xml").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
         let request_msg: SipMessage = Request {
             method: Method::Message,
@@ -203,7 +203,7 @@ impl RequestBuilder {
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
         headers.push(rsip::headers::Event::new(format!("Catalog;id={}", rng.gen_range(123456789u32..987654321u32))).into());
-        headers.push(rsip::headers::ContentType::new("APPLICATION/MANSCDP+xml").into());
+        headers.push(rsip::headers::ContentType::new("Application/MANSCDP+xml").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
         let request_msg: SipMessage = Request {
             method: Method::Subscribe,
@@ -229,7 +229,7 @@ impl RequestBuilder {
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
 
-        headers.push(rsip::headers::ContentType::new("APPLICATION/MANSRTSP").into());
+        headers.push(rsip::headers::ContentType::new("Application/MANSRTSP").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
         let msg = Request {
             method: Method::Info,
@@ -269,7 +269,7 @@ impl RequestBuilder {
             warn!("device id = [{}] 未启用设备,无法下发指令",&device_id);
         }
         let domain_id = oauth.get_domain_id();
-        let domain = oauth.get_domain();
+        let domain = &format!("{}.spvmn.cn", oauth.get_domain());
 
         let transport = bill.get_protocol().get_value();
         let uri_str = format!("sip:{}@{}", dst_id, domain);
@@ -372,7 +372,7 @@ impl RequestBuilder {
             Error::missing_header("From")
         ).hand_log(|msg| error!("{msg}"))?;
         headers.push(rsip::headers::Subject::new(format!("{}:{},{}:0", channel_id, ssrc, from.uri().unwrap().auth.unwrap().user)).into());
-        headers.push(rsip::headers::ContentType::new("APPLICATION/SDP").into());
+        headers.push(rsip::headers::ContentType::new("Application/SDP").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
         let msg = Request {
             method: Method::Invite,
@@ -470,16 +470,16 @@ impl XmlBuilder {
     }
     pub fn control_snapshot_image(channel_id: &String, num: u8, interval: u8, uri: &String, session_id: &String) -> String {
         let mut xml = String::new();
-        xml.push_str("<?xml version=\"1.0\" encoding=\"GB18030\"?>\r\n");
+        xml.push_str("<?xml version=\"1.0\"?>\r\n");
         xml.push_str("<Control>\r\n");
         xml.push_str("<CmdType>DeviceConfig</CmdType>\r\n");
-        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp()));
+        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
         xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", channel_id));
         xml.push_str("<SnapShotConfig>\r\n");
         xml.push_str(&*format!("<SnapNum>{}</SnapNum>\r\n", num));
         xml.push_str(&*format!("<Interval>{}</Interval>\r\n", interval));
-        xml.push_str(&*format!("<UploadURI>{}</UploadURI>\r\n", uri));
-        xml.push_str(&*format!("<SessionId>{}</SessionId>\r\n", session_id));
+        xml.push_str(&*format!("<UploadURL>{}</UploadURL>\r\n", uri));
+        xml.push_str(&*format!("<SessionID>{}</SessionID>\r\n", session_id));
         xml.push_str("</SnapShotConfig>\r\n");
         xml.push_str("</Control>\r\n");
         xml
@@ -665,5 +665,18 @@ mod tests {
             let out_cmd = super::XmlBuilder::build_cmd_ptz_line(&model);
             assert_eq!(out_cmd, "A50F01200000A075");
         }
+    }
+
+    #[test]
+    fn test_left_mv() {
+        let sec = Local::now().timestamp();
+        println!("+0 {}", sec);
+        println!("+1 {}", sec+1);
+        println!("+2 {}", sec+2);
+        println!("+3 {}", sec+3);
+        println!("L0 {}", sec>>1);
+        println!("L1 {}", (sec+1)>>1);
+        println!("L2 {}", (sec+2)>>1);
+        println!("L3 {}", (sec+3)>>1);
     }
 }

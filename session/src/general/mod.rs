@@ -13,6 +13,7 @@ pub mod model;
 pub mod cache;
 pub mod http;
 mod schedule;
+pub mod runner;
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "common::serde")]

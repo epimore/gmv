@@ -4,16 +4,15 @@ use std::thread;
 
 use cron::Schedule;
 
-use common::chrono::{Local, Utc};
+use common::chrono::{Local};
 use common::log::error;
 use common::once_cell::sync::Lazy;
 use common::tokio;
 use common::tokio::sync::mpsc;
 use common::tokio::sync::mpsc::{Receiver, Sender};
-use common::tokio::task;
 
 pub trait ScheduleTask: Send + Sync + 'static {
-    fn do_something(&self) -> Pin<Box<dyn Future<Output=()> + Send>>;
+    fn do_something(&self) -> Pin<Box<dyn Future<Output=()> + Send + '_>>;
 }
 
 static SENDER: Lazy<Sender<(Schedule, Arc<dyn ScheduleTask>)>> = Lazy::new(|| {
