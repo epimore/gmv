@@ -68,7 +68,10 @@ impl ToFrame for PsPacket {
                 if let Err(_) = ps_header_reader() {
                     continue;
                 }
-                let _ = PsPacket::split_pes_pkt(&mut pes_packets, &mut cursor);
+                match PsPacket::split_pes_pkt(&mut pes_packets, &mut cursor) {
+                    Ok(true) => { break; }
+                    _ => { continue }
+                }
             }
             if cursor.position() == 0 {
                 warn!("PS buffer without start code, discarding {} bytes",self.payload.len());
@@ -83,7 +86,7 @@ impl ToFrame for PsPacket {
 }
 
 impl PsPacket {
-    fn split_pes_pkt(pes_packets: &mut Vec<PesPacket>, cursor: &mut Cursor<&BytesMut>) -> GlobalResult<()> {
+    fn split_pes_pkt(pes_packets: &mut Vec<PesPacket>, cursor: &mut Cursor<&BytesMut>) -> GlobalResult<bool> {
         let byte_len = (cursor.get_ref().len() - PS_BASE_LEN) as u64;
         while cursor.position() < byte_len {
             cursor.seek(SeekFrom::Current(3)).hand_log(|msg| warn!("{msg}"))?;
@@ -91,7 +94,7 @@ impl PsPacket {
             match ident {
                 PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST => {
                     match PesPacket::read_video_pes_data(cursor, ident)? {
-                        None => { break; }
+                        None => { return Ok(true); }
                         Some(pes_pkt) => {
                             pes_packets.push(pes_pkt);
                         }
@@ -105,7 +108,7 @@ impl PsPacket {
                 }
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     //分离音视频字幕私有信息...
@@ -474,7 +477,11 @@ impl PesPacket {
 
     //PES_packet_length == 0|0xFFFF,读取数据直到下一个PES包头0x000001+ident,或到数据流的结束
     fn get_pkt_len(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<usize> {
-        let packet_len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
+        // let packet_len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
+        let packet_len = match cursor.read_u16::<BigEndian>() {
+            Ok(packet_len) => {packet_len}
+            Err(_) => {return Ok(0);}
+        };
         let bytes = cursor.get_ref();
         let pos = cursor.position() as usize;
         if pos + packet_len as usize > bytes.len() {
