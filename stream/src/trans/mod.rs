@@ -10,6 +10,8 @@ use common::tokio::time::{timeout};
 use crate::coder::{CodecPayload, FrameData, VideoCodec};
 use crate::coder::h264::H264Context;
 use crate::container::flv::{flv_h264};
+use crate::container::mp4::mp4_h264;
+use crate::container::PacketWriter;
 use crate::container::ps::PsPacket;
 use crate::general::mode::{HALF_TIME_OUT, Media};
 use crate::io::hook_handler::InEvent;
@@ -29,23 +31,95 @@ async fn get_stream_in(in_event_rx: Arc<Mutex<broadcast::Receiver<InEvent>>>) ->
             InEvent::StreamIn() => { break; }
         }
     }
+
     Ok(())
 }
 
 pub fn trans_run(rx: Receiver<u32>) {
-   std::thread::spawn(|| {
-       tokio::runtime::Builder::new_multi_thread()
-           .enable_all()
-           .thread_name("TRANS_RUN")
-           .build()
-           .hand_log(|msg| error!("{msg}"))
-           .unwrap()
-           .block_on(handle_run(rx));
-   });
+    std::thread::spawn(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("TRANS_RUN")
+            .build()
+            .hand_log(|msg| error!("{msg}"))
+            .unwrap()
+            .block_on(spilt_out_container(rx));
+    });
+}
+
+async fn spilt_out_container(mut rx: Receiver<u32>){
+    while let Some(ssrc) = rx.recv().await {
+        if let Some(in_event_rx) = cache::get_in_event_shard_rx(&ssrc) {
+            match timeout(Duration::from_millis(HALF_TIME_OUT), get_stream_in(in_event_rx)).await {
+                Ok(res) => {
+                    match res {
+                        Ok(()) => {
+                            if let Some((media, half_channel)) = cache::get_rx_media_type(&ssrc) {
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    let demux_context = DemuxContext::init(ssrc, half_channel.rtp_rx);
+                                    let codec_payload = CodecPayload::default();
+                                    let ct = "flv";
+                                    match ct {
+                                        "flv" => {
+                                            let writer = flv_h264::MediaFlvContext::register(half_channel.flv_tx);
+                                            do_remuxer(demux_context, codec_payload, media, writer);
+                                        }
+                                        "mp4" => {
+                                            let writer = mp4_h264::MediaMp4Context::register();
+                                            do_remuxer(demux_context, codec_payload, media, writer);
+                                        }
+                                        other => {
+                                            error!("未知的封装格式: {}", other);
+                                        }
+                                    }
+                                }).await.hand_log(|msg| error!("{msg}"));
+                            }
+                        }
+                        Err(_error) => {
+                            error!("接收外部事件发送端drop");
+                        }
+                    }
+                }
+                Err(_) => {
+                    error!("ssrc = {} 获取媒体初始化信息超时",ssrc);
+                }
+            }
+        }
+    }
+}
+
+fn do_remuxer<W: PacketWriter>(mut demux_context: DemuxContext,
+                                   mut codec_payload: CodecPayload,
+                                   media: Media,
+                                   mut writer: W) {
+    match media {
+        Media::PS => {
+            let mut ps_packet = PsPacket::default();
+            loop {
+                if demux_context.demux_packet(&mut codec_payload, &mut ps_packet).is_err() {
+                    break;
+                }
+                if let (Some(VideoCodec::H264), vec, ts) = &mut codec_payload.video_payload {
+                    writer.packet(vec, *ts);
+                }
+            }
+        }
+        Media::H264 => {
+            codec_payload.video_payload.0 = Some(VideoCodec::H264);
+            let mut h264context = H264Context::init_avc();
+            loop {
+                if demux_context.demux_packet(&mut codec_payload, &mut h264context).is_err() {
+                    break;
+                }
+                let (_, vec, ts) = &mut codec_payload.video_payload;
+                writer.packet(vec, *ts);
+            }
+        }
+    }
 }
 
 //todo 动态自适应编码切换
-async fn handle_run(mut rx: Receiver<u32>) {
+/*async fn handle_run(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
         if let Some(in_event_rx) = cache::get_in_event_shard_rx(&ssrc) {
             match timeout(Duration::from_millis(HALF_TIME_OUT), get_stream_in(in_event_rx)).await {
@@ -100,4 +174,4 @@ async fn handle_run(mut rx: Receiver<u32>) {
             }
         }
     }
-}
+}*/

@@ -159,7 +159,7 @@ impl RtpMap {
 // }
 
 //开启录像
-// pub async fn start_record(ssrc: u32, file_name: &String) {}
+pub async fn start_record(stream_id: String, file_name: String) {}
 
 //停止录像，是否清理录像文件
 // pub async fn stop_record(ssrc: u32, clean: bool) {}

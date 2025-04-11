@@ -7,8 +7,9 @@ pub mod flv_h264 {
     use common::log::{info, warn};
     use common::tokio::sync::broadcast;
 
-    use crate::coder::FrameData;
+    use crate::coder::{FrameData};
     use crate::coder::h264::H264Context;
+    use crate::container::PacketWriter;
     use crate::general::mode::Coder;
 
     pub struct MediaFlvContext {
@@ -17,11 +18,8 @@ pub mod flv_h264 {
         // pub hls_frame_tx: broadcast::Sender<FrameData>,
     }
 
-    impl MediaFlvContext {
-        pub fn register(flv_frame_tx: broadcast::Sender<FrameData>) -> Self {
-            Self { flv_video_h264: VideoTagDataBuffer::init(), flv_frame_tx }
-        }
-        pub fn packet(&mut self, vec_frame: &mut Vec<Bytes>, timestamp: u32) {
+    impl PacketWriter for MediaFlvContext {
+        fn packet(&mut self, vec_frame: &mut Vec<Bytes>, timestamp: u32) {
             vec_frame
                 .drain(..)
                 .filter_map(
@@ -41,6 +39,33 @@ pub mod flv_h264 {
                     }
                 });
         }
+    }
+
+    impl MediaFlvContext {
+        pub fn register(flv_frame_tx: broadcast::Sender<FrameData>) -> Self {
+            Self { flv_video_h264: VideoTagDataBuffer::init(), flv_frame_tx }
+        }
+
+        /*pub fn packet(&mut self, vec_frame: &mut Vec<Bytes>, timestamp: u32) {
+            vec_frame
+                .drain(..)
+                .filter_map(
+                    |frame|
+                    self.flv_video_h264.packaging(frame)
+                        .map(|(pkg, sps, pps, idr)|
+                        (pkg, sps, pps, idr)))
+                .for_each(|(pkg, sps, pps, idr)|
+                {
+                    let frame_data = FrameData {
+                        pay_type: Coder::H264(sps, pps, idr),
+                        timestamp,
+                        data: pkg.to_bytes(),
+                    };
+                    if self.flv_frame_tx.send(frame_data).is_err() {
+                        info!("http 用户端已全部断开连接.");
+                    }
+                });
+        }*/
     }
 
     //+----------------+-----------------+
