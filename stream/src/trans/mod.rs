@@ -14,7 +14,7 @@ use crate::container::mp4::mp4_h264;
 use crate::container::PacketWriter;
 use crate::container::ps::PsPacket;
 use crate::general::mode::{HALF_TIME_OUT, Media};
-use crate::io::hook_handler::InEvent;
+use crate::io::hook_handler::{Download, InEvent, MediaAction, Play, RtpStreamEvent};
 use crate::state::cache;
 use crate::trans::demuxer::{DemuxContext};
 
@@ -23,15 +23,12 @@ mod hls_muxer;
 mod demuxer;
 
 async fn get_stream_in(in_event_rx: Arc<Mutex<broadcast::Receiver<InEvent>>>) -> GlobalResult<()> {
-    //此处其他事件不参与仅需判断：MediaInit与StreamIn。但先有MediaInit后有StreamIn.故只需判断StreamIn
     loop {
         let in_event = in_event_rx.lock().await.recv().await.hand_log(|msg| error!("{msg}"))?;
-        match in_event {
-            InEvent::MediaInit() => {}
-            InEvent::StreamIn() => { break; }
+        if let InEvent::RtpStreamEvent(RtpStreamEvent::StreamIn) = in_event {
+            break;
         }
     }
-
     Ok(())
 }
 
@@ -47,30 +44,30 @@ pub fn trans_run(rx: Receiver<u32>) {
     });
 }
 
-async fn spilt_out_container(mut rx: Receiver<u32>){
+async fn spilt_out_container(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
         if let Some(in_event_rx) = cache::get_in_event_shard_rx(&ssrc) {
             match timeout(Duration::from_millis(HALF_TIME_OUT), get_stream_in(in_event_rx)).await {
                 Ok(res) => {
                     match res {
                         Ok(()) => {
-                            if let Some((media, half_channel)) = cache::get_rx_media_type(&ssrc) {
+                            if let Some((media, half_channel, media_type)) = cache::get_rx_media_type(&ssrc) {
                                 let _ = tokio::task::spawn_blocking(move || {
                                     let demux_context = DemuxContext::init(ssrc, half_channel.rtp_rx);
                                     let codec_payload = CodecPayload::default();
-                                    let ct = "flv";
-                                    match ct {
-                                        "flv" => {
+                                    match media_type {
+                                        MediaAction::Play(Play::Flv) => {
                                             let writer = flv_h264::MediaFlvContext::register(half_channel.flv_tx);
                                             do_remuxer(demux_context, codec_payload, media, writer);
                                         }
-                                        "mp4" => {
-                                            let writer = mp4_h264::MediaMp4Context::register();
-                                            do_remuxer(demux_context, codec_payload, media, writer);
+                                        MediaAction::Play(Play::Hls(_)) => { unimplemented!() }
+                                        MediaAction::Play(Play::FlvHls(_)) => { unimplemented!() }
+                                        MediaAction::Download(Download::Mp4(fileName)) => {
+                                            if let Ok(writer) = mp4_h264::MediaMp4Context::register(half_channel.down_tx, fileName) {
+                                                do_remuxer(demux_context, codec_payload, media, writer);
+                                            }
                                         }
-                                        other => {
-                                            error!("未知的封装格式: {}", other);
-                                        }
+                                        MediaAction::Download(Download::Picture(_fileName)) => { unimplemented!() }
                                     }
                                 }).await.hand_log(|msg| error!("{msg}"));
                             }
@@ -89,9 +86,9 @@ async fn spilt_out_container(mut rx: Receiver<u32>){
 }
 
 fn do_remuxer<W: PacketWriter>(mut demux_context: DemuxContext,
-                                   mut codec_payload: CodecPayload,
-                                   media: Media,
-                                   mut writer: W) {
+                               mut codec_payload: CodecPayload,
+                               media: Media,
+                               mut writer: W) {
     match media {
         Media::PS => {
             let mut ps_packet = PsPacket::default();
@@ -103,6 +100,7 @@ fn do_remuxer<W: PacketWriter>(mut demux_context: DemuxContext,
                     writer.packet(vec, *ts);
                 }
             }
+            writer.packet_end();
         }
         Media::H264 => {
             codec_payload.video_payload.0 = Some(VideoCodec::H264);
@@ -114,6 +112,7 @@ fn do_remuxer<W: PacketWriter>(mut demux_context: DemuxContext,
                 let (_, vec, ts) = &mut codec_payload.video_payload;
                 writer.packet(vec, *ts);
             }
+            writer.packet_end();
         }
     }
 }

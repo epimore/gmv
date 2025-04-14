@@ -24,8 +24,7 @@ use crate::general::mode::{INDEX};
 
 const DROP_SSRC: &str = "/drop/ssrc";
 const LISTEN_SSRC: &str = "/listen/ssrc";
-const STOP_RECORD: &str = "/stop/record";
-const START_RECORD: &str = "/start/record";
+const ON_RECORD: &str = "/on/record";
 const PLAY: &str = "/play/";
 const STOP_PLAY: &str = "/stop/play";
 const QUERY_STREAM_COUNT: &str = "/query/stream/count";
@@ -80,11 +79,19 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
                 DROP_SSRC => {
                     unimplemented!()
                 }
-                START_RECORD => {
-                    unimplemented!()
-                }
-                STOP_RECORD => {
-                    unimplemented!()
+                ON_RECORD => {
+                    match req.uri().query() {
+                        None => { api::res_400() }
+                        Some(param) => {
+                            let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
+                            match api::get_ssrc(&map) {
+                                Ok(ssrc) => {
+                                    api::on_record(&ssrc).await
+                                }
+                                Err(_) => {api::res_400()}
+                            }
+                        }
+                    }
                 }
                 STOP_PLAY => {
                     unimplemented!()

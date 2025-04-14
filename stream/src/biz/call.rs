@@ -4,8 +4,12 @@ use common::constructor::{Get, New};
 use common::exception::TransError;
 use common::log::error;
 use common::serde::{Deserialize, Serialize};
-use crate::container::PlayType;
+use common::tokio::sync::broadcast::error::RecvError;
+use common::tokio::sync::broadcast::Receiver;
+use common::tokio::time::error::Elapsed;
+use common::tokio::time::timeout;
 
+use crate::container::PlayType;
 use crate::general::mode;
 use crate::general::mode::TIME_OUT;
 use crate::state::cache;
@@ -135,27 +139,43 @@ impl StreamPlayInfo {
     }
 }
 
-#[derive(New, Serialize)]
+#[derive(New, Serialize, Clone)]
 #[serde(crate = "common::serde")]
 pub struct StreamRecordInfo {
-    base_stream_info: BaseStreamInfo,
-    file_path: String,
-    file_name: String,
-    //单位kb
-    file_size: u32,
+    pub file_name: String,
+    //单位kb,录制完成时统计文件大小
+    pub file_size: Option<u32>,
+    //媒体流原始时间,方便计算进度
+    pub timestamp: u32,
+    //每秒录制字节数
+    pub bytes_sec: usize,
 }
 
 impl StreamRecordInfo {
     //当流录制完成时进行回调
-    pub async fn end_record(&self) {}
-}
-
-#[derive(New, Serialize)]
-#[serde(crate = "common::serde")]
-pub struct StreamState {
-    base_stream_info: BaseStreamInfo,
-    user_count: u32,
-    // record_name: Option<String>,
+    pub async fn end_record(&self) -> Option<bool> {
+        let client = reqwest::Client::new();
+        let uri = format!("{}{}", cache::get_server_conf().get_hook_uri(), mode::END_RECORD);
+        let res = client.post(uri)
+            .timeout(Duration::from_millis(TIME_OUT))
+            .json(self).send().await
+            .hand_log(|msg| error!("{msg}"));
+        match res {
+            Ok(resp) => {
+                match (resp.status().is_success(), resp.json::<RespBo<bool>>().await) {
+                    (true, Ok(_)) => {
+                        Some(true)
+                    }
+                    _ => {
+                        Some(false)
+                    }
+                }
+            }
+            Err(_) => {
+                None
+            }
+        }
+    }
 }
 
 impl StreamState {
@@ -183,4 +203,12 @@ impl StreamState {
             }
         }
     }
+}
+
+#[derive(New, Serialize)]
+#[serde(crate = "common::serde")]
+pub struct StreamState {
+    base_stream_info: BaseStreamInfo,
+    user_count: u32,
+    // record_name: Option<String>,
 }

@@ -19,13 +19,13 @@ use common::tokio::time::Instant;
 use parking_lot::RwLock;
 use rtp::packet::Packet;
 
-use crate::biz::api::{HlsPiece, SsrcLisDto};
-use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamState};
+use crate::biz::api::{SsrcLisDto};
+use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamRecordInfo, StreamState};
 use crate::coder::FrameData;
 use crate::container::PlayType;
 use crate::general::cfg;
 use crate::general::mode::{BUFFER_SIZE, HALF_TIME_OUT, Media, ServerConf};
-use crate::io::hook_handler::{InEvent, OutEvent, OutEventRes};
+use crate::io::hook_handler::{InEvent, MediaAction, OutEvent, OutEventRes, RtpStreamEvent, SessionEvent};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -35,7 +35,7 @@ pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> GlobalRes
         Entry::Occupied(mut occ) => {
             let stream_trace = occ.get_mut();
             stream_trace.media_map = media_type;
-            if let Err(_error) = stream_trace.event_channel.0.send(InEvent::MediaInit()) {
+            if let Err(_error) = stream_trace.event_channel.0.send(InEvent::SessionEvent(SessionEvent::MediaInit)) {
                 return Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},事件接收通道销毁", ssrc), |msg| error!("{msg}")));
             }
             Ok(())
@@ -60,7 +60,7 @@ pub fn get_in_event_sub_rx(ssrc: &u32) -> Option<broadcast::Receiver<InEvent>> {
     })
 }
 
-pub fn get_rx_media_type(ssrc: &u32) -> Option<(Media, HalfChannel)> {
+pub fn get_rx_media_type(ssrc: &u32) -> Option<(Media, HalfChannel, MediaAction)> {
     let state = SESSION.shared.state.read();
     if let Some(mt) = state.sessions.get(ssrc) {
         if let Some(media) = mt.media_map.get(&mt.rtp_payload_type) {
@@ -68,8 +68,9 @@ pub fn get_rx_media_type(ssrc: &u32) -> Option<(Media, HalfChannel)> {
                 rtp_rx: mt.stream_ch.get_rtp_rx(),
                 flv_tx: mt.stream_ch.get_flv_tx(),
                 hls_tx: mt.stream_ch.get_hls_tx(),
+                down_tx: mt.stream_ch.get_down_tx(),
             };
-            return Some((*media, half_channel));
+            return Some((*media, half_channel, mt.media_action.clone()));
         }
         error!("ssrc: {}, Media payload type: {} is invalid or unsupported",ssrc,&mt.rtp_payload_type);
     }
@@ -123,8 +124,9 @@ pub fn insert(ssrc_lis: SsrcLisDto) -> GlobalResult<()> {
             media_map: Default::default(),
             rtp_payload_type: 0,
             event_channel: (tx, Arc::new(Mutex::new(rx))),
-            flv: false,
-            hls: None,
+            media_action: ssrc_lis.media_action,
+            // flv: false,
+            // hls: None,
         };
         state.sessions.insert(ssrc, stream_trace);
         let inner = InnerTrace { ssrc, user_map: Default::default() };
@@ -187,7 +189,7 @@ fn event_stream_in(ssrc: u32, bill: &Association, media_payload_type: u8) -> Opt
         let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id.clone(), time);
         let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamIn(stream_info), None)).hand_log(|msg| error!("{msg}"));
         stream_trace.register_ts = time;
-        if let Err(_err) = stream_trace.event_channel.0.send(InEvent::StreamIn()) {
+        if let Err(_err) = stream_trace.event_channel.0.send(InEvent::RtpStreamEvent(RtpStreamEvent::StreamIn)) {
             error!("ssrc:{}, 事件接收端drop",ssrc);
         }
         return Some((stream_trace.stream_ch.get_rtp_tx(), stream_trace.stream_ch.get_rtp_rx()));
@@ -212,6 +214,16 @@ pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
         None => { None }
         Some(stream_trace) => {
             Some(stream_trace.stream_ch.get_flv_rx())
+        }
+    }
+}
+
+pub fn get_down_rx(ssrc: &u32) -> Option<broadcast::Receiver<StreamRecordInfo>> {
+    let guard = SESSION.shared.state.read();
+    match guard.sessions.get(ssrc) {
+        None => { None }
+        Some(stream_trace) => {
+            Some(stream_trace.stream_ch.get_down_rx())
         }
     }
 }
@@ -451,12 +463,7 @@ struct StreamTrace {
     media_map: HashMap<u8, Media>,
     rtp_payload_type: u8,
     event_channel: (broadcast::Sender<InEvent>, Arc<Mutex<broadcast::Receiver<InEvent>>>),
-    // 缓存视音频编码类型？
-    //video
-    //audio
-    //转换流协议
-    flv:bool,
-    hls:Option<HlsPiece>,
+    media_action: MediaAction,
 }
 
 struct InnerTrace {
@@ -497,19 +504,22 @@ impl State {
 }
 
 type CrossbeamChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
-type BroadcastChannel = (broadcast::Sender<FrameData>, broadcast::Receiver<FrameData>);
+type BroadcastFrameChannel = (broadcast::Sender<FrameData>, broadcast::Receiver<FrameData>);
+type BroadcastDownInfoChannel = (broadcast::Sender<StreamRecordInfo>, broadcast::Receiver<StreamRecordInfo>);
 
 pub struct HalfChannel {
     pub rtp_rx: crossbeam_channel::Receiver<Packet>,
     pub flv_tx: broadcast::Sender<FrameData>,
     pub hls_tx: broadcast::Sender<FrameData>,
+    pub down_tx: broadcast::Sender<StreamRecordInfo>,
 }
 
 #[derive(Debug)]
 pub struct Channel {
     rtp_channel: CrossbeamChannel,
-    flv_channel: BroadcastChannel,
-    hls_channel: BroadcastChannel,
+    flv_channel: BroadcastFrameChannel,
+    hls_channel: BroadcastFrameChannel,
+    down_channel: BroadcastDownInfoChannel,
 }
 
 impl Channel {
@@ -517,10 +527,12 @@ impl Channel {
         let rtp_channel = crossbeam_channel::bounded(BUFFER_SIZE * 10);
         let flv_channel = broadcast::channel(BUFFER_SIZE);
         let hls_channel = broadcast::channel(BUFFER_SIZE);
+        let down_channel = broadcast::channel(1);
         Self {
             rtp_channel,
             flv_channel,
             hls_channel,
+            down_channel,
         }
     }
     fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Packet> {
@@ -540,6 +552,12 @@ impl Channel {
     }
     fn get_hls_rx(&self) -> broadcast::Receiver<FrameData> {
         self.hls_channel.0.subscribe()
+    }
+    fn get_down_tx(&self) -> broadcast::Sender<StreamRecordInfo> {
+        self.down_channel.0.clone()
+    }
+    fn get_down_rx(&self) -> broadcast::Receiver<StreamRecordInfo> {
+        self.down_channel.0.subscribe()
     }
 }
 

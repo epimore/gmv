@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use hyper::{Body, header, Response, StatusCode};
 use common::serde::{Deserialize, Serialize};
@@ -10,19 +11,19 @@ use common::log::{error, info};
 use common::tokio;
 use common::tokio::sync::{oneshot};
 use common::tokio::sync::mpsc::Sender;
+use common::tokio::time::timeout;
 
-use crate::biz::call::{StreamPlayInfo};
+use crate::biz::call::{StreamPlayInfo, StreamRecordInfo};
 use crate::container::PlayType;
-use crate::general::mode::{Media, ResMsg};
-use crate::io::hook_handler::{OutEvent, OutEventRes};
+use crate::general::mode::{Media, ResMsg, TIME_OUT};
+use crate::io::hook_handler::{Download, MediaAction, OutEvent, OutEventRes, Play};
 use crate::state::cache;
 use crate::trans::flv_muxer;
 
-#[allow(dead_code)]
-fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
+pub fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
     let ssrc = param_map.get("ssrc")
         .map(|s| s.parse::<u32>().hand_log(|msg| error!("{msg}")))
-        .ok_or_else(|| GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))??;
+        .ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc 不存在", |msg| error!("{msg}")))??;
     Ok(ssrc)
 }
 
@@ -42,6 +43,13 @@ pub fn res_401() -> GlobalResult<Response<Body>> {
 
 pub fn res_404() -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg("404".to_string()).to_json()?;
+    let res = Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
+    return Ok(res);
+}
+pub fn res_400() -> GlobalResult<Response<Body>> {
+    let json_data = ResMsg::<bool>::build_failed_by_msg("400".to_string()).to_json()?;
     let res = Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
         .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
@@ -97,14 +105,6 @@ pub fn listen_ssrc(ssrc_lis: SsrcLisDto) -> GlobalResult<Response<Body>> {
     Ok(res)
 }
 
-#[derive(Deserialize, Serialize, Debug, Default)]
-#[serde(crate = "common::serde")]
-pub struct HlsPiece {
-    //片时间长度 S
-    pub duration: u8,
-    pub live: bool,
-}
-
 #[derive(Deserialize, Debug)]
 #[serde(crate = "common::serde")]
 pub struct SsrcLisDto {
@@ -112,8 +112,9 @@ pub struct SsrcLisDto {
     pub stream_id: String,
     //当为None时，默认配置,负数-立即关闭
     pub expires: Option<i32>,
-    pub flv: Option<bool>,
-    pub hls: Option<HlsPiece>,
+    pub media_action: MediaAction,
+    // pub flv: Option<bool>,
+    // pub hls: Option<HlsPiece>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -153,16 +154,39 @@ impl RtpMap {
     }
 }
 
+//媒体流录制过程回调
+pub async fn on_record(ssrc: &u32) -> GlobalResult<Response<Body>> {
+    match cache::get_down_rx(ssrc) {
+        None => {
+            res_404()
+        }
+        Some(mut rx) => {
+            match timeout(Duration::from_millis(TIME_OUT), rx.recv()).await {
+                Ok(res) => {
+                    match res {
+                        Ok(info) => {
+                            let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
+                            let json_data = ResMsg::<StreamRecordInfo>::build_success_data(info).to_json()?;
+                            let res = response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
+                            Ok(res)
+                        }
+                        Err(_) => {
+                            res_404_stream_timeout()
+                        }
+                    }
+                }
+                Err(_) => {
+                    res_404_stream_timeout()
+                }
+            }
+        }
+    }
+}
+
 //删除ssrc，返回正在使用的stream_id/token
 // pub async fn drop_ssrc(ssrc: u32) -> GlobalResult<()> {
 //     unimplemented!()
 // }
-
-//开启录像
-pub async fn start_record(stream_id: String, file_name: String) {}
-
-//停止录像，是否清理录像文件
-// pub async fn stop_record(ssrc: u32, clean: bool) {}
 
 //查询流媒体数据状态,hls/flv/record:ResMsg<Vec<StreamState>>
 pub fn get_stream_count(opt_stream_id: Option<&String>) -> GlobalResult<Response<Body>> {

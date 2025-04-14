@@ -1,6 +1,8 @@
+use common::serde::{Deserialize, Serialize};
 use common::tokio::sync::mpsc::Receiver;
 use common::tokio::sync::oneshot::Sender;
 use crate::biz::call::{BaseStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use crate::container::hls::HlsPiece;
 
 //对外发送事件
 pub enum OutEvent {
@@ -53,17 +55,61 @@ impl OutEvent {
                 OutEvent::OffPlay(spi) => {
                     let _ = spi.off_play().await;
                 }
-                OutEvent::EndRecord(_) => {}
+                OutEvent::EndRecord(info) => {
+                    let _ = info.end_record().await;
+                }
             }
         }
     }
 }
 
 //接收外部事件
-#[derive(Copy, Clone)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(crate = "common::serde")]
 pub enum InEvent {
-    //信令回到流媒体事件
-    MediaInit(),
+    SessionEvent(SessionEvent),
+    RtpStreamEvent(RtpStreamEvent),
+}
+
+//RTP 实时流事件
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(crate = "common::serde")]
+pub enum RtpStreamEvent {
     //流注册
-    StreamIn(),
+    StreamIn,
+}
+
+//SESSION 信令事件
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(crate = "common::serde")]
+pub enum SessionEvent {
+    //媒体信息初始化
+    MediaInit,
+    MediaAction(MediaAction),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
+pub enum MediaAction {
+    //点播
+    Play(Play),
+    //下载
+    Download(Download),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
+pub enum Download {
+    //录像 filename
+    Mp4(String),
+    //截图 filename
+    Picture(String),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
+pub enum Play {
+    Flv,
+    Hls(HlsPiece),
+    FlvHls(HlsPiece),
 }

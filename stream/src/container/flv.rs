@@ -39,6 +39,8 @@ pub mod flv_h264 {
                     }
                 });
         }
+
+        fn packet_end(&mut self) {}
     }
 
     impl MediaFlvContext {
