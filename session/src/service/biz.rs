@@ -6,14 +6,14 @@
 */
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use poem::Body;
 use poem_openapi::payload::Binary;
 use common::chrono::Local;
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::log::error;
 use common::tokio::io::AsyncReadExt;
-use crate::storage::entity::GmvFileInfo;
+use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::storage::pics::{Pics};
 use crate::utils::se_token;
 
@@ -61,5 +61,21 @@ pub async fn upload(data: Binary<Body>, session_id: String, file_id: Option<Stri
     let size = fs::metadata(save_path).hand_log(|msg| error!("{msg}"))?.len();
     info.file_size = Some(size);
     GmvFileInfo::insert_gmv_file_info(vec![info]).await?;
+    Ok(())
+}
+
+pub async fn rm_file(file_id: String) -> GlobalResult<()> {
+    if let Ok(file_info) = GmvFileInfo::query_gmv_file_info_by_id(&file_id).await {
+        let mut file = file_info.file_name.clone();
+        if let Some(ext) = &file_info.file_format {
+            file = format!("{}.{}", file, ext);
+        }
+        let path_buf = PathBuf::from(&file_info.dir_path).join(file);
+        if path_buf.exists() {
+            fs::remove_file(path_buf).hand_log(|msg| error!("{msg}"))?;
+            GmvFileInfo::rm_gmv_file_info_by_id(&file_id).await?;
+            GmvRecord::rm_gmv_record_by_biz_id(&file_info.biz_id).await?;
+        }
+    }
     Ok(())
 }

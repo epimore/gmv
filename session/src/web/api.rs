@@ -6,7 +6,7 @@ use poem_openapi::payload::{Json};
 use common::exception::{GlobalError};
 
 use crate::general::model::*;
-use crate::service::{handler, StreamRecordInfo};
+use crate::service::{biz, handler, StreamRecordInfo};
 
 pub struct RestApi;
 
@@ -185,6 +185,26 @@ impl RestApi {
                 Json(ResultMessageData::build_failure())
             }
             Ok(info) => { Json(ResultMessageData::build_success(info)) }
+        }
+    }
+
+    #[allow(non_snake_case)]
+    #[oai(path = "/rm/file", method = "post")]
+    /// 物理删除文件
+    async fn rm_file(&self,
+                     file_id: Json<String>,
+                     #[oai(
+                         name = "gmv-token"
+                     )] token: Header<String>) -> Json<ResultMessageData<bool>> {
+        let header = token.0;
+        let file_id = file_id.0;
+        info!("rm_file:header = {:?},body = {:?}", &header,&file_id);
+        match biz::rm_file(file_id).await {
+            Err(err) => {
+                error!("删除失败；{}",err);
+                Json(ResultMessageData::build_failure())
+            }
+            Ok(_) => { Json(ResultMessageData::build_success(true)) }
         }
     }
 }

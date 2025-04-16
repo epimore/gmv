@@ -41,6 +41,15 @@ pub struct GmvRecord {
 }
 
 impl GmvRecord {
+    pub async fn rm_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<()> {
+        let pool = get_conn_by_pool()?;
+        sqlx::query("delete from GMV_RECORD where BIZ_ID=?")
+            .bind(biz_id)
+            .execute(pool)
+            .await.hand_log(|msg| error!("{msg}"))?;
+        Ok(())
+    }
+
     pub async fn insert_single_gmv_record(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
         sqlx::query("insert into GMV_RECORD (BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,STREAM_APP_NAME) values (?,?,?,?,?,?,?,?,?,?)")
@@ -388,6 +397,24 @@ pub struct GmvFileInfo {
 }
 
 impl GmvFileInfo {
+    pub async fn query_gmv_file_info_by_id(id: &str) -> GlobalResult<GmvFileInfo> {
+        let pool = get_conn_by_pool()?;
+        let res = sqlx::query_as::<_, GmvFileInfo>("select * from GMV_FILE_INFO where ID=?")
+            .bind(id)
+            .fetch_one(pool)
+            .await.hand_log(|msg| error!("{msg}"))?;
+        Ok(res)
+    }
+
+    pub async fn rm_gmv_file_info_by_id(biz_id: &str) -> GlobalResult<()> {
+        let pool = get_conn_by_pool()?;
+        sqlx::query("delete from GMV_FILE_INFO where BIZ_ID=?")
+            .bind(biz_id)
+            .execute(pool)
+            .await.hand_log(|msg| error!("{msg}"))?;
+        Ok(())
+    }
+
     pub async fn insert_gmv_file_info(arr: Vec<Self>) -> GlobalResult<()> {
         if arr.is_empty() {
             return Ok(());
@@ -603,7 +630,7 @@ mod tests {
 
 
     #[test]
-    fn test_datetime(){
+    fn test_datetime() {
         let now = Local::now();
         let ts = now.timestamp();
         println!("ts:{}", ts);
