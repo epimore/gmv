@@ -1,4 +1,4 @@
-#![allow(warnings)]
+// #![allow(warnings)]
 use common::{daemon};
 
 pub mod io;

@@ -1,4 +1,5 @@
 use std::collections::{HashMap};
+use std::fs;
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
 use common::{serde_default};
@@ -58,21 +59,21 @@ impl CheckFromConf for AlarmConf {
 #[serde(crate = "common::serde")]
 #[conf(prefix = "server.stream")]
 pub struct StreamConf {
-    proxy_enable: bool,
-    proxy_addr: Option<String>,
+    pub proxy_enable: bool,
+    pub proxy_addr: Option<String>,
     #[serde(default = "default_node_map")]
-    node_map: HashMap<String, StreamNode>,
-    nodes: Vec<StreamNode>,
+    pub node_map: HashMap<String, StreamNode>,
+    pub nodes: Vec<StreamNode>,
 }
 serde_default!(default_node_map, HashMap<String, StreamNode>, HashMap::new());
 #[derive(Debug, Get, Deserialize, Clone)]
 #[serde(crate = "common::serde")]
 pub struct StreamNode {
-    name: String,
-    local_ip: Ipv4Addr,
-    local_port: u16,
-    pub_ip: Ipv4Addr,
-    pub_port: u16,
+    pub name: String,
+    pub local_ip: Ipv4Addr,
+    pub local_port: u16,
+    pub pub_ip: Ipv4Addr,
+    pub pub_port: u16,
 }
 
 static CELL: OnceCell<StreamConf> = OnceCell::new();
@@ -94,6 +95,25 @@ impl StreamConf {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(crate = "common::serde")]
+#[conf(prefix = "server.download", check)]
+pub struct DownloadConf {
+    pub storage_path: String,
+}
+impl CheckFromConf for DownloadConf {
+    fn _field_check(&self) -> Result<(), FieldCheckError> {
+        let dc = DownloadConf::conf();
+        fs::create_dir_all(&dc.storage_path).map_err(|e| FieldCheckError::BizError(format!("create download dir failed: {}", e.to_string())))?;
+        Ok(())
+    }
+}
+
+impl DownloadConf {
+    pub fn get_download_conf() -> Self {
+        DownloadConf::conf()
+    }
+}
 
 #[cfg(test)]
 mod tests {

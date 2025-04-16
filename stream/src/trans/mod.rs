@@ -1,6 +1,7 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, TransError};
 use common::log::error;
 use common::tokio;
 use common::tokio::sync::mpsc::Receiver;
@@ -51,7 +52,7 @@ async fn spilt_out_container(mut rx: Receiver<u32>) {
                 Ok(res) => {
                     match res {
                         Ok(()) => {
-                            if let Some((media, half_channel, media_type)) = cache::get_rx_media_type(&ssrc) {
+                            if let Some((media, half_channel, stream_id, media_type)) = cache::get_rx_media_type(&ssrc) {
                                 let _ = tokio::task::spawn_blocking(move || {
                                     let demux_context = DemuxContext::init(ssrc, half_channel.rtp_rx);
                                     let codec_payload = CodecPayload::default();
@@ -62,12 +63,15 @@ async fn spilt_out_container(mut rx: Receiver<u32>) {
                                         }
                                         MediaAction::Play(Play::Hls(_)) => { unimplemented!() }
                                         MediaAction::Play(Play::FlvHls(_)) => { unimplemented!() }
-                                        MediaAction::Download(Download::Mp4(fileName)) => {
-                                            if let Ok(writer) = mp4_h264::MediaMp4Context::register(half_channel.down_tx, fileName) {
-                                                do_remuxer(demux_context, codec_payload, media, writer);
+                                        MediaAction::Download(Download::Mp4(storage_path)) => {
+                                            if let Ok(file_name) = Path::new(&storage_path).join(format!("{}.mp4", stream_id)).to_str()
+                                                .ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}"))) {
+                                                if let Ok(writer) = mp4_h264::MediaMp4Context::register(half_channel.down_tx, file_name.to_string()) {
+                                                    do_remuxer(demux_context, codec_payload, media, writer);
+                                                }
                                             }
                                         }
-                                        MediaAction::Download(Download::Picture(_fileName)) => { unimplemented!() }
+                                        MediaAction::Download(Download::Picture(_file_name)) => { unimplemented!() }
                                     }
                                 }).await.hand_log(|msg| error!("{msg}"));
                             }

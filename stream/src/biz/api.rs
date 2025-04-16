@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use hyper::{Body, header, Response, StatusCode};
-use common::serde::{Deserialize, Serialize};
+use common::serde::{Deserialize};
 use tokio_util::sync::CancellationToken;
 
 use common::exception::{BizError, GlobalError, GlobalResult, TransError};
@@ -16,10 +16,11 @@ use common::tokio::time::timeout;
 use crate::biz::call::{StreamPlayInfo, StreamRecordInfo};
 use crate::container::PlayType;
 use crate::general::mode::{Media, ResMsg, TIME_OUT};
-use crate::io::hook_handler::{Download, MediaAction, OutEvent, OutEventRes, Play};
+use crate::io::hook_handler::{MediaAction, OutEvent, OutEventRes};
 use crate::state::cache;
 use crate::trans::flv_muxer;
 
+#[allow(dead_code)]
 pub fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
     let ssrc = param_map.get("ssrc")
         .map(|s| s.parse::<u32>().hand_log(|msg| error!("{msg}")))
@@ -27,8 +28,8 @@ pub fn get_ssrc(param_map: &HashMap<String, String>) -> GlobalResult<u32> {
     Ok(ssrc)
 }
 
-#[allow(dead_code)]
-fn get_stream_id(param_map: &HashMap<String, String>) -> GlobalResult<String> {
+
+pub fn get_stream_id(param_map: &HashMap<String, String>) -> GlobalResult<String> {
     let stream_id = param_map.get("stream_id").ok_or_else(|| GlobalError::new_biz_error(1100, "stream_id 不存在", |msg| error!("{msg}")))?;
     Ok(stream_id.to_string())
 }
@@ -48,11 +49,12 @@ pub fn res_404() -> GlobalResult<Response<Body>> {
         .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     return Ok(res);
 }
+
 pub fn res_400() -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg("400".to_string()).to_json()?;
     let res = Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
-        .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
+        .status(StatusCode::BAD_REQUEST).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     return Ok(res);
 }
 
@@ -69,7 +71,7 @@ pub fn res_500(msg: &str) -> GlobalResult<Response<Body>> {
     let json_data = ResMsg::<bool>::build_failed_by_msg(msg.to_string()).to_json()?;
     let res = Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
-        .status(StatusCode::NOT_FOUND).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
+        .status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?;
     return Ok(res);
 }
 
@@ -155,8 +157,8 @@ impl RtpMap {
 }
 
 //媒体流录制过程回调
-pub async fn on_record(ssrc: &u32) -> GlobalResult<Response<Body>> {
-    match cache::get_down_rx(ssrc) {
+pub async fn on_record(stream_id: &String) -> GlobalResult<Response<Body>> {
+    match cache::get_down_rx_by_stream_id(stream_id) {
         None => {
             res_404()
         }

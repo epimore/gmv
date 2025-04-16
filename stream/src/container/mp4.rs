@@ -2,6 +2,7 @@ pub mod mp4_h264 {
     use std::fs;
     use std::fs::File;
     use std::io::{Seek, Write};
+    use std::time::{Instant};
     use common::bytes::Bytes;
     use common::exception::{GlobalResult, TransError};
     use common::log::error;
@@ -23,7 +24,8 @@ pub mod mp4_h264 {
         pub track_init: bool,
         pub seq_param_set: Option<Vec<u8>>,
         pub pic_param_set: Option<Vec<u8>>,
-        pub last_ts: u32,
+        pub timestamp: u32,
+        pub last_ts: Instant,
         pub file_name: String,
         pub writer: Mp4Writer<W>,
         pub down_tx: broadcast::Sender<StreamRecordInfo>,
@@ -44,7 +46,7 @@ pub mod mp4_h264 {
                 timescale: 1000,
             };
             let writer = Mp4Writer::write_start(file, &config).hand_log(|msg| error!("{msg}"))?;
-            Ok(Self { track_init: false, seq_param_set: None, pic_param_set: None, last_ts: 0, file_name, writer, down_tx })
+            Ok(Self { track_init: false, seq_param_set: None, pic_param_set: None, timestamp: 0, last_ts: Instant::now(), file_name, writer, down_tx })
         }
     }
 
@@ -74,7 +76,6 @@ pub mod mp4_h264 {
                                 };
                                 if let Ok(_) = self.writer.add_track(&track_config).hand_log(|msg| error!("{msg}")) {
                                     self.track_init = true;
-                                    self.last_ts = timestamp;
                                 };
                             }
                         }
@@ -98,7 +99,6 @@ pub mod mp4_h264 {
                                 };
                                 if let Ok(_) = self.writer.add_track(&track_config).hand_log(|msg| error!("{msg}")) {
                                     self.track_init = true;
-                                    self.last_ts = timestamp;
                                 };
                             }
                         }
@@ -122,19 +122,21 @@ pub mod mp4_h264 {
                     };
                 }
             }
-            let unit_sec = (timestamp - self.last_ts) as usize;
+            let now = Instant::now();
+            let unit_sec = now.duration_since(self.last_ts).as_millis() as usize;
             if self.track_init && unit_sec >= 1000 {
                 let bytes_sec = bytes_len * 1000 / unit_sec;
-                let info = StreamRecordInfo { file_name: self.file_name.clone(), file_size: None, timestamp, bytes_sec };
+                let info = StreamRecordInfo { file_name: None, file_size: None, timestamp, bytes_sec };
                 //不监听是否发送成功，接收端是http随机访问
                 let _ = self.down_tx.send(info);
-                self.last_ts = timestamp;
+                self.timestamp = timestamp;
+                self.last_ts = now;
             }
         }
         fn packet_end(&mut self) {
             if let Ok(_) = self.writer.write_end().hand_log(|msg| error!("{msg}")) {
                 if let Ok(m) = fs::metadata(&self.file_name) {
-                    let info = StreamRecordInfo { file_name: self.file_name.clone(), file_size: Some(m.len() as u32), timestamp: 0, bytes_sec: 0 };
+                    let info = StreamRecordInfo { file_name: Some(self.file_name.clone()), file_size: Some(m.len()), timestamp: self.timestamp, bytes_sec: 0 };
                     let sender = cache::get_event_tx();
                     let _ = sender.try_send((OutEvent::EndRecord(info), None)).hand_log(|msg| error!("{}; MP4录制完成事件推送失败：{}",self.file_name,msg));
                 }

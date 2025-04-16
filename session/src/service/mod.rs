@@ -72,12 +72,14 @@ pub struct StreamPlayInfo {
     user_count: u32,
 }
 
-#[derive(New, Object, Serialize, Deserialize, Get, Debug)]
+#[derive(Object, Serialize, Deserialize, Debug)]
 #[serde(crate = "common::serde")]
 pub struct StreamRecordInfo {
-    base_stream_info: BaseStreamInfo,
-    file_path: String,
-    file_name: String,
-    //单位kb
-    file_size: u32,
+    pub file_name: Option<String>,
+    //单位kb,录制完成时统计文件大小
+    pub file_size: Option<u64>,
+    //媒体流原始时间,方便计算进度
+    pub timestamp: u32,
+    //每秒录制字节数
+    pub bytes_sec: usize,
 }

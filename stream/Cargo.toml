@@ -6,7 +6,7 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-common = { git = "https://github.com/epimore/pigs.git",rev = "1d9f477e", features = ["net"] }
+common = { git = "https://github.com/epimore/pigs.git",rev = "8b9fb07c", features = ["net"] }
 #common = { path = "../../pigs/common", features = ["net"] }
 parking_lot = "0.12"
 tokio-util = "0.7"

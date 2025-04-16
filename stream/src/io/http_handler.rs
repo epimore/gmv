@@ -84,9 +84,9 @@ async fn biz(node_name: String, remote_addr: SocketAddr, ssrc_tx: Sender<u32>, t
                         None => { api::res_400() }
                         Some(param) => {
                             let map = form_urlencoded::parse(param.as_bytes()).into_owned().collect::<HashMap<String, String>>();
-                            match api::get_ssrc(&map) {
-                                Ok(ssrc) => {
-                                    api::on_record(&ssrc).await
+                            match api::get_stream_id(&map) {
+                                Ok(stream_id) => {
+                                    api::on_record(&stream_id).await
                                 }
                                 Err(_) => {api::res_400()}
                             }

@@ -476,7 +476,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=1d9f477e#1d9f477e2505ec4d2c5029f6b84e94f2d2b3b393"
+source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
 dependencies = [
  "cfg_macro",
  "clap",
@@ -486,7 +486,7 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=1d9f477e#1d9f477e2505ec4d2c5029f6b84e94f2d2b3b393"
+source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -579,7 +579,7 @@ checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 [[package]]
 name = "common"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=1d9f477e#1d9f477e2505ec4d2c5029f6b84e94f2d2b3b393"
+source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
 dependencies = [
  "aes",
  "base64 0.13.1",
@@ -611,7 +611,7 @@ dependencies = [
 [[package]]
 name = "common_db"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=1d9f477e#1d9f477e2505ec4d2c5029f6b84e94f2d2b3b393"
+source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
 dependencies = [
  "common",
  "sqlx",
@@ -635,7 +635,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "constructor"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=1d9f477e#1d9f477e2505ec4d2c5029f6b84e94f2d2b3b393"
+source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -988,7 +988,7 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=1d9f477e#1d9f477e2505ec4d2c5029f6b84e94f2d2b3b393"
+source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
 dependencies = [
  "anyhow",
  "thiserror 2.0.12",
@@ -1274,6 +1274,7 @@ dependencies = [
  "http-body-util",
  "hyper 0.14.32",
  "memchr",
+ "mp4",
  "parking_lot",
  "reqwest",
  "rtp",
@@ -1941,7 +1942,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -2080,6 +2081,20 @@ dependencies = [
  "libc",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "mp4"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9ef834d5ed55e494a2ae350220314dc4aacd1c43a9498b00e320e0ea352a5c3"
+dependencies = [
+ "byteorder 1.5.0",
+ "bytes",
+ "num-rational",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2229,6 +2244,7 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]

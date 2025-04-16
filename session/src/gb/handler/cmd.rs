@@ -83,6 +83,13 @@ pub struct CmdNotify;
 pub struct CmdStream;
 
 impl CmdStream {
+    pub async fn download_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32, speed: u8)
+                                 -> GlobalResult<(Response, HashMap<u8, String>, String, String)> {
+        let (ident, msg) = RequestBuilder::download(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)
+            .await.hand_log(|msg| warn!("{msg}"))?;
+        Self::invite_stream(ident, msg).await
+    }
+
     pub async fn play_back_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32)
                                   -> GlobalResult<(Response, HashMap<u8, String>, String, String)> {
         let (ident, msg) = RequestBuilder::playback(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)

@@ -2,7 +2,7 @@ use common::log::info;
 use poem_openapi::OpenApi;
 use poem_openapi::payload::{Json};
 use crate::general::model::{ResultMessageData};
-use crate::service::{BaseStreamInfo, handler, StreamPlayInfo, StreamState};
+use crate::service::{BaseStreamInfo, handler, StreamPlayInfo, StreamState, StreamRecordInfo};
 
 
 ////callback uri start
@@ -59,5 +59,13 @@ impl HookApi {
         let info = stream_play_info.0;
         info!("stream_idle = {:?}", &info);
         Json(ResultMessageData::build_success(handler::stream_idle(info).await))
+    }
+
+    ///完成录像
+    #[oai(path = "/end/record", method = "post")]
+    async fn end_record(&self, stream_record_info: Json<StreamRecordInfo>) -> Json<ResultMessageData<bool>> {
+        let info = stream_record_info.0;
+        info!("end_record = {:?}", &info);
+        Json(ResultMessageData::build_success(handler::end_record(info).await))
     }
 }

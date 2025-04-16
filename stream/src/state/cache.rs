@@ -60,7 +60,7 @@ pub fn get_in_event_sub_rx(ssrc: &u32) -> Option<broadcast::Receiver<InEvent>> {
     })
 }
 
-pub fn get_rx_media_type(ssrc: &u32) -> Option<(Media, HalfChannel, MediaAction)> {
+pub fn get_rx_media_type(ssrc: &u32) -> Option<(Media, HalfChannel, String, MediaAction)> {
     let state = SESSION.shared.state.read();
     if let Some(mt) = state.sessions.get(ssrc) {
         if let Some(media) = mt.media_map.get(&mt.rtp_payload_type) {
@@ -70,7 +70,7 @@ pub fn get_rx_media_type(ssrc: &u32) -> Option<(Media, HalfChannel, MediaAction)
                 hls_tx: mt.stream_ch.get_hls_tx(),
                 down_tx: mt.stream_ch.get_down_tx(),
             };
-            return Some((*media, half_channel, mt.media_action.clone()));
+            return Some((*media, half_channel, mt.stream_id.clone(), mt.media_action.clone()));
         }
         error!("ssrc: {}, Media payload type: {} is invalid or unsupported",ssrc,&mt.rtp_payload_type);
     }
@@ -214,6 +214,21 @@ pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
         None => { None }
         Some(stream_trace) => {
             Some(stream_trace.stream_ch.get_flv_rx())
+        }
+    }
+}
+
+pub fn get_down_rx_by_stream_id(stream_id: &String) -> Option<broadcast::Receiver<StreamRecordInfo>> {
+    let guard = SESSION.shared.state.read();
+    match guard.inner.get(stream_id) {
+        None => { None }
+        Some(inner) => {
+            match guard.sessions.get(&inner.ssrc) {
+                None => { None }
+                Some(stream_trace) => {
+                    Some(stream_trace.stream_ch.get_down_rx())
+                }
+            }
         }
     }
 }
@@ -423,7 +438,10 @@ impl Shared {
                     }
                 }
                 StreamDirection::StreamOut => {
-                    if let Some(StreamTrace { stream_id, .. }) = state.sessions.get(&ssrc) {
+                    if let Some(StreamTrace { stream_id, media_action, .. }) = state.sessions.get(&ssrc) {
+                        if let MediaAction::Download(_) = media_action {
+                            continue;
+                        }
                         if let Some(InnerTrace { user_map, .. }) = state.inner.get(stream_id) {
                             if user_map.len() == 0 {
                                 state.inner.remove(stream_id);

@@ -56,6 +56,13 @@ impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
 }
 
 
+#[derive(Object, Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
+pub struct StreamNode {
+    pub stream_id: String,
+    pub stream_server: String,
+}
+
 #[derive(Debug, Deserialize, Object, Serialize, Get)]
 #[serde(crate = "common::serde")]
 pub struct PlayLiveModel {

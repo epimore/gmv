@@ -4,10 +4,6 @@ use common::constructor::{Get, New};
 use common::exception::TransError;
 use common::log::error;
 use common::serde::{Deserialize, Serialize};
-use common::tokio::sync::broadcast::error::RecvError;
-use common::tokio::sync::broadcast::Receiver;
-use common::tokio::time::error::Elapsed;
-use common::tokio::time::timeout;
 
 use crate::container::PlayType;
 use crate::general::mode;
@@ -142,9 +138,9 @@ impl StreamPlayInfo {
 #[derive(New, Serialize, Clone)]
 #[serde(crate = "common::serde")]
 pub struct StreamRecordInfo {
-    pub file_name: String,
+    pub file_name: Option<String>,
     //单位kb,录制完成时统计文件大小
-    pub file_size: Option<u32>,
+    pub file_size: Option<u64>,
     //媒体流原始时间,方便计算进度
     pub timestamp: u32,
     //每秒录制字节数

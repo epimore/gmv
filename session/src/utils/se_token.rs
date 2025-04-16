@@ -46,7 +46,7 @@ mod test {
     #[test]
     fn t1() {
         let device_id = "34020000001110000009";
-        let channel_id = "34020000001320000103";
+        let channel_id = "34020000001320000101";
         let (token, session_id) = super::build_token_session_id(device_id, channel_id).unwrap();
         println!("token: {}", token);
         println!("session_id: {}", session_id);

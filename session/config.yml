@@ -31,7 +31,7 @@ http:
 db:
   mysql:
     host_or_ip: 175.178.243.153
-#    host_or_ip: 101.33.200.169
+    #    host_or_ip: 101.33.200.169
     port: 33061
     db_name: gmv
     user: epimore
@@ -62,6 +62,8 @@ server:
     enable: true #是否开启告警推送,默认true
     push_url: http://127.0.0.1:38888/event/alarm #推送地址
     priority: 4 #告警等级推送 1-4,默认最低4
+  download: #云端录像存储地址
+    storage_path: /mnt/download/video
   pics:
     enable: true #是否开启采集拍照,默认false
     push_url: https://epimore.cn/session/api/es/pic/upload

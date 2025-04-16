@@ -10,6 +10,80 @@ use common::serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use common::sqlx;
 
+//CREATE TABLE `GMV_RECORD` (
+//   `BIZ_ID` varchar(128) NOT NULL COMMENT '业务ID',
+//   `DEVICE_ID` varchar(20) NOT NULL COMMENT '设备编号',
+//   `CHANNEL_ID` varchar(20) NOT NULL COMMENT '通道编号',
+//   `USER_ID` varchar(32) DEFAULT NULL COMMENT '用户ID',
+//   `ST` datetime DEFAULT NULL COMMENT '录像开始时间',
+//   `ET` datetime DEFAULT NULL COMMENT '录像结束时间',
+//   `SPEED` int DEFAULT NULL COMMENT '倍速',
+//   `CT` datetime DEFAULT NULL COMMENT '创建时间',
+//   `STATE` int DEFAULT NULL COMMENT '录制状态：0=进行，1=完成，2=录制部分，3=失败',
+//   `LT` datetime DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+//   `STREAM_APP_NAME` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '流媒体名称',
+//   PRIMARY KEY (`BIZ_ID`)
+// ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='云端录像';
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
+#[serde(crate = "common::serde")]
+pub struct GmvRecord {
+    pub biz_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub user_id: Option<String>,
+    pub st: NaiveDateTime,
+    pub et: NaiveDateTime,
+    pub speed: u8,
+    pub ct: NaiveDateTime,
+    pub state: u8,
+    pub lt: NaiveDateTime,
+    pub stream_app_name: String,
+}
+
+impl GmvRecord {
+    pub async fn insert_single_gmv_record(&self) -> GlobalResult<()> {
+        let pool = get_conn_by_pool()?;
+        sqlx::query("insert into GMV_RECORD (BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,STREAM_APP_NAME) values (?,?,?,?,?,?,?,?,?,?)")
+            .bind(&self.biz_id)
+            .bind(&self.device_id)
+            .bind(&self.channel_id)
+            .bind(&self.user_id)
+            .bind(&self.st)
+            .bind(&self.et)
+            .bind(&self.speed)
+            .bind(&self.ct)
+            .bind(&self.state)
+            .bind(&self.stream_app_name)
+            .execute(pool)
+            .await.hand_log(|msg| error!("{msg}"))?;
+        Ok(())
+    }
+
+    pub async fn query_gmv_record_run_by_device_id_channel_id(device_id: &String, channel_id: &String) -> GlobalResult<Option<GmvRecord>> {
+        let pool = get_conn_by_pool()?;
+        let res = sqlx::query_as::<_, GmvRecord>("select BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,STREAM_APP_NAME from GMV_RECORD where STATE=0 and DEVICE_ID=? and CHANNEL_ID=?")
+            .bind(device_id).bind(channel_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
+        Ok(res)
+    }
+
+    pub async fn query_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<Option<GmvRecord>> {
+        let pool = get_conn_by_pool()?;
+        let res = sqlx::query_as::<_, GmvRecord>("select BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,STREAM_APP_NAME from GMV_RECORD where BIZ_ID=?")
+            .bind(biz_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
+        Ok(res)
+    }
+
+    pub async fn update_gmv_record_by_biz_id(&self) -> GlobalResult<()> {
+        let pool = get_conn_by_pool()?;
+        sqlx::query("update GMV_RECORD set STATE=? where BIZ_ID=?")
+            .bind(&self.state)
+            .bind(&self.biz_id)
+            .execute(pool)
+            .await.hand_log(|msg| error!("{msg}"))?;
+        Ok(())
+    }
+}
+
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
 #[serde(crate = "common::serde")]
 pub struct GmvOauth {
@@ -346,6 +420,7 @@ impl GmvFileInfo {
 #[allow(dead_code, unused_imports)]
 mod tests {
     use common::cfg_lib::conf::init_cfg;
+    use common::chrono::{DateTime, TimeZone};
     use common::dbx::mysqlx;
     use common::tokio;
     use super::*;
@@ -439,7 +514,7 @@ mod tests {
         init();
         let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000004".to_string()).await;
         if let Ok(Some(gd)) = res {
-            let a = GmvDevice { device_id: "34020000001320000004".to_string(),register_time: Local::now().naive_local(), ..gd };
+            let a = GmvDevice { device_id: "34020000001320000004".to_string(), register_time: Local::now().naive_local(), ..gd };
             println!("{a:?}");
             let result = a.insert_single_gmv_device_by_register().await;
             println!("{:?}", result)
@@ -524,5 +599,18 @@ mod tests {
     fn init() {
         init_cfg("/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/config.yml".to_string());
         let _ = mysqlx::init_conn_pool();
+    }
+
+
+    #[test]
+    fn test_datetime(){
+        let now = Local::now();
+        let ts = now.timestamp();
+        println!("ts:{}", ts);
+        let time = Local.timestamp_opt(ts, 0).unwrap().naive_local();
+        let time_str1 = time.format("%Y-%m-%d %H:%M:%S").to_string();
+        println!("{}", time_str1);
+        let time_str2 = now.naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
+        println!("{}", time_str2);
     }
 }
