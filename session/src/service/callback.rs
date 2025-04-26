@@ -81,10 +81,10 @@ pub struct HlsPiece {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(crate = "common::serde")]
 pub enum Download {
-    //录像 filename
-    Mp4(String),
+    //录像 filename,type
+    Mp4(String, Option<String>),
     //截图 filename
-    Picture(String),
+    Picture(String, Option<String>),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

@@ -1,8 +1,8 @@
-use std::collections::{BTreeSet, HashMap};
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,19 +12,19 @@ use common::log::{error, info};
 use common::net::state::Association;
 use common::once_cell::sync::Lazy;
 use common::tokio;
-use common::tokio::sync::{broadcast, mpsc, Mutex, Notify};
 use common::tokio::sync::oneshot::Sender;
+use common::tokio::sync::{broadcast, mpsc, Mutex, Notify};
 use common::tokio::time;
 use common::tokio::time::Instant;
 use parking_lot::RwLock;
 use rtp::packet::Packet;
 
-use crate::biz::api::{SsrcLisDto};
+use crate::biz::api::SsrcLisDto;
 use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamRecordInfo, StreamState};
 use crate::coder::FrameData;
 use crate::container::PlayType;
 use crate::general::cfg;
-use crate::general::mode::{BUFFER_SIZE, HALF_TIME_OUT, Media, ServerConf};
+use crate::general::mode::{Media, ServerConf, BUFFER_SIZE, HALF_TIME_OUT};
 use crate::io::hook_handler::{InEvent, MediaAction, OutEvent, OutEventRes, RtpStreamEvent, SessionEvent};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
@@ -127,6 +127,7 @@ pub fn insert(ssrc_lis: SsrcLisDto) -> GlobalResult<()> {
             media_action: ssrc_lis.media_action,
             // flv: false,
             // hls: None,
+            down_action: AtomicBool::new(false),
         };
         state.sessions.insert(ssrc, stream_trace);
         let inner = InnerTrace { ssrc, user_map: Default::default() };
@@ -323,6 +324,13 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
     None
 }
 
+pub fn update_down_action_run_by_ssrc(ssrc: u32,action: bool) {
+    let guard = SESSION.shared.state.read();
+    if let Some(stream_trace) = guard.sessions.get(&ssrc) {
+        stream_trace.down_action.store(action, Ordering::SeqCst);
+    }
+}
+
 pub fn get_stream_count(opt_stream_id: Option<&String>) -> u32 {
     let guard = SESSION.shared.state.read();
     match opt_stream_id {
@@ -438,8 +446,8 @@ impl Shared {
                     }
                 }
                 StreamDirection::StreamOut => {
-                    if let Some(StreamTrace { stream_id, media_action, .. }) = state.sessions.get(&ssrc) {
-                        if let MediaAction::Download(_) = media_action {
+                    if let Some(StreamTrace { stream_id, media_action, down_action, .. }) = state.sessions.get(&ssrc) {
+                        if matches!(media_action,MediaAction::Download(_)) && down_action.load(Ordering::SeqCst) {
                             continue;
                         }
                         if let Some(InnerTrace { user_map, .. }) = state.inner.get(stream_id) {
@@ -482,6 +490,7 @@ struct StreamTrace {
     rtp_payload_type: u8,
     event_channel: (broadcast::Sender<InEvent>, Arc<Mutex<broadcast::Receiver<InEvent>>>),
     media_action: MediaAction,
+    down_action: AtomicBool, //是否下载中
 }
 
 struct InnerTrace {

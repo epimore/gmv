@@ -100,10 +100,10 @@ pub enum MediaAction {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(crate = "common::serde")]
 pub enum Download {
-    //录像 storage_path
-    Mp4(String),
-    //截图 storage_path
-    Picture(String),
+    //录像 filename,type
+    Mp4(String, Option<String>),
+    //截图 filename
+    Picture(String, Option<String>),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

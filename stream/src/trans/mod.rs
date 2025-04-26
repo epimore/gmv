@@ -63,15 +63,18 @@ async fn spilt_out_container(mut rx: Receiver<u32>) {
                                         }
                                         MediaAction::Play(Play::Hls(_)) => { unimplemented!() }
                                         MediaAction::Play(Play::FlvHls(_)) => { unimplemented!() }
-                                        MediaAction::Download(Download::Mp4(storage_path)) => {
-                                            if let Ok(file_name) = Path::new(&storage_path).join(format!("{}.mp4", stream_id)).to_str()
-                                                .ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}"))) {
-                                                if let Ok(writer) = mp4_h264::MediaMp4Context::register(half_channel.down_tx, file_name.to_string()) {
-                                                    do_remuxer(demux_context, codec_payload, media, writer);
+                                        MediaAction::Download(Download::Mp4(storage_path, _format)) => {
+                                            if let Ok(_) = std::fs::create_dir_all(&storage_path).hand_log(|msg| error!("{msg}")) {
+                                                if let Ok(file_name) = Path::new(&storage_path).join(format!("{}.mp4", stream_id)).to_str()
+                                                    .ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}"))) {
+                                                    if let Ok(writer) = mp4_h264::MediaMp4Context::register(half_channel.down_tx, file_name.to_string()) {
+                                                        cache::update_down_action_run_by_ssrc(ssrc, true);
+                                                        do_remuxer(demux_context, codec_payload, media, writer);
+                                                    }
                                                 }
                                             }
                                         }
-                                        MediaAction::Download(Download::Picture(_file_name)) => { unimplemented!() }
+                                        MediaAction::Download(Download::Picture(_file_name, _format)) => { unimplemented!() }
                                     }
                                 }).await.hand_log(|msg| error!("{msg}"));
                             }

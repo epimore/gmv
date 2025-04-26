@@ -141,7 +141,7 @@ pub struct StreamRecordInfo {
     pub file_name: Option<String>,
     //单位kb,录制完成时统计文件大小
     pub file_size: Option<u64>,
-    //媒体流原始时间,方便计算进度
+    //媒体流进度时间,方便计算进度，单位秒
     pub timestamp: u32,
     //每秒录制字节数
     pub bytes_sec: usize,

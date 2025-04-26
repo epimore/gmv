@@ -7,6 +7,7 @@ use common::exception::{GlobalError};
 
 use crate::general::model::*;
 use crate::service::{biz, handler, StreamRecordInfo};
+use crate::web::SingleParam;
 
 pub struct RestApi;
 
@@ -150,14 +151,14 @@ impl RestApi {
     #[oai(path = "/download/stop", method = "post")]
     /// 提前终止云端录像任务
     async fn download_stop(&self,
-                           stream_id: Json<String>,
+                           param_mode: Json<SingleParam<String>>,
                            #[oai(
                                name = "gmv-token"
                            )] token: Header<String>) -> Json<ResultMessageData<bool>> {
         let header = token.0;
-        let stream_id = stream_id.0;
-        info!("teardown:header = {:?},body = {:?}", &header,&stream_id);
-        match handler::download_stop(stream_id, header).await {
+        let param_mode = param_mode.0;
+        info!("teardown:header = {:?},body = {:?}", &header,&param_mode);
+        match handler::download_stop(param_mode.param, header).await {
             Err(err) => {
                 error!("终止失败；{}",err);
                 Json(ResultMessageData::build_failure())
@@ -192,14 +193,14 @@ impl RestApi {
     #[oai(path = "/rm/file", method = "post")]
     /// 物理删除文件
     async fn rm_file(&self,
-                     file_id: Json<String>,
+                     param_mode: Json<SingleParam<i64>>,
                      #[oai(
                          name = "gmv-token"
                      )] token: Header<String>) -> Json<ResultMessageData<bool>> {
         let header = token.0;
-        let file_id = file_id.0;
-        info!("rm_file:header = {:?},body = {:?}", &header,&file_id);
-        match biz::rm_file(file_id).await {
+        let param_mode = param_mode.0;
+        info!("rm_file:header = {:?},body = {:?}", &header,&param_mode);
+        match biz::rm_file(param_mode.param).await {
             Err(err) => {
                 error!("删除失败；{}",err);
                 Json(ResultMessageData::build_failure())

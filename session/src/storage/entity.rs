@@ -7,8 +7,8 @@ use common::dbx::mysqlx::get_conn_by_pool;
 use common::exception::{GlobalResult, TransError};
 use common::log::error;
 use common::serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use common::sqlx;
+use sqlx::FromRow;
 
 //CREATE TABLE `GMV_RECORD` (
 //   `BIZ_ID` varchar(128) NOT NULL COMMENT '业务ID',
@@ -43,7 +43,7 @@ pub struct GmvRecord {
 impl GmvRecord {
     pub async fn rm_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
-        sqlx::query("delete from GMV_RECORD where BIZ_ID=?")
+        sqlx::query("delete from GMV_RECORD where biz_id=?")
             .bind(biz_id)
             .execute(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
@@ -52,7 +52,7 @@ impl GmvRecord {
 
     pub async fn insert_single_gmv_record(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
-        sqlx::query("insert into GMV_RECORD (BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,STREAM_APP_NAME) values (?,?,?,?,?,?,?,?,?,?)")
+        sqlx::query("insert into GMV_RECORD (BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,LT,STREAM_APP_NAME) values (?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&self.biz_id)
             .bind(&self.device_id)
             .bind(&self.channel_id)
@@ -62,30 +62,32 @@ impl GmvRecord {
             .bind(&self.speed)
             .bind(&self.ct)
             .bind(&self.state)
+            .bind(&self.lt)
             .bind(&self.stream_app_name)
             .execute(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 
-    pub async fn query_gmv_record_run_by_device_id_channel_id(device_id: &String, channel_id: &String) -> GlobalResult<Option<GmvRecord>> {
+    pub async fn query_gmv_record_run_by_device_id_channel_id(device_id: &str, channel_id: &str) -> GlobalResult<Option<GmvRecord>> {
         let pool = get_conn_by_pool()?;
-        let res = sqlx::query_as::<_, GmvRecord>("select BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,STREAM_APP_NAME from GMV_RECORD where STATE=0 and DEVICE_ID=? and CHANNEL_ID=?")
+        let res = sqlx::query_as::<_, GmvRecord>("select biz_id,device_id,channel_id,user_id,st,et,speed,ct,state,lt,stream_app_name from GMV_RECORD where state=0 and device_id=? and channel_id=?")
             .bind(device_id).bind(channel_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 
     pub async fn query_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<Option<GmvRecord>> {
         let pool = get_conn_by_pool()?;
-        let res = sqlx::query_as::<_, GmvRecord>("select BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,STREAM_APP_NAME from GMV_RECORD where BIZ_ID=?")
+        let res = sqlx::query_as::<_, GmvRecord>("select biz_id,device_id,channel_id,user_id,st,et,speed,ct,state,lt,stream_app_name from GMV_RECORD where biz_id=?")
             .bind(biz_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 
     pub async fn update_gmv_record_by_biz_id(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
-        sqlx::query("update GMV_RECORD set STATE=? where BIZ_ID=?")
+        sqlx::query("update GMV_RECORD set state=?,lt=? where biz_id=?")
             .bind(&self.state)
+            .bind(&self.lt)
             .bind(&self.biz_id)
             .execute(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
@@ -391,24 +393,25 @@ pub struct GmvFileInfo {
     pub file_name: String,
     pub file_format: Option<String>,
     pub dir_path: String,
+    pub abs_path: String,
     pub note: Option<String>,
     pub is_del: Option<i32>,
     pub create_time: Option<NaiveDateTime>,
 }
 
 impl GmvFileInfo {
-    pub async fn query_gmv_file_info_by_id(id: &str) -> GlobalResult<GmvFileInfo> {
+    pub async fn query_gmv_file_info_by_id(id: i64) -> GlobalResult<GmvFileInfo> {
         let pool = get_conn_by_pool()?;
-        let res = sqlx::query_as::<_, GmvFileInfo>("select * from GMV_FILE_INFO where ID=?")
+        let res = sqlx::query_as::<_, GmvFileInfo>("select id,device_id,channel_id,biz_time,biz_id,file_type,file_size,file_name,file_format,dir_path,abs_path,note,is_del,create_time from GMV_FILE_INFO where id=?")
             .bind(id)
             .fetch_one(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 
-    pub async fn rm_gmv_file_info_by_id(biz_id: &str) -> GlobalResult<()> {
+    pub async fn rm_gmv_file_info_by_id(biz_id: i64) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
-        sqlx::query("delete from GMV_FILE_INFO where BIZ_ID=?")
+        sqlx::query("delete from GMV_FILE_INFO where id=?")
             .bind(biz_id)
             .execute(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
@@ -422,7 +425,7 @@ impl GmvFileInfo {
         let pool = get_conn_by_pool()?;
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_FILE_INFO
                 (DEVICE_ID, CHANNEL_ID, BIZ_TIME, BIZ_ID, FILE_TYPE, FILE_SIZE,
-                 FILE_NAME, FILE_FORMAT, DIR_PATH, NOTE, IS_DEL, CREATE_TIME) ");
+                 FILE_NAME, FILE_FORMAT, DIR_PATH,ABS_PATH, NOTE, IS_DEL, CREATE_TIME) ");
         builder.push_values(arr.iter(), |mut b, info| {
             b.push_bind(&info.device_id)
                 .push_bind(&info.channel_id)
@@ -433,6 +436,7 @@ impl GmvFileInfo {
                 .push_bind(&info.file_name)
                 .push_bind(&info.file_format)
                 .push_bind(&info.dir_path)
+                .push_bind(&info.abs_path)
                 .push_bind(&info.note)
                 .push_bind(&info.is_del)
                 .push_bind(&info.create_time);
@@ -446,12 +450,11 @@ impl GmvFileInfo {
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 mod tests {
+    use super::*;
     use common::cfg_lib::conf::init_cfg;
-    use common::chrono::{DateTime, TimeZone};
+    use common::chrono::TimeZone;
     use common::dbx::mysqlx;
     use common::tokio;
-    use super::*;
-
 
     // #[tokio::test]
     async fn test_batch_insert_gmv_file_info() {
@@ -467,6 +470,7 @@ mod tests {
                 file_name: "file1".into(),
                 file_format: Some("jpg".into()),
                 dir_path: "/path/to/file1".into(),
+                abs_path: "".to_string(),
                 note: Some("test1".into()),
                 is_del: Some(0),
                 create_time: Some(Local::now().naive_local()),
@@ -482,6 +486,7 @@ mod tests {
                 file_name: "file2".into(),
                 file_format: Some("mp4".into()),
                 dir_path: "/path/to/file2".into(),
+                abs_path: "".to_string(),
                 note: Some("test2".into()),
                 is_del: Some(0),
                 create_time: Some(Local::now().naive_local()),
@@ -497,6 +502,7 @@ mod tests {
                 file_name: "file3".into(),
                 file_format: Some("mp3".into()),
                 dir_path: "/path/to/file3".into(),
+                abs_path: "".to_string(),
                 note: Some("test3".into()),
                 is_del: Some(0),
                 create_time: Some(Local::now().naive_local()),
@@ -512,6 +518,7 @@ mod tests {
                 file_name: "file4".into(),
                 file_format: Some("png".into()),
                 dir_path: "/path/to/file4".into(),
+                abs_path: "".to_string(),
                 note: Some("test4".into()),
                 is_del: Some(0),
                 create_time: Some(Local::now().naive_local()),
@@ -626,6 +633,26 @@ mod tests {
     fn init() {
         init_cfg("/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/config.yml".to_string());
         let _ = mysqlx::init_conn_pool();
+    }
+
+    // #[tokio::test]
+    async fn test_record() {
+        init();
+        let g = GmvRecord::query_gmv_record_by_biz_id("q2qcqqz1hqqu4qhqqs7Fqzsqqz6f2R6gc6Bs5I").await;
+        println!("{:?}", g);
+        if let Ok(Some(mut gr)) = g {
+            gr.state = 2;
+            gr.lt = Local::now().naive_local();
+            let res = gr.update_gmv_record_by_biz_id().await;
+            println!("{:?}", res);
+        }
+
+        // let r = GmvRecord::query_gmv_record_run_by_device_id_channel_id("34020000001110000009", "34020000001320000101").await;
+        // println!("{:?}", r);
+        // 
+        // let result = GmvFileInfo::query_gmv_file_info_by_id(32).await;
+        // println!("{:?}", result);
+        // let _ = GmvFileInfo::rm_gmv_file_info_by_id(39).await;
     }
 
 

@@ -97,7 +97,7 @@ impl StreamConf {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(crate = "common::serde")]
-#[conf(prefix = "server.download", check)]
+#[conf(prefix = "server.videos", check)]
 pub struct DownloadConf {
     pub storage_path: String,
 }
