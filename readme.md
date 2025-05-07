@@ -51,4 +51,6 @@ RTP -> PS -> H264 -> HTTP-FLV（直/点播）、MP4（录像）
 ![4](./sources/c_d_list.png "通道目录操作")
 ![5](./sources/c_play.png "通道点播")
 ![6](./sources/playback.png "历史回放")
-微信交流添加：epimore;备注GMV
+![7](./sources/down.png "云端下载")
+
+## 微信交流添加：epimore;备注GMV
