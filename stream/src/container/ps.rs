@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
-
 use byteorder::{BigEndian, ReadBytesExt};
 use memchr::memmem;
 
@@ -18,40 +17,56 @@ const PS_PACK_START_CODE: u32 = 0x000001BA;
 // const PS_PACK_START_IDENT: u8 = 0xBA;
 const PS_SYS_START_CODE: u32 = 0x000001BB;
 const PS_SYS_MAP_START_CODE: u32 = 0x000001BC;
+// const PS_SYS_MAP_START_IDENT: u8 = 0xBC;
 const PS_PES_START_CODE_VIDEO_FIRST: u8 = 0xE0;
 const PS_PES_START_CODE_VIDEO_LAST: u8 = 0xEF;
 const PS_PES_START_CODE_AUDIO_FIRST: u8 = 0xC0;
 const PS_PES_START_CODE_AUDIO_LAST: u8 = 0xDF;
-const PS_BASE_LEN: usize = 6; //ps len min = pes header
+// const PS_BASE_LEN: usize = 6; //ps len min = pes header
 // const PS_HEADER_BASE_LEN: usize = 14; //ps header
 const SPLIT_START_CODE_PREFIX: [u8; 3] = [0x00, 0x00, 0x01u8];
 const PS_START_CODE_PREFIX: [u8; 4] = [0x00, 0x00, 0x01u8, 0xBA];
-const BUFFER_SIZE: usize = 1024 * 1024;
+const BUFFER_SIZE: usize = 1024 * 128;
 
 #[derive(Default)]
 pub struct PsPacket {
+    last_seq: u16,
     ps_header: Option<PsHeader>,
     ps_sys_header: Option<PsSysHeader>,
     ps_sys_map: Option<PsSysMap>,
     payload: BytesMut,
 }
-
 impl ToFrame for PsPacket {
     fn parse(&mut self, pkt: Packet, codec_payload: &mut CodecPayload) -> GlobalResult<()> {
+        let expected_seq = self.last_seq.wrapping_add(1);
+        if pkt.header.sequence_number != expected_seq && expected_seq != 1 {
+            self.payload.clear();
+        }
+        self.last_seq = pkt.header.sequence_number;
         self.payload.put(pkt.payload);
         let payload_len = self.payload.len();
         if pkt.header.marker || payload_len > BUFFER_SIZE {
             let mut pes_packets = Vec::new();
-            let positions = memmem::find_iter(&self.payload[..], &PS_START_CODE_PREFIX).collect::<Vec<_>>();
-            let mut cursor = Cursor::new(&self.payload);
+            let mut ps_pos = 0;
+            //1. 查找完整的ps包
+            //2. 读取pes包
+            //PSH SYS PSM PES
+            while let Some(ps_rel_pos) = memchr::memmem::find(&self.payload[ps_pos..], &PS_START_CODE_PREFIX) {
+                let ps_abs_ident_pos = ps_pos + ps_rel_pos + 4;
+                // 尝试寻找下一个包
+                match memchr::memmem::find(&self.payload[ps_abs_ident_pos..], &PS_START_CODE_PREFIX) {
+                    Some(rel) => {
+                        ps_pos = ps_abs_ident_pos + rel;
+                    }
+                    None => {
+                        ps_pos += ps_rel_pos;
+                        break;
+                    } // 不足一个完整包，等待更多数据
+                };
 
-            for pos in positions {
-                if pos as u64 != cursor.position() {
-                    warn!("PS buffer with start code position: {} , crusor index: {} , discarding {} bytes",pos,cursor.position(),pos as u64-cursor.position());
-                }
-
-                let mut ps_header_reader = || {
-                    cursor.set_position(4 + pos as u64);
+                if self.ps_sys_map.is_none() {
+                    let mut cursor = Cursor::new(&self.payload);
+                    cursor.set_position(ps_abs_ident_pos as u64);
                     let in_ps_header = PsHeader::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
                     self.ps_header = Some(in_ps_header);
                     let sys_start_code = cursor.read_u32::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
@@ -60,55 +75,74 @@ impl ToFrame for PsPacket {
                         let in_ps_sys_map = PsSysMap::parse(&mut cursor).hand_log(|msg| warn!("{msg}"))?;
                         self.ps_sys_header = Some(in_ps_sys_header);
                         self.ps_sys_map = Some(in_ps_sys_map);
-                    } else {
-                        cursor.seek(SeekFrom::Current(-4)).hand_log(|msg| warn!("{msg}"))?;
                     }
-                    Ok::<(), GlobalError>(())
-                };
-                if let Err(_) = ps_header_reader() {
-                    continue;
                 }
-                match PsPacket::split_pes_pkt(&mut pes_packets, &mut cursor) {
-                    Ok(true) => { break; }
-                    _ => { continue }
+                if self.ps_sys_map.is_some() {
+                    self.split_pes_pkt(ps_abs_ident_pos, ps_pos, &mut pes_packets).hand_log(|msg| warn!("{msg}"))?
                 }
             }
-            if cursor.position() == 0 {
-                warn!("PS buffer without start code, discarding {} bytes",self.payload.len());
-                self.payload.clear();
-            } else {
-                self.payload.advance(cursor.position() as usize);
-            }
+            // 清除已处理数据
+            self.payload.advance(ps_pos);
             self.parse_to_nalu(pes_packets, codec_payload, pkt.header.timestamp)?;
+        }
+
+        if self.payload.len() > BUFFER_SIZE {
+            self.payload.clear();
         }
         Ok(())
     }
 }
 
 impl PsPacket {
-    fn split_pes_pkt(pes_packets: &mut Vec<PesPacket>, cursor: &mut Cursor<&BytesMut>) -> GlobalResult<bool> {
-        let byte_len = (cursor.get_ref().len() - PS_BASE_LEN) as u64;
-        while cursor.position() < byte_len {
-            cursor.seek(SeekFrom::Current(3)).hand_log(|msg| warn!("{msg}"))?;
-            let ident = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
-            match ident {
-                PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST => {
-                    match PesPacket::read_video_pes_data(cursor, ident)? {
-                        None => { return Ok(true); }
-                        Some(pes_pkt) => {
-                            pes_packets.push(pes_pkt);
+    fn split_pes_pkt(&self, mut start: usize, limit: usize, pes_packets: &mut Vec<PesPacket>) -> GlobalResult<()> {
+        while let Some(pos) = memchr::memmem::find(&self.payload[start..], &SPLIT_START_CODE_PREFIX) {
+            let abs_pos = start + pos;
+            let ident_pos = abs_pos + 3;
+            if ident_pos >= limit {
+                break;
+            }
+            let ident = &self.payload[ident_pos];
+            if matches!(ident,PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST) {
+                let mut cursor = Cursor::new(&self.payload);
+                let ident_next_pos = ident_pos + 1;
+                cursor.set_position(ident_next_pos as u64);
+                let mut packet_len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))? as usize;
+                if packet_len == 0 || packet_len == 0xFFFF {
+                    match self.get_next_pes_index(ident_next_pos, limit) {
+                        None => { break; }
+                        Some(next_pes_index) => {
+                            packet_len = next_pes_index - ident_next_pos - 2; //2为packet_len u16占2字节
                         }
                     }
                 }
-                PS_PES_START_CODE_AUDIO_FIRST..=PS_PES_START_CODE_AUDIO_LAST => {
-                    PesPacket::read_audio_pes_data(cursor).hand_log(|msg| warn!("{msg}"))?;
+                if let Some(pes_pkt) = PesPacket::read_video_pes_data(&mut cursor, *ident, packet_len)? {
+                    pes_packets.push(pes_pkt);
                 }
-                other => {
-                    return Err(GlobalError::new_sys_error(&format!("invalid data:ident is {other}"), |msg| warn!("{msg}")));
+            }
+            start = ident_pos + 1;
+        }
+        Ok(())
+    }
+
+    fn get_next_pes_index(&self, mut start: usize, limit: usize) -> Option<usize> {
+        loop {
+            match memchr::memmem::find(&self.payload[start..], &SPLIT_START_CODE_PREFIX) {
+                None => {
+                    return None;
+                }
+                Some(index) => {
+                    let pos = start + index;
+                    if pos + 4 >= limit {
+                        return Some(limit);
+                    }
+                    if matches!(&self.payload[pos + 4],PS_PES_START_CODE_VIDEO_FIRST..=PS_PES_START_CODE_VIDEO_LAST
+                                                | PS_PES_START_CODE_AUDIO_FIRST..=PS_PES_START_CODE_AUDIO_LAST) {
+                        return Some(pos);
+                    }
+                    start += index + 4;
                 }
             }
         }
-        Ok(false)
     }
 
     //分离音视频字幕私有信息...
@@ -117,7 +151,9 @@ impl PsPacket {
         if let Some(sys_map) = &self.ps_sys_map {
             let mut payload = BytesMut::new();
             for pes_packet in pes_packets {
-                let stream_type = &sys_map.es_map_info.get(&pes_packet.stream_id).ok_or_else(|| SysErr(anyhow!("stream id in es not found in ps sys map."))).hand_log(|msg| warn!("{msg}"))?.stream_type;
+                let stream_type = &sys_map.es_map_info.get(&pes_packet.stream_id)
+                    .ok_or_else(|| SysErr(anyhow!("stream id in es not found in ps sys map.")))
+                    .hand_log(|msg| warn!("{msg}"))?.stream_type;
                 match stream_type {
                     //H264
                     &0x1B => {
@@ -315,7 +351,7 @@ impl PsSysMap {
         }
         let crc_32 = cursor.read_u32::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
         Ok(Self {
-            start_code3_map_stream_id8,
+            start_code3_map_stream_id8: PS_SYS_MAP_START_CODE,
             ps_map_length,
             indicator1_reserved2_version5,
             reserved7_marker1,
@@ -401,6 +437,7 @@ pub struct PesPacket {
     pes_inner_data: PesInnerData,
 }
 
+#[allow(dead_code)]
 impl PesPacket {
     //audio 暂不支持读取内容，仅做字节跳过,
     fn read_audio_pes_data(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<()> {
@@ -412,12 +449,7 @@ impl PesPacket {
         Ok(())
     }
 
-    fn read_video_pes_data(cursor: &mut Cursor<&BytesMut>, stream_id: u8) -> GlobalResult<Option<Self>> {
-        let packet_len = Self::get_pkt_len(cursor)?;
-        if packet_len == 0 {
-            return Ok(None);
-        }
-
+    fn read_video_pes_data(cursor: &mut Cursor<&BytesMut>, stream_id: u8, packet_len: usize) -> GlobalResult<Option<Self>> {
         if Self::check_stream_id_pts_dts_info(stream_id) {
             let m2_p2_p1_d1_c1_o1 = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
             let flags2_e1_e1_d1_a1_p1_p1 = cursor.read_u8().hand_log(|msg| warn!("{msg}"))?;
@@ -479,13 +511,13 @@ impl PesPacket {
     fn get_pkt_len(cursor: &mut Cursor<&BytesMut>) -> GlobalResult<usize> {
         // let packet_len = cursor.read_u16::<BigEndian>().hand_log(|msg| warn!("{msg}"))?;
         let packet_len = match cursor.read_u16::<BigEndian>() {
-            Ok(packet_len) => {packet_len}
-            Err(_) => {return Ok(0);}
+            Ok(packet_len) => { packet_len }
+            Err(_) => { return Ok(0); }
         };
         let bytes = cursor.get_ref();
         let pos = cursor.position() as usize;
         if pos + packet_len as usize > bytes.len() {
-            cursor.set_position(pos as u64 - 6); //回退到0x00 00 01 ideint(u8) len(u16)
+            // cursor.set_position(pos as u64 - 6); //回退到0x00 00 01 ideint(u8) len(u16)
             return Ok(0);
         } else if packet_len == 0 || packet_len == 0xFFFF {
             let positions = memmem::find_iter(&bytes[pos..], &SPLIT_START_CODE_PREFIX).collect::<Vec<_>>();
@@ -588,7 +620,6 @@ mod test {
         // println!("{:0x.hand_log(|msg|warn!("{msg}"))?}", ps_sys_map_res);
         // assert_eq!(cursor.position(), 100);
 
-
         let data1 = [0x00u8, 0x00, 0x01, 0xbc, 0x00, 0x3f, 0xc2, 0x01, 0x00, 0x00, 0x00, 0x35,
             0x1b, 0xe0, 0x00, 0x28, 0x01, 0x42, 0xc0, 0x1e, 0xff, 0xe1, 0x00, 0x18, 0x67, 0x42, 0xc0,
             0x1e, 0xda, 0x01, 0xe0, 0x08, 0x9f, 0x96, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00,
@@ -649,6 +680,7 @@ mod test {
 
     use common::bytes::BufMut;
     use common::bytes::Buf;
+    use common::exception::GlobalResult;
     use rtp::packet::Packet;
     use crate::coder::{CodecPayload, ToFrame};
 
@@ -681,13 +713,16 @@ mod test {
     // #[test]
     // fn test_parse_ps_pkt() {
     //     let mut rtp_packet = Packet::default();
-    //     let input = include_bytes!("/home/ubuntu20/code/rs/mv/github/epimore/unuse/gmv/stream/h264ps.dump");
+    //     let input = include_bytes!("/home/ubuntu20/code/rs/mv/github/epimore/unuse/gmv/stream/ps.dump");
     //     let bytes = Bytes::copy_from_slice(input);
     //     rtp_packet.payload = bytes;
     //     rtp_packet.header.marker = true;
     //     let mut ps_packet = PsPacket::default();
     //     let mut codec_payload = CodecPayload::default();
-    //     let _ = ps_packet.parse(rtp_packet, &mut codec_payload);
+    //     match ps_packet.parse(rtp_packet, &mut codec_payload) {
+    //         Ok(_) => {}
+    //         Err(err) => {}
+    //     }
     // }
 
     #[test]
@@ -702,5 +737,21 @@ mod test {
             }
         }
         println!("end");
+    }
+
+    #[test]
+    fn test_find() {
+        let mut search_pos = 0;
+        let arr = [1, 2, 3, 5, 4, 1, 2, 3, 1, 5, 1, 7, 8, 9, 10, 1, 2, 4, 5, 6, 3, 1, 2, 4, 5, 6, 8, 9, 11, 1, 2, 4, 5, 7, 9, 2];
+        while let Some(pos) = memmem::find(&arr[search_pos..], &[1, 2]) {
+            let abs_pos = search_pos + pos;
+            //                 // 尝试寻找下一个包
+            let next_pos = match memmem::find(&&arr[abs_pos + 2..], &[1, 2]) {
+                Some(rel) => abs_pos + 2 + rel,
+                None => break, // 不足一个完整包，等待更多数据
+            };
+            println!("pos = {},search_pos = {}, abs_pos = {}, next_pos = {},len = {}", pos, search_pos, abs_pos, next_pos, next_pos - 2 - abs_pos);
+            search_pos = next_pos;
+        }
     }
 }
