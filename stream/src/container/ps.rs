@@ -39,7 +39,7 @@ pub struct PsPacket {
 impl ToFrame for PsPacket {
     fn parse(&mut self, pkt: Packet, codec_payload: &mut CodecPayload) -> GlobalResult<()> {
         let expected_seq = self.last_seq.wrapping_add(1);
-        if pkt.header.sequence_number != expected_seq && expected_seq != 1 {
+        if pkt.header.sequence_number != expected_seq {
             self.payload.clear();
         }
         self.last_seq = pkt.header.sequence_number;
