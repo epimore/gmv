@@ -6,6 +6,8 @@
 ### 🔗 1. 前端场景界面 demo（VUE 项目）：[simple-app](https://github.com/epimore/simple-app)
 ### 🔗 2. 自定义业务场景 demo（JAVA 项目）：[simple-biz](https://github.com/epimore/simple-biz)
 
+### ✨✨✨ 在线测试地址：[epimore.cn](https://epimore.cn)
+
 ## GMV:SESSION 信令服务已实现：
 1. 设备注册、注销、心跳、状态（在线/离线）
 2. 设备（子设备）信息、点播/历史回播/视频下载

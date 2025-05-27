@@ -1,7 +1,27 @@
-
-
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
+
+-- ----------------------------
+-- Table structure for C_AREA_CODE
+-- ----------------------------
+DROP TABLE IF EXISTS `C_AREA_CODE`;
+CREATE TABLE `C_AREA_CODE`  (
+                                `code` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '行政区划代码',
+                                `name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划',
+                                `name_full` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划-全称',
+                                `province_code` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划代码-省',
+                                `province_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划-省',
+                                `city_code` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划代码-市',
+                                `city_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划-市',
+                                `district_code` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划代码-区/县',
+                                `district_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划-区/县',
+                                `street_code` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划代码-乡镇/街道',
+                                `street_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '行政区划-乡镇/街道',
+                                `level` int NULL DEFAULT NULL COMMENT '行政区划级别',
+                                PRIMARY KEY (`code`) USING BTREE,
+                                INDEX `index_code`(`code` ASC) USING BTREE,
+                                INDEX `index_name`(`name` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Table structure for GMV_DEVICE
@@ -23,6 +43,8 @@ CREATE TABLE `GMV_DEVICE`  (
                                `STATUS` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-离线，1-在线',
                                `GB_VERSION` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT '2.0' COMMENT '国标版本',
                                `LAST_UPDATE_TIME` datetime NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                               `tenant_id` int NULL DEFAULT NULL COMMENT '租户ID',
+                               `org_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '机构编码',
                                PRIMARY KEY (`DEVICE_ID`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '设备主表' ROW_FORMAT = Dynamic;
 
@@ -106,6 +128,8 @@ CREATE TABLE `GMV_OAUTH`  (
                               `HEARTBEAT_SEC` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '心跳间隔：秒',
                               `CREATE_TIME` datetime NULL DEFAULT NULL COMMENT '创建时间',
                               `DEL` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-未删除，1-已删除',
+                              `tenant_id` int NULL DEFAULT NULL COMMENT '租户ID',
+                              `org_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '机构编码',
                               PRIMARY KEY (`DEVICE_ID`) USING BTREE,
                               UNIQUE INDEX `DEVICE_ID`(`DEVICE_ID` ASC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '认证表' ROW_FORMAT = Dynamic;
