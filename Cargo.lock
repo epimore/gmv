@@ -476,7 +476,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=302ae06b#302ae06bf1e70fa6d605f2868aaf36bb823b552b"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "cfg_macro",
  "clap",
@@ -486,7 +486,7 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=302ae06b#302ae06bf1e70fa6d605f2868aaf36bb823b552b"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -579,7 +579,7 @@ checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 [[package]]
 name = "common"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=302ae06b#302ae06bf1e70fa6d605f2868aaf36bb823b552b"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "aes",
  "base64 0.13.1",
@@ -609,7 +609,7 @@ dependencies = [
 [[package]]
 name = "common_db"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=302ae06b#302ae06bf1e70fa6d605f2868aaf36bb823b552b"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "common",
  "sqlx",
@@ -633,7 +633,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "constructor"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=302ae06b#302ae06bf1e70fa6d605f2868aaf36bb823b552b"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -986,7 +986,7 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=302ae06b#302ae06bf1e70fa6d605f2868aaf36bb823b552b"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "anyhow",
  "thiserror 2.0.12",
