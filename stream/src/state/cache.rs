@@ -17,19 +17,18 @@ use common::tokio::sync::{broadcast, mpsc, Mutex, Notify};
 use common::tokio::time;
 use common::tokio::time::Instant;
 use parking_lot::RwLock;
-use rtp::packet::Packet;
-
+use rsmpeg::ffi::AVPacket;
 use crate::biz::api::SsrcLisDto;
 use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamRecordInfo, StreamState};
 use crate::coder::FrameData;
 use crate::container::PlayType;
 use crate::general::cfg;
-use crate::general::mode::{Media, ServerConf, BUFFER_SIZE, HALF_TIME_OUT};
+use crate::general::mode::{ServerConf, BUFFER_SIZE, HALF_TIME_OUT};
 use crate::io::hook_handler::{InEvent, MediaAction, OutEvent, OutEventRes, RtpStreamEvent, SessionEvent};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, Media>) -> GlobalResult<()> {
+pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, String>) -> GlobalResult<()> {
     let mut state = SESSION.shared.state.write();
     match state.sessions.entry(ssrc) {
         Entry::Occupied(mut occ) => {
@@ -60,17 +59,11 @@ pub fn get_in_event_sub_rx(ssrc: &u32) -> Option<broadcast::Receiver<InEvent>> {
     })
 }
 
-pub fn get_rx_media_type(ssrc: &u32) -> Option<(Media, HalfChannel, String, MediaAction)> {
+pub fn get_rx_sdp(ssrc: &u32) -> Option<((u8, String), crossbeam_channel::Receiver<RtpPacket>)> {
     let state = SESSION.shared.state.read();
     if let Some(mt) = state.sessions.get(ssrc) {
         if let Some(media) = mt.media_map.get(&mt.rtp_payload_type) {
-            let half_channel = HalfChannel {
-                rtp_rx: mt.stream_ch.get_rtp_rx(),
-                flv_tx: mt.stream_ch.get_flv_tx(),
-                hls_tx: mt.stream_ch.get_hls_tx(),
-                down_tx: mt.stream_ch.get_down_tx(),
-            };
-            return Some((*media, half_channel, mt.stream_id.clone(), mt.media_action.clone()));
+            return Some(((mt.rtp_payload_type, media.clone()), mt.stream_ch.get_rtp_rx()));
         }
         error!("ssrc: {}, Media payload type: {} is invalid or unsupported",ssrc,&mt.rtp_payload_type);
     }
@@ -141,7 +134,7 @@ pub fn insert(ssrc_lis: SsrcLisDto) -> GlobalResult<()> {
 }
 
 //返回rtp_tx
-pub fn refresh(ssrc: u32, bill: &Association, packet: &Packet) -> Option<(crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>)> {
+pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>)> {
     let guard = SESSION.shared.state.read();
     if let Some(stream_trace) = guard.sessions.get(&ssrc) {
         if !stream_trace.in_on.load(Ordering::SeqCst) {
@@ -151,7 +144,7 @@ pub fn refresh(ssrc: u32, bill: &Association, packet: &Packet) -> Option<(crossb
         return if stream_trace.rtp_payload_type == 0 {
             drop(guard);
             //回调流注册时-事件
-            let media_payload_type = packet.header.payload_type;
+            let media_payload_type = payload_type;
             event_stream_in(ssrc, bill, media_payload_type)
         } else {
             Some((stream_trace.stream_ch.rtp_channel.0.clone(), stream_trace.stream_ch.rtp_channel.1.clone()))
@@ -165,7 +158,7 @@ pub fn get_stream_id(ssrc: &u32) -> Option<String> {
     guard.sessions.get(ssrc).map(|val| val.stream_id.clone())
 }
 
-fn event_stream_in(ssrc: u32, bill: &Association, media_payload_type: u8) -> Option<(crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>)> {
+fn event_stream_in(ssrc: u32, bill: &Association, media_payload_type: u8) -> Option<(crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>)> {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     let next_expiration = state.next_expiration();
@@ -324,7 +317,7 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
     None
 }
 
-pub fn update_down_action_run_by_ssrc(ssrc: u32,action: bool) {
+pub fn update_down_action_run_by_ssrc(ssrc: u32, action: bool) {
     let guard = SESSION.shared.state.read();
     if let Some(stream_trace) = guard.sessions.get(&ssrc) {
         stream_trace.down_action.store(action, Ordering::SeqCst);
@@ -486,7 +479,7 @@ struct StreamTrace {
     register_ts: u32,
     //addr , protocol
     origin_trans: Option<(String, String)>,
-    media_map: HashMap<u8, Media>,
+    media_map: HashMap<u8, String>,
     rtp_payload_type: u8,
     event_channel: (broadcast::Sender<InEvent>, Arc<Mutex<broadcast::Receiver<InEvent>>>),
     media_action: MediaAction,
@@ -530,12 +523,12 @@ impl State {
     }
 }
 
-type CrossbeamChannel = (crossbeam_channel::Sender<Packet>, crossbeam_channel::Receiver<Packet>);
+type CrossbeamChannel = (crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>);
+type BroadcastAvChannel = (broadcast::Sender<AVPacket>, broadcast::Receiver<AVPacket>);
 type BroadcastFrameChannel = (broadcast::Sender<FrameData>, broadcast::Receiver<FrameData>);
 type BroadcastDownInfoChannel = (broadcast::Sender<StreamRecordInfo>, broadcast::Receiver<StreamRecordInfo>);
 
-pub struct HalfChannel {
-    pub rtp_rx: crossbeam_channel::Receiver<Packet>,
+pub struct ConsumerChannel {
     pub flv_tx: broadcast::Sender<FrameData>,
     pub hls_tx: broadcast::Sender<FrameData>,
     pub down_tx: broadcast::Sender<StreamRecordInfo>,
@@ -562,10 +555,10 @@ impl Channel {
             down_channel,
         }
     }
-    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<Packet> {
+    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<RtpPacket> {
         self.rtp_channel.1.clone()
     }
-    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<Packet> {
+    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<RtpPacket> {
         self.rtp_channel.0.clone()
     }
     fn get_flv_tx(&self) -> broadcast::Sender<FrameData> {

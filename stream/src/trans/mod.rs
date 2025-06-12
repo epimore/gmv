@@ -52,7 +52,7 @@ async fn spilt_out_container(mut rx: Receiver<u32>) {
                 Ok(res) => {
                     match res {
                         Ok(()) => {
-                            if let Some((media, half_channel, stream_id, media_type)) = cache::get_rx_media_type(&ssrc) {
+                            if let Some((media, half_channel, stream_id, media_type)) = cache::get_rx_sdp_tx(&ssrc) {
                                 let _ = tokio::task::spawn_blocking(move || {
                                     let demux_context = DemuxContext::init(ssrc, half_channel.rtp_rx);
                                     let codec_payload = CodecPayload::default();
