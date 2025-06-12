@@ -7,7 +7,7 @@ use common::tokio::sync::mpsc;
 use crate::general::mode::ServerConf;
 use crate::io::{http_handler, rtp_handler};
 use crate::state::cache;
-use crate::trans;
+use crate::{media, trans};
 
 pub struct App {
     conf: ServerConf,
@@ -33,7 +33,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
         let conf = self.conf;
         let node_name = conf.get_name().clone();
         let (tx, rx) = mpsc::channel(100);
-        trans::trans_run(rx);
+        media::build_worker_run(rx);
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -56,7 +56,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
                 web.await.hand_log(|msg| error!("WEB:{msg}"))??;
                 Ok::<(), GlobalError>(())
             })?;
-        error!("系统异常退出...");
+        error!("APP abnormally stopped...");
         Ok(())
     }
 }

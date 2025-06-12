@@ -129,19 +129,11 @@ pub struct RtpMap {
 impl RtpMap {
     //指定媒体流类型映射,发送事件，消费流进行转换
     pub async fn rtp_map(rtp_map: RtpMap, ssrc_tx: Sender<u32>) -> GlobalResult<Response<Body>> {
-        let mut map = HashMap::new();
-        for (tp, val) in rtp_map.map {
-            match Media::build(&val).hand_log(|msg| error!("{msg}")) {
-                Ok(media) => {
-                    map.insert(tp, media);
-                }
-                Err(_err) => {
-                    return res_422();
-                }
-            }
+        if rtp_map.map.len() == 0 { 
+            return res_422();
         }
         let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
-        let res = match cache::insert_media_type(rtp_map.ssrc, map) {
+        let res = match cache::insert_media_type(rtp_map.ssrc, rtp_map.map) {
             Ok(_) => {
                 ssrc_tx.send(rtp_map.ssrc).await.hand_log(|msg| error!("{msg}"))?;
                 let json_data = ResMsg::<bool>::build_success().to_json()?;
