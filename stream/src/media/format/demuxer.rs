@@ -6,8 +6,8 @@ use common::log::error;
 use common::once_cell::sync::Lazy;
 use common::tokio;
 use common::tokio::sync::broadcast;
-use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, av_packet_ref, av_packet_unref, av_read_frame, av_strerror, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_CUSTOM_IO};
-use crate::media::{rtp, rw};
+use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, av_packet_ref, av_packet_unref, av_read_frame, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_CUSTOM_IO};
+use crate::media::{show_ffmpeg_error_msg, rtp, rw};
 use crate::media::rw::SdpMemory;
 
 static SDP_FLAGS: Lazy<CString> = Lazy::new(|| CString::new("sdp_flags").unwrap());
@@ -136,7 +136,7 @@ impl DemuxerContext {
             );
             rsmpeg::ffi::av_dict_free(&mut dict_opts);
             if ret < 0 {
-                let ffmpeg_error = log_ffmpeg_error(ret);
+                let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to open sdp input:ret= {ret}, msg={msg}")));
             }
             //创建 RTP AVIOContext
@@ -156,7 +156,7 @@ impl DemuxerContext {
             let original_pb = (*fmt_ctx).pb;
             (*fmt_ctx).pb = rtp_avio_ctx;
             if avformat_find_stream_info(fmt_ctx, ptr::null_mut()) < 0 {
-                let ffmpeg_error = log_ffmpeg_error(ret);
+                let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Could not find stream info:ret= {ret}, msg={msg}")));
             }
 
@@ -222,13 +222,4 @@ fn build_sdp(rtp_map_key: u8, rtp_map_val: &String) -> String {
     sdp.push_str(&format!("m=video 0 RTP/AVP {}\r\n", rtp_map_key));
     sdp.push_str(&format!("a=rtpmap:{} {}\r\n", rtp_map_key, rtp_map_val));
     sdp
-}
-
-fn log_ffmpeg_error(ret: c_int) -> String {
-    let mut buf = [0u8; 1024];
-    unsafe {
-        av_strerror(ret, buf.as_mut_ptr() as *mut i8, buf.len());
-        let cstr = std::ffi::CStr::from_ptr(buf.as_ptr() as *const i8);
-        cstr.to_string_lossy().into_owned()
-    }
 }
