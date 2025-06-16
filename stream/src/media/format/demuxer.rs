@@ -4,48 +4,13 @@ use std::sync::Arc;
 use common::exception::{GlobalError, GlobalResult};
 use common::log::error;
 use common::once_cell::sync::Lazy;
-use common::tokio;
-use common::tokio::sync::broadcast;
-use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, av_packet_ref, av_packet_unref, av_read_frame, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_CUSTOM_IO};
+use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_VIDEO, AVFMT_FLAG_CUSTOM_IO};
 use crate::media::{show_ffmpeg_error_msg, rtp, rw};
 use crate::media::rw::SdpMemory;
 
 static SDP_FLAGS: Lazy<CString> = Lazy::new(|| CString::new("sdp_flags").unwrap());
 static CUSTOM_IO: Lazy<CString> = Lazy::new(|| CString::new("custom_io").unwrap());
 static SDP: Lazy<CString> = Lazy::new(|| CString::new("sdp").unwrap());
-
-#[derive(Clone)]
-pub struct SendablePacket {
-    inner: AVPacket,
-}
-
-unsafe impl Send for SendablePacket {}
-
-impl SendablePacket {
-    pub fn from_avpacket(pkt: &AVPacket) -> Self {
-        unsafe {
-            let mut cloned = std::mem::zeroed::<AVPacket>();
-            av_packet_ref(&mut cloned, pkt);
-            SendablePacket { inner: cloned }
-        }
-    }
-
-    pub fn as_ptr(&self) -> *const AVPacket {
-        &self.inner
-    }
-
-    pub fn as_mut_ptr(&mut self) -> *mut AVPacket {
-        &mut self.inner
-    }
-}
-
-impl Drop for SendablePacket {
-    fn drop(&mut self) {
-        unsafe {
-            av_packet_unref(&mut self.inner);
-        }
-    }
-}
 
 /// FFmpeg资源自动释放结构
 pub struct AvioResource {
@@ -86,8 +51,7 @@ impl Drop for AvioResource {
 pub struct DemuxerContext {
     pub avio: Arc<AvioResource>,
     pub codecpar_list: Vec<*mut AVCodecParameters>,
-    pub stream_mapping: Vec<usize>,
-    pub tx: broadcast::Sender<SendablePacket>,
+    pub stream_mapping: Vec<(usize, bool)>,
 }
 impl Drop for DemuxerContext {
     fn drop(&mut self) {
@@ -102,7 +66,7 @@ impl Drop for DemuxerContext {
 }
 
 impl DemuxerContext {
-    pub fn start_demuxer(sdp_map: (u8, String), mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
+    pub fn start_demuxer(sdp_map: &(u8, String), mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         let sdp = build_sdp(sdp_map.0, &sdp_map.1);
         let mut sdp_mem = SdpMemory::new(sdp);
         unsafe {
@@ -170,11 +134,14 @@ impl DemuxerContext {
                     return Err(GlobalError::new_biz_error(1100, "Failed to alloc AVCodecParameters", |msg| error!("msg={msg}")));
                 }
                 avcodec_parameters_copy(codecpar, (*in_stream).codecpar);
+                let mut is_av = false;
+                if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+                    is_av = true
+                }
                 codecpar_list.push(codecpar);
-                stream_mapping.push(i as usize);
+                stream_mapping.push((i as usize, is_av));
             }
 
-            let (tx, _) = broadcast::channel(64);
             let ctx = DemuxerContext {
                 avio: Arc::new(AvioResource {
                     fmt_ctx,
@@ -186,28 +153,8 @@ impl DemuxerContext {
                 }),
                 codecpar_list,
                 stream_mapping,
-                tx: tx.clone(),
             };
-            let avio_arc = ctx.avio.clone();
-            tokio::task::spawn_blocking(move || {
-                Self::read_loop(avio_arc, tx);
-            });
             Ok(ctx)
-        }
-    }
-
-    fn read_loop(avio: Arc<AvioResource>, tx: broadcast::Sender<SendablePacket>) {
-        let fmt_ctx = avio.fmt_ctx;
-        unsafe {
-            let mut pkt = std::mem::zeroed::<AVPacket>();
-            loop {
-                if av_read_frame(fmt_ctx, &mut pkt) < 0 {
-                    break;
-                }
-                let cloned = SendablePacket::from_avpacket(&pkt);
-                let _ = tx.send(cloned);
-                av_packet_unref(&mut pkt);
-            }
         }
     }
 }
