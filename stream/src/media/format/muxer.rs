@@ -10,6 +10,6 @@ pub(crate) enum MuxerEnum {
 }
 
 pub trait MuxerSink {
-    fn write_packet(&mut self, pkt: &AVPacket);
+    fn write_packet(&self, pkt: &AVPacket);
 }
 
