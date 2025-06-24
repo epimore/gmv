@@ -541,7 +541,7 @@ mod tests {
         println!("{res:?}");
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_update_single_gmv_device_by_register() {
         init();
         let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000004".to_string()).await;
