@@ -7,17 +7,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use poem::Body;
-use poem_openapi::payload::Binary;
 use common::chrono::Local;
 use common::exception::{GlobalError, GlobalResult, TransError};
 use common::log::error;
 use common::tokio::io::AsyncReadExt;
+use poem::web::Field;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::storage::pics::{Pics};
 use crate::utils::se_token;
 
-pub async fn upload(data: Binary<Body>, session_id: String, file_id: Option<String>, snap_shot_file_id: Option<String>) -> GlobalResult<()> {
+pub async fn upload(data: Field, session_id: String, file_id: Option<String>, snap_shot_file_id: Option<String>) -> GlobalResult<()> {
     let id = snap_shot_file_id.or(file_id);
     let (device_id, channel_id) = se_token::split_dc(&session_id)?;
     let file_name = match id {
@@ -55,7 +54,7 @@ pub async fn upload(data: Binary<Body>, session_id: String, file_id: Option<Stri
     info.file_name = file_name;
     info.file_format = Some(pics_conf.storage_format.to_ascii_lowercase());
 
-    let mut reader = data.0.into_async_read();
+    let mut reader = data.into_async_read();
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).await.hand_log(|msg| error!("read pics bytes failed: {msg}"))?;
     let img = image::load_from_memory(&bytes).hand_log(|msg| error!("{msg}"))?;
