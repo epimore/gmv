@@ -24,3 +24,5 @@ crossbeam-channel = "0.5"
 parking_lot = "0.12"
 url = "2.5"
 cron = "0.15"
+anyhow = { workspace = true }
+thiserror = { workspace = true }

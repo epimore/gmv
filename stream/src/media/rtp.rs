@@ -43,7 +43,7 @@ impl RtpPacketBuffer {
     //1 判断缓冲区数据数量：[queue_count <  queue_window]? 1.1 : 1.2
     //1.1阻塞线程等待数据+超时
     //1.2直接取数据
-    pub fn demux_packet<P>(&mut self) -> GlobalResult<Option<Bytes>>
+    pub fn demux_packet(&mut self) -> GlobalResult<Option<Bytes>>
     {
         self.reduce_packet()?;
         let mut index = self.last_read_rtp_sn as usize % BUFFER_SIZE;

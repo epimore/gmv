@@ -1,3 +1,15 @@
+/// 1. 插入需监听的media信息【启动监听媒体流输入是否超时】，发送ssrc给rtp接收端监听;
+/// 2. rtp接收端监听ssrc同时订阅事件获取StreamConfig；
+/// 3. 插入media ext信息【此时session服务应发送指令给设备推流】;
+/// 4. 等待设备推送rtp媒体流注册;
+/// 4.1 设备推送rtp媒体流注册，发布事件推送StreamConfig；
+/// 4.1.1 根据media信息启动媒体流处理，
+/// 4.1.2 回调session服务，推送流注册事件,
+/// 4.1.3 监听媒体流输出是否闲置超时【根据配置选择是否关闭监听媒体流处理】;
+/// 4.1.3.1 闲置超时，回调session服务，推送接收流超时事件，关闭监听媒体流处理;
+/// 4.1.3.2 点播媒体流,回调session服务,推送点播事件鉴权，通过输出媒体流，否则返回401;
+/// 4.2 设备推送rtp媒体流[注册]超时，回调session服务，推送接收流超时事件，关闭监听媒体流处理;
+
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
@@ -6,37 +18,90 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use common::chrono::{Local, Timelike};
-use common::exception::{GlobalError, GlobalResult, TransError};
-use common::log::{error, info};
-use common::net::state::Association;
-use common::once_cell::sync::Lazy;
-use common::tokio;
-use common::tokio::sync::oneshot::Sender;
-use common::tokio::sync::{broadcast, mpsc, Mutex, Notify};
-use common::tokio::time;
-use common::tokio::time::Instant;
-use parking_lot::RwLock;
-use rsmpeg::ffi::AVPacket;
-use crate::biz::api::SsrcLisDto;
 use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamRecordInfo, StreamState};
 use crate::coder::FrameData;
 use crate::container::PlayType;
 use crate::general::cfg;
-use crate::general::mode::{ServerConf, BUFFER_SIZE, HALF_TIME_OUT};
-use crate::io::hook_handler::{InEvent, MediaAction, OutEvent, OutEventRes, RtpStreamEvent, SessionEvent};
+use crate::general::mode::{ServerConf, };
+use crate::io::hook_handler::{Download, MediaAction, OutEvent, OutEventRes, Play};
+use crate::media::context::event::ConverterEvent;
+use crate::media::rtp::RtpPacket;
+use crate::state::layer::converter_layer::ConverterLayer;
+use crate::state::layer::output_layer::OutputLayer;
+use crate::state::msg::{StreamConfig};
+use crate::state::{HALF_TIME_OUT, RTP_BUFFER_SIZE, STREAM_IDLE_TIME_OUT};
+use common::bus;
+use common::bytes::Bytes;
+use common::chrono::{Local, Timelike};
+use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use common::log::{error, info, warn};
+use common::net::state::Association;
+use common::once_cell::sync::Lazy;
+use common::tokio;
+use common::tokio::sync::oneshot::Sender;
+use common::tokio::sync::{broadcast, mpsc, Notify};
+use common::tokio::time;
+use common::tokio::time::Instant;
+use parking_lot::RwLock;
+use shared::info::media_initialize::MediaStreamConfig;
+use shared::info::media_initialize_ext::MediaExt;
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, String>) -> GlobalResult<()> {
+
+
+pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
+    let mut state = SESSION.shared.state.write();
+    let ssrc = stream_config.ssrc;
+    if !state.sessions.contains_key(&ssrc) {
+        let expires = Duration::from_millis(HALF_TIME_OUT);
+        let when = Instant::now() + expires;
+        let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+        state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
+        let stream_id = stream_config.stream_id;
+        let stream_conf = cfg::StreamConf::init_by_conf();
+        let out_expires: &i32 = stream_conf.get_expires();
+        let out_expires = match stream_config.expires {
+            None => {
+                build_out_expires(*out_expires)
+            }
+            Some(val) => {
+                build_out_expires(val)
+            }
+        };
+        let export = OutputLayer::bean_to_layer(stream_config.export)?;
+        let stream_trace = StreamTrace {
+            stream_id: stream_id.clone(),
+            in_on: AtomicBool::new(true),
+            in_timeout: when,
+            in_expires: expires,
+            out_expires,
+            rtp_channel: crossbeam_channel::bounded(RTP_BUFFER_SIZE * 10),
+            register_ts: 0,
+            origin_trans: None,
+            mpsc_bus: bus::mpsc::TypedMessageBus::new(),
+            broadcast_bus: bus::broadcast::TypedMessageBus::new(),
+            converter: ConverterLayer::bean_to_layer(stream_config.converter),
+            media_ext: None,
+            export,
+        };
+        state.sessions.insert(ssrc, stream_trace);
+        let inner = InnerTrace { ssrc, user_map: Default::default() };
+        state.inner.insert(stream_id, inner);
+        drop(state);
+        if notify {
+            SESSION.shared.background_task.notify_one();
+        }
+        Ok(ssrc)
+    } else { Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC已存在", ssrc), |msg| error!("{msg}"))) }
+}
+
+pub fn insert_media_ext(ssrc: u32, media_ext: MediaExt) -> GlobalResult<()> {
     let mut state = SESSION.shared.state.write();
     match state.sessions.entry(ssrc) {
         Entry::Occupied(mut occ) => {
             let stream_trace = occ.get_mut();
-            stream_trace.media_map = media_type;
-            if let Err(_error) = stream_trace.event_channel.0.send(InEvent::SessionEvent(SessionEvent::MediaInit)) {
-                return Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},事件接收通道销毁", ssrc), |msg| error!("{msg}")));
-            }
+            stream_trace.media_ext = Some(media_ext);
             Ok(())
         }
         Entry::Vacant(_) => {
@@ -45,30 +110,36 @@ pub fn insert_media_type(ssrc: u32, media_type: HashMap<u8, String>) -> GlobalRe
     }
 }
 
-pub fn get_in_event_shard_rx(ssrc: &u32) -> Option<Arc<Mutex<broadcast::Receiver<InEvent>>>> {
+pub fn sub_bus_broadcast_channel<T>(ssrc: &u32) -> GlobalResult<bus::broadcast::TypedReceiver<T>>
+where
+    T: Send + Sync + 'static + Clone,
+{
     let state = SESSION.shared.state.read();
-    state.sessions.get(ssrc).map(|st| {
-        st.event_channel.1.clone()
-    })
-}
-
-pub fn get_in_event_sub_rx(ssrc: &u32) -> Option<broadcast::Receiver<InEvent>> {
-    let state = SESSION.shared.state.read();
-    state.sessions.get(ssrc).map(|st| {
-        st.event_channel.0.subscribe()
-    })
-}
-
-pub fn get_rx_sdp(ssrc: &u32) -> Option<((u8, String), crossbeam_channel::Receiver<RtpPacket>)> {
-    let state = SESSION.shared.state.read();
-    if let Some(mt) = state.sessions.get(ssrc) {
-        if let Some(media) = mt.media_map.get(&mt.rtp_payload_type) {
-            return Some(((mt.rtp_payload_type, media.clone()), mt.stream_ch.get_rtp_rx()));
+    match state.sessions.get(ssrc) {
+        None => {
+            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
         }
-        error!("ssrc: {}, Media payload type: {} is invalid or unsupported",ssrc,&mt.rtp_payload_type);
+        Some(st) => {
+            let receiver = st.broadcast_bus.sub_type_channel::<T>();
+            Ok(receiver)
+        }
     }
-    error!("ssrc: {} is invalid",ssrc);
-    None
+}
+
+pub fn sub_bus_mpsc_channel<T>(ssrc: &u32) -> GlobalResult<bus::mpsc::TypedReceiver<T>>
+where
+    T: Send + Sync + 'static,
+{
+    let state = SESSION.shared.state.read();
+    match state.sessions.get(ssrc) {
+        None => {
+            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
+        }
+        Some(st) => {
+            let receiver = st.mpsc_bus.sub_type_channel::<T>().hand_log(|msg| error!("{msg}"))?;
+            Ok(receiver)
+        }
+    }
 }
 
 fn build_out_expires(expires: i32) -> Option<Duration> {
@@ -85,54 +156,6 @@ fn build_out_expires(expires: i32) -> Option<Duration> {
     }
 }
 
-pub fn insert(ssrc_lis: SsrcLisDto) -> GlobalResult<()> {
-    let mut state = SESSION.shared.state.write();
-    let ssrc = ssrc_lis.ssrc;
-    if !state.sessions.contains_key(&ssrc) {
-        let expires = Duration::from_millis(HALF_TIME_OUT);
-        let when = Instant::now() + expires;
-        let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
-        state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
-        let stream_id = ssrc_lis.stream_id;
-        let stream_conf = cfg::StreamConf::init_by_conf();
-        let out_expires: &i32 = stream_conf.get_expires();
-        let out_expires = match ssrc_lis.expires {
-            None => {
-                build_out_expires(*out_expires)
-            }
-            Some(val) => {
-                build_out_expires(val)
-            }
-        };
-        let (tx, rx) = broadcast::channel(BUFFER_SIZE);
-        let stream_trace = StreamTrace {
-            stream_id: stream_id.clone(),
-            in_on: AtomicBool::new(true),
-            in_timeout: when,
-            in_expires: expires,
-            out_expires,
-            stream_ch: Channel::build(),
-            register_ts: 0,
-            origin_trans: None,
-            media_map: Default::default(),
-            rtp_payload_type: 0,
-            event_channel: (tx, Arc::new(Mutex::new(rx))),
-            media_action: ssrc_lis.media_action,
-            // flv: false,
-            // hls: None,
-            down_action: AtomicBool::new(false),
-        };
-        state.sessions.insert(ssrc, stream_trace);
-        let inner = InnerTrace { ssrc, user_map: Default::default() };
-        state.inner.insert(stream_id, inner);
-        drop(state);
-        if notify {
-            SESSION.shared.background_task.notify_one();
-        }
-        Ok(())
-    } else { Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC已存在", ssrc), |msg| error!("{msg}"))) }
-}
-
 //返回rtp_tx
 pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>)> {
     let guard = SESSION.shared.state.read();
@@ -140,33 +163,45 @@ pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(cross
         if !stream_trace.in_on.load(Ordering::SeqCst) {
             stream_trace.in_on.store(true, Ordering::SeqCst);
         }
-        //流首次注册
-        return if stream_trace.rtp_payload_type == 0 {
+        //流注册
+        if stream_trace.origin_trans.is_none() {
             drop(guard);
-            //回调流注册时-事件
-            let media_payload_type = payload_type;
-            event_stream_in(ssrc, bill, media_payload_type)
+            match stream_trace.media_ext.as_ref() {
+                None => { error!("ssrc = {},尚未协商rtp sdp信息", ssrc); }
+                Some(media_ext) => {
+                    match media_ext.tp_code == payload_type {
+                        true => {
+                            let converter_event_rx = stream_trace.mpsc_bus.sub_type_channel::<ConverterEvent>().hand_log(|msg| error!("{msg}"))?;
+                            let stream_config = StreamConfig {
+                                converter: stream_trace.converter.clone(),
+                                media_ext: stream_trace.media_ext.clone().unwrap(),
+                                rtp_rx: stream_trace.rtp_channel.1.clone(),
+                                converter_event_rx,
+                            };
+                            let _ = stream_trace.mpsc_bus.try_publish(stream_config).hand_log(|msg| error!("{msg}"));
+                            return stream_register(ssrc, bill);
+                        }
+                        false => {
+                            warn!("ssrc = {},payload_type不匹配:sdp_payload_type = {},stream_payload_type = {}", ssrc,media_ext.tp_code,payload_type);
+                        }
+                    }
+                }
+            }
         } else {
-            Some((stream_trace.stream_ch.rtp_channel.0.clone(), stream_trace.stream_ch.rtp_channel.1.clone()))
+            return Some((stream_trace.rtp_channel.0.clone(), stream_trace.rtp_channel.1.clone()));
         };
     }
     None
 }
 
-pub fn get_stream_id(ssrc: &u32) -> Option<String> {
-    let guard = SESSION.shared.state.read();
-    guard.sessions.get(ssrc).map(|val| val.stream_id.clone())
-}
-
-fn event_stream_in(ssrc: u32, bill: &Association, media_payload_type: u8) -> Option<(crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>)> {
+fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>)> {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     let next_expiration = state.next_expiration();
     if let Some(stream_trace) = state.sessions.get_mut(&ssrc) {
-        stream_trace.rtp_payload_type = media_payload_type;
         //首次流闲置超时，非永不超时则-默认6秒
         if let Some(mut expires) = stream_trace.out_expires {
-            if expires == Duration::default() { expires = Duration::from_secs(6); }
+            if expires == Duration::default() { expires = Duration::from_millis(STREAM_IDLE_TIME_OUT); }
             let when = Instant::now() + expires;
             let notify = next_expiration.map(|ts| ts > when).unwrap_or(true);
             state.expirations.insert((when, ssrc, StreamDirection::StreamOut));
@@ -181,17 +216,46 @@ fn event_stream_in(ssrc: u32, bill: &Association, media_payload_type: u8) -> Opt
         let rtp_info = RtpInfo::new(ssrc, Some(net_source), SESSION.shared.server_conf.get_name().clone());
         let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
         let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id.clone(), time);
-        let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamIn(stream_info), None)).hand_log(|msg| error!("{msg}"));
+
+        let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamRegister(stream_info), None)).hand_log(|msg| error!("{msg}"));
         stream_trace.register_ts = time;
-        if let Err(_err) = stream_trace.event_channel.0.send(InEvent::RtpStreamEvent(RtpStreamEvent::StreamIn)) {
-            error!("ssrc:{}, 事件接收端drop",ssrc);
-        }
-        return Some((stream_trace.stream_ch.get_rtp_tx(), stream_trace.stream_ch.get_rtp_rx()));
+
+        return Some((stream_trace.rtp_channel.0.clone(), stream_trace.rtp_channel.1.clone()));
     }
     None
 }
+fn get_media_tx(stream_ch: &Channel, media_action: &MediaAction) -> MuxerSender {
+    match media_action {
+        MediaAction::Play(play) => {
+            match play {
+                Play::Flv => {
+                    MuxerSender::Flv(stream_ch.get_flv_tx())
+                }
+                Play::Hls(_) => { unimplemented!() }
+                Play::FlvHls(_) => { unimplemented!() }
+            }
+        }
+        MediaAction::Download(down) => {
+            match down {
+                Download::Mp4(_, _) => { unimplemented!() }
+                Download::Picture(_, _) => { unimplemented!() }
+            }
+        }
+    }
+}
 
-
+pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<RtpPacket>> {
+    let guard = SESSION.shared.state.read();
+    match guard.sessions.get(ssrc) {
+        None => {
+            warn!("ssrc: {} not found rtp channel",ssrc);
+            None
+        }
+        Some(stream_trace) => {
+            Some(stream_trace.stream_ch.get_rtp_rx())
+        }
+    }
+}
 pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
@@ -451,7 +515,7 @@ impl Shared {
                                     let opt_net = stream_trace.origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
                                     let rtp_info = RtpInfo::new(ssrc, opt_net, SESSION.shared.server_conf.get_name().clone());
                                     let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id, stream_trace.register_ts);
-                                    let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamOutIdle(stream_info), None)).hand_log(|msg| error!("{msg}"));
+                                    let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamIdle(stream_info), None)).hand_log(|msg| error!("{msg}"));
                                 }
                             }
                         }
@@ -466,6 +530,7 @@ impl Shared {
     }
 }
 
+
 #[allow(dead_code)]
 struct StreamTrace {
     stream_id: String,
@@ -475,16 +540,47 @@ struct StreamTrace {
     in_expires: Duration,
     //无人使用时，流关闭策略：Some-到期关闭（默认），Duration zero 立即关闭；None-不关闭；
     out_expires: Option<Duration>,
-    stream_ch: Channel,
+    rtp_channel: CrossbeamChannel,
     register_ts: u32,
-    //addr , protocol
+    //addr , udp/tcp protocol
     origin_trans: Option<(String, String)>,
-    media_map: HashMap<u8, String>,
-    rtp_payload_type: u8,
-    event_channel: (broadcast::Sender<InEvent>, Arc<Mutex<broadcast::Receiver<InEvent>>>),
-    media_action: MediaAction,
-    down_action: AtomicBool, //是否下载中
+    mpsc_bus: bus::mpsc::TypedMessageBus,
+    broadcast_bus: bus::broadcast::TypedMessageBus, //回调移除未使用的协议????
+    converter: ConverterLayer,
+    media_ext: Option<MediaExt>,
+    export: OutputLayer,
 }
+
+// struct MediaState {
+//     //video
+//     flv: Option<FlvInfo>,
+//     ts: Option<TsInfo>,
+//     mp4: Option<Mp4Info>,
+//     //audio
+//     // ...
+// }
+// 
+// impl MediaState {
+//     fn new() -> Self {
+//         Self {
+//             flv: None,
+//             ts: None,
+//             mp4: None,
+//         }
+//     }
+// 
+//     fn close(&mut self, media_box: MediaBox) -> bool {
+//         match media_box {
+//             MediaBox::Flv => { self.flv = None; }
+//             MediaBox::Ts => { self.ts = None; }
+//             MediaBox::Mp4 => { self.mp4 = None; }
+//         }
+//         self.can_shutdown()
+//     }
+//     fn can_shutdown(&self) -> bool {
+//         self.flv.is_none() && self.ts.is_none() && self.mp4.is_none()
+//     }
+// }
 
 struct InnerTrace {
     ssrc: u32,
@@ -524,8 +620,7 @@ impl State {
 }
 
 type CrossbeamChannel = (crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>);
-type BroadcastAvChannel = (broadcast::Sender<AVPacket>, broadcast::Receiver<AVPacket>);
-type BroadcastFrameChannel = (broadcast::Sender<FrameData>, broadcast::Receiver<FrameData>);
+type BroadcastFrameChannel = (broadcast::Sender<Bytes>, broadcast::Receiver<Bytes>);
 type BroadcastDownInfoChannel = (broadcast::Sender<StreamRecordInfo>, broadcast::Receiver<StreamRecordInfo>);
 
 pub struct ConsumerChannel {
@@ -561,16 +656,16 @@ impl Channel {
     fn get_rtp_tx(&self) -> crossbeam_channel::Sender<RtpPacket> {
         self.rtp_channel.0.clone()
     }
-    fn get_flv_tx(&self) -> broadcast::Sender<FrameData> {
+    fn get_flv_tx(&self) -> broadcast::Sender<Bytes> {
         self.flv_channel.0.clone()
     }
-    fn get_flv_rx(&self) -> broadcast::Receiver<FrameData> {
+    fn get_flv_rx(&self) -> broadcast::Receiver<Bytes> {
         self.flv_channel.0.subscribe()
     }
-    fn get_hls_tx(&self) -> broadcast::Sender<FrameData> {
+    fn get_hls_tx(&self) -> broadcast::Sender<Bytes> {
         self.hls_channel.0.clone()
     }
-    fn get_hls_rx(&self) -> broadcast::Receiver<FrameData> {
+    fn get_hls_rx(&self) -> broadcast::Receiver<Bytes> {
         self.hls_channel.0.subscribe()
     }
     fn get_down_tx(&self) -> broadcast::Sender<StreamRecordInfo> {

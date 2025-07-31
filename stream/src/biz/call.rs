@@ -18,14 +18,14 @@ pub struct RespBo<T> {
     data: Option<T>,
 }
 
-#[derive(New, Serialize, Get)]
+#[derive(New, Serialize, Get, Debug)]
 #[serde(crate = "common::serde")]
 pub struct NetSource {
     remote_addr: String,
     protocol: String,
 }
 
-#[derive(New, Serialize, Get)]
+#[derive(New, Serialize, Get, Debug)]
 #[serde(crate = "common::serde")]
 pub struct RtpInfo {
     ssrc: u32,
@@ -39,7 +39,7 @@ impl RtpInfo {
     pub async fn stream_unknown(&self) {}
 }
 
-#[derive(New, Serialize, Get)]
+#[derive(New, Serialize, Get, Debug)]
 #[serde(crate = "common::serde")]
 pub struct BaseStreamInfo {
     rtp_info: RtpInfo,

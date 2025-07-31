@@ -6,15 +6,16 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-common = { git = "https://github.com/epimore/pigs.git",rev = "ff413519", features = ["net"] }
-#common = { path = "../../pigs/common", features = ["net"] }
+#common = { git = "https://github.com/epimore/pigs.git",rev = "ff413519", features = ["net"] }
+common = { path = "../../pigs/common", features = ["net"] }
+shared = { path = "../shared" }
 parking_lot = "0.12"
 tokio-util = "0.7"
 futures-util = "0.3"
 hyper = { version = "0.14.26", features = ["full"] }
 #hyper = { version = "1.6.0", features = ["full"] }
 http-body-util = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+#reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 form_urlencoded = "1.2.1"
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 #rtp = "0.11"
@@ -29,6 +30,12 @@ tokio-stream = { version = "0.1.15", features = ["sync"] }
 #rayon = "1.10"
 crossbeam-channel = "0.5"
 #mp4 = "0.14"
-
-rtp-types = "0.1.2"
+axum = "0.8"
+rtp-types = "0.1"
+#rtcp-types = "0.1"
 rsmpeg = "0.14.2+ffmpeg.6.1"
+#feign = "0.1"
+#anyhow = { workspace = true }
+#thiserror = { workspace = true }
+pretend = "0.4"
+pretend-reqwest = "0.4"

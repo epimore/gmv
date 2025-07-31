@@ -7,15 +7,15 @@ use common::constructor::{Get};
 use common::serde_default;
 
 //统一响应超时:单位毫秒
-pub const TIME_OUT: u64 = 8000;
-pub const HALF_TIME_OUT: u64 = 4000;
-//数据通道缓存大小
-pub const BUFFER_SIZE: usize = 64;
-//API接口根信息
-pub const INDEX: &str = r#"<!DOCTYPE html><html lang="en"><head>
-    <style>body{display:grid;place-items:center;height:100vh;margin:0;}<bof/style>
-    <metacharset="UTF - 8"><title>GMV</title></head>
-<body><div><h1>GMV:STREAM-SERVER</h1></div></body></html>"#;
+// pub const TIME_OUT: u64 = 8000;
+// pub const HALF_TIME_OUT: u64 = 4000;
+// //数据通道缓存大小
+// pub const BUFFER_SIZE: usize = 64;
+// //API接口根信息
+// pub const INDEX: &str = r#"<!DOCTYPE html><html lang="en"><head>
+//     <style>body{display:grid;place-items:center;height:100vh;margin:0;}<bof/style>
+//     <metacharset="UTF - 8"><title>GMV</title></head>
+// <body><div><h1>GMV:STREAM-SERVER</h1></div></body></html>"#;
 
 //callback uri start
 //ssrc流注册

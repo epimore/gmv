@@ -1,0 +1,22 @@
+[package]
+name = "shared"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+common = { path = "../../pigs/common", features = ["net"] }
+axum = "0.8"
+paste = "1.0"
+pretend = "0.4"
+pretend-reqwest = "0.4"
+
+[dev-dependencies]
+#feign = "0.1"
+#anyhow = { workspace = true }
+#thiserror = { workspace = true }
+#feign-macros = "0.1"
+#reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+#
+#[patch.crates-io]
+#reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
