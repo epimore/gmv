@@ -1,6 +1,5 @@
 #![allow(warnings)]
 pub mod info;
-pub mod format;
 pub mod io;
 
 pub use paste;

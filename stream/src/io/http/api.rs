@@ -3,8 +3,8 @@ use axum::{Extension, Json, Router};
 use common::exception::GlobalResultExt;
 use common::log::error;
 use common::tokio::sync::mpsc::Sender;
-use shared::info::media_initialize::MediaStreamConfig;
-use shared::info::media_initialize_ext::MediaMap;
+use shared::info::media_info::MediaStreamConfig;
+use shared::info::media_info_ext::MediaMap;
 use shared::info::res::Resp;
 
 pub fn routes(tx: Sender<u32>) -> Router {

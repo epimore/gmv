@@ -2,9 +2,9 @@ pub mod output_layer {
     use common::exception::code::conf_err::CONFIG_ERROR_CODE;
     use common::exception::{GlobalError, GlobalResult};
     use common::log::error;
-    use share::bus::media_initialize::{Dash, Gb28181, Hls, HttpFlv, Local, Output, Rtmp, Rtsp, WebRtc};
-    use share::paste::paste;
-    use share::{impl_check_empty, impl_open_close};
+    use shared::info::io::{Dash, Gb28181, Hls, HttpFlv, Local, Output, Rtmp, Rtsp, WebRtc};
+    use shared::paste::paste;
+    use shared::{impl_check_empty, impl_open_close};
 
     pub struct OutputLayer {
         local: Option<LocalLayer>,
@@ -102,27 +102,28 @@ pub mod converter_layer {
     use crate::state::layer::codec_layer::CodecLayer;
     use crate::state::layer::filter_layer::FilterLayer;
     use crate::state::layer::muxer_layer::MuxerLayer;
-    use share::bus::media_initialize::Converter;
+    use shared::info::media_info::Converter;
 
     #[derive(Clone)]
     pub struct ConverterLayer {
         pub codec: Option<CodecLayer>,
-        pub muxer: Option<MuxerLayer>,
-        pub filter: Option<FilterLayer>,
+        pub muxer: MuxerLayer,
+        pub filter: FilterLayer,
     }
 
     impl ConverterLayer {
         pub fn bean_to_layer(converter: Converter) -> Self {
             ConverterLayer {
                 codec: converter.codec.map(CodecLayer::bean_to_layer),
-                muxer: converter.muxer.map(MuxerLayer::bean_to_layer),
-                filter: converter.filter.map(FilterLayer::bean_to_layer),
+                muxer: MuxerLayer::bean_to_layer(converter.muxer),
+                filter: FilterLayer::bean_to_layer(converter.filter),
             }
         }
+        
     }
 }
 pub mod filter_layer {
-    use share::bus::media_initialize::{Capture, Filter};
+    use shared::info::filter::{Capture, Filter};
 
     #[derive(Clone)]
     pub struct CaptureLayer {}
@@ -161,7 +162,7 @@ pub mod muxer_layer {
     use crate::media::context::format::flv::FlvPacket;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use common::tokio::sync::broadcast;
-    use share::bus::media_initialize::{Flv, Frame, Mp4, Muxer, RtpEnc, RtpFrame, RtpPs, Ts};
+    use shared::info::format::{Flv, Frame, Mp4, Muxer, RtpEnc, RtpFrame, RtpPs, Ts};
     use std::sync::Arc;
 
     #[derive(Clone)]
@@ -169,7 +170,7 @@ pub mod muxer_layer {
         pub flv: Option<FlvLayer>,
         pub mp4: Option<Mp4Layer>,
         pub ts: Option<TsLayer>,
-        pub rtp: Option<RtpFrameLayer>,
+        pub rtp_frame: Option<RtpFrameLayer>,
         pub rtp_ps: Option<RtpPsLayer>,
         pub rtp_enc: Option<RtpEncLayer>,
         pub frame: Option<FrameLayer>,
@@ -180,7 +181,7 @@ pub mod muxer_layer {
                 flv: muxer.flv.map(FlvLayer::bean_to_layer),
                 mp4: muxer.mp4.map(Mp4Layer::bean_to_layer),
                 ts: muxer.ts.map(TsLayer::bean_to_layer),
-                rtp: muxer.rtp.map(RtpFrameLayer::bean_to_layer),
+                rtp_frame: muxer.rtp_frame.map(RtpFrameLayer::bean_to_layer),
                 rtp_ps: muxer.rtp_ps.map(RtpPsLayer::bean_to_layer),
                 rtp_enc: muxer.rtp_enc.map(RtpEncLayer::bean_to_layer),
                 frame: muxer.frame.map(FrameLayer::bean_to_layer),
@@ -245,7 +246,7 @@ pub mod muxer_layer {
     }
 }
 pub mod codec_layer {
-    use share::bus::media_initialize::Codec;
+    use shared::info::codec::Codec;
 
     #[derive(Clone)]
     pub enum CodecLayer {
