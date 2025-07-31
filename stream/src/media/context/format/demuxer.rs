@@ -5,8 +5,10 @@ use common::exception::{GlobalError, GlobalResult};
 use common::log::error;
 use common::once_cell::sync::Lazy;
 use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_VIDEO, AVFMT_FLAG_CUSTOM_IO};
+use share::bus::media_initialize_ext::MediaExt;
 use crate::media::{show_ffmpeg_error_msg, rtp, rw};
 use crate::media::rw::SdpMemory;
+use crate::state::msg::SdpMsg;
 
 static SDP_FLAGS: Lazy<CString> = Lazy::new(|| CString::new("sdp_flags").unwrap());
 static CUSTOM_IO: Lazy<CString> = Lazy::new(|| CString::new("custom_io").unwrap());
@@ -66,8 +68,8 @@ impl Drop for DemuxerContext {
 }
 
 impl DemuxerContext {
-    pub fn start_demuxer(sdp_map: &(u8, String), mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
-        let sdp = build_sdp(sdp_map.0, &sdp_map.1);
+    pub fn start_demuxer(media_ext: &MediaExt, mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
+        let sdp = build_sdp(media_ext.tp_code, &media_ext.tp_val);
         let mut sdp_mem = SdpMemory::new(sdp);
         unsafe {
             //内存中读取sdp信息

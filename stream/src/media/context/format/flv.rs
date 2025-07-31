@@ -1,18 +1,26 @@
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
-use crate::media::format::demuxer;
-use crate::media::format::muxer::MuxerSink;
+use std::sync::Arc;
+use crate::media::msg::format::muxer::{MuxerEnum, MuxerSink};
 use common::bytes::Bytes;
-use common::exception::GlobalResult;
+use common::exception::{GlobalError, GlobalResult};
 use common::once_cell::sync::Lazy;
 use common::tokio::sync::broadcast;
 use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, AVFormatContext, AVIOContext, AVPacket};
+use common::log::warn;
+use crate::media::msg::format::demuxer::DemuxerContext;
 
 static FLV: Lazy<CString> = Lazy::new(|| CString::new("flv").unwrap());
+
+
+pub struct FlvPacket {
+    pub data: Bytes,
+    pub is_key: bool,
+}
+
 pub struct FlvMuxer {
     pub flv_header: Bytes,
-    //is_idr packet
-    pub flv_body_tx: broadcast::Sender<(bool, Bytes)>,
+    pub flv_body_tx: broadcast::Sender<Arc<FlvPacket>>,
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
     pub io_buf: *mut u8,
@@ -34,7 +42,59 @@ impl Drop for FlvMuxer {
     }
 }
 impl FlvMuxer {
-    pub fn new(flv_body_tx: broadcast::Sender<(bool, Bytes)>, demuxer_context: &demuxer::DemuxerContext) -> GlobalResult<Self> {
+    pub fn get_header(&self) -> Bytes {
+        self.flv_header.clone()
+    }
+
+    unsafe extern "C" fn write_callback(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
+        unsafe {
+            let out_buffer = &mut *(opaque as *mut Vec<u8>);
+            let data = std::slice::from_raw_parts(buf, buf_size as usize);
+            out_buffer.extend_from_slice(data);
+            buf_size
+        }
+    }
+}
+
+impl MuxerSink<broadcast::Sender<(bool, Bytes)>> for FlvMuxer {
+    fn write_packet(&mut self, pkt: &AVPacket) {
+        unsafe {
+            let mut cloned = std::mem::zeroed::<AVPacket>();
+            av_packet_ref(&mut cloned, pkt);
+
+            // 记录旧的 out_buf 长度
+            let before_len = self.out_buf.len();
+
+            // 写入 FLV packet 到缓冲区
+            let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
+            av_packet_unref(&mut cloned);
+
+            if ret < 0 {
+                common::log::warn!("FLV write failed: {}", ret);
+                return;
+            }
+
+            let after_len = self.out_buf.len();
+            if after_len <= before_len {
+                return;
+            }
+
+            // 获取新写入的字节（即这个 packet 的 FLV 表示）
+            let packet_bytes = &self.out_buf[before_len..after_len];
+
+            // 判断是否为视频关键帧
+            let is_key = pkt.stream_index == 0 && (pkt.flags & rsmpeg::ffi::AV_PKT_FLAG_KEY as i32 != 0);
+
+            let _ = self
+                .flv_body_tx
+                .send(FlvPacket { data: Bytes::copy_from_slice(packet_bytes), is_key });
+
+            // 清理 out_buf，保留 header（可选）或直接清空
+            self.out_buf.truncate(0); // 完全清空（推荐）
+        }
+    }
+
+    fn init_muxer(demuxer_context: &DemuxerContext, flv_body_tx: broadcast::Sender<FlvPacket>) -> GlobalResult<Self> {
         unsafe {
             let io_buf_size = 4096;
             let io_buf = av_malloc(io_buf_size) as *mut u8;
@@ -62,7 +122,7 @@ impl FlvMuxer {
 
             // 写 header
             if avformat_write_header(fmt_ctx, std::ptr::null_mut()) < 0 {
-                return Err("FLV header write failed".into());
+                return Err(GlobalError::new_sys_error("FLV header write failed", |msg| warn!("{msg}")));
             }
 
             let flv_muxer = Self {
@@ -73,59 +133,7 @@ impl FlvMuxer {
                 io_buf,
                 out_buf: buffer,
             };
-            Ok(flv_muxer)
-        }
-    }
-
-    pub fn get_header(&self) -> Bytes {
-        self.flv_header.clone()
-    }
-
-    unsafe extern "C" fn write_callback(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
-        unsafe {
-            let out_buffer = &mut *(opaque as *mut Vec<u8>);
-            let data = std::slice::from_raw_parts(buf, buf_size as usize);
-            out_buffer.extend_from_slice(data);
-            buf_size
-        }
-    }
-}
-
-impl MuxerSink for FlvMuxer {
-    fn write_packet(&self, pkt: &AVPacket) {
-        unsafe {
-            let mut cloned = std::mem::zeroed::<AVPacket>();
-            av_packet_ref(&mut cloned, pkt);
-
-            // 记录旧的 out_buf 长度
-            let before_len = self.out_buf.len();
-
-            // 写入 FLV packet 到缓冲区
-            let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
-            av_packet_unref(&mut cloned);
-
-            if ret < 0 {
-                common::log::warn!("FLV write failed: {}", ret);
-                return;
-            }
-
-            let after_len = self.out_buf.len();
-            if after_len <= before_len {
-                return;
-            }
-
-            // 获取新写入的字节（即这个 packet 的 FLV 表示）
-            let packet_bytes = &self.out_buf[before_len..after_len];
-
-            // 判断是否为视频关键帧
-            let is_idr = pkt.stream_index == 0 && (pkt.flags & rsmpeg::ffi::AV_PKT_FLAG_KEY != 0);
-
-            let _ = self
-                .flv_body_tx
-                .send((is_idr, Bytes::copy_from_slice(packet_bytes)));
-
-            // 清理 out_buf，保留 header（可选）或直接清空
-            self.out_buf.truncate(0); // 完全清空（推荐）
+            Ok(MuxerEnum::Flv(flv_muxer))
         }
     }
 }

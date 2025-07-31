@@ -94,7 +94,7 @@ pub fn res_422() -> GlobalResult<Response<Body>> {
 //监听ssrc,接收流放入通道缓存
 pub fn listen_ssrc(ssrc_lis: SsrcLisDto) -> GlobalResult<Response<Body>> {
     let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
-    let res = match cache::insert(ssrc_lis) {
+    let res = match cache::insert_media(ssrc_lis) {
         Ok(_) => {
             let json_data = ResMsg::<bool>::build_success().to_json()?;
             response.status(StatusCode::OK).body(Body::from(json_data)).hand_log(|msg| error!("{msg}"))?
@@ -133,7 +133,7 @@ impl RtpMap {
             return res_422();
         }
         let response = Response::builder().header(header::CONTENT_TYPE, "application/json");
-        let res = match cache::insert_media_type(rtp_map.ssrc, rtp_map.map) {
+        let res = match cache::insert_media_type(rtp_map.ssrc, rtp_map.map).await {
             Ok(_) => {
                 ssrc_tx.send(rtp_map.ssrc).await.hand_log(|msg| error!("{msg}"))?;
                 let json_data = ResMsg::<bool>::build_success().to_json()?;

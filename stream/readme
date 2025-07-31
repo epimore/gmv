@@ -88,3 +88,41 @@ todo:
       ssrc: u32,
       map: HashMap<u8, String>, //96 H264/90000
   }
+
+
+  v=0
+  o=- 4611731400430051336 2 IN IP4 192.168.1.100
+  s=Conference Stream
+  i=Multi-party video conference session
+  u=http://example.com/session-info
+  e=admin@example.com
+  c=IN IP4 239.255.0.1/32
+  t=0 0
+  a=group:BUNDLE audio video
+  a=msid-semantic: WMS stream_id audio_track video_track
+
+  # 音频媒体描述
+  m=audio 49170 RTP/AVP 111 96
+  i=Primary Audio Channel
+  c=IN IP4 239.255.0.1/32
+  b=AS:128
+  a=rtpmap:111 OPUS/48000/2
+  a=fmtp:111 minptime=10;useinbandfec=1
+  a=rtpmap:96 G722/8000
+  a=sendrecv
+  a=ssrc:12345678 cname:audio-src
+  a=mid:audio
+
+  # 视频媒体描述
+  m=video 51372 RTP/AVP 100 101
+  i=Main Video Feed
+  c=IN IP4 239.255.0.1/32
+  b=AS:2048
+  a=rtpmap:100 H264/90000
+  a=fmtp:100 profile-level-id=42e01f;packetization-mode=1
+  a=rtpmap:101 VP8/90000
+  a=rtcp-fb:100 nack pli
+  a=rtcp-fb:101 ccm fir
+  a=sendrecv
+  a=ssrc:87654321 cname:video-src
+  a=mid:video

@@ -1,6 +1,11 @@
+
 [workspace]
 resolver = "2"
-members = ["session", "stream"]
+members = ["session", "shared", "stream"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
 
 [profile.dev]
 debug = true
