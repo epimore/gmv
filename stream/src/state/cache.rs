@@ -24,7 +24,7 @@ use crate::container::PlayType;
 use crate::general::cfg;
 use crate::general::mode::{ServerConf, };
 use crate::io::hook_handler::{Download, MediaAction, OutEvent, OutEventRes, Play};
-use crate::media::context::event::ConverterEvent;
+use crate::media::context::event::ContextEvent;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -43,8 +43,8 @@ use common::tokio::sync::{broadcast, mpsc, Notify};
 use common::tokio::time;
 use common::tokio::time::Instant;
 use parking_lot::RwLock;
-use shared::info::media_initialize::MediaStreamConfig;
-use shared::info::media_initialize_ext::MediaExt;
+use shared::info::media_info::MediaStreamConfig;
+use shared::info::media_info_ext::MediaExt;
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -171,12 +171,12 @@ pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(cross
                 Some(media_ext) => {
                     match media_ext.tp_code == payload_type {
                         true => {
-                            let converter_event_rx = stream_trace.mpsc_bus.sub_type_channel::<ConverterEvent>().hand_log(|msg| error!("{msg}"))?;
+                            let converter_event_rx = stream_trace.mpsc_bus.sub_type_channel::<ContextEvent>().hand_log(|msg| error!("{msg}"))?;
                             let stream_config = StreamConfig {
                                 converter: stream_trace.converter.clone(),
                                 media_ext: stream_trace.media_ext.clone().unwrap(),
                                 rtp_rx: stream_trace.rtp_channel.1.clone(),
-                                converter_event_rx,
+                                context_event_rx: converter_event_rx,
                             };
                             let _ = stream_trace.mpsc_bus.try_publish(stream_config).hand_log(|msg| error!("{msg}"));
                             return stream_register(ssrc, bill);
@@ -550,37 +550,6 @@ struct StreamTrace {
     media_ext: Option<MediaExt>,
     export: OutputLayer,
 }
-
-// struct MediaState {
-//     //video
-//     flv: Option<FlvInfo>,
-//     ts: Option<TsInfo>,
-//     mp4: Option<Mp4Info>,
-//     //audio
-//     // ...
-// }
-// 
-// impl MediaState {
-//     fn new() -> Self {
-//         Self {
-//             flv: None,
-//             ts: None,
-//             mp4: None,
-//         }
-//     }
-// 
-//     fn close(&mut self, media_box: MediaBox) -> bool {
-//         match media_box {
-//             MediaBox::Flv => { self.flv = None; }
-//             MediaBox::Ts => { self.ts = None; }
-//             MediaBox::Mp4 => { self.mp4 = None; }
-//         }
-//         self.can_shutdown()
-//     }
-//     fn can_shutdown(&self) -> bool {
-//         self.flv.is_none() && self.ts.is_none() && self.mp4.is_none()
-//     }
-// }
 
 struct InnerTrace {
     ssrc: u32,

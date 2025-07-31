@@ -1,14 +1,13 @@
-use std::ffi::{c_int, c_void, CString};
-use std::ptr;
-use std::sync::Arc;
-use crate::media::msg::format::muxer::{MuxerEnum, MuxerSink};
+use crate::media::context::format::demuxer::DemuxerContext;
 use common::bytes::Bytes;
 use common::exception::{GlobalError, GlobalResult};
+use common::log::warn;
 use common::once_cell::sync::Lazy;
 use common::tokio::sync::broadcast;
 use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, AVFormatContext, AVIOContext, AVPacket};
-use common::log::warn;
-use crate::media::msg::format::demuxer::DemuxerContext;
+use std::ffi::{c_int, c_void, CString};
+use std::ptr;
+use std::sync::Arc;
 
 static FLV: Lazy<CString> = Lazy::new(|| CString::new("flv").unwrap());
 
@@ -18,7 +17,7 @@ pub struct FlvPacket {
     pub is_key: bool,
 }
 
-pub struct FlvMuxer {
+pub struct FlvContext {
     pub flv_header: Bytes,
     pub flv_body_tx: broadcast::Sender<Arc<FlvPacket>>,
     pub fmt_ctx: *mut AVFormatContext,
@@ -26,7 +25,7 @@ pub struct FlvMuxer {
     pub io_buf: *mut u8,
     pub out_buf: Vec<u8>,
 }
-impl Drop for FlvMuxer {
+impl Drop for FlvContext {
     fn drop(&mut self) {
         unsafe {
             if !self.fmt_ctx.is_null() {
@@ -41,7 +40,7 @@ impl Drop for FlvMuxer {
         }
     }
 }
-impl FlvMuxer {
+impl FlvContext {
     pub fn get_header(&self) -> Bytes {
         self.flv_header.clone()
     }
@@ -54,9 +53,7 @@ impl FlvMuxer {
             buf_size
         }
     }
-}
 
-impl MuxerSink<broadcast::Sender<(bool, Bytes)>> for FlvMuxer {
     fn write_packet(&mut self, pkt: &AVPacket) {
         unsafe {
             let mut cloned = std::mem::zeroed::<AVPacket>();
@@ -70,7 +67,7 @@ impl MuxerSink<broadcast::Sender<(bool, Bytes)>> for FlvMuxer {
             av_packet_unref(&mut cloned);
 
             if ret < 0 {
-                common::log::warn!("FLV write failed: {}", ret);
+                warn!("FLV write failed: {}", ret);
                 return;
             }
 
@@ -87,14 +84,17 @@ impl MuxerSink<broadcast::Sender<(bool, Bytes)>> for FlvMuxer {
 
             let _ = self
                 .flv_body_tx
-                .send(FlvPacket { data: Bytes::copy_from_slice(packet_bytes), is_key });
+                .send(Arc::new(FlvPacket {
+                    data: Bytes::copy_from_slice(packet_bytes),
+                    is_key,
+                }));
 
             // 清理 out_buf，保留 header（可选）或直接清空
             self.out_buf.truncate(0); // 完全清空（推荐）
         }
     }
 
-    fn init_muxer(demuxer_context: &DemuxerContext, flv_body_tx: broadcast::Sender<FlvPacket>) -> GlobalResult<Self> {
+    pub fn init_context(demuxer_context: &DemuxerContext, flv_body_tx: broadcast::Sender<Arc<FlvPacket>>) -> GlobalResult<Self> {
         unsafe {
             let io_buf_size = 4096;
             let io_buf = av_malloc(io_buf_size) as *mut u8;
@@ -133,7 +133,7 @@ impl MuxerSink<broadcast::Sender<(bool, Bytes)>> for FlvMuxer {
                 io_buf,
                 out_buf: buffer,
             };
-            Ok(MuxerEnum::Flv(flv_muxer))
+            Ok(flv_muxer)
         }
     }
 }
