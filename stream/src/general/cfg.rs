@@ -29,7 +29,26 @@ impl CheckFromConf for StreamConf {
         Ok(())
     }
 }
-
+#[derive(Debug, Get, Clone, Deserialize)]
+#[serde(crate = "common::serde")]
+#[conf(prefix = "server")]
+pub struct ServerConf {
+    name: String,
+    rtp_port: u16,
+    rtcp_port: u16,
+    http_port: u16,
+    hook_uri: String,
+}
+serde_default!(default_name, String, "stream-node-1".to_string());
+serde_default!(default_rtp_port, u16, 18568);
+serde_default!(default_rtcp_port, u16, 18569);
+serde_default!(default_http_port, u16, 18570);
+serde_default!(default_hook_uri, String, "http://127.0.0.1:18567".to_string());
+impl ServerConf {
+    pub fn init_by_conf() -> Self {
+        ServerConf::conf()
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
 use common::bytes::Bytes;
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::info;
 use crossbeam_channel::Receiver;
 
