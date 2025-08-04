@@ -1,8 +1,12 @@
+use axum::body::Body;
+use axum::http::StatusCode;
+use axum::response::Response;
 use axum::Router;
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::{error, info};
 use common::tokio::net::TcpListener;
 use common::tokio::sync::mpsc::Sender;
+use std::net::SocketAddr;
 
 mod flv;
 mod hls;
@@ -25,49 +29,67 @@ pub async fn run(node: &String, std_http_listener: std::net::TcpListener, tx: Se
         // .merge(dash::routes())
         .merge(api::routes(tx.clone()));
 
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .hand_log(|msg| error!("{msg}"))?;
     Ok(())
 }
 
-/// 启动流式响应，包括连接断开监听、构建响应
-pub async fn handle_streaming_request<F, S>(
-    req: Request<Body>,
-    make_stream: F,
-) -> Response<Body>
-where
-    F: FnOnce(StreamContext) -> S + Send + 'static,
-    S: Stream<Item=Result<bytes::Bytes, std::io::Error>> + Send + 'static,
-{
-    let (parts, _body) = req.into_parts();
-    let headers = parts.headers.clone();
-    let upgrade_fut = parts
-        .extensions
-        .get::<hyper::upgrade::OnUpgrade>()
-        .cloned();
-
-    let ctx = StreamContext::new(headers.clone());
-    let disconnect_notify = ctx.client_disconnected.clone();
-
-    // 启动后台任务检测断开
-    if let Some(on_upgrade) = upgrade_fut {
-        tokio::spawn(async move {
-            if let Ok(upgraded) = on_upgrade.await {
-                // 阻塞直到 socket 完全断开
-                let _ = tokio::io::copy(&mut &upgraded, &mut tokio::io::sink()).await;
-                disconnect_notify.notify_one();
-            }
-        });
-    }
-
-    // 构造媒体输出流
-    let stream = make_stream(ctx);
-
-    // 转为 Axum 可响应的 HTTP Body
+/// 404 Not Found
+pub fn res_404() -> Response<Body> {
     Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "video/x-flv") // 可替换为不同类型
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| Response::builder().status(500).body(Body::empty()).unwrap())
+        .header("Content-Type", "text/plain")
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("404 Not Found"))
+        .unwrap()
+}
+
+/// 401 Unauthorized
+pub fn res_401() -> Response<Body> {
+    Response::builder()
+        .header("Content-Type", "text/plain")
+        .status(StatusCode::UNAUTHORIZED)
+        .body(Body::from("401 Unauthorized"))
+        .unwrap()
+}
+
+/// 500 Internal Server Error
+pub fn res_500() -> Response<Body> {
+    Response::builder()
+        .header("Content-Type", "text/plain")
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .body(Body::from("500 Internal Server Error"))
+        .unwrap()
+}
+
+use common::bytes::Bytes;
+use futures_core::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+struct DisconnectAwareStream<S> {
+    inner: S,
+    on_drop: Option<Box<dyn FnOnce() + Send + Sync>>,
+}
+
+impl<S> Stream for DisconnectAwareStream<S>
+where
+    S: Stream<Item=Result<Bytes, std::convert::Infallible>> + Unpin,
+{
+    type Item = Result<Bytes, std::convert::Infallible>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl<S> Drop for DisconnectAwareStream<S> {
+    fn drop(&mut self) {
+        if let Some(cb) = self.on_drop.take() {
+            cb();
+        }
+    }
 }

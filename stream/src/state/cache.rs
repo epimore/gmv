@@ -18,17 +18,20 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::biz::call::{BaseStreamInfo, NetSource, RtpInfo, StreamRecordInfo, StreamState};
+
 use crate::coder::FrameData;
 use crate::container::PlayType;
 use crate::general::cfg;
-use crate::general::mode::{ServerConf, };
+use crate::general::cfg::ServerConf;
+use crate::general::mode::ServerConf;
 use crate::io::hook_handler::{Download, MediaAction, OutEvent, OutEventRes, Play};
 use crate::media::context::event::ContextEvent;
+use crate::media::context::format::flv::FlvPacket;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
+use crate::state::layer::muxer_layer::FlvLayer;
 use crate::state::layer::output_layer::OutputLayer;
-use crate::state::msg::{StreamConfig};
+use crate::state::msg::StreamConfig;
 use crate::state::{HALF_TIME_OUT, RTP_BUFFER_SIZE, STREAM_IDLE_TIME_OUT};
 use common::bus;
 use common::bytes::Bytes;
@@ -45,9 +48,9 @@ use common::tokio::time::Instant;
 use parking_lot::RwLock;
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaExt;
+use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamRecordInfo, StreamState};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
-
 
 
 pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
@@ -125,7 +128,20 @@ where
         }
     }
 }
-
+pub fn try_publish_mpsc<T>(ssrc: &u32, t: T) -> GlobalResult<()>
+where
+    T: Send + Sync + 'static,
+{
+    let state = SESSION.shared.state.read();
+    match state.sessions.get(ssrc) {
+        None => {
+            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
+        }
+        Some(st) => {
+            st.mpsc_bus.try_publish(t).hand_log(|msg| error!("{msg}"))
+        }
+    }
+}
 pub fn sub_bus_mpsc_channel<T>(ssrc: &u32) -> GlobalResult<bus::mpsc::TypedReceiver<T>>
 where
     T: Send + Sync + 'static,
@@ -224,54 +240,63 @@ fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
     }
     None
 }
-fn get_media_tx(stream_ch: &Channel, media_action: &MediaAction) -> MuxerSender {
-    match media_action {
-        MediaAction::Play(play) => {
-            match play {
-                Play::Flv => {
-                    MuxerSender::Flv(stream_ch.get_flv_tx())
-                }
-                Play::Hls(_) => { unimplemented!() }
-                Play::FlvHls(_) => { unimplemented!() }
-            }
-        }
-        MediaAction::Download(down) => {
-            match down {
-                Download::Mp4(_, _) => { unimplemented!() }
-                Download::Picture(_, _) => { unimplemented!() }
-            }
-        }
-    }
-}
+// fn get_media_tx(stream_ch: &Channel, media_action: &MediaAction) -> MuxerSender {
+//     match media_action {
+//         MediaAction::Play(play) => {
+//             match play {
+//                 Play::Flv => {
+//                     MuxerSender::Flv(stream_ch.get_flv_tx())
+//                 }
+//                 Play::Hls(_) => { unimplemented!() }
+//                 Play::FlvHls(_) => { unimplemented!() }
+//             }
+//         }
+//         MediaAction::Download(down) => {
+//             match down {
+//                 Download::Mp4(_, _) => { unimplemented!() }
+//                 Download::Picture(_, _) => { unimplemented!() }
+//             }
+//         }
+//     }
+// }
+// 
+// pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<RtpPacket>> {
+//     let guard = SESSION.shared.state.read();
+//     match guard.sessions.get(ssrc) {
+//         None => {
+//             warn!("ssrc: {} not found rtp channel",ssrc);
+//             None
+//         }
+//         Some(stream_trace) => {
+//             Some(stream_trace.stream_ch.get_rtp_rx())
+//         }
+//     }
+// }
+// pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
+//     let guard = SESSION.shared.state.read();
+//     match guard.sessions.get(ssrc) {
+//         None => { None }
+//         Some(stream_trace) => {
+//             Some(stream_trace.stream_ch.get_flv_tx())
+//         }
+//     }
+// }
 
-pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<RtpPacket>> {
+pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<FlvPacket>>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => {
-            warn!("ssrc: {} not found rtp channel",ssrc);
-            None
+            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
         }
         Some(stream_trace) => {
-            Some(stream_trace.stream_ch.get_rtp_rx())
-        }
-    }
-}
-pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-    let guard = SESSION.shared.state.read();
-    match guard.sessions.get(ssrc) {
-        None => { None }
-        Some(stream_trace) => {
-            Some(stream_trace.stream_ch.get_flv_tx())
-        }
-    }
-}
-
-pub fn get_flv_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
-    let guard = SESSION.shared.state.read();
-    match guard.sessions.get(ssrc) {
-        None => { None }
-        Some(stream_trace) => {
-            Some(stream_trace.stream_ch.get_flv_rx())
+            match &stream_trace.converter.muxer.flv {
+                None => {
+                    Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},对应的flv muxer未开启", ssrc), |msg| error!("{msg}")))
+                }
+                Some(flv_layer) => {
+                    Ok(flv_layer.tx.subscribe())
+                }
+            }
         }
     }
 }
@@ -301,25 +326,25 @@ pub fn get_down_rx(ssrc: &u32) -> Option<broadcast::Receiver<StreamRecordInfo>> 
     }
 }
 
-pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-    let guard = SESSION.shared.state.read();
-    match guard.sessions.get(ssrc) {
-        None => { None }
-        Some(stream_trace) => {
-            Some(stream_trace.stream_ch.get_hls_tx())
-        }
-    }
-}
-
-pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
-    let guard = SESSION.shared.state.read();
-    match guard.sessions.get(ssrc) {
-        None => { None }
-        Some(stream_trace) => {
-            Some(stream_trace.stream_ch.get_hls_rx())
-        }
-    }
-}
+// pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
+//     let guard = SESSION.shared.state.read();
+//     match guard.sessions.get(ssrc) {
+//         None => { None }
+//         Some(stream_trace) => {
+//             Some(stream_trace.stream_ch.get_hls_tx())
+//         }
+//     }
+// }
+// 
+// pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
+//     let guard = SESSION.shared.state.read();
+//     match guard.sessions.get(ssrc) {
+//         None => { None }
+//         Some(stream_trace) => {
+//             Some(stream_trace.stream_ch.get_hls_rx())
+//         }
+//     }
+// }
 
 pub fn get_server_conf() -> &'static ServerConf {
     let conf = &SESSION.shared.server_conf;
