@@ -127,6 +127,7 @@ impl Register {
             .hand_log(|msg| warn!("{msg}"))?;
         if oauth.get_status() == &0u8 {
             warn!("device id = [{}] 未启用设备，拒绝接入",device_id);
+            return Ok(());
         }
         match oauth.get_pwd_check() {
             //不进行鉴权校验
