@@ -10,7 +10,7 @@ use common::{rand, serde_json, tokio};
 use common::bytes::Bytes;
 use common::dashmap::{DashMap, DashSet};
 use common::dashmap::mapref::entry::Entry;
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::{error, warn};
 use common::once_cell::sync::Lazy;
 use common::rand::seq::IteratorRandom;

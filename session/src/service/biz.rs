@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use common::chrono::Local;
-use common::exception::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::log::error;
 use common::tokio::io::AsyncReadExt;
 use poem::web::Field;

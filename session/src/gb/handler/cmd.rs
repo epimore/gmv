@@ -5,7 +5,7 @@ use regex::Regex;
 use rsip::prelude::{HeadersExt, UntypedHeader};
 use rsip::{Response, SipMessage};
 
-use common::exception::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::log::{debug, error, warn};
 use common::tokio::sync::mpsc;
 use common::tokio::time::Instant;

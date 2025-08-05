@@ -6,7 +6,7 @@ use poem_openapi::OpenApiService;
 use common::serde::{Deserialize};
 use common::cfg_lib::conf;
 use common::log::{error, info};
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::serde_default;
 use crate::{web};
 

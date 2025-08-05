@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use common::anyhow::anyhow;
-use common::exception::{GlobalError, GlobalResult, TransError};
+use anyhow::anyhow;
+use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::exception::GlobalError::SysErr;
 use common::log::error;
 use common::serde::{Deserialize, Serialize};

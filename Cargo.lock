@@ -525,17 +525,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "cfg_lib"
 version = "0.1.0"
 dependencies = [
- "cfg_macro 0.1.0",
- "clap",
- "once_cell",
-]
-
-[[package]]
-name = "cfg_lib"
-version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
-dependencies = [
- "cfg_macro 0.1.0 (git+https://github.com/epimore/pigs.git?rev=ff413519)",
+ "cfg_macro",
  "clap",
  "once_cell",
 ]
@@ -543,16 +533,6 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "cfg_macro"
-version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -651,43 +631,13 @@ dependencies = [
  "block-modes",
  "bytebuffer",
  "bytes",
- "cfg_lib 0.1.0",
+ "cfg_lib",
  "chrono",
- "constructor 0.2.0",
+ "constructor",
  "ctor",
  "daemonize",
  "dashmap",
- "exception 0.1.0",
- "fern",
- "hex",
- "log",
- "once_cell",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "tokio",
- "users",
-]
-
-[[package]]
-name = "common"
-version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
-dependencies = [
- "aes",
- "base64 0.13.1",
- "block-modes",
- "bytebuffer",
- "bytes",
- "cfg_lib 0.1.0 (git+https://github.com/epimore/pigs.git?rev=ff413519)",
- "chrono",
- "constructor 0.2.0 (git+https://github.com/epimore/pigs.git?rev=ff413519)",
- "ctor",
- "daemonize",
- "dashmap",
- "exception 0.1.0 (git+https://github.com/epimore/pigs.git?rev=ff413519)",
+ "exception",
  "fern",
  "hex",
  "log",
@@ -704,9 +654,8 @@ dependencies = [
 [[package]]
 name = "common_db"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
- "common 0.2.0 (git+https://github.com/epimore/pigs.git?rev=ff413519)",
+ "common",
  "sqlx",
 ]
 
@@ -728,16 +677,6 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "constructor"
 version = "0.2.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "constructor"
-version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1127,15 +1066,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exception"
-version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
-dependencies = [
- "anyhow",
- "thiserror 2.0.12",
-]
-
-[[package]]
 name = "exr"
 version = "1.73.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1406,8 +1336,8 @@ dependencies = [
  "reqwest 0.12.22",
  "rsip",
  "sdp-types",
+ "shared",
  "sqlx",
- "thiserror 2.0.12",
  "url",
  "uuid 1.17.0",
 ]
@@ -1417,7 +1347,7 @@ name = "gmv-stream"
 version = "0.1.0"
 dependencies = [
  "axum",
- "common 0.2.0",
+ "common",
  "crossbeam-channel",
  "futures-core",
  "futures-util",
@@ -3470,7 +3400,7 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
- "common 0.2.0",
+ "common",
  "paste",
 ]
 

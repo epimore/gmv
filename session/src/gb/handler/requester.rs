@@ -6,10 +6,10 @@ use rsip::headers::ToTypedHeader;
 use rsip::message::HeadersExt;
 use rsip::services::DigestGenerator;
 
-use common::anyhow::anyhow;
+use anyhow::anyhow;
 use common::bytes::Bytes;
 use common::chrono::{Duration, Local};
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::exception::GlobalError::SysErr;
 use common::log::{error, warn};
 use common::net::state::{Association, Package, Zip};
@@ -127,6 +127,7 @@ impl Register {
             .hand_log(|msg| warn!("{msg}"))?;
         if oauth.get_status() == &0u8 {
             warn!("device id = [{}] 未启用设备，拒绝接入",device_id);
+            return Ok(());
         }
         match oauth.get_pwd_check() {
             //不进行鉴权校验

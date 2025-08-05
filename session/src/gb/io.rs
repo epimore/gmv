@@ -3,7 +3,7 @@ use rsip::message::HeadersExt;
 use rsip::SipMessage;
 use common::tokio::sync::mpsc::{Receiver, Sender};
 
-use common::exception::{TransError};
+use common::exception::{GlobalResultExt};
 use common::log::{debug, error, info};
 use common::net::state::{Package, Zip};
 use crate::gb::handler;

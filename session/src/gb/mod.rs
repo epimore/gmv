@@ -6,7 +6,7 @@ use common::tokio::sync::mpsc;
 use common::cfg_lib::conf;
 use common::constructor::Get;
 
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::{error, info};
 use common::net;
 use common::net::state::{CHANNEL_BUFFER_SIZE};
