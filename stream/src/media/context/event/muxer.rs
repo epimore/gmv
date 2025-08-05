@@ -1,3 +1,4 @@
+use shared::info::format::MuxerType;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::flv::FlvContext;
 use crate::media::context::format::muxer::MuxerContext;
@@ -59,4 +60,18 @@ pub enum CloseMuxer {
     RtpPs,
     RtpEnc,
     Frame,
+}
+impl CloseMuxer {
+    pub fn from_muxer_type(tp: &MuxerType) -> Option<Self> {
+        match tp {
+            MuxerType::None => { None }
+            MuxerType::Flv => { Some(Self::Flv) }
+            MuxerType::Mp4 => { Some(Self::Mp4) }
+            MuxerType::Ts => { Some(Self::Ts) }
+            MuxerType::RtpFrame => { Some(Self::RtpFrame) }
+            MuxerType::RtpPs => { Some(Self::RtpPs) }
+            MuxerType::RtpEnc => { Some(Self::RtpEnc) }
+            MuxerType::Frame => { Some(Self::Frame) }
+        }
+    }
 }

@@ -54,7 +54,7 @@ impl FlvContext {
         }
     }
 
-    fn write_packet(&mut self, pkt: &AVPacket) {
+    pub fn write_packet(&mut self, pkt: &AVPacket) {
         unsafe {
             let mut cloned = std::mem::zeroed::<AVPacket>();
             av_packet_ref(&mut cloned, pkt);
@@ -117,7 +117,7 @@ impl FlvContext {
             for &codecpar in &demuxer_context.codecpar_list {
                 let stream = avformat_new_stream(fmt_ctx, ptr::null_mut());
                 avcodec_parameters_copy((*stream).codecpar, codecpar);
-                (*stream).codecpar.codec_tag = 0;
+                (*(*stream).codecpar).codec_tag = 0;
             }
 
             // 写 header

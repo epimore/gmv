@@ -119,7 +119,6 @@ pub mod converter_layer {
                 filter: FilterLayer::bean_to_layer(converter.filter),
             }
         }
-        
     }
 }
 pub mod filter_layer {
@@ -162,8 +161,10 @@ pub mod muxer_layer {
     use crate::media::context::format::flv::FlvPacket;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use common::tokio::sync::broadcast;
-    use shared::info::format::{Flv, Frame, Mp4, Muxer, RtpEnc, RtpFrame, RtpPs, Ts};
+    use shared::info::format::{Flv, Frame, Mp4, Muxer, MuxerType, RtpEnc, RtpFrame, RtpPs, Ts};
     use std::sync::Arc;
+    use shared::{impl_check_empty, impl_close};
+    use shared::paste::paste;
 
     #[derive(Clone)]
     pub struct MuxerLayer {
@@ -175,6 +176,9 @@ pub mod muxer_layer {
         pub rtp_enc: Option<RtpEncLayer>,
         pub frame: Option<FrameLayer>,
     }
+    impl_check_empty!(MuxerLayer, [flv, mp4, ts, rtp_frame, rtp_ps, rtp_enc, frame]);
+
+    impl_close!(MuxerLayer, [flv, mp4, ts, rtp_frame, rtp_ps, rtp_enc, frame]);
     impl MuxerLayer {
         pub fn bean_to_layer(muxer: Muxer) -> Self {
             MuxerLayer {
@@ -185,6 +189,20 @@ pub mod muxer_layer {
                 rtp_ps: muxer.rtp_ps.map(RtpPsLayer::bean_to_layer),
                 rtp_enc: muxer.rtp_enc.map(RtpEncLayer::bean_to_layer),
                 frame: muxer.frame.map(FrameLayer::bean_to_layer),
+            }
+        }
+        //todo 发送close 消息
+
+        pub fn close_by_muxer_type(&mut self, mt: &MuxerType) {
+            match mt {
+                MuxerType::Flv => { self.flv = None }
+                MuxerType::Mp4 => { self.mp4 = None }
+                MuxerType::Ts => { self.ts = None }
+                MuxerType::RtpFrame => { self.rtp_frame = None }
+                MuxerType::RtpPs => { self.rtp_ps = None }
+                MuxerType::RtpEnc => { self.rtp_enc = None }
+                MuxerType::Frame => { self.frame = None }
+                MuxerType::None => {}
             }
         }
     }

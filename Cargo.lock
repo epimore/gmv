@@ -1419,10 +1419,8 @@ dependencies = [
  "axum",
  "common 0.2.0",
  "crossbeam-channel",
- "form_urlencoded",
  "futures-core",
  "futures-util",
- "http-body-util",
  "parking_lot",
  "pretend",
  "pretend-reqwest",
@@ -1430,7 +1428,6 @@ dependencies = [
  "rtp-types",
  "shared",
  "tokio-stream",
- "tokio-util",
 ]
 
 [[package]]

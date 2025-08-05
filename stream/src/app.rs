@@ -1,13 +1,13 @@
 use std::net::UdpSocket;
 use common::log::{error, info};
 use common::daemon::Daemon;
-use common::exception::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::{logger, tokio};
 use common::tokio::sync::mpsc;
-use crate::general::mode::ServerConf;
-use crate::io::{http_handler, rtp_handler};
+use crate::io::{http, rtp_handler};
 use crate::state::cache;
-use crate::{media, trans};
+use crate::{media};
+use crate::general::cfg::ServerConf;
 
 pub struct App {
     conf: ServerConf,
@@ -23,7 +23,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
         };
         logger::Logger::init()?;
         banner();
-        let http_listener = http_handler::listen_http_server(*(app.conf.get_http_port()))?;
+        let http_listener = http::listen_http_server(*(app.conf.get_http_port()))?;
         let tu = rtp_handler::listen_gb_server(*(app.conf.get_rtp_port()))?;
         Ok((app, (http_listener, tu)))
     }
@@ -48,7 +48,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
 
                 let web = tokio::spawn(async move {
                     info!("Web server start running...");
-                    http_handler::run(node_name, http_listener, tx).await?;
+                    http::run(&node_name, http_listener, tx).await?;
                     error!("Web server stop");
                     Ok::<(), GlobalError>(())
                 });

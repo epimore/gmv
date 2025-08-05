@@ -74,15 +74,15 @@ impl MediaContext {
     fn handle_filter(filter: &mut FilterContext) {}
 
     fn handle_muxer(muxer: &mut MuxerContext, pkt: &AVPacket) {
-        if let Some(flv_layer) = &muxer.flv {
-            todo!()
+        if let Some(flv_context) = &mut muxer.flv {
+            flv_context.write_packet(pkt);
         }
-        if let Some(mp4_layer) = &muxer.mp4 { unimplemented!() }
-        if let Some(ts_layer) = &muxer.ts { unimplemented!() }
-        if let Some(rtp_frame_layer) = &muxer.rtp_frame { unimplemented!() }
-        if let Some(rtp_ps_layer) = &muxer.rtp_ps { unimplemented!() }
-        if let Some(rtp_enc_layer) = &muxer.rtp_enc { unimplemented!() }
-        if let Some(frame_layer) = &muxer.frame { unimplemented!() }
+        if let Some(mpr_context) = &muxer.mp4 { unimplemented!() }
+        if let Some(ts_context) = &muxer.ts { unimplemented!() }
+        if let Some(rtp_frame_context) = &muxer.rtp_frame { unimplemented!() }
+        if let Some(rtp_ps_context) = &muxer.rtp_ps { unimplemented!() }
+        if let Some(rtp_enc_context) = &muxer.rtp_enc { unimplemented!() }
+        if let Some(frame_context) = &muxer.frame { unimplemented!() }
     }
 
     fn handle_event(&mut self, event: ContextEvent) {
