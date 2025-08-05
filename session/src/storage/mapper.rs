@@ -1,6 +1,6 @@
 use common::chrono::NaiveDateTime;
 use common::dbx::mysqlx::get_conn_by_pool;
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::error;
 use common::sqlx;
 

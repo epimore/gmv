@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use cron::Schedule;
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::error;
 use common::tokio::time::sleep;
 use crate::gb::handler::cmd;

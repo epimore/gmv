@@ -4,7 +4,7 @@ use rsip::Request;
 use common::chrono::{Local, NaiveDateTime};
 use common::constructor::{Get, New, Set};
 use common::dbx::mysqlx::get_conn_by_pool;
-use common::exception::{GlobalResult, TransError};
+use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::error;
 use common::serde::{Deserialize, Serialize};
 use common::sqlx;

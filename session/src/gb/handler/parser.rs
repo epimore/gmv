@@ -2,8 +2,8 @@ pub mod header {
     use rsip::headers::Via;
     use rsip::prelude::{HasHeaders, HeadersExt};
     use rsip::{Header, Request, Response};
-    use common::anyhow::anyhow;
-    use common::exception::{GlobalResult, TransError};
+    use anyhow::anyhow;
+    use common::exception::{GlobalResult, GlobalResultExt};
     use common::exception::GlobalError::{SysErr};
     use common::log::{warn};
 
@@ -94,8 +94,8 @@ pub mod xml {
     use common::log::{debug, error};
     use quick_xml::events::Event;
     use quick_xml::{encoding, Reader};
-    use common::anyhow::{anyhow};
-    use common::exception::{GlobalResult, TransError};
+    use anyhow::{anyhow};
+    use common::exception::{GlobalResult, GlobalResultExt};
     use common::exception::GlobalError::SysErr;
 
     pub const MESSAGE_TYPE: [&'static str; 4] = ["Query,CmdType", "Control,CmdType", "Response,CmdType", "Notify,CmdType"];

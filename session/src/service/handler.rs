@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use common::bytes::Bytes;
 use common::chrono::{Local, TimeZone};
-use common::exception::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::log::{error};
 use common::serde_json;
 use common::tokio::sync::mpsc;
@@ -31,7 +31,7 @@ pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
 }
 
 //无人观看则关闭流
-pub async fn stream_idle(base_stream_info: BaseStreamInfo) -> bool {
+pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
     let stream_id = base_stream_info.get_stream_id();
     let cst_info = general::cache::Cache::stream_map_build_call_id_seq_from_to_tag(stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(stream_id) {
@@ -45,19 +45,16 @@ pub async fn stream_idle(base_stream_info: BaseStreamInfo) -> bool {
         let ssrc = base_stream_info.rtp_info.ssrc;
         let ssrc_num = (ssrc % 10000) as u16;
         general::cache::Cache::ssrc_sn_set(ssrc_num);
-        return true;
     }
-    false
 }
 
-pub async fn off_play(stream_play_info: StreamPlayInfo) -> bool {
+pub async fn off_play(stream_play_info: StreamPlayInfo) {
     let stream_id = stream_play_info.base_stream_info.get_stream_id();
     let gmv_token = stream_play_info.get_token();
     general::cache::Cache::stream_map_remove(stream_id, Some(gmv_token));
-    true
 }
 
-pub async fn end_record(stream_record_info: StreamRecordInfo) -> bool {
+pub async fn end_record(stream_record_info: StreamRecordInfo){
     if let Some(path_file_name) = stream_record_info.file_name {
         if let Ok((abs_path, dir_path, biz_id, extension)) = get_path(&path_file_name) {
             if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&biz_id).await {
@@ -82,14 +79,11 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) -> bool {
                         is_del: Some(0),
                         create_time: Some(Local::now().naive_local()),
                     };
-                    if let Ok(_) = GmvFileInfo::insert_gmv_file_info(vec![file_info]).await {
-                        return true;
-                    }
+                    let _ = GmvFileInfo::insert_gmv_file_info(vec![file_info]).await;
                 }
             }
         }
     };
-    false
 }
 
 fn get_path(path_file_name: &String) -> GlobalResult<(String, String, String, String)> {

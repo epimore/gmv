@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use poem::Body;
 use poem_openapi::payload::Binary;
 use common::chrono::Local;
-use common::exception::{GlobalError, GlobalResult, TransError};
+use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::log::error;
 use common::tokio::io::AsyncReadExt;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};

@@ -23,8 +23,8 @@ pub enum OutEventRes {
     StreamRegister(Option<()>),
     //接收国标媒体流超时事件：取消监听该SSRC,响应内容不敏感;
     StreamInTimeout(Option<()>),
-    //无人观看时，关闭流
-    StreamIdle(Option<u8>),
+    //无人观看时,响应内容不敏感
+    StreamIdle(Option<()>),
     //未知ssrc流事件；响应内容不敏感,some-成功接收;None-未成功接收
     StreamUnknown(Option<()>),
     //用户点播媒体流事件,none与false-回复用户401，true-写入流
