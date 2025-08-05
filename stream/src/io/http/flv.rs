@@ -1,5 +1,5 @@
 use crate::io::hook_handler::{OutEvent, OutEventRes};
-use crate::io::http::{res_401, res_404, DisconnectAwareStream};
+use crate::io::http::{res_401, res_404, DisconnectAwareStream, FLV_PLAY_PATH};
 use crate::media::context::event::inner::InnerEvent;
 use crate::media::context::event::ContextEvent;
 use crate::media::context::format::flv::FlvPacket;
@@ -14,20 +14,19 @@ use common::log::error;
 use common::tokio::sync::{broadcast, oneshot};
 use common::tokio::time::timeout;
 use futures_core::Stream;
-use shared::info::obj::{HttpStreamType, StreamPlayInfo};
+use shared::info::obj::{StreamPlayInfo};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use futures_util::{stream, StreamExt};
+use tokio_stream::wrappers::BroadcastStream;
+use shared::info::format::MuxerType;
+use shared::info::io::{HttpFlv, HttpStreamType, PlayType};
 
-pub fn routes(node: &String) -> Router {
-    Router::new()
-        .nest(
-            &format!("/{}", node),
-            Router::new().route("/play/{stream_id}.flv", axum::routing::get(flv_handler)),
-        )
+pub fn routes() -> Router {
+    Router::new().route(FLV_PLAY_PATH, axum::routing::get(flv_handler))
 }
 async fn flv_handler(Path(stream_id): Path<String>, Query(token): Query<Option<String>>, ConnectInfo(addr): ConnectInfo<SocketAddr>)
                      -> Response<Body> {
@@ -39,19 +38,24 @@ async fn flv_handler(Path(stream_id): Path<String>, Query(token): Query<Option<S
             res_404()
         }
         Some((bsi, user_count)) => {
+            //todo 校验output是否存在
             let ssrc = bsi.rtp_info.ssrc;
             let remote_addr = addr.to_string();
-            let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone().unwrap(), HttpStreamType::HttpFlv, user_count);
+            let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone().unwrap(), HttpStreamType::HttpFlv(MuxerType::Flv), user_count);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
             let _ = event_tx.send((OutEvent::OnPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
+            let token = token.unwrap();
             match rx.await.hand_log(|msg| error!("{msg}")) {
                 Ok(OutEventRes::OnPlay(Some(true))) => {
                     match cache::get_flv_rx(&ssrc) {
                         Ok(rx) => {
+                            //插入用户
+                            cache::update_token(&stream_id, PlayType::Http(HttpStreamType::HttpFlv(MuxerType::Flv)), token.clone(), true, addr);
                             let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync + 'static>> = Some(Box::new(move || {
+                                cache::update_token(&stream_id, PlayType::Http(HttpStreamType::HttpFlv(MuxerType::Flv)), token.clone(), false, addr);
                                 if let Some((bsi, user_count)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
-                                    let info = StreamPlayInfo::new(bsi, remote_addr, token.unwrap(), HttpStreamType::HttpFlv, user_count);
+                                    let info = StreamPlayInfo::new(bsi, remote_addr, token, HttpStreamType::HttpFlv(MuxerType::Flv), user_count);
                                     let _ = event_tx.try_send((OutEvent::OffPlay(info), None)).hand_log(|msg| error!("{msg}"));
                                 }
                             }));
@@ -97,7 +101,7 @@ async fn send_frame(
     // 构建数据流：header -> 首帧关键帧 -> 实时流
     let header_stream = stream::once(Box::pin(async move { Ok::<_, std::convert::Infallible>(header) }));
     let first_key_stream = stream::once(Box::pin(async move { Ok::<_, std::convert::Infallible>(first_key) }));
-    let live_stream = FlvStream { rx };
+    let live_stream = FlvStream { inner: BroadcastStream::new(rx) };
 
     // 包装为 disconnect aware
     let full_stream = header_stream.chain(first_key_stream).chain(live_stream);
@@ -122,7 +126,7 @@ async fn get_header_rx(ssrc: u32) -> GlobalResult<Bytes> {
 }
 
 pub struct FlvStream {
-    rx: broadcast::Receiver<Arc<FlvPacket>>,
+    inner: BroadcastStream<Arc<FlvPacket>>,
 }
 
 impl Stream for FlvStream {
@@ -132,8 +136,9 @@ impl Stream for FlvStream {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.rx).poll_recv(cx) {
-            Poll::Ready(Some(pkt)) => Poll::Ready(Some(Ok(pkt.data.clone()))),
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(pkt))) => Poll::Ready(Some(Ok(pkt.data.clone()))),
+            Poll::Ready(Some(Err(_))) => Poll::Pending, // broadcast lagged, skip
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }

@@ -8,7 +8,7 @@ use shared::info::res::Resp;
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::Duration;
-use shared::info::obj::{BaseStreamInfo, StreamPlayInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
 
 pub struct HttpClient;
 static HTTP: OnceLock<GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>>> = OnceLock::new();
@@ -38,4 +38,8 @@ pub trait HttpSession {
     async fn on_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/stream/idle")]
     async fn stream_idle(&self, json: &BaseStreamInfo) -> Result<Json<Resp<u8>>>;
+    #[request(method = "POST", path = "/off/play")]
+    async fn off_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<()>>>;
+    #[request(method = "POST", path = "/end/record")]
+    async fn end_record(&self, json: &StreamRecordInfo) -> Result<Json<Resp<()>>>;
 }

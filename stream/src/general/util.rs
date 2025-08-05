@@ -1,8 +1,8 @@
+use common::exception::{GlobalResult, GlobalResultExt};
+use common::log::error;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use common::exception::{GlobalResult, TransError};
-use common::log::error;
 
 static INDEX: AtomicUsize = AtomicUsize::new(0);
 

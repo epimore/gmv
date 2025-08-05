@@ -1,6 +1,5 @@
+use crate::info::io::HttpStreamType;
 use common::constructor::New;
-use common::exception::{GlobalError, GlobalResult};
-use common::log::error;
 use common::serde::{Deserialize, Serialize};
 
 #[derive(New, Serialize, Deserialize, Debug)]
@@ -56,37 +55,4 @@ pub struct RtpInfo {
     //媒体流源地址,tcp/udp
     pub origin_trans: Option<NetSource>,
     pub server_name: String,
-}
-
-//Mp4下载及rtp推流；由发起方控制，不回调鉴权
-//    Rtmp,
-//     Rtsp,
-//     WebRtc,
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
-pub enum HttpStreamType {
-    HttpFlv,
-    Hls,
-    Dash,
-}
-impl HttpStreamType {
-    pub fn from_str(s: &str) -> GlobalResult<HttpStreamType> {
-        match s {
-            "flv" => Ok(HttpStreamType::HttpFlv),
-            "ts" => Ok(HttpStreamType::Hls),
-            // "dash" => Some(StreamType::Dash),
-            // "rtmp" => Some(StreamType::Rtmp),
-            // "rtsp" => Some(StreamType::Rtsp),
-            // "webrtc" => Some(StreamType::WebRtc),
-            other => Err(GlobalError::new_sys_error(&format!("unknown stream type {}", other), |msg| error!("{msg}"))),
-        }
-    }
-
-    pub fn to_string(&self) -> String {
-        match self {
-            HttpStreamType::HttpFlv => "http_flv".to_string(),
-            HttpStreamType::Hls => "hls".to_string(),
-            HttpStreamType::Dash => "dash".to_string(),
-        }
-    }
 }

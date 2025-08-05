@@ -17,7 +17,9 @@ impl InnerEvent {
                         error!("no flv context");
                     }
                     Some(fc) => {
-                        let _ = sender.send(fc.flv_header.clone()).hand_log(|msg| error!("{}",msg));
+                        if let Err(_) = sender.send(fc.flv_header.clone()) {
+                            error!("flv_header send to the receiver dropped");
+                        }
                     }
                 }
             }

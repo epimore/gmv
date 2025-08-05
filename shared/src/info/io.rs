@@ -3,6 +3,8 @@ use common::exception::code::conf_err::CONFIG_ERROR_CODE;
 use common::log::error;
 use common::serde::{Deserialize, Serialize};
 use paste::paste;
+use crate::{impl_check_empty, impl_open_close};
+use crate::info::format::MuxerType;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(crate = "common::serde")]
@@ -15,40 +17,6 @@ pub struct Output {
     pub rtsp: Option<Rtsp>,
     pub gb28181: Option<Gb28181>,
     pub web_rtc: Option<WebRtc>,
-}
-#[macro_export]
-macro_rules! impl_check_empty {
-    ($struct:ident, [$($field:ident),*]) => {
-        impl $struct {
-            pub fn check_empty(&self) -> bool {
-                true $(&& self.$field.is_none())*
-            }
-        }
-    }
-}
-
-#[macro_export]
-macro_rules! impl_open_close {
-    ($struct:ident, { $( $field:ident : $type:ty ),* $(,)? }) => {
-        impl $struct {
-            $(
-                paste! {
-                    pub fn [<close_$field>](&mut self) -> bool {
-                        self.$field = None;
-                        self.check_empty()
-                    }
-
-                    pub fn [<open_$field>](&mut self, val: $type) -> bool {
-                        if self.$field.is_some() {
-                            return false;
-                        }
-                        self.$field = Some(val);
-                        true
-                    }
-                }
-            )*
-        }
-    };
 }
 impl_check_empty!(Output, [local, rtmp, http_flv, dash, hls, rtsp, gb28181, web_rtc]);
 
@@ -65,28 +33,44 @@ impl_open_close!(Output, {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Local {}
+pub struct Local {
+    muxer: MuxerType,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Hls {}
+pub struct Hls {
+    muxer: MuxerType,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct HttpFlv {}
+pub struct HttpFlv {
+    muxer: MuxerType,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Rtmp {}
+pub struct Rtmp {
+    muxer: MuxerType,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Rtsp {}
+pub struct Rtsp {
+    muxer: MuxerType,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Dash {}
+pub struct Dash {
+    muxer: MuxerType,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Gb28181 {}
+pub struct Gb28181 {
+    muxer: MuxerType,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct WebRtc {}
+pub struct WebRtc {
+    muxer: MuxerType,
+}
 
 impl Output {
     pub fn new(
@@ -110,6 +94,44 @@ impl Output {
             Err(GlobalError::new_biz_error(CONFIG_ERROR_CODE, "Output cannot be empty", |msg| error!("{msg}")))
         } else {
             Ok(Output { local, rtmp, http_flv, dash, hls, rtsp, gb28181, web_rtc })
+        }
+    }
+}
+
+pub enum PlayType {
+    Rtmp(MuxerType),
+    Rtsp(MuxerType),
+    WebRtc(MuxerType),
+    Http(HttpStreamType),
+}
+impl PlayType {
+    pub fn get_type(&self) -> MuxerType {
+        match self {
+            PlayType::Rtmp(muxer) => muxer.clone(),
+            PlayType::Rtsp(muxer) => muxer.clone(),
+            PlayType::WebRtc(muxer) => muxer.clone(),
+            PlayType::Http(muxer) => muxer.get_type(),
+        }
+    }
+}
+
+//Mp4下载及rtp推流；由发起方控制，不回调鉴权
+//    Rtmp,
+//     Rtsp,
+//     WebRtc,
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
+pub enum HttpStreamType {
+    HttpFlv(MuxerType),
+    Hls(MuxerType),
+    Dash(MuxerType),
+}
+impl HttpStreamType {
+    pub fn get_type(&self) -> MuxerType {
+        match self {
+            HttpStreamType::HttpFlv(muxer) => muxer.clone(),
+            HttpStreamType::Hls(muxer) => muxer.clone(),
+            HttpStreamType::Dash(muxer) => muxer.clone(),
         }
     }
 }

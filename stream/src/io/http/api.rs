@@ -6,11 +6,12 @@ use common::tokio::sync::mpsc::Sender;
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaMap;
 use shared::info::res::Resp;
+use crate::io::http::{LISTEN_SSRC, RTP_MEDIA};
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
-        .route("/listen/ssrc", axum::routing::post(stream_init))
-        .route("/rtp/media", axum::routing::post(stream_map).layer(Extension(tx.clone())))
+        .route(LISTEN_SSRC, axum::routing::post(stream_init))
+        .route(RTP_MEDIA, axum::routing::post(stream_map).layer(Extension(tx.clone())))
 }
 
 async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaStreamConfig>) -> Resp<()> {
@@ -38,4 +39,18 @@ async fn stream_map(Json(sdp): Json<MediaMap>) -> Resp<()> {
             Resp::<()>::build_failed_by_msg(err.to_string())
         }
     }
+}
+
+async fn open_output_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
+    unimplemented!()
+}
+async fn close_output_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
+    unimplemented!()
+}
+
+async fn open_filter_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
+    unimplemented!()
+}
+async fn close_filter_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
+    unimplemented!()
 }

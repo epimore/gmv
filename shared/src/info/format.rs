@@ -33,3 +33,28 @@ pub struct RtpEnc {}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Ts {}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "common::serde")]
+pub enum MuxerTypeExt {
+    Flv(Flv),
+    Mp4(Mp4),
+    Ts(Ts),
+    RtpFrame(RtpFrame),
+    RtpPs(RtpPs),
+    RtpEnc(RtpEnc),
+    Frame(Frame),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, Ord, PartialEq, PartialOrd,Copy)]
+#[serde(crate = "common::serde")]
+pub enum MuxerType {
+    None,
+    Flv,
+    Mp4,
+    Ts,
+    RtpFrame,
+    RtpPs,
+    RtpEnc,
+    Frame,
+}

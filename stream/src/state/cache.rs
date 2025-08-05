@@ -19,22 +19,18 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 
-use crate::coder::FrameData;
-use crate::container::PlayType;
 use crate::general::cfg;
 use crate::general::cfg::ServerConf;
-use crate::general::mode::ServerConf;
-use crate::io::hook_handler::{Download, MediaAction, OutEvent, OutEventRes, Play};
+use crate::io::hook_handler::{OutEvent, OutEventRes};
+use crate::media::context::event::muxer::{CloseMuxer, MuxerEvent};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::format::flv::FlvPacket;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
-use crate::state::layer::muxer_layer::FlvLayer;
 use crate::state::layer::output_layer::OutputLayer;
 use crate::state::msg::StreamConfig;
 use crate::state::{HALF_TIME_OUT, RTP_BUFFER_SIZE, STREAM_IDLE_TIME_OUT};
 use common::bus;
-use common::bytes::Bytes;
 use common::chrono::{Local, Timelike};
 use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::log::{error, info, warn};
@@ -46,9 +42,11 @@ use common::tokio::sync::{broadcast, mpsc, Notify};
 use common::tokio::time;
 use common::tokio::time::Instant;
 use parking_lot::RwLock;
+use shared::info::format::MuxerType;
+use shared::info::io::PlayType;
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaExt;
-use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamRecordInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamState};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -181,20 +179,21 @@ pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(cross
         }
         //流注册
         if stream_trace.origin_trans.is_none() {
-            drop(guard);
             match stream_trace.media_ext.as_ref() {
                 None => { error!("ssrc = {},尚未协商rtp sdp信息", ssrc); }
                 Some(media_ext) => {
                     match media_ext.tp_code == payload_type {
                         true => {
-                            let converter_event_rx = stream_trace.mpsc_bus.sub_type_channel::<ContextEvent>().hand_log(|msg| error!("{msg}"))?;
-                            let stream_config = StreamConfig {
-                                converter: stream_trace.converter.clone(),
-                                media_ext: stream_trace.media_ext.clone().unwrap(),
-                                rtp_rx: stream_trace.rtp_channel.1.clone(),
-                                context_event_rx: converter_event_rx,
-                            };
-                            let _ = stream_trace.mpsc_bus.try_publish(stream_config).hand_log(|msg| error!("{msg}"));
+                            if let Ok(converter_event_rx) = stream_trace.mpsc_bus.sub_type_channel::<ContextEvent>().hand_log(|msg| error!("{msg}")) {
+                                let stream_config = StreamConfig {
+                                    converter: stream_trace.converter.clone(),
+                                    media_ext: stream_trace.media_ext.clone().unwrap(),
+                                    rtp_rx: stream_trace.rtp_channel.1.clone(),
+                                    context_event_rx: converter_event_rx,
+                                };
+                                let _ = stream_trace.mpsc_bus.try_publish(stream_config).hand_log(|msg| error!("{msg}"));
+                            }
+                            drop(guard);
                             return stream_register(ssrc, bill);
                         }
                         false => {
@@ -220,7 +219,7 @@ fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
             if expires == Duration::default() { expires = Duration::from_millis(STREAM_IDLE_TIME_OUT); }
             let when = Instant::now() + expires;
             let notify = next_expiration.map(|ts| ts > when).unwrap_or(true);
-            state.expirations.insert((when, ssrc, StreamDirection::StreamOut));
+            state.expirations.insert((when, ssrc, StreamDirection::StreamOut(MuxerType::None)));
             if notify {
                 SESSION.shared.background_task.notify_one();
             }
@@ -240,47 +239,6 @@ fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
     }
     None
 }
-// fn get_media_tx(stream_ch: &Channel, media_action: &MediaAction) -> MuxerSender {
-//     match media_action {
-//         MediaAction::Play(play) => {
-//             match play {
-//                 Play::Flv => {
-//                     MuxerSender::Flv(stream_ch.get_flv_tx())
-//                 }
-//                 Play::Hls(_) => { unimplemented!() }
-//                 Play::FlvHls(_) => { unimplemented!() }
-//             }
-//         }
-//         MediaAction::Download(down) => {
-//             match down {
-//                 Download::Mp4(_, _) => { unimplemented!() }
-//                 Download::Picture(_, _) => { unimplemented!() }
-//             }
-//         }
-//     }
-// }
-// 
-// pub fn get_rtp_rx(ssrc: &u32) -> Option<crossbeam_channel::Receiver<RtpPacket>> {
-//     let guard = SESSION.shared.state.read();
-//     match guard.sessions.get(ssrc) {
-//         None => {
-//             warn!("ssrc: {} not found rtp channel",ssrc);
-//             None
-//         }
-//         Some(stream_trace) => {
-//             Some(stream_trace.stream_ch.get_rtp_rx())
-//         }
-//     }
-// }
-// pub fn get_flv_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-//     let guard = SESSION.shared.state.read();
-//     match guard.sessions.get(ssrc) {
-//         None => { None }
-//         Some(stream_trace) => {
-//             Some(stream_trace.stream_ch.get_flv_tx())
-//         }
-//     }
-// }
 
 pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<FlvPacket>>> {
     let guard = SESSION.shared.state.read();
@@ -301,51 +259,6 @@ pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<FlvPacket>
     }
 }
 
-pub fn get_down_rx_by_stream_id(stream_id: &String) -> Option<broadcast::Receiver<StreamRecordInfo>> {
-    let guard = SESSION.shared.state.read();
-    match guard.inner.get(stream_id) {
-        None => { None }
-        Some(inner) => {
-            match guard.sessions.get(&inner.ssrc) {
-                None => { None }
-                Some(stream_trace) => {
-                    Some(stream_trace.stream_ch.get_down_rx())
-                }
-            }
-        }
-    }
-}
-
-pub fn get_down_rx(ssrc: &u32) -> Option<broadcast::Receiver<StreamRecordInfo>> {
-    let guard = SESSION.shared.state.read();
-    match guard.sessions.get(ssrc) {
-        None => { None }
-        Some(stream_trace) => {
-            Some(stream_trace.stream_ch.get_down_rx())
-        }
-    }
-}
-
-// pub fn get_hls_tx(ssrc: &u32) -> Option<broadcast::Sender<FrameData>> {
-//     let guard = SESSION.shared.state.read();
-//     match guard.sessions.get(ssrc) {
-//         None => { None }
-//         Some(stream_trace) => {
-//             Some(stream_trace.stream_ch.get_hls_tx())
-//         }
-//     }
-// }
-// 
-// pub fn get_hls_rx(ssrc: &u32) -> Option<broadcast::Receiver<FrameData>> {
-//     let guard = SESSION.shared.state.read();
-//     match guard.sessions.get(ssrc) {
-//         None => { None }
-//         Some(stream_trace) => {
-//             Some(stream_trace.stream_ch.get_hls_rx())
-//         }
-//     }
-// }
-
 pub fn get_server_conf() -> &'static ServerConf {
     let conf = &SESSION.shared.server_conf;
     conf
@@ -356,6 +269,7 @@ pub fn get_event_tx() -> mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)> {
 }
 
 //更新用户数据:in_out:true-插入,false-移除
+//所有输出皆通过此计算是否idle：如无用户，如gb28181转发，则stream_id/user_token = ssrc
 pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String, in_out: bool, remote_addr: SocketAddr) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
@@ -370,15 +284,16 @@ pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String,
                 user_map.insert(remote_addr, user);
             }
             false => {
-                user_map.remove(&remote_addr);
-                if user_map.len() == 0 {
-                    if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
-                        if let Some(timeout) = out_expires {
-                            let when = Instant::now() + *timeout;
-                            state.expirations.insert((when, *ssrc, StreamDirection::StreamOut));
-                            let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
-                            if notify {
-                                SESSION.shared.background_task.notify_one();
+                if let Some(ut) = user_map.remove(&remote_addr) {
+                    if user_map.len() == 0 {
+                        if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
+                            if let Some(timeout) = out_expires {
+                                let when = Instant::now() + *timeout;
+                                state.expirations.insert((when, *ssrc, StreamDirection::StreamOut(ut.play_type.get_type())));
+                                let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                                if notify {
+                                    SESSION.shared.background_task.notify_one();
+                                }
                             }
                         }
                     }
@@ -406,12 +321,6 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
     None
 }
 
-pub fn update_down_action_run_by_ssrc(ssrc: u32, action: bool) {
-    let guard = SESSION.shared.state.read();
-    if let Some(stream_trace) = guard.sessions.get(&ssrc) {
-        stream_trace.down_action.store(action, Ordering::SeqCst);
-    }
-}
 
 pub fn get_stream_count(opt_stream_id: Option<&String>) -> u32 {
     let guard = SESSION.shared.state.read();
@@ -527,22 +436,22 @@ impl Shared {
                         }
                     }
                 }
-                StreamDirection::StreamOut => {
-                    if let Some(StreamTrace { stream_id, media_action, down_action, .. }) = state.sessions.get(&ssrc) {
-                        if matches!(media_action,MediaAction::Download(_)) && down_action.load(Ordering::SeqCst) {
+                StreamDirection::StreamOut(mux_tp) => {
+                    if let Some(StreamTrace { stream_id, converter, mpsc_bus, .. }) = state.sessions.get_mut(&ssrc) {
+                        converter.muxer.close_by_muxer_type(&mux_tp);
+                        if let Some(cm) = CloseMuxer::from_muxer_type(&mux_tp) {
+                            let _ = mpsc_bus.try_publish(MuxerEvent::Close(cm)).hand_log(|msg| error!("{msg}"));
+                        }
+                        if !converter.muxer.check_empty() {
                             continue;
                         }
-                        if let Some(InnerTrace { user_map, .. }) = state.inner.get(stream_id) {
-                            if user_map.len() == 0 {
-                                state.inner.remove(stream_id);
-                                if let Some(stream_trace) = state.sessions.remove(&ssrc) {
-                                    info!("ssrc: {},stream_id: {}, 流空闲超时 -> 清理会话",ssrc,&stream_trace.stream_id);
-                                    let opt_net = stream_trace.origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
-                                    let rtp_info = RtpInfo::new(ssrc, opt_net, SESSION.shared.server_conf.get_name().clone());
-                                    let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id, stream_trace.register_ts);
-                                    let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamIdle(stream_info), None)).hand_log(|msg| error!("{msg}"));
-                                }
-                            }
+                        state.inner.remove(stream_id);
+                        if let Some(stream_trace) = state.sessions.remove(&ssrc) {
+                            info!("ssrc: {},stream_id: {}, 流空闲超时 -> 清理会话",ssrc,&stream_trace.stream_id);
+                            let opt_net = stream_trace.origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
+                            let rtp_info = RtpInfo::new(ssrc, opt_net, SESSION.shared.server_conf.get_name().clone());
+                            let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id, stream_trace.register_ts);
+                            let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamIdle(stream_info), None)).hand_log(|msg| error!("{msg}"));
                         }
                     }
                 }
@@ -593,9 +502,19 @@ enum StreamDirection {
     //监听流注册/输入
     StreamIn,
     //监听流输出【有无观看】
-    StreamOut,
+    StreamOut(MuxerType),
 }
-
+// #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy)]
+// enum MuxerType {
+//     None,
+//     Flv,
+//     Mp4,
+//     Ts,
+//     Frame,
+//     RtpPs,
+//     RtpEnc,
+//     RtpFrame,
+// }
 ///自定义会话信息
 struct State {
     //ssrc:StreamTrace
@@ -614,83 +533,3 @@ impl State {
 }
 
 type CrossbeamChannel = (crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>);
-type BroadcastFrameChannel = (broadcast::Sender<Bytes>, broadcast::Receiver<Bytes>);
-type BroadcastDownInfoChannel = (broadcast::Sender<StreamRecordInfo>, broadcast::Receiver<StreamRecordInfo>);
-
-pub struct ConsumerChannel {
-    pub flv_tx: broadcast::Sender<FrameData>,
-    pub hls_tx: broadcast::Sender<FrameData>,
-    pub down_tx: broadcast::Sender<StreamRecordInfo>,
-}
-
-#[derive(Debug)]
-pub struct Channel {
-    rtp_channel: CrossbeamChannel,
-    flv_channel: BroadcastFrameChannel,
-    hls_channel: BroadcastFrameChannel,
-    down_channel: BroadcastDownInfoChannel,
-}
-
-impl Channel {
-    pub fn build() -> Self {
-        let rtp_channel = crossbeam_channel::bounded(BUFFER_SIZE * 10);
-        let flv_channel = broadcast::channel(BUFFER_SIZE);
-        let hls_channel = broadcast::channel(BUFFER_SIZE);
-        let down_channel = broadcast::channel(1);
-        Self {
-            rtp_channel,
-            flv_channel,
-            hls_channel,
-            down_channel,
-        }
-    }
-    fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<RtpPacket> {
-        self.rtp_channel.1.clone()
-    }
-    fn get_rtp_tx(&self) -> crossbeam_channel::Sender<RtpPacket> {
-        self.rtp_channel.0.clone()
-    }
-    fn get_flv_tx(&self) -> broadcast::Sender<Bytes> {
-        self.flv_channel.0.clone()
-    }
-    fn get_flv_rx(&self) -> broadcast::Receiver<Bytes> {
-        self.flv_channel.0.subscribe()
-    }
-    fn get_hls_tx(&self) -> broadcast::Sender<Bytes> {
-        self.hls_channel.0.clone()
-    }
-    fn get_hls_rx(&self) -> broadcast::Receiver<Bytes> {
-        self.hls_channel.0.subscribe()
-    }
-    fn get_down_tx(&self) -> broadcast::Sender<StreamRecordInfo> {
-        self.down_channel.0.clone()
-    }
-    fn get_down_rx(&self) -> broadcast::Receiver<StreamRecordInfo> {
-        self.down_channel.0.subscribe()
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-mod test {
-    use std::collections::HashMap;
-
-    #[test]
-    fn test() {
-        #[derive(Debug)]
-        struct Inner {
-            id: u32,
-            map: HashMap<u8, u8>,
-        }
-        let mut map = HashMap::new();
-        map.insert(1, 2);
-        let mut inner = Inner { id: 38, map };
-        let inner1 = &mut inner;
-
-        let mut map2 = HashMap::new();
-        map2.insert(3, 4);
-        inner1.map = map2;
-
-        println!("{:?}", inner);
-    }
-}
