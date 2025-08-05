@@ -3470,11 +3470,8 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
- "axum",
  "common 0.2.0",
  "paste",
- "pretend",
- "pretend-reqwest",
 ]
 
 [[package]]

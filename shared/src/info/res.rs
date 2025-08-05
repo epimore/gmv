@@ -1,5 +1,3 @@
-use axum::response::{IntoResponse, Response};
-use axum::Json;
 use common::serde::{Deserialize, Serialize};
 
 /// () 被 serde 序列化为一个空对象 {}
@@ -17,11 +15,6 @@ pub struct Resp<T> {
 impl<T> Resp<T> {
     pub fn define(code: u16, msg: impl Into<String>, data: Option<T>) -> Self {
         Self { code, msg: msg.into(), data }
-    }
-}
-impl<T: Serialize> IntoResponse for Resp<T> {
-    fn into_response(self) -> Response {
-        Json(self).into_response()
     }
 }
 
