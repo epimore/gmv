@@ -46,7 +46,7 @@ use shared::info::format::MuxerType;
 use shared::info::io::PlayType;
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaExt;
-use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -269,7 +269,7 @@ pub fn get_event_tx() -> mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)> {
 }
 
 //更新用户数据:in_out:true-插入,false-移除
-//所有输出皆通过此计算是否idle：如无用户，如gb28181转发，则stream_id/user_token = ssrc
+//所有输出皆通过此计算是否idle：如无用户，如gb28181转发，则stream_id/user_token = ssrc_{ssrc}
 pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String, in_out: bool, remote_addr: SocketAddr) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
@@ -322,15 +322,13 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
 }
 
 
-pub fn get_stream_count(opt_stream_id: Option<&String>) -> u32 {
+pub fn is_exist(stream_key: StreamKey) -> bool {
     let guard = SESSION.shared.state.read();
-    match opt_stream_id {
-        None => {
-            let len = guard.inner.len();
-            len as u32
-        }
+    let StreamKey { stream_id, ssrc } = stream_key;
+    match stream_id {
+        None => { guard.sessions.contains_key(&ssrc) }
         Some(stream_id) => {
-            if guard.inner.get(stream_id).is_none() { 0 } else { 1 }
+            guard.inner.contains_key(&stream_id) && guard.sessions.contains_key(&ssrc)
         }
     }
 }
