@@ -7,6 +7,7 @@ use common::exception::GlobalError::SysErr;
 use common::exception::{GlobalResult, GlobalResultExt};
 use common::constructor::Get;
 use common::log::error;
+use shared::info::io::Output;
 use crate::gb::handler::parser::xml::KV2Model;
 
 use crate::general;
@@ -74,7 +75,7 @@ pub struct PlayLiveModel {
     trans_mode: Option<u8>,
     #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     /// 媒体类型，默认flv,hls开启,(todo 2-mp4 3-webrtc ...)
-    media_type: Option<u8>,
+    media_type: Output,
 }
 
 #[derive(Debug, Deserialize, Object, Serialize, Get)]

@@ -14,9 +14,9 @@ common = { package = "common_db", path = "../../pigs/common_db", features = ["ne
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"
-poem = { version = "3.1", features = ["rustls"] }
-poem-openapi = { version = "5.1", features = ["swagger-ui"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+#poem = { version = "3.1", features = ["rustls"] }
+#poem-openapi = { version = "5.1", features = ["swagger-ui"] }
+#reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sdp-types = "0.1"
 regex = "1.10"
 image = "0.25"
@@ -27,3 +27,6 @@ url = "2.5"
 cron = "0.15"
 anyhow = { workspace = true }
 #thiserror = { workspace = true }
+pretend = "0.4"
+pretend-reqwest = "0.4"
+axum = {version = "0.8",features = ["multipart"]}

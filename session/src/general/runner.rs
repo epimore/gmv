@@ -11,7 +11,7 @@ use crate::general::schedule;
 use crate::general::schedule::ScheduleTask;
 use crate::storage::{mapper};
 use crate::storage::pics::Pics;
-use crate::utils::se_token;
+use crate::utils::edge_token;
 
 //启动器完成后触发执行
 pub trait Runner {
@@ -32,7 +32,7 @@ impl PicsRunner {
             start += COUNT;
 
             for item in arr {
-                let (token, session_id) = se_token::build_token_session_id(&item.0, &item.1)?;
+                let (token, session_id) = edge_token::build_token_session_id(&item.0, &item.1)?;
                 let url = format!("{}?token={}", pics_conf.push_url.clone().unwrap(), token);
                 cmd::CmdControl::snapshot_image(&item.0, &item.1, pics_conf.num, pics_conf.interval, &url, &session_id).await?;
             }

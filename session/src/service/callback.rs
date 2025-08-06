@@ -27,7 +27,7 @@ const START_PLAY: &str = "/start/play";
 #[allow(dead_code)]
 const STOP_PLAY: &str = "/stop/play";
 #[allow(dead_code)]
-const QUERY_STREAM_COUNT: &str = "/query/stream/count";
+const QUERY_STREAM_COUNT: &str = "/stream/count";
 #[allow(dead_code)]
 const RTP_MEDIA: &str = "/rtp/media";
 
