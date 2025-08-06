@@ -143,13 +143,10 @@ impl GmvDevice {
         Ok(res)
     }
 
-    pub async fn insert_single_gmv_device_by_register(&self) -> GlobalResult<()> {
+    pub async fn update_gmv_device_by_register(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool()?;
-        sqlx::query(r#"insert into GMV_DEVICE (device_id,transport,register_expires,
-        register_time,local_addr,sip_from,sip_to,status,gb_version) values (?,?,?,?,?,?,?,?,?)
-        ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),transport=VALUES(transport),register_expires=VALUES(register_expires),
-        register_time=VALUES(register_time),local_addr=VALUES(local_addr),sip_from=VALUES(sip_from),sip_to=VALUES(sip_to),status=VALUES(status),gb_version=VALUES(gb_version)"#)
-            .bind(&self.device_id)
+        sqlx::query(r#"update GMV_DEVICE set transport=?,register_expires=?,
+        register_time=?,local_addr=?,sip_from=?,sip_to=?,status=?,gb_version=? where device_id=?"#)
             .bind(&self.transport)
             .bind(&self.register_expires)
             .bind(&self.register_time)
@@ -158,6 +155,7 @@ impl GmvDevice {
             .bind(&self.sip_to)
             .bind(&self.status)
             .bind(&self.gb_version)
+            .bind(&self.device_id)
             .execute(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
@@ -544,13 +542,13 @@ mod tests {
     }
 
     // #[tokio::test]
-    async fn test_insert_single_gmv_device_by_register() {
+    async fn test_update_single_gmv_device_by_register() {
         init();
         let res = GmvDevice::query_gmv_device_by_device_id(&"34020000001320000004".to_string()).await;
         if let Ok(Some(gd)) = res {
             let a = GmvDevice { device_id: "34020000001320000004".to_string(), register_time: Local::now().naive_local(), ..gd };
             println!("{a:?}");
-            let result = a.insert_single_gmv_device_by_register().await;
+            let result = a.update_gmv_device_by_register().await;
             println!("{:?}", result)
         }
     }

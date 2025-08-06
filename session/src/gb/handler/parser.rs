@@ -139,6 +139,7 @@ pub mod xml {
     pub const NOTIFY_DEVICE_ID: &str = "Notify,DeviceID";
     pub const NOTIFY_STATUS: &str = "Notify,Status";
     pub const NOTIFY_TYPE: &str = "Notify,NotifyType";
+    pub const NOTIFY_UPLOAD_SNAP_SHOT_FINISHED: &str = "UploadSnapShotFinished";
 
 
     pub const NOTIFY_ALARM_PRIORITY: &str = "Notify,AlarmPriority";

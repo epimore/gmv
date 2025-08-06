@@ -476,7 +476,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "cfg_macro",
  "clap",
@@ -486,7 +486,7 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -579,7 +579,7 @@ checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 [[package]]
 name = "common"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "aes",
  "base64 0.13.1",
@@ -595,8 +595,6 @@ dependencies = [
  "exception",
  "fern",
  "hex",
- "hex-literal",
- "libc",
  "log",
  "once_cell",
  "rand 0.8.5",
@@ -611,7 +609,7 @@ dependencies = [
 [[package]]
 name = "common_db"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "common",
  "sqlx",
@@ -635,7 +633,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "constructor"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -988,7 +986,7 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=8b9fb07c#8b9fb07c7b99782a25e0f9e61622e2f61a21e815"
+source = "git+https://github.com/epimore/pigs.git?rev=ff413519#ff41351907a14dc9dd55d81bf3a1d00e2e5c61bf"
 dependencies = [
  "anyhow",
  "thiserror 2.0.12",
@@ -1405,25 +1403,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hex-literal"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d70693199b3cf4552f3fa720b54163927a3ebed2aef240efaf556033ab336a11"
-dependencies = [
- "hex-literal-impl",
- "proc-macro-hack",
-]
-
-[[package]]
-name = "hex-literal-impl"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59448fc2f82a5fb6907f78c3d69d843e82ff5b051923313cc4438cb0c7b745a8"
-dependencies = [
- "proc-macro-hack",
-]
 
 [[package]]
 name = "hex-slice"
@@ -2509,12 +2488,6 @@ checksum = "edce586971a4dfaa28950c6f18ed55e0406c1ab88bbce2c6f6293a7aaba73d35"
 dependencies = [
  "toml_edit",
 ]
-
-[[package]]
-name = "proc-macro-hack"
-version = "0.5.20+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
 
 [[package]]
 name = "proc-macro2"

@@ -251,7 +251,7 @@ impl RequestBuilder {
             let channel_id = channel_id.unwrap();
             let channel_status = mapper::get_device_channel_status(device_id, channel_id).await?.ok_or(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，未知或无效")))?;
             match &channel_status.to_ascii_uppercase()[..] {
-                "ON" | "ONLINE" | "ONLY" | "" => { dst_id = channel_id }
+                "OK" | "ON" | "ONLINE" | "ONLY" | "" => { dst_id = channel_id }
                 _ => {
                     Err(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，已下线")))?
                 }
@@ -671,12 +671,12 @@ mod tests {
     fn test_left_mv() {
         let sec = Local::now().timestamp();
         println!("+0 {}", sec);
-        println!("+1 {}", sec+1);
-        println!("+2 {}", sec+2);
-        println!("+3 {}", sec+3);
-        println!("L0 {}", sec>>1);
-        println!("L1 {}", (sec+1)>>1);
-        println!("L2 {}", (sec+2)>>1);
-        println!("L3 {}", (sec+3)>>1);
+        println!("+1 {}", sec + 1);
+        println!("+2 {}", sec + 2);
+        println!("+3 {}", sec + 3);
+        println!("L0 {}", sec >> 1);
+        println!("L1 {}", (sec + 1) >> 1);
+        println!("L2 {}", (sec + 2) >> 1);
+        println!("L3 {}", (sec + 3) >> 1);
     }
 }

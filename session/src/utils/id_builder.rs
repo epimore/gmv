@@ -16,14 +16,12 @@ pub fn en_stream_id(device_id: &str, channel_id: &str, ssrc: &str) -> GlobalResu
         .expect("Time went backwards");
     let secs = since_the_epoch.as_millis();
     let ori_key = format!("{device_id}{channel_id}{ssrc}{secs}");
-    println!("{}",&ori_key);
     dig62::en(&ori_key)
 }
 
 //返回(device_id,channel_id,ssrc)
 pub fn de_stream_id(stream_id: &str) -> GlobalResult<(String, String, String)> {
     let ori_str = dig62::de(stream_id)?;
-    println!("key = {}, timestamp = {}",&ori_str,&ori_str[50..]);
     Ok((ori_str[0..20].to_string(), ori_str[20..40].to_string(), ori_str[40..50].to_string()))
 }
 
@@ -41,7 +39,7 @@ pub async fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_s
         let channel_status = mapper::get_device_channel_status(device_id, channel_id).await?
             .ok_or_else(|| GlobalError::new_biz_error(1100, "未知设备", |msg| error!("{msg}")))?;
         match &channel_status.to_ascii_uppercase()[..] {
-            "ON" | "ONLINE" | "ONLY" | "" => {}
+            "OK" | "ON" | "ONLINE" | "ONLY" | "" => {}
             _ => {
                 return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
             }

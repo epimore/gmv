@@ -176,7 +176,7 @@ impl Register {
     async fn login_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Association, oauth: GmvOauth) -> GlobalResult<()> {
         RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
-        gmv_device.insert_single_gmv_device_by_register().await?;
+        gmv_device.update_gmv_device_by_register().await?;
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
@@ -227,6 +227,7 @@ impl Message {
                             MESSAGE_DEVICE_CONTROL => {}
                             MESSAGE_DEVICE_CONFIG => {}
                             MESSAGE_PRESET_QUERY => {}
+                            NOTIFY_UPLOAD_SNAP_SHOT_FINISHED => {}
                             _ => {
                                 warn!("device_id = {};message -- > {} 不支持。", device_id,v)
                             }
