@@ -6,8 +6,9 @@ pub mod gb;
 pub mod general;
 mod web;
 mod service;
-mod utils;
+pub mod utils;
 mod app;
+mod http;
 
 fn main() {
     daemon::run::<AppInfo, _>();

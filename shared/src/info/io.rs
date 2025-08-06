@@ -3,10 +3,11 @@ use common::exception::code::conf_err::CONFIG_ERROR_CODE;
 use common::log::error;
 use common::serde::{Deserialize, Serialize};
 use paste::paste;
+use poem_openapi::Object;
 use crate::{impl_check_empty, impl_open_close};
 use crate::info::format::MuxerType;
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Object, Serialize, Deserialize, Debug, Default)]
 #[serde(crate = "common::serde")]
 pub struct Output {
     pub local: Option<Local>,
@@ -31,42 +32,42 @@ impl_open_close!(Output, {
     web_rtc: WebRtc,
 });
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Local {
     muxer: MuxerType,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Hls {
-    muxer: MuxerType,
+    // muxer: MuxerType,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct HttpFlv {
-    muxer: MuxerType,
+    // muxer: MuxerType,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Rtmp {
-    muxer: MuxerType,
+    // muxer: MuxerType,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Rtsp {
     muxer: MuxerType,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Dash {
     muxer: MuxerType,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Gb28181 {
     muxer: MuxerType,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Object, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct WebRtc {
     muxer: MuxerType,

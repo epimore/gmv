@@ -2,7 +2,6 @@ use std::fs;
 use std::ops::Sub;
 use std::path::Path;
 use std::time::Duration;
-
 use common::bytes::Bytes;
 use common::chrono::{Local, TimeZone};
 use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
@@ -10,7 +9,7 @@ use common::log::{error};
 use common::serde_json;
 use common::tokio::sync::mpsc;
 use common::tokio::time::{Instant, sleep};
-
+use shared::info::obj::StreamKey;
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWSession;
 use crate::general;
@@ -21,6 +20,7 @@ use crate::service::{BaseStreamInfo, callback, EXPIRES, RELOAD_EXPIRES, StreamPl
 use crate::service::callback::{Download, MediaAction, Play};
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::utils::{id_builder};
+use crate::utils::http_client::{HttpClient, HttpStream};
 
 const KEY_STREAM_IN: &str = "KEY_STREAM_IN:";
 
@@ -54,7 +54,7 @@ pub async fn off_play(stream_play_info: StreamPlayInfo) {
     general::cache::Cache::stream_map_remove(stream_id, Some(gmv_token));
 }
 
-pub async fn end_record(stream_record_info: StreamRecordInfo){
+pub async fn end_record(stream_record_info: StreamRecordInfo) {
     if let Some(path_file_name) = stream_record_info.file_name {
         if let Ok((abs_path, dir_path, biz_id, extension)) = get_path(&path_file_name) {
             if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&biz_id).await {
@@ -139,7 +139,7 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     };
     let play_type = PlayType::Live;
     //查看直播流是否已存在,有则直接返回
-    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &token, &play_type, MediaAction::Play(Play::Flv)).await {
+    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &token, &play_type, MediaAction::Play(Play::Flv)).await? {
         general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
         return Ok(StreamInfo::build(stream_id, node_name));
     }
@@ -237,7 +237,7 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
     };
     let play_type = PlayType::Back;
     //查看流是否已存在,有则直接返回
-    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &token, &play_type, MediaAction::Play(Play::Flv)).await {
+    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &token, &play_type, MediaAction::Play(Play::Flv)).await? {
         general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
         return Ok(StreamInfo::build(stream_id, node_name));
     }
@@ -319,10 +319,15 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, token: &St
 //首先查看session缓存中是否有映射关系,然后看stream中是否有相应数据:都为true时返回数据
 //当session有,stream无时：session调用stream->使其重新监听ssrc
 //(避免stream重启后,数据不一致)
-async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &String, play_type: &PlayType, media_action: MediaAction) -> Option<(String, String)> {
+// 主动探测ssrc是否存在：
+// session不存在：None，
+// session存在: 返回Some,
+
+// todo 心跳检测ssrc是否存在，每8秒检测一次
+async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &String, play_type: &PlayType, media_action: MediaAction) -> GlobalResult<Option<(String, String)>> {
     match general::cache::Cache::device_map_get_invite_info(device_id, channel_id, play_type) {
         None => {
-            None
+            Ok(None)
         }
         //session -> true
         Some((stream_id, ssrc)) => {
@@ -330,19 +335,28 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &S
             if let Some(node_name) = general::cache::Cache::stream_map_query_node_name(&stream_id) {
                 //确认stream是否存在
                 if let Some(stream_node) = StreamConf::get_stream_conf().get_node_map().get(&node_name) {
-                    if let Ok(count) = callback::get_stream_count(Some(&stream_id), token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
-                        if count == 0 {
-                            //session有流信息,stream无流存在=>进一步判断可能是stream重启导致没有该监听,重启监听等待结果
-                            if let Ok(true) = callback::call_listen_ssrc(stream_id.clone(), &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port(), media_action).await {
-                                if let Some(_) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
-                                    res = Some((stream_id.clone(), node_name));
-                                }
-                            }
-                        } else {
-                            //stream -> true
-                            res = Some((stream_id.clone(), node_name));
-                        }
+                    let pretend = HttpClient::template_ip_port(stream_node.local_ip.to_string(), stream_node.local_port).expect("Http client template init failed");
+                    let ssrc_num = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
+                    let stream_key = StreamKey { ssrc: ssrc_num, stream_id: Some(stream_id.clone()) };
+                    let pretend::Json { value } = pretend.stream_living(&stream_key).await.hand_log(|msg| error!("{msg}"))?;
+                    if let Some(true) = value.data {
+                        //stream -> true
+                        res = Some((stream_id.clone(), node_name));
                     }
+                    // 
+                    // if let Ok(count) = callback::get_stream_count(Some(&stream_id), token, stream_node.get_local_ip(), stream_node.get_local_port()).await {
+                    //     if count == 0 {
+                    //         //session有流信息,stream无流存在=>进一步判断可能是stream重启导致没有该监听,重启监听等待结果
+                    //         if let Ok(true) = callback::call_listen_ssrc(stream_id.clone(), &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port(), media_action).await {
+                    //             if let Some(_) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
+                    //                 res = Some((stream_id.clone(), node_name));
+                    //             }
+                    //         }
+                    //     } else {
+                    //         //stream -> true
+                    //         res = Some((stream_id.clone(), node_name));
+                    //     }
+                    // }
                 }
             }
             //stream中无stream_id映射,同步剔除session中映射
@@ -350,7 +364,7 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &S
                 general::cache::Cache::device_map_remove(device_id, None);
                 general::cache::Cache::stream_map_remove(&stream_id, None);
             }
-            res
+            Ok(res)
         }
     }
 }

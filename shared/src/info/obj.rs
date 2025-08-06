@@ -56,3 +56,9 @@ pub struct RtpInfo {
     pub origin_trans: Option<NetSource>,
     pub server_name: String,
 }
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
+pub struct StreamKey {
+    pub ssrc: u32,
+    pub stream_id: Option<String>,
+}

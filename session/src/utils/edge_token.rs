@@ -32,7 +32,7 @@ pub fn split_dc(session_id: &str) -> GlobalResult<(String, String)> {
     Ok((dcs[0..20].to_string(), dcs[20..40].to_string()))
 }
 
-pub fn check_token(session_id: &str, token: &str) -> GlobalResult<()> {
+pub fn check(session_id: &str, token: &str) -> GlobalResult<()> {
     let input = format!("{}@{}", KEY, session_id);
     let r_token = crypto::generate_token(&input);
     if r_token.eq(token) {
@@ -53,6 +53,6 @@ mod test {
         let (dc_device_id, dc_channel_id) = super::split_dc(&session_id).unwrap();
         println!("dc_device_id: {}", dc_device_id);
         println!("dc_channel_id: {}", dc_channel_id);
-        super::check_token(&session_id, &token).unwrap();
+        super::check(&session_id, &token).unwrap();
     }
 }
