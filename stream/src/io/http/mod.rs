@@ -17,6 +17,7 @@ pub mod call;
 
 pub const LISTEN_SSRC: &str = "/listen/ssrc";
 pub const RTP_MEDIA: &str = "/rtp/media";
+pub const STREAM_LIVING: &str = "/stream/living";
 pub const FLV_PLAY_PATH: &str = "/play/:stream_id.flv";
 
 // pub const CALL_STREAM_REGISTER: &str = "/stream/register";
