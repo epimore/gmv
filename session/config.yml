@@ -65,7 +65,7 @@ server:
     storage_path: ./videos/down #云端录像存储地址,与流媒体服务共享存储【多节点分开部署则使用NFS共享文件系统】
   pics:
     enable: true #是否开启采集拍照,默认false
-    push_url: https://epimore.cn/session/api/es/pic/upload
+    push_url: https://epimore.cn/session/edge/upload/picture
     cron_cycle: 0 */5 * * * * #拍照周期cron表达式，默认每5分钟执行一次
     num: 1 #连拍张数,最大10 默认1
     interval: 1 #连拍间隔秒 max u8

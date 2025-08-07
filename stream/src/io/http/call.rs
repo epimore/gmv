@@ -37,7 +37,7 @@ pub trait HttpSession {
     #[request(method = "POST", path = "/on/play")]
     async fn on_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/stream/idle")]
-    async fn stream_idle(&self, json: &BaseStreamInfo) -> Result<Json<Resp<u8>>>;
+    async fn stream_idle(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/off/play")]
     async fn off_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/end/record")]
