@@ -9,15 +9,14 @@ use common::log::{error};
 use common::serde_json;
 use common::tokio::sync::mpsc;
 use common::tokio::time::{Instant, sleep};
-use shared::info::obj::{StreamKey, StreamPlayInfo, StreamRecordInfo};
+use shared::info::obj::{BaseStreamInfo, StreamKey, StreamPlayInfo, StreamRecordInfo, StreamState};
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWSession;
 use crate::general;
 use crate::general::cache::PlayType;
 use crate::general::{DownloadConf, StreamConf};
-use crate::general::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamMode};
+use crate::general::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamMode};
 use crate::service::{callback, RELOAD_EXPIRES};
-use crate::service::callback::{Download, MediaAction, Play};
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::utils::{id_builder};
 use crate::http::client::{HttpClient, HttpStream};
@@ -25,22 +24,22 @@ use crate::http::client::{HttpClient, HttpStream};
 const KEY_STREAM_IN: &str = "KEY_STREAM_IN:";
 
 pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
-    let gmv_token = stream_play_info.get_token();
-    let stream_id = stream_play_info.base_stream_info.get_stream_id();
-    general::cache::Cache::stream_map_contains_token(stream_id, gmv_token)
+    let gmv_token = stream_play_info.token;
+    let stream_id = stream_play_info.base_stream_info.stream_id;
+    general::cache::Cache::stream_map_contains_token(&stream_id, &gmv_token)
 }
 
 //无人观看则关闭流
 pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
-    let stream_id = base_stream_info.get_stream_id();
-    let cst_info = general::cache::Cache::stream_map_build_call_id_seq_from_to_tag(stream_id);
-    if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(stream_id) {
+    let stream_id = base_stream_info.stream_id;
+    let cst_info = general::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
+    if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
         if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
             let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
         }
-        if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(stream_id) {
+        if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
             general::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((play_type, &ssrc_str)))));
-            general::cache::Cache::stream_map_remove(stream_id, None);
+            general::cache::Cache::stream_map_remove(&stream_id, None);
         }
         let ssrc = base_stream_info.rtp_info.ssrc;
         let ssrc_num = (ssrc % 10000) as u16;
@@ -49,9 +48,9 @@ pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
 }
 
 pub async fn off_play(stream_play_info: StreamPlayInfo) {
-    let stream_id = stream_play_info.base_stream_info.get_stream_id();
-    let gmv_token = stream_play_info.get_token();
-    general::cache::Cache::stream_map_remove(stream_id, Some(gmv_token));
+    let stream_id = stream_play_info.base_stream_info.stream_id;
+    let gmv_token = stream_play_info.token;
+    general::cache::Cache::stream_map_remove(&stream_id, Some(&gmv_token));
 }
 
 pub async fn end_record(stream_record_info: StreamRecordInfo) {
@@ -98,8 +97,8 @@ fn get_path(path_file_name: &String) -> GlobalResult<(String, String, String, St
     Ok((abs_path, dir_path, biz_id, extension))
 }
 
-pub async fn stream_in(base_stream_info: BaseStreamInfo) {
-    let key_stream_in_id = format!("{KEY_STREAM_IN}{}", base_stream_info.get_stream_id());
+pub async fn stream_register(base_stream_info: BaseStreamInfo) {
+    let key_stream_in_id = format!("{KEY_STREAM_IN}{}", base_stream_info.stream_id);
     if let Some((_, Some(tx))) = general::cache::Cache::state_get(&key_stream_in_id) {
         let vec = serde_json::to_vec(&base_stream_info).unwrap();
         let bytes = Bytes::from(vec);
@@ -112,10 +111,10 @@ pub fn stream_input_timeout(stream_state: StreamState) {
     let ssrc = stream_state.base_stream_info.rtp_info.ssrc;
     let ssrc_num = (ssrc % 10000) as u16;
     general::cache::Cache::ssrc_sn_set(ssrc_num);
-    let stream_id = stream_state.base_stream_info.get_stream_id();
-    if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(stream_id) {
-        general::cache::Cache::stream_map_remove(stream_id, None);
-        if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(stream_id) {
+    let stream_id = stream_state.base_stream_info.stream_id;
+    if let Some(play_type) = general::cache::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
+        general::cache::Cache::stream_map_remove(&stream_id, None);
+        if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
             general::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((play_type, &ssrc_str)))));
         }
     }
@@ -153,7 +152,20 @@ pub async fn download_info_by_stream_id(stream_id: String, stream_server: String
     match conf.node_map.get(&stream_server) {
         None => { Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}"))) }
         Some(node) => {
-            callback::get_stream_record_info_by_biz_id(&stream_id, &token, &node.local_ip, &node.local_port).await
+            let p = HttpClient::template_ip_port(node.local_ip.to_string(), node.local_port)?;
+            let pretend::Json { value } = p.record_info(&SingleParam { param: stream_id }).await.hand_log(|msg| error!("{msg}"))?;
+            if value.code == 200 {
+                match value.data {
+                    None => {
+                        Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}: {}", &value.msg)))
+                    }
+                    Some(info) => {
+                        Ok(info)
+                    }
+                }
+            } else {
+                Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}: {}", &value.msg)))
+            }
         }
     }
 }
@@ -183,7 +195,8 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
 }
 
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<String> {
-    let device_id = play_back_model.get_device_id();
+    unimplemented!();
+    /*let device_id = play_back_model.get_device_id();
     if !RWSession::has_session_by_device_id(device_id) {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
@@ -222,7 +235,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         stream_app_name: node_name,
     };
     record.insert_single_gmv_record().await?;
-    Ok(stream_id)
+    Ok(stream_id)*/
 }
 
 pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
@@ -335,7 +348,7 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, token: &S
             if let Some(node_name) = general::cache::Cache::stream_map_query_node_name(&stream_id) {
                 //确认stream是否存在
                 if let Some(stream_node) = StreamConf::get_stream_conf().get_node_map().get(&node_name) {
-                    let pretend = HttpClient::template_ip_port(stream_node.local_ip.to_string(), stream_node.local_port).expect("Http client template init failed");
+                    let pretend = HttpClient::template_ip_port(stream_node.local_ip.to_string(), stream_node.local_port)?;
                     let ssrc_num = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
                     let stream_key = StreamKey { ssrc: ssrc_num, stream_id: Some(stream_id.clone()) };
                     let pretend::Json { value } = pretend.stream_living(&stream_key).await.hand_log(|msg| error!("{msg}"))?;

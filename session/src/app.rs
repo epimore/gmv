@@ -8,8 +8,8 @@ use common::logger;
 use common::tokio;
 
 use crate::gb::SessionConf;
-use crate::general::http::Http;
 use crate::general::runner::{PicsRunner, Runner};
+use crate::http::Http;
 
 #[derive(Debug)]
 pub struct AppInfo {

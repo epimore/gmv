@@ -6,10 +6,11 @@ use pretend::{pretend, Pretend, Result};
 use pretend::{Json, Url};
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::StreamKey;
+use shared::info::obj::{StreamKey, StreamRecordInfo};
 use shared::info::res::Resp;
 use std::str::FromStr;
 use std::time::Duration;
+use crate::general::model::{AlarmInfo, SingleParam};
 
 const TIME_OUT: u64 = 8000;
 pub struct HttpClient;
@@ -52,9 +53,12 @@ pub trait HttpStream {
     async fn stream_init_ext(&self, json: &MediaMap) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/stream/living")]
     async fn stream_living(&self, json: &StreamKey) -> Result<Json<Resp<bool>>>;
+    #[request(method = "POST", path = "/record/info")]
+    async fn record_info(&self, json: &SingleParam<String>) -> Result<Json<Resp<StreamRecordInfo>>>;
 }
 
-// #[pretend]
-// pub trait HttpBiz {
-// async fn call_alarm_info(&self, json: &AlarmInfo) -> GlobalResult<bool>
-// }
+#[pretend]
+pub trait HttpBiz {
+    #[request(method = "POST", path = "")]
+    async fn call_alarm_info(&self, json: &AlarmInfo) -> Result<Json<Resp<bool>>>;
+}

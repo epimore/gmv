@@ -19,7 +19,9 @@ use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::handler::parser::xml::KV2Model;
 use crate::gb::shared::rw::RWSession;
+use crate::general::AlarmConf;
 use crate::general::model::AlarmInfo;
+use crate::http::client::{HttpBiz, HttpClient};
 use crate::service::callback;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
@@ -280,7 +282,9 @@ impl Message {
     async fn message_notify_alarm(device_id: &String, vs: Vec<(String, String)>) -> GlobalResult<()> {
         let mut info = AlarmInfo::kv_to_model(vs)?;
         info.deviceId = device_id.clone();
-        callback::call_alarm_info(&info).await?;
+        let conf = AlarmConf::get_alarm_conf();
+        let pretend = HttpClient::template(conf.push_url.as_ref().unwrap())?;
+        let _ = pretend.call_alarm_info(&info).await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 }

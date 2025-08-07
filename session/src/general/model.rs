@@ -42,25 +42,18 @@ pub struct StreamNode {
 #[derive(Debug, Deserialize, Serialize, Get)]
 #[serde(crate = "common::serde")]
 pub struct PlayLiveModel {
-    #[oai(validator(min_length = "20", max_length = "20"))]
     device_id: String,
-    #[oai(validator(min_length = "20", max_length = "20"))]
     channel_id: Option<String>,
-    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     trans_mode: Option<u8>,
-    // #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
-    // /// 媒体类型，默认flv,hls开启,(todo 2-mp4 3-webrtc ...)
+    //     // /// 媒体类型，默认flv,hls开启,(todo 2-mp4 3-webrtc ...)
     // media_type: Output,
 }
 
 #[derive(Debug, Deserialize, Serialize, Get)]
 #[serde(crate = "common::serde")]
 pub struct PlayBackModel {
-    #[oai(validator(min_length = "20", max_length = "20"))]
     device_id: String,
-    #[oai(validator(min_length = "20", max_length = "20"))]
     channel_id: Option<String>,
-    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     trans_mode: Option<u8>,
     st: u32,
     et: u32,
@@ -70,10 +63,7 @@ pub struct PlayBackModel {
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySeekModel {
-    #[oai(validator(min_length = "24", max_length = "32")
-    )]
     streamId: String,
-    #[oai(validator(maximum(value = "86400"), minimum(value = "1")))]
     seekSecond: u32,
 }
 
@@ -81,10 +71,7 @@ pub struct PlaySeekModel {
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySpeedModel {
-    #[oai(validator(min_length = "24", max_length = "32")
-    )]
     streamId: String,
-    #[oai(validator(maximum(value = "8"), minimum(value = "0.25")))]
     speedRate: f32,
 }
 
@@ -92,26 +79,18 @@ pub struct PlaySpeedModel {
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct PtzControlModel {
-    #[oai(validator(min_length = "20", max_length = "20"))]
     pub deviceId: String,
-    #[oai(validator(min_length = "20", max_length = "20"))]
     pub channelId: String,
-    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     ///镜头左移右移 0:停止 1:左移 2:右移
     pub leftRight: u8,
-    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     ///镜头上移下移 0:停止 1:上移 2:下移
     pub upDown: u8,
-    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     ///镜头放大缩小 0:停止 1:缩小 2:放大
     pub inOut: u8,
-    #[oai(validator(maximum(value = "255"), minimum(value = "0")))]
     ///水平移动速度：1-255
     pub horizonSpeed: u8,
-    #[oai(validator(maximum(value = "255"), minimum(value = "0")))]
     ///垂直移动速度：0-255
     pub verticalSpeed: u8,
-    #[oai(validator(maximum(value = "15"), minimum(value = "0")))]
     ///焦距缩放速度：0-15
     pub zoomSpeed: u8,
 }
