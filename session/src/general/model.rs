@@ -1,16 +1,19 @@
-use poem_openapi::{self, Object};
-use poem_openapi::types::{ParseFromJSON, ToJSON, Type};
 use common::serde::{Deserialize, Serialize};
 
+use crate::gb::handler::parser::xml::KV2Model;
 use anyhow::anyhow;
+use common::constructor::Get;
 use common::exception::GlobalError::SysErr;
 use common::exception::{GlobalResult, GlobalResultExt};
-use common::constructor::Get;
 use common::log::error;
-use shared::info::io::Output;
-use crate::gb::handler::parser::xml::KV2Model;
 
 use crate::general;
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "common::serde")]
+pub struct SingleParam<T> {
+    pub param: T,
+}
 
 pub enum StreamMode {
     Udp,
@@ -29,42 +32,14 @@ impl StreamMode {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Object)]
-pub struct ResultMessageData<T: Type + ParseFromJSON + ToJSON> {
-    code: u16,
-    msg: Option<String>,
-    data: Option<T>,
-}
-
-impl<T: Type + ParseFromJSON + ToJSON> ResultMessageData<T> {
-    #[allow(dead_code)]
-    pub fn build(code: u16, msg: String, data: T) -> Self {
-        Self { code, msg: Some(msg), data: Some(data) }
-    }
-
-    pub fn build_success(data: T) -> Self {
-        Self { code: 200, msg: Some("success".to_string()), data: Some(data) }
-    }
-    pub fn build_success_none() -> Self {
-        Self { code: 200, msg: Some("success".to_string()), data: None }
-    }
-    pub fn build_failure() -> Self {
-        Self { code: 500, msg: Some("failure".to_string()), data: None }
-    }
-    pub fn build_failure_msg(msg: String) -> Self {
-        Self { code: 500, msg: Some(msg), data: None }
-    }
-}
-
-
-#[derive(Object, Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "common::serde")]
 pub struct StreamNode {
     pub stream_id: String,
     pub stream_server: String,
 }
 
-#[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[derive(Debug, Deserialize, Serialize, Get)]
 #[serde(crate = "common::serde")]
 pub struct PlayLiveModel {
     #[oai(validator(min_length = "20", max_length = "20"))]
@@ -73,12 +48,12 @@ pub struct PlayLiveModel {
     channel_id: Option<String>,
     #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
     trans_mode: Option<u8>,
-    #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
-    /// 媒体类型，默认flv,hls开启,(todo 2-mp4 3-webrtc ...)
-    media_type: Output,
+    // #[oai(validator(maximum(value = "2"), minimum(value = "0")))]
+    // /// 媒体类型，默认flv,hls开启,(todo 2-mp4 3-webrtc ...)
+    // media_type: Output,
 }
 
-#[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[derive(Debug, Deserialize, Serialize, Get)]
 #[serde(crate = "common::serde")]
 pub struct PlayBackModel {
     #[oai(validator(min_length = "20", max_length = "20"))]
@@ -91,7 +66,7 @@ pub struct PlayBackModel {
     et: u32,
 }
 
-#[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[derive(Debug, Deserialize, Serialize, Get)]
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySeekModel {
@@ -102,7 +77,7 @@ pub struct PlaySeekModel {
     seekSecond: u32,
 }
 
-#[derive(Debug, Deserialize, Object, Serialize, Get)]
+#[derive(Debug, Deserialize, Serialize, Get)]
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySpeedModel {
@@ -113,7 +88,7 @@ pub struct PlaySpeedModel {
     speedRate: f32,
 }
 
-#[derive(Debug, Deserialize, Object, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct PtzControlModel {
@@ -141,7 +116,7 @@ pub struct PtzControlModel {
     pub zoomSpeed: u8,
 }
 
-#[derive(Debug, Deserialize, Object, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct StreamInfo {
@@ -173,7 +148,7 @@ impl StreamInfo {
     }
 }
 
-#[derive(Debug, Deserialize, Object, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "common::serde")]
 #[allow(non_snake_case)]
 pub struct AlarmInfo {
@@ -210,24 +185,5 @@ impl KV2Model for AlarmInfo {
             }
         }
         Ok(model)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use poem_openapi::payload::Json;
-    use poem_openapi::types::ToJSON;
-
-    use crate::general::model::{ResultMessageData, StreamInfo};
-
-    #[test]
-    fn t1() {
-        let m = StreamInfo {
-            streamId: "streamId".to_string(),
-            flv: "streamId".to_string(),
-            m3u8: "streamId".to_string(),
-        };
-        let data = ResultMessageData::build_success(m);
-        println!("{:#?}", Json(data).to_json_string());
     }
 }

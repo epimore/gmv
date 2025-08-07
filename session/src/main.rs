@@ -4,7 +4,6 @@ use crate::app::AppInfo;
 pub mod storage;
 pub mod gb;
 pub mod general;
-mod web;
 mod service;
 pub mod utils;
 mod app;

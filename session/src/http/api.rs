@@ -1,64 +1,166 @@
-use crate::state::cache;
-use axum::{Extension, Json, Router};
-use common::exception::GlobalResultExt;
-use common::log::error;
-use common::tokio::sync::mpsc::Sender;
-use shared::info::media_info::MediaStreamConfig;
-use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::StreamKey;
+use crate::general::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamNode};
+use crate::service::{biz, handler};
+use axum::http::{HeaderMap, HeaderName};
+use axum::{Json, Router};
+use common::exception::{GlobalError, GlobalResult};
+use common::log::{error, info};
+use shared::info::obj::{StreamRecordInfo, CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK, PLAY_SPEED, RM_FILE};
 use shared::info::res::Resp;
-use crate::io::http::{LISTEN_SSRC, RTP_MEDIA, STREAM_LIVING};
 
-pub fn routes(tx: Sender<u32>) -> Router {
+pub fn routes() -> Router {
     Router::new()
-        .route(LISTEN_SSRC, axum::routing::post(stream_init))
-        .route(RTP_MEDIA, axum::routing::post(stream_map).layer(Extension(tx.clone())))
-        .route(STREAM_LIVING, axum::routing::post(stream_living))
+        .route(PLAY_LIVING, axum::routing::post(play_living))
+        .route(PLAY_BACK, axum::routing::post(play_back))
+        .route(PLAY_SEEK, axum::routing::post(play_seek))
+        .route(PLAY_SPEED, axum::routing::post(play_speed))
+        .route(CONTROL_PTZ, axum::routing::post(control_ptz))
+        .route(DOWNLOAD_MP4, axum::routing::post(download_mp4))
+        .route(DOWNLOAD_STOP, axum::routing::post(download_stop))
+        .route(DOWNING_INFO, axum::routing::post(downing_info))
+        .route(RM_FILE, axum::routing::post(rm_file))
 }
 
-async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaStreamConfig>) -> Json<Resp<()>> {
-    let json = match cache::insert_media(config) {
-        Ok(ssrc) => {
-            match tx.send(ssrc).await.hand_log(|msg| error!("{msg}")) {
-                Ok(_) => { Resp::<()>::build_success() }
-                Err(err) => {
-                    Resp::<()>::build_failed_by_msg(err.to_string())
-                }
+async fn play_living(headers: HeaderMap, Json(info): Json<PlayLiveModel>) -> Json<Resp<StreamInfo>> {
+    info!("play_live: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            match handler::play_live(info, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
         }
-        Err(err) => {
-            Resp::<()>::build_failed_by_msg(err.to_string())
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
         }
-    };
-    Json(json)
+    }
 }
-
-async fn stream_map(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
-    let json = match cache::insert_media_ext(sdp.ssrc, sdp.ext) {
-        Ok(_) => {
-            Resp::<()>::build_success()
+async fn play_back(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<Resp<StreamInfo>> {
+    info!("play_back: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            match handler::play_back(info, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
         }
-        Err(err) => {
-            Resp::<()>::build_failed_by_msg(err.to_string())
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
         }
-    };
-    Json(json)
+    }
+}
+async fn play_seek(headers: HeaderMap, Json(info): Json<PlaySeekModel>) -> Json<Resp<bool>> {
+    info!("play_seek: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            match handler::seek(info, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
+        }
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
+        }
+    }
+}
+async fn play_speed(headers: HeaderMap, Json(info): Json<PlaySpeedModel>) -> Json<Resp<bool>> {
+    info!("play_speed: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            match handler::speed(info, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
+        }
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
+        }
+    }
+}
+async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> Json<Resp<bool>> {
+    info!("control_ptz: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            match handler::ptz(info, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
+        }
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
+        }
+    }
+}
+async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<Resp<String>> {
+    info!("download_mp4: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            match handler::download(info, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
+        }
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
+        }
+    }
+}
+async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>) -> Json<Resp<bool>> {
+    info!("download_stop: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            match handler::download_stop(info.param, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
+        }
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
+        }
+    }
+}
+async fn downing_info(headers: HeaderMap, Json(info): Json<StreamNode>) -> Json<Resp<StreamRecordInfo>> {
+    info!("downing_info: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => {
+            let stream_id = info.stream_id;
+            let stream_server = info.stream_server;
+            match handler::download_info_by_stream_id(stream_id, stream_server, token).await {
+                Ok(data) => { Json(Resp::build_success_data(data)) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
+        }
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
+        }
+    }
+}
+async fn rm_file(headers: HeaderMap, Json(info): Json<SingleParam<i64>>) -> Json<Resp<()>> {
+    info!("rm_file: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(_token) => {
+            match biz::rm_file(info.param).await {
+                Ok(_) => { Json(Resp::build_success()) }
+                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
+            }
+        }
+        Err(_) => {
+            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
+        }
+    }
 }
 
-async fn stream_living(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
-    Json(Resp::<bool>::build_success_data(cache::is_exist(stream_key)))
-}
-
-async fn open_output_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
-    unimplemented!()
-}
-async fn close_output_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
-    unimplemented!()
-}
-
-async fn open_filter_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
-    unimplemented!()
-}
-async fn close_filter_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
-    unimplemented!()
+fn get_gmv_token(headers: HeaderMap) -> GlobalResult<String> {
+    let header_name = HeaderName::from_static("Gmv-Token");
+    if let Some(value) = headers.get(&header_name) {
+        match value.to_str() {
+            Ok(token) => {
+                Ok(token.to_string())
+            }
+            Err(_) => {
+                Err(GlobalError::new_biz_error(1100, "Gmv-Token is invalid", |msg| error!("{}", msg)))
+            }
+        }
+    } else {
+        Err(GlobalError::new_biz_error(1100, "Gmv-Token not found", |msg| error!("{}", msg)))
+    }
 }

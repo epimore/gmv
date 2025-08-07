@@ -11,20 +11,22 @@ use common::bytes::Bytes;
 use common::chrono::Local;
 use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::log::error;
-use common::tokio::io::AsyncReadExt;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::storage::pics::{Pics};
 use crate::utils::edge_token;
 
-pub async fn upload(bytes: Bytes, param_map: HashMap<String, String>) -> GlobalResult<()> {
-    let id = snap_shot_file_id.or(file_id);
-    let (device_id, channel_id) = edge_token::split_dc(&session_id)?;
+pub async fn upload(bytes: Bytes, session_id: &str, param_map: HashMap<String, String>) -> GlobalResult<()> {
+    let id = param_map
+        .iter()
+        .find(|(key, _)| key.to_lowercase().ends_with("fileid"))
+        .map(|(_, value)| value);
+    let (device_id, channel_id) = edge_token::split_dc(session_id)?;
     let file_name = match id {
         None => {
             edge_token::build_file_name(&device_id, &channel_id)?
         }
         Some(id) => {
-            id
+            id.to_string()
         }
     };
 
@@ -37,7 +39,7 @@ pub async fn upload(bytes: Bytes, param_map: HashMap<String, String>) -> GlobalR
 
     info.device_id = device_id;
     info.channel_id = channel_id;
-    info.biz_id = session_id;
+    info.biz_id = session_id.to_string();
     let pics_conf = Pics::get_pics_by_conf();
     let storage_path_str = &pics_conf.storage_path;
     let relative_path = Path::new(storage_path_str);

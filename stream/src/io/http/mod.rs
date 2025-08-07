@@ -15,18 +15,6 @@ mod api;
 pub mod call;
 
 
-pub const LISTEN_SSRC: &str = "/listen/ssrc";
-pub const RTP_MEDIA: &str = "/rtp/media";
-pub const STREAM_LIVING: &str = "/stream/living";
-pub const FLV_PLAY_PATH: &str = "/play/:stream_id.flv";
-
-// pub const CALL_STREAM_REGISTER: &str = "/stream/register";
-// pub const CALL_INPUT_TIMEOUT: &str = "/stream/input/timeout";
-// pub const CALL_ON_PLAY: &str = "/on/play";
-// pub const CALL_STREAM_IDLE: &str = "/stream/idle";
-// pub const CALL_OFF_PLAY: &str = "/off/play";
-// pub const CALL_END_RECORD: &str = "/end/record";
-
 pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
     let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
     info!("Listen to http web addr = 0.0.0.0:{} ...", port);

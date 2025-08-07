@@ -9,18 +9,13 @@ use common::log::{error, info};
 use common::serde::Deserialize;
 use common::serde_default;
 use common::tokio::net::TcpListener;
-use common::tokio::sync::mpsc::Sender;
-use crate::general::http::Http;
 
 mod api;
-mod call;
+mod hook;
 mod edge;
+pub mod client;
 
 pub const UPLOAD_PICTURE: &str = "/edge/upload/picture";
-pub const PUSH_PICTURE: &str = "/edge/push/picture";
-pub const PUSH_PICTURE: &str = "/edge/push/picture";
-pub const PUSH_PICTURE: &str = "/edge/push/picture";
-pub const PUSH_PICTURE: &str = "/edge/push/picture";
 #[derive(Debug, Deserialize)]
 #[serde(crate = "common::serde")]
 #[conf(prefix = "http")]
@@ -48,7 +43,7 @@ impl Http {
 
     pub fn listen_http_server(&self) -> GlobalResult<std::net::TcpListener> {
         let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", self.port)).hand_log(|msg| error!("{msg}"))?;
-        info!("Listen to http web addr = 0.0.0.0:{} ...", port);
+        info!("Listen to http web addr = 0.0.0.0:{} ...", self.port);
         Ok(listener)
     }
 
@@ -57,6 +52,7 @@ impl Http {
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         let app = Router::new()
             .merge(edge::routes())
+            .merge(hook::routes())
             .merge(api::routes());
 
         axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
