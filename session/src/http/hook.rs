@@ -16,7 +16,7 @@ pub fn routes() -> Router {
 
 async fn stream_register(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
     info!("stream_register = {:?}", &info);
-    handler::stream_in(info).await;
+    handler::stream_register(info).await;
     Json(Resp::build_success())
 }
 async fn stream_input_timeout(Json(info): Json<StreamState>) -> Json<Resp<()>> {

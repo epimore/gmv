@@ -4,24 +4,20 @@
 2.生成缩略图存储
 3.持久化2/3地址索引到数据库建立设备时间关系
 */
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use crate::storage::entity::{GmvFileInfo, GmvRecord};
+use crate::storage::pics::Pics;
+use crate::utils::edge_token;
 use common::bytes::Bytes;
 use common::chrono::Local;
 use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use common::log::error;
-use crate::storage::entity::{GmvFileInfo, GmvRecord};
-use crate::storage::pics::{Pics};
-use crate::utils::edge_token;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-pub async fn upload(bytes: Bytes, session_id: &str, param_map: HashMap<String, String>) -> GlobalResult<()> {
-    let id = param_map
-        .iter()
-        .find(|(key, _)| key.to_lowercase().ends_with("fileid"))
-        .map(|(_, value)| value);
+pub async fn upload(bytes: Bytes, session_id: &str, file_id_opt: Option<&String>) -> GlobalResult<()> {
     let (device_id, channel_id) = edge_token::split_dc(session_id)?;
-    let file_name = match id {
+    let file_name = match file_id_opt {
         None => {
             edge_token::build_file_name(&device_id, &channel_id)?
         }
@@ -46,7 +42,7 @@ pub async fn upload(bytes: Bytes, session_id: &str, param_map: HashMap<String, S
     let date_str = Local::now().format("%Y%m%d").to_string();
     let final_dir = relative_path.join(date_str);
     fs::create_dir_all(&final_dir).hand_log(|msg| error!("create pics dir failed: {msg}"))?;
-    let abs_final_dir = std::fs::canonicalize(&final_dir).hand_log(|msg| error!("create pics dir failed: {msg}"))?;
+    let abs_final_dir = fs::canonicalize(&final_dir).hand_log(|msg| error!("create pics dir failed: {msg}"))?;
     info.abs_path = abs_final_dir.to_str().ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}")))?.to_string();
     let dir_path = final_dir.to_str().ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}")))?;
     info.dir_path = dir_path.to_string();

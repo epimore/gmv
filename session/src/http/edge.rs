@@ -23,7 +23,10 @@ async fn upload_picture(
     let session_id = get_param(&params, "SessionID")?;
     let token = get_param(&params, "token")?;
     edge_token::check(session_id, token).map_err(|_| "Invalid token".to_string())?;
-
+    let file_id_opt = params
+        .iter()
+        .find(|(key, _)| key.to_lowercase().ends_with("fileid"))
+        .map(|(_, value)| value);
     let content_type = headers
         .get("Content-Type")
         .ok_or_else(|| "Missing Content-Type header".to_string())
@@ -35,10 +38,10 @@ async fn upload_picture(
 
     match content_type {
         ct if ct.starts_with("multipart/form-data") => {
-            handle_multipart_upload(req, params).await
+            handle_multipart_upload(req, session_id, file_id_opt).await
         }
         ct if ct.starts_with("image/") => {
-            handle_binary_upload(req, params).await
+            handle_binary_upload(req, session_id, file_id_opt).await
         }
         _ => {
             let err = format!(
@@ -62,9 +65,10 @@ fn get_param<'a>(params: &'a HashMap<String, String>, key: &str) -> Result<&'a s
 /// 处理 multipart/form-data 上传
 async fn handle_multipart_upload(
     req: Request,
-    params: HashMap<String, String>,
-) -> Result<impl IntoResponse, String> {
-    let mut multipart = Multipart::from_request(req, &Default::default())
+    session_id: &str,
+    file_id_opt: Option<&String>,
+) -> Result<&'static str, String> {
+    let mut multipart = Multipart::from_request(req, &())
         .await
         .map_err(|e| {
             error!("Failed to parse multipart: {}", e);
@@ -86,7 +90,7 @@ async fn handle_multipart_upload(
                 error!("Failed to get field bytes: {}", e);
                 format!("Failed to get field bytes: {}", e)
             })?;
-            biz::upload(data, params)
+            biz::upload(data, session_id, file_id_opt)
                 .await
                 .map_err(|e| format!("Failed to upload file: {}", e))?;
             return Ok("File uploaded successfully as form-data");
@@ -99,16 +103,17 @@ async fn handle_multipart_upload(
 /// 处理 image/* 二进制上传
 async fn handle_binary_upload(
     req: Request,
-    params: HashMap<String, String>,
-) -> Result<impl IntoResponse, String> {
-    let data = Bytes::from_request(req, &Default::default())
+    session_id: &str,
+    file_id_opt: Option<&String>,
+) -> Result<&'static str, String> {
+    let data = Bytes::from_request(req, &())
         .await
         .map_err(|e| {
             error!("Failed to get request body: {}", e);
             format!("Failed to get request body: {}", e)
         })?;
 
-    biz::upload(data, params)
+    biz::upload(data, session_id, file_id_opt)
         .await
         .map_err(|e| format!("Failed to upload file: {}", e))?;
 

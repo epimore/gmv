@@ -1,7 +1,7 @@
 // use std::collections::HashMap;
 // use std::net::Ipv4Addr;
 // use std::time::Duration;
-// 
+//
 // use anyhow::anyhow;
 // use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
 // use common::exception::GlobalError::SysErr;
@@ -9,11 +9,11 @@
 // use common::serde::{Deserialize, Serialize};
 // use reqwest::header;
 // use reqwest::header::HeaderMap;
-// 
+//
 // use crate::general::AlarmConf;
 // use crate::general::model::AlarmInfo;
 // use crate::service::{EXPIRES, ResMsg, StreamRecordInfo};
-// 
+//
 // #[allow(dead_code)]
 // const DROP_SSRC: &str = "/drop/ssrc";
 // #[allow(dead_code)]
@@ -30,14 +30,14 @@
 // const QUERY_STREAM_COUNT: &str = "/stream/count";
 // #[allow(dead_code)]
 // const RTP_MEDIA: &str = "/rtp/media";
-// 
+//
 // fn build_uri_header(gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<(String, HeaderMap)> {
 //     let uri = format!("http://{}:{}", local_ip.to_string(), local_port);
 //     let mut headers = HeaderMap::new();
 //     headers.insert("gmv-token", header::HeaderValue::from_str(gmv_token).hand_log(|msg| error!("{msg}"))?);
 //     Ok((uri, headers))
 // }
-// 
+//
 // pub async fn get_stream_count(opt_stream_id: Option<&String>, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<u32> {
 //     let (mut uri, headers) = build_uri_header(gmv_token, local_ip, local_port)?;
 //     if let Some(stream_id) = opt_stream_id {
@@ -45,7 +45,7 @@
 //     } else {
 //         uri = format!("{uri}{QUERY_STREAM_COUNT}");
 //     }
-// 
+//
 //     let res = reqwest::Client::builder()
 //         .timeout(Duration::from_secs(EXPIRES))
 //         .default_headers(headers)
@@ -69,7 +69,7 @@
 //         Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
 //     };
 // }
-// 
+//
 // #[derive(Clone, Deserialize, Serialize, Debug, Default)]
 // #[serde(crate = "common::serde")]
 // pub struct HlsPiece {
@@ -77,7 +77,7 @@
 //     pub duration: u8,
 //     pub live: bool,
 // }
-// 
+//
 // #[derive(Clone, Serialize, Deserialize, Debug)]
 // #[serde(crate = "common::serde")]
 // pub enum Download {
@@ -86,7 +86,7 @@
 //     //截图 filename
 //     Picture(String, Option<String>),
 // }
-// 
+//
 // #[derive(Clone, Serialize, Deserialize, Debug)]
 // #[serde(crate = "common::serde")]
 // pub enum Play {
@@ -94,7 +94,7 @@
 //     Hls(HlsPiece),
 //     FlvHls(HlsPiece),
 // }
-// 
+//
 // #[derive(Clone, Serialize, Deserialize, Debug)]
 // #[serde(crate = "common::serde")]
 // pub enum MediaAction {
@@ -103,7 +103,7 @@
 //     //下载
 //     Download(Download),
 // }
-// 
+//
 // #[derive(Deserialize, Serialize, Debug)]
 // #[serde(crate = "common::serde")]
 // pub struct SsrcLisDto {
@@ -117,7 +117,7 @@
 //     //MP4录像保存，filename
 //     // pub mp4: Option<String>
 // }
-// 
+//
 // pub async fn call_listen_ssrc(stream_id: String, ssrc: &String, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16, media_action: MediaAction) -> GlobalResult<bool> {
 //     let ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
 //     let ssrc_lis_dto = SsrcLisDto {
@@ -147,14 +147,14 @@
 //         Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
 //     };
 // }
-// 
+//
 // #[derive(Serialize, Deserialize, Debug)]
 // #[serde(crate = "common::serde")]
 // struct RtpMap {
 //     ssrc: u32,
 //     map: HashMap<u8, String>,
 // }
-// 
+//
 // pub async fn ident_rtp_media_info(ssrc: &String, map: HashMap<u8, String>, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<bool> {
 //     let ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
 //     let rtp_map = RtpMap { ssrc, map };
@@ -178,8 +178,8 @@
 //         Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
 //     };
 // }
-// 
-// 
+//
+//
 // pub async fn get_stream_record_info_by_biz_id(stream_id: &String, gmv_token: &String, local_ip: &Ipv4Addr, local_port: &u16) -> GlobalResult<StreamRecordInfo> {
 //     let (uri, headers) = build_uri_header(gmv_token, local_ip, local_port)?;
 //     let res = reqwest::Client::builder()
@@ -200,7 +200,7 @@
 //         Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
 //     };
 // }
-// 
+//
 // pub async fn call_alarm_info(info: &AlarmInfo) -> GlobalResult<bool> {
 //     let conf = AlarmConf::get_alarm_conf();
 //     let res = reqwest::Client::builder()
@@ -221,4 +221,4 @@
 //         Err(SysErr(anyhow!("{}",res.status().to_string()))).hand_log(|msg| error!("{msg}"))?
 //     };
 // }
-// 
+//
