@@ -70,7 +70,7 @@ pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
                 build_out_expires(val)
             }
         };
-        let export = OutputLayer::bean_to_layer(stream_config.export)?;
+        let output = OutputLayer::bean_to_layer(stream_config.output)?;
         let stream_trace = StreamTrace {
             stream_id: stream_id.clone(),
             in_on: AtomicBool::new(true),
@@ -84,7 +84,7 @@ pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
             broadcast_bus: bus::broadcast::TypedMessageBus::new(),
             converter: ConverterLayer::bean_to_layer(stream_config.converter),
             media_ext: None,
-            export,
+            output,
         };
         state.sessions.insert(ssrc, stream_trace);
         let inner = InnerTrace { ssrc, user_map: Default::default() };
@@ -480,7 +480,7 @@ struct StreamTrace {
     broadcast_bus: bus::broadcast::TypedMessageBus, //回调移除未使用的协议????
     converter: ConverterLayer,
     media_ext: Option<MediaExt>,
-    export: OutputLayer,
+    output: OutputLayer,
 }
 
 struct InnerTrace {

@@ -1,7 +1,7 @@
 use crate::info::io::HttpStreamType;
 use common::constructor::New;
 use common::serde::{Deserialize, Serialize};
-
+//session
 pub const PLAY_LIVING: &str = "api/play/live/stream";
 pub const PLAY_BACK: &str = "api/play/back/stream";
 pub const PLAY_SEEK: &str = "api/play/back/seek";
@@ -12,18 +12,21 @@ pub const DOWNLOAD_STOP: &str = "api/download/stop";
 pub const DOWNING_INFO: &str = "api/downing/info";
 pub const RM_FILE: &str = "api/rm/file";
 
-
-pub const LISTEN_SSRC: &str = "/listen/ssrc";
-pub const RTP_MEDIA: &str = "/rtp/media";
-pub const STREAM_LIVING: &str = "/stream/living";
-pub const FLV_PLAY_PATH: &str = "/play/:stream_id.flv";
-
 pub const STREAM_REGISTER: &str = "/stream/register";
 pub const INPUT_TIMEOUT: &str = "/stream/input/timeout";
 pub const ON_PLAY: &str = "/on/play";
 pub const STREAM_IDLE: &str = "/stream/idle";
 pub const OFF_PLAY: &str = "/off/play";
 pub const END_RECORD: &str = "/end/record";
+
+//stream
+pub const LISTEN_SSRC: &str = "/listen/ssrc";
+pub const RTP_MEDIA: &str = "/rtp/media";
+pub const STREAM_ONLINE: &str = "/stream/online";
+pub const FLV_PLAY_PATH: &str = "/play/:stream_id.flv";
+
+//todo record info
+
 
 #[derive(New, Serialize, Deserialize, Debug)]
 #[serde(crate = "common::serde")]

@@ -22,7 +22,7 @@ impl HttpClient {
             .with_url(url);
         Ok(pretend)
     }
-    pub fn template_ip_port(local_ip: String, local_port: u16) -> GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>> {
+    pub fn template_ip_port(local_ip: &String, local_port: u16) -> GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>> {
         let uri = format!("http://{}:{}", local_ip, local_port);
         Self::template(&uri)
     }
@@ -51,8 +51,8 @@ pub trait HttpStream {
     async fn stream_init(&self, json: &MediaStreamConfig) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/rtp/media")]
     async fn stream_init_ext(&self, json: &MediaMap) -> Result<Json<Resp<()>>>;
-    #[request(method = "POST", path = "/stream/living")]
-    async fn stream_living(&self, json: &StreamKey) -> Result<Json<Resp<bool>>>;
+    #[request(method = "POST", path = "/stream/online")]
+    async fn stream_online(&self, json: &StreamKey) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/record/info")]
     async fn record_info(&self, json: &SingleParam<String>) -> Result<Json<Resp<StreamRecordInfo>>>;
 }

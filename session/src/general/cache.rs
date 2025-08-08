@@ -20,7 +20,7 @@ use common::tokio::sync::mpsc::Sender;
 use common::tokio::sync::Notify;
 use common::tokio::time;
 use common::tokio::time::Instant;
-
+use shared::info::io::Output;
 use crate::general;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
@@ -84,7 +84,7 @@ impl Cache {
     }
 
     //当媒体流注册时，需插入建立关系,成功插入：true
-    pub fn stream_map_insert_info(stream_id: String, stream_node_name: String, call_id: String, seq: u32, play_type: PlayType, from_tag: String, to_tag: String) -> bool {
+    pub fn stream_map_insert_info(stream_id: String, stream_node_name: String, call_id: String, seq: u32, am: AccessMode, from_tag: String, to_tag: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => { false }
             Entry::Vacant(vac) => {
@@ -93,7 +93,7 @@ impl Cache {
                     stream_node_name,
                     call_id,
                     seq,
-                    play_type,
+                    am,
                     from_tag,
                     to_tag,
                 };
@@ -154,20 +154,21 @@ impl Cache {
             })
     }
 
-    pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<PlayType> {
+    pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<AccessMode> {
         GENERAL_CACHE.shared.stream_map.get(stream_id).map(|res| {
-            let play_type = res.value().play_type;
-            play_type.clone()
+            let am = res.value().am;
+            am.clone()
         })
     }
 
     //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
     //层层插入
-    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, play_type: PlayType) {
+    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, am: AccessMode, output: Output) {
         let device_table = DeviceTable {
             channel_id,
-            play_type,
+            am,
             stream_id,
+            output,
             ssrc,
         };
         match GENERAL_CACHE.shared.device_map.entry(device_id) {
@@ -191,7 +192,7 @@ impl Cache {
       2.1 (PlayType,ssrc)= none => remove(device_id下channel_id)
       2.2 (PlayType,ssrc)= some => remove(device_id下channel_id下(PlayType,ssrc))
     */
-    pub fn device_map_remove(device_id: &String, opt_channel_ssrc: Option<(&String, Option<(PlayType, &String)>)>) {
+    pub fn device_map_remove(device_id: &String, opt_channel_ssrc: Option<(&String, Option<(AccessMode, &String)>)>) {
         match opt_channel_ssrc {
             None => {
                 GENERAL_CACHE.shared.device_map.remove(device_id);
@@ -205,9 +206,9 @@ impl Cache {
                                 None => {
                                     !device_table.channel_id.eq(channel_id)
                                 }
-                                Some((play_type, ssrc)) => {
+                                Some((am, ssrc)) => {
                                     !device_table.channel_id.eq(channel_id)
-                                        && !device_table.play_type.eq(&play_type)
+                                        && !device_table.am.eq(&am)
                                         && !device_table.ssrc.eq(ssrc)
                                 }
                             }
@@ -225,13 +226,13 @@ impl Cache {
     }
 
     //返回stream_id,ssrc
-    pub fn device_map_get_invite_info(device_id: &String, channel_id: &String, play_type: &PlayType) -> Option<(String, String)> {
+    pub fn device_map_get_invite_info(device_id: &String, channel_id: &String, am: &AccessMode) -> Option<(String, String)> {
         match GENERAL_CACHE.shared.device_map.get(device_id) {
             None => { None }
             Some(m_map) => {
                 let mut iter = m_map.value().iter();
                 iter.find_map(|device_table| {
-                    if device_table.channel_id.eq(channel_id) && device_table.play_type.eq(play_type) {
+                    if device_table.channel_id.eq(channel_id) && device_table.am.eq(am) {
                         return Some((device_table.stream_id.clone(), device_table.ssrc.clone()));
                     }
                     None
@@ -373,15 +374,16 @@ struct StreamTable {
     stream_node_name: String,
     call_id: String,
     seq: u32,
-    play_type: PlayType,
+    am: AccessMode,
     from_tag: String,
     to_tag: String,
 }
 
 struct DeviceTable {
     channel_id: String,
-    play_type: PlayType,
+    am: AccessMode,
     stream_id: String,
+    output: Output,
     ssrc: String,
 }
 
@@ -395,11 +397,9 @@ struct Shared {
     background_task: Notify,
     //存放原始可用的ssrc序号
     ssrc_sn: DashSet<u16>,
-    //stream_id:(set<gmv_token>,stream_node_name,call_id,seq,PlayType,from_tag,to_tag)
-    // stream_map: DashMap<String, (Option<HashSet<String>>, String, String, u32, PlayType, String, String)>,
+    //key:stream_id
     stream_map: DashMap<String, StreamTable>,
-    //device_id:HashMap<channel_id,HashMap<playType,BiMap<stream_id,ssrc>>
-    // device_map: DashMap<String, HashMap<String, HashMap<PlayType, BiMap<String, String>>>>,
+    //key:device_id
     device_map: DashMap<String, Vec<DeviceTable>>,
 }
 
@@ -425,20 +425,20 @@ impl Shared {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
-pub enum PlayType {
+pub enum AccessMode {
     Live,
     Back,
-    Down,
+    // Down,
 }
 
-impl PlayType {}
+impl AccessMode {}
 
 #[cfg(test)]
 mod tests {
     use common::dashmap::{DashMap, DashSet};
     use common::{rand};
     use common::rand::prelude::IteratorRandom;
-    use crate::general::cache::{Cache, GENERAL_CACHE, PlayType, StreamTable};
+    use crate::general::cache::{Cache, GENERAL_CACHE, AccessMode, StreamTable};
 
     #[test]
     fn test_ref_mut() {
@@ -447,7 +447,7 @@ mod tests {
             stream_node_name: "".to_string(),
             call_id: "".to_string(),
             seq: 0,
-            play_type: PlayType::Live,
+            am: AccessMode::Live,
             from_tag: "".to_string(),
             to_tag: "".to_string(),
         };
