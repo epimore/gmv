@@ -43,7 +43,7 @@ use common::tokio::time;
 use common::tokio::time::Instant;
 use parking_lot::RwLock;
 use shared::info::format::MuxerType;
-use shared::info::io::PlayType;
+use shared::info::output::PlayType;
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaExt;
 use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
@@ -70,6 +70,7 @@ pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
                 build_out_expires(val)
             }
         };
+        let converter = ConverterLayer::bean_to_layer(stream_config.converter, &stream_config.output);
         let output = OutputLayer::bean_to_layer(stream_config.output)?;
         let stream_trace = StreamTrace {
             stream_id: stream_id.clone(),
@@ -82,7 +83,7 @@ pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
             origin_trans: None,
             mpsc_bus: bus::mpsc::TypedMessageBus::new(),
             broadcast_bus: bus::broadcast::TypedMessageBus::new(),
-            converter: ConverterLayer::bean_to_layer(stream_config.converter),
+            converter,
             media_ext: None,
             output,
         };

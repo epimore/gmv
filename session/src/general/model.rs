@@ -8,7 +8,7 @@ use common::exception::{GlobalResult, GlobalResultExt};
 use common::log::error;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
-use shared::info::io::Output;
+use shared::info::output::Output;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "common::serde")]

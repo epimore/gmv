@@ -23,7 +23,7 @@ use std::time::Duration;
 use futures_util::{stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
 use shared::info::format::MuxerType;
-use shared::info::io::{HttpFlv, HttpStreamType, PlayType};
+use shared::info::output::{HttpFlv, HttpStreamType, PlayType};
 
 pub fn routes() -> Router {
     Router::new().route(FLV_PLAY_PATH, axum::routing::get(flv_handler))

@@ -58,10 +58,10 @@ impl MediaContext {
                 if ret < 0 {
                     break;
                 }
-                // 暂不实现处理filter
-                // Self::handle_filter(&mut self.filter_context);
                 // 暂不实现处理codec
                 // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
+                // 暂不实现处理filter
+                // Self::handle_filter(&mut self.filter_context);
                 // 处理muxer
                 Self::handle_muxer(&mut self.muxer_context, &pkt);
 

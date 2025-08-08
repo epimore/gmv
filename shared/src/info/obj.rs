@@ -1,4 +1,4 @@
-use crate::info::io::HttpStreamType;
+use crate::info::output::HttpStreamType;
 use common::constructor::New;
 use common::serde::{Deserialize, Serialize};
 //session
