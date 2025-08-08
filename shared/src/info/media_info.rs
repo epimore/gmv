@@ -16,7 +16,7 @@ pub struct MediaStreamConfig {
     /// 转换
     pub converter: Converter,
     /// 输出:至少一个
-    pub export: Output,
+    pub output: Output,
 }
 
 

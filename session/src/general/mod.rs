@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 use common::{serde_default};
 use common::cfg_lib::conf;
 use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
-use common::constructor::Get;
 use common::once_cell::sync::OnceCell;
 use common::serde::{Deserialize};
 use url::Url;
@@ -54,7 +53,7 @@ impl CheckFromConf for AlarmConf {
     }
 }
 
-#[derive(Debug, Get, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(crate = "common::serde")]
 #[conf(prefix = "server.stream")]
 pub struct StreamConf {
@@ -65,7 +64,7 @@ pub struct StreamConf {
     pub nodes: Vec<StreamNode>,
 }
 serde_default!(default_node_map, HashMap<String, StreamNode>, HashMap::new());
-#[derive(Debug, Get, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(crate = "common::serde")]
 pub struct StreamNode {
     pub name: String,

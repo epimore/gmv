@@ -5,14 +5,14 @@ use common::log::error;
 use common::tokio::sync::mpsc::Sender;
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{StreamKey, LISTEN_SSRC, RTP_MEDIA, STREAM_LIVING};
+use shared::info::obj::{StreamKey, LISTEN_SSRC, RTP_MEDIA, STREAM_ONLINE};
 use shared::info::res::Resp;
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
         .route(LISTEN_SSRC, axum::routing::post(stream_init))
         .route(RTP_MEDIA, axum::routing::post(stream_map).layer(Extension(tx.clone())))
-        .route(STREAM_LIVING, axum::routing::post(stream_living))
+        .route(STREAM_ONLINE, axum::routing::post(stream_online))
 }
 
 async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaStreamConfig>) -> Json<Resp<()>> {
@@ -44,7 +44,7 @@ async fn stream_map(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
     Json(json)
 }
 
-async fn stream_living(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
+async fn stream_online(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
     Json(Resp::<bool>::build_success_data(cache::is_exist(stream_key)))
 }
 
