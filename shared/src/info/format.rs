@@ -11,42 +11,43 @@ pub struct Muxer {
     pub rtp_enc: Option<RtpEnc>,
     pub frame: Option<Frame>,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "common::serde")]
 pub struct Frame {}
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "common::serde")]
 pub struct Mp4 {}
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "common::serde")]
 pub struct Flv {}
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "common::serde")]
 pub struct RtpFrame {}
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "common::serde")]
 pub struct RtpPs {}
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "common::serde")]
 pub struct RtpEnc {}
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "common::serde")]
 pub struct Ts {}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub enum MuxerTypeExt {
-    Flv(Flv),
-    Mp4(Mp4),
-    Ts(Ts),
-    RtpFrame(RtpFrame),
-    RtpPs(RtpPs),
-    RtpEnc(RtpEnc),
-    Frame(Frame),
+pub enum GB28181MuxerType {
+    RtpFrame,
+    RtpPs,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "common::serde")]
+pub enum WebRtcMuxerType {
+    RtpFrame,
+    RtpEnc,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Eq, Ord, PartialEq, PartialOrd,Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Ord, PartialOrd, Eq, PartialEq,Copy )]
 #[serde(crate = "common::serde")]
 pub enum MuxerType {
     None,
@@ -57,4 +58,21 @@ pub enum MuxerType {
     RtpPs,
     RtpEnc,
     Frame,
+}
+impl From<GB28181MuxerType> for MuxerType {
+    fn from(muxer: GB28181MuxerType) -> Self {
+        match muxer {
+            GB28181MuxerType::RtpFrame => MuxerType::RtpFrame,
+            GB28181MuxerType::RtpPs => MuxerType::RtpPs,
+        }
+    }
+}
+
+impl From<WebRtcMuxerType> for MuxerType {
+    fn from(muxer: WebRtcMuxerType) -> Self {
+        match muxer {
+            WebRtcMuxerType::RtpFrame => MuxerType::RtpFrame,
+            WebRtcMuxerType::RtpEnc => MuxerType::RtpEnc,
+        }
+    }
 }

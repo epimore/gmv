@@ -20,7 +20,7 @@ use common::tokio::sync::mpsc::Sender;
 use common::tokio::sync::Notify;
 use common::tokio::time;
 use common::tokio::time::Instant;
-use shared::info::io::Output;
+use shared::info::output::Output;
 use crate::general;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());

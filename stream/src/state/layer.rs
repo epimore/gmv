@@ -2,7 +2,7 @@ pub mod output_layer {
     use common::exception::code::conf_err::CONFIG_ERROR_CODE;
     use common::exception::{GlobalError, GlobalResult};
     use common::log::error;
-    use shared::info::io::{Dash, Gb28181, Hls, HttpFlv, Local, Output, Rtmp, Rtsp, WebRtc};
+    use shared::info::output::{Dash, Gb28181, Hls, HttpFlv, Local, Output, Rtmp, Rtsp, WebRtc};
     use shared::paste::paste;
     use shared::{impl_check_empty, impl_open_close};
 
@@ -99,6 +99,7 @@ pub mod output_layer {
 }
 
 pub mod converter_layer {
+    use shared::info::output::Output;
     use crate::state::layer::codec_layer::CodecLayer;
     use crate::state::layer::filter_layer::FilterLayer;
     use crate::state::layer::muxer_layer::MuxerLayer;
@@ -112,10 +113,10 @@ pub mod converter_layer {
     }
 
     impl ConverterLayer {
-        pub fn bean_to_layer(converter: Converter) -> Self {
+        pub fn bean_to_layer(converter: Converter, output: &Output) -> Self {
             ConverterLayer {
                 codec: converter.codec.map(CodecLayer::bean_to_layer),
-                muxer: MuxerLayer::bean_to_layer(converter.muxer),
+                muxer: MuxerLayer::build_muxer(converter.muxer, output),
                 filter: FilterLayer::bean_to_layer(converter.filter),
             }
         }
@@ -161,12 +162,13 @@ pub mod muxer_layer {
     use crate::media::context::format::flv::FlvPacket;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use common::tokio::sync::broadcast;
-    use shared::info::format::{Flv, Frame, Mp4, Muxer, MuxerType, RtpEnc, RtpFrame, RtpPs, Ts};
+    use shared::info::format::{Flv, Frame, GB28181MuxerType, Mp4, Muxer, MuxerType, RtpEnc, RtpFrame, RtpPs, Ts, WebRtcMuxerType};
     use std::sync::Arc;
     use shared::{impl_check_empty, impl_close};
+    use shared::info::output::{Gb28181, Local, Output, WebRtc};
     use shared::paste::paste;
 
-    #[derive(Clone)]
+    #[derive(Clone, Default)]
     pub struct MuxerLayer {
         pub flv: Option<FlvLayer>,
         pub mp4: Option<Mp4Layer>,
@@ -180,18 +182,41 @@ pub mod muxer_layer {
 
     impl_close!(MuxerLayer, [flv, mp4, ts, rtp_frame, rtp_ps, rtp_enc, frame]);
     impl MuxerLayer {
-        pub fn bean_to_layer(muxer: Muxer) -> Self {
-            MuxerLayer {
-                flv: muxer.flv.map(FlvLayer::bean_to_layer),
-                mp4: muxer.mp4.map(Mp4Layer::bean_to_layer),
-                ts: muxer.ts.map(TsLayer::bean_to_layer),
-                rtp_frame: muxer.rtp_frame.map(RtpFrameLayer::bean_to_layer),
-                rtp_ps: muxer.rtp_ps.map(RtpPsLayer::bean_to_layer),
-                rtp_enc: muxer.rtp_enc.map(RtpEncLayer::bean_to_layer),
-                frame: muxer.frame.map(FrameLayer::bean_to_layer),
+        pub fn build_muxer(muxer: Muxer, output: &Output) -> Self {
+            let mut ml = MuxerLayer::default();
+            if output.http_flv.is_some() || output.rtmp.is_some()
+                || matches!(output.local, Some(Local { muxer: MuxerType::Flv })) {
+                let flv = muxer.flv.unwrap_or_else(|| Flv::default());
+                ml.flv = Some(FlvLayer::bean_to_layer(flv));
             }
+            if output.dash.is_some() || matches!(output.local, Some(Local { muxer: MuxerType::Mp4 })) {
+                let mp4 = muxer.mp4.unwrap_or_else(|| Mp4::default());
+                ml.mp4 = Some(Mp4Layer::bean_to_layer(mp4));
+            }
+            if output.hls.is_some() || matches!(output.local, Some(Local { muxer: MuxerType::Ts })) {
+                let ts = muxer.ts.unwrap_or_else(|| Ts::default());
+                ml.ts = Some(TsLayer::bean_to_layer(ts));
+            }
+            if output.rtsp.is_some()
+                || matches!(output.local, Some(Local { muxer: MuxerType::RtpFrame }))
+                || matches!(output.gb28181,Some(Gb28181{muxer:GB28181MuxerType::RtpFrame}))
+                || matches!(output.web_rtc,Some(WebRtc{muxer:WebRtcMuxerType::RtpFrame})) {
+                let rtp_frame = muxer.rtp_frame.unwrap_or_else(|| RtpFrame::default());
+                ml.rtp_frame = Some(RtpFrameLayer::bean_to_layer(rtp_frame));
+            }
+            if matches!(output.local, Some(Local { muxer: MuxerType::RtpPs }))
+                || matches!(output.gb28181,Some(Gb28181{muxer:GB28181MuxerType::RtpPs})) {
+                let rtp_ps = muxer.rtp_ps.unwrap_or_else(|| RtpPs::default());
+                ml.rtp_ps = Some(RtpPsLayer::bean_to_layer(rtp_ps));
+            }
+
+            if matches!(output.local, Some(Local { muxer: MuxerType::RtpEnc }))
+                || matches!(output.web_rtc,Some(WebRtc{muxer:WebRtcMuxerType::RtpEnc})) {
+                let rtp_enc = muxer.rtp_enc.unwrap_or_else(|| RtpEnc::default());
+                ml.rtp_enc = Some(RtpEncLayer::bean_to_layer(rtp_enc));
+            }
+            ml
         }
-        //todo 发送close 消息
 
         pub fn close_by_muxer_type(&mut self, mt: &MuxerType) {
             match mt {

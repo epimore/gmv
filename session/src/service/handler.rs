@@ -10,7 +10,7 @@ use common::serde_json;
 use common::tokio::sync::mpsc;
 use common::tokio::time::{Instant, sleep};
 use shared::info::format::{Flv, Muxer};
-use shared::info::io::{HttpFlv, Output};
+use shared::info::output::{HttpFlv, Output};
 use shared::info::media_info::{Converter, MediaStreamConfig};
 use shared::info::obj::{BaseStreamInfo, StreamKey, StreamPlayInfo, StreamRecordInfo, StreamState};
 use crate::gb::handler::cmd::{CmdControl, CmdStream};

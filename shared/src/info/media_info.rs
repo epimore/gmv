@@ -1,8 +1,8 @@
 use crate::info::codec::Codec;
 use crate::info::filter::Filter;
-use crate::info::format::Muxer;
-use crate::info::io::Output;
+use crate::info::output::Output;
 use common::serde::{Deserialize, Serialize};
+use crate::info::format::Muxer;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "common::serde")]

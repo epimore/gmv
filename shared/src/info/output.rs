@@ -4,32 +4,32 @@ use common::log::error;
 use common::serde::{Deserialize, Serialize};
 use paste::paste;
 use crate::{impl_check_empty, impl_open_close};
-use crate::info::format::{Flv, Mp4, Muxer, MuxerType, Ts};
+use crate::info::format::{Flv, GB28181MuxerType, Mp4, Muxer, MuxerType, RtpFrame, Ts, WebRtcMuxerType};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(crate = "common::serde")]
 pub struct Output {
     pub local: Option<Local>,
     pub rtmp: Option<Rtmp>,
-    pub http_flv: Option<HttpFlv>,
     pub dash: Option<Dash>,
+    pub http_flv: Option<HttpFlv>,
     pub hls: Option<Hls>,
     pub rtsp: Option<Rtsp>,
     pub gb28181: Option<Gb28181>,
     pub web_rtc: Option<WebRtc>,
 }
 impl Output {
-    pub fn to_muxer(&self) -> GlobalResult<Muxer> {
-        let mut muxer = Muxer::default();
-        self.http_flv.as_ref().map(|_| { muxer.flv = Some(Flv {}) });
-        self.rtmp.as_ref().map(|_| { muxer.flv = Some(Flv {}) });
-        self.dash.as_ref().map(|_| { muxer.mp4 = Some(Mp4 {}) });
-        self.hls.as_ref().map(|_| { muxer.ts = Some(Ts {}) });
-        self.rtsp.as_ref().map(|t| { unimplemented!() });
-        self.gb28181.as_ref().map(|t| { unimplemented!() });
-        self.web_rtc.as_ref().map(|t| { unimplemented!() });
-        Ok(muxer)
-    }
+    // pub fn to_muxer(&self) -> GlobalResult<Muxer> {
+    //     let mut muxer = Muxer::default();
+    //     self.http_flv.as_ref().map(|_| { muxer.flv = Some(Flv {}) });
+    //     self.rtmp.as_ref().map(|_| { muxer.flv = Some(Flv {}) });
+    //     self.dash.as_ref().map(|_| { muxer.mp4 = Some(Mp4 {}) });
+    //     self.hls.as_ref().map(|_| { muxer.ts = Some(Ts {}) });
+    //     self.rtsp.as_ref().map(|t| { unimplemented!() });
+    //     self.gb28181.as_ref().map(|t| { unimplemented!() });
+    //     self.web_rtc.as_ref().map(|t| { unimplemented!() });
+    //     Ok(muxer)
+    // }
     pub fn new(
         local: Option<Local>,
         rtmp: Option<Rtmp>,
@@ -70,34 +70,37 @@ impl_open_close!(Output, {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Local {
-    muxer: MuxerType,
+    pub muxer: MuxerType,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Hls {}
+pub struct Hls {
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct HttpFlv {}
+pub struct HttpFlv {
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Rtmp {}
+pub struct Rtmp {
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Rtsp {
-    muxer: MuxerType,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
-pub struct Dash {}
+pub struct Dash {
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct Gb28181 {
-    muxer: MuxerType,
+    pub muxer: GB28181MuxerType,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "common::serde")]
 pub struct WebRtc {
-    muxer: MuxerType,
+    pub muxer: WebRtcMuxerType,
 }
 
 pub enum PlayType {
