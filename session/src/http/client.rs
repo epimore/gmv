@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use common::exception::{GlobalResult, GlobalResultExt};
+use base::exception::{GlobalResult, GlobalResultExt};
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
 use pretend::{pretend, Pretend, Result};

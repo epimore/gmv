@@ -6,8 +6,8 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#common = { git = "https://github.com/epimore/pigs.git",rev = "ff413519", features = ["net"] }
-common = { path = "../../pigs/common", features = ["net"] }
+#base = { git = "https://github.com/epimore/pigs.git",features = ["net"] }
+base = { path = "../../pigs/base", features = ["net"] }
 shared = { path = "../shared" }
 parking_lot = "0.12"
 #tokio-util = "0.7"

@@ -1,11 +1,11 @@
 use crate::info::codec::Codec;
 use crate::info::filter::Filter;
 use crate::info::output::Output;
-use common::serde::{Deserialize, Serialize};
+use base::serde::{Deserialize, Serialize};
 use crate::info::format::Muxer;
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct MediaStreamConfig {
     pub ssrc: u32,
     pub stream_id: String,
@@ -21,7 +21,7 @@ pub struct MediaStreamConfig {
 
 
 #[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Converter {
     pub codec: Option<Codec>,
     pub muxer: Muxer,

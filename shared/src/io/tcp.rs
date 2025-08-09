@@ -1,8 +1,8 @@
 use std::net::IpAddr;
-use common::serde::Deserialize;
+use base::serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Tcp {
     ip: IpAddr,
     port: u16,

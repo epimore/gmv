@@ -1,10 +1,10 @@
-use common::serde::{Deserialize, Serialize};
+use base::serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Capture {}
 #[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Filter {
     //抽图
     pub capture: Option<Capture>,

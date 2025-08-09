@@ -3,12 +3,12 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Router;
-use common::cfg_lib::conf;
-use common::exception::{GlobalResult, GlobalResultExt};
-use common::log::{error, info};
-use common::serde::Deserialize;
-use common::serde_default;
-use common::tokio::net::TcpListener;
+use base::cfg_lib::conf;
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::log::{error, info};
+use base::serde::Deserialize;
+use base::serde_default;
+use base::tokio::net::TcpListener;
 
 mod api;
 mod hook;
@@ -17,7 +17,7 @@ pub mod client;
 
 pub const UPLOAD_PICTURE: &str = "/edge/upload/picture";
 #[derive(Debug, Deserialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "http")]
 pub struct Http {
     #[serde(default = "default_port")]

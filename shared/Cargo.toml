@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-common = { path = "../../pigs/common", features = ["net"] }
+base = { path = "../../pigs/base", features = ["net"] }
 paste = "1.0"
 
 #[patch.crates-io]

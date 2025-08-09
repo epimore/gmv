@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
-use common::log::error;
-use common::exception::{GlobalError, GlobalResult};
-use common::utils::dig62;
+use base::log::error;
+use base::exception::{GlobalError, GlobalResult};
+use base::utils::dig62;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
 

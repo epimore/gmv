@@ -1,17 +1,18 @@
-use common::serde::{Deserialize, Serialize};
+use base::serde::{Deserialize, Serialize};
 
 use crate::gb::handler::parser::xml::KV2Model;
 use crate::general;
 use anyhow::anyhow;
-use common::exception::GlobalError::SysErr;
-use common::exception::{GlobalResult, GlobalResultExt};
-use common::log::error;
+use base::exception::GlobalError::SysErr;
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::log::error;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
+use shared::info::media_info::Converter;
 use shared::info::output::Output;
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct SingleParam<T> {
     pub param: T,
 }
@@ -34,7 +35,7 @@ impl StreamMode {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct StreamNode {
     pub stream_id: String,
     pub stream_server: String,
@@ -42,22 +43,21 @@ pub struct StreamNode {
 
 // 传输方式 默认udp 模式, TcpPassive 被动模式,TcpActive 主动模式
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub enum TransMode {
     Udp,
     TcpActive,
     TcpPassive,
 }
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct CustomMediaConfig {
     pub output: Output,
-    pub codec: Codec,
-    pub filter: Filter,
+    pub converter: Converter,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct PlayLiveModel {
     pub device_id: String,
     pub channel_id: Option<String>,
@@ -66,7 +66,7 @@ pub struct PlayLiveModel {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct PlayBackModel {
     pub device_id: String,
     pub channel_id: Option<String>,
@@ -77,7 +77,7 @@ pub struct PlayBackModel {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySeekModel {
     pub streamId: String,
@@ -85,7 +85,7 @@ pub struct PlaySeekModel {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySpeedModel {
     pub streamId: String,
@@ -93,7 +93,7 @@ pub struct PlaySpeedModel {
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PtzControlModel {
     pub deviceId: String,
@@ -113,7 +113,7 @@ pub struct PtzControlModel {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct StreamInfo {
     pub streamId: String,
@@ -145,7 +145,7 @@ impl StreamInfo {
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct AlarmInfo {
     pub priority: u8,

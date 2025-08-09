@@ -6,20 +6,20 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use common::{rand, serde_json, tokio};
-use common::bytes::Bytes;
-use common::dashmap::{DashMap, DashSet};
-use common::dashmap::mapref::entry::Entry;
-use common::exception::{GlobalResult, GlobalResultExt};
-use common::log::{error, warn};
-use common::once_cell::sync::Lazy;
-use common::rand::seq::IteratorRandom;
-use common::serde::{Deserialize, Serialize};
-use common::serde::de::DeserializeOwned;
-use common::tokio::sync::mpsc::Sender;
-use common::tokio::sync::Notify;
-use common::tokio::time;
-use common::tokio::time::Instant;
+use base::{rand, serde_json, tokio};
+use base::bytes::Bytes;
+use base::dashmap::{DashMap, DashSet};
+use base::dashmap::mapref::entry::Entry;
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::log::{error, warn};
+use base::once_cell::sync::Lazy;
+use base::rand::seq::IteratorRandom;
+use base::serde::{Deserialize, Serialize};
+use base::serde::de::DeserializeOwned;
+use base::tokio::sync::mpsc::Sender;
+use base::tokio::sync::Notify;
+use base::tokio::time;
+use base::tokio::time::Instant;
 use shared::info::output::Output;
 use crate::general;
 
@@ -428,16 +428,16 @@ impl Shared {
 pub enum AccessMode {
     Live,
     Back,
-    // Down,
+    Down,
 }
 
 impl AccessMode {}
 
 #[cfg(test)]
 mod tests {
-    use common::dashmap::{DashMap, DashSet};
-    use common::{rand};
-    use common::rand::prelude::IteratorRandom;
+    use base::dashmap::{DashMap, DashSet};
+    use base::{rand};
+    use base::rand::prelude::IteratorRandom;
     use crate::general::cache::{Cache, GENERAL_CACHE, AccessMode, StreamTable};
 
     #[test]

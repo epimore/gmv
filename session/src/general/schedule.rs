@@ -4,12 +4,12 @@ use std::thread;
 
 use cron::Schedule;
 
-use common::chrono::{Local};
-use common::log::error;
-use common::once_cell::sync::Lazy;
-use common::tokio;
-use common::tokio::sync::mpsc;
-use common::tokio::sync::mpsc::{Receiver, Sender};
+use base::chrono::{Local};
+use base::log::error;
+use base::once_cell::sync::Lazy;
+use base::tokio;
+use base::tokio::sync::mpsc;
+use base::tokio::sync::mpsc::{Receiver, Sender};
 
 pub trait ScheduleTask: Send + Sync + 'static {
     fn do_something(&self) -> Pin<Box<dyn Future<Output=()> + Send + '_>>;
@@ -69,7 +69,7 @@ mod test {
 
     use cron::Schedule;
 
-    use common::chrono::Local;
+    use base::chrono::Local;
 
     use crate::general::schedule::{get_schedule_tx, ScheduleTask};
 

@@ -7,7 +7,7 @@ use axum::{
 };
 use std::collections::HashMap;
 
-use common::{bytes::Bytes, log::error};
+use base::{bytes::Bytes, log::error};
 
 use crate::{http::UPLOAD_PICTURE, service::biz, utils::edge_token};
 

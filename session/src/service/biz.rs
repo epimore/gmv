@@ -7,10 +7,10 @@
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::storage::pics::Pics;
 use crate::utils::edge_token;
-use common::bytes::Bytes;
-use common::chrono::Local;
-use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use common::log::error;
+use base::bytes::Bytes;
+use base::chrono::Local;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::log::error;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -82,8 +82,8 @@ pub async fn rm_file(file_id: i64) -> GlobalResult<()> {
 mod test {
     #[test]
     fn test_path() {
-        //    use common::exception::{GlobalError, GlobalResult};
-        //     use common::log::error;
+        //    use base::exception::{GlobalError, GlobalResult};
+        //     use base::log::error;
         //     use crate::general::DownloadConf;
         // use std::{env, fs};
         // use std::path::{Path, PathBuf};

@@ -1,5 +1,5 @@
-use common::exception::{GlobalResult, GlobalResultExt};
-use common::log::error;
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::log::error;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
