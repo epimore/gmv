@@ -1,13 +1,13 @@
-use common::exception::{GlobalError, GlobalResult};
-use common::exception::code::conf_err::CONFIG_ERROR_CODE;
-use common::log::error;
-use common::serde::{Deserialize, Serialize};
+use base::exception::{GlobalError, GlobalResult};
+use base::exception::code::conf_err::CONFIG_ERROR_CODE;
+use base::log::error;
+use base::serde::{Deserialize, Serialize};
 use paste::paste;
 use crate::{impl_check_empty, impl_open_close};
 use crate::info::format::{Flv, GB28181MuxerType, Mp4, Muxer, MuxerType, RtpFrame, Ts, WebRtcMuxerType};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Output {
     pub local: Option<Local>,
     pub rtmp: Option<Rtmp>,
@@ -68,37 +68,37 @@ impl_open_close!(Output, {
 });
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Local {
     pub muxer: MuxerType,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Hls {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct HttpFlv {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Rtmp {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Rtsp {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Dash {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Gb28181 {
     pub muxer: GB28181MuxerType,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct WebRtc {
     pub muxer: WebRtcMuxerType,
 }
@@ -125,7 +125,7 @@ impl PlayType {
 //     Rtsp,
 //     WebRtc,
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub enum HttpStreamType {
     HttpFlv(MuxerType),
     Hls(MuxerType),

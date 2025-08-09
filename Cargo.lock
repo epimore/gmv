@@ -267,6 +267,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "base"
+version = "0.2.0"
+dependencies = [
+ "aes",
+ "base64 0.22.1",
+ "block-modes",
+ "bytebuffer",
+ "bytes",
+ "cfg_lib",
+ "chrono",
+ "constructor",
+ "ctor",
+ "daemonize",
+ "dashmap",
+ "exception",
+ "fern",
+ "hex",
+ "log",
+ "once_cell",
+ "rand",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tokio",
+ "users",
+]
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -283,6 +312,14 @@ name = "base64ct"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
+
+[[package]]
+name = "base_db"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "sqlx",
+]
 
 [[package]]
 name = "bindgen"
@@ -572,43 +609,6 @@ name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
-
-[[package]]
-name = "common"
-version = "0.2.0"
-dependencies = [
- "aes",
- "base64 0.22.1",
- "block-modes",
- "bytebuffer",
- "bytes",
- "cfg_lib",
- "chrono",
- "constructor",
- "ctor",
- "daemonize",
- "dashmap",
- "exception",
- "fern",
- "hex",
- "log",
- "once_cell",
- "rand",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "tokio",
- "users",
-]
-
-[[package]]
-name = "common_db"
-version = "0.1.0"
-dependencies = [
- "common",
- "sqlx",
-]
 
 [[package]]
 name = "concurrent-queue"
@@ -1202,7 +1202,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "common_db",
+ "base_db",
  "cron",
  "crossbeam-channel",
  "encoding_rs",
@@ -1226,7 +1226,7 @@ name = "gmv-stream"
 version = "0.1.0"
 dependencies = [
  "axum",
- "common",
+ "base",
  "crossbeam-channel",
  "futures-core",
  "futures-util",
@@ -2906,7 +2906,7 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
- "common",
+ "base",
  "paste",
 ]
 

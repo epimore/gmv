@@ -1,5 +1,5 @@
 #![allow(warnings)]
-use common::daemon;
+use base::daemon;
 use crate::app::AppInfo;
 pub mod storage;
 pub mod gb;

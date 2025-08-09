@@ -2,23 +2,26 @@ use std::fs;
 use std::ops::Sub;
 use std::path::Path;
 use std::time::Duration;
-use common::bytes::Bytes;
-use common::chrono::{Local, TimeZone};
-use common::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use common::log::{error};
-use common::serde_json;
-use common::tokio::sync::mpsc;
-use common::tokio::time::{Instant, sleep};
+use pretend::Json;
+use base::bytes::Bytes;
+use base::chrono::{Local, TimeZone};
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::log::{error};
+use base::serde_json;
+use base::tokio::sync::mpsc;
+use base::tokio::time::{Instant, sleep};
 use shared::info::format::{Flv, Muxer};
 use shared::info::output::{HttpFlv, Output};
 use shared::info::media_info::{Converter, MediaStreamConfig};
+use shared::info::media_info_ext::{MediaExt, MediaMap, MediaType};
 use shared::info::obj::{BaseStreamInfo, StreamKey, StreamPlayInfo, StreamRecordInfo, StreamState};
+use shared::info::res::Resp;
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWSession;
 use crate::general;
 use crate::general::cache::AccessMode;
 use crate::general::{DownloadConf, StreamConf};
-use crate::general::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamMode, TransMode};
+use crate::general::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamMode, TransMode};
 use crate::service::{RELOAD_EXPIRES};
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::utils::{id_builder};
@@ -145,7 +148,7 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
         general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
         return Ok(StreamInfo::build(stream_id, node_name));
     }
-    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, 0, 0, play_live_model.trans_mode, play_live_model.output).await?;
+    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, 0, 0, play_live_model.trans_mode, play_live_model.custom_media_config).await?;
     general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
     Ok(StreamInfo::build(stream_id, node_name))
 }
@@ -293,56 +296,71 @@ pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalRe
 //选择流媒体节点（可用+负载最小）-> 监听流注册
 //发起实时点播 -> 监听设备响应
 //缓存流信息
-async fn start_invite_stream(device_id: &String, channel_id: &String, token: &String, am: AccessMode, st: u32, et: u32, trans_mode: Option<TransMode>, media_type: Option<Output>) -> GlobalResult<(String, String)> {
-    let num_ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
+async fn start_invite_stream(device_id: &String, channel_id: &String, token: &String, am: AccessMode, st: u32, et: u32,
+                             trans_mode: Option<TransMode>, custom_media_config: Option<CustomMediaConfig>) -> GlobalResult<(String, String)> {
+    let u16ssrc = general::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
     let mut node_sets = general::cache::Cache::stream_map_order_node();
-    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, num_ssrc, true).await?;
+    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, u16ssrc, true).await?;
+    let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let conf = StreamConf::get_stream_conf();
-
-    match media_type {
+    let msc = match custom_media_config {
         None => {
             let output = Output {
                 http_flv: Some(HttpFlv {}),
                 ..Default::default()
             };
-            let converter = Converter { muxer: Muxer { flv: Some(Flv {}), ..Default::default() }, ..Default::default() };
-            let config = MediaStreamConfig {
-                ssrc: ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?,
+            MediaStreamConfig {
+                ssrc: u32ssrc,
                 stream_id: stream_id.clone(),
                 expires: None,
-                converter,
+                converter: Converter::default(),
                 output,
-            };
+            }
         }
-        Some(output) => {
-            let muxer = output.to_muxer()?;
-            muxer
+        Some(cmc) => {
+            MediaStreamConfig {
+                ssrc: u32ssrc,
+                stream_id: stream_id.clone(),
+                expires: None,
+                converter: cmc.converter,
+                output: cmc.output,
+            }
         }
-    }
+    };
 
-
-    let output = media_type.unwrap_or_else(|| Output { http_flv: Some(HttpFlv {}), ..Default::default() });
     //选择负载最小的节点开始尝试：节点是否可用;
     while let Some((_, node_name)) = node_sets.pop_first() {
         let stream_node = conf.node_map.get(&node_name).unwrap();
         let p = HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port).hand_log(|msg| error!("{msg}"))?;
-        p.stream_init()
 
         //next 将sdp支持从session固定的，转为stream支持的
-        if let Ok(true) = callback::call_listen_ssrc(stream_id.clone(), &ssrc, token, stream_node.get_local_ip(), stream_node.get_local_port(), media_action.clone()).await {
+        if let Json { value: Resp { code: 200, .. } } = p.stream_init(&msc).await.hand_log(|msg| error!("{msg}"))?
+        {
             let (res, media_map, from_tag, to_tag) = match am {
                 AccessMode::Live => {
-                    CmdStream::play_live_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc).await?
+                    CmdStream::play_live_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc).await?
                 }
                 AccessMode::Back => {
-                    CmdStream::play_back_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc, st, et).await?
+                    CmdStream::play_back_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et).await?
                 }
                 AccessMode::Down => {
-                    CmdStream::download_invite(device_id, channel_id, &stream_node.get_pub_ip().to_string(), *stream_node.get_pub_port(), StreamMode::Udp, &ssrc, st, et, 1).await?
+                    CmdStream::download_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et, 1).await?
                 }
             };
 
             //回调给gmv-stream 使其确认媒体类型
+            MediaMap {
+                ssrc: u32ssrc,
+                ext: MediaExt {
+                    mt: MediaType::Video,
+                    tp_code: 0,
+                    tp_val: "".to_string(),
+                    link_ssrc: None,
+                },
+            }
+            p.stream_init_ext()
+
+
             let _ = callback::ident_rtp_media_info(&ssrc, media_map, token, stream_node.get_local_ip(), stream_node.get_local_port()).await;
             let (call_id, seq) = CmdStream::invite_ack(device_id, &res)?;
             return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
@@ -424,10 +442,10 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
 #[cfg(test)]
 mod test {
     use std::time::Duration;
-    use common::tokio;
-    use common::chrono::Local;
-    use common::tokio::sync::mpsc;
-    use common::tokio::time::{Instant, sleep_until};
+    use base::tokio;
+    use base::chrono::Local;
+    use base::tokio::sync::mpsc;
+    use base::tokio::time::{Instant, sleep_until};
 
     #[tokio::test]
     async fn test() {

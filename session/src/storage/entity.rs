@@ -1,13 +1,13 @@
 use crate::gb::handler::parser;
 use rsip::Request;
 
-use common::chrono::{Local, NaiveDateTime};
-use common::constructor::{Get, New, Set};
-use common::dbx::mysqlx::get_conn_by_pool;
-use common::exception::{GlobalResult, GlobalResultExt};
-use common::log::error;
-use common::serde::{Deserialize, Serialize};
-use common::sqlx;
+use base::chrono::{Local, NaiveDateTime};
+use base::constructor::{Get, New, Set};
+use base::dbx::mysqlx::get_conn_by_pool;
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::log::error;
+use base::serde::{Deserialize, Serialize};
+use base::sqlx;
 use sqlx::FromRow;
 
 //CREATE TABLE `GMV_RECORD` (
@@ -25,7 +25,7 @@ use sqlx::FromRow;
 //   PRIMARY KEY (`BIZ_ID`)
 // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='云端录像';
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct GmvRecord {
     pub biz_id: String,
     pub device_id: String,
@@ -96,7 +96,7 @@ impl GmvRecord {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct GmvOauth {
     device_id: String,
     domain_id: String,
@@ -120,7 +120,7 @@ impl GmvOauth {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct GmvDevice {
     device_id: String,
     transport: String,
@@ -451,10 +451,10 @@ impl GmvFileInfo {
 #[allow(dead_code, unused_imports)]
 mod tests {
     use super::*;
-    use common::cfg_lib::conf::init_cfg;
-    use common::chrono::TimeZone;
-    use common::dbx::mysqlx;
-    use common::tokio;
+    use base::cfg_lib::conf::init_cfg;
+    use base::chrono::TimeZone;
+    use base::dbx::mysqlx;
+    use base::tokio;
 
     // #[tokio::test]
     async fn test_batch_insert_gmv_file_info() {

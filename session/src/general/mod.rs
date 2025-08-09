@@ -2,11 +2,11 @@ use std::collections::{HashMap};
 use std::fs;
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
-use common::{serde_default};
-use common::cfg_lib::conf;
-use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
-use common::once_cell::sync::OnceCell;
-use common::serde::{Deserialize};
+use base::{serde_default};
+use base::cfg_lib::conf;
+use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
+use base::once_cell::sync::OnceCell;
+use base::serde::{Deserialize};
 use url::Url;
 
 pub mod model;
@@ -15,7 +15,7 @@ mod schedule;
 pub mod runner;
 
 #[derive(Debug, Deserialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "server.alarm", check)]
 pub struct AlarmConf {
     pub enable: bool,
@@ -54,7 +54,7 @@ impl CheckFromConf for AlarmConf {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "server.stream")]
 pub struct StreamConf {
     pub proxy_enable: bool,
@@ -65,7 +65,7 @@ pub struct StreamConf {
 }
 serde_default!(default_node_map, HashMap<String, StreamNode>, HashMap::new());
 #[derive(Debug, Deserialize, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct StreamNode {
     pub name: String,
     pub local_ip: Ipv4Addr,
@@ -94,7 +94,7 @@ impl StreamConf {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "server.videos", check)]
 pub struct DownloadConf {
     pub storage_path: String,

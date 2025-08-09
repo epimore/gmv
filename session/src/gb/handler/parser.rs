@@ -3,9 +3,9 @@ pub mod header {
     use rsip::prelude::{HasHeaders, HeadersExt};
     use rsip::{Header, Request, Response};
     use anyhow::anyhow;
-    use common::exception::{GlobalResult, GlobalResultExt};
-    use common::exception::GlobalError::{SysErr};
-    use common::log::{warn};
+    use base::exception::{GlobalResult, GlobalResultExt};
+    use base::exception::GlobalError::{SysErr};
+    use base::log::{warn};
 
     pub fn get_device_id_by_request(req: &Request) -> GlobalResult<String> {
         let from_user = req.from_header()
@@ -91,12 +91,12 @@ pub mod xml {
     use std::ops::Deref;
     use std::str::from_utf8;
     use encoding_rs::GB18030;
-    use common::log::{debug, error};
+    use base::log::{debug, error};
     use quick_xml::events::Event;
     use quick_xml::{encoding, Reader};
     use anyhow::{anyhow};
-    use common::exception::{GlobalResult, GlobalResultExt};
-    use common::exception::GlobalError::SysErr;
+    use base::exception::{GlobalResult, GlobalResultExt};
+    use base::exception::GlobalError::SysErr;
 
     pub const MESSAGE_TYPE: [&'static str; 4] = ["Query,CmdType", "Control,CmdType", "Response,CmdType", "Notify,CmdType"];
     pub const MESSAGE_KEEP_ALIVE: &str = "Keepalive";

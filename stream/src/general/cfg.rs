@@ -1,11 +1,11 @@
-use common::cfg_lib::conf;
-use common::constructor::Get;
-use common::serde::Deserialize;
-use common::serde_default;
-use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
+use base::cfg_lib::conf;
+use base::constructor::Get;
+use base::serde::Deserialize;
+use base::serde_default;
+use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 
 #[derive(Debug, Get, Clone, Deserialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "stream", check)]
 pub struct StreamConf {
     expires: i32,
@@ -30,7 +30,7 @@ impl CheckFromConf for StreamConf {
     }
 }
 #[derive(Debug, Get, Clone, Deserialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "server")]
 pub struct ServerConf {
     name: String,
@@ -52,7 +52,7 @@ impl ServerConf {
 
 #[cfg(test)]
 mod tests {
-    use common::cfg_lib::conf::init_cfg;
+    use base::cfg_lib::conf::init_cfg;
     use crate::general::cfg::StreamConf;
 
     //   hls 与 flv: 都为false时，触发panic

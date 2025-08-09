@@ -1,9 +1,9 @@
-use common::serde::{Deserialize, Serialize};
+use base::serde::{Deserialize, Serialize};
 
 /// () 被 serde 序列化为一个空对象 {}
 /// 传入的是 None，并启用了 skip_serializing_if = "Option::is_none"，那么 data 字段会被完全省略。
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Resp<T> {
     pub code: u16,
     pub msg: String,

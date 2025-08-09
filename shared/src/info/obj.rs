@@ -1,6 +1,6 @@
 use crate::info::output::HttpStreamType;
-use common::constructor::New;
-use common::serde::{Deserialize, Serialize};
+use base::constructor::New;
+use base::serde::{Deserialize, Serialize};
 //session
 pub const PLAY_LIVING: &str = "api/play/live/stream";
 pub const PLAY_BACK: &str = "api/play/back/stream";
@@ -29,7 +29,7 @@ pub const FLV_PLAY_PATH: &str = "/play/:stream_id.flv";
 
 
 #[derive(New, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct StreamState {
     pub base_stream_info: BaseStreamInfo,
     pub user_count: u32,
@@ -37,7 +37,7 @@ pub struct StreamState {
 }
 
 #[derive(New, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct StreamRecordInfo {
     pub file_name: Option<String>,
     //单位kb,录制完成时统计文件大小
@@ -49,7 +49,7 @@ pub struct StreamRecordInfo {
 }
 
 #[derive(New, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct StreamPlayInfo {
     pub base_stream_info: BaseStreamInfo,
     pub remote_addr: String,
@@ -60,7 +60,7 @@ pub struct StreamPlayInfo {
 }
 
 #[derive(New, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct BaseStreamInfo {
     pub rtp_info: RtpInfo,
     pub stream_id: String,
@@ -68,14 +68,14 @@ pub struct BaseStreamInfo {
 }
 
 #[derive(New, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct NetSource {
     pub remote_addr: String,
     pub protocol: String,
 }
 
 #[derive(New, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct RtpInfo {
     pub ssrc: u32,
     //媒体流源地址,tcp/udp
@@ -83,7 +83,7 @@ pub struct RtpInfo {
     pub server_name: String,
 }
 #[derive(New, Serialize, Deserialize, Debug)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct StreamKey {
     pub ssrc: u32,
     pub stream_id: Option<String>,

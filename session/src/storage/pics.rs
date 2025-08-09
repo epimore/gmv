@@ -3,15 +3,15 @@ use std::str::FromStr;
 use cron::Schedule;
 use url::Url;
 
-use common::cfg_lib::conf;
-use common::cfg_lib::conf::{CheckFromConf, FieldCheckError};
-use common::constructor::{Get};
-use common::once_cell::sync::Lazy;
-use common::serde::Deserialize;
-use common::serde_default;
+use base::cfg_lib::conf;
+use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
+use base::constructor::{Get};
+use base::once_cell::sync::Lazy;
+use base::serde::Deserialize;
+use base::serde_default;
 
 #[derive(Debug, Get, Deserialize)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "server.pics", check)]
 pub struct Pics {
     #[serde(default = "default_enable")]
@@ -140,10 +140,10 @@ impl Pics {
 
 #[cfg(test)]
 mod test {
-    use common::chrono::Local;
+    use base::chrono::Local;
     use image::ImageFormat;
     use image::ImageFormat::Jpeg;
-    use common::cfg_lib::conf::init_cfg;
+    use base::cfg_lib::conf::init_cfg;
     use crate::storage::pics::Pics;
 
     #[test]

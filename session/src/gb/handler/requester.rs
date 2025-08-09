@@ -1,4 +1,4 @@
-use common::log::{debug, info, LevelFilter};
+use base::log::{debug, info, LevelFilter};
 use quick_xml::encoding;
 use encoding_rs::GB18030;
 use rsip::{Method, Request};
@@ -7,13 +7,13 @@ use rsip::message::HeadersExt;
 use rsip::services::DigestGenerator;
 
 use anyhow::anyhow;
-use common::bytes::Bytes;
-use common::chrono::{Duration, Local};
-use common::exception::{GlobalResult, GlobalResultExt};
-use common::exception::GlobalError::SysErr;
-use common::log::{error, warn};
-use common::net::state::{Association, Package, Zip};
-use common::tokio::sync::mpsc::Sender;
+use base::bytes::Bytes;
+use base::chrono::{Duration, Local};
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::exception::GlobalError::SysErr;
+use base::log::{error, warn};
+use base::net::state::{Association, Package, Zip};
+use base::tokio::sync::mpsc::Sender;
 
 use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
@@ -248,7 +248,7 @@ impl Message {
     }
     async fn keep_alive(device_id: &String, vs: Vec<(String, String)>, bill: &Association) {
         use parser::xml::{NOTIFY_DEVICE_ID, NOTIFY_STATUS};
-        if common::log::max_level() <= LevelFilter::Info {
+        if base::log::max_level() <= LevelFilter::Info {
             let (mut device_id, mut status) = (String::new(), String::new());
             for (k, v) in &vs {
                 match &k[..] {
@@ -328,8 +328,8 @@ mod tests {
     use rsip::headers::ToTypedHeader;
     use rsip::{headers, Method};
     use rsip::services::DigestGenerator;
-    use common::log::LevelFilter;
-    use common::chrono::Local;
+    use base::log::LevelFilter;
+    use base::chrono::Local;
 
     #[test]
     fn test_time_stamp() {
@@ -339,14 +339,14 @@ mod tests {
     #[test]
     fn test_log_level() {
         // 设置日志级别为 Info
-        common::log::set_max_level(LevelFilter::Info);
+        base::log::set_max_level(LevelFilter::Info);
 
         // 获取当前日志级别
-        let max_level = common::log::max_level();
+        let max_level = base::log::max_level();
         println!("Current log level: {:?}", max_level);
 
         // 判断当前级别是否达到指定级别
-        if common::log::max_level() >= LevelFilter::Debug {
+        if base::log::max_level() >= LevelFilter::Debug {
             println!("Debug messages are enabled");
         } else {
             println!("Debug messages are disabled");

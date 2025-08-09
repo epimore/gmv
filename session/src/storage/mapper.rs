@@ -1,8 +1,8 @@
-use common::chrono::NaiveDateTime;
-use common::dbx::mysqlx::get_conn_by_pool;
-use common::exception::{GlobalResult, GlobalResultExt};
-use common::log::error;
-use common::sqlx;
+use base::chrono::NaiveDateTime;
+use base::dbx::mysqlx::get_conn_by_pool;
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::log::error;
+use base::sqlx;
 
 pub async fn get_device_channel_status(device_id: &String, channel_id: &String) -> GlobalResult<Option<String>> {
     let pool = get_conn_by_pool()?;
@@ -44,9 +44,9 @@ pub async fn get_snapshot_dc_by_limit(start: u32, count: u32) -> GlobalResult<Ve
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 mod test {
-    use common::cfg_lib::conf::init_cfg;
-    use common::dbx::mysqlx;
-    use common::tokio;
+    use base::cfg_lib::conf::init_cfg;
+    use base::dbx::mysqlx;
+    use base::tokio;
     use super::*;
 
     // #[tokio::test]

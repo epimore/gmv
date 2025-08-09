@@ -6,11 +6,11 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#common = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "ff413519", features = ["net"] }
+#base = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "ff413519", features = ["net"] }
 shared = { path = "../shared" }
 rsip = "0.4"
 sqlx = { version = "0.8",default-features = false}
-common = { package = "common_db", path = "../../pigs/common_db", features = ["net"] }
+base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"

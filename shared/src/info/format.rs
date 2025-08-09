@@ -1,7 +1,7 @@
-use common::serde::{Deserialize, Serialize};
+use base::serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Muxer {
     pub flv: Option<Flv>,
     pub mp4: Option<Mp4>,
@@ -12,43 +12,43 @@ pub struct Muxer {
     pub frame: Option<Frame>,
 }
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Frame {}
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Mp4 {}
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Flv {}
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct RtpFrame {}
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct RtpPs {}
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct RtpEnc {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub struct Ts {}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub enum GB28181MuxerType {
     RtpFrame,
     RtpPs,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub enum WebRtcMuxerType {
     RtpFrame,
     RtpEnc,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Ord, PartialOrd, Eq, PartialEq,Copy )]
-#[serde(crate = "common::serde")]
+#[serde(crate = "base::serde")]
 pub enum MuxerType {
     None,
     Flv,

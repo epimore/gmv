@@ -1,7 +1,7 @@
 use crate::media::context::event::ContextEvent;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
-use common::bus::mpsc::TypedReceiver;
+use base::bus::mpsc::TypedReceiver;
 use shared::info::media_info_ext::MediaExt;
 
 
