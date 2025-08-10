@@ -34,7 +34,6 @@ async fn handle_run(mut rx: Receiver<u32>) {
         if let Ok(mut sc_rx) = cache::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
             //此处可以不使用超时等待，统一流输入超时处理即可；输入超时-清理该ssrc所有信息，包含此处的发送句柄，完成资源释放
             if let Ok(stream_config) = sc_rx.recv().await.hand_log(|msg| error!("{}",msg)) {
-                // if let Ok(stream_config) = sc_rx.recv_with_timeout(Duration::from_millis(TIME_OUT)).await.hand_log(|msg| error!("{}",msg)) {
                 let _ = tokio::task::spawn_blocking(move || {
                     let _ = MediaContext::init(ssrc, stream_config).map(|mut ctx| ctx.invoke());
                 }).await.hand_log(|msg| error!("{}",msg));

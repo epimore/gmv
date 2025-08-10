@@ -2,33 +2,20 @@ use base::cfg_lib::conf;
 use base::constructor::Get;
 use base::serde::Deserialize;
 use base::serde_default;
-use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 
 #[derive(Debug, Get, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
-#[conf(prefix = "stream", check)]
+#[conf(prefix = "stream")]
 pub struct StreamConf {
     expires: i32,
-    flv: bool,
-    hls: bool,
 }
 serde_default!(default_expires, i32, 6);
-serde_default!(default_flv, bool, true);
-serde_default!(default_hls, bool, true);
 impl StreamConf {
     pub fn init_by_conf() -> Self {
         StreamConf::conf()
     }
 }
 
-impl CheckFromConf for StreamConf {
-    fn _field_check(&self) -> Result<(), FieldCheckError> {
-        if !self.hls && !self.flv {
-            return Err(FieldCheckError::BizError("HLS/FLV未启用,请至少开启一个媒体输出".to_string()));
-        }
-        Ok(())
-    }
-}
 #[derive(Debug, Get, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server")]
