@@ -10,7 +10,7 @@ use shared::info::obj::{StreamKey, StreamRecordInfo};
 use shared::info::res::Resp;
 use std::str::FromStr;
 use std::time::Duration;
-use crate::general::model::{AlarmInfo, SingleParam};
+use crate::state::model::{AlarmInfo, SingleParam};
 
 const TIME_OUT: u64 = 8000;
 pub struct HttpClient;

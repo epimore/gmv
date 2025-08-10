@@ -1,27 +1,29 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use base::{rand, serde_json, tokio};
+use crate::state;
+use crate::state::model::CustomMediaConfig;
 use base::bytes::Bytes;
-use base::dashmap::{DashMap, DashSet};
 use base::dashmap::mapref::entry::Entry;
+use base::dashmap::{DashMap, DashSet};
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::once_cell::sync::Lazy;
 use base::rand::seq::IteratorRandom;
-use base::serde::{Deserialize, Serialize};
 use base::serde::de::DeserializeOwned;
+use base::serde::{Deserialize, Serialize};
 use base::tokio::sync::mpsc::Sender;
 use base::tokio::sync::Notify;
 use base::tokio::time;
 use base::tokio::time::Instant;
+use base::{rand, serde_json, tokio};
+use shared::info::media_info::MediaStreamConfig;
 use shared::info::output::Output;
-use crate::general;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 
@@ -58,7 +60,7 @@ impl Cache {
             }
         }
         let mut set = BTreeSet::new();
-        let conf = general::StreamConf::get_stream_conf();
+        let conf = state::StreamConf::get_stream_conf();
         for (k, _v) in conf.node_map.iter() {
             let count = map.get(k).unwrap_or(&0);
             set.insert((*count, k.clone()));
@@ -163,12 +165,12 @@ impl Cache {
 
     //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
     //层层插入
-    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, am: AccessMode, output: Output) {
+    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, am: AccessMode, config: MediaStreamConfig) {
         let device_table = DeviceTable {
             channel_id,
             am,
             stream_id,
-            output,
+            config,
             ssrc,
         };
         match GENERAL_CACHE.shared.device_map.entry(device_id) {
@@ -383,7 +385,7 @@ struct DeviceTable {
     channel_id: String,
     am: AccessMode,
     stream_id: String,
-    output: Output,
+    config: MediaStreamConfig,
     ssrc: String,
 }
 
@@ -435,10 +437,10 @@ impl AccessMode {}
 
 #[cfg(test)]
 mod tests {
+    use crate::state::cache::{AccessMode, Cache, StreamTable, GENERAL_CACHE};
     use base::dashmap::{DashMap, DashSet};
-    use base::{rand};
     use base::rand::prelude::IteratorRandom;
-    use crate::general::cache::{Cache, GENERAL_CACHE, AccessMode, StreamTable};
+    use base::rand;
 
     #[test]
     fn test_ref_mut() {

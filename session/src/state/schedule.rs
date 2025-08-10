@@ -71,7 +71,7 @@ mod test {
 
     use base::chrono::Local;
 
-    use crate::general::schedule::{get_schedule_tx, ScheduleTask};
+    use crate::state::schedule::{get_schedule_tx, ScheduleTask};
 
     struct MyTask;
 

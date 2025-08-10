@@ -9,8 +9,8 @@ use base::net::state::{Package, Zip};
 use crate::gb::handler;
 
 use crate::gb::handler::parser;
-use crate::gb::shared::event::EventSession;
-pub use crate::gb::shared::rw::RWSession;
+use crate::gb::core::event::EventSession;
+pub use crate::gb::core::rw::RWSession;
 
 pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>) {
     while let Some(zip) = input.recv().await {

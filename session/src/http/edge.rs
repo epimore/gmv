@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use base::{bytes::Bytes, log::error};
 
-use crate::{http::UPLOAD_PICTURE, service::biz, utils::edge_token};
+use crate::{http::UPLOAD_PICTURE, service::edge_serv, utils::edge_token};
 
 pub fn routes() -> Router {
     Router::new().route(UPLOAD_PICTURE, post(upload_picture))
@@ -90,7 +90,7 @@ async fn handle_multipart_upload(
                 error!("Failed to get field bytes: {}", e);
                 format!("Failed to get field bytes: {}", e)
             })?;
-            biz::upload(data, session_id, file_id_opt)
+            edge_serv::upload(data, session_id, file_id_opt)
                 .await
                 .map_err(|e| format!("Failed to upload file: {}", e))?;
             return Ok("File uploaded successfully as form-data");
@@ -113,7 +113,7 @@ async fn handle_binary_upload(
             format!("Failed to get request body: {}", e)
         })?;
 
-    biz::upload(data, session_id, file_id_opt)
+    edge_serv::upload(data, session_id, file_id_opt)
         .await
         .map_err(|e| format!("Failed to upload file: {}", e))?;
 

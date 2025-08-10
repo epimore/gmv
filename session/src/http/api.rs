@@ -1,5 +1,5 @@
-use crate::general::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamNode};
-use crate::service::{biz, handler};
+use crate::state::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamNode};
+use crate::service::{edge_serv, api_serv};
 use axum::http::{HeaderMap, HeaderName};
 use axum::{Json, Router};
 use base::exception::{GlobalError, GlobalResult};
@@ -24,7 +24,7 @@ async fn play_living(headers: HeaderMap, Json(info): Json<PlayLiveModel>) -> Jso
     info!("play_live: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            match handler::play_live(info, token).await {
+            match api_serv::play_live(info, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -38,7 +38,7 @@ async fn play_back(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<
     info!("play_back: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            match handler::play_back(info, token).await {
+            match api_serv::play_back(info, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -52,7 +52,7 @@ async fn play_seek(headers: HeaderMap, Json(info): Json<PlaySeekModel>) -> Json<
     info!("play_seek: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            match handler::seek(info, token).await {
+            match api_serv::seek(info, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -66,7 +66,7 @@ async fn play_speed(headers: HeaderMap, Json(info): Json<PlaySpeedModel>) -> Jso
     info!("play_speed: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            match handler::speed(info, token).await {
+            match api_serv::speed(info, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -80,7 +80,7 @@ async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> J
     info!("control_ptz: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            match handler::ptz(info, token).await {
+            match api_serv::ptz(info, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -94,7 +94,7 @@ async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Js
     info!("download_mp4: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            match handler::download(info, token).await {
+            match api_serv::download(info, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -108,7 +108,7 @@ async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>
     info!("download_stop: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            match handler::download_stop(info.param, token).await {
+            match api_serv::download_stop(info.param, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -124,7 +124,7 @@ async fn downing_info(headers: HeaderMap, Json(info): Json<StreamNode>) -> Json<
         Ok(token) => {
             let stream_id = info.stream_id;
             let stream_server = info.stream_server;
-            match handler::download_info_by_stream_id(stream_id, stream_server, token).await {
+            match api_serv::download_info_by_stream_id(stream_id, stream_server, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }
@@ -138,7 +138,7 @@ async fn rm_file(headers: HeaderMap, Json(info): Json<SingleParam<i64>>) -> Json
     info!("rm_file: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(_token) => {
-            match biz::rm_file(info.param).await {
+            match edge_serv::rm_file(info.param).await {
                 Ok(_) => { Json(Resp::build_success()) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }

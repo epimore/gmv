@@ -11,9 +11,9 @@ use base::log::{error, info};
 use base::net;
 use base::net::state::{CHANNEL_BUFFER_SIZE};
 
-pub use crate::gb::shared::rw::RWSession;
+pub use core::rw::RWSession;
 
-mod shared;
+mod core;
 pub mod handler;
 mod io;
 
@@ -26,6 +26,7 @@ pub struct SessionConf {
     lan_port: u16,
     wan_port: u16,
 }
+
 
 impl SessionConf {
     pub fn get_session_by_conf() -> Self {
