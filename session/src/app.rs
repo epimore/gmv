@@ -8,7 +8,7 @@ use base::logger;
 use base::tokio;
 
 use crate::gb::SessionConf;
-use crate::general::runner::{PicsRunner, Runner};
+use crate::state::runner::{PicsRunner, Runner};
 use crate::http::Http;
 
 #[derive(Debug)]

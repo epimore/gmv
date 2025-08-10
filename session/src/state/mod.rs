@@ -8,6 +8,7 @@ use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::once_cell::sync::OnceCell;
 use base::serde::{Deserialize};
 use url::Url;
+use base::constructor::Get;
 
 pub mod model;
 pub mod cache;
@@ -53,7 +54,7 @@ impl CheckFromConf for AlarmConf {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Get, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.stream")]
 pub struct StreamConf {

@@ -24,7 +24,7 @@ pub mod rw {
     use base::tokio::time;
     use base::tokio::time::Instant;
 
-    use crate::gb::shared::event::{Container, EventSession, EXPIRES, Ident};
+    use crate::gb::core::event::{Container, EventSession, EXPIRES, Ident};
     use crate::storage::entity::GmvDevice;
 
     static RW_SESSION: Lazy<RWSession> = Lazy::new(|| RWSession::init());
@@ -300,7 +300,7 @@ pub mod event {
     use base::tokio::time;
     use base::tokio::time::Instant;
 
-    use crate::gb::shared::rw::RequestOutput;
+    use crate::gb::core::rw::RequestOutput;
 
     /// 会话超时 8s
     pub const EXPIRES: u64 = 8;

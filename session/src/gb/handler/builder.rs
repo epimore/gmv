@@ -20,11 +20,11 @@ use base::rand::{Rng, SeedableRng, thread_rng};
 
 use crate::gb::handler::parser;
 use crate::gb::SessionConf;
-use crate::gb::shared::event::Ident;
-use crate::gb::shared::rw::RWSession;
+use crate::gb::core::event::Ident;
+use crate::gb::core::rw::RWSession;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
-use crate::general::model::{PtzControlModel, StreamMode};
+use crate::state::model::{PtzControlModel, StreamMode};
 
 pub struct ResponseBuilder;
 
@@ -187,7 +187,7 @@ impl RequestBuilder {
             method: Method::Message,
             uri,
             headers,
-            version: rsip::base::version::Version::V2,
+            version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
         }.into();
         let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
@@ -616,7 +616,7 @@ impl SdpBuilder {
 #[cfg(test)]
 mod tests {
     use base::chrono::Local;
-    use crate::general::model::PtzControlModel;
+    use crate::state::model::PtzControlModel;
 
     #[test]
     fn test_date_format() {

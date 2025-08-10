@@ -1,19 +1,20 @@
 use std::collections::HashMap;
 use std::time::Duration;
-
+use anyhow::__private::kind::AdhocKind;
 use regex::Regex;
 use rsip::prelude::{HeadersExt, UntypedHeader};
 use rsip::{Response, SipMessage};
-
+use webrtc_sdp::attribute_type::SdpAttribute;
+use webrtc_sdp::media_type::SdpMediaValue;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::tokio::sync::mpsc;
 use base::tokio::time::Instant;
-
+use shared::info::media_info_ext::{MediaExt, MediaType};
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
-use crate::gb::shared::event::{Container, EventSession, Ident};
-use crate::gb::shared::rw::RequestOutput;
-use crate::general::model::{PtzControlModel, StreamMode};
+use crate::gb::core::event::{Container, EventSession, Ident};
+use crate::gb::core::rw::RequestOutput;
+use crate::state::model::{PtzControlModel, StreamMode};
 
 pub struct CmdResponse;
 
@@ -84,20 +85,20 @@ pub struct CmdStream;
 
 impl CmdStream {
     pub async fn download_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32, speed: u8)
-                                 -> GlobalResult<(Response, HashMap<u8, String>, String, String)> {
+                                 -> GlobalResult<(Response, MediaExt, String, String)> {
         let (ident, msg) = RequestBuilder::download(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)
             .await.hand_log(|msg| warn!("{msg}"))?;
         Self::invite_stream(ident, msg).await
     }
 
     pub async fn play_back_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32)
-                                  -> GlobalResult<(Response, HashMap<u8, String>, String, String)> {
+                                  -> GlobalResult<(Response, MediaExt, String, String)> {
         let (ident, msg) = RequestBuilder::playback(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)
             .await.hand_log(|msg| warn!("{msg}"))?;
         Self::invite_stream(ident, msg).await
     }
     pub async fn play_live_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String)
-                                  -> GlobalResult<(Response, HashMap<u8, String>, String, String)> {
+                                  -> GlobalResult<(Response, MediaExt, String, String)> {
         let (ident, msg) = RequestBuilder::play_live_request(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc)
             .await.hand_log(|msg| warn!("{msg}"))?;
         Self::invite_stream(ident, msg).await
@@ -155,7 +156,8 @@ impl CmdStream {
         EventSession::remove_event(&ident);
         return Err(GlobalError::new_biz_error(1000, "关闭摄像机直播未响应或超时", |msg| error!("{msg}")));
     }
-    async fn invite_stream(ident: Ident, msg: SipMessage) -> GlobalResult<(Response, HashMap<u8, String>, String, String)> {
+    //同时下发两个ssrc,以标识音视频
+    async fn invite_stream(ident: Ident, msg: SipMessage) -> GlobalResult<(Response, MediaExt, String, String)> {
         let (tx, mut rx) = mpsc::channel(10);
         RequestOutput::new(ident.clone(), msg, Some(tx)).do_send()?;
         while let Some((Some(res), _)) = rx.recv().await {
@@ -167,31 +169,31 @@ impl CmdStream {
                 return Err(GlobalError::new_biz_error(3000, &code_msg, |msg| error!("{msg}")));
             }
             if code == 200 {
-                let session = sdp_types::Session::parse(res.body()).unwrap();
-                debug!("{ident:?} :{:?}",&session);
-                let re = Regex::new(r"\s+").unwrap();
-                let mut media_map = HashMap::new();
-                for media in session.medias {
-                    for attr in media.attributes {
-                        if attr.attribute.eq("rtpmap") {
-                            if let Some(info) = attr.value {
-                                if let Some((key, val)) = re.replace_all(info.trim(), " ").split_once(" ") {
-                                    let tp = key.parse::<u8>().hand_log(|msg| error!("{msg}"))?;
-                                    let i = val.find('/').unwrap_or(val.len());
-                                    media_map.insert(tp, val[0..i].to_uppercase());
-                                }
-                            }
+                let sdp_msg = String::from_utf8(res.body().clone()).hand_log(|msg| error!("{msg}"))?;
+                debug!("{ident:?} :{:?}",&sdp_msg);
+                let session = webrtc_sdp::parse_sdp(&sdp_msg, false).hand_log(|msg| error!("{msg}"))?;
+                for media in session.media {
+                    if media.get_type() == &SdpMediaValue::Video {
+                        if let Some(SdpAttribute::Rtpmap(map)) = media.get_attribute(webrtc_sdp::attribute_type::SdpAttributeType::Rtpmap) {
+                            let ext = MediaExt {
+                                mt: MediaType::Video,
+                                tp_code: map.payload_type,
+                                tp_val: map.channels.map_or_else(|| format!("{}/{}", map.codec_name, map.frequency), |ch| format!("{}/{}/{}", map.codec_name, map.frequency, ch)),
+                                link_ssrc: None,
+                            };
+                            let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
+                            let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
+                            EventSession::remove_event(&ident);
+                            return Ok((res, ext, from_tag, to_tag));
                         }
                     }
                 }
-                let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
-                let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
                 EventSession::remove_event(&ident);
-                return Ok((res, media_map, from_tag, to_tag));
+                return Err(GlobalError::new_biz_error(1000, "摄像机响应rtpmap错误", |msg| error!("{msg}")));
             }
         }
         EventSession::remove_event(&ident);
-        return Err(GlobalError::new_biz_error(1000, "摄像机响应超时", |msg| error!("{msg}")));
+        Err(GlobalError::new_biz_error(1000, "摄像机响应超时", |msg| error!("{msg}")))
     }
 }
 
