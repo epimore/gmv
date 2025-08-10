@@ -8,12 +8,9 @@ use base::tokio::net::TcpListener;
 use base::tokio::sync::mpsc::Sender;
 use std::net::SocketAddr;
 
-mod flv;
-mod hls;
-mod dash;
 mod api;
 pub mod call;
-
+mod out;
 
 pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
     let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
@@ -25,9 +22,7 @@ pub async fn run(node: &String, std_http_listener: std::net::TcpListener, tx: Se
     std_http_listener.set_nonblocking(true).hand_log(|msg| error!("{msg}"))?;
     let listener = TcpListener::from_std(std_http_listener).hand_log(|msg| error!("{msg}"))?;
     let app = Router::new()
-        .merge(flv::routes())
-        .merge(hls::routes())
-        // .merge(dash::routes())
+        .merge(out::routes())
         .merge(api::routes(tx.clone()));
 
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
@@ -61,36 +56,4 @@ pub fn res_500() -> Response<Body> {
         .status(StatusCode::INTERNAL_SERVER_ERROR)
         .body(Body::from("500 Internal Server Error"))
         .unwrap()
-}
-
-use base::bytes::Bytes;
-use futures_core::Stream;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
-struct DisconnectAwareStream<S> {
-    inner: S,
-    on_drop: Option<Box<dyn FnOnce() + Send + Sync>>,
-}
-
-impl<S> Stream for DisconnectAwareStream<S>
-where
-    S: Stream<Item=Result<Bytes, std::convert::Infallible>> + Unpin,
-{
-    type Item = Result<Bytes, std::convert::Infallible>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.inner).poll_next(cx)
-    }
-}
-
-impl<S> Drop for DisconnectAwareStream<S> {
-    fn drop(&mut self) {
-        if let Some(cb) = self.on_drop.take() {
-            cb();
-        }
-    }
 }

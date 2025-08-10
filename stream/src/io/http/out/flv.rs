@@ -1,5 +1,6 @@
 use crate::io::hook_handler::{OutEvent, OutEventRes};
-use crate::io::http::{res_401, res_404, DisconnectAwareStream};
+use crate::io::http::out::DisconnectAwareStream;
+use crate::io::http::{res_401, res_404};
 use crate::media::context::event::inner::InnerEvent;
 use crate::media::context::event::ContextEvent;
 use crate::media::context::format::flv::FlvPacket;
@@ -14,25 +15,19 @@ use base::log::error;
 use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
 use futures_core::Stream;
-use shared::info::obj::{StreamPlayInfo, FLV_PLAY_PATH};
+use futures_util::{stream, StreamExt};
+use shared::info::format::MuxerType;
+use shared::info::obj::{StreamPlayInfo, PLAY_PATH};
+use shared::info::output::{HttpFlv, HttpStreamType, PlayType};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use futures_util::{stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
-use shared::info::format::MuxerType;
-use shared::info::output::{HttpFlv, HttpStreamType, PlayType};
 
-pub fn routes() -> Router {
-    Router::new().route(FLV_PLAY_PATH, axum::routing::get(flv_handler))
-}
-async fn flv_handler(Path(stream_id): Path<String>, Query(token): Query<Option<String>>, ConnectInfo(addr): ConnectInfo<SocketAddr>)
+pub async fn handler(stream_id: String, token: String, addr: SocketAddr)
                      -> Response<Body> {
-    if token.is_none() {
-        return res_401();
-    }
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => {
             res_404()
@@ -41,11 +36,10 @@ async fn flv_handler(Path(stream_id): Path<String>, Query(token): Query<Option<S
             //todo 校验output是否存在
             let ssrc = bsi.rtp_info.ssrc;
             let remote_addr = addr.to_string();
-            let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone().unwrap(), HttpStreamType::HttpFlv(MuxerType::Flv), user_count);
+            let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone(), HttpStreamType::HttpFlv(MuxerType::Flv), user_count);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
             let _ = event_tx.send((OutEvent::OnPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
-            let token = token.unwrap();
             match rx.await.hand_log(|msg| error!("{msg}")) {
                 Ok(OutEventRes::OnPlay(Some(true))) => {
                     match cache::get_flv_rx(&ssrc) {
@@ -125,7 +119,7 @@ async fn get_header_rx(ssrc: u32) -> GlobalResult<Bytes> {
     Ok(header)
 }
 
-pub struct FlvStream {
+struct FlvStream {
     inner: BroadcastStream<Arc<FlvPacket>>,
 }
 

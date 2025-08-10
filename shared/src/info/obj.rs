@@ -2,15 +2,15 @@ use crate::info::output::HttpStreamType;
 use base::constructor::New;
 use base::serde::{Deserialize, Serialize};
 //session
-pub const PLAY_LIVING: &str = "api/play/live/stream";
-pub const PLAY_BACK: &str = "api/play/back/stream";
-pub const PLAY_SEEK: &str = "api/play/back/seek";
-pub const PLAY_SPEED: &str = "api/play/back/speed";
-pub const CONTROL_PTZ: &str = "api/control/ptz";
-pub const DOWNLOAD_MP4: &str = "api/download/mp4";
-pub const DOWNLOAD_STOP: &str = "api/download/stop";
-pub const DOWNING_INFO: &str = "api/downing/info";
-pub const RM_FILE: &str = "api/rm/file";
+pub const PLAY_LIVING: &str = "/api/play/live/stream";
+pub const PLAY_BACK: &str = "/api/play/back/stream";
+pub const PLAY_SEEK: &str = "/api/play/back/seek";
+pub const PLAY_SPEED: &str = "/api/play/back/speed";
+pub const CONTROL_PTZ: &str = "/api/control/ptz";
+pub const DOWNLOAD_MP4: &str = "/api/download/mp4";
+pub const DOWNLOAD_STOP: &str = "/api/download/stop";
+pub const DOWNING_INFO: &str = "/api/downing/info";
+pub const RM_FILE: &str = "/api/rm/file";
 
 pub const STREAM_REGISTER: &str = "/stream/register";
 pub const INPUT_TIMEOUT: &str = "/stream/input/timeout";
@@ -23,7 +23,7 @@ pub const END_RECORD: &str = "/end/record";
 pub const LISTEN_SSRC: &str = "/listen/ssrc";
 pub const RTP_MEDIA: &str = "/rtp/media";
 pub const STREAM_ONLINE: &str = "/stream/online";
-pub const FLV_PLAY_PATH: &str = "/play/:stream_id.flv";
+pub const PLAY_PATH: &str = "/play/{stream_id}";
 
 //todo record info
 
