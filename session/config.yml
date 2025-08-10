@@ -3,19 +3,11 @@ log:
   prefix: session
   store_path: ./logs
   specify:
-    - crate_name: poem::server
-      level: debug
-      file_name_prefix: poem #日志文件前缀
-      additivity: false #是否记录到默认日志文件中
-    - crate_name: sqlx  #sqlx用指全部,可sqlx::xxx
-      level: info #日志等级
-      file_name_prefix: sql #日志文件前缀
-      additivity: false #是否记录到其默认日志文件中
     - crate_name: gmv_session::gb::io$  #信令日志
       level: debug #日志等级
       file_name_prefix: gb #日志文件前缀
       additivity: false #是否记录到其默认日志文件中
-    - crate_name: gmv_session::web  #请求日志
+    - crate_name: gmv_session::http  #请求日志
       level: info #日志等级
       file_name_prefix: web #日志文件前缀
       additivity: false #是否记录到其默认日志文件中

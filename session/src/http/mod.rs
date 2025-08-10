@@ -50,10 +50,15 @@ impl Http {
     pub async fn run(&self, listener: std::net::TcpListener) -> GlobalResult<()> {
         listener.set_nonblocking(true).hand_log(|msg| error!("{msg}"))?;
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
-        let app = Router::new()
+        // 创建包含所有路由的统一Router
+        let all_routes = Router::new()
             .merge(edge::routes())
-            .merge(hook::routes())
+            .nest("/hook",hook::routes())
             .merge(api::routes());
+
+        // 为所有路由添加`/v1`前缀
+        let app = Router::new()
+            .nest(&format!("/{}",self.prefix), all_routes);
 
         axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .await
