@@ -58,7 +58,7 @@ impl Http {
 
         // 为所有路由添加`/v1`前缀
         let app = Router::new()
-            .nest(&format!("/{}",self.prefix), all_routes);
+            .nest(&format!("{}",self.prefix), all_routes);
 
         axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .await

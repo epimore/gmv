@@ -150,7 +150,7 @@ async fn rm_file(headers: HeaderMap, Json(info): Json<SingleParam<i64>>) -> Json
 }
 
 fn get_gmv_token(headers: HeaderMap) -> GlobalResult<String> {
-    let header_name = HeaderName::from_static("Gmv-Token");
+    let header_name = HeaderName::from_static("gmv-token");
     if let Some(value) = headers.get(&header_name) {
         match value.to_str() {
             Ok(token) => {

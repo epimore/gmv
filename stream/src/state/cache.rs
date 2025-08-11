@@ -503,17 +503,6 @@ enum StreamDirection {
     //监听流输出【有无观看】
     StreamOut(MuxerType),
 }
-// #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy)]
-// enum MuxerType {
-//     None,
-//     Flv,
-//     Mp4,
-//     Ts,
-//     Frame,
-//     RtpPs,
-//     RtpEnc,
-//     RtpFrame,
-// }
 ///自定义会话信息
 struct State {
     //ssrc:StreamTrace

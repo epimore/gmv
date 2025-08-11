@@ -235,7 +235,8 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
     while let Some((_, node_name)) = node_sets.pop_first() {
         let stream_node = conf.node_map.get(&node_name).unwrap();
         let p = HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port).hand_log(|msg| error!("{msg}"))?;
-
+        println!("{},{}", stream_node.local_ip.to_string(), stream_node.local_port);
+        println!("{:?}", serde_json::to_string(&msc).unwrap());
         //next 将sdp支持从session固定的，转为stream支持的
         if p.stream_init(&msc).await.hand_log(|msg| error!("{msg}"))?.code == 200
         {

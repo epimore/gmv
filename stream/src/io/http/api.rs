@@ -1,7 +1,7 @@
 use crate::state::cache;
 use axum::{Extension, Json, Router};
 use base::exception::GlobalResultExt;
-use base::log::error;
+use base::log::{error, info};
 use base::tokio::sync::mpsc::Sender;
 use shared::info::media_info::MediaStreamConfig;
 use shared::info::media_info_ext::MediaMap;
@@ -10,12 +10,13 @@ use shared::info::res::Resp;
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
-        .route(LISTEN_SSRC, axum::routing::post(stream_init))
-        .route(RTP_MEDIA, axum::routing::post(stream_map).layer(Extension(tx.clone())))
+        .route(LISTEN_SSRC, axum::routing::post(stream_init).layer(Extension(tx.clone())))
+        .route(RTP_MEDIA, axum::routing::post(stream_map))
         .route(STREAM_ONLINE, axum::routing::post(stream_online))
 }
 
 async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaStreamConfig>) -> Json<Resp<()>> {
+    info!("stream_init: {:?}",&config);
     let json = match cache::insert_media(config) {
         Ok(ssrc) => {
             match tx.send(ssrc).await.hand_log(|msg| error!("{msg}")) {
@@ -33,6 +34,7 @@ async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<M
 }
 
 async fn stream_map(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
+    info!("stream_map: {:?}",&sdp);
     let json = match cache::insert_media_ext(sdp.ssrc, sdp.ext) {
         Ok(_) => {
             Resp::<()>::build_success()
@@ -45,6 +47,7 @@ async fn stream_map(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
 }
 
 async fn stream_online(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
+    info!("stream_online: {:?}",&stream_key);
     Json(Resp::<bool>::build_success_data(cache::is_exist(stream_key)))
 }
 
