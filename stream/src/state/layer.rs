@@ -50,7 +50,7 @@ pub mod output_layer {
     pub struct HttpFlvLayer {}
     impl HttpFlvLayer {
         pub fn bean_to_layer(http_flv: HttpFlv) -> Self {
-            unimplemented!()
+            Self {}
         }
     }
     pub struct RtmpLayer {}

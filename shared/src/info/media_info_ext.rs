@@ -2,7 +2,7 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, warn};
 use base::serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub enum MediaType {
     Video,
@@ -27,13 +27,13 @@ impl MediaType {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub struct MediaMap {
     pub ssrc: u32,
     pub ext: MediaExt,
 }
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub struct MediaExt {
     pub mt: MediaType,
