@@ -34,7 +34,7 @@ axum = "0.8"
 futures-core="0.3"
 rtp-types = "0.1"
 #rtcp-types = "0.1"
-rsmpeg = "0.14.2+ffmpeg.6.1"
+rsmpeg = { version = "0.14.2+ffmpeg.6.1", default-features = false, features = ["link_system_ffmpeg"] }
 #feign = "0.1"
 #anyhow = { workspace = true }
 #thiserror = { workspace = true }

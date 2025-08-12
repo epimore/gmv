@@ -4,8 +4,6 @@ use anyhow::__private::kind::AdhocKind;
 use regex::Regex;
 use rsip::prelude::{HeadersExt, UntypedHeader};
 use rsip::{Response, SipMessage};
-use webrtc_sdp::attribute_type::SdpAttribute;
-use webrtc_sdp::media_type::SdpMediaValue;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::tokio::sync::mpsc;
@@ -169,24 +167,47 @@ impl CmdStream {
                 return Err(GlobalError::new_biz_error(3000, &code_msg, |msg| error!("{msg}")));
             }
             if code == 200 {
-                let sdp_msg = String::from_utf8(res.body().clone()).hand_log(|msg| error!("{msg}"))?;
-                debug!("{ident:?} :{:?}",&sdp_msg);
-                let session = webrtc_sdp::parse_sdp(&sdp_msg, false).hand_log(|msg| error!("{msg}"))?;
-                for media in session.media {
-                    if media.get_type() == &SdpMediaValue::Video {
-                        if let Some(SdpAttribute::Rtpmap(map)) = media.get_attribute(webrtc_sdp::attribute_type::SdpAttributeType::Rtpmap) {
-                            let ext = MediaExt {
-                                mt: MediaType::Video,
-                                tp_code: map.payload_type,
-                                tp_val: map.channels.map_or_else(|| format!("{}/{}", map.codec_name, map.frequency), |ch| format!("{}/{}/{}", map.codec_name, map.frequency, ch)),
-                                link_ssrc: None,
-                            };
-                            let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
-                            let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
-                            EventSession::remove_event(&ident);
-                            return Ok((res, ext, from_tag, to_tag));
+                let session = sdp_types::Session::parse(res.body()).hand_log(|msg| error!("{msg}"))?;
+                let re = Regex::new(r"\s+").hand_log(|msg| error!("{msg}"))?;
+                for media in session.medias {
+                    if media.media.eq_ignore_ascii_case("video") {
+                        if let Some(info) = media.get_first_attribute_value("rtpmap").hand_log(|msg| error!("{msg}"))?
+                        {
+                            let trimmed = re.replace_all(info, " ").trim().to_string();
+                            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                            if parts.len() >= 2 {
+                                let tp: u8 = parts[0].parse().hand_log(|msg| error!("{msg}"))?;
+                                let ext = MediaExt {
+                                    mt: MediaType::Video,
+                                    tp_code: tp,
+                                    tp_val: parts[1].to_string(),
+                                    link_ssrc: None,
+                                };
+                                let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
+                                let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
+                                EventSession::remove_event(&ident);
+                                return Ok((res, ext, from_tag, to_tag));
+                            }
                         }
                     }
+
+                    // let sdp_msg = String::from_utf8(res.body().clone()).hand_log(|msg| error!("{msg}"))?;
+                    // debug!("{ident:?} :{:?}",&sdp_msg);
+                    // let session = webrtc_sdp::parse_sdp(&sdp_msg, false).hand_log(|msg| error!("{msg}"))?;
+                    // if media.get_type() == &SdpMediaValue::Video {
+                    //     if let Some(SdpAttribute::Rtpmap(map)) = media.get_attribute(webrtc_sdp::attribute_type::SdpAttributeType::Rtpmap) {
+                    //         let ext = MediaExt {
+                    //             mt: MediaType::Video,
+                    //             tp_code: map.payload_type,
+                    //             tp_val: map.channels.map_or_else(|| format!("{}/{}", map.codec_name, map.frequency), |ch| format!("{}/{}/{}", map.codec_name, map.frequency, ch)),
+                    //             link_ssrc: None,
+                    //         };
+                    //         let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
+                    //         let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
+                    //         EventSession::remove_event(&ident);
+                    //         return Ok((res, ext, from_tag, to_tag));
+                    //     }
+                    // }
                 }
                 EventSession::remove_event(&ident);
                 return Err(GlobalError::new_biz_error(1000, "摄像机响应rtpmap错误", |msg| error!("{msg}")));
