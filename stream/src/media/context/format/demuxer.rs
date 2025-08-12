@@ -127,6 +127,15 @@ impl DemuxerContext {
             (*fmt_ctx).pb = sdp_avio_ctx;
             (*fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
+            // analyzeduration = 5 秒（单位微秒）
+            let analyzeduration_key = CString::new("analyzeduration").unwrap();
+            let analyzeduration_val = CString::new("8000000").unwrap(); // 5,000,000 us
+            av_dict_set(&mut dict_opts, analyzeduration_key.as_ptr(), analyzeduration_val.as_ptr(), 0);
+
+            // probesize = 5MB
+            let probesize_key = CString::new("probesize").unwrap();
+            let probesize_val = CString::new("8000000").unwrap(); // 字节
+            av_dict_set(&mut dict_opts, probesize_key.as_ptr(), probesize_val.as_ptr(), 0);
             let ret = av_dict_set(&mut dict_opts, SDP_FLAGS.as_ptr(), CUSTOM_IO.as_ptr(), 0);
             if ret < 0 {
                 // 回收 sdp_ptr
@@ -150,10 +159,10 @@ impl DemuxerContext {
 
             // 创建 RTP AVIOContext，注意缓冲区大小保持一致
             let rtp_buf_ptr = &mut rtp_buffer as *mut _ as *mut c_void;
-            let rtp_io_buf = av_malloc(4096) as *mut u8;
+            let rtp_io_buf = av_malloc(8192) as *mut u8;
             let rtp_avio_ctx = avio_alloc_context(
                 rtp_io_buf,
-                4096,
+                8192,
                 1,
                 rtp_buf_ptr,
                 Some(rw::read_rtp_packet),
