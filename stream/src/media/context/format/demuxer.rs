@@ -23,14 +23,14 @@ pub struct AvioResource {
     pub original_pb: *mut AVIOContext,
 }
 unsafe impl Send for AvioResource {}
-unsafe impl Sync for AvioResource {}
+// unsafe impl Sync for AvioResource {}
 impl Drop for AvioResource {
     fn drop(&mut self) {
         unsafe {
             if !self.fmt_ctx.is_null() {
                 (*self.fmt_ctx).pb = self.original_pb;
                 avformat_close_input(&mut self.fmt_ctx);
-                avformat_free_context(self.fmt_ctx);
+                // avformat_free_context(self.fmt_ctx);
             }
             if !self.sdp_io_buf.is_null() {
                 av_free(self.sdp_io_buf as *mut c_void);
@@ -67,8 +67,8 @@ impl Drop for DemuxerContext {
 }
 
 impl DemuxerContext {
-    pub fn start_demuxer(media_ext: &MediaExt, mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
-        let sdp = build_sdp(media_ext.tp_code, &media_ext.tp_val);
+    pub fn start_demuxer(ssrc: u32, media_ext: &MediaExt, mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
+        let sdp = build_sdp(ssrc, media_ext.tp_code, &media_ext.tp_val);
         let mut sdp_mem = SdpMemory::new(sdp);
         unsafe {
             //内存中读取sdp信息
@@ -86,12 +86,10 @@ impl DemuxerContext {
             (*fmt_ctx).pb = sdp_avio_ctx;
             (*fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
-            av_dict_set(
-                &mut dict_opts,
-                SDP_FLAGS.as_ptr(),
-                CUSTOM_IO.as_ptr(),
-                0,
-            );
+            let ret = av_dict_set(&mut dict_opts, SDP_FLAGS.as_ptr(), CUSTOM_IO.as_ptr(), 0);
+            if ret < 0 {
+                return Err(GlobalError::new_sys_error(&format!("av_dict_set failed: {}", ret), |msg| error!("{msg}")));
+            }
             let input_fmt = av_find_input_format(SDP.as_ptr());
             let ret = avformat_open_input(
                 &mut (fmt_ctx as *mut _),
@@ -106,7 +104,7 @@ impl DemuxerContext {
             }
             //创建 RTP AVIOContext
             let rtp_buf_ptr = &mut rtp_buffer as *mut _ as *mut c_void;
-            let rtp_io_buf = av_malloc(4096) as *mut u8;
+            let rtp_io_buf = av_malloc(1500) as *mut u8;
             let rtp_avio_ctx = avio_alloc_context(
                 rtp_io_buf,
                 4096,
@@ -120,7 +118,8 @@ impl DemuxerContext {
             //保存原始 pb 并替换为 RTP 数据流
             let original_pb = (*fmt_ctx).pb;
             (*fmt_ctx).pb = rtp_avio_ctx;
-            if avformat_find_stream_info(fmt_ctx, ptr::null_mut()) < 0 {
+            let ret = avformat_find_stream_info(fmt_ctx, ptr::null_mut());
+            if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Could not find stream info:ret= {ret}, msg={msg}")));
             }
@@ -160,7 +159,7 @@ impl DemuxerContext {
     }
 }
 
-fn build_sdp(rtp_map_key: u8, rtp_map_val: &String) -> String {
+fn build_sdp(ssrc: u32, rtp_map_key: u8, rtp_map_val: &String) -> String {
     let mut sdp = String::with_capacity(300);
     sdp.push_str("v=0\r\n");
     sdp.push_str("o=- 0 0 IN IP4 127.0.0.1\r\n");
@@ -169,5 +168,7 @@ fn build_sdp(rtp_map_key: u8, rtp_map_val: &String) -> String {
     sdp.push_str("t=0 0\r\n");
     sdp.push_str(&format!("m=video 0 RTP/AVP {}\r\n", rtp_map_key));
     sdp.push_str(&format!("a=rtpmap:{} {}\r\n", rtp_map_key, rtp_map_val));
+    sdp.push_str("a=recvonly\r\n");
+    sdp.push_str(&format!("a=ssrc:{} cname:gb28181_stream\r\n", ssrc));
     sdp
 }
