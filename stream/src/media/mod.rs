@@ -5,7 +5,7 @@ use base::exception::GlobalResultExt;
 use base::log::error;
 use base::tokio;
 use base::tokio::sync::mpsc::Receiver;
-use rsmpeg::ffi::{av_strerror, avformat_network_init};
+use rsmpeg::ffi::{av_log_set_level, av_strerror, avformat_network_init, AV_LOG_DEBUG};
 use std::ffi::c_int;
 
 mod rw;
@@ -23,7 +23,11 @@ pub fn build_worker_run(rx: Receiver<u32>) {
             .hand_log(|msg| error!("{}",msg))
             .unwrap()
             .block_on({
-                unsafe { avformat_network_init() };
+                unsafe {
+                    avformat_network_init();
+                    av_log_set_level(AV_LOG_DEBUG as c_int);
+                };
+
                 handle_run(rx)
             });
     });

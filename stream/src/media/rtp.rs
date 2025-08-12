@@ -15,7 +15,7 @@ pub struct RtpPacket {
  时间戳增量单位：1/90000(秒/个) ，特别注意RTP时间戳是有单位的 每帧对应的采样： 90000 / 25 = 3600 (个/帧)
 */
 //缓冲区大小
-const BUFFER_SIZE: usize = 32;
+const BUFFER_SIZE: usize = 128;
 //检查sn是否回绕；sn变小，且差值的绝对值大于u16的一半。65535/2=32767
 const ROUND_SIZE: u16 = 32767;
 
@@ -61,15 +61,16 @@ impl RtpPacketBuffer {
                 if self.queue_count <= self.queue_window {
                     //遍历次数大于有效数据数量,则中间有不连续，需增加缓存窗口
                     if i > self.queue_window + 2 {
-                        if matches!(self.queue_window,1|2|4|8) {
+                        if self.queue_window < 16 {
                             self.queue_window *= 2;
                         }
                     } else if i == self.queue_window {
-                        if matches!(self.queue_window,8|16) {
+                        if self.queue_window > 16 {
                             self.queue_window /= 2;
                         }
                     }
                 }
+                println!("ssrc:{}, queue_count:{}, queue_window:{}, last_read_rtp_sn:{}", self.ssrc, self.queue_count, self.queue_window, self.last_read_rtp_sn);
                 return Ok(Some(pkt.data));
             }
         }

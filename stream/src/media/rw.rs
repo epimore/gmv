@@ -42,7 +42,7 @@ pub unsafe extern "C" fn read_rtp_packet(opaque: *mut c_void, buf: *mut u8, _buf
             let len = data.len();
             let src = data.as_ptr();
             ptr::copy_nonoverlapping(src, buf, len);
-            info!("ffmpeg consumed packet len: {}", len);
+            // info!("ffmpeg consumed packet len: {}", len);
             len as c_int
         }
         Err(err) => {
