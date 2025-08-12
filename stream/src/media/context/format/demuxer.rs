@@ -3,7 +3,27 @@ use crate::media::{rtp, rw, show_ffmpeg_error_msg};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::error;
 use base::once_cell::sync::Lazy;
-use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_VIDEO, AVFMT_FLAG_CUSTOM_IO};
+use rsmpeg::ffi::{
+    av_dict_set,
+    av_find_input_format,
+    av_free,
+    av_malloc,
+    avcodec_parameters_alloc,
+    avcodec_parameters_copy,
+    avcodec_parameters_free,
+    avformat_alloc_context,
+    avformat_close_input,
+    avformat_find_stream_info,
+    avformat_free_context,
+    avformat_open_input,
+    avio_alloc_context,
+    AVCodecParameters,
+    AVDictionary,
+    AVFormatContext,
+    AVIOContext,
+    AVMediaType_AVMEDIA_TYPE_VIDEO,
+    AVFMT_FLAG_CUSTOM_IO,
+};
 use shared::info::media_info_ext::MediaExt;
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
@@ -21,13 +41,16 @@ pub struct AvioResource {
     pub sdp_avio_ctx: *mut AVIOContext,
     pub rtp_avio_ctx: *mut AVIOContext,
     pub original_pb: *mut AVIOContext,
+    // 持有 sdp 内存的原始指针（Box<SdpMemory> 转为裸指针）
+    pub sdp_mem_ptr: *mut SdpMemory,
 }
 unsafe impl Send for AvioResource {}
-// unsafe impl Sync for AvioResource {}
+
 impl Drop for AvioResource {
     fn drop(&mut self) {
         unsafe {
             if !self.fmt_ctx.is_null() {
+                // 恢复原始 pb 再关闭
                 (*self.fmt_ctx).pb = self.original_pb;
                 avformat_close_input(&mut self.fmt_ctx);
                 // avformat_free_context(self.fmt_ctx);
@@ -43,6 +66,13 @@ impl Drop for AvioResource {
             }
             if !self.rtp_avio_ctx.is_null() {
                 av_free(self.rtp_avio_ctx as *mut c_void);
+            }
+
+            // 回收之前用 Box::into_raw 转出的 sdp memory
+            if !self.sdp_mem_ptr.is_null() {
+                // 转回 Box 自动 drop
+                let _ = Box::from_raw(self.sdp_mem_ptr);
+                self.sdp_mem_ptr = ptr::null_mut();
             }
         }
     }
@@ -69,25 +99,38 @@ impl Drop for DemuxerContext {
 impl DemuxerContext {
     pub fn start_demuxer(ssrc: u32, media_ext: &MediaExt, mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         let sdp = build_sdp(ssrc, media_ext.tp_code, &media_ext.tp_val);
-        let mut sdp_mem = SdpMemory::new(sdp);
+
         unsafe {
-            //内存中读取sdp信息
+            // 把 SdpMemory 放到堆上并持有其裸指针，保证生命周期
+            let sdp_box = Box::new(SdpMemory::new(sdp));
+            let sdp_ptr = Box::into_raw(sdp_box);
+
+            // 内存中读取sdp信息
             let sdp_io_buf = av_malloc(2048) as *mut u8;
             let sdp_avio_ctx = avio_alloc_context(
                 sdp_io_buf,
                 2048,
                 0,
-                &mut sdp_mem as *mut _ as *mut c_void,
+                sdp_ptr as *mut c_void,
                 Some(rw::read_sdp_packet),
                 None,
                 None,
             );
+
             let fmt_ctx = avformat_alloc_context();
+            if fmt_ctx.is_null() {
+                // 回收 sdp_ptr
+                let _ = Box::from_raw(sdp_ptr);
+                return Err(GlobalError::new_sys_error("Failed to alloc format context", |msg| error!("{msg}")));
+            }
+
             (*fmt_ctx).pb = sdp_avio_ctx;
             (*fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
             let ret = av_dict_set(&mut dict_opts, SDP_FLAGS.as_ptr(), CUSTOM_IO.as_ptr(), 0);
             if ret < 0 {
+                // 回收 sdp_ptr
+                let _ = Box::from_raw(sdp_ptr);
                 return Err(GlobalError::new_sys_error(&format!("av_dict_set failed: {}", ret), |msg| error!("{msg}")));
             }
             let input_fmt = av_find_input_format(SDP.as_ptr());
@@ -100,11 +143,14 @@ impl DemuxerContext {
             rsmpeg::ffi::av_dict_free(&mut dict_opts);
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
+                // 回收 sdp_ptr
+                let _ = Box::from_raw(sdp_ptr);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to open sdp input:ret= {ret}, msg={msg}")));
             }
-            //创建 RTP AVIOContext
+
+            // 创建 RTP AVIOContext，注意缓冲区大小保持一致
             let rtp_buf_ptr = &mut rtp_buffer as *mut _ as *mut c_void;
-            let rtp_io_buf = av_malloc(1500) as *mut u8;
+            let rtp_io_buf = av_malloc(4096) as *mut u8;
             let rtp_avio_ctx = avio_alloc_context(
                 rtp_io_buf,
                 4096,
@@ -115,12 +161,15 @@ impl DemuxerContext {
                 None,
             );
 
-            //保存原始 pb 并替换为 RTP 数据流
+            // 保存原始 pb 并替换为 RTP 数据流
             let original_pb = (*fmt_ctx).pb;
             (*fmt_ctx).pb = rtp_avio_ctx;
             let ret = avformat_find_stream_info(fmt_ctx, ptr::null_mut());
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
+                // 清理：恢复 pb，释放 sdp_ptr
+                (*fmt_ctx).pb = original_pb;
+                let _ = Box::from_raw(sdp_ptr);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Could not find stream info:ret= {ret}, msg={msg}")));
             }
 
@@ -131,6 +180,8 @@ impl DemuxerContext {
                 let in_stream = *(*fmt_ctx).streams.add(i as usize);
                 let codecpar = avcodec_parameters_alloc();
                 if codecpar.is_null() {
+                    // 失败时回收 sdp_ptr
+                    let _ = Box::from_raw(sdp_ptr);
                     return Err(GlobalError::new_biz_error(1100, "Failed to alloc AVCodecParameters", |msg| error!("msg={msg}")));
                 }
                 avcodec_parameters_copy(codecpar, (*in_stream).codecpar);
@@ -150,6 +201,7 @@ impl DemuxerContext {
                     sdp_avio_ctx,
                     rtp_avio_ctx,
                     original_pb,
+                    sdp_mem_ptr: sdp_ptr,
                 }),
                 codecpar_list,
                 stream_mapping,
@@ -160,13 +212,14 @@ impl DemuxerContext {
 }
 
 fn build_sdp(ssrc: u32, rtp_map_key: u8, rtp_map_val: &String) -> String {
+    // 使用非 0 端口（例如 5004），增加 FFmpeg 解析几率
     let mut sdp = String::with_capacity(300);
     sdp.push_str("v=0\r\n");
     sdp.push_str("o=- 0 0 IN IP4 127.0.0.1\r\n");
     sdp.push_str("s=No Name\r\n");
     sdp.push_str("c=IN IP4 127.0.0.1\r\n");
     sdp.push_str("t=0 0\r\n");
-    sdp.push_str(&format!("m=video 0 RTP/AVP {}\r\n", rtp_map_key));
+    sdp.push_str(&format!("m=video 5004 RTP/AVP {}\r\n", rtp_map_key));
     sdp.push_str(&format!("a=rtpmap:{} {}\r\n", rtp_map_key, rtp_map_val));
     sdp.push_str("a=recvonly\r\n");
     sdp.push_str(&format!("a=ssrc:{} cname:gb28181_stream\r\n", ssrc));
