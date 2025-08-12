@@ -30,4 +30,4 @@ anyhow = { workspace = true }
 pretend = "0.4"
 pretend-reqwest = "0.4"
 axum = {version = "0.8",features = ["multipart"]}
-webrtc-sdp = "0.3"
+#webrtc-sdp = "0.3"
