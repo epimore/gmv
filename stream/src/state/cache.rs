@@ -435,14 +435,19 @@ impl Shared {
                         }
                     }
                 }
+                //此处不需刷新输出，由下一个过期判断
+                //init muxer 无访问过期？
                 StreamDirection::StreamOut(mux_tp) => {
                     if let Some(StreamTrace { stream_id, converter, mpsc_bus, .. }) = state.sessions.get_mut(&ssrc) {
+                        info!("ssrc: {},stream_id: {}, 流空闲超时 -> 清理会话;mux_tp: {:?}",ssrc,stream_id,mux_tp);
                         converter.muxer.close_by_muxer_type(&mux_tp);
                         if let Some(cm) = CloseMuxer::from_muxer_type(&mux_tp) {
                             let _ = mpsc_bus.try_publish(MuxerEvent::Close(cm)).hand_log(|msg| error!("{msg}"));
                         }
-                        if !converter.muxer.check_empty() {
-                            continue;
+                        if let Some(InnerTrace{user_map, ..}) = state.inner.get(stream_id) {
+                            if user_map.len() > 0 {
+                                continue;
+                            }
                         }
                         state.inner.remove(stream_id);
                         if let Some(stream_trace) = state.sessions.remove(&ssrc) {

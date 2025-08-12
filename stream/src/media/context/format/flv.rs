@@ -109,17 +109,37 @@ impl FlvContext {
                 None,
             );
 
-            let fmt_ctx = avformat_alloc_context();
+            // 1. 验证FLV格式支持
             let flv_fmt = av_guess_format(FLV.as_ptr(), ptr::null(), ptr::null());
+            if flv_fmt.is_null() {
+                return Err(GlobalError::new_sys_error("FLV format not supported", |msg| warn!("{msg}")));
+            }
+
+            let fmt_ctx = avformat_alloc_context();
+            if fmt_ctx.is_null() {
+                return Err(GlobalError::new_sys_error("Failed to alloc format context", |msg| warn!("{msg}")));
+            }
             (*fmt_ctx).pb = avio_ctx;
             (*fmt_ctx).oformat = flv_fmt;
 
-            for &codecpar in &demuxer_context.codecpar_list {
-                let stream = avformat_new_stream(fmt_ctx, ptr::null_mut());
-                avcodec_parameters_copy((*stream).codecpar, codecpar);
-                (*(*stream).codecpar).codec_tag = 0;
+            if demuxer_context.codecpar_list.is_empty() {
+                return Err(GlobalError::new_sys_error("No codec parameters available", |msg| warn!("{msg}")));
             }
 
+            for &codecpar in &demuxer_context.codecpar_list {
+                let stream = avformat_new_stream(fmt_ctx, ptr::null_mut());
+                if stream.is_null() {
+                    return Err(GlobalError::new_sys_error("Failed to create stream", |msg| warn!("{msg}")));
+                }
+                let ret = avcodec_parameters_copy((*stream).codecpar, codecpar);
+                if ret < 0 {
+                    return Err(GlobalError::new_sys_error(&format!("Codecpar copy failed: {}", ret), |msg| warn!("{msg}")));
+                }
+                (*(*stream).codecpar).codec_tag = 0;
+            }
+            if (*fmt_ctx).nb_streams == 0 {
+                return Err(GlobalError::new_sys_error("No streams added to muxer", |msg| warn!("{msg}")));
+            }
             // 写 header
             if avformat_write_header(fmt_ctx, std::ptr::null_mut()) < 0 {
                 return Err(GlobalError::new_sys_error("FLV header write failed", |msg| warn!("{msg}")));

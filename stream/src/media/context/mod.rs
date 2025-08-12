@@ -28,7 +28,7 @@ pub struct MediaContext {
 impl MediaContext {
     pub fn init(ssrc: u32, stream_config: StreamConfig) -> GlobalResult<MediaContext> {
         let rtp_buffer = RtpPacketBuffer::init(ssrc, stream_config.rtp_rx);
-        let demuxer_context = DemuxerContext::start_demuxer(&stream_config.media_ext, rtp_buffer)?;
+        let demuxer_context = DemuxerContext::start_demuxer(ssrc, &stream_config.media_ext, rtp_buffer)?;
         let converter = stream_config.converter;
         let context = MediaContext {
             codec_context: CodecContext::init(converter.codec),
