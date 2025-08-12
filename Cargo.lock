@@ -1219,7 +1219,6 @@ dependencies = [
  "sqlx",
  "url",
  "uuid 1.17.0",
- "webrtc-sdp",
 ]
 
 [[package]]
@@ -3828,16 +3827,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e8983c3ab33d6fb807cfcdad2491c4ea8cbc8ed839181c7dfd9c67c83e261b2"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "webrtc-sdp"
-version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a87d58624aae43577604ea137de9dcaf92793eccc4d816efad482001c2e055ca"
-dependencies = [
- "log",
- "url",
 ]
 
 [[package]]

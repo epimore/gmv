@@ -4,6 +4,6 @@ pub struct FilterContext {}
 
 impl FilterContext {
     pub fn init(filter: FilterLayer) -> FilterContext {
-        unimplemented!()
+        FilterContext {}
     }
 }
