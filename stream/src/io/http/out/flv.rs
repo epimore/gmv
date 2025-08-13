@@ -26,7 +26,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 
-pub async fn handler(stream_id: String, token: String, addr: SocketAddr)
+pub async fn handler(stream_id: String, token: &String, addr: SocketAddr)
                      -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => {
@@ -35,6 +35,7 @@ pub async fn handler(stream_id: String, token: String, addr: SocketAddr)
         Some((bsi, user_count)) => {
             //todo 校验output是否存在
             let ssrc = bsi.rtp_info.ssrc;
+            let token = token.to_string();
             let remote_addr = addr.to_string();
             let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone(), HttpStreamType::HttpFlv(MuxerType::Flv), user_count);
             let (tx, rx) = oneshot::channel();
