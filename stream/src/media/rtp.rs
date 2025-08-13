@@ -70,7 +70,6 @@ impl RtpPacketBuffer {
                         }
                     }
                 }
-                println!("ssrc:{}, queue_count:{}, queue_window:{}, last_read_rtp_sn:{}", self.ssrc, self.queue_count, self.queue_window, self.last_read_rtp_sn);
                 return Ok(Some(pkt.data));
             }
         }

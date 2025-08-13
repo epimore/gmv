@@ -22,7 +22,7 @@ pub async fn run(node: &String, std_http_listener: std::net::TcpListener, tx: Se
     std_http_listener.set_nonblocking(true).hand_log(|msg| error!("{msg}"))?;
     let listener = TcpListener::from_std(std_http_listener).hand_log(|msg| error!("{msg}"))?;
     let app = Router::new()
-        .merge(out::routes())
+        .merge(out::routes(node))
         .merge(api::routes(tx.clone()));
 
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())

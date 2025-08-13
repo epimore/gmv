@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use axum::Router;
 use shared::info::obj::{PLAY_PATH};
@@ -8,17 +9,20 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query};
 use axum::response::Response;
+use base::log::info;
 use crate::io::http::{res_401, res_404};
 
 mod flv;
 mod hls;
 mod dash;
 
-pub fn routes() -> Router {
-    Router::new().route(PLAY_PATH, axum::routing::get(handler))
+pub fn routes(node: &String) -> Router {
+    Router::new().route(&format!("/{}{}", node, PLAY_PATH), axum::routing::get(handler))
 }
-async fn handler(Path(stream_id): Path<String>, Query(token): Query<Option<String>>, ConnectInfo(addr): ConnectInfo<SocketAddr>)
+async fn handler(Path(stream_id): Path<String>, Query(map): Query<HashMap<String, String>>, ConnectInfo(addr): ConnectInfo<SocketAddr>)
                  -> Response<Body> {
+    info!("stream play:stream_id: {}, param: {:?}", stream_id, map);
+    let token = map.get("gmv-token");
     if token.is_none() {
         return res_401();
     }
