@@ -5,6 +5,7 @@ use crossbeam_channel::Receiver;
 
 pub struct RtpPacket {
     pub ssrc: u32,
+    pub timestamp: u32,
     pub seq: u16,
     pub data: Bytes,
 }
@@ -15,7 +16,7 @@ pub struct RtpPacket {
  时间戳增量单位：1/90000(秒/个) ，特别注意RTP时间戳是有单位的 每帧对应的采样： 90000 / 25 = 3600 (个/帧)
 */
 //缓冲区大小
-const BUFFER_SIZE: usize = 128;
+const BUFFER_SIZE: usize = 64;
 //检查sn是否回绕；sn变小，且差值的绝对值大于u16的一半。65535/2=32767
 const ROUND_SIZE: u16 = 32767;
 
@@ -70,6 +71,7 @@ impl RtpPacketBuffer {
                         }
                     }
                 }
+                // println!("seq:{},timestamp:{}", pkt.seq, pkt.timestamp);
                 return Ok(Some(pkt.data));
             }
         }

@@ -1,7 +1,7 @@
 use crate::media::rw::SdpMemory;
 use crate::media::{rtp, rw, show_ffmpeg_error_msg};
 use base::exception::{GlobalError, GlobalResult};
-use base::log::error;
+use base::log::{error, info};
 use base::once_cell::sync::Lazy;
 use rsmpeg::ffi::{
     av_dict_set,
@@ -25,7 +25,7 @@ use rsmpeg::ffi::{
     AVFMT_FLAG_CUSTOM_IO,
 };
 use shared::info::media_info_ext::MediaExt;
-use std::ffi::{c_int, c_void, CString};
+use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
 use std::sync::Arc;
 
@@ -99,7 +99,7 @@ impl Drop for DemuxerContext {
 impl DemuxerContext {
     pub fn start_demuxer(ssrc: u32, media_ext: &MediaExt, mut rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         let sdp = build_sdp(ssrc, media_ext.tp_code, &media_ext.tp_val);
-
+        info!("sdp: {}", sdp);
         unsafe {
             // 把 SdpMemory 放到堆上并持有其裸指针，保证生命周期
             let sdp_box = Box::new(SdpMemory::new(sdp));
@@ -117,6 +117,10 @@ impl DemuxerContext {
                 None,
             );
 
+            if sdp_avio_ctx.is_null() || (*sdp_avio_ctx).error != 0 {
+                error!("Failed to alloc sdp avio context");
+            }
+
             let fmt_ctx = avformat_alloc_context();
             if fmt_ctx.is_null() {
                 // 回收 sdp_ptr
@@ -127,34 +131,62 @@ impl DemuxerContext {
             (*fmt_ctx).pb = sdp_avio_ctx;
             (*fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
+
+            // 添加处理非单调时间戳的标志
+            let fflags_key = CString::new("fflags").unwrap();
+            // let fflags_val = CString::new("nobuffer+discardcorrupt+genpts+igndts").unwrap();
+            // 修改fflags配置为：
+            let fflags_val = CString::new("nobuffer+discardcorrupt+genpts+igndts+sortdts").unwrap();
+
+            av_dict_set(&mut dict_opts, fflags_key.as_ptr(), fflags_val.as_ptr(), 0);
+
+            // 设置最大延迟（微秒）用于数据包重排序
+            // let max_delay_key = CString::new("max_delay").unwrap();
+            // let max_delay_val = CString::new("500000").unwrap(); // 500ms
+            // av_dict_set(&mut dict_opts, max_delay_key.as_ptr(), max_delay_val.as_ptr(), 0);
+
+            // 启用非严格模式处理格式不规范的流
+            let strict_std_compliance_key = CString::new("strict").unwrap();
+            let strict_std_compliance_val = CString::new("experimental").unwrap();
+            av_dict_set(&mut dict_opts, strict_std_compliance_key.as_ptr(), strict_std_compliance_val.as_ptr(), 0);
+
             // analyzeduration = 5 秒（单位微秒）
             let analyzeduration_key = CString::new("analyzeduration").unwrap();
             let analyzeduration_val = CString::new("8000000").unwrap(); // 5,000,000 us
             av_dict_set(&mut dict_opts, analyzeduration_key.as_ptr(), analyzeduration_val.as_ptr(), 0);
-
-            // probesize = 5MB
-            let probesize_key = CString::new("probesize").unwrap();
-            let probesize_val = CString::new("8000000").unwrap(); // 字节
-            av_dict_set(&mut dict_opts, probesize_key.as_ptr(), probesize_val.as_ptr(), 0);
+            // 
+            // // probesize = 5MB
+            // let probesize_key = CString::new("probesize").unwrap();
+            // let probesize_val = CString::new("8000000").unwrap(); // 字节
+            // av_dict_set(&mut dict_opts, probesize_key.as_ptr(), probesize_val.as_ptr(), 0);
+            // let format = CString::new("format").unwrap();
+            // let ps = CString::new("mpegps").unwrap();
+            // av_dict_set(&mut dict_opts, format.as_ptr(), ps.as_ptr(), 0);
             let ret = av_dict_set(&mut dict_opts, SDP_FLAGS.as_ptr(), CUSTOM_IO.as_ptr(), 0);
             if ret < 0 {
                 // 回收 sdp_ptr
                 let _ = Box::from_raw(sdp_ptr);
                 return Err(GlobalError::new_sys_error(&format!("av_dict_set failed: {}", ret), |msg| error!("{msg}")));
             }
+            println!("111111111111111111");
             let input_fmt = av_find_input_format(SDP.as_ptr());
+            // let input_fmt = ptr::null_mut();
             let ret = avformat_open_input(
                 &mut (fmt_ctx as *mut _),
                 ptr::null(),
                 input_fmt,
                 &mut dict_opts,
             );
-            rsmpeg::ffi::av_dict_free(&mut dict_opts);
+            
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 // 回收 sdp_ptr
                 let _ = Box::from_raw(sdp_ptr);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to open sdp input:ret= {ret}, msg={msg}")));
+            }
+            println!("222222222222222");
+            if input_fmt.is_null() {
+                error!("Failed to find input format:FFmpeg未编译PS格式支持");
             }
 
             // 创建 RTP AVIOContext，注意缓冲区大小保持一致
@@ -169,25 +201,46 @@ impl DemuxerContext {
                 Some(rw::write_rtcp_packet),
                 None,
             );
-
+            println!("333333333333333");
             // 保存原始 pb 并替换为 RTP 数据流
             let original_pb = (*fmt_ctx).pb;
             (*fmt_ctx).pb = rtp_avio_ctx;
-            let ret = avformat_find_stream_info(fmt_ctx, ptr::null_mut());
+            let ret = avformat_find_stream_info(fmt_ctx,&mut dict_opts);
+            rsmpeg::ffi::av_dict_free(&mut dict_opts);
+            println!("44444444444");
             if ret < 0 {
+                // 记录详细的流信息用于调试
+                for i in 0..(*fmt_ctx).nb_streams {
+                    let stream = *(*fmt_ctx).streams.offset(i as isize);
+                    error!("流 {}: 类型 = {}, 编解码器ID = {}", 
+                            i, 
+                            (*stream).codecpar.as_ref().map_or(0, |p| p.codec_type),
+                            (*stream).codecpar.as_ref().map_or(0, |p| p.codec_id));
+                }
+
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 // 清理：恢复 pb，释放 sdp_ptr
                 (*fmt_ctx).pb = original_pb;
                 let _ = Box::from_raw(sdp_ptr);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Could not find stream info:ret= {ret}, msg={msg}")));
             }
+            let fmt_name = CStr::from_ptr((*(*fmt_ctx).iformat).name).to_string_lossy().into_owned();
+            println!("格式名 = {}", fmt_name);
 
             let mut codecpar_list = Vec::with_capacity((*fmt_ctx).nb_streams as usize);
             let mut stream_mapping = vec![];
-
             for i in 0..(*fmt_ctx).nb_streams {
                 let in_stream = *(*fmt_ctx).streams.add(i as usize);
                 let codecpar = avcodec_parameters_alloc();
+
+                info!("流 {}: 类型 = {}, 编解码器ID = {}, 格式 = {}, 宽度 = {}, 高度 = {}",
+                    i,
+                    codecpar.as_ref().map_or(0, |p| p.codec_type),
+                    codecpar.as_ref().map_or(0, |p| p.codec_id),
+                    codecpar.as_ref().map_or(0, |p| p.format),
+                    codecpar.as_ref().map_or(0, |p| p.width),
+                    codecpar.as_ref().map_or(0, |p| p.height));
+
                 if codecpar.is_null() {
                     // 失败时回收 sdp_ptr
                     let _ = Box::from_raw(sdp_ptr);

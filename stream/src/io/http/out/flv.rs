@@ -73,12 +73,13 @@ async fn send_frame(
     mut rx: broadcast::Receiver<Arc<FlvPacket>>,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
 ) -> Response<Body> {
+    println!("send_frame");
     // 获取 header
     let header = match get_header_rx(ssrc).await {
         Ok(h) => h,
         Err(_) => return res_404(),
     };
-
+    println!("get header end: {}", header.len());
     // 等待第一个关键帧
     let first_key = match timeout(Duration::from_millis(TIME_OUT), async {
         loop {
