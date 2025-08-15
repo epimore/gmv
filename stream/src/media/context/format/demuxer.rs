@@ -1,6 +1,6 @@
 use crate::media::{rtp, rw, show_ffmpeg_error_msg};
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{error, info};
+use base::log::{error, info, warn};
 use base::once_cell::sync::Lazy;
 use rsmpeg::ffi::{
     av_dict_set,
@@ -102,12 +102,11 @@ impl DemuxerContext {
 
             // Find the MPEG-PS demuxer
             let ps = CString::new("mpeg").unwrap(); // Using 'mpeg' instead of 'mpegps' for better compatibility
-            let mut input_fmt = ptr::null_mut();
-            // if input_fmt.is_null() {
-            //     return Err(GlobalError::new_sys_error("FFmpeg was not compiled with MPEG demuxer support", |msg| error!("{msg}")));
-            // } else {
-            //     input_fmt = ptr::null_mut();
-            // }
+            let mut input_fmt = av_find_input_format(ps.as_ptr());
+            if input_fmt.is_null() {
+                warn!("MPEG-PS demuxer not found");
+                input_fmt = av_find_input_format(ptr::null());
+            }
 
             // Set up custom AVIO context
             let io_ctx_buffer = av_malloc(8192) as *mut u8;

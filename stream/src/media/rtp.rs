@@ -37,7 +37,7 @@ impl RtpPacketBuffer {
             last_read_rtp_sn: 0,
             queue: std::array::from_fn(|_| None),
             queue_count: 0,
-            queue_window: 1,
+            queue_window: 16,
             packet_rx,
             remaining: Default::default(),
         }
