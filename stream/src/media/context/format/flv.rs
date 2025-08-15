@@ -46,21 +46,23 @@ impl FlvContext {
     }
 
     unsafe extern "C" fn write_callback(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
-        unsafe {
-            let out_buffer = &mut *(opaque as *mut Vec<u8>);
-            let data = std::slice::from_raw_parts(buf, buf_size as usize);
-            out_buffer.extend_from_slice(data);
-            buf_size
+        let out_buffer = unsafe { &mut *(opaque as *mut Vec<u8>) };
+        let available = out_buffer.len();
+        if available == 0 {
+            return 0;
         }
+        let write_len = std::cmp::min(buf_size as usize, available);
+        unsafe {
+            std::ptr::copy_nonoverlapping(out_buffer.as_ptr(), buf, write_len);
+        }
+        out_buffer.drain(..write_len);
+        write_len as c_int
     }
 
     pub fn write_packet(&mut self, pkt: &AVPacket) {
         unsafe {
             let mut cloned = std::mem::zeroed::<AVPacket>();
             av_packet_ref(&mut cloned, pkt);
-
-            // 记录旧的 out_buf 长度
-            let before_len = self.out_buf.len();
 
             // 写入 FLV packet 到缓冲区
             let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
@@ -70,27 +72,22 @@ impl FlvContext {
                 warn!("FLV write failed: {}", ret);
                 return;
             }
-
-            let after_len = self.out_buf.len();
-            if after_len <= before_len {
+            if self.out_buf.is_empty() {
+                warn!("FLV write failed: out buffer is empty");
                 return;
             }
 
-            // 获取新写入的字节（即这个 packet 的 FLV 表示）
-            let packet_bytes = &self.out_buf[before_len..after_len];
+            let out_data = std::mem::take(&mut self.out_buf);
 
             // 判断是否为视频关键帧
             let is_key = pkt.stream_index == 0 && (pkt.flags & rsmpeg::ffi::AV_PKT_FLAG_KEY as i32 != 0);
-
+            println!("is_key: {}", is_key);
             let _ = self
                 .flv_body_tx
                 .send(Arc::new(FlvPacket {
-                    data: Bytes::copy_from_slice(packet_bytes),
+                    data: Bytes::from(out_data),
                     is_key,
                 }));
-
-            // 清理 out_buf，保留 header（可选）或直接清空
-            self.out_buf.truncate(0); // 完全清空（推荐）
         }
     }
 
@@ -136,11 +133,6 @@ impl FlvContext {
                     return Err(GlobalError::new_sys_error(&format!("Codecpar copy failed: {}", ret), |msg| warn!("{msg}")));
                 }
                 (*(*stream).codecpar).codec_tag = 0;
-                if (*codecpar).width == 0 {
-                    warn!("自动设置默认分辨率1920x1080");
-                    (*codecpar).width = 1920;
-                    (*codecpar).height = 1080;
-                }
             }
             if (*fmt_ctx).nb_streams == 0 {
                 return Err(GlobalError::new_sys_error("No streams added to muxer", |msg| warn!("{msg}")));
