@@ -1,4 +1,4 @@
-use base::bytes::Bytes;
+use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::info;
 use crossbeam_channel::Receiver;
@@ -7,7 +7,7 @@ pub struct RtpPacket {
     pub ssrc: u32,
     pub timestamp: u32,
     pub seq: u16,
-    pub data: Bytes,
+    pub payload: Bytes,
 }
 
 /*
@@ -27,6 +27,7 @@ pub struct RtpPacketBuffer {
     queue_count: usize,  // 缓冲区有效的包数量
     queue_window: usize,  //缓冲区窗口大小:4/8/16
     packet_rx: Receiver<RtpPacket>, //数据接收句柄
+    remaining: Bytes,
 }
 
 impl RtpPacketBuffer {
@@ -38,14 +39,25 @@ impl RtpPacketBuffer {
             queue_count: 0,
             queue_window: 1,
             packet_rx,
+            remaining: Default::default(),
         }
     }
+
+    pub fn cache_remaining_data(&mut self, remaining: &[u8]) {
+        self.remaining = BytesMut::from(remaining).freeze();
+    }
+
 
     //1 判断缓冲区数据数量：[queue_count <  queue_window]? 1.1 : 1.2
     //1.1阻塞线程等待数据+超时
     //1.2直接取数据
     pub fn demux_packet(&mut self) -> GlobalResult<Option<Bytes>>
     {
+        // 优先返回缓存的剩余数据
+        if !self.remaining.is_empty() {
+            let data = std::mem::take(&mut self.remaining);
+            return Ok(Some(data));
+        }
         self.reduce_packet()?;
         let mut index = self.last_read_rtp_sn as usize % BUFFER_SIZE;
         for i in 0..BUFFER_SIZE {
@@ -72,7 +84,7 @@ impl RtpPacketBuffer {
                     }
                 }
                 // println!("seq:{},timestamp:{}", pkt.seq, pkt.timestamp);
-                return Ok(Some(pkt.data));
+                return Ok(Some(pkt.payload));
             }
         }
         Ok(None)

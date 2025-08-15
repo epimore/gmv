@@ -9,6 +9,7 @@ use base::log::{debug, error};
 use base::net;
 use base::net::state::{Association, Package, Protocol, Zip};
 use rtp_types::RtpPacket;
+use tracing::instrument::WithSubscriber;
 use crate::{media, state};
 use crate::general::util;
 use crate::io::splitter::rtp::TcpRtpBuffer;
@@ -58,11 +59,12 @@ fn demux_rtp(rtp_data: Bytes, association: &Association) {
                 Some((rtp_tx, rtp_rx)) => {
                     // let _ = util::dump("rtp_ps", &rtp_data, false);
                     // let _ = util::dump("ps", pkt.payload(), false);
+
                     let packet = media::rtp::RtpPacket {
                         ssrc,
                         timestamp: pkt.timestamp(),
                         seq: pkt.sequence_number(),
-                        data: rtp_data,
+                        payload: Bytes::from(pkt.payload().to_vec()),
                     };
                     //通道满了，删除先入的数据
                     if let Err(TrySendError::Full(_)) = rtp_tx.try_send(packet) {
