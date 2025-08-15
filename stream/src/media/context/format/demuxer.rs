@@ -189,7 +189,13 @@ impl DemuxerContext {
                     (*codecpar).format,
                     (*codecpar).width,
                     (*codecpar).height);
-
+                let extradata = (*codecpar).extradata;
+                let extradata_size = (*codecpar).extradata_size;
+                if extradata.is_null() || extradata_size <= 0 {
+                    warn!("H.264 stream missing SPS/PPS data");
+                } else {
+                    info!("H.264 extradata size: {}", extradata_size);
+                }
                 codecpar_list.push(codecpar);
                 stream_mapping.push((i, is_video));
             }
