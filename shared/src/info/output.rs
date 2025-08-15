@@ -103,6 +103,8 @@ pub struct WebRtc {
     pub muxer: WebRtcMuxerType,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
 pub enum PlayType {
     Rtmp(MuxerType),
     Rtsp(MuxerType),

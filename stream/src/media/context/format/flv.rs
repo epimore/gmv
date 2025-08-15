@@ -136,6 +136,11 @@ impl FlvContext {
                     return Err(GlobalError::new_sys_error(&format!("Codecpar copy failed: {}", ret), |msg| warn!("{msg}")));
                 }
                 (*(*stream).codecpar).codec_tag = 0;
+                if (*codecpar).width == 0 {
+                    warn!("自动设置默认分辨率1920x1080");
+                    (*codecpar).width = 1920;
+                    (*codecpar).height = 1080;
+                }
             }
             if (*fmt_ctx).nb_streams == 0 {
                 return Err(GlobalError::new_sys_error("No streams added to muxer", |msg| warn!("{msg}")));

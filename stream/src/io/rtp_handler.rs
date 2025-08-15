@@ -10,6 +10,7 @@ use base::net;
 use base::net::state::{Association, Package, Protocol, Zip};
 use rtp_types::RtpPacket;
 use crate::{media, state};
+use crate::general::util;
 use crate::io::splitter::rtp::TcpRtpBuffer;
 
 pub fn listen_gb_server(port: u16) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
@@ -55,8 +56,11 @@ fn demux_rtp(rtp_data: Bytes, association: &Association) {
                     debug!("未知ssrc: {}",ssrc);
                 }
                 Some((rtp_tx, rtp_rx)) => {
+                    // let _ = util::dump("rtp_ps", &rtp_data, false);
+                    // let _ = util::dump("ps", pkt.payload(), false);
                     let packet = media::rtp::RtpPacket {
                         ssrc,
+                        timestamp: pkt.timestamp(),
                         seq: pkt.sequence_number(),
                         data: rtp_data,
                     };

@@ -13,7 +13,6 @@ parking_lot = "0.12"
 #tokio-util = "0.7"
 futures-util = "0.3"
 #hyper = { version = "0.14.26", features = ["full"] }
-#hyper = { version = "1.1", features = ["full"] }
 #http-body-util = "0.1"
 #reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 #form_urlencoded = "1.2.1"
@@ -31,7 +30,11 @@ tokio-stream = { version = "0.1.15", features = ["sync"] }
 crossbeam-channel = "0.5"
 #mp4 = "0.14"
 axum = "0.8"
-futures-core="0.3"
+#tower = "0.5"
+#hyper = { version = "1.1",features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+futures-core = "0.3"
 rtp-types = "0.1"
 #rtcp-types = "0.1"
 rsmpeg = { version = "0.14.2+ffmpeg.6.1", default-features = false, features = ["link_system_ffmpeg"] }
