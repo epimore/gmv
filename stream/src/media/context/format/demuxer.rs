@@ -96,9 +96,20 @@ impl DemuxerContext {
             let strict_std_compliance_val = CString::new("experimental").unwrap();
             av_dict_set(&mut dict_opts, strict_std_compliance_key.as_ptr(), strict_std_compliance_val.as_ptr(), 0);
 
+            // 缩小探测窗口 —— 尽快返回流信息
+            // 注：analyzeduration=0 在某些老版本会被当作“禁用分析”，若遇到打不开/识别差，可改成 50000（50ms）
             let analyzeduration_key = CString::new("analyzeduration").unwrap();
-            let analyzeduration_val = CString::new("5000000").unwrap(); // 5 seconds
+            let analyzeduration_val = CString::new("0").unwrap();
             av_dict_set(&mut dict_opts, analyzeduration_key.as_ptr(), analyzeduration_val.as_ptr(), 0);
+
+            let probesize_key = CString::new("probesize").unwrap();
+            let probesize_val = CString::new("32768").unwrap(); // 32k，够快且相对稳
+            av_dict_set(&mut dict_opts, probesize_key.as_ptr(), probesize_val.as_ptr(), 0);
+
+            // 消除队头等待
+            let max_delay_key = CString::new("max_delay").unwrap();
+            let max_delay_val = CString::new("0").unwrap();
+            av_dict_set(&mut dict_opts, max_delay_key.as_ptr(), max_delay_val.as_ptr(), 0);
 
             // Find the MPEG-PS demuxer
             let ps = CString::new("mpeg").unwrap(); // Using 'mpeg' instead of 'mpegps' for better compatibility
@@ -131,7 +142,8 @@ impl DemuxerContext {
                 avformat_free_context(fmt_ctx);
                 return Err(GlobalError::new_sys_error("Failed to allocate AVIO context", |msg| error!("{msg}")));
             }
-
+            // 禁止 FFmpeg 尝试 seek（流式传输）
+            (*io_ctx).seekable = 0;
             // Assign the AVIO context to the format context
             (*fmt_ctx).pb = io_ctx;
 
