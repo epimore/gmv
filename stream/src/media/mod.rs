@@ -12,6 +12,7 @@ mod rw;
 pub mod rtp;
 pub mod context;
 
+pub const DEFAULT_IO_BUF_SIZE: usize = 8192;
 pub fn build_worker_run(rx: Receiver<u32>) {
     std::thread::spawn(|| {
         tokio::runtime::Builder::new_multi_thread()

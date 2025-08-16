@@ -12,7 +12,7 @@ use rsmpeg::ffi::{
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
-use crate::media::show_ffmpeg_error_msg;
+use crate::media::{show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 
 static FLV: Lazy<CString> = Lazy::new(|| CString::new("flv").unwrap());
 
@@ -119,7 +119,7 @@ impl FlvContext {
         flv_body_tx: broadcast::Sender<Arc<FlvPacket>>,
     ) -> GlobalResult<Self> {
         unsafe {
-            let io_buf_size = 8192;
+            let io_buf_size = DEFAULT_IO_BUF_SIZE;
             let io_buf = av_malloc(io_buf_size) as *mut u8;
             if io_buf.is_null() {
                 return Err(GlobalError::new_sys_error(
