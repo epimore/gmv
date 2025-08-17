@@ -25,7 +25,7 @@ pub fn build_worker_run(rx: Receiver<u32>) {
             .unwrap()
             .block_on({
                 unsafe {
-                    avformat_network_init();
+                    // avformat_network_init();
                     // av_log_set_level(AV_LOG_DEBUG as c_int);
                 };
 
