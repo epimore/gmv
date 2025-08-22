@@ -65,7 +65,25 @@ impl Drop for DemuxerContext {
         }
     }
 }
-
+//AVFormatContext *fmt_ctx = avformat_alloc_context();
+//
+// // 添加一个视频流
+// AVStream *st = avformat_new_stream(fmt_ctx, NULL);
+// AVCodecParameters *par = st->codecpar;
+//
+// par->codec_type = AVMEDIA_TYPE_VIDEO;
+// par->codec_id   = AV_CODEC_ID_H264;
+// par->width      = 1920;
+// par->height     = 1080;
+// par->format     = AV_PIX_FMT_YUV420P;
+// par->extradata  = av_malloc(extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+// memcpy(par->extradata, extradata, extradata_size);
+// par->extradata_size = extradata_size;
+//
+// // 设置时基（例：90k时钟）
+// st->time_base = (AVRational){1, 90000};
+//
+// // 不调用 avformat_find_stream_info，直接用
 impl DemuxerContext {
     pub fn start_demuxer(_ssrc: u32, _media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         unsafe {
@@ -79,20 +97,58 @@ impl DemuxerContext {
             // 2) dict
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
             let fflags_key = CString::new("fflags").unwrap();
-            let fflags_val = CString::new("nobuffer+discardcorrupt+genpts").unwrap();// 先去掉 sortdts/genpts，稳定性优先
+            let fflags_val = CString::new("nobuffer+discardcorrupt+genpts").unwrap(); // 先去掉 sortdts/genpts，稳定性优先
             av_dict_set(&mut dict_opts, fflags_key.as_ptr(), fflags_val.as_ptr(), 0);
 
             let strict_std_compliance_key = CString::new("strict").unwrap();
             let strict_std_compliance_val = CString::new("experimental").unwrap();
             av_dict_set(&mut dict_opts, strict_std_compliance_key.as_ptr(), strict_std_compliance_val.as_ptr(), 0);
 
+            // 缩小探测窗口 —— 尽快返回流信息
+            // 注：analyzeduration=0 在某些老版本会被当作“禁用分析”，若遇到打不开/识别差，可改成 50000（50ms）
+            let analyzeduration_key = CString::new("analyzeduration").unwrap();
+            let analyzeduration_val = CString::new("2000000").unwrap();
+            av_dict_set(&mut dict_opts, analyzeduration_key.as_ptr(), analyzeduration_val.as_ptr(), 0);
+
             let probesize_key = CString::new("probesize").unwrap();
-            let probesize_val = CString::new("32768").unwrap(); // 32 KiB，PS over RTP 更稳
+            let probesize_val = CString::new("10240").unwrap(); // 32 KiB: 32768，PS over RTP 更稳
             av_dict_set(&mut dict_opts, probesize_key.as_ptr(), probesize_val.as_ptr(), 0);
 
             let max_delay_key = CString::new("max_delay").unwrap();
             let max_delay_val = CString::new("0").unwrap();
             av_dict_set(&mut dict_opts, max_delay_key.as_ptr(), max_delay_val.as_ptr(), 0);
+
+            //// --- 限制探测的参数 ---
+            // // 1. 限制探测的数据量大小 (单位：字节)
+            // fmt_ctx->probesize = 2 * 1024; // 例如，只探测 2KB 数据
+            // 
+            // // 2. 限制探测的时长 (单位：微秒)
+            // fmt_ctx->max_analyze_duration = 500000; // 例如，只分析最多0.5秒的数据
+            // 
+            // // 3. 设置标志位，避免昂贵的操作
+            // // 不查找帧率（对于一些格式，查找帧率需要解码很多帧）
+            // fmt_ctx->flags |= AVFMT_FLAG_NOFILLIN;
+            // // 不生成缺失的PTS/DTS
+            // fmt_ctx->flags |= AVFMT_FLAG_IGNIDX;
+            // // 如果可能，快速探测
+            // // 注意：这个标志并非所有格式都支持，但值得一试
+            // fmt_ctx->flags |= AVFMT_FLAG_FAST_SEEK;
+            //// 对于视频流，限制解码的帧数
+            // av_dict_set(&opts, "decode_error_detection", "skip_frame", 0);
+            // // 对于你的编码格式，可以尝试设置更具体的选项
+            // // av_dict_set_int(&opts, "probesize", fmt_ctx->probesize); // 通常不需要，上面设置了
+            //probesize：对于 ES 流，可以设置得相对较小。例如，一个 H.264 流的 SPS/PPS 通常就在最开始的几个包里，32KB 可能都绰绰有余。
+            // 
+            // max_analyze_duration：这个参数对 ES 流尤其重要。对于视频 ES 流，FFmpeg 可能会尝试解码直到遇到一个关键帧。如果文件开头没有关键帧，它可能会一直读下去。强烈建议设置一个绝对值（如 500000，即 0.5 秒）。
+            // 
+            // 选项字典 (opts)：使用 "decode_error_detection"="skip_frame" 可以让解码器在遇到错误时跳过而不是纠结，从而加快探测。
+            // 不需要探测时长
+            //用无缓冲标志
+            // ：设置
+            // AVFMT_FLAG_NOBUFFER标志可禁用FFmpeg内部缓冲机制，使数据直接从输入流
+            // 传递至解码器，减少中间环节的等待时间。该标志尤其适用于实时流场景，能有效降低因缓冲堆积导
+            // 致的阻塞概率
+
 
             // 3) input fmt
             let ps = CString::new("mpeg").unwrap();
@@ -195,6 +251,113 @@ impl DemuxerContext {
                 codecpar_list,
                 stream_mapping,
             })
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CStr;
+    use std::ptr;
+    use rsmpeg::ffi::{av_demuxer_iterate, av_opt_next, AVOption};
+    use rsmpeg::ffi;
+
+    #[test]
+
+    fn for_supported_demuxer() {
+        unsafe {
+            let mut opaque = ptr::null_mut();
+            while let Some(fmt) = av_demuxer_iterate(&mut opaque).as_ref() {
+                let fmt_name = CStr::from_ptr((*fmt).name).to_string_lossy();
+                let fmt_long_name = CStr::from_ptr((*fmt).long_name).to_string_lossy();
+                println!("Supported demuxer: {}, {}", fmt_name, fmt_long_name);
+            }
+        }
+    }
+
+    #[test]
+    fn for_enum_protocols() {
+        unsafe {
+            let mut opaque = ptr::null_mut();
+            println!("Input protocols:");
+            while let Some(protocol) = rsmpeg::ffi::avio_enum_protocols(&mut opaque, 0).as_ref() {
+                let protocol_name = CStr::from_ptr(protocol).to_string_lossy();
+                println!("  - {}", protocol_name);
+            }
+            println!("\nOutput protocols:");
+            let mut opaque = ptr::null_mut();
+            while let Some(protocol) = rsmpeg::ffi::avio_enum_protocols(&mut opaque, 1).as_ref() {
+                let protocol_name = CStr::from_ptr(protocol).to_string_lossy();
+                println!("  - {}", protocol_name);
+            }
+        }
+    }
+    #[test]
+    fn dump_avoptions_for_format_context() {
+        unsafe {
+            let fmt_ctx = rsmpeg::ffi::avformat_alloc_context();
+            let mut opt: *const rsmpeg::ffi::AVOption = std::ptr::null();
+            let obj = fmt_ctx as *mut std::ffi::c_void;
+
+            while {
+                opt = rsmpeg::ffi::av_opt_next(obj, opt);
+                !opt.is_null()
+            } {
+                let o = &*opt;
+                let name = std::ffi::CStr::from_ptr(o.name).to_string_lossy();
+                let help = if !o.help.is_null() {
+                    std::ffi::CStr::from_ptr(o.help).to_string_lossy().into_owned()
+                } else {
+                    "".to_string()
+                };
+                println!(
+                    "option: {} (help: {}, type: {}, min: {}, max: {})",
+                    name, help, o.type_, o.min, o.max
+                );
+            }
+
+            rsmpeg::ffi::avformat_free_context(fmt_ctx);
+        }
+    }
+
+
+    /// 打印所有可用 demuxer 及其支持的参数
+    #[test]
+    fn dump_all_demuxer_options() {
+        unsafe {
+            let mut opaque: *mut std::ffi::c_void = ptr::null_mut();
+
+            loop {
+                let ifmt = av_demuxer_iterate(&mut opaque);
+                if ifmt.is_null() {
+                    break;
+                }
+                let name = if !(*ifmt).name.is_null() {
+                    CStr::from_ptr((*ifmt).name).to_string_lossy().into_owned()
+                } else {
+                    "<unknown>".to_string()
+                };
+
+                println!("Demuxer: {}", name);
+
+                let av_class = (*ifmt).priv_class;
+                if !av_class.is_null() {
+                    let mut opt: *const AVOption = ptr::null();
+                    loop {
+                        opt = av_opt_next(ptr::null(), opt);
+                        if opt.is_null() {
+                            break;
+                        }
+                        let opt_name = if !(*opt).name.is_null() {
+                            CStr::from_ptr((*opt).name).to_string_lossy()
+                        } else {
+                            std::borrow::Cow::Borrowed("<noname>")
+                        };
+                        println!("    option: {}", opt_name);
+                    }
+                }
+            }
         }
     }
 }

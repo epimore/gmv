@@ -4,7 +4,7 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
-use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free};
+use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free, avformat_alloc_output_context2, av_dump_format, avcodec_parameters_from_context};
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
@@ -216,6 +216,7 @@ impl FlvContext {
                     drop(Box::from_raw(out_buf_ptr));
                     return Err(GlobalError::new_sys_error("Failed to create stream", |msg| warn!("{msg}")));
                 }
+                
                 let ret = avcodec_parameters_copy((*out_st).codecpar, codecpar);
                 if ret < 0 {
                     avio_context_free(&mut (avio_ctx.clone()));
@@ -242,6 +243,8 @@ impl FlvContext {
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error("No streams added to muxer", |msg| warn!("{msg}")));
             }
+
+            av_dump_format(fmt_ctx, 0, FLV.as_ptr(), 1);
 
             let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
             if ret < 0 {
