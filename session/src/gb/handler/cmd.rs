@@ -167,47 +167,11 @@ impl CmdStream {
                 return Err(GlobalError::new_biz_error(3000, &code_msg, |msg| error!("{msg}")));
             }
             if code == 200 {
-                let session = sdp_types::Session::parse(res.body()).hand_log(|msg| error!("{msg}"))?;
-                let re = Regex::new(r"\s+").hand_log(|msg| error!("{msg}"))?;
-                for media in session.medias {
-                    if media.media.eq_ignore_ascii_case("video") {
-                        if let Some(info) = media.get_first_attribute_value("rtpmap").hand_log(|msg| error!("{msg}"))?
-                        {
-                            let trimmed = re.replace_all(info, " ").trim().to_string();
-                            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                            if parts.len() >= 2 {
-                                let tp: u8 = parts[0].parse().hand_log(|msg| error!("{msg}"))?;
-                                let ext = MediaExt {
-                                    mt: MediaType::Video,
-                                    tp_code: tp,
-                                    tp_val: parts[1].to_string(),
-                                    link_ssrc: None,
-                                };
-                                let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
-                                let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
-                                EventSession::remove_event(&ident);
-                                return Ok((res, ext, from_tag, to_tag));
-                            }
-                        }
-                    }
-
-                    // let sdp_msg = String::from_utf8(res.body().clone()).hand_log(|msg| error!("{msg}"))?;
-                    // debug!("{ident:?} :{:?}",&sdp_msg);
-                    // let session = webrtc_sdp::parse_sdp(&sdp_msg, false).hand_log(|msg| error!("{msg}"))?;
-                    // if media.get_type() == &SdpMediaValue::Video {
-                    //     if let Some(SdpAttribute::Rtpmap(map)) = media.get_attribute(webrtc_sdp::attribute_type::SdpAttributeType::Rtpmap) {
-                    //         let ext = MediaExt {
-                    //             mt: MediaType::Video,
-                    //             tp_code: map.payload_type,
-                    //             tp_val: map.channels.map_or_else(|| format!("{}/{}", map.codec_name, map.frequency), |ch| format!("{}/{}/{}", map.codec_name, map.frequency, ch)),
-                    //             link_ssrc: None,
-                    //         };
-                    //         let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
-                    //         let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
-                    //         EventSession::remove_event(&ident);
-                    //         return Ok((res, ext, from_tag, to_tag));
-                    //     }
-                    // }
+                if let Ok(ext) = Self::parse_sdp(res.body()) {
+                    let from_tag = ResponseBuilder::get_tag_by_header_from(&res)?;
+                    let to_tag = ResponseBuilder::get_tag_by_header_to(&res)?;
+                    EventSession::remove_event(&ident);
+                    return Ok((res, ext, from_tag, to_tag));
                 }
                 EventSession::remove_event(&ident);
                 return Err(GlobalError::new_biz_error(1000, "摄像机响应rtpmap错误", |msg| error!("{msg}")));
@@ -215,6 +179,50 @@ impl CmdStream {
         }
         EventSession::remove_event(&ident);
         Err(GlobalError::new_biz_error(1000, "摄像机响应超时", |msg| error!("{msg}")))
+    }
+
+    fn parse_sdp(sdp: &Vec<u8>) -> GlobalResult<MediaExt> {
+        let session = sdp_types::Session::parse(sdp).hand_log(|msg| error!("{msg}"))?;
+        let re = Regex::new(r"\s+").hand_log(|msg| error!("{msg}"))?;
+        let mut ext = MediaExt::default();
+        for media in session.medias {
+            if matches!(&*(media.media.trim().to_lowercase()),"video"|"audio") {
+                if let Some(info) = media.get_first_attribute_value("rtpmap").hand_log(|msg| error!("{msg}"))?
+                {
+                    let trimmed = re.replace_all(info, " ").trim().to_string();
+                    if let Some((play_code, payload)) = trimmed.split_once(' ') {
+                        let type_code: u8 = play_code.trim().parse().hand_log(|msg| error!("{msg}"))?;
+                        ext.type_code = type_code;
+                        if let Some((type_name, clock_rate)) = payload.trim().split_once('/') {
+                            ext.clock_rate = clock_rate.trim().parse().hand_log(|msg| error!("{msg}"))?;
+                            ext.type_name = type_name.trim().to_string();
+                        }
+                    }
+                }
+                if let Some(num) = media.get_first_attribute_value("streamnumber").hand_log(|msg| error!("{msg}"))? {
+                    ext.stream_number = Some(num.trim().parse().hand_log(|msg| error!("{msg}"))?);
+                }
+            }
+        }
+        Self::extract_f_field(&mut ext, sdp);
+        Ok(ext)
+    }
+
+    fn extract_f_field(me: &mut MediaExt, sdp: &Vec<u8>) {
+        let sdp = str::from_utf8(sdp).unwrap();
+        if let Some(f_field) = sdp.lines().find_map(|line| line.trim().strip_prefix("f=")) {
+            let parts: Vec<&str> = f_field.split('/').map(|item| item.trim()).collect();
+            if parts.len() == 9 && parts[0] == "v" && parts[5].ends_with("a") {
+                me.video_params.map_video_codec(parts[1]);
+                me.video_params.map_resolution(parts[2]);
+                me.video_params.map_fps(parts[3]);
+                me.video_params.map_bitrate_type(parts[4]);
+                me.video_params.map_bitrate(parts[5].trim_end_matches("a"));
+                me.audio_params.map_audio_codec(parts[6]);
+                me.audio_params.map_bitrate(parts[7]);
+                me.audio_params.map_sample_rate(parts[8]);
+            }
+        }
     }
 }
 
