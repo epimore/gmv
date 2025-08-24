@@ -101,20 +101,12 @@ pub struct RtpEncrypt {}
 #[serde(crate = "base::serde")]
 pub struct MediaExt {
     pub rtp_encrypt: Option<RtpEncrypt>,
-    pub type_code: u8,
-    pub type_name: String,
+    pub type_code: u8, //rtp payload type
+    pub type_name: String,//rtp payload name
     pub clock_rate: i32, //时钟频率
     pub stream_number: Option<u8>, //gb28181自定义属性，流编号:0-主码流（高清流）1-子码率（标清流）
     pub video_params: VideoParams,
     pub audio_params: AudioParams,
-    // pub mt: MediaType,
-    // pub tp_val: String,
-    // pub link_ssrc: Option<u32>,
-}
-impl MediaExt {
-    pub fn from_sdp(s: &str) -> GlobalResult<Self> {
-        unimplemented!()
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
