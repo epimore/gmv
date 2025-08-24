@@ -2,13 +2,7 @@ use crate::media::{rtp, rw, show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, info, warn};
 use base::once_cell::sync::Lazy;
-use rsmpeg::ffi::{
-    av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_parameters_alloc,
-    avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input,
-    avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context,
-    avio_context_free, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_VIDEO,
-    AVFMT_FLAG_CUSTOM_IO,
-};
+use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_VIDEO, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
 use shared::info::media_info_ext::MediaExt;
 use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
@@ -85,7 +79,7 @@ impl Drop for DemuxerContext {
 //
 // // 不调用 avformat_find_stream_info，直接用
 impl DemuxerContext {
-    pub fn start_demuxer(_ssrc: u32, _media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
+    pub fn start_demuxer(_ssrc: u32, media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         unsafe {
             // 1) alloc fmt_ctx
             let mut fmt_ctx = avformat_alloc_context();
@@ -94,71 +88,116 @@ impl DemuxerContext {
             }
             (*fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
 
-            // 2) dict
+            // 2) 设置 AVFormatContext 直接参数
+            // 根据 media_ext 中的信息设置探测参数
+            // 如果没有明确配置，使用合理的默认值
+            (*fmt_ctx).probesize = 1024 * 100; // 默认 100KB 探测大小
+            (*fmt_ctx).max_analyze_duration = 2 * 1000 * 1000; // 默认 2秒分析时长
+
+            // 3) 设置 AVDictionary 选项
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
+
+            // 基本 flags
             let fflags_key = CString::new("fflags").unwrap();
-            let fflags_val = CString::new("nobuffer+discardcorrupt+genpts").unwrap(); // 先去掉 sortdts/genpts，稳定性优先
+            let fflags_val = CString::new("nobuffer+discardcorrupt+genpts").unwrap();
             av_dict_set(&mut dict_opts, fflags_key.as_ptr(), fflags_val.as_ptr(), 0);
 
             let strict_std_compliance_key = CString::new("strict").unwrap();
             let strict_std_compliance_val = CString::new("experimental").unwrap();
             av_dict_set(&mut dict_opts, strict_std_compliance_key.as_ptr(), strict_std_compliance_val.as_ptr(), 0);
 
-            // 缩小探测窗口 —— 尽快返回流信息
-            // 注：analyzeduration=0 在某些老版本会被当作“禁用分析”，若遇到打不开/识别差，可改成 50000（50ms）
-            let analyzeduration_key = CString::new("analyzeduration").unwrap();
-            let analyzeduration_val = CString::new("2000000").unwrap();
-            av_dict_set(&mut dict_opts, analyzeduration_key.as_ptr(), analyzeduration_val.as_ptr(), 0);
+            // 解码错误检测设置 - 遇到错误时跳过帧
+            let decode_error_detection_key = CString::new("decode_error_detection").unwrap();
+            let decode_error_detection_val = CString::new("skip_frame").unwrap();
+            av_dict_set(&mut dict_opts, decode_error_detection_key.as_ptr(), decode_error_detection_val.as_ptr(), 0);
 
-            let probesize_key = CString::new("probesize").unwrap();
-            let probesize_val = CString::new("10240").unwrap(); // 32 KiB: 32768，PS over RTP 更稳
-            av_dict_set(&mut dict_opts, probesize_key.as_ptr(), probesize_val.as_ptr(), 0);
+            // 根据视频参数设置编解码器相关选项
+            if let Some(codec_id) = &media_ext.video_params.codec_id {
+                let codec_key = CString::new("vcodec").unwrap();
+                let codec_id = CString::new(codec_id.as_str()).unwrap();
+                av_dict_set(&mut dict_opts, codec_key.as_ptr(), codec_id.as_ptr(), 0);
+            }
 
-            let max_delay_key = CString::new("max_delay").unwrap();
-            let max_delay_val = CString::new("0").unwrap();
-            av_dict_set(&mut dict_opts, max_delay_key.as_ptr(), max_delay_val.as_ptr(), 0);
+            // 设置分辨率（如果已知）
+            if let Some((width, height)) = media_ext.video_params.resolution {
+                let width_key = CString::new("video_size").unwrap();
+                let video_size_val = CString::new(format!("{}x{}", width, height)).unwrap();
+                av_dict_set(&mut dict_opts, width_key.as_ptr(), video_size_val.as_ptr(), 0);
+            }
 
-            //// --- 限制探测的参数 ---
-            // // 1. 限制探测的数据量大小 (单位：字节)
-            // fmt_ctx->probesize = 2 * 1024; // 例如，只探测 2KB 数据
-            // 
-            // // 2. 限制探测的时长 (单位：微秒)
-            // fmt_ctx->max_analyze_duration = 500000; // 例如，只分析最多0.5秒的数据
-            // 
-            // // 3. 设置标志位，避免昂贵的操作
-            // // 不查找帧率（对于一些格式，查找帧率需要解码很多帧）
-            // fmt_ctx->flags |= AVFMT_FLAG_NOFILLIN;
-            // // 不生成缺失的PTS/DTS
-            // fmt_ctx->flags |= AVFMT_FLAG_IGNIDX;
-            // // 如果可能，快速探测
-            // // 注意：这个标志并非所有格式都支持，但值得一试
-            // fmt_ctx->flags |= AVFMT_FLAG_FAST_SEEK;
-            //// 对于视频流，限制解码的帧数
-            // av_dict_set(&opts, "decode_error_detection", "skip_frame", 0);
-            // // 对于你的编码格式，可以尝试设置更具体的选项
-            // // av_dict_set_int(&opts, "probesize", fmt_ctx->probesize); // 通常不需要，上面设置了
-            //probesize：对于 ES 流，可以设置得相对较小。例如，一个 H.264 流的 SPS/PPS 通常就在最开始的几个包里，32KB 可能都绰绰有余。
-            // 
-            // max_analyze_duration：这个参数对 ES 流尤其重要。对于视频 ES 流，FFmpeg 可能会尝试解码直到遇到一个关键帧。如果文件开头没有关键帧，它可能会一直读下去。强烈建议设置一个绝对值（如 500000，即 0.5 秒）。
-            // 
-            // 选项字典 (opts)：使用 "decode_error_detection"="skip_frame" 可以让解码器在遇到错误时跳过而不是纠结，从而加快探测。
-            // 不需要探测时长
-            //用无缓冲标志
-            // ：设置
-            // AVFMT_FLAG_NOBUFFER标志可禁用FFmpeg内部缓冲机制，使数据直接从输入流
-            // 传递至解码器，减少中间环节的等待时间。该标志尤其适用于实时流场景，能有效降低因缓冲堆积导
-            // 致的阻塞概率
+            // 设置帧率（如果已知）
+            if let Some(fps) = media_ext.video_params.fps {
+                let fps_key = CString::new("framerate").unwrap();
+                let fr = CString::new(fps.to_string()).unwrap();
+                av_dict_set(&mut dict_opts, fps_key.as_ptr(), fr.as_ptr(), 0);
+            }
 
+            // 设置码率（如果已知）
+            if let Some(bitrate) = media_ext.video_params.bitrate {
+                let bitrate_key = CString::new("b:v").unwrap();
+                let br = CString::new(bitrate.to_string()).unwrap();
+                av_dict_set(&mut dict_opts, bitrate_key.as_ptr(), br.as_ptr(), 0);
+            }
 
-            // 3) input fmt
-            let ps = CString::new("mpeg").unwrap();
+            // 音频参数设置
+            if let Some(codec_id) = &media_ext.audio_params.codec_id {
+                let acodec_key = CString::new("acodec").unwrap();
+                let acodec = CString::new(codec_id.as_str()).unwrap();
+                av_dict_set(&mut dict_opts, acodec_key.as_ptr(), acodec.as_ptr(), 0);
+            }
+
+            if let Some(sample_rate) = &media_ext.audio_params.sample_rate {
+                let sample_rate_key = CString::new("sample_rate").unwrap();
+                let sr = CString::new(sample_rate.as_str()).unwrap();
+                av_dict_set(&mut dict_opts, sample_rate_key.as_ptr(), sr.as_ptr(), 0);
+            }
+
+            if let Some(codec_id) = &media_ext.audio_params.bitrate {
+                let acodec_key = CString::new("b:a").unwrap();
+                let acodec = CString::new(codec_id.as_str()).unwrap();
+                av_dict_set(&mut dict_opts, acodec_key.as_ptr(), acodec.as_ptr(), 0);
+            }
+            // RTP 相关设置
+            // if let Some(rtp_encrypt) = &media_ext.rtp_encrypt {
+            //     // 这里可以根据 RTP 加密配置设置相应的参数
+            //     info!("RTP encryption configured");
+            // }
+
+            // 设置 payload type
+            // let payload_type_key = CString::new("payload_type").unwrap();
+            // let pt = CString::new(media_ext.type_code.to_string()).unwrap();
+            // av_dict_set(&mut dict_opts, payload_type_key.as_ptr(), pt.as_ptr(), 0);
+
+            // 设置时钟频率
+            let clock_rate_key = CString::new("clock_rate").unwrap();
+            let cr = CString::new(media_ext.clock_rate.to_string()).unwrap();
+            av_dict_set(&mut dict_opts, clock_rate_key.as_ptr(), cr.as_ptr(), 0);
+
+            // 对于 GB28181 流编号
+            // if let Some(stream_number) = media_ext.stream_number {
+            //     let stream_num_key = CString::new("stream_number").unwrap();
+            //     let sn = CString::new(stream_number.to_string()).unwrap();
+            //     av_dict_set(&mut dict_opts, stream_num_key.as_ptr(), sn.as_ptr(), 0);
+            // }
+
+            // 4) input fmt - 根据媒体类型选择合适的格式
+            let format_name = match media_ext.type_name.as_str() {
+                "PS" => "mpeg",
+                "H264" => "h264",
+                "H265" => "hevc",
+                "AAC" => "aac",
+                "G711" => "pcm_alaw",
+                _ => "mpeg", // 默认使用 MPEG-PS
+            };
+
+            let ps = CString::new(format_name).unwrap();
             let mut input_fmt = av_find_input_format(ps.as_ptr());
             if input_fmt.is_null() {
-                warn!("MPEG-PS demuxer not found");
+                warn!("{} demuxer not found, trying default", format_name);
                 input_fmt = av_find_input_format(ptr::null());
             }
 
-            // 4) custom AVIO
+            // 5) custom AVIO
             let io_ctx_buffer = av_malloc(DEFAULT_IO_BUF_SIZE) as *mut u8;
             if io_ctx_buffer.is_null() {
                 avformat_free_context(fmt_ctx);
@@ -179,31 +218,28 @@ impl DemuxerContext {
             if io_ctx.is_null() {
                 av_free(io_ctx_buffer as *mut c_void);
                 avformat_free_context(fmt_ctx);
-                // 回收 opaque
                 drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
                 return Err(GlobalError::new_sys_error("Failed to allocate AVIO context", |msg| error!("{msg}")));
             }
             (*io_ctx).seekable = 0;
             (*fmt_ctx).pb = io_ctx;
 
-            // 5) open input
+            // 6) open input
             let input_url = ptr::null();
             let ret = avformat_open_input(&mut fmt_ctx, input_url, input_fmt, &mut dict_opts);
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
-                // 正确释放：会释放 buffer
                 avio_context_free(&mut io_ctx);
-                // 回收 opaque
                 drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
                 avformat_free_context(fmt_ctx);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to open input: {}", msg)));
             }
 
-            // 6) find stream info
+            // 7) find stream info
             let ret = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
-                avformat_close_input(&mut fmt_ctx); // 会内部关闭 pb? 保险起见交由 AvioResource::drop 处理其余
+                avformat_close_input(&mut fmt_ctx);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to find stream info: {}", msg)));
             }
 
@@ -261,7 +297,6 @@ mod tests {
     use std::ffi::CStr;
     use std::ptr;
     use rsmpeg::ffi::{av_demuxer_iterate, av_opt_next, AVOption};
-    use rsmpeg::ffi;
 
     #[test]
 

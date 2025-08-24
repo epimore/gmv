@@ -183,7 +183,7 @@ pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(cross
             match stream_trace.media_ext.as_ref() {
                 None => { error!("ssrc = {},尚未协商rtp sdp信息", ssrc); }
                 Some(media_ext) => {
-                    match media_ext.tp_code == payload_type {
+                    match media_ext.type_code == payload_type {
                         true => {
                             if let Ok(converter_event_rx) = stream_trace.mpsc_bus.sub_type_channel::<ContextEvent>().hand_log(|msg| error!("{msg}")) {
                                 let stream_config = StreamConfig {
@@ -198,7 +198,7 @@ pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(cross
                             return stream_register(ssrc, bill);
                         }
                         false => {
-                            warn!("ssrc = {},payload_type不匹配:sdp_payload_type = {},stream_payload_type = {}", ssrc,media_ext.tp_code,payload_type);
+                            warn!("ssrc = {},payload_type不匹配:sdp_payload_type = {},stream_payload_type = {}", ssrc,media_ext.type_code,payload_type);
                         }
                     }
                 }
