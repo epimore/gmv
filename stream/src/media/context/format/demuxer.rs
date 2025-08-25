@@ -8,8 +8,6 @@ use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
 use std::sync::Arc;
 
-static CUSTOM_IO: Lazy<CString> = Lazy::new(|| CString::new("custom_io").unwrap());
-
 /// FFmpeg资源自动释放结构
 pub struct AvioResource {
     pub fmt_ctx: *mut AVFormatContext,
@@ -67,7 +65,7 @@ unsafe fn map_video_codec_id(s: &str) -> AVCodecID {
         "h264" => AVCodecID_AV_CODEC_ID_H264,
         "h265" | "hevc" => AVCodecID_AV_CODEC_ID_HEVC,
         "mpeg4" => AVCodecID_AV_CODEC_ID_MPEG4,
-        // "svac" => AVCodecID_AV_CODEC_ID_SVAC,
+        // "svac" => AVCodecID_AV_CODEC_ID_SVAC,//avcodec_find_decoder_by_name("svac")
         "3gp" => AVCodecID_AV_CODEC_ID_H263, // 视你的来源定义
         _ => AVCodecID_AV_CODEC_ID_NONE,
     }
@@ -81,7 +79,7 @@ unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
         "g729" => AVCodecID_AV_CODEC_ID_G729,
         "g722" => AVCodecID_AV_CODEC_ID_ADPCM_G722,
         "aac"  => AVCodecID_AV_CODEC_ID_AAC,
-        // "svac" => AVCodecID_AV_CODEC_ID_SVAC,
+        // "svac" => AVCodecID_AV_CODEC_ID_SVAC,//avcodec_find_decoder_by_name("svac")
         _ => AVCodecID_AV_CODEC_ID_NONE,
     }
 }
@@ -148,9 +146,11 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
     // 5) 采样率（仅音频）
     if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
         if let Some(ref sr_str) = media_ext.audio_params.sample_rate {
-            if let Ok(sr_khz) = sr_str.parse::<i32>() {
+            if let Ok(mut sr) = sr_str.parse::<i32>() {
+                // 智能判断：< 1000 认为是 kHz，>= 1000 认为是 Hz
+                if sr > 0 && sr < 1000 { sr *= 1000; }
                 if !prefer_missing_only || (*par).sample_rate <= 0 {
-                    (*par).sample_rate = sr_khz * 1000;
+                    (*par).sample_rate = sr;
                 }
             }
         }
@@ -182,7 +182,6 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
     }
 }
 
-// --- 你的 DemuxerContext 实现（只贴 start_demuxer 完整体） ---
 impl DemuxerContext {
     pub fn start_demuxer(_ssrc: u32, media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         unsafe {
@@ -197,34 +196,42 @@ impl DemuxerContext {
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
 
             // fflags
+            let fflags = CString::new("fflags").unwrap();
+            let fflags_val = CString::new("nobuffer+discardcorrupt+genpts+ignidx").unwrap();
             av_dict_set(
                 &mut dict_opts,
-                CString::new("fflags").unwrap().as_ptr(),
-                CString::new("nobuffer+discardcorrupt+genpts+ignidx").unwrap().as_ptr(),
+                fflags.as_ptr(),
+                fflags_val.as_ptr(),
                 0,
             );
 
             // strict
+            let strict = CString::new("strict").unwrap();
+            let strict_val = CString::new("experimental").unwrap();
             av_dict_set(
                 &mut dict_opts,
-                CString::new("strict").unwrap().as_ptr(),
-                CString::new("experimental").unwrap().as_ptr(),
+                strict.as_ptr(),
+                strict_val.as_ptr(),
                 0,
             );
 
             // analyzeduration / probesize：给 demuxer 提示，但不再指望靠它填参数
+            let ans = CString::new("analyzeduration").unwrap();
+            let ans_val = CString::new("1000000").unwrap();// 1s
             av_dict_set(
                 &mut dict_opts,
-                CString::new("analyzeduration").unwrap().as_ptr(),
-                CString::new("2000000").unwrap().as_ptr(), // 2s
+                ans.as_ptr(),
+                ans_val.as_ptr(), 
                 0,
             );
-            av_dict_set(
-                &mut dict_opts,
-                CString::new("probesize").unwrap().as_ptr(),
-                CString::new("32768").unwrap().as_ptr(), // 32 KiB
-                0,
-            );
+            // let probesize = CString::new("probesize").unwrap();
+            // let probesize_val = CString::new("32768").unwrap(); // 32 KiB
+            // av_dict_set(
+            //     &mut dict_opts,
+            //     probesize.as_ptr(),
+            //     probesize_val.as_ptr(), 
+            //     0,
+            // );
 
             // 3) input fmt 选择
             let format_name = match media_ext.type_name.as_str() {
@@ -303,7 +310,7 @@ impl DemuxerContext {
 
             while ret_fsi < 0 && retry_count < max_retries {
                 warn!("avformat_find_stream_info failed (attempt {}), retrying...", retry_count + 1);
-                std::thread::sleep(std::time::Duration::from_millis(400));
+                std::thread::sleep(std::time::Duration::from_millis(500));
                 ret_fsi = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
                 retry_count += 1;
             }
@@ -311,9 +318,6 @@ impl DemuxerContext {
             if ret_fsi < 0 {
                 warn!("Failed to find stream info after {} attempts, will fallback to MediaExt.", max_retries);
             }
-
-            let fmt_name = std::ffi::CStr::from_ptr((*(*fmt_ctx).iformat).name).to_string_lossy();
-            info!("Input format: {}", fmt_name);
 
             let nb_streams = (*fmt_ctx).nb_streams as usize;
 
@@ -330,7 +334,7 @@ impl DemuxerContext {
                     fill_stream_from_media_ext(st, media_ext, /*prefer_missing_only*/ true);
                 }
 
-                // 额外健壮性：若仍无 codec_id，且我们知道是视频（PS/90000 + video_params），再兜底一次
+                // 额外健壮性：若仍无 codec_id，且知道是视频（PS/90000 + video_params），再兜底一次
                 if (*(*st).codecpar).codec_id == AVCodecID_AV_CODEC_ID_NONE {
                     if media_ext.video_params.codec_id.is_some() {
                         fill_stream_from_media_ext(st, media_ext, false);
@@ -338,7 +342,7 @@ impl DemuxerContext {
                 }
             }
 
-            // 8) 拷贝出 codecpar_list / stream_mapping（与你原逻辑保持一致）
+            // 8) 拷贝出 codecpar_list / stream_mapping
             let nb_streams = (*fmt_ctx).nb_streams as usize;
             let mut codecpar_list = Vec::with_capacity(nb_streams);
             let mut stream_mapping = Vec::with_capacity(nb_streams);
