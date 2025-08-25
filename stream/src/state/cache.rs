@@ -272,7 +272,6 @@ pub fn get_event_tx() -> mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)> {
 //更新用户数据:in_out:true-插入,false-移除
 //所有输出皆通过此计算是否idle：如无用户，如gb28181转发，则stream_id/user_token = ssrc_{ssrc}
 pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String, in_out: bool, remote_addr: SocketAddr) {
-    error!("stream_id = {},play_type = {:?},user_token = {},in_out = {},remote_addr = {}", stream_id, play_type, &user_token, in_out, remote_addr);
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     if let Some(InnerTrace { user_map, ssrc }) = state.inner.get_mut(stream_id) {

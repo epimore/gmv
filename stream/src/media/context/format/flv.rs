@@ -216,7 +216,7 @@ impl FlvContext {
                     drop(Box::from_raw(out_buf_ptr));
                     return Err(GlobalError::new_sys_error("Failed to create stream", |msg| warn!("{msg}")));
                 }
-                
+
                 let ret = avcodec_parameters_copy((*out_st).codecpar, codecpar);
                 if ret < 0 {
                     avio_context_free(&mut (avio_ctx.clone()));
@@ -225,15 +225,28 @@ impl FlvContext {
                     return Err(GlobalError::new_sys_error(&format!("Codecpar copy failed: {}", ret), |msg| warn!("{msg}")));
                 }
 
-                // 对齐时基（关键）
-                (*out_st).time_base = (*in_st).time_base;
+                // 根据流类型设置FLV适当的时间基
+                let out_time_base = match (*(*out_st).codecpar).codec_type {
+                    AVMediaType_AVMEDIA_TYPE_VIDEO => {
+                        // FLV视频时间基：1/1000 (毫秒)
+                        AVRational { num: 1, den: 1000 }
+                    },
+                    AVMediaType_AVMEDIA_TYPE_AUDIO => {
+                        // FLV音频时间基：1/采样率
+                        let sample_rate = (*(*out_st).codecpar).sample_rate.max(1);
+                        AVRational { num: 1, den: sample_rate }
+                    },
+                    _ => (*in_st).time_base // 其他流保持原样
+                };
+
+                (*out_st).time_base = out_time_base;
 
                 if (*(*out_st).codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO && video_si < 0 {
                     video_si = i as i32;
                 }
 
                 in_tbs.push((*in_st).time_base);
-                out_tbs.push((*out_st).time_base);
+                out_tbs.push(out_time_base); // 使用设置好的输出时间基
                 (*(*out_st).codecpar).codec_tag = 0;
             }
 

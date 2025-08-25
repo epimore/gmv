@@ -67,9 +67,7 @@ impl RtpPacketBuffer {
             *item = Some(pkt);
             self.queue_count += 1;
 
-            println!("sn:{}", seq_num);
             if self.queue_count == DEFAULT_QUEUE_WINDOW {
-                println!("first_read_rtp_sn:{}", self.first_read_rtp_sn);
                 break;
             }
         }
