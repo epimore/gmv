@@ -145,7 +145,9 @@ pub fn sub_bus_mpsc_channel<T>(ssrc: &u32) -> GlobalResult<bus::mpsc::TypedRecei
 where
     T: Send + Sync + 'static,
 {
+    error!("locked sub_bus_mpsc_channel ssrc = {}",ssrc);
     let state = SESSION.shared.state.read();
+    error!("unlocked sub_bus_mpsc_channel ssrc = {}",ssrc);
     match state.sessions.get(ssrc) {
         None => {
             Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
@@ -442,7 +444,7 @@ impl Shared {
                         if let Some(cm) = CloseMuxer::from_muxer_type(&mux_tp) {
                             let _ = mpsc_bus.try_publish(MuxerEvent::Close(cm)).hand_log(|msg| error!("{msg}"));
                         }
-                        if let Some(InnerTrace{user_map, ..}) = state.inner.get(stream_id) {
+                        if let Some(InnerTrace { user_map, .. }) = state.inner.get(stream_id) {
                             if user_map.len() > 0 {
                                 continue;
                             }

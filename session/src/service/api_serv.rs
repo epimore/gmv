@@ -235,38 +235,37 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
     while let Some((_, node_name)) = node_sets.pop_first() {
         let stream_node = conf.node_map.get(&node_name).unwrap();
         let p = HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port).hand_log(|msg| error!("{msg}"))?;
-        println!("{},{}", stream_node.local_ip.to_string(), stream_node.local_port);
-        println!("{:?}", serde_json::to_string(&msc).unwrap());
         //next 将sdp支持从session固定的，转为stream支持的
-        if p.stream_init(&msc).await.hand_log(|msg| error!("{msg}"))?.code == 200
-        {
-            let (res, media_ext, from_tag, to_tag) = match am {
-                AccessMode::Live => {
-                    CmdStream::play_live_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc).await?
-                }
-                AccessMode::Back => {
-                    CmdStream::play_back_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et).await?
-                }
-                AccessMode::Down => {
-                    CmdStream::download_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et, 1).await?
-                }
-            };
+        if let Ok(res) = p.stream_init(&msc).await.hand_log(|msg| error!("{msg}")) {
+            if res.code == 200 {
+                let (res, media_ext, from_tag, to_tag) = match am {
+                    AccessMode::Live => {
+                        CmdStream::play_live_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc).await?
+                    }
+                    AccessMode::Back => {
+                        CmdStream::play_back_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et).await?
+                    }
+                    AccessMode::Down => {
+                        CmdStream::download_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et, 1).await?
+                    }
+                };
 
-            //回调给gmv-stream 使其确认媒体类型
-            let map = MediaMap {
-                ssrc: u32ssrc,
-                ext: media_ext,
-            };
-            p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
-            let (call_id, seq) = CmdStream::invite_ack(device_id, &res)?;
-            return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                state::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, am, from_tag, to_tag);
-                state::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);
-                Ok((stream_id, node_name))
-            } else {
-                CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await?;
-                Err(GlobalError::new_biz_error(1100, "未接收到监控推流", |msg| error!("{msg}")))
-            };
+                //回调给gmv-stream 使其确认媒体类型
+                let map = MediaMap {
+                    ssrc: u32ssrc,
+                    ext: media_ext,
+                };
+                p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
+                let (call_id, seq) = CmdStream::invite_ack(device_id, &res)?;
+                return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
+                    state::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, am, from_tag, to_tag);
+                    state::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);
+                    Ok((stream_id, node_name))
+                } else {
+                    CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await?;
+                    Err(GlobalError::new_biz_error(1100, "未接收到监控推流", |msg| error!("{msg}")))
+                };
+            }
         }
     }
     Err(GlobalError::new_biz_error(1100, "无可用流媒体服务", |msg| error!("{msg}")))

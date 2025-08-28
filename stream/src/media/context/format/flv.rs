@@ -4,7 +4,7 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
-use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free, avformat_alloc_output_context2, av_dump_format, avcodec_parameters_from_context};
+use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free, avformat_alloc_output_context2, av_dump_format, avcodec_parameters_from_context, av_packet_rescale_ts};
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
@@ -93,29 +93,29 @@ impl FlvContext {
                 return;
             }
 
+            // 关键帧起播：先等视频关键帧
+            if !self.started  {  
+                if self.video_stream_index >= 0 && pkt.stream_index == self.video_stream_index  {
+                    let is_key = (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
+                    if !is_key {
+                        av_packet_unref(&mut cloned);
+                        return;
+                    }
+                    self.started = true;
+                }else {
+                    // 未开始时，非视频流先不发，避免卡在等关键帧
+                    av_packet_unref(&mut cloned);
+                    return;
+                }
+            }
+            
             // 时间戳重采样
             rsmpeg::ffi::av_packet_rescale_ts(
                 &mut cloned,
                 self.in_time_bases[si],
                 self.out_time_bases[si],
             );
-
-            // 关键帧起播：先等视频关键帧
-            if self.video_stream_index >= 0 && pkt.stream_index == self.video_stream_index {
-                let is_key = (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
-                if !self.started {
-                    if !is_key {
-                        av_packet_unref(&mut cloned);
-                        return;
-                    }
-                    self.started = true;
-                }
-            } else if !self.started {
-                // 未开始时，非视频流先不发，避免卡在等关键帧
-                av_packet_unref(&mut cloned);
-                return;
-            }
-
+            
             let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
             av_packet_unref(&mut cloned);
             if ret < 0 {
@@ -257,7 +257,7 @@ impl FlvContext {
                 return Err(GlobalError::new_sys_error("No streams added to muxer", |msg| warn!("{msg}")));
             }
 
-            av_dump_format(fmt_ctx, 0, FLV.as_ptr(), 1);
+            // av_dump_format(fmt_ctx, 0, FLV.as_ptr(), 1);
 
             let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
             if ret < 0 {
