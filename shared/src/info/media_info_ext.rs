@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{error, warn};
+use base::log::{error, info, warn};
 use base::serde::{Deserialize, Serialize};
 use crate::impl_check_empty;
 use crate::info::format::MuxerType;
@@ -102,11 +102,31 @@ pub struct RtpEncrypt {}
 pub struct MediaExt {
     pub rtp_encrypt: Option<RtpEncrypt>,
     pub type_code: u8, //rtp payload type
-    pub type_name: String,//rtp payload name
+    pub type_name: String, //rtp payload name
     pub clock_rate: i32, //时钟频率
     pub stream_number: Option<u8>, //gb28181自定义属性，流编号:0-主码流（高清流）1-子码率（标清流）
     pub video_params: VideoParams,
     pub audio_params: AudioParams,
+}impl MediaExt{
+    pub fn codec_from_psm(&self,codec_id:i32){
+        if self.type_code == 96 {
+            let codec = match codec_id {
+                0x10 => { "mpeg4" }
+                0x1B => {"h264"}
+                0x80 => {"v.svac"}
+                0x24 => {"h265"}
+                0x90 => {"g711a"}
+                0x91 => {"g711u"}
+                0x92 => {"g7221"}
+                0x93 => {"g7231"}
+                0x99 => {"g729"}
+                0x9B => {"a.svac"}
+                0x0F => {"aac"}
+                _ => {""}
+            };
+            info!("codec: {}", codec);
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -174,14 +194,27 @@ impl VideoParams {
         }
     }
 }
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub struct AudioParams {
     pub codec_id: Option<String>,   // AVCodecID (ffi::AVCodecID)
     pub bitrate: Option<String>, //码率 kbps
     pub sample_rate: Option<String>, //采样率 kHz
+    pub channel_count: i32,
+    pub clock_rare: i32,
 }
 impl_check_empty!(AudioParams,[codec_id,bitrate,sample_rate]);
+impl Default for AudioParams {
+    fn default() -> Self {
+        Self {
+            codec_id: None,
+            bitrate: None,
+            sample_rate: None,
+            channel_count: 1,
+            clock_rare: 8000,
+        }
+    }
+}
 impl AudioParams {
     pub fn map_audio_codec(&mut self, item: &str) {
         match item {

@@ -24,10 +24,10 @@ pub fn build_worker_run(rx: Receiver<u32>) {
             .hand_log(|msg| error!("{}",msg))
             .unwrap()
             .block_on({
-                unsafe {
+                // unsafe {
                     // avformat_network_init();
                     // av_log_set_level(AV_LOG_DEBUG as c_int);
-                };
+                // };
 
                 handle_run(rx)
             });
@@ -36,6 +36,7 @@ pub fn build_worker_run(rx: Receiver<u32>) {
 //todo! 转发媒体流，不进入MediaContext
 async fn handle_run(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
+        error!("handle_run ssrc: {}",ssrc);
         if let Ok(mut sc_rx) = cache::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
             //此处可以不使用超时等待，统一流输入超时处理即可；输入超时-清理该ssrc所有信息，包含此处的发送句柄，完成资源释放
             if let Ok(stream_config) = sc_rx.recv().await.hand_log(|msg| error!("{}",msg)) {

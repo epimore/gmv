@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::__private::kind::AdhocKind;
 use regex::Regex;
 use rsip::prelude::{HeadersExt, UntypedHeader};
-use rsip::{Response, SipMessage};
+use rsip::{AbstractInput, Response, SipMessage};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::tokio::sync::mpsc;
@@ -213,14 +213,15 @@ impl CmdStream {
         if let Some(f_field) = sdp.lines().find_map(|line| line.trim().strip_prefix("f=")) {
             let parts: Vec<&str> = f_field.split('/').map(|item| item.trim()).collect();
             if parts.len() == 9 && parts[0] == "v" && parts[5].ends_with("a") {
-                me.video_params.map_video_codec(parts[1]);
-                me.video_params.map_resolution(parts[2]);
-                me.video_params.map_fps(parts[3]);
-                me.video_params.map_bitrate_type(parts[4]);
-                me.video_params.map_bitrate(parts[5].trim_end_matches("a"));
-                me.audio_params.map_audio_codec(parts[6]);
-                me.audio_params.map_bitrate(parts[7]);
-                me.audio_params.map_sample_rate(parts[8]);
+                if !parts[1].is_empty() { me.video_params.map_video_codec(parts[1]); }
+                if !parts[2].is_empty() { me.video_params.map_resolution(parts[2]); }
+                if !parts[3].is_empty() { me.video_params.map_fps(parts[3]); }
+                if !parts[4].is_empty() { me.video_params.map_bitrate_type(parts[4]); }
+                let p5 = parts[5].strip_suffix("a").unwrap().trim();
+                if !p5.is_empty() { me.video_params.map_bitrate(p5); }
+                if !parts[6].is_empty() { me.audio_params.map_audio_codec(parts[6]); }
+                if !parts[7].is_empty() { me.audio_params.map_bitrate(parts[7]); }
+                if !parts[8].is_empty() { me.audio_params.map_sample_rate(parts[8]); }
             }
         }
     }

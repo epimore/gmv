@@ -19,7 +19,7 @@ async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<M
     info!("stream_init: {:?}",&config);
     let json = match cache::insert_media(config) {
         Ok(ssrc) => {
-            match tx.send(ssrc).await.hand_log(|msg| error!("{msg}")) {
+            match tx.try_send(ssrc).hand_log(|msg| error!("{msg}")) {
                 Ok(_) => { Resp::<()>::build_success() }
                 Err(err) => {
                     Resp::<()>::build_failed_by_msg(err.to_string())
@@ -30,6 +30,7 @@ async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<M
             Resp::<()>::build_failed_by_msg(err.to_string())
         }
     };
+    info!("stream_init response: {:?}",&json);
     Json(json)
 }
 
@@ -43,12 +44,15 @@ async fn stream_map(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
             Resp::<()>::build_failed_by_msg(err.to_string())
         }
     };
+    info!("stream_map response: {:?}",&json);
     Json(json)
 }
 
 async fn stream_online(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
     info!("stream_online: {:?}",&stream_key);
-    Json(Resp::<bool>::build_success_data(cache::is_exist(stream_key)))
+    let json = Json(Resp::<bool>::build_success_data(cache::is_exist(stream_key)));
+    info!("stream_online response: {:?}",&json);
+    json
 }
 
 async fn open_output_stream(Extension(tx): Extension<Sender<u32>>, Json(ssrc): Json<u32>) -> Resp<()> {
