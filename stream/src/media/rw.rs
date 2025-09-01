@@ -7,7 +7,10 @@ use std::ffi::{c_int, c_void};
 pub unsafe extern "C" fn read_rtp_payload(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int {
     let rtp_buff = &mut *(opaque as *mut rtp::RtpPacketBuffer);
     match rtp_buff.consume_packet(buf_size as usize, buf) {
-        Ok(copy_len) => copy_len as c_int,
+        Ok(copy_len) => {
+            // info!("consume ps buffer size: {} ,copy size: {}",buf_size,copy_len);
+            copy_len as c_int
+        }
         Err(err) => {
             info!("rtp input stream close: {:?}", err);
             AVERROR_EOF

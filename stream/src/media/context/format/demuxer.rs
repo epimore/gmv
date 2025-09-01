@@ -2,7 +2,7 @@ use crate::media::{rtp, rw, show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
 use base::once_cell::sync::Lazy;
-use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_UNKNOWN, AVMediaType_AVMEDIA_TYPE_VIDEO, AVRational, AVStream, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
+use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_alloc_context3, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodec, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_UNKNOWN, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVStream, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
 use shared::info::media_info_ext::MediaExt;
 use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
@@ -182,6 +182,8 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
     }
 }
 
+fn cstr(s: &str) -> CString { CString::new(s).unwrap() }
+
 impl DemuxerContext {
     pub fn start_demuxer(_ssrc: u32, media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         unsafe {
@@ -197,8 +199,8 @@ impl DemuxerContext {
 
             // fflags
             let fflags = CString::new("fflags").unwrap();
-            // let fflags_val = CString::new("discardcorrupt+genpts+igndts").unwrap();
-            let fflags_val = CString::new("nobuffer+discardcorrupt+genpts+ignidx").unwrap();
+            let fflags_val = CString::new("discardcorrupt+genpts+igndts").unwrap();
+            // let fflags_val = CString::new("nobuffer+discardcorrupt+genpts+ignidx").unwrap();
             av_dict_set(
                 &mut dict_opts,
                 fflags.as_ptr(),
@@ -225,7 +227,7 @@ impl DemuxerContext {
             // );
 
             // analyzeduration / probesize：给 demuxer 提示，但不再指望靠它填参数
-            let ans = CString::new("analyzeduration").unwrap();
+            let ans = CString::new("max_analyze_duration").unwrap();
             let ans_val = CString::new("1000000").unwrap(); // 1s
             av_dict_set(
                 &mut dict_opts,
@@ -233,16 +235,16 @@ impl DemuxerContext {
                 ans_val.as_ptr(),
                 0,
             );
-            // let probesize = CString::new("probesize").unwrap();
-            // let probesize_val = CString::new("102400").unwrap(); // 100 KiB
-            // av_dict_set(
-            //     &mut dict_opts,
-            //     probesize.as_ptr(),
-            //     probesize_val.as_ptr(),
-            //     0,
-            // );
-            let max_probe_packets = CString::new("max_probe_packets ").unwrap();
-            let max_probe_packets_val = CString::new("32").unwrap(); // 100 KiB
+            let probesize = CString::new("probesize").unwrap();
+            let probesize_val = CString::new("102400").unwrap(); // 100 KiB
+            av_dict_set(
+                &mut dict_opts,
+                probesize.as_ptr(),
+                probesize_val.as_ptr(),
+                0,
+            );
+            let max_probe_packets = CString::new("max_probe_packets").unwrap();
+            let max_probe_packets_val = CString::new("64").unwrap();
             av_dict_set(
                 &mut dict_opts,
                 max_probe_packets.as_ptr(),
@@ -250,7 +252,7 @@ impl DemuxerContext {
                 0,
             );
 
-            let codec_whitelist = CString::new("codec_whitelist ").unwrap();
+            let codec_whitelist = CString::new("codec_whitelist").unwrap();
             let codec_whitelist_val = CString::new("h264").unwrap(); // 100 KiB
             av_dict_set(
                 &mut dict_opts,
@@ -275,6 +277,23 @@ impl DemuxerContext {
                 &mut dict_opts,
                 max_delay.as_ptr(),
                 max_delay_val.as_ptr(),
+                0,
+            );
+            let fpsprobesize = CString::new("fpsprobesize").unwrap();
+            let fpsprobesize_val = CString::new("0").unwrap(); // 100ms
+            av_dict_set(
+                &mut dict_opts,
+                fpsprobesize.as_ptr(),
+                fpsprobesize_val.as_ptr(),
+                0,
+            );
+
+            let vcodec = CString::new("vcodec").unwrap();
+            let vcodec_val = CString::new("h264").unwrap(); // 100ms
+            av_dict_set(
+                &mut dict_opts,
+                vcodec.as_ptr(),
+                vcodec_val.as_ptr(),
                 0,
             );
             // 3) input fmt 选择
@@ -335,10 +354,12 @@ impl DemuxerContext {
             }
             (*io_ctx).seekable = 0;
             (*fmt_ctx).pb = io_ctx;
+            (*fmt_ctx).iformat = input_fmt;
 
             // 5) open input
             let input_url = ptr::null();
-            let ret_open = avformat_open_input(&mut fmt_ctx, input_url, input_fmt, &mut dict_opts);
+            let ifmt = ptr::null();
+            let ret_open = avformat_open_input(&mut fmt_ctx, input_url, ifmt, &mut dict_opts);
             if ret_open < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret_open);
                 avio_context_free(&mut io_ctx);
@@ -346,7 +367,63 @@ impl DemuxerContext {
                 avformat_free_context(fmt_ctx);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to open input: {}", msg)));
             }
-            
+            // 指定编码类型
+            // for i in 0..(*fmt_ctx).nb_streams as usize {
+            //     AVStream *stream = fmt_ctx->streams[i];
+            //
+            //     if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            //         // 指定视频编码为H264
+            //         stream->codecpar->codec_id = AV_CODEC_ID_H264;
+            //     } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            //         // 指定音频编码为AAC
+            //         stream->codecpar->codec_id = AV_CODEC_ID_AAC;
+            //     }
+            // }
+
+            // 1. 查找解码器
+            let codec: *const AVCodec = unsafe { avcodec_find_decoder(AVCodecID_AV_CODEC_ID_H264) };
+            if codec.is_null() {
+                return Err(GlobalError::new_sys_error("Codec not found", |msg| error!("{msg}")));
+            }
+
+            // 2. 创建编解码器上下文
+            // let codec_ctx = unsafe { avcodec_alloc_context3(codec) };
+            // if codec_ctx.is_null() {
+            //     return Err("Could not allocate video codec context".into());
+            // }
+            // 注意：记得在不需要时释放资源
+            // unsafe { avcodec_free_context(&mut codec_ctx); }
+
+            // 3. 设置编解码器参数（可选）
+            // unsafe {
+            //     (*codec_ctx).bit_rate = 512000;
+            //     (*codec_ctx).width = 1920;
+            //     (*codec_ctx).height = 1080;
+            //     (*codec_ctx).time_base = AVRational { num: 1, den: media_ext.clock_rate };
+            //     (*codec_ctx).framerate = AVRational { num: media_ext.video_params.fps.unwrap_or(25), den: 1 };
+            //     // (*codec_ctx).gop_size = 10;
+            //     (*codec_ctx).max_b_frames = 2;
+            //     (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
+            // }
+
+            warn!("nb_streams = {}",(*fmt_ctx).nb_streams);
+            (*fmt_ctx).bit_rate = 512000;
+            // (*fmt_ctx).video_codec_id = 0x1B;
+            (*fmt_ctx).video_codec_id = AVCodecID_AV_CODEC_ID_H264;
+            (*fmt_ctx).video_codec = codec;
+            // for i in 0..(*fmt_ctx).nb_streams as usize {
+            //    
+            // 
+            //     let st = *(*fmt_ctx).streams.add(i);
+            //     let par = (*st).codecpar;
+            //     warn!(
+            //         "first ->>>>>>>>>  Stream {} validation: codec_id={}, type={}",
+            //         i,
+            //         (*par).codec_id,
+            //         (*par).codec_type
+            //     );
+            // }
+
 
             // 6) find stream info（正常 probe）
             warn!("start avformat_find_stream_info");
@@ -452,9 +529,9 @@ impl DemuxerContext {
 
 #[cfg(test)]
 mod tests {
+    use rsmpeg::ffi::{av_demuxer_iterate, av_opt_next, AVOption};
     use std::ffi::CStr;
     use std::ptr;
-    use rsmpeg::ffi::{av_demuxer_iterate, av_opt_next, AVOption};
 
     #[test]
 

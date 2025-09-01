@@ -3,6 +3,7 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info};
 use crossbeam_channel::Receiver;
 use std::ptr;
+use crate::general::util;
 use crate::media::DEFAULT_IO_BUF_SIZE;
 
 pub struct RtpPacket {
@@ -87,6 +88,9 @@ impl RtpPacketBuffer {
             unsafe {
                 ptr::copy_nonoverlapping(data.as_ptr(), buf, copy_len);
             }
+
+            util::dump("ps", &data, false)?;
+
             self.remaining = data.slice(copy_len..);
             return Ok(copy_len);
         }
@@ -106,7 +110,10 @@ impl RtpPacketBuffer {
 
                 // 动态计算剩余空间，确保不溢出
                 let remaining_space = max_consume_len - size;
-                if pkt.payload.len() > remaining_space {
+                if pkt.payload.len() >= remaining_space {
+                    
+                    util::dump("ps", &pkt.payload[..remaining_space], false)?;
+
                     // 复制部分数据并保存剩余到 remaining
                     unsafe {
                         ptr::copy_nonoverlapping(
@@ -117,8 +124,9 @@ impl RtpPacketBuffer {
                     }
                     self.remaining = pkt.payload.split_off(remaining_space);
                     size += remaining_space;
-                    return Ok(size); // 空间用尽，返回当前长度
+                    // return Ok(size); // 空间用尽，返回当前长度
                 } else {
+                    util::dump("ps", &pkt.payload, false)?;
                     // 完全复制 payload
                     unsafe {
                         ptr::copy_nonoverlapping(
