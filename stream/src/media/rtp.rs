@@ -89,7 +89,7 @@ impl RtpPacketBuffer {
                 ptr::copy_nonoverlapping(data.as_ptr(), buf, copy_len);
             }
 
-            util::dump("ps", &data, false)?;
+            // util::dump("ps", &data, false)?;
 
             self.remaining = data.slice(copy_len..);
             return Ok(copy_len);
@@ -108,48 +108,38 @@ impl RtpPacketBuffer {
                 self.queue_count -= 1;
                 self.first_read_rtp_sn = pkt.seq + 1;
 
-                // 动态计算剩余空间，确保不溢出
-                let remaining_space = max_consume_len - size;
-                if pkt.payload.len() >= remaining_space {
-                    
-                    util::dump("ps", &pkt.payload[..remaining_space], false)?;
-
-                    // 复制部分数据并保存剩余到 remaining
+                if pkt.payload.len() <= max_consume_len {
                     unsafe {
                         ptr::copy_nonoverlapping(
                             pkt.payload.as_ptr(),
-                            buf.add(size),
-                            remaining_space,
-                        );
-                    }
-                    self.remaining = pkt.payload.split_off(remaining_space);
-                    size += remaining_space;
-                    // return Ok(size); // 空间用尽，返回当前长度
-                } else {
-                    util::dump("ps", &pkt.payload, false)?;
-                    // 完全复制 payload
-                    unsafe {
-                        ptr::copy_nonoverlapping(
-                            pkt.payload.as_ptr(),
-                            buf.add(size),
+                            buf,
                             pkt.payload.len(),
                         );
                     }
-                    size += pkt.payload.len();
-                }
-                if size == max_consume_len || self.queue_count == 0 {
-                    //一个读写周期内，丢包大于缓冲区一半 && 缓冲区未满
-                    if i > self.queue_window + self.queue_window / 4 {
-                        if self.queue_window < MAX_QUEUE_WINDOW {
-                            self.queue_window += 1;
-                        }
-                    } else if i == self.queue_window { //一个读写周期内，未丢包 && 大于最小缓冲区
-                        if self.queue_window > MIN_QUEUE_WINDOW {
-                            self.queue_window -= 1;
-                        }
+                    size = pkt.payload.len();
+                } else {
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            pkt.payload.as_ptr(),
+                            buf,
+                            max_consume_len,
+                        );
                     }
-                    return Ok(size);
+                    self.remaining = pkt.payload.split_off(max_consume_len);
+                    size = max_consume_len;
                 }
+
+                //一个读写周期内，丢包大于缓冲区 && 缓冲区未满
+                if i > self.queue_window {
+                    if self.queue_window < MAX_QUEUE_WINDOW {
+                        self.queue_window += 1;
+                    }
+                } else if i == 0 { //一个读写周期内，未丢包 && 大于最小缓冲区
+                    if self.queue_window > MIN_QUEUE_WINDOW {
+                        self.queue_window -= 1;
+                    }
+                }
+                return Ok(size);
             }
         }
         Ok(size)

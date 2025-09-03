@@ -24,10 +24,10 @@ pub fn build_worker_run(rx: Receiver<u32>) {
             .hand_log(|msg| error!("{}",msg))
             .unwrap()
             .block_on({
-                // unsafe {
+                unsafe {
                     // avformat_network_init();
                     // av_log_set_level(AV_LOG_DEBUG as c_int);
-                // };
+                };
 
                 handle_run(rx)
             });
