@@ -197,105 +197,50 @@ impl DemuxerContext {
             // 2) 设置 AVDictionary（注意：不要用 vcodec/video_size 这种仅 raw 有效的参数）
             let mut dict_opts: *mut AVDictionary = ptr::null_mut();
 
-            // fflags
-            let fflags = CString::new("fflags").unwrap();
-            let fflags_val = CString::new("discardcorrupt+genpts+igndts").unwrap();
-            // let fflags_val = CString::new("nobuffer+discardcorrupt+genpts+ignidx").unwrap();
             av_dict_set(
                 &mut dict_opts,
-                fflags.as_ptr(),
-                fflags_val.as_ptr(),
-                0,
-            );
-            // 设置 allowed_media_types 参数
-            // let allowed_media_types = CString::new("allowed_media_types").unwrap();
-            // let allowed_values = CString::new("h264").unwrap();
-            // av_dict_set(
-            //     &mut dict_opts,
-            //     allowed_media_types.as_ptr(),
-            //     allowed_values.as_ptr(),
-            //     0,
-            // );
-            // strict
-            // let strict = CString::new("strict").unwrap();
-            // let strict_val = CString::new("experimental").unwrap();
-            // av_dict_set(
-            //     &mut dict_opts,
-            //     strict.as_ptr(),
-            //     strict_val.as_ptr(),
-            //     0,
-            // );
-
-            // analyzeduration / probesize：给 demuxer 提示，但不再指望靠它填参数
-            let ans = CString::new("max_analyze_duration").unwrap();
-            let ans_val = CString::new("1000000").unwrap(); // 1s
-            av_dict_set(
-                &mut dict_opts,
-                ans.as_ptr(),
-                ans_val.as_ptr(),
-                0,
-            );
-            let probesize = CString::new("probesize").unwrap();
-            let probesize_val = CString::new("102400").unwrap(); // 100 KiB
-            av_dict_set(
-                &mut dict_opts,
-                probesize.as_ptr(),
-                probesize_val.as_ptr(),
-                0,
-            );
-            let max_probe_packets = CString::new("max_probe_packets").unwrap();
-            let max_probe_packets_val = CString::new("64").unwrap();
-            av_dict_set(
-                &mut dict_opts,
-                max_probe_packets.as_ptr(),
-                max_probe_packets_val.as_ptr(),
+                cstr("fflags").as_ptr(),
+                cstr("nobuffer+discardcorrupt+genpts+ignidx").as_ptr(),
                 0,
             );
 
-            let codec_whitelist = CString::new("codec_whitelist").unwrap();
-            let codec_whitelist_val = CString::new("h264").unwrap(); // 100 KiB
             av_dict_set(
                 &mut dict_opts,
-                codec_whitelist.as_ptr(),
-                codec_whitelist_val.as_ptr(),
+                cstr("analyzeduration").as_ptr(),
+                cstr("1000000").as_ptr(),
+                0,
+            );
+            av_dict_set(
+                &mut dict_opts,
+                cstr("probesize").as_ptr(),
+                cstr("32768").as_ptr(),
+                0,
+            );
+            av_dict_set(
+                &mut dict_opts,
+                cstr("muxrate").as_ptr(),
+                cstr("512000").as_ptr(),
+                0,
+            );
+            av_dict_set(
+                &mut dict_opts,
+                cstr("decode_error_detection").as_ptr(),
+                cstr("skip_frame").as_ptr(),
+                0,
+            );
+            av_dict_set(
+                &mut dict_opts,
+                cstr("max_delay").as_ptr(),
+                cstr("100000").as_ptr(),
+                0,
+            );
+            av_dict_set(
+                &mut dict_opts,
+                cstr("fpsprobesize").as_ptr(),
+                cstr("0").as_ptr(),
                 0,
             );
 
-            // 设置 PS 流相关参数
-            let muxrate = CString::new("muxrate").unwrap();
-            let muxrate_val = CString::new("512000").unwrap(); // 512 kbps
-            av_dict_set(
-                &mut dict_opts,
-                muxrate.as_ptr(),
-                muxrate_val.as_ptr(),
-                0,
-            );
-            // 其他推荐的 PS 流优化参数
-            let max_delay = CString::new("max_delay").unwrap();
-            let max_delay_val = CString::new("100000").unwrap(); // 100ms
-            av_dict_set(
-                &mut dict_opts,
-                max_delay.as_ptr(),
-                max_delay_val.as_ptr(),
-                0,
-            );
-            let fpsprobesize = CString::new("fpsprobesize").unwrap();
-            let fpsprobesize_val = CString::new("0").unwrap(); // 100ms
-            av_dict_set(
-                &mut dict_opts,
-                fpsprobesize.as_ptr(),
-                fpsprobesize_val.as_ptr(),
-                0,
-            );
-
-            let vcodec = CString::new("vcodec").unwrap();
-            let vcodec_val = CString::new("h264").unwrap(); // 100ms
-            av_dict_set(
-                &mut dict_opts,
-                vcodec.as_ptr(),
-                vcodec_val.as_ptr(),
-                0,
-            );
             // 3) input fmt 选择
             let format_name = match media_ext.type_name.as_str() {
                 "PS" => "mpeg",
@@ -316,16 +261,10 @@ impl DemuxerContext {
                 }
             };
 
-            info!("Using input format: {}", format_name);
-            let ps = CString::new(format_name).unwrap();
-            let mut input_fmt = av_find_input_format(ps.as_ptr());
+            debug!("Using input format: {}", format_name);
+            let input_fmt = av_find_input_format(cstr(format_name).as_ptr());
             if input_fmt.is_null() {
-                warn!("{} demuxer not found, trying default mpeg", format_name);
-                let mpeg_fmt = CString::new("mpeg").unwrap();
-                input_fmt = av_find_input_format(mpeg_fmt.as_ptr());
-                if input_fmt.is_null() {
-                    input_fmt = av_find_input_format(ptr::null());
-                }
+                return Err(GlobalError::new_sys_error("demuxer not found", |msg| error!("{msg}: {}",format_name)));
             }
 
             // 4) custom AVIO
@@ -354,12 +293,17 @@ impl DemuxerContext {
             }
             (*io_ctx).seekable = 0;
             (*fmt_ctx).pb = io_ctx;
-            (*fmt_ctx).iformat = input_fmt;
+            (*fmt_ctx).bit_rate = 512000;
+            // (*fmt_ctx).video_codec_id = 0x1B;
+            (*fmt_ctx).video_codec_id = AVCodecID_AV_CODEC_ID_H264;
+            let codec: *const AVCodec = unsafe { avcodec_find_decoder(AVCodecID_AV_CODEC_ID_H264) };
+            if codec.is_null() {
+                return Err(GlobalError::new_sys_error("Codec not found", |msg| error!("{msg}")));
+            }
+            (*fmt_ctx).video_codec = codec;
 
             // 5) open input
-            let input_url = ptr::null();
-            let ifmt = ptr::null();
-            let ret_open = avformat_open_input(&mut fmt_ctx, input_url, ifmt, &mut dict_opts);
+            let ret_open = avformat_open_input(&mut fmt_ctx, ptr::null(), input_fmt, &mut dict_opts);
             if ret_open < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret_open);
                 avio_context_free(&mut io_ctx);
@@ -367,100 +311,52 @@ impl DemuxerContext {
                 avformat_free_context(fmt_ctx);
                 return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to open input: {}", msg)));
             }
-            // 指定编码类型
-            // for i in 0..(*fmt_ctx).nb_streams as usize {
-            //     AVStream *stream = fmt_ctx->streams[i];
-            //
-            //     if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            //         // 指定视频编码为H264
-            //         stream->codecpar->codec_id = AV_CODEC_ID_H264;
-            //     } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-            //         // 指定音频编码为AAC
-            //         stream->codecpar->codec_id = AV_CODEC_ID_AAC;
-            //     }
-            // }
-
-            // 1. 查找解码器
-            let codec: *const AVCodec = unsafe { avcodec_find_decoder(AVCodecID_AV_CODEC_ID_H264) };
-            if codec.is_null() {
-                return Err(GlobalError::new_sys_error("Codec not found", |msg| error!("{msg}")));
-            }
-
-            // 2. 创建编解码器上下文
-            // let codec_ctx = unsafe { avcodec_alloc_context3(codec) };
-            // if codec_ctx.is_null() {
-            //     return Err("Could not allocate video codec context".into());
-            // }
-            // 注意：记得在不需要时释放资源
-            // unsafe { avcodec_free_context(&mut codec_ctx); }
-
-            // 3. 设置编解码器参数（可选）
-            // unsafe {
-            //     (*codec_ctx).bit_rate = 512000;
-            //     (*codec_ctx).width = 1920;
-            //     (*codec_ctx).height = 1080;
-            //     (*codec_ctx).time_base = AVRational { num: 1, den: media_ext.clock_rate };
-            //     (*codec_ctx).framerate = AVRational { num: media_ext.video_params.fps.unwrap_or(25), den: 1 };
-            //     // (*codec_ctx).gop_size = 10;
-            //     (*codec_ctx).max_b_frames = 2;
-            //     (*codec_ctx).pix_fmt = AVPixelFormat_AV_PIX_FMT_YUV420P;
-            // }
-
-            warn!("nb_streams = {}",(*fmt_ctx).nb_streams);
-            (*fmt_ctx).bit_rate = 512000;
-            // (*fmt_ctx).video_codec_id = 0x1B;
-            (*fmt_ctx).video_codec_id = AVCodecID_AV_CODEC_ID_H264;
-            (*fmt_ctx).video_codec = codec;
-            // for i in 0..(*fmt_ctx).nb_streams as usize {
-            //    
-            // 
-            //     let st = *(*fmt_ctx).streams.add(i);
-            //     let par = (*st).codecpar;
-            //     warn!(
-            //         "first ->>>>>>>>>  Stream {} validation: codec_id={}, type={}",
-            //         i,
-            //         (*par).codec_id,
-            //         (*par).codec_type
-            //     );
-            // }
-
 
             // 6) find stream info（正常 probe）
-            warn!("start avformat_find_stream_info");
             let mut retry_count = 0;
             let max_retries = 3;
             let mut ret_fsi = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
-            warn!("avformat_find_stream_info returned {}", ret_fsi);
             while ret_fsi < 0 && retry_count < max_retries {
                 warn!("avformat_find_stream_info failed (attempt {}), retrying...", retry_count + 1);
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 ret_fsi = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
                 retry_count += 1;
             }
-            warn!("avformat_find_stream_info final result: {} after {} retries", ret_fsi, retry_count); // 新增最终结果日志
-
+            
             for i in 0..(*fmt_ctx).nb_streams as usize {
                 let st = *(*fmt_ctx).streams.add(i);
-                let par = (*st).codecpar;
-                warn!(
-                    "Stream {} validation: codec_id={}, type={}, params_complete={}",
+                let codecpar = (*st).codecpar;
+                info!(
+                    "before fill info, Stream={}: type={}, codec_id={}, w={}, h={}, br={}, tb={}/{} fps={} (avg)",
                     i,
-                    (*par).codec_id,
-                    (*par).codec_type,
-                    (*par).codec_id != AVCodecID_AV_CODEC_ID_NONE && (*par).codec_type != AVMediaType_AVMEDIA_TYPE_UNKNOWN
+                    (*codecpar).codec_type,
+                    (*codecpar).codec_id,
+                    (*codecpar).width,
+                    (*codecpar).height,
+                    (*codecpar).bit_rate,
+                    (*st).time_base.num,
+                    (*st).time_base.den,
+                    if (*st).avg_frame_rate.den != 0 {
+                        (*st).avg_frame_rate.num / (*st).avg_frame_rate.den
+                    } else { 0 }
                 );
             }
             if ret_fsi < 0 {
                 warn!("Failed to find stream info after {} attempts, will fallback to MediaExt.", max_retries);
             }
 
+            println!("-----------------");
             let nb_streams = (*fmt_ctx).nb_streams as usize;
-
+            println!("nb_streams = {}",nb_streams);
+            println!("-----------------");
             // 7) （关键）对每个 AVStream：若探测失败或缺字段，用 MediaExt 补齐/覆盖
             for i in 0..nb_streams {
                 let st = *(*fmt_ctx).streams.add(i);
+                println!("is null +++++++++++{}",st.is_null());
                 if st.is_null() { continue; }
-
+                println!("id+++++++{}",(*st).id as i32);
+                println!("codec_type+++++++{}",(*(*st).codecpar).codec_type as i32);
+                println!("codec_id+++++++{}",(*(*st).codecpar).codec_id as i32);
                 if ret_fsi < 0 {
                     // 探测失败：强制覆盖
                     fill_stream_from_media_ext(st, media_ext, /*prefer_missing_only*/ false);
