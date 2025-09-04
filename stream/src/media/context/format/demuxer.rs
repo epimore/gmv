@@ -2,7 +2,7 @@ use crate::media::{rtp, rw, show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
 use base::once_cell::sync::Lazy;
-use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_alloc_context3, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodec, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_UNKNOWN, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVStream, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
+use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_alloc_context3, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodec, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_UNKNOWN, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVStream, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
 use shared::info::media_info_ext::MediaExt;
 use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
@@ -19,26 +19,34 @@ unsafe impl Send for AvioResource {}
 impl Drop for AvioResource {
     fn drop(&mut self) {
         unsafe {
+            // 1) 如果有 avio_ctx，先取出 opaque，然后释放 avio_ctx（会释放内部 buffer）
+            let mut opaque: *mut std::ffi::c_void = std::ptr::null_mut();
+            if !self.avio_ctx.is_null() {
+                opaque = (*self.avio_ctx).opaque;
+                // avio_context_free 会把 *avio_ctx 设为 NULL
+                avio_context_free(&mut self.avio_ctx);
+                // avio_ctx 已被置为 null
+                self.io_buf = ptr::null_mut();
+            }
+
+            // 2) 若 fmt_ctx 仍存在，避免 avformat_close_input 再去处理 pb（已经被 avio_context_free 处理）
             if !self.fmt_ctx.is_null() {
+                // 防止 avformat_close_input 尝试去释放 pb（已释放）
+                if !(*self.fmt_ctx).pb.is_null() {
+                    (*self.fmt_ctx).pb = ptr::null_mut();
+                }
                 avformat_close_input(&mut self.fmt_ctx);
                 self.fmt_ctx = ptr::null_mut();
             }
-            if !self.avio_ctx.is_null() {
-                // 取出 opaque（rtp_buffer），随后统一回收
-                let opaque = (*self.avio_ctx).opaque;
-                // 正确释放 AVIOContext（会连带释放内部 buffer）
-                avio_context_free(&mut self.avio_ctx);
-                self.avio_ctx = ptr::null_mut();
-                // io_buf 由 avio_context_free 释放，不要再手动 free
-                self.io_buf = ptr::null_mut();
-                // 回收 rtp_buffer（保证只在这一个地方回收）
-                if !opaque.is_null() {
-                    drop(Box::<rtp::RtpPacketBuffer>::from_raw(opaque as *mut _));
-                }
+
+            // 3) 回收 opaque -> rtp_buffer（确保只在这里回收）
+            if !opaque.is_null() {
+                drop(Box::<rtp::RtpPacketBuffer>::from_raw(opaque as *mut _));
             }
         }
     }
 }
+
 
 #[derive(Clone)]
 pub struct DemuxerContext {
@@ -61,7 +69,7 @@ impl Drop for DemuxerContext {
 
 // --- 辅助：把字符串 codec 映射到 AVCodecID ---
 unsafe fn map_video_codec_id(s: &str) -> AVCodecID {
-    match s {
+    match s.to_lowercase().as_str() {
         "h264" => AVCodecID_AV_CODEC_ID_H264,
         "h265" | "hevc" => AVCodecID_AV_CODEC_ID_HEVC,
         "mpeg4" => AVCodecID_AV_CODEC_ID_MPEG4,
@@ -71,14 +79,29 @@ unsafe fn map_video_codec_id(s: &str) -> AVCodecID {
     }
 }
 
-unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
-    match s {
-        "g711" | "pcma" => AVCodecID_AV_CODEC_ID_PCM_ALAW,   // 如果确定是 A-law
-        "pcmu" => AVCodecID_AV_CODEC_ID_PCM_MULAW,
-        "g723" => AVCodecID_AV_CODEC_ID_G723_1,
-        "g729" => AVCodecID_AV_CODEC_ID_G729,
-        "g722" => AVCodecID_AV_CODEC_ID_ADPCM_G722,
-        "aac" => AVCodecID_AV_CODEC_ID_AAC,
+pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
+    match s.to_lowercase().as_str() {
+        // G.711 A-law
+        "g711" | "g711a" | "g.711a" | "g.711 a-law" | "a-law" | "alaw" | "pcma" | "pcm_alaw" =>
+            AVCodecID_AV_CODEC_ID_PCM_ALAW,
+        // G.711 μ-law
+        "g711u" | "g.711u" | "g.711 μ-law" | "mu-law" | "mulaw" | "pcmu" | "pcm_mulaw" =>
+            AVCodecID_AV_CODEC_ID_PCM_MULAW,
+        // G.722
+        "g722" | "g.722" =>
+            AVCodecID_AV_CODEC_ID_ADPCM_G722,
+        // G.722.1 (Siren)
+        "g7221" | "g.722.1" | "siren" =>
+            AVCodecID_AV_CODEC_ID_SIREN,
+        // G.723.1
+        "g723" | "g7231" | "g.723" | "g.723.1" | "g723_1" =>
+            AVCodecID_AV_CODEC_ID_G723_1,
+        // G.729
+        "g729" | "g.729" =>
+            AVCodecID_AV_CODEC_ID_G729,
+        // AAC
+        "aac" | "mpeg2-aac" | "mpeg4-aac" =>
+            AVCodecID_AV_CODEC_ID_AAC,
         // "svac" => AVCodecID_AV_CODEC_ID_SVAC,//avcodec_find_decoder_by_name("svac")
         _ => AVCodecID_AV_CODEC_ID_NONE,
     }
@@ -182,99 +205,77 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
     }
 }
 
-fn cstr(s: &str) -> CString { CString::new(s).unwrap() }
+// --- 输入格式辅助：根据 media_ext 选择 demuxer 名称 ---
+fn pick_input_format(media_ext: &MediaExt) -> &'static str {
+    match media_ext.type_name.as_str() {
+        "PS" => "mpeg",           // mpeg-ps demuxer
+        "H264" => "h264",         // raw h264
+        "H265" => "hevc",         // raw hevc
+        "AAC" => "aac",          // raw aac (ADTS)
+        "G711" => {
+            // 尝试根据 codec_id 判别 A-Law / μ-Law（alaw / mulaw）
+            if let Some(cid) = &media_ext.audio_params.codec_id {
+                match cid.as_str() {
+                    "g711" | "pcma" => "alaw",
+                    "pcmu" => "mulaw",
+                    _ => "alaw",
+                }
+            } else {
+                "alaw"
+            }
+        }
+        _ => {
+            // 兜底：若 video codec 已知，且是原始裸流，优先对应 raw demuxer；否则走 mpeg-ps
+            if let Some(cid) = &media_ext.video_params.codec_id {
+                match cid.as_str() {
+                    "h264" => "h264",
+                    "h265" | "hevc" => "hevc",
+                    _ => "mpeg",
+                }
+            } else {
+                "mpeg"
+            }
+        }
+    }
+}
+
+fn cstr(s: &str) -> Result<CString, GlobalError> {
+    CString::new(s).map_err(|e| {
+        GlobalError::new_biz_error(
+            1001,
+            &format!("Failed to create C string: {}", e),
+            |msg| error!("{}", msg),
+        )
+    })
+}
 
 impl DemuxerContext {
     pub fn start_demuxer(_ssrc: u32, media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
         unsafe {
-            // 1) alloc fmt_ctx
+            // --- 1) 分配 fmt_ctx ---
             let mut fmt_ctx = avformat_alloc_context();
             if fmt_ctx.is_null() {
                 return Err(GlobalError::new_sys_error("Failed to alloc format context", |msg| error!("{msg}")));
             }
             (*fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
 
-            // 2) 设置 AVDictionary（注意：不要用 vcodec/video_size 这种仅 raw 有效的参数）
-            let mut dict_opts: *mut AVDictionary = ptr::null_mut();
-
-            av_dict_set(
-                &mut dict_opts,
-                cstr("fflags").as_ptr(),
-                cstr("nobuffer+discardcorrupt+genpts+ignidx").as_ptr(),
-                0,
-            );
-
-            av_dict_set(
-                &mut dict_opts,
-                cstr("analyzeduration").as_ptr(),
-                cstr("1000000").as_ptr(),
-                0,
-            );
-            av_dict_set(
-                &mut dict_opts,
-                cstr("probesize").as_ptr(),
-                cstr("32768").as_ptr(),
-                0,
-            );
-            av_dict_set(
-                &mut dict_opts,
-                cstr("muxrate").as_ptr(),
-                cstr("512000").as_ptr(),
-                0,
-            );
-            av_dict_set(
-                &mut dict_opts,
-                cstr("decode_error_detection").as_ptr(),
-                cstr("skip_frame").as_ptr(),
-                0,
-            );
-            av_dict_set(
-                &mut dict_opts,
-                cstr("max_delay").as_ptr(),
-                cstr("100000").as_ptr(),
-                0,
-            );
-            av_dict_set(
-                &mut dict_opts,
-                cstr("fpsprobesize").as_ptr(),
-                cstr("0").as_ptr(),
-                0,
-            );
-
-            // 3) input fmt 选择
-            let format_name = match media_ext.type_name.as_str() {
-                "PS" => "mpeg",
-                "H264" => "h264", // raw H264 时才有效
-                "H265" => "hevc",
-                "AAC" => "aac",
-                "G711" => "pcm_alaw",
-                _ => {
-                    if let Some(codec_id) = &media_ext.video_params.codec_id {
-                        match codec_id.as_str() {
-                            "h264" => "h264",
-                            "h265" => "hevc",
-                            _ => "mpeg",
-                        }
-                    } else {
-                        "mpeg"
-                    }
-                }
-            };
-
+            // --- 2) 输入格式 ---
+            let format_name = pick_input_format(media_ext);
             debug!("Using input format: {}", format_name);
-            let input_fmt = av_find_input_format(cstr(format_name).as_ptr());
+            let input_fmt = av_find_input_format(cstr(format_name)?.as_ptr());
             if input_fmt.is_null() {
-                return Err(GlobalError::new_sys_error("demuxer not found", |msg| error!("{msg}: {}",format_name)));
+                avformat_free_context(fmt_ctx);
+                return Err(GlobalError::new_sys_error(&format!("demuxer not found: {}", format_name), |msg| error!("{msg}")));
             }
 
-            // 4) custom AVIO
+            // --- 3) 分配 IO 缓冲区 ---
             let io_ctx_buffer = av_malloc(DEFAULT_IO_BUF_SIZE) as *mut u8;
             if io_ctx_buffer.is_null() {
                 avformat_free_context(fmt_ctx);
                 return Err(GlobalError::new_sys_error("Failed to allocate IO buffer", |msg| error!("{msg}")));
             }
 
-            let rtp_buf_ptr = Box::into_raw(Box::new(rtp_buffer)) as *mut std::ffi::c_void;
+            let rtp_buf_ptr = Box::into_raw(Box::new(rtp_buffer)) as *mut c_void;
 
             let mut io_ctx = avio_alloc_context(
                 io_ctx_buffer,
@@ -286,33 +287,70 @@ impl DemuxerContext {
                 None,
             );
             if io_ctx.is_null() {
-                av_free(io_ctx_buffer as *mut std::ffi::c_void);
+                av_free(io_ctx_buffer as *mut c_void);
                 avformat_free_context(fmt_ctx);
                 drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
                 return Err(GlobalError::new_sys_error("Failed to allocate AVIO context", |msg| error!("{msg}")));
             }
             (*io_ctx).seekable = 0;
             (*fmt_ctx).pb = io_ctx;
-            (*fmt_ctx).bit_rate = 512000;
-            // (*fmt_ctx).video_codec_id = 0x1B;
-            (*fmt_ctx).video_codec_id = AVCodecID_AV_CODEC_ID_H264;
-            let codec: *const AVCodec = unsafe { avcodec_find_decoder(AVCodecID_AV_CODEC_ID_H264) };
-            if codec.is_null() {
-                return Err(GlobalError::new_sys_error("Codec not found", |msg| error!("{msg}")));
-            }
-            (*fmt_ctx).video_codec = codec;
 
-            // 5) open input
+            // --- 4) 根据 MediaExt 设置 codec ---
+            if let Some(v_id) = &media_ext.video_params.codec_id {
+                let id = map_video_codec_id(v_id);
+                if id != AVCodecID_AV_CODEC_ID_NONE {
+                    (*fmt_ctx).video_codec_id = id;
+                    let codec = avcodec_find_decoder(id);
+                    if codec.is_null() {
+                        avio_context_free(&mut io_ctx);
+                        drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
+                        avformat_free_context(fmt_ctx);
+                        return Err(GlobalError::new_sys_error(&format!("Video codec not found: {}", v_id), |msg| error!("{msg}")));
+                    }
+                    (*fmt_ctx).video_codec = codec;
+                }
+            }
+            if let Some(a_id) = &media_ext.audio_params.codec_id {
+                let id = map_audio_codec_id(a_id);
+                if id != AVCodecID_AV_CODEC_ID_NONE {
+                    (*fmt_ctx).audio_codec_id = id;
+                    let codec = avcodec_find_decoder(id);
+                    if codec.is_null() {
+                        avio_context_free(&mut io_ctx);
+                        drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
+                        avformat_free_context(fmt_ctx);
+                        return Err(GlobalError::new_sys_error(&format!("Audio codec not found: {}", a_id), |msg| error!("{msg}")));
+                    }
+                    (*fmt_ctx).audio_codec = codec;
+                }
+            }
+
+            // --- 5) 设置 AVDictionary ---
+            let mut dict_opts: *mut AVDictionary = ptr::null_mut();
+            macro_rules! set_dict {
+                ($key:expr, $val:expr) => {{
+                    let key = cstr($key)?;
+                    let val = cstr($val)?;
+                    av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
+                }};
+            }
+            set_dict!("fflags", "nobuffer+discardcorrupt+genpts+ignidx");
+            set_dict!("analyzeduration", "1000000");
+            set_dict!("probesize", "32768");
+            set_dict!("fpsprobesize", "0");
+
+            // --- 6) 打开输入 ---
             let ret_open = avformat_open_input(&mut fmt_ctx, ptr::null(), input_fmt, &mut dict_opts);
             if ret_open < 0 {
+                rsmpeg::ffi::av_dict_free(&mut dict_opts);
                 let ffmpeg_error = show_ffmpeg_error_msg(ret_open);
                 avio_context_free(&mut io_ctx);
                 drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
                 avformat_free_context(fmt_ctx);
-                return Err(GlobalError::new_biz_error(1100, &*ffmpeg_error, |msg| error!("Failed to open input: {}", msg)));
+                return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| error!("Failed to open input: {}", msg)));
             }
 
-            // 6) find stream info（正常 probe）
+            // --- 7) 探测 stream info ---
             let mut retry_count = 0;
             let max_retries = 3;
             let mut ret_fsi = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
@@ -322,50 +360,20 @@ impl DemuxerContext {
                 ret_fsi = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
                 retry_count += 1;
             }
-            
-            for i in 0..(*fmt_ctx).nb_streams as usize {
-                let st = *(*fmt_ctx).streams.add(i);
-                let codecpar = (*st).codecpar;
-                info!(
-                    "before fill info, Stream={}: type={}, codec_id={}, w={}, h={}, br={}, tb={}/{} fps={} (avg)",
-                    i,
-                    (*codecpar).codec_type,
-                    (*codecpar).codec_id,
-                    (*codecpar).width,
-                    (*codecpar).height,
-                    (*codecpar).bit_rate,
-                    (*st).time_base.num,
-                    (*st).time_base.den,
-                    if (*st).avg_frame_rate.den != 0 {
-                        (*st).avg_frame_rate.num / (*st).avg_frame_rate.den
-                    } else { 0 }
-                );
-            }
             if ret_fsi < 0 {
                 warn!("Failed to find stream info after {} attempts, will fallback to MediaExt.", max_retries);
             }
 
-            println!("-----------------");
+            // --- 8) 用 MediaExt 补齐 stream 参数 ---
             let nb_streams = (*fmt_ctx).nb_streams as usize;
-            println!("nb_streams = {}",nb_streams);
-            println!("-----------------");
-            // 7) （关键）对每个 AVStream：若探测失败或缺字段，用 MediaExt 补齐/覆盖
             for i in 0..nb_streams {
                 let st = *(*fmt_ctx).streams.add(i);
-                println!("is null +++++++++++{}",st.is_null());
                 if st.is_null() { continue; }
-                println!("id+++++++{}",(*st).id as i32);
-                println!("codec_type+++++++{}",(*(*st).codecpar).codec_type as i32);
-                println!("codec_id+++++++{}",(*(*st).codecpar).codec_id as i32);
                 if ret_fsi < 0 {
-                    // 探测失败：强制覆盖
-                    fill_stream_from_media_ext(st, media_ext, /*prefer_missing_only*/ false);
+                    fill_stream_from_media_ext(st, media_ext, false);
                 } else {
-                    // 探测成功：仅补齐缺失字段，不盲目覆盖
-                    fill_stream_from_media_ext(st, media_ext, /*prefer_missing_only*/ true);
+                    fill_stream_from_media_ext(st, media_ext, true);
                 }
-
-                // 额外健壮性：若仍无 codec_id，且知道是视频（PS/90000 + video_params），再兜底一次
                 if (*(*st).codecpar).codec_id == AVCodecID_AV_CODEC_ID_NONE {
                     if media_ext.video_params.codec_id.is_some() {
                         fill_stream_from_media_ext(st, media_ext, false);
@@ -373,11 +381,9 @@ impl DemuxerContext {
                 }
             }
 
-            // 8) 拷贝出 codecpar_list / stream_mapping
-            let nb_streams = (*fmt_ctx).nb_streams as usize;
+            // --- 9) 拷贝 codecpar_list / stream_mapping ---
             let mut codecpar_list = Vec::with_capacity(nb_streams);
             let mut stream_mapping = Vec::with_capacity(nb_streams);
-
             for i in 0..nb_streams {
                 let st = *(*fmt_ctx).streams.add(i);
                 let codecpar = avcodec_parameters_alloc();
@@ -412,7 +418,7 @@ impl DemuxerContext {
             Ok(Self {
                 avio: Arc::new(AvioResource {
                     fmt_ctx,
-                    io_buf: io_ctx_buffer, // 释放由 avio_context_free 负责
+                    io_buf: io_ctx_buffer,
                     avio_ctx: io_ctx,
                 }),
                 codecpar_list,
@@ -421,6 +427,7 @@ impl DemuxerContext {
         }
     }
 }
+
 
 
 #[cfg(test)]
