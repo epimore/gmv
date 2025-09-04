@@ -195,7 +195,7 @@ impl CmdStream {
                         ext.type_code = type_code;
                         if let Some((type_name, clock_rate)) = payload.trim().split_once('/') {
                             ext.clock_rate = clock_rate.trim().parse().hand_log(|msg| error!("{msg}"))?;
-                            ext.type_name = type_name.trim().to_string();
+                            ext.type_name = type_name.trim().to_uppercase();
                         }
                     }
                 }
