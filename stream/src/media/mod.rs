@@ -14,10 +14,17 @@ pub mod context;
 
 pub const DEFAULT_IO_BUF_SIZE: usize = 10240;
 pub fn build_worker_run(rx: Receiver<u32>) {
-    std::thread::spawn(|| {
+    // 限制最大并发流数量，防止资源耗尽
+    let mut concurrency_limit = std::thread::available_parallelism()
+        .map(|n| n.get() * 10) // CPU核心数*10
+        .unwrap_or(10);
+    if concurrency_limit < 8 {
+        concurrency_limit = 8;
+    };
+    std::thread::spawn(move || {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(8)
-            .max_blocking_threads(1024)
+            .max_blocking_threads(concurrency_limit)
             .enable_all()
             .thread_name("media-worker")
             .build()
