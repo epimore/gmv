@@ -15,7 +15,9 @@ pub mod event;
 pub mod format;
 mod codec;
 mod filter;
-
+/// FFmpeg的AVFormatContext和AVCodecContext实例非线程安全，必须为每个线程创建独立实例
+/// 通过av_lockmgr_register注册全局锁管理器，处理编解码器初始化等非线程安全操作
+/// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 #[derive(Default)]
 pub struct RtpState {
     pub timestamp: u32,

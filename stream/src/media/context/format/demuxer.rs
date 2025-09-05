@@ -335,7 +335,7 @@ impl DemuxerContext {
                     av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");//genpts 去掉
+            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");//genpts 去掉 
             set_dict!("analyzeduration", "1000000");
             set_dict!("probesize", "32768");
             set_dict!("fpsprobesize", "0");
