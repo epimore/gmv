@@ -10,49 +10,17 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query};
 use axum::response::Response;
-use tower_http::trace::TraceLayer;
 use base::log::info;
 use crate::io::http::{res_401, res_404};
 
 mod flv;
 mod hls;
 mod dash;
-
+//收到流-》media 长期阻塞 ——》无输出流
 pub fn routes(node: &str) -> Router {
     Router::new().route(
         &format!("/{}{}", node, PLAY_PATH),
-        axum::routing::get(handler).layer(
-            TraceLayer::new_for_http()
-                // .on_request(
-                //     |_request: &axum::http::Request<Body>, _span: &tracing::Span| {
-                //         tracing::info!("request begin");
-                //     },
-                // )
-                // .on_response(
-                //     |response: &Response<Body>, latency: Duration, _span: &tracing::Span| {
-                //         tracing::info!(
-                //             status = response.status().as_u16(),
-                //             latency = ?latency,
-                //             "response sent"
-                //         );
-                //     },
-                // )
-                // .on_body_chunk(
-                //     |_chunk: &[u8], _latency: Duration, _span: &tracing::Span| {
-                //         tracing::trace!("sending chunk");
-                //     },
-                // )
-                .on_eos(
-                    |_trailers: Option<&axum::http::HeaderMap>, _duration: Duration, _span: &tracing::Span| {
-                        tracing::info!("stream ended");
-                    },
-                )
-                .on_failure(
-                    |_error: tower_http::classify::ServerErrorsFailureClass, _latency: Duration, _span: &tracing::Span| {
-                        tracing::error!("stream failed");
-                    },
-                ),
-        ),
+        axum::routing::get(handler),
     )
 }
 

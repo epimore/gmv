@@ -9,7 +9,6 @@ use base::log::{debug, error};
 use base::net;
 use base::net::state::{Association, Package, Protocol, Zip};
 use rtp_types::RtpPacket;
-use tracing::instrument::WithSubscriber;
 use crate::{media, state};
 use crate::general::util;
 use crate::io::splitter::rtp::TcpRtpBuffer;

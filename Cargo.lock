@@ -1249,8 +1249,6 @@ dependencies = [
  "rtp-types",
  "shared",
  "tokio-stream",
- "tower-http",
- "tracing",
 ]
 
 [[package]]
@@ -3549,22 +3547,6 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper 1.0.2",
  "tokio",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.6.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adc82fd73de2a9722ac5da747f12383d2bfdb93591ee6c58486e0097890f05f2"
-dependencies = [
- "bitflags 2.9.1",
- "bytes",
- "http 1.3.1",
- "http-body 1.0.1",
- "pin-project-lite",
  "tower-layer",
  "tower-service",
  "tracing",
