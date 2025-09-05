@@ -20,33 +20,46 @@ unsafe impl Send for AvioResource {}
 impl Drop for AvioResource {
     fn drop(&mut self) {
         unsafe {
-            // 1) 如果有 avio_ctx，先取出 opaque，然后释放 avio_ctx（会释放内部 buffer）
-            let mut opaque: *mut std::ffi::c_void = std::ptr::null_mut();
+            // 1) 先取出 opaque（如果有）
+            let mut opaque_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
             if !self.avio_ctx.is_null() {
-                opaque = (*self.avio_ctx).opaque;
-                // avio_context_free 会把 *avio_ctx 设为 NULL
+                opaque_ptr = (*self.avio_ctx).opaque;
+            }
+
+            // 2) 释放 avio_ctx（会释放 AVIOContext 结构）
+            if !self.avio_ctx.is_null() {
+                // 把 opaque 从 avio_ctx 清除，避免 avio_context_free 对 opaque 做任何假设
+                (*self.avio_ctx).opaque = std::ptr::null_mut();
                 avio_context_free(&mut self.avio_ctx);
-                // avio_ctx 已被置为 null
+                // avio_context_free 不一定 free 你传入的 buffer -> 我们后面统一 free io_buf
+            }
+
+            // 3) 关闭 fmt_ctx（但先将 pb 置空，避免重复释放 pb）
+            if !self.fmt_ctx.is_null() {
+                if !(*self.fmt_ctx).pb.is_null() {
+                    (*self.fmt_ctx).pb = std::ptr::null_mut();
+                }
+                avformat_close_input(&mut self.fmt_ctx);
+                self.fmt_ctx = std::ptr::null_mut();
+            }
+
+            // 4) 释放 io_buf（如果有）—— 我们在 start_demuxer 保证 io_buf 仅在这里释放一次
+            if !self.io_buf.is_null() {
+                av_free(self.io_buf as *mut c_void);
                 self.io_buf = ptr::null_mut();
             }
 
-            // 2) 若 fmt_ctx 仍存在，避免 avformat_close_input 再去处理 pb（已经被 avio_context_free 处理）
-            if !self.fmt_ctx.is_null() {
-                // 防止 avformat_close_input 尝试去释放 pb（已释放）
-                if !(*self.fmt_ctx).pb.is_null() {
-                    (*self.fmt_ctx).pb = ptr::null_mut();
-                }
-                avformat_close_input(&mut self.fmt_ctx);
-                self.fmt_ctx = ptr::null_mut();
-            }
-
-            // 3) 回收 opaque -> rtp_buffer（确保只在这里回收）
-            if !opaque.is_null() {
-                drop(Box::<rtp::RtpPacketBuffer>::from_raw(opaque as *mut _));
+            // 5) 恢复并 drop opaque 的实际类型：(RtpPacketBuffer, *mut RtpState)
+            if !opaque_ptr.is_null() {
+                // 注意：opaque 是 Box::into_raw(Box::new((rtp_buffer, rtp_state)))
+                let tup_ptr = opaque_ptr as *mut (rtp::RtpPacketBuffer, *mut RtpState);
+                // 安全地把 Box 恢复并 drop（同时 drop rtp_buffer）
+                drop(Box::from_raw(tup_ptr));
             }
         }
     }
 }
+
 
 
 #[derive(Clone)]
@@ -109,87 +122,36 @@ pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
 }
 
 // --- 辅助：根据 MediaExt 补齐/覆盖一个 AVStream 的参数 ---
-unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt, prefer_missing_only: bool) {
+unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt) {
     if stream.is_null() { return; }
     let par = (*stream).codecpar;
     if par.is_null() { return; }
 
-    let is_video_hint = media_ext.video_params.codec_id.is_some() || media_ext.video_params.resolution.is_some();
-    let is_audio_hint = media_ext.audio_params.codec_id.is_some();
-
-    // 1) 媒体类型
-    if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_UNKNOWN {
-        (*par).codec_type = if is_video_hint { AVMediaType_AVMEDIA_TYPE_VIDEO } else { AVMediaType_AVMEDIA_TYPE_AUDIO };
-    }
-
-    // 2) codec_id
-    if is_video_hint {
-        if let Some(ref s) = media_ext.video_params.codec_id {
-            let id = map_video_codec_id(s);
-            if id != AVCodecID_AV_CODEC_ID_NONE {
-                if !prefer_missing_only || (*par).codec_id == AVCodecID_AV_CODEC_ID_NONE {
-                    (*par).codec_id = id;
-                }
-            }
-        }
-    } else if is_audio_hint {
-        if let Some(ref s) = media_ext.audio_params.codec_id {
-            let id = map_audio_codec_id(s);
-            if id != AVCodecID_AV_CODEC_ID_NONE {
-                if !prefer_missing_only || (*par).codec_id == AVCodecID_AV_CODEC_ID_NONE {
-                    (*par).codec_id = id;
-                }
-            }
-        }
-    }
-
-    // 3) 分辨率（仅视频）
+    // 视频
     if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+        //分辨率（仅视频）
         if let Some((w, h)) = media_ext.video_params.resolution {
-            if !prefer_missing_only || ((*par).width == 0 && (*par).height == 0) {
+            if (*par).width == 0 || (*par).height == 0 {
                 (*par).width = w;
                 (*par).height = h;
             }
         }
-    }
-
-    // 4) 比特率（视频/音频）
-    if let Some(br_kbps) = media_ext.video_params.bitrate {
-        let br = (br_kbps as i64) * 1000;
-        if !prefer_missing_only || (*par).bit_rate <= 0 {
-            (*par).bit_rate = br;
-        }
-    } else if let Some(ref br_str) = media_ext.audio_params.bitrate {
-        if let Ok(br_kbps) = br_str.parse::<i64>() {
-            if !prefer_missing_only || (*par).bit_rate <= 0 {
-                (*par).bit_rate = br_kbps * 1000;
+        // 比特率视频
+        if let Some(br_kbps) = media_ext.video_params.bitrate {
+            let br = (br_kbps as i64) * 1000;
+            if (*par).bit_rate <= 0 {
+                (*par).bit_rate = br;
             }
         }
-    }
-
-    // 5) 采样率（仅音频）
-    if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
-        if let Some(ref sr_str) = media_ext.audio_params.sample_rate {
-            if let Ok(mut sr) = sr_str.parse::<i32>() {
-                // 智能判断：< 1000 认为是 kHz，>= 1000 认为是 Hz
-                if sr > 0 && sr < 1000 { sr *= 1000; }
-                if !prefer_missing_only || (*par).sample_rate <= 0 {
-                    (*par).sample_rate = sr;
-                }
-            }
-        }
-    }
-
-    // 6) 帧率/时间基（视频）
-    if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+        //帧率、时间基
         if let Some(fps) = media_ext.video_params.fps {
-            if !prefer_missing_only || ((*stream).avg_frame_rate.num == 0 || (*stream).avg_frame_rate.den == 0) {
+            if (*stream).avg_frame_rate.num == 0 || (*stream).avg_frame_rate.den == 0 {
                 (*stream).avg_frame_rate = AVRational { num: fps, den: 1 };
             }
-            if !prefer_missing_only || ((*stream).r_frame_rate.num == 0 || (*stream).r_frame_rate.den == 0) {
+            if (*stream).r_frame_rate.num == 0 || (*stream).r_frame_rate.den == 0 {
                 (*stream).r_frame_rate = AVRational { num: fps, den: 1 };
             }
-            if !prefer_missing_only || ((*stream).time_base.num == 0 || (*stream).time_base.den == 0) {
+            if (*stream).time_base.num == 0 || (*stream).time_base.den == 0 {
                 // 若是 PS/TS（clock_rate=90000）则优先 1/90000；否则按 fps
                 if media_ext.clock_rate > 0 {
                     (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
@@ -199,11 +161,32 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
             }
         } else {
             // 没提供 fps，也把 time_base 设置为 clock_rate（若有效）
-            if media_ext.clock_rate > 0 && (!prefer_missing_only || ((*stream).time_base.num == 0 || (*stream).time_base.den == 0)) {
+            if media_ext.clock_rate > 0 && ((*stream).time_base.num == 0 || (*stream).time_base.den == 0) {
                 (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
             }
         }
     }
+
+    // 音频
+    if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
+        if let Some(ref sr_str) = media_ext.audio_params.sample_rate {
+            if let Ok(mut sr) = sr_str.parse::<i32>() {
+                // 智能判断：< 1000 认为是 kHz，>= 1000 认为是 Hz
+                if sr > 0 && sr < 1000 { sr *= 1000; }
+                if (*par).sample_rate <= 0 {
+                    (*par).sample_rate = sr;
+                }
+            }
+        }
+        if let Some(ref br_str) = media_ext.audio_params.bitrate {
+            if let Ok(br_kbps) = br_str.parse::<i64>() {
+                if (*par).bit_rate <= 0 {
+                    (*par).bit_rate = br_kbps * 1000;
+                }
+            }
+        }
+    }
+
 }
 
 // --- 输入格式辅助：根据 media_ext 选择 demuxer 名称 ---
@@ -290,6 +273,7 @@ impl DemuxerContext {
             if io_ctx.is_null() {
                 av_free(io_ctx_buffer as *mut c_void);
                 avformat_free_context(fmt_ctx);
+                let (rpb,_) = rtp_ptr as *mut (rtp::RtpPacketBuffer, *mut RtpState);
                 drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_ptr as *mut _));
                 return Err(GlobalError::new_sys_error("Failed to allocate AVIO context", |msg| error!("{msg}")));
             }
@@ -335,7 +319,7 @@ impl DemuxerContext {
                     av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");//genpts 去掉 
+            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx"); //genpts 去掉 
             set_dict!("analyzeduration", "1000000");
             set_dict!("probesize", "32768");
             set_dict!("fpsprobesize", "0");
@@ -356,13 +340,14 @@ impl DemuxerContext {
             let max_retries = 3;
             let mut ret_fsi = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
             while ret_fsi < 0 && retry_count < max_retries {
-                warn!("avformat_find_stream_info failed (attempt {}), retrying...", retry_count + 1);
+                info!("avformat_find_stream_info failed (attempt {}), retrying...", retry_count + 1);
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 ret_fsi = avformat_find_stream_info(fmt_ctx, &mut dict_opts);
                 retry_count += 1;
             }
             if ret_fsi < 0 {
-                warn!("Failed to find stream info after {} attempts, will fallback to MediaExt.", max_retries);
+                avformat_close_input(&mut fmt_ctx);
+                return Err(GlobalError::new_sys_error("Failed to find stream info after max_retries attempts", |msg| error!("{msg}")));
             }
 
             // --- 8) 用 MediaExt 补齐 stream 参数 ---
@@ -370,16 +355,36 @@ impl DemuxerContext {
             for i in 0..nb_streams {
                 let st = *(*fmt_ctx).streams.add(i);
                 if st.is_null() { continue; }
-                if ret_fsi < 0 {
-                    fill_stream_from_media_ext(st, media_ext, false);
-                } else {
-                    fill_stream_from_media_ext(st, media_ext, true);
-                }
-                if (*(*st).codecpar).codec_id == AVCodecID_AV_CODEC_ID_NONE {
-                    if media_ext.video_params.codec_id.is_some() {
-                        fill_stream_from_media_ext(st, media_ext, false);
+                // 判断当前流是视频还是音频，并与 media_ext 中的参数进行比对，不一致则返回错误
+                let codecpar = (*st).codecpar;
+                let is_video_stream = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO;
+                let is_audio_stream = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO;
+
+                if is_video_stream {
+                    if let Some(ref v_codec) = media_ext.video_params.codec_id {
+                        let expected_id = map_video_codec_id(v_codec);
+                        if expected_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != expected_id {
+                            avformat_close_input(&mut fmt_ctx);
+                            return Err(GlobalError::new_sys_error(
+                                &format!("视频流 codec_id 不一致: demuxer={}, media_ext={}", (*codecpar).codec_id, expected_id),
+                                |msg| error!("{msg}")
+                            ));
+                        }
+                    }
+                } else if is_audio_stream {
+                    if let Some(ref a_codec) = media_ext.audio_params.codec_id {
+                        let expected_id = map_audio_codec_id(a_codec);
+                        if expected_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != expected_id {
+                            avformat_close_input(&mut fmt_ctx);
+                            return Err(GlobalError::new_sys_error(
+                                &format!("音频流 codec_id 不一致: demuxer={}, media_ext={}", (*codecpar).codec_id, expected_id),
+                                |msg| error!("{msg}")
+                            ));
+                        }
                     }
                 }
+
+                fill_stream_from_media_ext(st, media_ext);
             }
 
             // --- 9) 拷贝 codecpar_list / stream_mapping ---
