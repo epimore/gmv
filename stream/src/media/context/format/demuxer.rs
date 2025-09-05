@@ -7,6 +7,7 @@ use shared::info::media_info_ext::MediaExt;
 use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
 use std::sync::Arc;
+use crate::media::context::RtpState;
 
 /// FFmpeg资源自动释放结构
 pub struct AvioResource {
@@ -250,7 +251,7 @@ fn cstr(s: &str) -> Result<CString, GlobalError> {
 }
 
 impl DemuxerContext {
-    pub fn start_demuxer(_ssrc: u32, media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer) -> GlobalResult<Self> {
+    pub fn start_demuxer(_ssrc: u32, media_ext: &MediaExt, rtp_buffer: rtp::RtpPacketBuffer, rtp_state: *mut RtpState) -> GlobalResult<Self> {
         unsafe {
             // --- 1) 分配 fmt_ctx ---
             let mut fmt_ctx = avformat_alloc_context();
@@ -275,13 +276,13 @@ impl DemuxerContext {
                 return Err(GlobalError::new_sys_error("Failed to allocate IO buffer", |msg| error!("{msg}")));
             }
 
-            let rtp_buf_ptr = Box::into_raw(Box::new(rtp_buffer)) as *mut c_void;
+            let rtp_ptr = Box::into_raw(Box::new((rtp_buffer, rtp_state))) as *mut c_void;
 
             let mut io_ctx = avio_alloc_context(
                 io_ctx_buffer,
                 DEFAULT_IO_BUF_SIZE as c_int,
                 0,
-                rtp_buf_ptr,
+                rtp_ptr,
                 Some(rw::read_rtp_payload),
                 None,
                 None,
@@ -289,7 +290,7 @@ impl DemuxerContext {
             if io_ctx.is_null() {
                 av_free(io_ctx_buffer as *mut c_void);
                 avformat_free_context(fmt_ctx);
-                drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
+                drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_ptr as *mut _));
                 return Err(GlobalError::new_sys_error("Failed to allocate AVIO context", |msg| error!("{msg}")));
             }
             (*io_ctx).seekable = 0;
@@ -303,7 +304,7 @@ impl DemuxerContext {
                     let codec = avcodec_find_decoder(id);
                     if codec.is_null() {
                         avio_context_free(&mut io_ctx);
-                        drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
+                        drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_ptr as *mut _));
                         avformat_free_context(fmt_ctx);
                         return Err(GlobalError::new_sys_error(&format!("Video codec not found: {}", v_id), |msg| error!("{msg}")));
                     }
@@ -317,7 +318,7 @@ impl DemuxerContext {
                     let codec = avcodec_find_decoder(id);
                     if codec.is_null() {
                         avio_context_free(&mut io_ctx);
-                        drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
+                        drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_ptr as *mut _));
                         avformat_free_context(fmt_ctx);
                         return Err(GlobalError::new_sys_error(&format!("Audio codec not found: {}", a_id), |msg| error!("{msg}")));
                     }
@@ -334,7 +335,7 @@ impl DemuxerContext {
                     av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "nobuffer+discardcorrupt+genpts+ignidx");
+            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");//genpts 去掉
             set_dict!("analyzeduration", "1000000");
             set_dict!("probesize", "32768");
             set_dict!("fpsprobesize", "0");
@@ -345,7 +346,7 @@ impl DemuxerContext {
                 rsmpeg::ffi::av_dict_free(&mut dict_opts);
                 let ffmpeg_error = show_ffmpeg_error_msg(ret_open);
                 avio_context_free(&mut io_ctx);
-                drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_buf_ptr as *mut _));
+                drop(Box::<rtp::RtpPacketBuffer>::from_raw(rtp_ptr as *mut _));
                 avformat_free_context(fmt_ctx);
                 return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| error!("Failed to open input: {}", msg)));
             }
@@ -427,7 +428,6 @@ impl DemuxerContext {
         }
     }
 }
-
 
 
 #[cfg(test)]

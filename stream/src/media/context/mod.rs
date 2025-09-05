@@ -16,6 +16,11 @@ pub mod format;
 mod codec;
 mod filter;
 
+#[derive(Default)]
+pub struct RtpState {
+    pub timestamp: u32,
+    pub marker: bool,
+}
 pub struct MediaContext {
     pub ssrc: u32,
     pub media_ext: MediaExt,
@@ -24,11 +29,25 @@ pub struct MediaContext {
     pub muxer_context: MuxerContext,
     pub context_event_rx: TypedReceiver<ContextEvent>,
     pub demuxer_context: DemuxerContext,
+    pub rtp_state: *mut RtpState,
+}
+impl Drop for MediaContext {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.rtp_state.is_null() {
+                // 回收 RtpState
+                drop(Box::from_raw(self.rtp_state));
+                self.rtp_state = std::ptr::null_mut();
+            }
+        }
+    }
 }
 impl MediaContext {
     pub fn init(ssrc: u32, stream_config: StreamConfig) -> GlobalResult<MediaContext> {
         let rtp_buffer = RtpPacketBuffer::init(ssrc, stream_config.rtp_rx)?;
-        let demuxer_context = DemuxerContext::start_demuxer(ssrc, &stream_config.media_ext, rtp_buffer)?;
+        // Box → raw pointer
+        let rtp_state_ptr = Box::into_raw(Box::new(RtpState::default()));
+        let demuxer_context = DemuxerContext::start_demuxer(ssrc, &stream_config.media_ext, rtp_buffer, rtp_state_ptr)?;
         let converter = stream_config.converter;
         let context = MediaContext {
             codec_context: CodecContext::init(converter.codec),
@@ -38,6 +57,7 @@ impl MediaContext {
             context_event_rx: stream_config.context_event_rx,
             muxer_context: MuxerContext::init(&demuxer_context, converter.muxer),
             demuxer_context,
+            rtp_state: rtp_state_ptr,
         };
         Ok(context)
     }
@@ -58,6 +78,23 @@ impl MediaContext {
                 if ret < 0 {
                     break;
                 }
+                // ---- RTP timestamp / marker ----
+                let rtp_ts = (*self.rtp_state).timestamp;
+
+                // ---- 转换 RTP ts → AVStream 时基 ----
+                let tb = (*(*fmt_ctx)
+                    .streams
+                    .offset(pkt.stream_index as isize)
+                    .read())
+                    .time_base;
+
+                pkt.dts = rsmpeg::ffi::av_rescale_q(
+                    rtp_ts as i64,
+                    rsmpeg::ffi::AVRational { num: 1, den: 90000 }, // RTP 视频时间基
+                    tb,
+                );
+                pkt.pts = pkt.dts;
+
                 // 暂不实现处理codec
                 // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
                 // 暂不实现处理filter

@@ -63,6 +63,7 @@ fn demux_rtp(rtp_data: Bytes, association: &Association) {
                     let packet = media::rtp::RtpPacket {
                         ssrc,
                         timestamp: pkt.timestamp(),
+                        marker: pkt.marker_bit(),
                         seq: pkt.sequence_number(),
                         payload: Bytes::from(pkt.payload().to_vec()),
                     };

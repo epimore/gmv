@@ -4,11 +4,13 @@ use base::log::{error, info};
 use crossbeam_channel::Receiver;
 use std::ptr;
 use crate::general::util;
+use crate::media::context::RtpState;
 use crate::media::DEFAULT_IO_BUF_SIZE;
 
 pub struct RtpPacket {
     pub ssrc: u32,
     pub timestamp: u32,
+    pub marker: bool,
     pub seq: u16,
     pub payload: Bytes,
 }
@@ -79,7 +81,7 @@ impl RtpPacketBuffer {
     //1 判断缓冲区数据数量：[queue_count <  queue_window]? 1.1 : 1.2
     //1.1阻塞线程等待数据+超时
     //1.2直接取数据
-    pub fn consume_packet(&mut self, max_consume_len: usize, buf: *mut u8) -> GlobalResult<usize>
+    pub fn consume_packet(&mut self, max_consume_len: usize, buf: *mut u8, rtp_state: *mut RtpState) -> GlobalResult<usize>
     {
         // 优先返回缓存的剩余数据
         if !self.remaining.is_empty() {
@@ -137,6 +139,12 @@ impl RtpPacketBuffer {
                 } else if i == 0 { //一个读写周期内，未丢包 && 大于最小缓冲区
                     if self.queue_window > MIN_QUEUE_WINDOW {
                         self.queue_window -= 1;
+                    }
+                }
+                unsafe {
+                    if !rtp_state.is_null() {
+                        (*rtp_state).timestamp = pkt.timestamp;
+                        (*rtp_state).marker = pkt.marker;
                     }
                 }
                 return Ok(size);
