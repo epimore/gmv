@@ -201,7 +201,7 @@ pub struct AudioParams {
     pub bitrate: Option<String>, //码率 kbps
     pub sample_rate: Option<String>, //采样率 kHz
     pub channel_count: i32,
-    pub clock_rare: i32,
+    pub clock_rate: i32,
 }
 impl_check_empty!(AudioParams,[codec_id,bitrate,sample_rate]);
 impl Default for AudioParams {
@@ -211,7 +211,7 @@ impl Default for AudioParams {
             bitrate: None,
             sample_rate: None,
             channel_count: 1,
-            clock_rare: 8000,
+            clock_rate: 8000,
         }
     }
 }
