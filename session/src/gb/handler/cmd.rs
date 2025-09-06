@@ -193,9 +193,10 @@ impl CmdStream {
                     if let Some((play_code, payload)) = trimmed.split_once(' ') {
                         let type_code: u8 = play_code.trim().parse().hand_log(|msg| error!("{msg}"))?;
                         ext.type_code = type_code;
-                        if let Some((type_name, clock_rate)) = payload.trim().split_once('/') {
-                            ext.clock_rate = clock_rate.trim().parse().hand_log(|msg| error!("{msg}"))?;
-                            ext.type_name = type_name.trim().to_uppercase();
+                        let vs: Vec<&str> = payload.trim().split('/').collect();
+                        if vs.len() >= 2 {
+                            ext.type_name = vs[0].trim().to_uppercase();
+                            ext.clock_rate = vs[1].trim().parse().hand_log(|msg| error!("{msg}"))?;
                         }
                     }
                 }
