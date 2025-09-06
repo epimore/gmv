@@ -242,15 +242,15 @@ pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
 }
 
 /// fill stream parameters from media_ext (your version, slightly simplified)
-unsafe fn fill_stream_from_media_ext(stream: *mut rsmpeg::ffi::AVStream, media_ext: &MediaExt) {
+unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt) {
     if stream.is_null() { return; }
     let par = (*stream).codecpar;
     if par.is_null() { return; }
 
     // Video
     if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-        if let Some((w,h)) = media_ext.video_params.resolution {
-            if (*par).width == 0 || (*par).height == 0 {
+        if let Some((w, h)) = media_ext.video_params.resolution {
+            if (*par).width <= 0 || (*par).height <= 0 {
                 (*par).width = w;
                 (*par).height = h;
             }
@@ -262,22 +262,30 @@ unsafe fn fill_stream_from_media_ext(stream: *mut rsmpeg::ffi::AVStream, media_e
             }
         }
         if let Some(fps) = media_ext.video_params.fps {
-            if (*stream).avg_frame_rate.num == 0 || (*stream).avg_frame_rate.den == 0 {
+            if (*stream).avg_frame_rate.num <= 0 || (*stream).avg_frame_rate.den <= 0 {
                 (*stream).avg_frame_rate = AVRational { num: fps, den: 1 };
-            }
-            if (*stream).r_frame_rate.num == 0 || (*stream).r_frame_rate.den == 0 {
                 (*stream).r_frame_rate = AVRational { num: fps, den: 1 };
             }
-            if (*stream).time_base.num == 0 || (*stream).time_base.den == 0 {
+            // if (*stream).r_frame_rate.num <= 0 || (*stream).r_frame_rate.den <= 0 {
+            //     (*stream).r_frame_rate = AVRational { num: fps, den: 1 };
+            // }
+            if (*stream).time_base.num <= 0 || (*stream).time_base.den <= 0 {
                 if media_ext.clock_rate > 0 {
                     (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
                 } else {
                     (*stream).time_base = AVRational { num: 1, den: fps.max(1) };
                 }
             }
-        } else if media_ext.clock_rate > 0 && ((*stream).time_base.num == 0 || (*stream).time_base.den == 0) {
+        } else if media_ext.clock_rate > 0 && ((*stream).time_base.num <= 0 || (*stream).time_base.den <= 0) {
             (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
         }
+        warn!(
+            "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
+            stream,
+            (*stream).time_base.num, (*stream).time_base.den,
+            (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
+            (*stream).r_frame_rate.num, (*stream).r_frame_rate.den,
+        );
     }
 
     // Audio
@@ -328,7 +336,8 @@ impl DemuxerContext {
             // 1) pick input format
             let fmt_name = pick_input_format(media_ext);
             debug!("Using input format: {}", fmt_name);
-            let input_fmt = rsmpeg::ffi::av_find_input_format(CString::new(fmt_name).unwrap().as_ptr());
+            let ifmt_name = CString::new(fmt_name).unwrap();
+            let input_fmt = av_find_input_format(ifmt_name.as_ptr());
             if input_fmt.is_null() {
                 avformat_free_context(fmt_ctx);
                 return Err(GlobalError::new_sys_error(&format!("demuxer not found: {}", fmt_name), |msg| error!("{msg}")));
@@ -347,7 +356,9 @@ impl DemuxerContext {
             (*fmt_ctx).pb = pb;
 
             // 3) set codec hints if provided in media_ext
+            let mut has_video = false;
             if let Some(v_id) = &media_ext.video_params.codec_id {
+                has_video = true;
                 let id = map_video_codec_id(v_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
                     (*fmt_ctx).video_codec_id = id;
@@ -361,7 +372,9 @@ impl DemuxerContext {
                     (*fmt_ctx).video_codec = codec;
                 }
             }
+            let mut has_audio = false;
             if let Some(a_id) = &media_ext.audio_params.codec_id {
+                has_audio = true;
                 let id = map_audio_codec_id(a_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
                     (*fmt_ctx).audio_codec_id = id;
@@ -384,7 +397,12 @@ impl DemuxerContext {
                     rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx"); // removed genpts as you set pts manually
+            //流包含音视频需要rtp timestamp 同步，单路无需同步可以使用genpts
+            if has_video&&has_audio {
+                set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");
+            }else {
+                set_dict!("fflags", "nobuffer+discardcorrupt+genpts+ignidx");
+            }
             set_dict!("analyzeduration", "1000000");
             set_dict!("probesize", "32768");
             set_dict!("fpsprobesize", "0");
@@ -454,7 +472,6 @@ impl DemuxerContext {
         }
     }
 }
-
 
 
 #[cfg(test)]

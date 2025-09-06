@@ -9,6 +9,7 @@ use base::bus::mpsc::TypedReceiver;
 use base::exception::typed::common::MessageBusError;
 use base::exception::GlobalResult;
 use rsmpeg::ffi::AVPacket;
+use base::log::warn;
 use shared::info::media_info_ext::MediaExt;
 
 pub mod event;
@@ -20,7 +21,7 @@ mod filter;
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 #[derive(Default)]
 pub struct RtpState {
-    pub timestamp: u32,
+    pub timestamp: i64,
     pub marker: bool,
 }
 pub struct MediaContext {
@@ -80,9 +81,30 @@ impl MediaContext {
                 if ret < 0 {
                     break;
                 }
+
+                // read frame 已完成，插入诊断日志（原始 pkt 值）
+                let si = pkt.stream_index as isize;
+                let in_stream = *(*fmt_ctx).streams.offset(si);
+                let in_tb = (*in_stream).time_base;
+                let avr = (*in_stream).avg_frame_rate;
+                let codecpar = (*in_stream).codecpar;
+
+                warn!(
+    "DEMX read_frame: stream={} orig_pts={} orig_dts={} orig_duration={} in_tb={}/{} avg_frame={}/{} codec_type={}",
+    pkt.stream_index,
+    pkt.pts,
+    pkt.dts,
+    pkt.duration,
+    in_tb.num, in_tb.den,
+    avr.num, avr.den,
+    (*codecpar).codec_type,
+);
+
                 // ---- RTP timestamp / marker ----
                 let rtp_ts = (*self.rtp_state).timestamp;
 
+                warn!("DEMX rtp_ts(raw) = {}", rtp_ts);
+                
                 // ---- 转换 RTP ts → AVStream 时基 ----
                 let tb = (*(*fmt_ctx)
                     .streams
@@ -92,11 +114,22 @@ impl MediaContext {
 
                 pkt.dts = rsmpeg::ffi::av_rescale_q(
                     rtp_ts as i64,
-                    rsmpeg::ffi::AVRational { num: 1, den: 90000 }, // RTP 视频时间基
+                    rsmpeg::ffi::AVRational { num: 1, den: self.media_ext.clock_rate },
                     tb,
                 );
                 pkt.pts = pkt.dts;
 
+                warn!(
+    "DEMX after map: stream={} rtp_ts={} mapped_pts={} duration={} (in tb units) in_tb={}/{} avg_frame={}/{}",
+    pkt.stream_index,
+    rtp_ts,
+    pkt.pts,
+    pkt.duration,
+    (*in_stream).time_base.num, (*in_stream).time_base.den,
+    avr.num, avr.den,
+);
+                
+                
                 // 暂不实现处理codec
                 // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
                 // 暂不实现处理filter
