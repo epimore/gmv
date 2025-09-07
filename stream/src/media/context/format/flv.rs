@@ -119,14 +119,15 @@ impl FlvContext {
 );
             
             // 时间戳重采样
+            let orig_duration = pkt.duration;
             av_packet_rescale_ts(
                 &mut cloned,
                 self.in_time_bases[si],
                 self.out_time_bases[si],
             );
-            if pkt.duration > 0 {
+            if orig_duration > 0 {
                 cloned.duration = av_rescale_q(
-                    cloned.duration,
+                    orig_duration,
                     self.in_time_bases[si],
                     self.out_time_bases[si]
                 );
