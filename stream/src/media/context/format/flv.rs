@@ -1,7 +1,7 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{warn};
+use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
 use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free, avformat_alloc_output_context2, av_dump_format, avcodec_parameters_from_context, av_packet_rescale_ts, av_rescale_q};
@@ -290,12 +290,12 @@ impl FlvContext {
                 return Err(GlobalError::new_sys_error(&format!("FLV header write failed: {}", show_ffmpeg_error_msg(ret)), |msg| warn!("{msg}")));
             }
             for (i, tb) in in_tbs.iter().enumerate() {
-                warn!("FLV init: in_time_base[{}] = {}/{}", i, tb.num, tb.den);
+                debug!("FLV init: in_time_base[{}] = {}/{}", i, tb.num, tb.den);
             }
             for (i, tb) in out_tbs.iter().enumerate() {
-                warn!("FLV init: out_time_base[{}] = {}/{}", i, tb.num, tb.den);
+                debug!("FLV init: out_time_base[{}] = {}/{}", i, tb.num, tb.den);
             }
-            warn!("FLV video_stream_index = {}", video_si);
+            debug!("FLV video_stream_index = {}", video_si);
 
             let out_vec = &mut *out_buf_ptr;
             let flv_header = Bytes::from(out_vec.clone());

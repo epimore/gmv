@@ -2,7 +2,7 @@ use crate::media::{rtp, rw, show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
 use base::once_cell::sync::Lazy;
-use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_alloc_context3, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodec, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_UNKNOWN, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVStream, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
+use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_alloc_context3, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodec, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_UNKNOWN, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVStream, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
 use shared::info::media_info_ext::MediaExt;
 use std::ffi::{c_int, c_void, CStr, CString};
 use std::ptr;
@@ -246,7 +246,13 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
     if stream.is_null() { return; }
     let par = (*stream).codecpar;
     if par.is_null() { return; }
-
+    warn!(
+        "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
+        stream,
+        (*stream).time_base.num, (*stream).time_base.den,
+        (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
+        (*stream).r_frame_rate.num, (*stream).r_frame_rate.den
+    );
     // Video
     if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
         if let Some((w, h)) = media_ext.video_params.resolution {
@@ -279,9 +285,9 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
         } else if media_ext.clock_rate > 0 && ((*stream).time_base.num <= 0 || (*stream).time_base.den <= 0) {
             (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
         }
-        warn!(
-            "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
-            stream,
+        debug!(
+            "fill_stream: stream_id={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
+            (*stream).id,
             (*stream).time_base.num, (*stream).time_base.den,
             (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
             (*stream).r_frame_rate.num, (*stream).r_frame_rate.den,
@@ -306,7 +312,102 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
             }
         }
     }
+    // 如果 extradata 缺失，调用 ensure_extradata
+    if (*par).extradata.is_null() || (*par).extradata_size <= 0 {
+        let ret = ensure_extradata((*stream).codecpar, (*par).codec_id, stream);
+        if ret == 0 {
+            base::log::info!(
+                "extradata filled: codec_id={} size={}",
+                (*par).codec_id,
+                (*par).extradata_size
+            );
+        } else {
+            base::log::warn!(
+                "extradata not filled: codec_id={}",
+                (*par).codec_id
+            );
+        }
+    } else {
+        base::log::info!(
+            "extradata already present: codec_id={} size={}",
+            (*par).codec_id,
+            (*par).extradata_size
+        );
+    }
 }
+unsafe fn ensure_extradata(
+    codecpar: *mut AVCodecParameters,
+    codec_id: AVCodecID,
+    st: *mut AVStream,
+) -> i32 {
+    use rsmpeg::ffi::*;
+
+    match codec_id {
+        // --- 视频 ---
+        AVCodecID_AV_CODEC_ID_H264 => {
+            return apply_bsf(st, "h264_mp4toannexb\0");
+        }
+        AVCodecID_AV_CODEC_ID_HEVC => {
+            return apply_bsf(st, "hevc_mp4toannexb\0");
+        }
+        AVCodecID_AV_CODEC_ID_MPEG4 => {
+            return apply_bsf(st, "mpeg4_unpack_bframes\0");
+        }
+
+        // --- 音频 ---
+        AVCodecID_AV_CODEC_ID_AAC => {
+            return apply_bsf(st, "aac_adtstoasc\0");
+        }
+
+        AVCodecID_AV_CODEC_ID_PCM_ALAW   // G.711 A-law
+        | AVCodecID_AV_CODEC_ID_PCM_MULAW // G.711 μ-law
+        | AVCodecID_AV_CODEC_ID_ADPCM_G722
+        | AVCodecID_AV_CODEC_ID_G723_1
+        | AVCodecID_AV_CODEC_ID_G729 => {
+            // 这些 codec 不需要 extradata
+            return 0;
+        }
+
+        _ => {
+            base::log::warn!("No extradata handler for codec_id={}", codec_id);
+            return -1;
+        }
+    }
+}
+
+/// 使用 FFmpeg bsf 填充 extradata
+unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 {
+    use rsmpeg::ffi::*;
+    let mut bsf: *mut AVBSFContext = std::ptr::null_mut();
+    let filter = av_bsf_get_by_name(bsf_name.as_ptr() as *const i8);
+    if filter.is_null() {
+        base::log::error!("BSF {} not found", bsf_name);
+        return -1;
+    }
+
+    if av_bsf_alloc(filter, &mut bsf) < 0 {
+        return -1;
+    }
+
+    avcodec_parameters_copy((*bsf).par_in, (*st).codecpar);
+    if av_bsf_init(bsf) < 0 {
+        av_bsf_free(&mut bsf);
+        return -1;
+    }
+
+    // 应用一次 extradata 更新
+    avcodec_parameters_copy((*st).codecpar, (*bsf).par_out);
+
+    base::log::info!(
+        "Applied bsf {} on stream, extradata size={}",
+        bsf_name,
+        (*(*st).codecpar).extradata_size
+    );
+
+    av_bsf_free(&mut bsf);
+    0
+}
+
 
 /// pick input format (reuse your logic)
 fn pick_input_format(media_ext: &MediaExt) -> &'static str {
