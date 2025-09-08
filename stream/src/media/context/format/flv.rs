@@ -109,7 +109,7 @@ impl FlvContext {
                 }
             }
 
-            warn!("FLV write_packet before rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={} in_tb={}/{} out_tb={}/{}",
+            debug!("FLV write_packet before rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={} in_tb={}/{} out_tb={}/{}",
     si,
     cloned.pts,
     cloned.dts,
@@ -132,7 +132,7 @@ impl FlvContext {
                     self.out_time_bases[si]
                 );
             }
-            warn!("FLV write_packet after rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={}",
+            debug!("FLV write_packet after rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={}",
     si,
     cloned.pts,
     cloned.dts,
