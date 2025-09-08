@@ -1,3 +1,5 @@
+9.8-9.14 完成SESSION注册BUG+已有功能实现回放+MP4录像
+9.15- 大华相机调试+图片采集（是否推流采集？）
 流播放地址：
 /flv/{stream_id}/{token}
 /hls/{stream_id}/{token}
