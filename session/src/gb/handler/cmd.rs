@@ -200,7 +200,7 @@ impl CmdStream {
                         }
                     }
                 }
-                if let Some(num) = media.get_first_attribute_value("streamnumber").hand_log(|msg| error!("{msg}"))? {
+                if let Ok(Some(num)) = media.get_first_attribute_value("streamnumber") {
                     ext.stream_number = Some(num.trim().parse().hand_log(|msg| error!("{msg}"))?);
                 }
             }
@@ -233,20 +233,24 @@ impl CmdStream {
 #[allow(unused)]
 mod test {
     use regex::Regex;
+    use crate::gb::handler::cmd::CmdStream;
 
     #[test]
     fn test_parse_sdp() {
-        let sdp_str = "v=0
-o=33010602001310019325 0 0 IN IP4 10.64.49.44
-s=Play
-c=IN IP4 10.64.49.218
-t=0 0
-m=video 5514 RTP/AVP 96
-a=rtpmap:96 PS/90000
+        let sdp_str = r#"v=0
+o=34020000001110000009 0 0 IN IP4 192.168.110.254
+s=Playback
+c=IN IP4 192.168.110.254
+t=1757289597 1757293200
+m=video 62874 RTP/AVP 96
 a=sendonly
-y=0060205514";
-        let session = sdp_types::Session::parse(sdp_str.as_ref()).unwrap();
-        println!("{:#?}", session);
+a=rtpmap:96 PS/90000
+y=0000004362
+f=v/2/6/25/1/4096a///"#;
+        let result = CmdStream::parse_sdp(&sdp_str.as_bytes().to_vec());
+
+
+        println!("{:#?}", result);
     }
 
 
