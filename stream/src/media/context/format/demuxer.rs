@@ -155,14 +155,22 @@ unsafe fn open_input_with_format(
 unsafe fn find_stream_info_with_retry(
     fmt_ctx: *mut AVFormatContext,
     dict_opts: *mut AVDictionary,
+    media_ext: &MediaExt,
 ) -> Result<(), GlobalError> {
     let mut retry_count = 0usize;
     let max_retries = 3usize;
     let mut ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
-    while ret < 0 && retry_count < max_retries {
+    let mut not_the_codec = false;
+    if ret >= 0 {
+        not_the_codec = !check_codec(fmt_ctx, media_ext);
+    }
+    while (ret < 0 || not_the_codec) && retry_count < max_retries {
         info!("avformat_find_stream_info failed (attempt {}), retrying...", retry_count + 1);
         std::thread::sleep(std::time::Duration::from_millis(500));
         ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
+        if ret >= 0 {
+            not_the_codec = !check_codec(fmt_ctx, media_ext);
+        }
         retry_count += 1;
     }
     if ret < 0 {
@@ -173,6 +181,38 @@ unsafe fn find_stream_info_with_retry(
         ));
     }
     Ok(())
+}
+
+unsafe fn check_codec(fmt_ctx: *mut AVFormatContext, media_ext: &MediaExt) -> bool {
+    let nb_streams = (*fmt_ctx).nb_streams as usize;
+    for i in 0..nb_streams {
+        let st = *(*fmt_ctx).streams.add(i);
+        if st.is_null() {
+            return false;
+        }
+        // 判断当前流是视频还是音频，并与 media_ext 中的参数进行比对，不一致则返回错误
+        let codecpar = (*st).codecpar;
+        let is_video_stream = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO;
+        let is_audio_stream = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO;
+        if is_video_stream {
+            if let Some(ref v_codec) = media_ext.video_params.codec_id {
+                let expected_id = map_video_codec_id(v_codec);
+                if expected_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != expected_id {
+                    warn!("视频流 codec_id 不一致: demuxer={}, media_ext={}", (*codecpar).codec_id, expected_id);
+                    return false;
+                }
+            }
+        } else if is_audio_stream {
+            if let Some(ref a_codec) = media_ext.audio_params.codec_id {
+                let expected_id = map_audio_codec_id(a_codec);
+                if expected_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != AVCodecID_AV_CODEC_ID_NONE && (*codecpar).codec_id != expected_id {
+                    warn!("音频流 codec_id 不一致: demuxer={}, media_ext={}", (*codecpar).codec_id, expected_id);
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Helper: cleanup when start_demuxer fails before AvioResource is returned.
@@ -246,13 +286,6 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
     if stream.is_null() { return; }
     let par = (*stream).codecpar;
     if par.is_null() { return; }
-    warn!(
-        "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
-        stream,
-        (*stream).time_base.num, (*stream).time_base.den,
-        (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
-        (*stream).r_frame_rate.num, (*stream).r_frame_rate.den
-    );
     // Video
     if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
         if let Some((w, h)) = media_ext.video_params.resolution {
@@ -267,20 +300,15 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
                 (*par).bit_rate = br;
             }
         }
+        if (*stream).time_base.num <= 0 || (*stream).time_base.den <= 0 {
+            if media_ext.clock_rate > 0 {
+                (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
+            }
+        }
         if let Some(fps) = media_ext.video_params.fps {
             if (*stream).avg_frame_rate.num <= 0 || (*stream).avg_frame_rate.den <= 0 {
                 (*stream).avg_frame_rate = AVRational { num: fps, den: 1 };
                 (*stream).r_frame_rate = AVRational { num: fps, den: 1 };
-            }
-            // if (*stream).r_frame_rate.num <= 0 || (*stream).r_frame_rate.den <= 0 {
-            //     (*stream).r_frame_rate = AVRational { num: fps, den: 1 };
-            // }
-            if (*stream).time_base.num <= 0 || (*stream).time_base.den <= 0 {
-                if media_ext.clock_rate > 0 {
-                    (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
-                } else {
-                    (*stream).time_base = AVRational { num: 1, den: fps.max(1) };
-                }
             }
         } else if media_ext.clock_rate > 0 && ((*stream).time_base.num <= 0 || (*stream).time_base.den <= 0) {
             (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
@@ -313,26 +341,41 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
         }
     }
     // 如果 extradata 缺失，调用 ensure_extradata
-    if (*par).extradata.is_null() || (*par).extradata_size <= 0 {
+    if (*par).extradata.is_null() || is_extradata_incomplete((*par).codec_id, (*par).extradata_size) {
         let ret = ensure_extradata((*stream).codecpar, (*par).codec_id, stream);
         if ret == 0 {
-            base::log::info!(
+            info!(
                 "extradata filled: codec_id={} size={}",
                 (*par).codec_id,
                 (*par).extradata_size
             );
         } else {
-            base::log::warn!(
+            warn!(
                 "extradata not filled: codec_id={}",
                 (*par).codec_id
             );
         }
     } else {
-        base::log::info!(
+        info!(
             "extradata already present: codec_id={} size={}",
             (*par).codec_id,
             (*par).extradata_size
         );
+    }
+    info!(
+        "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
+        stream,
+        (*stream).time_base.num, (*stream).time_base.den,
+        (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
+        (*stream).r_frame_rate.num, (*stream).r_frame_rate.den
+    );
+}
+fn is_extradata_incomplete(codec_id: AVCodecID, size: i32) -> bool {
+    match codec_id {
+        AVCodecID_AV_CODEC_ID_H264 => size < 50,
+        AVCodecID_AV_CODEC_ID_HEVC => size < 80,
+        AVCodecID_AV_CODEC_ID_AAC => size < 2,
+        _ => false,
     }
 }
 unsafe fn ensure_extradata(
@@ -369,7 +412,7 @@ unsafe fn ensure_extradata(
         }
 
         _ => {
-            base::log::warn!("No extradata handler for codec_id={}", codec_id);
+            warn!("No extradata handler for codec_id={}", codec_id);
             return -1;
         }
     }
@@ -457,9 +500,7 @@ impl DemuxerContext {
             (*fmt_ctx).pb = pb;
 
             // 3) set codec hints if provided in media_ext
-            let mut has_video = false;
             if let Some(v_id) = &media_ext.video_params.codec_id {
-                has_video = true;
                 let id = map_video_codec_id(v_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
                     (*fmt_ctx).video_codec_id = id;
@@ -473,9 +514,7 @@ impl DemuxerContext {
                     (*fmt_ctx).video_codec = codec;
                 }
             }
-            let mut has_audio = false;
             if let Some(a_id) = &media_ext.audio_params.codec_id {
-                has_audio = true;
                 let id = map_audio_codec_id(a_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
                     (*fmt_ctx).audio_codec_id = id;
@@ -498,12 +537,7 @@ impl DemuxerContext {
                     rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            //流包含音视频需要rtp timestamp 同步，单路无需同步可以使用genpts
-            if has_video&&has_audio {
-                set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");
-            }else {
-                set_dict!("fflags", "nobuffer+discardcorrupt+genpts+ignidx");
-            }
+            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");
             set_dict!("analyzeduration", "1000000");
             set_dict!("probesize", "32768");
             set_dict!("fpsprobesize", "0");
@@ -521,27 +555,19 @@ impl DemuxerContext {
             }
 
             // 6) find stream info (with retry)
-            if let Err(e) = find_stream_info_with_retry(fmt_ctx, dict_opts) {
+            if let Err(e) = find_stream_info_with_retry(fmt_ctx, dict_opts, media_ext) {
                 // close input and cleanup early: after avformat_close_input, pb is detached, but
-                // our AvioResource::drop will handle freeing io_buf/opaque when returned below.
                 avformat_close_input(&mut (fmt_ctx as *mut _));
-                cleanup_early(ptr::null_mut(), ptr::null_mut(), io_buf); // ensure boxed freed if necessary
                 return Err(e);
             }
 
-            // 7) fill stream params from media_ext
-            let nb_streams = (*fmt_ctx).nb_streams as usize;
-            for i in 0..nb_streams {
-                let st = *(*fmt_ctx).streams.add(i);
-                if st.is_null() { continue; }
-                fill_stream_from_media_ext(st, media_ext);
-            }
-
             // 8) collect codecpar_list & stream mapping
+            let nb_streams = (*fmt_ctx).nb_streams as usize;
             let mut codecpar_list: Vec<*mut rsmpeg::ffi::AVCodecParameters> = Vec::with_capacity(nb_streams);
             let mut stream_mapping: Vec<(usize, bool)> = Vec::with_capacity(nb_streams);
             for i in 0..nb_streams {
                 let st = *(*fmt_ctx).streams.add(i);
+                fill_stream_from_media_ext(st, media_ext);
                 let codecpar = avcodec_parameters_alloc();
                 if codecpar.is_null() {
                     // cleanup: close input (which will free pb), and let AvioResource::drop handle opaque/io_buf

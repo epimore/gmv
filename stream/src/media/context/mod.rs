@@ -9,7 +9,7 @@ use base::bus::mpsc::TypedReceiver;
 use base::exception::typed::common::MessageBusError;
 use base::exception::GlobalResult;
 use rsmpeg::ffi::AVPacket;
-use base::log::warn;
+use base::log::{debug, warn};
 use shared::info::media_info_ext::MediaExt;
 use std::time::Instant;
 
@@ -169,7 +169,7 @@ impl MediaContext {
                 pkt.pts = pts_rescaled;
                 pkt.dts = pts_rescaled;
                 pkt.duration = duration_rescaled;
-                warn!(
+                debug!(
                 "DEMX RTP: raw_ts={} unwrapped={} diff_90k={} pts={} dts={} duration={} (tb={}/{})",
                 cur_ts_32,
                 cur_unwrapped_i64,
@@ -180,6 +180,11 @@ impl MediaContext {
                 tb.num,
                 tb.den
             );
+
+                // 暂不实现处理codec
+                // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
+                // 暂不实现处理filter
+                // Self::handle_filter(&mut self.filter_context);
 
                 // 调用 muxer
                 Self::handle_muxer(&mut self.muxer_context, &pkt);

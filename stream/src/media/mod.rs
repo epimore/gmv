@@ -12,7 +12,7 @@ mod rw;
 pub mod rtp;
 pub mod context;
 
-pub const DEFAULT_IO_BUF_SIZE: usize = 10240;
+pub const DEFAULT_IO_BUF_SIZE: usize = 32768;
 pub fn build_worker_run(rx: Receiver<u32>) {
     // 限制最大并发流数量，防止资源耗尽
     let mut concurrency_limit = std::thread::available_parallelism()
