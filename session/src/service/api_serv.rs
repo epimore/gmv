@@ -10,11 +10,12 @@ use base::log::{error};
 use base::serde_json;
 use base::tokio::sync::mpsc;
 use base::tokio::time::{Instant, sleep};
-use shared::info::format::{Flv, Muxer};
+use shared::info::format::{Flv, Mp4, Muxer, MuxerType};
 use shared::info::output::{HttpFlv, Output};
 use shared::info::media_info::{Converter, MediaStreamConfig};
 use shared::info::media_info_ext::{MediaExt, MediaMap, MediaType};
 use shared::info::obj::{BaseStreamInfo, StreamKey, StreamPlayInfo, StreamRecordInfo, StreamState};
+use shared::info::output;
 use shared::info::res::Resp;
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWSession;
@@ -104,23 +105,22 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
 }
 
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<String> {
-    unimplemented!();
-    /*let device_id = play_back_model.get_device_id();
+    let device_id = &play_back_model.device_id;
     if !RWSession::has_session_by_device_id(device_id) {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
-    let channel_id = if let Some(channel_id) = play_back_model.get_channel_id() {
+    let channel_id = if let Some(channel_id) = &play_back_model.channel_id {
         channel_id
     } else {
         device_id
     };
-    let am = PlayType::Down;
+    let am = AccessMode::Down;
     //查看是否有任务
     if let Some(_) = GmvRecord::query_gmv_record_run_by_device_id_channel_id(device_id, channel_id).await? {
         return Err(GlobalError::new_biz_error(1000, "任务已存在", |msg| error!("{msg}")));
     }
-    let st = play_back_model.get_st();
-    let et = play_back_model.get_et();
+    let st = play_back_model.st;
+    let et = play_back_model.et;
 
     let storage_path = DownloadConf::get_download_conf().storage_path;
     let date_str = Local::now().format("%Y%m%d").to_string();
@@ -128,15 +128,24 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     fs::create_dir_all(&path).hand_log(|msg| error!("{msg}"))?;
     let abs_path = path.canonicalize().hand_log(|msg| error!("{msg}"))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
 
-    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, *st - 2, *et + 1, MediaAction::Download(Download::Mp4(abs_path, None))).await?;
-    general::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+    let down_conf = (&play_back_model).custom_media_config.clone().unwrap_or_else(|| {
+        let mut muxer = Muxer::default();
+        muxer.mp4 = Some(Mp4::default());
+        let mut converter = Converter::default();
+        converter.muxer = muxer;
+        let mut output = Output::default();
+        output.local = Some(output::Local { muxer: MuxerType::Mp4, path: abs_path.clone() });
+        CustomMediaConfig { output, converter }
+    });
+    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, st - 2, et + 1, play_back_model.trans_mode, Some(down_conf)).await?;
+    state::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
     let record = GmvRecord {
         biz_id: stream_id.clone(),
         device_id: device_id.to_string(),
         channel_id: channel_id.to_string(),
         user_id: None,
-        st: Local.timestamp_opt(*st as i64, 0).unwrap().naive_local(),
-        et: Local.timestamp_opt(*et as i64, 0).unwrap().naive_local(),
+        st: Local.timestamp_opt(st as i64, 0).unwrap().naive_local(),
+        et: Local.timestamp_opt(et as i64, 0).unwrap().naive_local(),
         speed: 1,
         ct: Local::now().naive_local(),
         state: 0,
@@ -144,7 +153,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         stream_app_name: node_name,
     };
     record.insert_single_gmv_record().await?;
-    Ok(stream_id)*/
+    Ok(stream_id)
 }
 
 pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {

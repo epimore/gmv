@@ -50,53 +50,80 @@ use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamSta
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-
-pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
-    let mut state = SESSION.shared.state.write();
+/// 无则新增
+/// 有则增量添加、不做移除；单独方法移除
+pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<Option<u32>> {
     let ssrc = stream_config.ssrc;
-    if !state.sessions.contains_key(&ssrc) {
-        let expires = Duration::from_millis(HALF_TIME_OUT);
-        let when = Instant::now() + expires;
-        let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
-        state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
-        let stream_id = stream_config.stream_id;
-        let stream_conf = cfg::StreamConf::init_by_conf();
-        let out_expires: &i32 = stream_conf.get_expires();
-        let out_expires = match stream_config.expires {
-            None => {
-                build_out_expires(*out_expires)
+    let expires = Duration::from_millis(HALF_TIME_OUT);
+    let when = Instant::now() + expires;
+
+    // 第一步：检查是否已存在
+    {
+        let mut state = SESSION.shared.state.write();
+        match state.sessions.entry(ssrc) {
+            Entry::Occupied(mut occ) => {
+                let stream_trace = occ.get_mut();
+                stream_trace
+                    .converter
+                    .put_if_absent(stream_config.converter, &stream_config.output);
+                stream_trace.output.put_if_absent(stream_config.output);
+                return Ok(None); // 已存在，直接返回
             }
-            Some(val) => {
-                build_out_expires(val)
+            Entry::Vacant(_) => {
+                // 不在这里创建，只标记 Vacant
             }
-        };
-        let converter = ConverterLayer::bean_to_layer(stream_config.converter, &stream_config.output);
-        let output = OutputLayer::bean_to_layer(stream_config.output)?;
-        let stream_trace = StreamTrace {
-            stream_id: stream_id.clone(),
-            in_on: AtomicBool::new(true),
-            in_timeout: when,
-            in_expires: expires,
-            out_expires,
-            rtp_channel: crossbeam_channel::bounded(RTP_BUFFER_SIZE * 10),
-            register_ts: 0,
-            origin_trans: None,
-            mpsc_bus: bus::mpsc::TypedMessageBus::new(),
-            broadcast_bus: bus::broadcast::TypedMessageBus::new(),
-            converter,
-            media_ext: None,
-            output,
-        };
-        state.sessions.insert(ssrc, stream_trace);
-        let inner = InnerTrace { ssrc, user_map: Default::default() };
-        state.inner.insert(stream_id, inner);
-        drop(state);
-        if notify {
-            SESSION.shared.background_task.notify_one();
         }
-        Ok(ssrc)
-    } else { Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC已存在", ssrc), |msg| error!("{msg}"))) }
+    }
+
+    // 第二步：在锁外构建 StreamTrace，避免占用锁
+    let stream_id = stream_config.stream_id.clone();
+    let stream_conf = cfg::StreamConf::init_by_conf();
+    let out_expires_val: i32 = stream_config
+        .expires
+        .unwrap_or(*stream_conf.get_expires());
+    let out_expires = build_out_expires(out_expires_val);
+
+    let converter = ConverterLayer::layer(stream_config.converter, &stream_config.output);
+    let output = OutputLayer::layer(stream_config.output)?;
+
+    let stream_trace = StreamTrace {
+        stream_id: stream_id.clone(),
+        in_on: AtomicBool::new(true),
+        in_timeout: when,
+        in_expires: expires,
+        out_expires,
+        rtp_channel: crossbeam_channel::bounded(RTP_BUFFER_SIZE * 10),
+        register_ts: 0,
+        origin_trans: None,
+        mpsc_bus: bus::mpsc::TypedMessageBus::new(),
+        broadcast_bus: bus::broadcast::TypedMessageBus::new(),
+        converter,
+        media_ext: None,
+        output,
+    };
+    let inner = InnerTrace {
+        ssrc,
+        user_map: Default::default(),
+    };
+
+    // 第三步：再次加锁，插入
+    let should_notify = {
+        let mut state = SESSION.shared.state.write();
+        let should_notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+        state.sessions.insert(ssrc, stream_trace);
+        state.inner.insert(stream_id, inner);
+        state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
+        should_notify
+    };
+
+    // 第四步：通知
+    if should_notify {
+        SESSION.shared.background_task.notify_one();
+    }
+
+    Ok(Some(ssrc))
 }
+
 
 pub fn insert_media_ext(ssrc: u32, media_ext: MediaExt) -> GlobalResult<()> {
     let mut state = SESSION.shared.state.write();

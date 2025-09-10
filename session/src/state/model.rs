@@ -42,14 +42,14 @@ pub struct StreamNode {
 }
 
 // 传输方式 默认udp 模式, TcpPassive 被动模式,TcpActive 主动模式
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug,Copy, Clone)]
 #[serde(crate = "base::serde")]
 pub enum TransMode {
     Udp,
     TcpActive,
     TcpPassive,
 }
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize,Clone)]
 #[serde(crate = "base::serde")]
 pub struct CustomMediaConfig {
     pub output: Output,
@@ -65,7 +65,7 @@ pub struct PlayLiveModel {
     pub custom_media_config: Option<CustomMediaConfig>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize,Clone)]
 #[serde(crate = "base::serde")]
 pub struct PlayBackModel {
     pub device_id: String,

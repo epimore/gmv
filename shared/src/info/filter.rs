@@ -3,7 +3,7 @@ use base::serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Capture {}
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Filter {
     //抽图

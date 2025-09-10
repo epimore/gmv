@@ -20,7 +20,7 @@ pub struct MediaStreamConfig {
 }
 
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default,Clone)]
 #[serde(crate = "base::serde")]
 pub struct Converter {
     pub codec: Option<Codec>,

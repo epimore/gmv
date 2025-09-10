@@ -18,7 +18,7 @@ pub fn routes(tx: Sender<u32>) -> Router {
 async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaStreamConfig>) -> Json<Resp<()>> {
     info!("stream_init: {:?}",&config);
     let json = match cache::insert_media(config) {
-        Ok(ssrc) => {
+        Ok(Some(ssrc)) => {
             match tx.try_send(ssrc).hand_log(|msg| error!("{msg}")) {
                 Ok(_) => { Resp::<()>::build_success() }
                 Err(err) => {
@@ -29,6 +29,7 @@ async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<M
         Err(err) => {
             Resp::<()>::build_failed_by_msg(err.to_string())
         }
+        Ok(None) => Resp::<()>::build_success()
     };
     info!("stream_init response: {:?}",&json);
     Json(json)
