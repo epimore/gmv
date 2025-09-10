@@ -154,7 +154,7 @@ impl CmdStream {
         EventSession::remove_event(&ident);
         return Err(GlobalError::new_biz_error(1000, "关闭摄像机直播未响应或超时", |msg| error!("{msg}")));
     }
-    //同时下发两个ssrc,以标识音视频
+    //ps含音视频，todo cancel
     async fn invite_stream(ident: Ident, msg: SipMessage) -> GlobalResult<(Response, MediaExt, String, String)> {
         let (tx, mut rx) = mpsc::channel(10);
         RequestOutput::new(ident.clone(), msg, Some(tx)).do_send()?;

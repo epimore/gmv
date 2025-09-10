@@ -1,6 +1,6 @@
 use base::serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default,Clone)]
 #[serde(crate = "base::serde")]
 pub struct Muxer {
     pub flv: Option<Flv>,

@@ -17,19 +17,46 @@ pub mod output_layer {
         web_rtc: Option<WebRtcLayer>,
     }
     impl OutputLayer {
-        pub fn bean_to_layer(output: Output) -> GlobalResult<Self> {
+        pub fn put_if_absent(&mut self, output: Output) {
+            if self.local.is_none() {
+                self.local = output.local.map(LocalLayer::layer);
+            }
+            if self.rtmp.is_none() {
+                self.rtmp = output.rtmp.map(RtmpLayer::layer);
+            }
+            if self.http_flv.is_none() {
+                self.http_flv = output.http_flv.map(HttpFlvLayer::layer);
+            }
+            if self.dash.is_none() {
+                self.dash = output.dash.map(DashLayer::layer);
+            }
+            if self.hls.is_none() {
+                self.hls = output.hls.map(HlsLayer::layer);
+            }
+            if self.rtsp.is_none() {
+                self.rtsp = output.rtsp.map(RtspLayer::layer);
+            }
+            if self.gb28181.is_none() {
+                self.gb28181 = output.gb28181.map(Gb28181Layer::layer);
+            }
+            if self.web_rtc.is_none() {
+                self.web_rtc = output.web_rtc.map(WebRtcLayer::layer);
+            }
+        }
+
+        pub fn layer(output: Output) -> GlobalResult<Self> {
             if output.check_empty() {
                 return Err(GlobalError::new_biz_error(CONFIG_ERROR_CODE, "Output cannot be empty", |msg| error!("{msg}")));
             }
             let layer = OutputLayer {
-                local: output.local.map(LocalLayer::bean_to_layer),
-                rtmp: output.rtmp.map(RtmpLayer::bean_to_layer),
-                http_flv: output.http_flv.map(HttpFlvLayer::bean_to_layer),
-                dash: output.dash.map(DashLayer::bean_to_layer),
-                hls: output.hls.map(HlsLayer::bean_to_layer),
-                rtsp: output.rtsp.map(RtspLayer::bean_to_layer),
-                gb28181: output.gb28181.map(Gb28181Layer::bean_to_layer),
-                web_rtc: output.web_rtc.map(WebRtcLayer::bean_to_layer),
+                local: output.local.map(LocalLayer::layer),
+                rtmp: output.rtmp.map(RtmpLayer::layer),
+                http_flv: output.http_flv.map(HttpFlvLayer::layer),
+                dash: output.dash.map(DashLayer::layer),
+                hls: output.hls.map(HlsLayer::layer),
+                rtsp: output.rtsp.map(RtspLayer::layer),
+                gb28181: output.gb28181.map(Gb28181Layer::layer),
+                web_rtc: output.web_rtc.map(WebRtcLayer::layer),
             };
             Ok(layer)
         }
@@ -37,49 +64,49 @@ pub mod output_layer {
 
     pub struct LocalLayer {}
     impl LocalLayer {
-        pub fn bean_to_layer(local: Local) -> Self {
+        pub fn layer(local: Local) -> Self {
             unimplemented!()
         }
     }
     pub struct HlsLayer {}
     impl HlsLayer {
-        pub fn bean_to_layer(hls: Hls) -> Self {
+        pub fn layer(hls: Hls) -> Self {
             unimplemented!()
         }
     }
     pub struct HttpFlvLayer {}
     impl HttpFlvLayer {
-        pub fn bean_to_layer(http_flv: HttpFlv) -> Self {
+        pub fn layer(http_flv: HttpFlv) -> Self {
             Self {}
         }
     }
     pub struct RtmpLayer {}
     impl RtmpLayer {
-        pub fn bean_to_layer(rtmp: Rtmp) -> Self {
+        pub fn layer(rtmp: Rtmp) -> Self {
             unimplemented!()
         }
     }
     pub struct RtspLayer {}
     impl RtspLayer {
-        pub fn bean_to_layer(rtsp: Rtsp) -> Self {
+        pub fn layer(rtsp: Rtsp) -> Self {
             unimplemented!()
         }
     }
     pub struct DashLayer {}
     impl DashLayer {
-        pub fn bean_to_layer(dash: Dash) -> Self {
+        pub fn layer(dash: Dash) -> Self {
             unimplemented!()
         }
     }
     pub struct Gb28181Layer {}
     impl Gb28181Layer {
-        pub fn bean_to_layer(gb28181: Gb28181) -> Self {
+        pub fn layer(gb28181: Gb28181) -> Self {
             unimplemented!()
         }
     }
     pub struct WebRtcLayer {}
     impl WebRtcLayer {
-        pub fn bean_to_layer(web_rtc: WebRtc) -> Self {
+        pub fn layer(web_rtc: WebRtc) -> Self {
             unimplemented!()
         }
     }
@@ -113,11 +140,18 @@ pub mod converter_layer {
     }
 
     impl ConverterLayer {
-        pub fn bean_to_layer(converter: Converter, output: &Output) -> Self {
+        pub fn put_if_absent(&mut self, converter: Converter, output: &Output) {
+            if self.codec.is_none() {
+                self.codec = converter.codec.map(CodecLayer::layer);
+            }
+            self.muxer.put_if_absent(converter.muxer, output);
+            self.filter.put_if_absent(converter.filter);
+        }
+        pub fn layer(converter: Converter, output: &Output) -> Self {
             ConverterLayer {
-                codec: converter.codec.map(CodecLayer::bean_to_layer),
-                muxer: MuxerLayer::build_muxer(converter.muxer, output),
-                filter: FilterLayer::bean_to_layer(converter.filter),
+                codec: converter.codec.map(CodecLayer::layer),
+                muxer: MuxerLayer::layer(converter.muxer, output),
+                filter: FilterLayer::layer(converter.filter),
             }
         }
     }
@@ -128,7 +162,7 @@ pub mod filter_layer {
     #[derive(Clone)]
     pub struct CaptureLayer {}
     impl CaptureLayer {
-        pub fn bean_to_layer(capture: Capture) -> Self {
+        pub fn layer(capture: Capture) -> Self {
             unimplemented!()
         }
     }
@@ -147,13 +181,16 @@ pub mod filter_layer {
     }
 
     impl FilterLayer {
-        pub fn bean_to_layer(filter: Filter) -> Self {
+        pub fn put_if_absent(&mut self, filter: Filter) {
+            if self.capture.is_none() {
+                {
+                    self.capture = filter.capture.map(CaptureLayer::layer);
+                }
+            }
+        }
+        pub fn layer(filter: Filter) -> Self {
             FilterLayer {
-                capture: filter.capture.map(CaptureLayer::bean_to_layer),
-                // scale: filter.scale,
-                // crop: filter.crop,
-                // rotate: filter.rotate,
-                // mirror: filter.mirror,
+                capture: filter.capture.map(CaptureLayer::layer),
             }
         }
     }
@@ -167,6 +204,7 @@ pub mod muxer_layer {
     use shared::{impl_check_empty, impl_close};
     use shared::info::output::{Gb28181, Local, Output, WebRtc};
     use shared::paste::paste;
+    use crate::media::context::format::mp4::Mp4Packet;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
@@ -182,38 +220,78 @@ pub mod muxer_layer {
 
     impl_close!(MuxerLayer, [flv, mp4, ts, rtp_frame, rtp_ps, rtp_enc, frame]);
     impl MuxerLayer {
-        pub fn build_muxer(muxer: Muxer, output: &Output) -> Self {
+        pub fn put_if_absent(&mut self, muxer: Muxer, output: &Output) {
+            if self.flv.is_none()
+                && (output.http_flv.is_some()
+                || output.rtmp.is_some()
+                || matches!(output.local, Some(Local { muxer: MuxerType::Flv ,..}))) {
+                let flv = muxer.flv.unwrap_or_else(|| Flv::default());
+                self.flv = Some(FlvLayer::layer(flv));
+            }
+            if self.mp4.is_none()
+                && (output.dash.is_some()
+                || matches!(output.local, Some(Local { muxer: MuxerType::Mp4,.. }))) {
+                let mp4 = muxer.mp4.unwrap_or_else(|| Mp4::default());
+                self.mp4 = Some(Mp4Layer::layer(mp4));
+            }
+            if self.ts.is_none()
+                && (output.hls.is_some()
+                || matches!(output.local, Some(Local { muxer: MuxerType::Ts,.. }))) {
+                let ts = muxer.ts.unwrap_or_else(|| Ts::default());
+                self.ts = Some(TsLayer::layer(ts));
+            }
+            if self.rtp_frame.is_none()
+                && (output.rtsp.is_some()
+                || matches!(output.local, Some(Local { muxer: MuxerType::RtpFrame,.. }))
+                || matches!(output.gb28181,Some(Gb28181{muxer:GB28181MuxerType::RtpFrame}))
+                || matches!(output.web_rtc,Some(WebRtc{muxer:WebRtcMuxerType::RtpFrame}))) {
+                let rtp_frame = muxer.rtp_frame.unwrap_or_else(|| RtpFrame::default());
+                self.rtp_frame = Some(RtpFrameLayer::layer(rtp_frame));
+            }
+            if self.rtp_ps.is_none() && (matches!(output.local, Some(Local { muxer: MuxerType::RtpPs,.. }))
+                || matches!(output.gb28181,Some(Gb28181{muxer:GB28181MuxerType::RtpPs}))) {
+                let rtp_ps = muxer.rtp_ps.unwrap_or_else(|| RtpPs::default());
+                self.rtp_ps = Some(RtpPsLayer::layer(rtp_ps));
+            }
+
+            if self.rtp_enc.is_none() && (matches!(output.local, Some(Local { muxer: MuxerType::RtpEnc,.. }))
+                || matches!(output.web_rtc,Some(WebRtc{muxer:WebRtcMuxerType::RtpEnc}))) {
+                let rtp_enc = muxer.rtp_enc.unwrap_or_else(|| RtpEnc::default());
+                self.rtp_enc = Some(RtpEncLayer::layer(rtp_enc));
+            }
+        }
+        pub fn layer(muxer: Muxer, output: &Output) -> Self {
             let mut ml = MuxerLayer::default();
             if output.http_flv.is_some() || output.rtmp.is_some()
-                || matches!(output.local, Some(Local { muxer: MuxerType::Flv })) {
+                || matches!(output.local, Some(Local { muxer: MuxerType::Flv ,..})) {
                 let flv = muxer.flv.unwrap_or_else(|| Flv::default());
-                ml.flv = Some(FlvLayer::bean_to_layer(flv));
+                ml.flv = Some(FlvLayer::layer(flv));
             }
-            if output.dash.is_some() || matches!(output.local, Some(Local { muxer: MuxerType::Mp4 })) {
+            if output.dash.is_some() || matches!(output.local, Some(Local { muxer: MuxerType::Mp4 ,..})) {
                 let mp4 = muxer.mp4.unwrap_or_else(|| Mp4::default());
-                ml.mp4 = Some(Mp4Layer::bean_to_layer(mp4));
+                ml.mp4 = Some(Mp4Layer::layer(mp4));
             }
-            if output.hls.is_some() || matches!(output.local, Some(Local { muxer: MuxerType::Ts })) {
+            if output.hls.is_some() || matches!(output.local, Some(Local { muxer: MuxerType::Ts ,..})) {
                 let ts = muxer.ts.unwrap_or_else(|| Ts::default());
-                ml.ts = Some(TsLayer::bean_to_layer(ts));
+                ml.ts = Some(TsLayer::layer(ts));
             }
             if output.rtsp.is_some()
-                || matches!(output.local, Some(Local { muxer: MuxerType::RtpFrame }))
+                || matches!(output.local, Some(Local { muxer: MuxerType::RtpFrame ,..}))
                 || matches!(output.gb28181,Some(Gb28181{muxer:GB28181MuxerType::RtpFrame}))
                 || matches!(output.web_rtc,Some(WebRtc{muxer:WebRtcMuxerType::RtpFrame})) {
                 let rtp_frame = muxer.rtp_frame.unwrap_or_else(|| RtpFrame::default());
-                ml.rtp_frame = Some(RtpFrameLayer::bean_to_layer(rtp_frame));
+                ml.rtp_frame = Some(RtpFrameLayer::layer(rtp_frame));
             }
-            if matches!(output.local, Some(Local { muxer: MuxerType::RtpPs }))
+            if matches!(output.local, Some(Local { muxer: MuxerType::RtpPs,.. }))
                 || matches!(output.gb28181,Some(Gb28181{muxer:GB28181MuxerType::RtpPs})) {
                 let rtp_ps = muxer.rtp_ps.unwrap_or_else(|| RtpPs::default());
-                ml.rtp_ps = Some(RtpPsLayer::bean_to_layer(rtp_ps));
+                ml.rtp_ps = Some(RtpPsLayer::layer(rtp_ps));
             }
 
-            if matches!(output.local, Some(Local { muxer: MuxerType::RtpEnc }))
+            if matches!(output.local, Some(Local { muxer: MuxerType::RtpEnc ,..}))
                 || matches!(output.web_rtc,Some(WebRtc{muxer:WebRtcMuxerType::RtpEnc})) {
                 let rtp_enc = muxer.rtp_enc.unwrap_or_else(|| RtpEnc::default());
-                ml.rtp_enc = Some(RtpEncLayer::bean_to_layer(rtp_enc));
+                ml.rtp_enc = Some(RtpEncLayer::layer(rtp_enc));
             }
             ml
         }
@@ -237,7 +315,7 @@ pub mod muxer_layer {
         pub flv: Flv,
     }
     impl FlvLayer {
-        pub fn bean_to_layer(flv: Flv) -> Self {
+        pub fn layer(flv: Flv) -> Self {
             let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
             Self {
                 tx,
@@ -248,42 +326,49 @@ pub mod muxer_layer {
     #[derive(Clone)]
     pub struct FrameLayer {}
     impl FrameLayer {
-        pub fn bean_to_layer(frame: Frame) -> Self {
+        pub fn layer(frame: Frame) -> Self {
             unimplemented!()
         }
     }
     #[derive(Clone)]
-    pub struct Mp4Layer {}
+    pub struct Mp4Layer {
+        pub tx: broadcast::Sender<Arc<Mp4Packet>>,
+        pub mp4: Mp4,
+    }
     impl Mp4Layer {
-        pub fn bean_to_layer(mp4: Mp4) -> Self {
-            unimplemented!()
+        pub fn layer(mp4: Mp4) -> Self {
+            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
+            Self {
+                tx,
+                mp4,
+            }
         }
     }
     #[derive(Clone)]
     pub struct RtpFrameLayer {}
     impl RtpFrameLayer {
-        pub fn bean_to_layer(rtp: RtpFrame) -> Self {
+        pub fn layer(rtp: RtpFrame) -> Self {
             unimplemented!()
         }
     }
     #[derive(Clone)]
     pub struct RtpPsLayer {}
     impl RtpPsLayer {
-        pub fn bean_to_layer(rtp: RtpPs) -> Self {
+        pub fn layer(rtp: RtpPs) -> Self {
             unimplemented!()
         }
     }
     #[derive(Clone)]
     pub struct RtpEncLayer {}
     impl RtpEncLayer {
-        pub fn bean_to_layer(rtp: RtpEnc) -> Self {
+        pub fn layer(rtp: RtpEnc) -> Self {
             unimplemented!()
         }
     }
     #[derive(Clone)]
     pub struct TsLayer {}
     impl TsLayer {
-        pub fn bean_to_layer(ts: Ts) -> Self {
+        pub fn layer(ts: Ts) -> Self {
             unimplemented!()
         }
     }
@@ -308,7 +393,7 @@ pub mod codec_layer {
         Aac,
     }
     impl CodecLayer {
-        pub fn bean_to_layer(codec: Codec) -> Self {
+        pub fn layer(codec: Codec) -> Self {
             match codec {
                 Codec::Mpeg4 => { CodecLayer::Mpeg4 }
                 Codec::H264 => { CodecLayer::H264 }

@@ -6,7 +6,7 @@ use paste::paste;
 use crate::{impl_check_empty, impl_open_close};
 use crate::info::format::{Flv, GB28181MuxerType, Mp4, Muxer, MuxerType, RtpFrame, Ts, WebRtcMuxerType};
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Output {
     pub local: Option<Local>,
@@ -71,27 +71,23 @@ impl_open_close!(Output, {
 #[serde(crate = "base::serde")]
 pub struct Local {
     pub muxer: MuxerType,
+    pub path: String,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct Hls {
-}
+pub struct Hls {}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct HttpFlv {
-}
+pub struct HttpFlv {}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct Rtmp {
-}
+pub struct Rtmp {}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct Rtsp {
-}
+pub struct Rtsp {}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct Dash {
-}
+pub struct Dash {}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Gb28181 {
