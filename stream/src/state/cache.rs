@@ -44,38 +44,21 @@ use base::tokio::time::Instant;
 use parking_lot::RwLock;
 use shared::info::format::MuxerType;
 use shared::info::output::PlayType;
-use shared::info::media_info::MediaStreamConfig;
+use shared::info::media_info::{MediaAction, MediaStreamConfig};
 use shared::info::media_info_ext::MediaExt;
 use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-/// 无则新增
-/// 有则增量添加、不做移除；单独方法移除
-pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<Option<u32>> {
+pub fn modify_media(action: MediaAction) {
+    todo!()
+}
+pub fn init_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
+    // 第1步：在锁外构建 StreamTrace，避免占用锁
     let ssrc = stream_config.ssrc;
     let expires = Duration::from_millis(HALF_TIME_OUT);
     let when = Instant::now() + expires;
 
-    // 第一步：检查是否已存在
-    {
-        let mut state = SESSION.shared.state.write();
-        match state.sessions.entry(ssrc) {
-            Entry::Occupied(mut occ) => {
-                let stream_trace = occ.get_mut();
-                stream_trace
-                    .converter
-                    .put_if_absent(stream_config.converter, &stream_config.output);
-                stream_trace.output.put_if_absent(stream_config.output);
-                return Ok(None); // 已存在，直接返回
-            }
-            Entry::Vacant(_) => {
-                // 不在这里创建，只标记 Vacant
-            }
-        }
-    }
-
-    // 第二步：在锁外构建 StreamTrace，避免占用锁
     let stream_id = stream_config.stream_id.clone();
     let stream_conf = cfg::StreamConf::init_by_conf();
     let out_expires_val: i32 = stream_config
@@ -106,26 +89,28 @@ pub fn insert_media(stream_config: MediaStreamConfig) -> GlobalResult<Option<u32
         user_map: Default::default(),
     };
 
-    // 第三步：再次加锁，插入
-    let should_notify = {
-        let mut state = SESSION.shared.state.write();
-        let should_notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
-        state.sessions.insert(ssrc, stream_trace);
-        state.inner.insert(stream_id, inner);
-        state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
-        should_notify
-    };
-
-    // 第四步：通知
+    // 第2步：加锁，插入
+    let mut state = SESSION.shared.state.write();
+    match state.sessions.entry(ssrc) {
+        Entry::Occupied(_) => {
+            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC已存在", ssrc), |msg| error!("{msg}")))?
+        }
+        Entry::Vacant(vac) => {
+            vac.insert(stream_trace);
+            state.inner.insert(stream_id, inner);
+            state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
+        }
+    }
+    let should_notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+    drop(state);
     if should_notify {
         SESSION.shared.background_task.notify_one();
     }
-
-    Ok(Some(ssrc))
+    Ok(ssrc)
 }
 
 
-pub fn insert_media_ext(ssrc: u32, media_ext: MediaExt) -> GlobalResult<()> {
+pub fn init_media_ext(ssrc: u32, media_ext: MediaExt) -> GlobalResult<()> {
     let mut state = SESSION.shared.state.write();
     match state.sessions.entry(ssrc) {
         Entry::Occupied(mut occ) => {
@@ -247,7 +232,7 @@ fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
             if expires == Duration::default() { expires = Duration::from_millis(STREAM_IDLE_TIME_OUT); }
             let when = Instant::now() + expires;
             let notify = next_expiration.map(|ts| ts > when).unwrap_or(true);
-            state.expirations.insert((when, ssrc, StreamDirection::StreamOut(MuxerType::None)));
+            state.expirations.insert((when, ssrc, StreamDirection::StreamOut(PlayType::None)));
             if notify {
                 SESSION.shared.background_task.notify_one();
             }
@@ -297,7 +282,7 @@ pub fn get_event_tx() -> mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)> {
 }
 
 //更新用户数据:in_out:true-插入,false-移除
-//所有输出皆通过此计算是否idle：如无用户，如gb28181转发，则stream_id/user_token = ssrc_{ssrc}
+//所有输出【除无用户gb28181 udp转发，Local存储】皆通过此计算是否idle：
 pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String, in_out: bool, remote_addr: SocketAddr) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
@@ -317,7 +302,7 @@ pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String,
                         if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
                             if let Some(timeout) = out_expires {
                                 let when = Instant::now() + *timeout;
-                                state.expirations.insert((when, *ssrc, StreamDirection::StreamOut(ut.play_type.get_type())));
+                                state.expirations.insert((when, *ssrc, StreamDirection::StreamOut(ut.play_type)));
                                 let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
                                 if notify {
                                     SESSION.shared.background_task.notify_one();
@@ -396,7 +381,7 @@ impl Session {
 
     async fn purge_expired_task(shared: Arc<Shared>) -> GlobalResult<()> {
         loop {
-            if let Some(when) = shared.purge_expired_state().await? {
+            if let Some(when) = shared.purge_expired_state()? {
                 tokio::select! {
                         _ = time::sleep_until(when) =>{},
                         _ = shared.background_task.notified() =>{},
@@ -420,7 +405,7 @@ impl Shared {
     //判断是否有数据:
     // 有:on=true变false;重新插入计时队列，更新时刻
     // 无：on->false；清理state，并回调通知timeout
-    async fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
+    fn purge_expired_state(&self) -> GlobalResult<Option<Instant>> {
         let mut guard = SESSION.shared.state.write();
         let state = &mut *guard;
         let now = Instant::now();
@@ -457,22 +442,27 @@ impl Shared {
                                 let rtp_info = RtpInfo::new(ssrc, opt_net, server_name);
                                 let stream_info = BaseStreamInfo::new(rtp_info, stream_id, register_ts);
                                 let stream_state = StreamState::new(stream_info, user_map.len() as u32);
-                                let _ = SESSION.shared.event_tx.clone().send((OutEvent::StreamInTimeout(stream_state), None)).await.hand_log(|msg| error!("{msg}"));
+                                let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamInTimeout(stream_state), None)).hand_log(|msg| error!("{msg}"));
                             }
                         }
                     }
                 }
                 //此处不需刷新输出，由下一个过期判断
                 StreamDirection::StreamOut(mux_tp) => {
-                    if let Some(StreamTrace { stream_id, converter, mpsc_bus, .. }) = state.sessions.get_mut(&ssrc) {
-                        converter.muxer.close_by_muxer_type(&mux_tp);
-                        if let Some(cm) = CloseMuxer::from_muxer_type(&mux_tp) {
+                    if let Some(StreamTrace { stream_id, converter, mpsc_bus, output, .. })
+                        = state.sessions.get_mut(&ssrc) {
+                        converter.muxer.close_by_muxer_type(&mux_tp.get_type());
+                        if let Some(cm) = CloseMuxer::from_muxer_type(&mux_tp.get_type()) {
                             let _ = mpsc_bus.try_publish(MuxerEvent::Close(cm)).hand_log(|msg| error!("{msg}"));
                         }
                         if let Some(InnerTrace { user_map, .. }) = state.inner.get(stream_id) {
                             if user_map.len() > 0 {
                                 continue;
                             }
+                        }
+                        //todo gb28181 udp做输出 continue
+                        if output.local.is_some() {
+                            continue;
                         }
                         state.inner.remove(stream_id);
                         if let Some(stream_trace) = state.sessions.remove(&ssrc) {
@@ -531,7 +521,7 @@ enum StreamDirection {
     //监听流注册/输入
     StreamIn,
     //监听流输出【有无观看】
-    StreamOut(MuxerType),
+    StreamOut(PlayType),
 }
 ///自定义会话信息
 struct State {
