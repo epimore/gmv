@@ -17,3 +17,8 @@ pub enum Codec {
     SvacAudio,
     Aac,
 }
+impl Default for Codec {
+    fn default() -> Self {
+        Self::H264
+    }
+}

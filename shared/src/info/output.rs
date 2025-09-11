@@ -99,21 +99,26 @@ pub struct WebRtc {
     pub muxer: WebRtcMuxerType,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, )]
 #[serde(crate = "base::serde")]
 pub enum PlayType {
+    None,
     Rtmp(MuxerType),
+    Local(MuxerType),
     Rtsp(MuxerType),
     WebRtc(MuxerType),
     Http(HttpStreamType),
+
 }
 impl PlayType {
     pub fn get_type(&self) -> MuxerType {
         match self {
             PlayType::Rtmp(muxer) => muxer.clone(),
+            PlayType::Local(muxer) => muxer.clone(),
             PlayType::Rtsp(muxer) => muxer.clone(),
             PlayType::WebRtc(muxer) => muxer.clone(),
             PlayType::Http(muxer) => muxer.get_type(),
+            PlayType::None => { MuxerType::None }
         }
     }
 }
@@ -122,7 +127,7 @@ impl PlayType {
 //    Rtmp,
 //     Rtsp,
 //     WebRtc,
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, Copy, Ord, PartialOrd, Eq, PartialEq, )]
 #[serde(crate = "base::serde")]
 pub enum HttpStreamType {
     HttpFlv(MuxerType),

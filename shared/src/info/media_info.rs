@@ -20,10 +20,22 @@ pub struct MediaStreamConfig {
 }
 
 
-#[derive(Serialize, Deserialize, Debug, Default,Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Converter {
     pub codec: Option<Codec>,
     pub muxer: Muxer,
     pub filter: Filter,
 }
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(crate = "base::serde")]
+pub struct MediaAction {
+    pub enable_codec: bool,
+    pub enable_filter: bool,
+    pub enable_output: bool,
+    pub codec: Codec,
+    pub filter: Filter,
+    pub output: Output,
+}
+
