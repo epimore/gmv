@@ -1,7 +1,7 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{debug, warn};
+use base::log::{debug, info, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
 use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free, avformat_alloc_output_context2, av_dump_format, avcodec_parameters_from_context, av_packet_rescale_ts, av_rescale_q};
@@ -15,6 +15,7 @@ static FLV: Lazy<CString> = Lazy::new(|| CString::new("flv").unwrap());
 pub struct FlvPacket {
     pub data: Bytes,
     pub is_key: bool,
+    pub timestamp: u64,
 }
 
 pub struct FlvContext {
@@ -75,7 +76,7 @@ impl FlvContext {
         buf_size
     }
 
-    pub fn write_packet(&mut self, pkt: &AVPacket) {
+    pub fn write_packet(&mut self, pkt: &AVPacket,timestamp: u64) {
         unsafe {
             if pkt.size == 0 || pkt.data.is_null() {
                 warn!("Skipping empty or invalid packet");
@@ -94,15 +95,15 @@ impl FlvContext {
             }
 
             // 关键帧起播：先等视频关键帧
-            if !self.started  {  
-                if self.video_stream_index >= 0 && pkt.stream_index == self.video_stream_index  {
+            if !self.started {
+                if self.video_stream_index >= 0 && pkt.stream_index == self.video_stream_index {
                     let is_key = (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     if !is_key {
                         av_packet_unref(&mut cloned);
                         return;
                     }
                     self.started = true;
-                }else {
+                } else {
                     // 未开始时，非视频流先不发，避免卡在等关键帧
                     av_packet_unref(&mut cloned);
                     return;
@@ -117,7 +118,7 @@ impl FlvContext {
     self.in_time_bases[si].num, self.in_time_bases[si].den,
     self.out_time_bases[si].num, self.out_time_bases[si].den,
 );
-            
+
             // 时间戳重采样
             let orig_duration = pkt.duration;
             av_packet_rescale_ts(
@@ -129,7 +130,7 @@ impl FlvContext {
                 cloned.duration = av_rescale_q(
                     orig_duration,
                     self.in_time_bases[si],
-                    self.out_time_bases[si]
+                    self.out_time_bases[si],
                 );
             }
             debug!("FLV write_packet after rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={}",
@@ -138,7 +139,7 @@ impl FlvContext {
     cloned.dts,
     cloned.duration,
 );
-            
+
             let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
             av_packet_unref(&mut cloned);
             if ret < 0 {
@@ -162,7 +163,7 @@ impl FlvContext {
                 && pkt.stream_index == self.video_stream_index
                 && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0);
 
-            let _ = self.flv_body_tx.send(Arc::new(FlvPacket { data, is_key: is_key_out }));
+            let _ = self.flv_body_tx.send(Arc::new(FlvPacket { data, is_key: is_key_out, timestamp }));
         }
     }
 
@@ -253,12 +254,12 @@ impl FlvContext {
                     AVMediaType_AVMEDIA_TYPE_VIDEO => {
                         // FLV视频时间基：1/1000 (毫秒)
                         AVRational { num: 1, den: 1000 }
-                    },
+                    }
                     AVMediaType_AVMEDIA_TYPE_AUDIO => {
                         // FLV音频时间基：1/采样率
                         let sample_rate = (*(*out_st).codecpar).sample_rate.max(1);
                         AVRational { num: 1, den: sample_rate }
-                    },
+                    }
                     _ => (*in_st).time_base // 其他流保持原样
                 };
 
@@ -289,17 +290,17 @@ impl FlvContext {
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error(&format!("FLV header write failed: {}", show_ffmpeg_error_msg(ret)), |msg| warn!("{msg}")));
             }
-            for (i, tb) in in_tbs.iter().enumerate() {
-                debug!("FLV init: in_time_base[{}] = {}/{}", i, tb.num, tb.den);
-            }
-            for (i, tb) in out_tbs.iter().enumerate() {
-                debug!("FLV init: out_time_base[{}] = {}/{}", i, tb.num, tb.den);
-            }
-            debug!("FLV video_stream_index = {}", video_si);
+            // for (i, tb) in in_tbs.iter().enumerate() {
+            //     info!("FLV init: in_time_base[{}] = {}/{}", i, tb.num, tb.den);
+            // }
+            // for (i, tb) in out_tbs.iter().enumerate() {
+            //     info!("FLV init: out_time_base[{}] = {}/{}", i, tb.num, tb.den);
+            // }
+            // info!("FLV video_stream_index = {}", video_si);
 
             let out_vec = &mut *out_buf_ptr;
-            let flv_header = Bytes::from(out_vec.clone());
-            out_vec.clear();
+            let flv_header = Bytes::from(std::mem::replace(out_vec, Vec::new()));
+            // out_vec.clear();
 
             Ok(FlvContext {
                 flv_header,

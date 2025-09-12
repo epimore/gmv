@@ -17,7 +17,7 @@ impl InnerEvent {
                         error!("no flv context");
                     }
                     Some(fc) => {
-                        if let Err(_) = sender.send(fc.flv_header.clone()) {
+                        if let Err(_) = sender.send(fc.get_header()) {
                             error!("flv_header send to the receiver dropped");
                         }
                     }

@@ -23,33 +23,59 @@ mod utils;
 /// 通过av_lockmgr_register注册全局锁管理器，处理编解码器初始化等非线程安全操作
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 
-
 pub struct RtpState {
-    /// 原来的字段（保留）
-    pub timestamp: u32,
-    pub marker: bool,
+    pub timestamp: u32,  // 读取rtp包的timestamp
+    pub marker: bool,  // 读取rtp包的mark
 
-    /// unwrap 状态
-    pub wraps: u64,            // 已经经历的 32-bit wrap 次数
-    pub last_32: u32,          // 上次记录的低 32 位（用于判断 wrap）
-    pub last_unwrapped: i64,   // 上次完整展开后的 timestamp（单位：RTP ticks，90kHz）
-    pub last_pts: i64,         // 上次转换后的 pts（单位：目标 tb）
-    pub initialized: bool,     // 是否已初始化
-    pub last_arrival: Instant, // 上次包到达时间（用于估算 expected increment）
+    pub last_32: u32,          // 上一次 RTP timestamp（32-bit）
+    pub last_unwrapped: i64,   // 上一次展开 timestamp，用于累积 diff
 }
-
 impl RtpState {
     pub fn new() -> Self {
         Self {
             timestamp: 0,
             marker: false,
-            wraps: 0,
             last_32: 0,
             last_unwrapped: 0,
-            last_pts: 0,
-            initialized: false,
-            last_arrival: Instant::now(),
         }
+    }
+
+    /// 更新 RTP 状态，返回当前展开 timestamp 和帧间差值
+    /// `clock_rate` 用于最大 diff 限制
+    pub fn update(&mut self, cur_ts: u32, clock_rate: u32) -> (i64, i64) {
+        let cur_unwrapped = if self.last_unwrapped == 0 {
+            // 第一帧
+            cur_ts as i64
+        } else {
+            let mut diff = (cur_ts as i64).wrapping_sub(self.last_32 as i64);
+
+            // wrap-around 检测
+            if diff < 0 && (self.last_32.wrapping_sub(cur_ts) > 0x8000_0000) {
+                diff = (cur_ts as i64 + (1i64 << 32)) - self.last_32 as i64;
+            }
+
+            // 最大 diff 限制，防止异常跳变
+            let max_diff = clock_rate as i64; // 1 秒最大 diff，可按需要调整
+            if diff < 0 {
+                diff = 0;
+            } else if diff > max_diff {
+                diff = max_diff;
+            }
+
+            self.last_unwrapped + diff
+        };
+
+        let duration_ticks = if self.last_unwrapped == 0 {
+            0
+        } else {
+            cur_unwrapped - self.last_unwrapped
+        };
+
+        // 更新状态
+        self.last_unwrapped = cur_unwrapped;
+        self.last_32 = cur_ts;
+
+        (cur_unwrapped, duration_ticks)
     }
 }
 pub struct MediaContext {
@@ -98,99 +124,66 @@ impl MediaContext {
 
         unsafe {
             let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+            //write start
+
+            //write body
             let mut pkt = std::mem::zeroed::<AVPacket>();
             loop {
-                // 处理converter事件
                 match self.context_event_rx.try_recv() {
-                    Ok(event) => { self.handle_event(event) }
-                    Err(MessageBusError::ChannelClosed) => { break; }
+                    Ok(event) => self.handle_event(event),
+                    Err(MessageBusError::ChannelClosed) => break,
                     Err(_) => {}
                 }
 
                 let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
-                if ret < 0 {
-                    break;
-                }
+                if ret < 0 { break; }
 
-                // --- 读取 stream 的 time_base（目标 tb） ---
                 let tb = (*(*fmt_ctx)
                     .streams
                     .offset(pkt.stream_index as isize)
                     .read())
                     .time_base;
 
-                // --- RTP timestamp 解包 ---
+                // 更新 RTP 状态并获取展开 timestamp 和帧间差值
                 let rtp_state = &mut *self.rtp_state;
-                let cur_ts_32 = rtp_state.timestamp;
+                let (cur_unwrapped, duration_ticks) = rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
 
-                // wrap-around 检测
-                if rtp_state.initialized {
-                    if cur_ts_32 < rtp_state.last_32
-                        && (rpt_diff_u32(rtp_state.last_32, cur_ts_32) > 0x8000_0000u32)
-                    {
-                        rtp_state.wraps = rtp_state.wraps.wrapping_add(1);
-                    }
-                } else {
-                    rtp_state.initialized = true;
-                    rtp_state.wraps = 0;
-                }
-
-                // 展开成 64-bit
-                let cur_unwrapped =
-                    (rtp_state.wraps as u128 * 0x1_0000_0000u128) + (cur_ts_32 as u128);
-                let cur_unwrapped_i64 = cur_unwrapped as i64;
-
-                // --- 计算 duration：严格按 RTP ts 差值 ---
-                let mut duration_90k: i64 = 0;
-                if rtp_state.last_unwrapped > 0 {
-                    let diff = cur_unwrapped_i64 - rtp_state.last_unwrapped;
-                    if diff > 0 {
-                        duration_90k = diff;
-                    }
-                }
-
-                // --- 映射到流 time_base ---
                 let rtp_tb = AVRational { num: 1, den: self.media_ext.clock_rate };
-                let pts_rescaled = av_rescale_q(cur_unwrapped_i64, rtp_tb, tb);
-
-                let duration_rescaled = if duration_90k > 0 {
-                    av_rescale_q(duration_90k, rtp_tb, tb)
+                let pts_rescaled = av_rescale_q(cur_unwrapped, rtp_tb, tb);
+                let duration_rescaled = if duration_ticks > 0 {
+                    av_rescale_q(duration_ticks, rtp_tb, tb)
                 } else {
-                    // fallback：如果第一帧没有 diff，就估一个（比如 1 帧时间）
                     av_rescale_q((self.media_ext.clock_rate / 25) as i64, rtp_tb, tb)
                 };
 
-                // 更新 state
-                rtp_state.last_unwrapped = cur_unwrapped_i64;
-                rtp_state.last_32 = cur_ts_32;
-                rtp_state.last_pts = pts_rescaled;
-
-                // 写回 pkt
                 pkt.pts = pts_rescaled;
                 pkt.dts = pts_rescaled;
                 pkt.duration = duration_rescaled;
-                debug!(
-                "DEMX RTP: raw_ts={} unwrapped={} diff_90k={} pts={} dts={} duration={} (tb={}/{})",
-                cur_ts_32,
-                cur_unwrapped_i64,
-                duration_90k,
-                pkt.pts,
-                pkt.dts,
-                pkt.duration,
-                tb.num,
-                tb.den
-            );
 
+                debug!(
+                    "DEMX RTP: raw_ts={} unwrapped={} pts={} dts={} duration={} (tb={}/{})",
+                    rtp_state.last_32,
+                    cur_unwrapped,
+                    pkt.pts,
+                    pkt.dts,
+                    pkt.duration,
+                    tb.num,
+                    tb.den
+                );
+
+                // 通过 pts 计算累计真实时长（秒）
+                let real_ts = pts_rescaled as f64 * tb.num as f64 / tb.den as f64;
                 // 暂不实现处理codec
                 // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
                 // 暂不实现处理filter
                 // Self::handle_filter(&mut self.filter_context);
 
                 // 调用 muxer
-                Self::handle_muxer(&mut self.muxer_context, &pkt);
+                Self::handle_pkt_muxer(&mut self.muxer_context, &pkt, real_ts as u64);
 
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
             }
+            //write end
         }
 
         fn rpt_diff_u32(a: u32, b: u32) -> u32 {
@@ -199,13 +192,28 @@ impl MediaContext {
     }
 
 
-
     fn handle_codec(codec: &mut CodecContext) {}
     fn handle_filter(filter: &mut FilterContext) {}
 
-    fn handle_muxer(muxer: &mut MuxerContext, pkt: &AVPacket) {
+    // 1.写入头信息
+    // 2.循环写入body
+    // 3.写入结束信息
+    // 问题如何传递信息【该使用写入结束信息】
+    // 回调
+    fn handle_pkt_muxer(muxer: &mut MuxerContext, pkt: &AVPacket, ts: u64) {
         if let Some(flv_context) = &mut muxer.flv {
-            flv_context.write_packet(pkt);
+            flv_context.write_packet(pkt, ts);
+        }
+        if let Some(mp4_context) = &muxer.mp4 { unimplemented!() }
+        if let Some(ts_context) = &muxer.ts { unimplemented!() }
+        if let Some(rtp_frame_context) = &muxer.rtp_frame { unimplemented!() }
+        if let Some(rtp_ps_context) = &muxer.rtp_ps { unimplemented!() }
+        if let Some(rtp_enc_context) = &muxer.rtp_enc { unimplemented!() }
+        if let Some(frame_context) = &muxer.frame { unimplemented!() }
+    }
+    fn handle_pkt_muxer_end(muxer: &mut MuxerContext, pkt: &AVPacket) {
+        if let Some(flv_context) = &mut muxer.flv {
+            // flv_context.write_packet(pkt);
         }
         if let Some(mp4_context) = &muxer.mp4 { unimplemented!() }
         if let Some(ts_context) = &muxer.ts { unimplemented!() }

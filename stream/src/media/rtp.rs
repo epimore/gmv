@@ -30,7 +30,7 @@ const LAST_MAX_QUEUE_WINDOW: usize = MAX_QUEUE_WINDOW - 2;
 const MIN_QUEUE_WINDOW: usize = 4;
 
 pub struct RtpPacketBuffer {
-    ssrc: u32,
+    pub ssrc: u32,
     first_read_rtp_sn: u16, // 第一个读取的 RTP 包的序列号
     queue: [Option<RtpPacket>; BUFFER_SIZE],
     queue_count: usize,  // 缓冲区有效的包数量
@@ -81,7 +81,7 @@ impl RtpPacketBuffer {
     //1 判断缓冲区数据数量：[queue_count <  queue_window]? 1.1 : 1.2
     //1.1阻塞线程等待数据+超时
     //1.2直接取数据
-    pub fn consume_packet(&mut self, max_consume_len: usize, buf: *mut u8, rtp_state: *mut RtpState) -> GlobalResult<usize>
+    pub fn consume_packet(&mut self, max_consume_len: usize, buf: *mut u8, rtp_state: *mut RtpState) -> Option<usize>
     {
         // 优先返回缓存的剩余数据
         if !self.remaining.is_empty() {
@@ -94,9 +94,10 @@ impl RtpPacketBuffer {
             // util::dump("ps", &data, false)?;
 
             self.remaining = data.slice(copy_len..);
-            return Ok(copy_len);
+            return Some(copy_len);
         }
-        self.reduce_packet()?;
+        let is_end = self.reduce_packet().is_err();
+        if self.queue_count == 0 { return None; }
         let mut index = self.first_read_rtp_sn as usize % BUFFER_SIZE;
         let mut size = 0;
         for i in 0..BUFFER_SIZE {
@@ -130,27 +131,26 @@ impl RtpPacketBuffer {
                     self.remaining = pkt.payload.split_off(max_consume_len);
                     size = max_consume_len;
                 }
-
-                //一个读写周期内，丢包大于缓冲区 && 缓冲区未满
-                if i > self.queue_window {
-                    if self.queue_window < MAX_QUEUE_WINDOW {
-                        self.queue_window += 1;
-                    }
-                } else if i == 0 { //一个读写周期内，未丢包 && 大于最小缓冲区
-                    if self.queue_window > MIN_QUEUE_WINDOW {
-                        self.queue_window -= 1;
+                if !is_end {
+                    //一个读写周期内，丢包大于缓冲区 && 缓冲区未满
+                    if i > self.queue_window {
+                        if self.queue_window < MAX_QUEUE_WINDOW {
+                            self.queue_window += 1;
+                        }
+                    } else if i == 0 { //一个读写周期内，未丢包 && 大于最小缓冲区
+                        if self.queue_window > MIN_QUEUE_WINDOW {
+                            self.queue_window -= 1;
+                        }
                     }
                 }
                 unsafe {
-                    if !rtp_state.is_null() {
-                        (*rtp_state).timestamp = pkt.timestamp;
-                        (*rtp_state).marker = pkt.marker;
-                    }
+                    (*rtp_state).timestamp = pkt.timestamp;
+                    (*rtp_state).marker = pkt.marker;
                 }
-                return Ok(size);
+                return Some(size);
             }
         }
-        Ok(size)
+        None
     }
 
     fn reduce_packet(&mut self) -> GlobalResult<()> {
