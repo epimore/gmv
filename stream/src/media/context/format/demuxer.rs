@@ -341,6 +341,7 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
         }
     }
     // 如果 extradata 缺失，调用 ensure_extradata
+    //使用 av_bitstream_filter_init("h264_mp4toannexb") 创建过滤器上下文，然后在每次收到 AVPacket 后，用 av_bitstream_filter_filter 处理后再写入输出。
     if (*par).extradata.is_null() || is_extradata_incomplete((*par).codec_id, (*par).extradata_size) {
         let ret = ensure_extradata((*stream).codecpar, (*par).codec_id, stream);
         if ret == 0 {

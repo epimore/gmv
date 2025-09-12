@@ -7,14 +7,14 @@ pub mod output_layer {
     use shared::{impl_check_empty, impl_open_close};
 
     pub struct OutputLayer {
-       pub local: Option<LocalLayer>,
-       pub rtmp: Option<RtmpLayer>,
-       pub http_flv: Option<HttpFlvLayer>,
-       pub dash: Option<DashLayer>,
-       pub hls: Option<HlsLayer>,
-       pub rtsp: Option<RtspLayer>,
-       pub gb28181: Option<Gb28181Layer>,
-       pub web_rtc: Option<WebRtcLayer>,
+        pub local: Option<LocalLayer>,
+        pub rtmp: Option<RtmpLayer>,
+        pub http_flv: Option<HttpFlvLayer>,
+        pub dash: Option<DashLayer>,
+        pub hls: Option<HlsLayer>,
+        pub rtsp: Option<RtspLayer>,
+        pub gb28181: Option<Gb28181Layer>,
+        pub web_rtc: Option<WebRtcLayer>,
     }
     impl OutputLayer {
         pub fn put_if_absent(&mut self, output: Output) {
@@ -62,10 +62,12 @@ pub mod output_layer {
         }
     }
 
-    pub struct LocalLayer {}
+    pub struct LocalLayer {
+        pub local: Local,
+    }
     impl LocalLayer {
         pub fn layer(local: Local) -> Self {
-            unimplemented!()
+            Self { local }
         }
     }
     pub struct HlsLayer {}

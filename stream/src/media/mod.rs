@@ -1,12 +1,13 @@
 use crate::media::context::MediaContext;
 use crate::state::msg::StreamConfig;
 use crate::state::{cache};
-use base::exception::GlobalResultExt;
+use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio;
 use base::tokio::sync::mpsc::Receiver;
 use rsmpeg::ffi::{av_log_set_level, av_strerror, avformat_network_init, AV_LOG_DEBUG};
 use std::ffi::c_int;
+use base::bytes::Bytes;
 
 mod rw;
 pub mod rtp;
@@ -60,4 +61,11 @@ pub fn show_ffmpeg_error_msg(ret: c_int) -> String {
         let cstr = std::ffi::CStr::from_ptr(buf.as_ptr() as *const i8);
         cstr.to_string_lossy().into_owned()
     }
+}
+
+pub trait DataWriter {
+    fn init(&self)->Bytes;
+    fn get_header(&mut self, data: Bytes) -> Bytes;
+    fn write_body(&mut self, data: Bytes) -> GlobalResult<()>;
+    fn write_trailer(&mut self, data: Bytes) -> GlobalResult<()>;
 }
