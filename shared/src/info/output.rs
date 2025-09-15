@@ -6,6 +6,21 @@ use paste::paste;
 use crate::{impl_check_empty, impl_open_close};
 use crate::info::format::{Flv, GB28181MuxerType, Mp4, Muxer, MuxerType, RtpFrame, Ts, WebRtcMuxerType};
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub enum Sink {
+ Local(Local),
+ Rtmp(Rtmp),
+ Dash(Dash),
+ HttpFlv(HttpFlv),
+ Hls(Hls),
+ Rtsp(Rtsp),
+ Gb28181(Gb28181),
+ WebRtc(WebRtc),
+}
+
+
+
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Output {

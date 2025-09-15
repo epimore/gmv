@@ -24,7 +24,6 @@ use crate::general::cfg::ServerConf;
 use crate::io::hook_handler::{OutEvent, OutEventRes};
 use crate::media::context::event::muxer::{CloseMuxer, MuxerEvent};
 use crate::media::context::event::ContextEvent;
-use crate::media::context::format::flv::FlvPacket;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -47,6 +46,7 @@ use shared::info::output::PlayType;
 use shared::info::media_info::{MediaAction, MediaStreamConfig};
 use shared::info::media_info_ext::MediaExt;
 use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
+use crate::media::context::format::MuxPacket;
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
@@ -253,7 +253,7 @@ fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
     None
 }
 
-pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<FlvPacket>>> {
+pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => {

@@ -5,9 +5,13 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio;
 use base::tokio::sync::mpsc::Receiver;
-use rsmpeg::ffi::{av_log_set_level, av_strerror, avformat_network_init, AV_LOG_DEBUG};
+use rsmpeg::ffi::{av_log_set_level, av_strerror, avformat_network_init, AVPacket, AV_LOG_DEBUG};
 use std::ffi::c_int;
+use std::sync::Arc;
 use base::bytes::Bytes;
+use base::tokio::sync::broadcast;
+use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::MuxPacket;
 
 mod rw;
 pub mod rtp;
@@ -33,8 +37,8 @@ pub fn build_worker_run(rx: Receiver<u32>) {
             .unwrap()
             .block_on({
                 // unsafe {
-                    // avformat_network_init();
-                    // av_log_set_level(AV_LOG_DEBUG as c_int);
+                // avformat_network_init();
+                // av_log_set_level(AV_LOG_DEBUG as c_int);
                 // };
                 handle_run(rx)
             });
@@ -64,8 +68,10 @@ pub fn show_ffmpeg_error_msg(ret: c_int) -> String {
 }
 
 pub trait DataWriter {
-    fn init(&self)->Bytes;
-    fn get_header(&mut self, data: Bytes) -> Bytes;
-    fn write_body(&mut self, data: Bytes) -> GlobalResult<()>;
-    fn write_trailer(&mut self, data: Bytes) -> GlobalResult<()>;
+    fn init(demuxer_context: &DemuxerContext, pkt: broadcast::Sender<Arc<MuxPacket>>) -> GlobalResult<Self>
+    where
+        Self: Sized;
+    fn get_header(&self) -> Bytes;
+    fn write_body(&mut self, pkt: &AVPacket,timestamp: u64);
+    fn get_trailer(&mut self);
 }

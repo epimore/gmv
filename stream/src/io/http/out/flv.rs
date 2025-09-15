@@ -3,7 +3,6 @@ use crate::io::http::out::DisconnectAwareStream;
 use crate::io::http::{res_401, res_404};
 use crate::media::context::event::inner::InnerEvent;
 use crate::media::context::event::ContextEvent;
-use crate::media::context::format::flv::FlvPacket;
 use crate::state::{cache, TIME_OUT};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query};
@@ -25,6 +24,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
+use crate::media::context::format::MuxPacket;
 
 pub async fn handler(stream_id: String, token: &String, addr: SocketAddr)
                      -> Response<Body> {
@@ -69,7 +69,7 @@ pub async fn handler(stream_id: String, token: &String, addr: SocketAddr)
 }
 async fn send_frame(
     ssrc: u32,
-    mut rx: broadcast::Receiver<Arc<FlvPacket>>,
+    mut rx: broadcast::Receiver<Arc<MuxPacket>>,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
 ) -> Response<Body> {
     // 获取 header
@@ -119,7 +119,7 @@ async fn get_header_rx(ssrc: u32) -> GlobalResult<Bytes> {
 }
 
 struct FlvStream {
-    inner: BroadcastStream<Arc<FlvPacket>>,
+    inner: BroadcastStream<Arc<MuxPacket>>,
 }
 
 impl Stream for FlvStream {
