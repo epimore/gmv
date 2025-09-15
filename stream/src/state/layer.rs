@@ -198,7 +198,6 @@ pub mod filter_layer {
     }
 }
 pub mod muxer_layer {
-    use crate::media::context::format::flv::FlvPacket;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::tokio::sync::broadcast;
     use shared::info::format::{Flv, Frame, GB28181MuxerType, Mp4, Muxer, MuxerType, RtpEnc, RtpFrame, RtpPs, Ts, WebRtcMuxerType};
@@ -207,6 +206,7 @@ pub mod muxer_layer {
     use shared::info::output::{Gb28181, Local, Output, WebRtc};
     use shared::paste::paste;
     use crate::media::context::format::mp4::Mp4Packet;
+    use crate::media::context::format::MuxPacket;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
@@ -313,7 +313,7 @@ pub mod muxer_layer {
     }
     #[derive(Clone)]
     pub struct FlvLayer {
-        pub tx: broadcast::Sender<Arc<FlvPacket>>,
+        pub tx: broadcast::Sender<Arc<MuxPacket>>,
         pub flv: Flv,
     }
     impl FlvLayer {

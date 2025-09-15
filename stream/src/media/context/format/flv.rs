@@ -9,18 +9,13 @@ use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
 use crate::media::{show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
+use crate::media::context::format::{write_callback, MuxPacket};
 
 static FLV: Lazy<CString> = Lazy::new(|| CString::new("flv").unwrap());
 
-pub struct FlvPacket {
-    pub data: Bytes,
-    pub is_key: bool,
-    pub timestamp: u64,
-}
-
 pub struct FlvContext {
     pub flv_header: Bytes,
-    pub flv_body_tx: broadcast::Sender<Arc<FlvPacket>>,
+    pub flv_body_tx: broadcast::Sender<Arc<MuxPacket>>,
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
     pub io_buf: *mut u8,
@@ -58,22 +53,6 @@ impl Drop for FlvContext {
 impl FlvContext {
     pub fn get_header(&self) -> Bytes {
         self.flv_header.clone()
-    }
-
-    unsafe extern "C" fn write_callback(
-        opaque: *mut c_void,
-        buf: *mut u8,
-        buf_size: c_int,
-    ) -> c_int {
-        if opaque.is_null() || buf.is_null() || buf_size <= 0 {
-            return buf_size;
-        }
-        let out_vec: &mut Vec<u8> = &mut *(opaque as *mut Vec<u8>);
-        let old_len = out_vec.len();
-        out_vec.reserve(buf_size as usize);
-        std::ptr::copy_nonoverlapping(buf, out_vec.as_mut_ptr().add(old_len), buf_size as usize);
-        out_vec.set_len(old_len + buf_size as usize);
-        buf_size
     }
 
     pub fn write_packet(&mut self, pkt: &AVPacket,timestamp: u64) {
@@ -163,13 +142,13 @@ impl FlvContext {
                 && pkt.stream_index == self.video_stream_index
                 && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0);
 
-            let _ = self.flv_body_tx.send(Arc::new(FlvPacket { data, is_key: is_key_out, timestamp }));
+            let _ = self.flv_body_tx.send(Arc::new(MuxPacket { data, is_key: is_key_out, timestamp }));
         }
     }
 
     pub fn init_context(
         demuxer_context: &DemuxerContext,
-        flv_body_tx: broadcast::Sender<Arc<FlvPacket>>,
+        flv_body_tx: broadcast::Sender<Arc<MuxPacket>>,
     ) -> GlobalResult<Self> {
         unsafe {
             let io_buf_size = DEFAULT_IO_BUF_SIZE;
@@ -187,7 +166,7 @@ impl FlvContext {
                 1,
                 out_buf_ptr as *mut c_void,
                 None,
-                Some(Self::write_callback),
+                Some(write_callback),
                 None,
             );
             if avio_ctx.is_null() {
