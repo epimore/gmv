@@ -9,21 +9,20 @@
 /// 4.1.3.1 闲置超时，回调session服务，推送接收流超时事件，关闭监听媒体流处理;
 /// 4.1.3.2 点播媒体流,回调session服务,推送点播事件鉴权，通过输出媒体流，否则返回401;
 /// 4.2 设备推送rtp媒体流[注册]超时，回调session服务，推送接收流超时事件，关闭监听媒体流处理;
-
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 
 use crate::general::cfg;
 use crate::general::cfg::ServerConf;
 use crate::io::hook_handler::{OutEvent, OutEventRes};
-use crate::media::context::event::muxer::{CloseMuxer, MuxerEvent};
 use crate::media::context::event::ContextEvent;
+use crate::media::context::event::muxer::{CloseMuxer, MuxerEvent};
+use crate::media::context::format::MuxPacket;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -37,37 +36,36 @@ use base::net::state::Association;
 use base::once_cell::sync::Lazy;
 use base::tokio;
 use base::tokio::sync::oneshot::Sender;
-use base::tokio::sync::{broadcast, mpsc, Notify};
+use base::tokio::sync::{Notify, broadcast, mpsc};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use parking_lot::RwLock;
 use shared::info::format::MuxerType;
-use shared::info::output::PlayType;
-use shared::info::media_info::{MediaAction, MediaStreamConfig};
+use shared::info::media_info::{MediaAction, MediaConfig, MediaStreamConfig};
 use shared::info::media_info_ext::MediaExt;
+use shared::info::muxer::MuxerEnum;
 use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
-use crate::media::context::format::MuxPacket;
+use shared::info::output::OutputEnum;
+use shared::info::output1::PlayType;
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
 pub fn modify_media(action: MediaAction) {
     todo!()
 }
-pub fn init_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
+pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
     // 第1步：在锁外构建 StreamTrace，避免占用锁
-    let ssrc = stream_config.ssrc;
+    let ssrc = media_config.ssrc;
     let expires = Duration::from_millis(HALF_TIME_OUT);
     let when = Instant::now() + expires;
 
-    let stream_id = stream_config.stream_id.clone();
+    let stream_id = media_config.stream_id.clone();
     let stream_conf = cfg::StreamConf::init_by_conf();
-    let out_expires_val: i32 = stream_config
-        .expires
-        .unwrap_or(*stream_conf.get_expires());
+    let out_expires_val: i32 = media_config.expires.unwrap_or(*stream_conf.get_expires());
     let out_expires = build_out_expires(out_expires_val);
 
-    let converter = ConverterLayer::layer(stream_config.converter, &stream_config.output);
-    let output = OutputLayer::layer(stream_config.output)?;
+    let converter = ConverterLayer::layer(media_config.converter, &media_config.output);
+    let output = OutputLayer::layer(media_config.output)?;
 
     let stream_trace = StreamTrace {
         stream_id: stream_id.clone(),
@@ -92,13 +90,17 @@ pub fn init_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
     // 第2步：加锁，插入
     let mut state = SESSION.shared.state.write();
     match state.sessions.entry(ssrc) {
-        Entry::Occupied(_) => {
-            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC已存在", ssrc), |msg| error!("{msg}")))?
-        }
+        Entry::Occupied(_) => Err(GlobalError::new_biz_error(
+            1100,
+            &format!("ssrc = {:?},SSRC已存在", ssrc),
+            |msg| error!("{msg}"),
+        ))?,
         Entry::Vacant(vac) => {
             vac.insert(stream_trace);
             state.inner.insert(stream_id, inner);
-            state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
+            state
+                .expirations
+                .insert((when, ssrc, StreamDirection::StreamIn));
         }
     }
     let should_notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
@@ -109,7 +111,6 @@ pub fn init_media(stream_config: MediaStreamConfig) -> GlobalResult<u32> {
     Ok(ssrc)
 }
 
-
 pub fn init_media_ext(ssrc: u32, media_ext: MediaExt) -> GlobalResult<()> {
     let mut state = SESSION.shared.state.write();
     match state.sessions.entry(ssrc) {
@@ -118,9 +119,11 @@ pub fn init_media_ext(ssrc: u32, media_ext: MediaExt) -> GlobalResult<()> {
             stream_trace.media_ext = Some(media_ext);
             Ok(())
         }
-        Entry::Vacant(_) => {
-            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
-        }
+        Entry::Vacant(_) => Err(GlobalError::new_biz_error(
+            1100,
+            &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc),
+            |msg| error!("{msg}"),
+        )),
     }
 }
 
@@ -130,9 +133,11 @@ where
 {
     let state = SESSION.shared.state.read();
     match state.sessions.get(ssrc) {
-        None => {
-            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
-        }
+        None => Err(GlobalError::new_biz_error(
+            1100,
+            &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc),
+            |msg| error!("{msg}"),
+        )),
         Some(st) => {
             let receiver = st.broadcast_bus.sub_type_channel::<T>();
             Ok(receiver)
@@ -145,12 +150,12 @@ where
 {
     let state = SESSION.shared.state.read();
     match state.sessions.get(ssrc) {
-        None => {
-            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
-        }
-        Some(st) => {
-            st.mpsc_bus.try_publish(t).hand_log(|msg| error!("{msg}"))
-        }
+        None => Err(GlobalError::new_biz_error(
+            1100,
+            &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc),
+            |msg| error!("{msg}"),
+        )),
+        Some(st) => st.mpsc_bus.try_publish(t).hand_log(|msg| error!("{msg}")),
     }
 }
 pub fn sub_bus_mpsc_channel<T>(ssrc: &u32) -> GlobalResult<bus::mpsc::TypedReceiver<T>>
@@ -159,11 +164,16 @@ where
 {
     let state = SESSION.shared.state.read();
     match state.sessions.get(ssrc) {
-        None => {
-            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
-        }
+        None => Err(GlobalError::new_biz_error(
+            1100,
+            &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc),
+            |msg| error!("{msg}"),
+        )),
         Some(st) => {
-            let receiver = st.mpsc_bus.sub_type_channel::<T>().hand_log(|msg| error!("{msg}"))?;
+            let receiver = st
+                .mpsc_bus
+                .sub_type_channel::<T>()
+                .hand_log(|msg| error!("{msg}"))?;
             Ok(receiver)
         }
     }
@@ -171,20 +181,21 @@ where
 
 fn build_out_expires(expires: i32) -> Option<Duration> {
     match expires {
-        0 => {
-            Some(Duration::default())
-        }
-        a if a > 0 => {
-            Some(Duration::from_secs(a as u64))
-        }
-        _ => {
-            None
-        }
+        0 => Some(Duration::default()),
+        a if a > 0 => Some(Duration::from_secs(a as u64)),
+        _ => None,
     }
 }
 
 //返回rtp_tx
-pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>)> {
+pub fn refresh(
+    ssrc: u32,
+    bill: &Association,
+    payload_type: u8,
+) -> Option<(
+    crossbeam_channel::Sender<RtpPacket>,
+    crossbeam_channel::Receiver<RtpPacket>,
+)> {
     let guard = SESSION.shared.state.read();
     if let Some(stream_trace) = guard.sessions.get(&ssrc) {
         if !stream_trace.in_on.load(Ordering::SeqCst) {
@@ -193,46 +204,69 @@ pub fn refresh(ssrc: u32, bill: &Association, payload_type: u8) -> Option<(cross
         //流注册
         if stream_trace.origin_trans.is_none() {
             match stream_trace.media_ext.as_ref() {
-                None => { error!("ssrc = {},尚未协商rtp sdp信息", ssrc); }
-                Some(media_ext) => {
-                    match media_ext.type_code == payload_type {
-                        true => {
-                            if let Ok(converter_event_rx) = stream_trace.mpsc_bus.sub_type_channel::<ContextEvent>().hand_log(|msg| error!("{msg}")) {
-                                let stream_config = StreamConfig {
-                                    converter: stream_trace.converter.clone(),
-                                    media_ext: stream_trace.media_ext.clone().unwrap(),
-                                    rtp_rx: stream_trace.rtp_channel.1.clone(),
-                                    context_event_rx: converter_event_rx,
-                                };
-                                let _ = stream_trace.mpsc_bus.try_publish(stream_config).hand_log(|msg| error!("{msg}"));
-                            }
-                            drop(guard);
-                            return stream_register(ssrc, bill);
-                        }
-                        false => {
-                            warn!("ssrc = {},payload_type不匹配:sdp_payload_type = {},stream_payload_type = {}", ssrc,media_ext.type_code,payload_type);
-                        }
-                    }
+                None => {
+                    error!("ssrc = {},尚未协商rtp sdp信息", ssrc);
                 }
+                Some(media_ext) => match media_ext.type_code == payload_type {
+                    true => {
+                        if let Ok(converter_event_rx) = stream_trace
+                            .mpsc_bus
+                            .sub_type_channel::<ContextEvent>()
+                            .hand_log(|msg| error!("{msg}"))
+                        {
+                            let stream_config = StreamConfig {
+                                converter: stream_trace.converter.clone(),
+                                media_ext: stream_trace.media_ext.clone().unwrap(),
+                                rtp_rx: stream_trace.rtp_channel.1.clone(),
+                                context_event_rx: converter_event_rx,
+                            };
+                            let _ = stream_trace
+                                .mpsc_bus
+                                .try_publish(stream_config)
+                                .hand_log(|msg| error!("{msg}"));
+                        }
+                        drop(guard);
+                        return stream_register(ssrc, bill);
+                    }
+                    false => {
+                        warn!(
+                            "ssrc = {},payload_type不匹配:sdp_payload_type = {},stream_payload_type = {}",
+                            ssrc, media_ext.type_code, payload_type
+                        );
+                    }
+                },
             }
         } else {
-            return Some((stream_trace.rtp_channel.0.clone(), stream_trace.rtp_channel.1.clone()));
+            return Some((
+                stream_trace.rtp_channel.0.clone(),
+                stream_trace.rtp_channel.1.clone(),
+            ));
         };
     }
     None
 }
 
-fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>)> {
+fn stream_register(
+    ssrc: u32,
+    bill: &Association,
+) -> Option<(
+    crossbeam_channel::Sender<RtpPacket>,
+    crossbeam_channel::Receiver<RtpPacket>,
+)> {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     let next_expiration = state.next_expiration();
     if let Some(stream_trace) = state.sessions.get_mut(&ssrc) {
         //首次流闲置超时，非永不超时则-默认6秒
         if let Some(mut expires) = stream_trace.out_expires {
-            if expires == Duration::default() { expires = Duration::from_millis(STREAM_IDLE_TIME_OUT); }
+            if expires == Duration::default() {
+                expires = Duration::from_millis(STREAM_IDLE_TIME_OUT);
+            }
             let when = Instant::now() + expires;
             let notify = next_expiration.map(|ts| ts > when).unwrap_or(true);
-            state.expirations.insert((when, ssrc, StreamDirection::StreamOut(PlayType::None)));
+            state
+                .expirations
+                .insert((when, ssrc, StreamDirection::StreamOut(PlayType::None)));
             if notify {
                 SESSION.shared.background_task.notify_one();
             }
@@ -241,14 +275,29 @@ fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
         let protocol = bill.get_protocol().get_value().to_string();
         stream_trace.origin_trans = Some((remote_addr_str.clone(), protocol.clone()));
         let net_source = NetSource::new(remote_addr_str, protocol);
-        let rtp_info = RtpInfo::new(ssrc, Some(net_source), SESSION.shared.server_conf.get_name().clone());
-        let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs() as u32;
+        let rtp_info = RtpInfo::new(
+            ssrc,
+            Some(net_source),
+            SESSION.shared.server_conf.get_name().clone(),
+        );
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs() as u32;
         let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id.clone(), time);
 
-        let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamRegister(stream_info), None)).hand_log(|msg| error!("{msg}"));
+        let _ = SESSION
+            .shared
+            .event_tx
+            .clone()
+            .try_send((OutEvent::StreamRegister(stream_info), None))
+            .hand_log(|msg| error!("{msg}"));
         stream_trace.register_ts = time;
 
-        return Some((stream_trace.rtp_channel.0.clone(), stream_trace.rtp_channel.1.clone()));
+        return Some((
+            stream_trace.rtp_channel.0.clone(),
+            stream_trace.rtp_channel.1.clone(),
+        ));
     }
     None
 }
@@ -256,19 +305,19 @@ fn stream_register(ssrc: u32, bill: &Association) -> Option<(crossbeam_channel::
 pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
-        None => {
-            Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc), |msg| error!("{msg}")))
-        }
-        Some(stream_trace) => {
-            match &stream_trace.converter.muxer.flv {
-                None => {
-                    Err(GlobalError::new_biz_error(1100, &format!("ssrc = {:?},对应的flv muxer未开启", ssrc), |msg| error!("{msg}")))
-                }
-                Some(flv_layer) => {
-                    Ok(flv_layer.tx.subscribe())
-                }
-            }
-        }
+        None => Err(GlobalError::new_biz_error(
+            1100,
+            &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc),
+            |msg| error!("{msg}"),
+        )),
+        Some(stream_trace) => match &stream_trace.converter.muxer.flv {
+            None => Err(GlobalError::new_biz_error(
+                1100,
+                &format!("ssrc = {:?},对应的flv muxer未开启", ssrc),
+                |msg| error!("{msg}"),
+            )),
+            Some(flv_layer) => Ok(flv_layer.tx.subscribe()),
+        },
     }
 }
 
@@ -283,7 +332,13 @@ pub fn get_event_tx() -> mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)> {
 
 //更新用户数据:in_out:true-插入,false-移除
 //所有输出【除无用户gb28181 udp转发，Local存储】皆通过此计算是否idle：
-pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String, in_out: bool, remote_addr: SocketAddr) {
+pub fn update_token(
+    stream_id: &String,
+    play_type: PlayType,
+    user_token: String,
+    in_out: bool,
+    remote_addr: SocketAddr,
+) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     if let Some(InnerTrace { user_map, ssrc }) = state.inner.get_mut(stream_id) {
@@ -302,8 +357,13 @@ pub fn update_token(stream_id: &String, play_type: PlayType, user_token: String,
                         if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
                             if let Some(timeout) = out_expires {
                                 let when = Instant::now() + *timeout;
-                                state.expirations.insert((when, *ssrc, StreamDirection::StreamOut(ut.play_type)));
-                                let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                                state.expirations.insert((
+                                    when,
+                                    *ssrc,
+                                    StreamDirection::StreamOut(ut.play_type),
+                                ));
+                                let notify =
+                                    state.next_expiration().map(|ts| ts > when).unwrap_or(true);
                                 if notify {
                                     SESSION.shared.background_task.notify_one();
                                 }
@@ -326,7 +386,8 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
                 let server_name = SESSION.shared.server_conf.get_name().to_string();
                 let net_source = NetSource::new(origin_addr.to_string(), protocol.to_string());
                 let rtp_info = RtpInfo::new(*ssrc, Some(net_source), server_name);
-                let stream_info = BaseStreamInfo::new(rtp_info, stream_id.to_string(), stream_in_reported_time);
+                let stream_info =
+                    BaseStreamInfo::new(rtp_info, stream_id.to_string(), stream_in_reported_time);
                 return Some((stream_info, user_map.len() as u32));
             }
         }
@@ -334,18 +395,16 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
     None
 }
 
-
 pub fn is_exist(stream_key: StreamKey) -> bool {
     let guard = SESSION.shared.state.read();
     let StreamKey { stream_id, ssrc } = stream_key;
     match stream_id {
-        None => { guard.sessions.contains_key(&ssrc) }
+        None => guard.sessions.contains_key(&ssrc),
         Some(stream_id) => {
             guard.inner.contains_key(&stream_id) && guard.sessions.contains_key(&ssrc)
         }
     }
 }
-
 
 struct Session {
     shared: Arc<Shared>,
@@ -365,15 +424,25 @@ impl Session {
                 background_task: Notify::new(),
                 server_conf: server_conf.clone(),
                 event_tx: tx,
-            })
+            }),
         };
         let shared = session.shared.clone();
         thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_time().thread_name("SESSION").build().hand_log(|msg| error!("{msg}")).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .thread_name("SESSION")
+                .build()
+                .hand_log(|msg| error!("{msg}"))
+                .unwrap();
             let _ = rt.block_on(Self::purge_expired_task(shared));
         });
         thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().thread_name("HOOK-EVENT").build().hand_log(|msg| error!("{msg}")).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .thread_name("HOOK-EVENT")
+                .build()
+                .hand_log(|msg| error!("{msg}"))
+                .unwrap();
             let _ = rt.block_on(OutEvent::event_loop(rx));
         });
         session
@@ -383,9 +452,9 @@ impl Session {
         loop {
             if let Some(when) = shared.purge_expired_state()? {
                 tokio::select! {
-                        _ = time::sleep_until(when) =>{},
-                        _ = shared.background_task.notified() =>{},
-                    }
+                    _ = time::sleep_until(when) =>{},
+                    _ = shared.background_task.notified() =>{},
+                }
             } else {
                 shared.background_task.notified().await;
             }
@@ -418,13 +487,17 @@ impl Shared {
             match direction {
                 StreamDirection::StreamIn => {
                     let mut del = false;
-                    if let Some(StreamTrace { in_on, in_timeout, .. }) = state.sessions.get_mut(&ssrc) {
+                    if let Some(StreamTrace {
+                        in_on, in_timeout, ..
+                    }) = state.sessions.get_mut(&ssrc)
+                    {
                         if in_on.load(Ordering::SeqCst) {
                             in_on.store(false, Ordering::SeqCst);
                             let expires = Duration::from_millis(HALF_TIME_OUT);
                             let when = Instant::now() + expires;
                             *in_timeout = when;
-                            let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                            let notify =
+                                state.next_expiration().map(|ts| ts > when).unwrap_or(true);
                             state.expirations.insert((when, ssrc, direction));
                             if notify {
                                 notify_one = notify;
@@ -434,26 +507,53 @@ impl Shared {
                         }
                     }
                     if del {
-                        if let Some(StreamTrace { stream_id, register_ts, origin_trans, .. }) = state.sessions.remove(&ssrc) {
-                            if let Some(InnerTrace { ssrc, user_map }) = state.inner.remove(&stream_id) {
-                                info!("ssrc: {},stream_id: {}, 接收流超时 -> 清理会话",ssrc,&stream_id);
+                        if let Some(StreamTrace {
+                            stream_id,
+                            register_ts,
+                            origin_trans,
+                            ..
+                        }) = state.sessions.remove(&ssrc)
+                        {
+                            if let Some(InnerTrace { ssrc, user_map }) =
+                                state.inner.remove(&stream_id)
+                            {
+                                info!(
+                                    "ssrc: {},stream_id: {}, 接收流超时 -> 清理会话",
+                                    ssrc, &stream_id
+                                );
                                 let server_name = SESSION.shared.server_conf.get_name().to_string();
-                                let opt_net = origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
+                                let opt_net = origin_trans
+                                    .map(|(addr, protocol)| NetSource::new(addr, protocol));
                                 let rtp_info = RtpInfo::new(ssrc, opt_net, server_name);
-                                let stream_info = BaseStreamInfo::new(rtp_info, stream_id, register_ts);
-                                let stream_state = StreamState::new(stream_info, user_map.len() as u32);
-                                let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamInTimeout(stream_state), None)).hand_log(|msg| error!("{msg}"));
+                                let stream_info =
+                                    BaseStreamInfo::new(rtp_info, stream_id, register_ts);
+                                let stream_state =
+                                    StreamState::new(stream_info, user_map.len() as u32);
+                                let _ = SESSION
+                                    .shared
+                                    .event_tx
+                                    .clone()
+                                    .try_send((OutEvent::StreamInTimeout(stream_state), None))
+                                    .hand_log(|msg| error!("{msg}"));
                             }
                         }
                     }
                 }
                 //此处不需刷新输出，由下一个过期判断
                 StreamDirection::StreamOut(mux_tp) => {
-                    if let Some(StreamTrace { stream_id, converter, mpsc_bus, output, .. })
-                        = state.sessions.get_mut(&ssrc) {
+                    if let Some(StreamTrace {
+                        stream_id,
+                        converter,
+                        mpsc_bus,
+                        output,
+                        ..
+                    }) = state.sessions.get_mut(&ssrc)
+                    {
                         converter.muxer.close_by_muxer_type(&mux_tp.get_type());
                         if let Some(cm) = CloseMuxer::from_muxer_type(&mux_tp.get_type()) {
-                            let _ = mpsc_bus.try_publish(MuxerEvent::Close(cm)).hand_log(|msg| error!("{msg}"));
+                            let _ = mpsc_bus
+                                .try_publish(MuxerEvent::Close(cm))
+                                .hand_log(|msg| error!("{msg}"));
                         }
                         if let Some(InnerTrace { user_map, .. }) = state.inner.get(stream_id) {
                             if user_map.len() > 0 {
@@ -466,11 +566,29 @@ impl Shared {
                         }
                         state.inner.remove(stream_id);
                         if let Some(stream_trace) = state.sessions.remove(&ssrc) {
-                            info!("ssrc: {},stream_id: {}, 流空闲超时 -> 清理会话",ssrc,&stream_trace.stream_id);
-                            let opt_net = stream_trace.origin_trans.map(|(addr, protocol)| NetSource::new(addr, protocol));
-                            let rtp_info = RtpInfo::new(ssrc, opt_net, SESSION.shared.server_conf.get_name().clone());
-                            let stream_info = BaseStreamInfo::new(rtp_info, stream_trace.stream_id, stream_trace.register_ts);
-                            let _ = SESSION.shared.event_tx.clone().try_send((OutEvent::StreamIdle(stream_info), None)).hand_log(|msg| error!("{msg}"));
+                            info!(
+                                "ssrc: {},stream_id: {}, 流空闲超时 -> 清理会话",
+                                ssrc, &stream_trace.stream_id
+                            );
+                            let opt_net = stream_trace
+                                .origin_trans
+                                .map(|(addr, protocol)| NetSource::new(addr, protocol));
+                            let rtp_info = RtpInfo::new(
+                                ssrc,
+                                opt_net,
+                                SESSION.shared.server_conf.get_name().clone(),
+                            );
+                            let stream_info = BaseStreamInfo::new(
+                                rtp_info,
+                                stream_trace.stream_id,
+                                stream_trace.register_ts,
+                            );
+                            let _ = SESSION
+                                .shared
+                                .event_tx
+                                .clone()
+                                .try_send((OutEvent::StreamIdle(stream_info), None))
+                                .hand_log(|msg| error!("{msg}"));
                         }
                     }
                 }
@@ -482,7 +600,6 @@ impl Shared {
         Ok(None)
     }
 }
-
 
 #[allow(dead_code)]
 struct StreamTrace {
@@ -507,6 +624,130 @@ struct StreamTrace {
 struct InnerTrace {
     ssrc: u32,
     user_map: HashMap<SocketAddr, UserTrace>,
+    output_trace: OutputTrace,
+}
+
+#[derive(Default)]
+struct OutputTrace {
+    http_flv: AtomicIsize,
+    rtmp: AtomicIsize,
+    dash_fmp4: AtomicIsize,
+    hls_fmp4: AtomicIsize,
+    hls_ts: AtomicIsize,
+    rtsp: AtomicIsize,
+    gb28181_frame: AtomicIsize,
+    gb28181_ps: AtomicIsize,
+    web_rtc: AtomicIsize,
+    local_mp4: AtomicIsize,
+    local_ts: AtomicIsize,
+}
+impl OutputTrace {
+    //增加@OutputEnum点播数量，返回该output的当前点播数量
+    fn publish(&self, output: OutputEnum) -> isize {
+        (match output {
+            OutputEnum::HttpFlv => self.http_flv.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::Rtmp => self.rtmp.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::DashFmp4 => self.dash_fmp4.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::HlsFmp4 => self.hls_fmp4.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::HlsTs => self.hls_ts.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::Rtsp => self.rtmp.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::Gb28181Frame => self.gb28181_frame.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::Gb28181Ps => self.gb28181_ps.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::WebRtc => self.web_rtc.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::LocalMp4 => self.local_mp4.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::LocalTs => self.local_ts.fetch_add(1, Ordering::SeqCst),
+        }) + 1
+    }
+    //减少@OutputEnum点播数据，并判断该@OutputEnum对应的MuxerEnum是否已无输出使用
+    //返回（@OutputEnum的点播数量、None在使用/Some无输出使用）
+    fn subtract(&self, output: OutputEnum) -> (isize, Option<MuxerEnum>) {
+        let last = match output {
+            OutputEnum::HttpFlv => {
+                if self.http_flv.load(Ordering::SeqCst) == 1
+                    && self.rtmp.load(Ordering::SeqCst) == 0
+                {
+                    return (0, Some(MuxerEnum::Flv));
+                }
+                self.http_flv.fetch_sub(1, Ordering::SeqCst)
+            }
+            OutputEnum::Rtmp => {
+                if self.rtmp.load(Ordering::SeqCst) == 1
+                    && self.http_flv.load(Ordering::SeqCst) == 0
+                {
+                    return (0, Some(MuxerEnum::Flv));
+                }
+                self.rtmp.fetch_sub(1, Ordering::SeqCst)
+            }
+            OutputEnum::DashFmp4 => {
+                if self.dash_fmp4.load(Ordering::SeqCst) == 1
+                    && self.hls_fmp4.load(Ordering::SeqCst) == 0
+                {
+                    return (0, Some(MuxerEnum::Flv));
+                }
+                self.dash_fmp4.fetch_sub(1, Ordering::SeqCst)
+            }
+            OutputEnum::HlsFmp4 => {
+                if self.hls_fmp4.load(Ordering::SeqCst) == 1
+                    && self.dash_fmp4.load(Ordering::SeqCst) == 0
+                {
+                    return (0, Some(MuxerEnum::Flv));
+                }
+                self.hls_fmp4.fetch_sub(1, Ordering::SeqCst)
+            }
+            OutputEnum::HlsTs => {
+                let val = self.hls_ts.fetch_sub(1, Ordering::SeqCst);
+                if val == 1 {
+                    return (0, Some(MuxerEnum::CMaf));
+                }
+                val
+            }
+            OutputEnum::Rtsp => {
+                if self.rtsp.load(Ordering::SeqCst) == 1
+                    && self.gb28181_frame.load(Ordering::SeqCst) == 0
+                {
+                    return (0, Some(MuxerEnum::RtpFrame));
+                }
+                self.rtsp.fetch_sub(1, Ordering::SeqCst)
+            }
+            OutputEnum::Gb28181Frame => {
+                if self.gb28181_frame.load(Ordering::SeqCst) == 1
+                    && self.rtsp.load(Ordering::SeqCst) == 0
+                {
+                    return (0, Some(MuxerEnum::RtpFrame));
+                }
+                self.gb28181_frame.fetch_sub(1, Ordering::SeqCst)
+            }
+            OutputEnum::Gb28181Ps => {
+                let val = self.gb28181_ps.fetch_sub(1, Ordering::SeqCst);
+                if val == 1 {
+                    return (0, Some(MuxerEnum::RtpPs));
+                }
+                val
+            }
+            OutputEnum::WebRtc => {
+                let val = self.web_rtc.fetch_sub(1, Ordering::SeqCst);
+                if val == 1 {
+                    return (0, Some(MuxerEnum::RtpEnc));
+                }
+                val
+            }
+            OutputEnum::LocalMp4 => {
+                let val = self.local_mp4.fetch_sub(1, Ordering::SeqCst);
+                if val == 1 {
+                    return (0, Some(MuxerEnum::Mp4));
+                }
+                val
+            }
+            OutputEnum::LocalTs => {
+                let val = self.local_ts.fetch_sub(1, Ordering::SeqCst);
+                if val == 1 {
+                    return (0, Some(MuxerEnum::Ts));
+                }
+                val
+            }
+        };
+        (last - 1, None)
+    }
 }
 
 #[allow(dead_code)]
@@ -540,4 +781,7 @@ impl State {
     }
 }
 
-type CrossbeamChannel = (crossbeam_channel::Sender<RtpPacket>, crossbeam_channel::Receiver<RtpPacket>);
+type CrossbeamChannel = (
+    crossbeam_channel::Sender<RtpPacket>,
+    crossbeam_channel::Receiver<RtpPacket>,
+);

@@ -10,15 +10,15 @@ pub fn add(left: u64, right: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicU32;
 
     #[test]
     fn it_works() {
         let result = add(2, 2);
         assert_eq!(result, 4);
     }
-
 
     #[test]
     fn test_end_with() {
@@ -32,5 +32,12 @@ mod tests {
             .find(|(key, _)| key.to_lowercase().ends_with("fileid"))
             .map(|(_, value)| value);
         println!("{:?}", id);
+    }
+    #[test]
+
+    fn test() {
+        let a = AtomicU32::new(0);
+        let i = a.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        println!("{},{}", i, a.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

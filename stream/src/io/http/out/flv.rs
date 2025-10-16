@@ -17,7 +17,7 @@ use futures_core::Stream;
 use futures_util::{stream, StreamExt};
 use shared::info::format::MuxerType;
 use shared::info::obj::{StreamPlayInfo, PLAY_PATH};
-use shared::info::output::{HttpFlv, HttpStreamType, PlayType};
+use shared::info::output1::{HttpFlv, HttpStreamType, PlayType};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;

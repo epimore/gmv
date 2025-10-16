@@ -9,7 +9,7 @@ use base::log::error;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
 use shared::info::media_info::Converter;
-use shared::info::output::Output;
+use shared::info::output1::Output;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
