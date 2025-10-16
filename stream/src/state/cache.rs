@@ -666,7 +666,7 @@ impl OutputTrace {
                 if self.http_flv.load(Ordering::SeqCst) == 1
                     && self.rtmp.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(MuxerEnum::Flv));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 self.http_flv.fetch_sub(1, Ordering::SeqCst)
             }
@@ -674,7 +674,7 @@ impl OutputTrace {
                 if self.rtmp.load(Ordering::SeqCst) == 1
                     && self.http_flv.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(MuxerEnum::Flv));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 self.rtmp.fetch_sub(1, Ordering::SeqCst)
             }
@@ -682,7 +682,7 @@ impl OutputTrace {
                 if self.dash_fmp4.load(Ordering::SeqCst) == 1
                     && self.hls_fmp4.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(MuxerEnum::Flv));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 self.dash_fmp4.fetch_sub(1, Ordering::SeqCst)
             }
@@ -690,14 +690,14 @@ impl OutputTrace {
                 if self.hls_fmp4.load(Ordering::SeqCst) == 1
                     && self.dash_fmp4.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(MuxerEnum::Flv));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 self.hls_fmp4.fetch_sub(1, Ordering::SeqCst)
             }
             OutputEnum::HlsTs => {
                 let val = self.hls_ts.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(MuxerEnum::CMaf));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 val
             }
@@ -705,7 +705,7 @@ impl OutputTrace {
                 if self.rtsp.load(Ordering::SeqCst) == 1
                     && self.gb28181_frame.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(MuxerEnum::RtpFrame));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 self.rtsp.fetch_sub(1, Ordering::SeqCst)
             }
@@ -713,35 +713,35 @@ impl OutputTrace {
                 if self.gb28181_frame.load(Ordering::SeqCst) == 1
                     && self.rtsp.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(MuxerEnum::RtpFrame));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 self.gb28181_frame.fetch_sub(1, Ordering::SeqCst)
             }
             OutputEnum::Gb28181Ps => {
                 let val = self.gb28181_ps.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(MuxerEnum::RtpPs));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 val
             }
             OutputEnum::WebRtc => {
                 let val = self.web_rtc.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(MuxerEnum::RtpEnc));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 val
             }
             OutputEnum::LocalMp4 => {
                 let val = self.local_mp4.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(MuxerEnum::Mp4));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 val
             }
             OutputEnum::LocalTs => {
                 let val = self.local_ts.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(MuxerEnum::Ts));
+                    return (0, Some(output.to_muxer_enum()));
                 }
                 val
             }

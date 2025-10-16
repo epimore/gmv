@@ -1,10 +1,11 @@
 pub mod output_layer {
-    use base::exception::code::conf_err::CONFIG_ERROR_CODE;
-    use base::exception::{GlobalError, GlobalResult};
-    use base::log::error;
+    use shared::impl_close;
+    use shared::info::output::{
+        DashFmp4Output, Gb28181FrameOutput, Gb28181PsOutput, HlsFmp4Output, HlsTsOutput,
+        HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputKind, RtmpOutput, RtspOutput,
+        WebRtcOutput,
+    };
     use shared::paste::paste;
-    use shared::{impl_check_empty, impl_open_close};
-    use shared::info::output::OutputKind;
 
     pub struct OutputLayer {
         pub http_flv: Option<HttpFlvLayer>,
@@ -19,139 +20,248 @@ pub mod output_layer {
         pub local_mp4: Option<LocalMp4Layer>,
         pub local_ts: Option<LocalTsLayer>,
     }
-    impl OutputLayer {
-        pub fn put_if_absent(&mut self, output: OutputKind) {
-            if self.local.is_none() {
-                self.local = output.local.map(LocalMp4Layer::layer);
-            }
-            if self.rtmp.is_none() {
-                self.rtmp = output.rtmp.map(RtmpLayer::layer);
-            }
-            if self.http_flv.is_none() {
-                self.http_flv = output.http_flv.map(HttpFlvLayer::layer);
-            }
-            if self.dash.is_none() {
-                self.dash = output.dash.map(DashFmp4Layer::layer);
-            }
-            if self.hls.is_none() {
-                self.hls = output.hls.map(HlsTsLayer::layer);
-            }
-            if self.rtsp.is_none() {
-                self.rtsp = output.rtsp.map(RtspLayer::layer);
-            }
-            if self.gb28181.is_none() {
-                self.gb28181 = output.gb28181.map(Gb28181PsLayer::layer);
-            }
-            if self.web_rtc.is_none() {
-                self.web_rtc = output.web_rtc.map(WebRtcLayer::layer);
-            }
-        }
+    impl_close!(
+        OutputLayer,
+        [
+            http_flv,
+            rtmp,
+            dash_fmp4,
+            hls_fmp4,
+            hls_ts,
+            rtsp,
+            gb28181_frame,
+            gb28181_ps,
+            web_rtc,
+            local_mp4,
+            local_ts
+        ]
+    );
 
-        pub fn layer(output: Output) -> GlobalResult<Self> {
-            if output.check_empty() {
-                return Err(GlobalError::new_biz_error(
-                    CONFIG_ERROR_CODE,
-                    "Output cannot be empty",
-                    |msg| error!("{msg}"),
-                ));
-            }
-            let layer = OutputLayer {
-                local: output.local.map(LocalMp4Layer::layer),
-                rtmp: output.rtmp.map(RtmpLayer::layer),
-                http_flv: output.http_flv.map(HttpFlvLayer::layer),
-                dash: output.dash.map(DashFmp4Layer::layer),
-                hls: output.hls.map(HlsTsLayer::layer),
-                rtsp: output.rtsp.map(RtspLayer::layer),
-                gb28181: output.gb28181.map(Gb28181PsLayer::layer),
-                web_rtc: output.web_rtc.map(WebRtcLayer::layer),
+    impl OutputLayer {
+        pub fn new(output: OutputKind) -> Self {
+            let mut layer = Self {
+                http_flv: None,
+                rtmp: None,
+                dash_fmp4: None,
+                hls_fmp4: None,
+                hls_ts: None,
+                rtsp: None,
+                gb28181_frame: None,
+                gb28181_ps: None,
+                web_rtc: None,
+                local_mp4: None,
+                local_ts: None,
             };
-            Ok(layer)
+
+            match output {
+                OutputKind::HttpFlv(inner) => {
+                    layer.http_flv = Some(HttpFlvLayer::layer(inner));
+                }
+                OutputKind::Rtmp(inner) => {
+                    layer.rtmp = Some(RtmpLayer::layer(inner));
+                }
+                OutputKind::DashFmp4(inner) => {
+                    layer.dash_fmp4 = Some(DashFmp4Layer::layer(inner));
+                }
+                OutputKind::HlsFmp4(inner) => {
+                    layer.hls_fmp4 = Some(HlsFmp4Layer::layer(inner));
+                }
+                OutputKind::HlsTs(inner) => {
+                    layer.hls_ts = Some(HlsTsLayer::layer(inner));
+                }
+                OutputKind::Rtsp(inner) => {
+                    layer.rtsp = Some(RtspLayer::layer(inner));
+                }
+                OutputKind::Gb28181Frame(inner) => {
+                    layer.gb28181_frame = Some(Gb28181FrameLayer::layer(inner));
+                }
+                OutputKind::Gb28181Ps(inner) => {
+                    layer.gb28181_ps = Some(Gb28181PsLayer::layer(inner));
+                }
+                OutputKind::WebRtc(inner) => {
+                    layer.web_rtc = Some(WebRtcLayer::layer(inner));
+                }
+                OutputKind::LocalMp4(inner) => {
+                    layer.local_mp4 = Some(LocalMp4Layer::layer(inner));
+                }
+                OutputKind::LocalTs(inner) => {
+                    layer.local_ts = Some(LocalTsLayer::layer(inner));
+                }
+            }
+            layer
+        }
+        //存在则返回false;不存在则put，返回true
+        pub fn put_if_absent(&mut self, output: OutputKind) -> bool {
+            match output {
+                OutputKind::HttpFlv(inner) => {
+                    if self.http_flv.is_none() {
+                        self.http_flv = Some(HttpFlvLayer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::Rtmp(inner) => {
+                    if self.rtmp.is_none() {
+                        self.rtmp = Some(RtmpLayer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::DashFmp4(inner) => {
+                    if self.dash_fmp4.is_none() {
+                        self.dash_fmp4 = Some(DashFmp4Layer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::HlsFmp4(inner) => {
+                    if self.hls_fmp4.is_none() {
+                        self.hls_fmp4 = Some(HlsFmp4Layer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::HlsTs(inner) => {
+                    if self.hls_ts.is_none() {
+                        self.hls_ts = Some(HlsTsLayer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::Rtsp(inner) => {
+                    if self.rtsp.is_none() {
+                        self.rtsp = Some(RtspLayer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::Gb28181Frame(inner) => {
+                    if self.gb28181_frame.is_none() {
+                        self.gb28181_frame = Some(Gb28181FrameLayer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::Gb28181Ps(inner) => {
+                    if self.gb28181_ps.is_none() {
+                        self.gb28181_ps = Some(Gb28181PsLayer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::WebRtc(inner) => {
+                    if self.web_rtc.is_none() {
+                        self.web_rtc = Some(WebRtcLayer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::LocalMp4(inner) => {
+                    if self.local_mp4.is_none() {
+                        self.local_mp4 = Some(LocalMp4Layer::layer(inner));
+                        return true;
+                    }
+                }
+                OutputKind::LocalTs(inner) => {
+                    if self.local_ts.is_none() {
+                        self.local_ts = Some(LocalTsLayer::layer(inner));
+                        return true;
+                    }
+                }
+            }
+            false
         }
     }
 
     pub struct LocalTsLayer {
-        pub local: Local,
+        pub local_ts: LocalTsOutput,
+    }
+    impl LocalTsLayer {
+        pub fn layer(local_ts: LocalTsOutput) -> Self {
+            Self { local_ts }
+        }
     }
     pub struct LocalMp4Layer {
-        pub local: Local,
+        pub local_mp4: LocalMp4Output,
     }
     impl LocalMp4Layer {
-        pub fn layer(local: Local) -> Self {
-            Self { local }
+        pub fn layer(local_mp4: LocalMp4Output) -> Self {
+            Self { local_mp4 }
         }
     }
-    pub struct HlsFmp4Layer {}
+    pub struct HlsFmp4Layer {
+        pub hls_fmp4: HlsFmp4Output,
+    }
     impl HlsFmp4Layer {
-        pub fn layer(hls: Hls) -> Self {
-            unimplemented!()
+        pub fn layer(hls_fmp4: HlsFmp4Output) -> Self {
+            Self { hls_fmp4 }
         }
     }
 
-    pub struct HlsTsLayer {}
+    pub struct HlsTsLayer {
+        pub hls_ts: HlsTsOutput,
+    }
     impl HlsTsLayer {
-        pub fn layer(hls: Hls) -> Self {
-            unimplemented!()
+        pub fn layer(hls_ts: HlsTsOutput) -> Self {
+            Self { hls_ts }
         }
     }
-    pub struct HttpFlvLayer {}
+    pub struct HttpFlvLayer {
+        pub http_flv: HttpFlvOutput,
+    }
     impl HttpFlvLayer {
-        pub fn layer(http_flv: HttpFlv) -> Self {
-            Self {}
+        pub fn layer(http_flv: HttpFlvOutput) -> Self {
+            Self { http_flv }
         }
     }
-    pub struct RtmpLayer {}
+    pub struct RtmpLayer {
+        pub rtmp: RtmpOutput,
+    }
     impl RtmpLayer {
-        pub fn layer(rtmp: Rtmp) -> Self {
-            unimplemented!()
+        pub fn layer(rtmp: RtmpOutput) -> Self {
+            Self { rtmp }
         }
     }
-    pub struct RtspLayer {}
+    pub struct RtspLayer {
+        pub rtsp: RtspOutput,
+    }
     impl RtspLayer {
-        pub fn layer(rtsp: Rtsp) -> Self {
-            unimplemented!()
+        pub fn layer(rtsp: RtspOutput) -> Self {
+            Self { rtsp }
         }
     }
-    pub struct DashFmp4Layer {}
+    pub struct DashFmp4Layer {
+        pub dash_fmp4: DashFmp4Output,
+    }
     impl DashFmp4Layer {
-        pub fn layer(dash: Dash) -> Self {
-            unimplemented!()
+        pub fn layer(dash_fmp4: DashFmp4Output) -> Self {
+            Self { dash_fmp4 }
         }
     }
-    pub struct Gb28181FrameLayer {}
-    pub struct Gb28181PsLayer {}
+    pub struct Gb28181FrameLayer {
+        pub gb28181_frame: Gb28181FrameOutput,
+    }
+    impl Gb28181FrameLayer {
+        pub fn layer(gb28181_frame: Gb28181FrameOutput) -> Self {
+            Self { gb28181_frame }
+        }
+    }
+    pub struct Gb28181PsLayer {
+        pub gb28181_ps: Gb28181PsOutput,
+    }
     impl Gb28181PsLayer {
-        pub fn layer(gb28181: Gb28181) -> Self {
-            unimplemented!()
+        pub fn layer(gb28181_ps: Gb28181PsOutput) -> Self {
+            Self { gb28181_ps }
         }
     }
-    pub struct WebRtcLayer {}
+    pub struct WebRtcLayer {
+        pub web_rtc: WebRtcOutput,
+    }
     impl WebRtcLayer {
-        pub fn layer(web_rtc: WebRtc) -> Self {
-            unimplemented!()
+        pub fn layer(web_rtc: WebRtcOutput) -> Self {
+            Self { web_rtc }
         }
     }
-
-    impl_check_empty!(
-        OutputLayer,
-        [local, rtmp, http_flv, dash, hls, rtsp, gb28181, web_rtc]
-    );
-
-    impl_open_close!(OutputLayer, {
-    local: LocalLayer,
-    rtmp: RtmpLayer,
-    http_flv: HttpFlvLayer,
-    dash: DashFmp4Layer,
-    hls: HlsLayer,
-    rtsp: RtspLayer,
-    gb28181: Gb28181PsLayer,
-    web_rtc: WebRtcLayer,
-    });
 }
 
 pub mod converter_layer {
     use crate::state::layer::codec_layer::CodecLayer;
     use crate::state::layer::filter_layer::FilterLayer;
     use crate::state::layer::muxer_layer::MuxerLayer;
+    use shared::info::codec::Codec;
+    use shared::info::filter::Filter;
+    use shared::info::output::OutputKind;
 
     #[derive(Clone)]
     pub struct ConverterLayer {
@@ -161,18 +271,14 @@ pub mod converter_layer {
     }
 
     impl ConverterLayer {
-        pub fn put_if_absent(&mut self, converter: Converter, output: &Output) {
-            if self.codec.is_none() {
-                self.codec = converter.codec.map(CodecLayer::layer);
-            }
-            self.muxer.put_if_absent(converter.muxer, output);
-            self.filter.put_if_absent(converter.filter);
-        }
-        pub fn layer(converter: Converter, output: &Output) -> Self {
-            ConverterLayer {
-                codec: converter.codec.map(CodecLayer::layer),
-                muxer: MuxerLayer::layer(converter.muxer, output),
-                filter: FilterLayer::layer(converter.filter),
+        pub fn new(codec: Option<Codec>, filter: Filter, output: &OutputKind) -> Self {
+            let muxer = MuxerLayer::new(output);
+            let filter = FilterLayer::new(filter);
+            let codec = codec.map(CodecLayer::new);
+            Self {
+                codec,
+                muxer,
+                filter,
             }
         }
     }
@@ -209,7 +315,7 @@ pub mod filter_layer {
                 }
             }
         }
-        pub fn layer(filter: Filter) -> Self {
+        pub fn new(filter: Filter) -> Self {
             FilterLayer {
                 capture: filter.capture.map(CaptureLayer::layer),
             }
@@ -217,238 +323,75 @@ pub mod filter_layer {
     }
 }
 pub mod muxer_layer {
-    use crate::media::context::format::MuxPacket;
     use crate::media::context::format::mp4::Mp4Packet;
+    use crate::media::context::format::MuxPacket;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::tokio::sync::broadcast;
-    use shared::info::format::{
-        CMaf, Flv, Frame, GB28181MuxerType, HlsTs, Mp4, Muxer, MuxerType, RtpEnc, RtpFrame, RtpPs,
-        Ts, WebRtcMuxerType,
-    };
+    use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
     use shared::info::muxer::MuxerEnum;
-    use shared::info::output1::{Gb28181, Local, Output, WebRtc};
-    use shared::paste::paste;
-    use shared::{impl_check_empty, impl_close};
+    use shared::info::output::OutputKind;
     use std::sync::Arc;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
         pub flv: Option<FlvLayer>,
-        pub mp4: Option<Mp4Layer>,
-        pub ts: Option<TsLayer>,
         pub fmp4: Option<CMafLayer>,
         pub hls_ts: Option<HlsTsLayer>,
         pub rtp_frame: Option<RtpFrameLayer>,
         pub rtp_ps: Option<RtpPsLayer>,
         pub rtp_enc: Option<RtpEncLayer>,
+        pub mp4: Option<Mp4Layer>,
+        pub ts: Option<TsLayer>,
     }
-    impl_check_empty!(
-        MuxerLayer,
-        [flv, mp4, ts, fmp4, hls_ts, rtp_frame, rtp_ps, rtp_enc]
-    );
-
-    impl_close!(
-        MuxerLayer,
-        [flv, mp4, ts, fmp4, hls_ts, rtp_frame, rtp_ps, rtp_enc]
-    );
     impl MuxerLayer {
-        pub fn put_if_absent(&mut self, muxer: Muxer, output: &Output) {
-            if self.flv.is_none()
-                && (output.http_flv.is_some()
-                    || output.rtmp.is_some()
-                    || matches!(
-                        output.local,
-                        Some(Local {
-                            muxer: MuxerType::Flv,
-                            ..
-                        })
-                    ))
-            {
-                let flv = muxer.flv.unwrap_or_else(|| Flv::default());
-                self.flv = Some(FlvLayer::layer(flv));
-            }
-            if self.mp4.is_none()
-                && (output.dash.is_some()
-                    || matches!(
-                        output.local,
-                        Some(Local {
-                            muxer: MuxerType::Mp4,
-                            ..
-                        })
-                    ))
-            {
-                let mp4 = muxer.mp4.unwrap_or_else(|| Mp4::default());
-                self.mp4 = Some(Mp4Layer::layer(mp4));
-            }
-            if self.ts.is_none()
-                && (output.hls.is_some()
-                    || matches!(
-                        output.local,
-                        Some(Local {
-                            muxer: MuxerType::Ts,
-                            ..
-                        })
-                    ))
-            {
-                let ts = muxer.ts.unwrap_or_else(|| Ts::default());
-                self.ts = Some(TsLayer::layer(ts));
-            }
-            if self.rtp_frame.is_none()
-                && (output.rtsp.is_some()
-                    || matches!(
-                        output.local,
-                        Some(Local {
-                            muxer: MuxerType::RtpFrame,
-                            ..
-                        })
-                    )
-                    || matches!(
-                        output.gb28181,
-                        Some(Gb28181 {
-                            muxer: GB28181MuxerType::RtpFrame
-                        })
-                    )
-                    || matches!(
-                        output.web_rtc,
-                        Some(WebRtc {
-                            muxer: WebRtcMuxerType::RtpFrame
-                        })
-                    ))
-            {
-                let rtp_frame = muxer.rtp_frame.unwrap_or_else(|| RtpFrame::default());
-                self.rtp_frame = Some(RtpFrameLayer::layer(rtp_frame));
-            }
-            if self.rtp_ps.is_none()
-                && (matches!(
-                    output.local,
-                    Some(Local {
-                        muxer: MuxerType::RtpPs,
-                        ..
-                    })
-                ) || matches!(
-                    output.gb28181,
-                    Some(Gb28181 {
-                        muxer: GB28181MuxerType::RtpPs
-                    })
-                ))
-            {
-                let rtp_ps = muxer.rtp_ps.unwrap_or_else(|| RtpPs::default());
-                self.rtp_ps = Some(RtpPsLayer::layer(rtp_ps));
-            }
-
-            if self.rtp_enc.is_none()
-                && (matches!(
-                    output.local,
-                    Some(Local {
-                        muxer: MuxerType::RtpEnc,
-                        ..
-                    })
-                ) || matches!(
-                    output.web_rtc,
-                    Some(WebRtc {
-                        muxer: WebRtcMuxerType::RtpEnc
-                    })
-                ))
-            {
-                let rtp_enc = muxer.rtp_enc.unwrap_or_else(|| RtpEnc::default());
-                self.rtp_enc = Some(RtpEncLayer::layer(rtp_enc));
-            }
+        pub fn new(output: &OutputKind) -> Self {
+            let mut layer = MuxerLayer::default();
+            layer.put_if_absent(output);
+            layer
         }
-        pub fn layer(muxer: Muxer, output: &Output) -> Self {
-            let mut ml = MuxerLayer::default();
-            if output.http_flv.is_some()
-                || output.rtmp.is_some()
-                || matches!(
-                    output.local,
-                    Some(Local {
-                        muxer: MuxerType::Flv,
-                        ..
-                    })
-                )
-            {
-                let flv = muxer.flv.unwrap_or_else(|| Flv::default());
-                ml.flv = Some(FlvLayer::layer(flv));
+        pub fn put_if_absent(&mut self, output: &OutputKind) {
+            match output {
+                OutputKind::HttpFlv(_) | OutputKind::Rtmp(_) => {
+                    if self.flv.is_none() {
+                        self.flv = Some(FlvLayer::layer());
+                    }
+                }
+                OutputKind::DashFmp4(inner) | OutputKind::HlsFmp4(inner) => {
+                    if self.fmp4.is_none() {
+                        unimplemented!()
+                    }
+                }
+                OutputKind::HlsTs(inner) => {
+                    if self.hls_ts.is_none() {
+                        unimplemented!()
+                    }
+                }
+                OutputKind::Rtsp(inner) | OutputKind::Gb28181Frame(inner) => {
+                    if self.rtp_frame.is_none() {
+                        unimplemented!()
+                    }
+                }
+                OutputKind::Gb28181Ps(inner) => {
+                    if self.rtp_ps.is_none() {
+                        unimplemented!()
+                    }
+                }
+                OutputKind::WebRtc(inner) => {
+                    if self.rtp_enc.is_none() {
+                        unimplemented!()
+                    }
+                }
+                OutputKind::LocalMp4(inner) => {
+                    if self.mp4.is_none() {
+                        unimplemented!()
+                    }
+                }
+                OutputKind::LocalTs(inner) => {
+                    if self.ts.is_none() {
+                        unimplemented!()
+                    }
+                }
             }
-            if output.dash.is_some()
-                || matches!(
-                    output.local,
-                    Some(Local {
-                        muxer: MuxerType::Mp4,
-                        ..
-                    })
-                )
-            {
-                let mp4 = muxer.mp4.unwrap_or_else(|| Mp4::default());
-                ml.mp4 = Some(Mp4Layer::layer(mp4));
-            }
-            if output.hls.is_some()
-                || matches!(
-                    output.local,
-                    Some(Local {
-                        muxer: MuxerType::Ts,
-                        ..
-                    })
-                )
-            {
-                let ts = muxer.ts.unwrap_or_else(|| Ts::default());
-                ml.ts = Some(TsLayer::layer(ts));
-            }
-            if output.rtsp.is_some()
-                || matches!(
-                    output.local,
-                    Some(Local {
-                        muxer: MuxerType::RtpFrame,
-                        ..
-                    })
-                )
-                || matches!(
-                    output.gb28181,
-                    Some(Gb28181 {
-                        muxer: GB28181MuxerType::RtpFrame
-                    })
-                )
-                || matches!(
-                    output.web_rtc,
-                    Some(WebRtc {
-                        muxer: WebRtcMuxerType::RtpFrame
-                    })
-                )
-            {
-                let rtp_frame = muxer.rtp_frame.unwrap_or_else(|| RtpFrame::default());
-                ml.rtp_frame = Some(RtpFrameLayer::layer(rtp_frame));
-            }
-            if matches!(
-                output.local,
-                Some(Local {
-                    muxer: MuxerType::RtpPs,
-                    ..
-                })
-            ) || matches!(
-                output.gb28181,
-                Some(Gb28181 {
-                    muxer: GB28181MuxerType::RtpPs
-                })
-            ) {
-                let rtp_ps = muxer.rtp_ps.unwrap_or_else(|| RtpPs::default());
-                ml.rtp_ps = Some(RtpPsLayer::layer(rtp_ps));
-            }
-
-            if matches!(
-                output.local,
-                Some(Local {
-                    muxer: MuxerType::RtpEnc,
-                    ..
-                })
-            ) || matches!(
-                output.web_rtc,
-                Some(WebRtc {
-                    muxer: WebRtcMuxerType::RtpEnc
-                })
-            ) {
-                let rtp_enc = muxer.rtp_enc.unwrap_or_else(|| RtpEnc::default());
-                ml.rtp_enc = Some(RtpEncLayer::layer(rtp_enc));
-            }
-            ml
         }
 
         pub fn close_by_muxer_type(&mut self, mt: MuxerEnum) {
@@ -467,12 +410,11 @@ pub mod muxer_layer {
     #[derive(Clone)]
     pub struct FlvLayer {
         pub tx: broadcast::Sender<Arc<MuxPacket>>,
-        pub flv: Flv,
     }
     impl FlvLayer {
-        pub fn layer(flv: Flv) -> Self {
+        pub fn layer() -> Self {
             let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
-            Self { tx, flv }
+            Self { tx }
         }
     }
     #[derive(Clone)]
@@ -552,7 +494,7 @@ pub mod codec_layer {
         Aac,
     }
     impl CodecLayer {
-        pub fn layer(codec: Codec) -> Self {
+        pub fn new(codec: Codec) -> Self {
             match codec {
                 Codec::Mpeg4 => CodecLayer::Mpeg4,
                 Codec::H264 => CodecLayer::H264,
