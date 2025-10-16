@@ -39,6 +39,20 @@ macro_rules! impl_close {
         impl $struct {
             $(
                 paste! {
+                    pub fn [<close_$field>](&mut self){
+                        self.$field = None;
+                    }
+                }
+            )*
+        }
+    };
+}
+#[macro_export]
+macro_rules! impl_close_check_empty {
+    ($struct:ident, [$($field:ident),*]) => {
+        impl $struct {
+            $(
+                paste! {
                     pub fn [<close_$field>](&mut self) -> bool {
                         self.$field = None;
                         self.check_empty()

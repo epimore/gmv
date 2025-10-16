@@ -30,7 +30,7 @@ pub struct MediaConfig {
     pub expires: Option<i32>,
     pub codec: Option<Codec>,
     pub filter: Filter,
-    pub sink: OutputKind,
+    pub output: OutputKind,
 }
 
 
