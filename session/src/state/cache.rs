@@ -23,7 +23,7 @@ use base::tokio::time;
 use base::tokio::time::Instant;
 use base::{rand, serde_json, tokio};
 use shared::info::media_info::MediaStreamConfig;
-use shared::info::output::Output;
+use shared::info::output1::Output;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 

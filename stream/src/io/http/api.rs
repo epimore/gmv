@@ -3,20 +3,20 @@ use axum::{Extension, Json, Router};
 use base::exception::GlobalResultExt;
 use base::log::{error, info};
 use base::tokio::sync::mpsc::Sender;
-use shared::info::media_info::MediaStreamConfig;
+use shared::info::media_info::{MediaConfig, MediaStreamConfig};
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{StreamKey, LISTEN_SSRC, RTP_MEDIA, STREAM_ONLINE};
+use shared::info::obj::{StreamKey, LISTEN_MEDIA, SDP_MEDIA, STREAM_ONLINE};
 use shared::info::res::Resp;
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
-        .route(LISTEN_SSRC, axum::routing::post(stream_init).layer(Extension(tx.clone())))
-        .route(RTP_MEDIA, axum::routing::post(stream_map))
+        .route(LISTEN_MEDIA, axum::routing::post(listen_media).layer(Extension(tx.clone())))
+        .route(SDP_MEDIA, axum::routing::post(sdp_media))
         .route(STREAM_ONLINE, axum::routing::post(stream_online))
 }
 
-async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaStreamConfig>) -> Json<Resp<()>> {
-    info!("stream_init: {:?}",&config);
+async fn listen_media(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaConfig>) -> Json<Resp<()>> {
+    info!("listen_media: {:?}",&config);
     let json = match cache::init_media(config) {
         Ok(ssrc) => {
             match tx.try_send(ssrc).hand_log(|msg| error!("{msg}")) {
@@ -30,12 +30,12 @@ async fn stream_init(Extension(tx): Extension<Sender<u32>>, Json(config): Json<M
             Resp::<()>::build_failed_by_msg(err.to_string())
         }
     };
-    info!("stream_init response: {:?}",&json);
+    info!("listen_media response: {:?}",&json);
     Json(json)
 }
 
-async fn stream_map(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
-    info!("stream_map: {:?}",&sdp);
+async fn sdp_media(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
+    info!("sdp_media: {:?}",&sdp);
     let json = match cache::init_media_ext(sdp.ssrc, sdp.ext) {
         Ok(_) => {
             Resp::<()>::build_success()
@@ -44,7 +44,7 @@ async fn stream_map(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
             Resp::<()>::build_failed_by_msg(err.to_string())
         }
     };
-    info!("stream_map response: {:?}",&json);
+    info!("sdp_media response: {:?}",&json);
     Json(json)
 }
 

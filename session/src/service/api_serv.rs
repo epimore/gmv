@@ -11,11 +11,11 @@ use base::serde_json;
 use base::tokio::sync::mpsc;
 use base::tokio::time::{Instant, sleep};
 use shared::info::format::{Flv, Mp4, Muxer, MuxerType};
-use shared::info::output::{HttpFlv, Output};
+use shared::info::output1::{HttpFlv, Output};
 use shared::info::media_info::{Converter, MediaStreamConfig};
 use shared::info::media_info_ext::{MediaExt, MediaMap, MediaType};
 use shared::info::obj::{BaseStreamInfo, StreamKey, StreamPlayInfo, StreamRecordInfo, StreamState};
-use shared::info::output;
+use shared::info::output1;
 use shared::info::res::Resp;
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWSession;
@@ -134,7 +134,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         let mut converter = Converter::default();
         converter.muxer = muxer;
         let mut output = Output::default();
-        output.local = Some(output::Local { muxer: MuxerType::Mp4, path: abs_path.clone() });
+        output.local = Some(output1::Local { muxer: MuxerType::Mp4, path: abs_path.clone() });
         CustomMediaConfig { output, converter }
     });
     let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, st - 2, et + 1, play_back_model.trans_mode, Some(down_conf)).await?;

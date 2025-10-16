@@ -1,4 +1,4 @@
-use crate::info::output::HttpStreamType;
+use crate::info::output1::HttpStreamType;
 use base::constructor::New;
 use base::serde::{Deserialize, Serialize};
 //session
@@ -20,8 +20,8 @@ pub const OFF_PLAY: &str = "/off/play";
 pub const END_RECORD: &str = "/end/record";
 
 //stream
-pub const LISTEN_SSRC: &str = "/listen/ssrc";
-pub const RTP_MEDIA: &str = "/rtp/media";
+pub const LISTEN_MEDIA: &str = "/listen/media";
+pub const SDP_MEDIA: &str = "/sdp/media";
 pub const STREAM_ONLINE: &str = "/stream/online";
 pub const PLAY_PATH: &str = "/play/{stream_id}";
 

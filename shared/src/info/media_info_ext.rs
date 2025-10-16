@@ -3,7 +3,6 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, info, warn};
 use base::serde::{Deserialize, Serialize};
 use crate::impl_check_empty;
-use crate::info::format::MuxerType;
 use std::sync::LazyLock;
 
 static BITRATE_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
