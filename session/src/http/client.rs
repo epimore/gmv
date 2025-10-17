@@ -46,9 +46,9 @@ impl HttpClient {
 
 #[pretend]
 pub trait HttpStream {
-    #[request(method = "POST", path = "/listen/ssrc")]
+    #[request(method = "POST", path = "/listen/media")]
     async fn stream_init(&self, json: &MediaConfig) -> Result<Json<Resp<()>>>;
-    #[request(method = "POST", path = "/rtp/media")]
+    #[request(method = "POST", path = "/sdp/media")]
     async fn stream_init_ext(&self, json: &MediaMap) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/stream/online")]
     async fn stream_online(&self, json: &StreamKey) -> Result<Json<Resp<bool>>>;
