@@ -5,7 +5,7 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio;
 use base::tokio::sync::mpsc::Receiver;
-use rsmpeg::ffi::{av_log_set_level, av_strerror, avformat_network_init, AVPacket, AV_LOG_DEBUG};
+use rsmpeg::ffi::{av_strerror, AVPacket};
 use std::ffi::c_int;
 use std::sync::Arc;
 use base::bytes::Bytes;

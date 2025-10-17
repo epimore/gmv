@@ -8,7 +8,7 @@ use std::ffi::CStr;
 /// - MPEG4: 用 FFmpeg bsf 生成 global headers
 /// - AAC: 用 aac_adtstoasc 生成 AudioSpecificConfig
 /// - G.711/G.722/G.723/G.729: 无需 extradata，直接跳过
-pub unsafe fn fix_extradata(pkt: *mut AVPacket, st: *mut AVStream) -> i32 {
+pub unsafe fn fix_extradata(pkt: *mut AVPacket, st: *mut AVStream) -> i32 { unsafe {
     if pkt.is_null() || st.is_null() {
         return -1;
     }
@@ -53,11 +53,11 @@ pub unsafe fn fix_extradata(pkt: *mut AVPacket, st: *mut AVStream) -> i32 {
     }
 
     0
-}
+}}
 
 /// 判断是否为 IDR 关键帧（H.264/H.265）
 /// 简单检查 flags 和 NAL 单元
-unsafe fn is_idr(pkt: *mut AVPacket) -> bool {
+unsafe fn is_idr(pkt: *mut AVPacket) -> bool { unsafe {
     if (*pkt).flags & AV_PKT_FLAG_KEY as i32 != 0 {
         return true;
     }
@@ -74,10 +74,10 @@ unsafe fn is_idr(pkt: *mut AVPacket) -> bool {
         }
     }
     false
-}
+}}
 
 /// 提取并更新 extradata
-unsafe fn extract_and_update(codecpar: *mut AVCodecParameters, pkt: *mut AVPacket, bsf_name: &str) -> i32 {
+unsafe fn extract_and_update(codecpar: *mut AVCodecParameters, pkt: *mut AVPacket, bsf_name: &str) -> i32 { unsafe {
     let mut bsf: *mut AVBSFContext = std::ptr::null_mut();
     let filter = av_bsf_get_by_name(bsf_name.as_ptr() as *const i8);
     if filter.is_null() {
@@ -115,10 +115,10 @@ unsafe fn extract_and_update(codecpar: *mut AVCodecParameters, pkt: *mut AVPacke
 
     av_bsf_free(&mut bsf);
     0
-}
+}}
 
 /// 通用 bsf 调用（非逐包）
-unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 {
+unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 { unsafe {
     let mut bsf: *mut AVBSFContext = std::ptr::null_mut();
     let filter = av_bsf_get_by_name(bsf_name.as_ptr() as *const i8);
     if filter.is_null() {
@@ -144,4 +144,4 @@ unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 {
 
     av_bsf_free(&mut bsf);
     0
-}
+}}

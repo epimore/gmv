@@ -1,5 +1,4 @@
 use base::bytes::Bytes;
-use base::exception::GlobalResultExt;
 use base::log::error;
 use base::tokio::sync::oneshot;
 use crate::media::context::MediaContext;

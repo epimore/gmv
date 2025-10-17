@@ -1,10 +1,9 @@
 use crate::media::{rtp, rw, show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
-use base::once_cell::sync::Lazy;
-use rsmpeg::ffi::{av_dict_set, av_find_input_format, av_free, av_malloc, avcodec_alloc_context3, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodec, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_UNKNOWN, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPixelFormat_AV_PIX_FMT_YUV420P, AVRational, AVStream, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_NOFILLIN};
+use rsmpeg::ffi::{av_find_input_format, av_free, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free, avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context, avformat_open_input, avio_alloc_context, avio_context_free, AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN, AVCodecParameters, AVDictionary, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVRational, AVStream};
 use shared::info::media_info_ext::MediaExt;
-use std::ffi::{c_int, c_void, CStr, CString};
+use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
 use crate::media::context::RtpState;
@@ -79,7 +78,7 @@ impl Drop for DemuxerContext {
 }
 
 /// Helper: create an AVFormatContext and set custom IO flag
-unsafe fn alloc_fmt_ctx_with_custom_io() -> GlobalResult<*mut AVFormatContext> {
+unsafe fn alloc_fmt_ctx_with_custom_io() -> GlobalResult<*mut AVFormatContext> { unsafe {
     let fmt_ctx = avformat_alloc_context();
     if fmt_ctx.is_null() {
         return Err(GlobalError::new_sys_error(
@@ -90,13 +89,13 @@ unsafe fn alloc_fmt_ctx_with_custom_io() -> GlobalResult<*mut AVFormatContext> {
     // mark we will use custom IO
     (*fmt_ctx).flags |= rsmpeg::ffi::AVFMT_FLAG_CUSTOM_IO as c_int;
     Ok(fmt_ctx)
-}
+}}
 
 /// Helper: allocate AVIOContext with boxed opaque tuple; returns (pb, boxed_ptr, buf_ptr)
 unsafe fn alloc_avio_for_rtp(
     rtp_buffer: rtp::RtpPacketBuffer,
     rtp_state: *mut RtpState,
-) -> GlobalResult<(*mut AVIOContext, *mut c_void, *mut u8)> {
+) -> GlobalResult<(*mut AVIOContext, *mut c_void, *mut u8)> { unsafe {
     // allocate IO buffer
     let io_buf = rsmpeg::ffi::av_malloc(DEFAULT_IO_BUF_SIZE) as *mut u8;
     if io_buf.is_null() {
@@ -135,28 +134,28 @@ unsafe fn alloc_avio_for_rtp(
     // ensure pb isn't marked seekable
     (*pb).seekable = 0;
     Ok((pb, opaque, io_buf))
-}
+}}
 
 /// Helper: open input with given format and dict opts (dict ownership: caller frees)
 unsafe fn open_input_with_format(
     fmt_ctx: *mut AVFormatContext,
     input_fmt: *mut rsmpeg::ffi::AVInputFormat,
     dict_opts: *mut AVDictionary,
-) -> Result<(), GlobalError> {
+) -> Result<(), GlobalError> { unsafe {
     let ret = avformat_open_input(&mut (fmt_ctx as *mut _), ptr::null(), input_fmt, &mut (dict_opts as *mut _));
     if ret < 0 {
         let ffmpeg_error = show_ffmpeg_error_msg(ret);
         return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| error!("{msg}")));
     }
     Ok(())
-}
+}}
 
 /// Helper: find stream info with retries
 unsafe fn find_stream_info_with_retry(
     fmt_ctx: *mut AVFormatContext,
     dict_opts: *mut AVDictionary,
     media_ext: &MediaExt,
-) -> Result<(), GlobalError> {
+) -> Result<(), GlobalError> { unsafe {
     let mut retry_count = 0usize;
     let max_retries = 3usize;
     let mut ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
@@ -181,9 +180,9 @@ unsafe fn find_stream_info_with_retry(
         ));
     }
     Ok(())
-}
+}}
 
-unsafe fn check_codec(fmt_ctx: *mut AVFormatContext, media_ext: &MediaExt) -> bool {
+unsafe fn check_codec(fmt_ctx: *mut AVFormatContext, media_ext: &MediaExt) -> bool { unsafe {
     let nb_streams = (*fmt_ctx).nb_streams as usize;
     for i in 0..nb_streams {
         let st = *(*fmt_ctx).streams.add(i);
@@ -213,7 +212,7 @@ unsafe fn check_codec(fmt_ctx: *mut AVFormatContext, media_ext: &MediaExt) -> bo
         }
     }
     true
-}
+}}
 
 /// Helper: cleanup when start_demuxer fails before AvioResource is returned.
 /// This will free io_ctx (if non-null), io_buf (if non-null) and boxed opaque (if non-null).
@@ -221,7 +220,7 @@ unsafe fn cleanup_early(
     io_ctx: *mut AVIOContext,
     opaque_ptr: *mut c_void,
     io_buf: *mut u8,
-) {
+) { unsafe {
     // If avio ctx exists, clear its opaque and free it
     if !io_ctx.is_null() {
         // detach opaque to avoid double-free inside avio_context_free
@@ -239,7 +238,7 @@ unsafe fn cleanup_early(
         // Safety: only call when we are sure AvioResource was not created to own it.
         drop(Box::from_raw(tup));
     }
-}
+}}
 
 /// Map helper functions (you provided earlier, included here for completeness)
 unsafe fn map_video_codec_id(s: &str) -> AVCodecID {
@@ -282,7 +281,7 @@ pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
 }
 
 /// fill stream parameters from media_ext (your version, slightly simplified)
-unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt) {
+unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt) { unsafe {
     if stream.is_null() { return; }
     let par = (*stream).codecpar;
     if par.is_null() { return; }
@@ -370,7 +369,7 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
         (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
         (*stream).r_frame_rate.num, (*stream).r_frame_rate.den
     );
-}
+}}
 fn is_extradata_incomplete(codec_id: AVCodecID, size: i32) -> bool {
     match codec_id {
         AVCodecID_AV_CODEC_ID_H264 => size < 50,
@@ -383,7 +382,7 @@ unsafe fn ensure_extradata(
     codecpar: *mut AVCodecParameters,
     codec_id: AVCodecID,
     st: *mut AVStream,
-) -> i32 {
+) -> i32 { unsafe {
     use rsmpeg::ffi::*;
 
     match codec_id {
@@ -417,10 +416,10 @@ unsafe fn ensure_extradata(
             return -1;
         }
     }
-}
+}}
 
 /// 使用 FFmpeg bsf 填充 extradata
-unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 {
+unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 { unsafe {
     use rsmpeg::ffi::*;
     let mut bsf: *mut AVBSFContext = std::ptr::null_mut();
     let filter = av_bsf_get_by_name(bsf_name.as_ptr() as *const i8);
@@ -450,7 +449,7 @@ unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 {
 
     av_bsf_free(&mut bsf);
     0
-}
+}}
 
 
 /// pick input format (reuse your logic)

@@ -1,10 +1,10 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{debug, info, warn};
+use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
-use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free, avformat_alloc_output_context2, av_dump_format, avcodec_parameters_from_context, av_packet_rescale_ts, av_rescale_q};
+use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO, AV_PKT_FLAG_KEY, av_free, av_packet_rescale_ts, av_rescale_q};
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
