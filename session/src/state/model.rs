@@ -8,8 +8,7 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
-use shared::info::media_info::Converter;
-use shared::info::output1::Output;
+use shared::info::output::OutputKind;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
@@ -52,8 +51,9 @@ pub enum TransMode {
 #[derive(Debug, Deserialize, Serialize,Clone)]
 #[serde(crate = "base::serde")]
 pub struct CustomMediaConfig {
-    pub output: Output,
-    pub converter: Converter,
+    pub output: OutputKind,
+    pub codec: Option<Codec>,
+    pub filter: Filter,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
