@@ -1,32 +1,28 @@
-use std::fs;
-use std::ops::Sub;
-use std::path::Path;
-use std::time::Duration;
-use pretend::Json;
+use crate::gb::handler::cmd::{CmdControl, CmdStream};
+use crate::gb::RWSession;
+use crate::http::client::{HttpClient, HttpStream};
+use crate::service::{KEY_STREAM_IN, RELOAD_EXPIRES};
+use crate::state;
+use crate::state::cache::AccessMode;
+use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamMode, TransMode};
+use crate::state::{DownloadConf, StreamConf};
+use crate::storage::entity::{GmvRecord};
+use crate::utils::id_builder;
 use base::bytes::Bytes;
 use base::chrono::{Local, TimeZone};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error};
+use base::log::error;
 use base::serde_json;
 use base::tokio::sync::mpsc;
-use base::tokio::time::{Instant, sleep};
+use base::tokio::time::{sleep, Instant};
 use shared::info::format::{Flv, Mp4};
 use shared::info::media_info::MediaConfig;
-use shared::info::media_info_ext::{MediaExt, MediaMap, MediaType};
-use shared::info::obj::{BaseStreamInfo, StreamKey, StreamPlayInfo, StreamRecordInfo, StreamState};
-use shared::info::output1;
+use shared::info::media_info_ext::{MediaMap};
+use shared::info::obj::{BaseStreamInfo, StreamKey, StreamRecordInfo};
 use shared::info::output::{HttpFlvOutput, LocalMp4Output, OutputKind};
-use shared::info::res::Resp;
-use crate::gb::handler::cmd::{CmdControl, CmdStream};
-use crate::gb::RWSession;
-use crate::state;
-use crate::state::cache::AccessMode;
-use crate::state::{DownloadConf, StreamConf};
-use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamMode, TransMode};
-use crate::service::{KEY_STREAM_IN, RELOAD_EXPIRES};
-use crate::storage::entity::{GmvFileInfo, GmvRecord};
-use crate::utils::{id_builder};
-use crate::http::client::{HttpClient, HttpStream};
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
 
 /*
 1.检查设备状态：是否在线
@@ -80,7 +76,7 @@ pub async fn download_info_by_stream_id(stream_id: String, stream_server: String
 }
 
 //todo stream -> stop api
-pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bool> {
+pub async fn download_stop(_stream_id: String, _token: String) -> GlobalResult<bool> {
     unimplemented!();
     /*let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
@@ -341,11 +337,11 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
-    use base::tokio;
     use base::chrono::Local;
+    use base::tokio;
     use base::tokio::sync::mpsc;
-    use base::tokio::time::{Instant, sleep_until};
+    use base::tokio::time::{sleep_until, Instant};
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test() {

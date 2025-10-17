@@ -3,7 +3,7 @@ use axum::{
     http::HeaderMap,
     response::IntoResponse,
     routing::post,
-    RequestExt, Router,
+    Router,
 };
 use std::collections::HashMap;
 

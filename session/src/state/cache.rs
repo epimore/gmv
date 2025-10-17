@@ -7,7 +7,6 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 use crate::state;
-use crate::state::model::CustomMediaConfig;
 use base::bytes::Bytes;
 use base::dashmap::mapref::entry::Entry;
 use base::dashmap::{DashMap, DashSet};
@@ -438,8 +437,8 @@ impl AccessMode {}
 mod tests {
     use crate::state::cache::{AccessMode, Cache, StreamTable, GENERAL_CACHE};
     use base::dashmap::{DashMap, DashSet};
-    use base::rand::prelude::IteratorRandom;
     use base::rand;
+    use base::rand::prelude::IteratorRandom;
 
     #[test]
     fn test_ref_mut() {

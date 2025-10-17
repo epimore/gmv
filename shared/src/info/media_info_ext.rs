@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{error, info, warn};
+use base::log::{info, warn};
 use base::serde::{Deserialize, Serialize};
 use crate::impl_check_empty;
 use std::sync::LazyLock;

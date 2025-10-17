@@ -6,6 +6,38 @@ use crate::media::context::format::mp4::Mp4Context;
 use crate::media::context::format::rtp::{RtpEncContext, RtpFrameContext, RtpPsContext};
 use crate::media::context::format::ts::TsContext;
 use crate::state::layer::muxer_layer::MuxerLayer;
+use base::serde::{Deserialize, Serialize};
+use shared::info::output::OutputEnum;
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[serde(crate = "base::serde")]
+pub enum MuxerEnum {
+    Flv,
+    Mp4,
+    Ts,
+    FMp4,
+    HlsTs,
+    RtpFrame,
+    RtpPs,
+    RtpEnc,
+}
+impl MuxerEnum {
+    pub fn from_output_enum(output_enum: OutputEnum) -> MuxerEnum {
+        match output_enum {
+            OutputEnum::HttpFlv => MuxerEnum::Flv,
+            OutputEnum::Rtmp => MuxerEnum::Flv,
+            OutputEnum::DashFmp4 => MuxerEnum::FMp4,
+            OutputEnum::HlsFmp4 => MuxerEnum::FMp4,
+            OutputEnum::HlsTs => MuxerEnum::Ts,
+            OutputEnum::Rtsp => MuxerEnum::RtpFrame,
+            OutputEnum::Gb28181Frame => MuxerEnum::RtpFrame,
+            OutputEnum::Gb28181Ps => MuxerEnum::RtpPs,
+            OutputEnum::WebRtc => MuxerEnum::RtpEnc,
+            OutputEnum::LocalMp4 => MuxerEnum::Mp4,
+            OutputEnum::LocalTs => MuxerEnum::Ts,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct MuxerContext {

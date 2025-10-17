@@ -1,18 +1,16 @@
-use std::collections::HashMap;
-use std::time::Duration;
-use anyhow::__private::kind::AdhocKind;
-use regex::Regex;
-use rsip::prelude::{HeadersExt, UntypedHeader};
-use rsip::{AbstractInput, Response, SipMessage};
+use crate::gb::core::event::{Container, EventSession, Ident};
+use crate::gb::core::rw::RequestOutput;
+use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
+use crate::state::model::{PtzControlModel, StreamMode};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::tokio::sync::mpsc;
 use base::tokio::time::Instant;
-use shared::info::media_info_ext::{MediaExt, MediaType};
-use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
-use crate::gb::core::event::{Container, EventSession, Ident};
-use crate::gb::core::rw::RequestOutput;
-use crate::state::model::{PtzControlModel, StreamMode};
+use regex::Regex;
+use rsip::prelude::{HeadersExt, UntypedHeader};
+use rsip::{Response, SipMessage};
+use shared::info::media_info_ext::{MediaExt};
+use std::time::Duration;
 
 pub struct CmdResponse;
 
@@ -232,8 +230,8 @@ impl CmdStream {
 #[cfg(test)]
 #[allow(unused)]
 mod test {
-    use regex::Regex;
     use crate::gb::handler::cmd::CmdStream;
+    use regex::Regex;
 
     #[test]
     fn test_parse_sdp() {

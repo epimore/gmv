@@ -1,4 +1,4 @@
-#![allow(warnings)]
+// #![allow(warnings)]
 use base::{daemon};
 
 pub mod io;
