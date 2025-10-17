@@ -10,12 +10,12 @@ use base::log::{error};
 use base::serde_json;
 use base::tokio::sync::mpsc;
 use base::tokio::time::{Instant, sleep};
-use shared::info::format::{Flv, Mp4, Muxer, MuxerType};
-use shared::info::output1::{HttpFlv, Output};
-use shared::info::media_info::{Converter, MediaStreamConfig};
+use shared::info::format::{Flv, Mp4};
+use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::{MediaExt, MediaMap, MediaType};
 use shared::info::obj::{BaseStreamInfo, StreamKey, StreamPlayInfo, StreamRecordInfo, StreamState};
 use shared::info::output1;
+use shared::info::output::{HttpFlvOutput, LocalMp4Output, OutputKind};
 use shared::info::res::Resp;
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWSession;
@@ -129,13 +129,11 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     let abs_path = path.canonicalize().hand_log(|msg| error!("{msg}"))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
 
     let down_conf = (&play_back_model).custom_media_config.clone().unwrap_or_else(|| {
-        let mut muxer = Muxer::default();
-        muxer.mp4 = Some(Mp4::default());
-        let mut converter = Converter::default();
-        converter.muxer = muxer;
-        let mut output = Output::default();
-        output.local = Some(output1::Local { muxer: MuxerType::Mp4, path: abs_path.clone() });
-        CustomMediaConfig { output, converter }
+        CustomMediaConfig{
+            output: OutputKind::LocalMp4(LocalMp4Output{fmt:Mp4::default(),path:abs_path.clone()}),
+            codec: None,
+            filter: Default::default(),
+        }
     });
     let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, st - 2, et + 1, play_back_model.trans_mode, Some(down_conf)).await?;
     state::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
@@ -217,25 +215,23 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
     let conf = StreamConf::get_stream_conf();
     let msc = match custom_media_config {
         None => {
-            let output = Output {
-                http_flv: Some(HttpFlv {}),
-                ..Default::default()
-            };
-            MediaStreamConfig {
+            MediaConfig {
                 ssrc: u32ssrc,
                 stream_id: stream_id.clone(),
                 expires: None,
-                converter: Converter::default(),
-                output,
+                codec: None,
+                filter: Default::default(),
+                output:OutputKind::HttpFlv(HttpFlvOutput{fmt:Flv::default()}),
             }
         }
         Some(cmc) => {
-            MediaStreamConfig {
+            MediaConfig {
                 ssrc: u32ssrc,
                 stream_id: stream_id.clone(),
                 expires: None,
-                converter: cmc.converter,
+                codec: cmc.codec,
                 output: cmc.output,
+                filter: cmc.filter,
             }
         }
     };

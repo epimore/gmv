@@ -22,8 +22,7 @@ use base::tokio::sync::Notify;
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::{rand, serde_json, tokio};
-use shared::info::media_info::MediaStreamConfig;
-use shared::info::output1::Output;
+use shared::info::media_info::MediaConfig;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 
@@ -165,7 +164,7 @@ impl Cache {
 
     //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
     //层层插入
-    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, am: AccessMode, config: MediaStreamConfig) {
+    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, am: AccessMode, config: MediaConfig) {
         let device_table = DeviceTable {
             channel_id,
             am,
@@ -385,7 +384,7 @@ struct DeviceTable {
     channel_id: String,
     am: AccessMode,
     stream_id: String,
-    config: MediaStreamConfig,
+    config: MediaConfig,
     ssrc: String,
 }
 
