@@ -6,7 +6,7 @@ pub enum MuxerEnum {
     Flv,
     Mp4,
     Ts,
-    CMaf,
+    FMp4,
     HlsTs,
     RtpFrame,
     RtpPs,

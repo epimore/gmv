@@ -15,15 +15,15 @@ use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
 use futures_core::Stream;
 use futures_util::{stream, StreamExt};
-use shared::info::format::MuxerType;
 use shared::info::obj::{StreamPlayInfo, PLAY_PATH};
-use shared::info::output1::{HttpFlv, HttpStreamType, PlayType};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
+use shared::info::muxer::MuxerEnum;
+use shared::info::output::OutputEnum;
 use crate::media::context::format::MuxPacket;
 
 pub async fn handler(stream_id: String, token: &String, addr: SocketAddr)
@@ -36,20 +36,20 @@ pub async fn handler(stream_id: String, token: &String, addr: SocketAddr)
             let ssrc = bsi.rtp_info.ssrc;
             let token = token.to_string();
             let remote_addr = addr.to_string();
-            let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone(), HttpStreamType::HttpFlv(MuxerType::Flv), user_count);
+            let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone(), OutputEnum::HttpFlv, user_count);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
             let _ = event_tx.send((OutEvent::OnPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
             match rx.await.hand_log(|msg| error!("{msg}")) {
                 Ok(OutEventRes::OnPlay(Some(true))) => {
-                    match cache::get_flv_rx(&ssrc) {
+                    match cache::get_muxer_rx(&ssrc,MuxerEnum::Flv) {
                         Ok(rx) => {
                             //插入用户
-                            cache::update_token(&stream_id, PlayType::Http(HttpStreamType::HttpFlv(MuxerType::Flv)), token.clone(), true, addr);
+                            cache::update_token(&stream_id, OutputEnum::HttpFlv, token.clone(), true, addr);
                             let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync + 'static>> = Some(Box::new(move || {
-                                cache::update_token(&stream_id, PlayType::Http(HttpStreamType::HttpFlv(MuxerType::Flv)), token.clone(), false, addr);
+                                cache::update_token(&stream_id, OutputEnum::HttpFlv, token.clone(), false, addr);
                                 if let Some((bsi, user_count)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
-                                    let info = StreamPlayInfo::new(bsi, remote_addr, token, HttpStreamType::HttpFlv(MuxerType::Flv), user_count);
+                                    let info = StreamPlayInfo::new(bsi, remote_addr, token, OutputEnum::HttpFlv, user_count);
                                     let _ = event_tx.try_send((OutEvent::OffPlay(info), None)).hand_log(|msg| error!("{msg}"));
                                 }
                             }));

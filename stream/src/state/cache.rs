@@ -21,7 +21,7 @@ use crate::general::cfg;
 use crate::general::cfg::ServerConf;
 use crate::io::hook_handler::{OutEvent, OutEventRes};
 use crate::media::context::event::ContextEvent;
-use crate::media::context::event::muxer::{CloseMuxer, MuxerEvent};
+use crate::media::context::event::muxer::{MuxerEvent};
 use crate::media::context::format::MuxPacket;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
@@ -40,17 +40,15 @@ use base::tokio::sync::{Notify, broadcast, mpsc};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use parking_lot::RwLock;
-use shared::info::format::MuxerType;
-use shared::info::media_info::{MediaAction, MediaConfig, MediaStreamConfig};
+use shared::info::media_info::{MediaConfig};
 use shared::info::media_info_ext::MediaExt;
 use shared::info::muxer::MuxerEnum;
 use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
-use shared::info::output::OutputEnum;
-use shared::info::output1::PlayType;
+use shared::info::output::{OutputEnum, OutputKind};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
 
-pub fn modify_media(action: MediaAction) {
+pub fn add_output(action: OutputKind) {
     todo!()
 }
 pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
@@ -64,8 +62,12 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
     let out_expires_val: i32 = media_config.expires.unwrap_or(*stream_conf.get_expires());
     let out_expires = build_out_expires(out_expires_val);
 
-    let converter = ConverterLayer::layer(media_config.converter, &media_config.output);
-    let output = OutputLayer::layer(media_config.output)?;
+    let converter = ConverterLayer::new(
+        media_config.codec,
+        media_config.filter,
+        &media_config.output,
+    );
+    let output = OutputLayer::new(media_config.output);
 
     let stream_trace = StreamTrace {
         stream_id: stream_id.clone(),
@@ -85,6 +87,7 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
     let inner = InnerTrace {
         ssrc,
         user_map: Default::default(),
+        output_trace: Default::default(),
     };
 
     // 第2步：加锁，插入
@@ -266,7 +269,7 @@ fn stream_register(
             let notify = next_expiration.map(|ts| ts > when).unwrap_or(true);
             state
                 .expirations
-                .insert((when, ssrc, StreamDirection::StreamOut(PlayType::None)));
+                .insert((when, ssrc, StreamDirection::StreamOut(None)));
             if notify {
                 SESSION.shared.background_task.notify_one();
             }
@@ -302,7 +305,10 @@ fn stream_register(
     None
 }
 
-pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
+pub fn get_muxer_rx(
+    ssrc: &u32,
+    muxer_enum: MuxerEnum,
+) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
     let guard = SESSION.shared.state.read();
     match guard.sessions.get(ssrc) {
         None => Err(GlobalError::new_biz_error(
@@ -310,14 +316,7 @@ pub fn get_flv_rx(ssrc: &u32) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>
             &format!("ssrc = {:?},SSRC不存在或已超时丢弃", ssrc),
             |msg| error!("{msg}"),
         )),
-        Some(stream_trace) => match &stream_trace.converter.muxer.flv {
-            None => Err(GlobalError::new_biz_error(
-                1100,
-                &format!("ssrc = {:?},对应的flv muxer未开启", ssrc),
-                |msg| error!("{msg}"),
-            )),
-            Some(flv_layer) => Ok(flv_layer.tx.subscribe()),
-        },
+        Some(stream_trace) => stream_trace.converter.muxer.get_rx(muxer_enum),
     }
 }
 
@@ -331,46 +330,76 @@ pub fn get_event_tx() -> mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)> {
 }
 
 //更新用户数据:in_out:true-插入,false-移除
-//所有输出【除无用户gb28181 udp转发，Local存储】皆通过此计算是否idle：
+//所有输出【gb28181 udp转发:操作人token+目标地址，Local存储操作人+MP4:127.0.0.1:1,Ts:127.0.0.1:2】皆通过此计算是否idle：
 pub fn update_token(
     stream_id: &String,
-    play_type: PlayType,
+    output_enum: OutputEnum,
     user_token: String,
     in_out: bool,
     remote_addr: SocketAddr,
 ) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
-    if let Some(InnerTrace { user_map, ssrc }) = state.inner.get_mut(stream_id) {
+    if let Some(InnerTrace {
+        user_map,
+        ssrc,
+        output_trace,
+    }) = state.inner.get_mut(stream_id)
+    {
         match in_out {
+            //插入用户数据及加一点播记录
             true => {
                 let user = UserTrace {
                     token: user_token,
                     request_time: Local::now().second(),
-                    play_type,
+                    play_type: output_enum,
                 };
                 user_map.insert(remote_addr, user);
+                output_trace.add(output_enum);
             }
             false => {
-                if let Some(ut) = user_map.remove(&remote_addr) {
-                    if user_map.len() == 0 {
-                        if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
-                            if let Some(timeout) = out_expires {
-                                let when = Instant::now() + *timeout;
-                                state.expirations.insert((
-                                    when,
-                                    *ssrc,
-                                    StreamDirection::StreamOut(ut.play_type),
-                                ));
-                                let notify =
-                                    state.next_expiration().map(|ts| ts > when).unwrap_or(true);
-                                if notify {
-                                    SESSION.shared.background_task.notify_one();
-                                }
+                //移除用户数据；
+                //减一点播记录返回Some(muxer_enum)则表示该复用器已无输出使用,交由定时器清理关闭该复用器，（若该ssrc对应使用用户为0，则清理该ssrc对应的所有数据）
+                user_map.remove(&remote_addr);
+                if let (_, Some(_muxer_enum)) = output_trace.subtract(output_enum) {
+                    if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
+                        if let Some(timeout) = out_expires {
+                            let when = Instant::now() + *timeout;
+                            state.expirations.insert((
+                                when,
+                                *ssrc,
+                                StreamDirection::StreamOut(Some(output_enum)),
+                            ));
+                            let notify =
+                                state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                            if notify {
+                                SESSION.shared.background_task.notify_one();
                             }
                         }
                     }
-                }
+                    // state.sessions.get_mut(ssrc).map(|stream_trace| {
+                    //     stream_trace.converter.muxer.close_by_muxer_type(muxer_enum)
+                    // });
+                };
+                // if let Some(ut) = user_map.remove(&remote_addr) {
+                // if user_map.len() == 0 {
+                //     if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
+                //         if let Some(timeout) = out_expires {
+                //             let when = Instant::now() + *timeout;
+                //             state.expirations.insert((
+                //                 when,
+                //                 *ssrc,
+                //                 StreamDirection::StreamOut(ut.play_type),
+                //             ));
+                //             let notify =
+                //                 state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                //             if notify {
+                //                 SESSION.shared.background_task.notify_one();
+                //             }
+                //         }
+                //     }
+                // }
+                // }
             }
         }
     }
@@ -379,7 +408,7 @@ pub fn update_token(
 //返回BaseStreamInfo,user_count
 pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStreamInfo, u32)> {
     let guard = SESSION.shared.state.read();
-    if let Some(InnerTrace { ssrc, user_map }) = guard.inner.get(stream_id) {
+    if let Some(InnerTrace { ssrc, user_map, .. }) = guard.inner.get(stream_id) {
         if let Some(stream_trace) = guard.sessions.get(ssrc) {
             if let Some((protocol, origin_addr)) = &stream_trace.origin_trans {
                 let stream_in_reported_time = stream_trace.register_ts;
@@ -514,7 +543,7 @@ impl Shared {
                             ..
                         }) = state.sessions.remove(&ssrc)
                         {
-                            if let Some(InnerTrace { ssrc, user_map }) =
+                            if let Some(InnerTrace { ssrc, user_map, .. }) =
                                 state.inner.remove(&stream_id)
                             {
                                 info!(
@@ -549,21 +578,24 @@ impl Shared {
                         ..
                     }) = state.sessions.get_mut(&ssrc)
                     {
-                        converter.muxer.close_by_muxer_type(&mux_tp.get_type());
-                        if let Some(cm) = CloseMuxer::from_muxer_type(&mux_tp.get_type()) {
-                            let _ = mpsc_bus
-                                .try_publish(MuxerEvent::Close(cm))
-                                .hand_log(|msg| error!("{msg}"));
-                        }
-                        if let Some(InnerTrace { user_map, .. }) = state.inner.get(stream_id) {
+                        //流注册时，加入的无输出,超时检查
+                        if let Some(InnerTrace { user_map, output_trace,.. }) =
+                            state.inner.get(stream_id)
+                        {
+                            if let Some(output_enum) = mux_tp {
+                                //释放复用器
+                                if output_trace.get_muxer_size(output_enum)==0 {
+                                    converter.muxer.close_by_muxer_type(output_enum.to_muxer_enum());
+                                    let _ = mpsc_bus
+                                        .try_publish(MuxerEvent::Close(output_enum.to_muxer_enum()))
+                                        .hand_log(|msg| error!("{msg}"));
+                                }
+                            }
                             if user_map.len() > 0 {
                                 continue;
                             }
                         }
-                        //todo gb28181 udp做输出 continue
-                        if output.local.is_some() {
-                            continue;
-                        }
+
                         state.inner.remove(stream_id);
                         if let Some(stream_trace) = state.sessions.remove(&ssrc) {
                             info!(
@@ -642,8 +674,28 @@ struct OutputTrace {
     local_ts: AtomicIsize,
 }
 impl OutputTrace {
+    //获取复用器调用数量
+    fn get_muxer_size(&self, output: OutputEnum) -> isize {
+        match output {
+            OutputEnum::HttpFlv | OutputEnum::Rtmp => {
+                self.http_flv.load(Ordering::Relaxed) + self.rtmp.load(Ordering::Relaxed)
+            }
+            OutputEnum::DashFmp4 | OutputEnum::HlsFmp4 => {
+                self.dash_fmp4.load(Ordering::Relaxed) + self.hls_fmp4.load(Ordering::Relaxed)
+            }
+            OutputEnum::HlsTs => self.hls_ts.load(Ordering::Relaxed),
+            OutputEnum::Rtsp | OutputEnum::Gb28181Frame => {
+                self.gb28181_frame.load(Ordering::Relaxed) + self.rtsp.load(Ordering::Relaxed)
+            }
+            OutputEnum::Gb28181Ps => self.gb28181_ps.load(Ordering::Relaxed),
+            OutputEnum::WebRtc => self.web_rtc.load(Ordering::Relaxed),
+            OutputEnum::LocalMp4 => self.local_mp4.load(Ordering::Relaxed),
+            OutputEnum::LocalTs => self.local_ts.load(Ordering::Relaxed),
+        }
+    }
+
     //增加@OutputEnum点播数量，返回该output的当前点播数量
-    fn publish(&self, output: OutputEnum) -> isize {
+    fn add(&self, output: OutputEnum) -> isize {
         (match output {
             OutputEnum::HttpFlv => self.http_flv.fetch_add(1, Ordering::SeqCst),
             OutputEnum::Rtmp => self.rtmp.fetch_add(1, Ordering::SeqCst),
@@ -754,7 +806,7 @@ impl OutputTrace {
 struct UserTrace {
     token: String,
     request_time: u32,
-    play_type: PlayType,
+    play_type: OutputEnum,
 }
 
 #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy)]
@@ -762,7 +814,7 @@ enum StreamDirection {
     //监听流注册/输入
     StreamIn,
     //监听流输出【有无观看】
-    StreamOut(PlayType),
+    StreamOut(Option<OutputEnum>),
 }
 ///自定义会话信息
 struct State {

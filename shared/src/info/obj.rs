@@ -1,6 +1,7 @@
-use crate::info::output1::HttpStreamType;
+use crate::info::output::OutputEnum;
 use base::constructor::New;
 use base::serde::{Deserialize, Serialize};
+
 //session
 pub const PLAY_LIVING: &str = "/api/play/live/stream";
 pub const PLAY_BACK: &str = "/api/play/back/stream";
@@ -26,7 +27,6 @@ pub const STREAM_ONLINE: &str = "/stream/online";
 pub const PLAY_PATH: &str = "/play/{stream_id}";
 
 //todo record info
-
 
 #[derive(New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
@@ -54,7 +54,7 @@ pub struct StreamPlayInfo {
     pub base_stream_info: BaseStreamInfo,
     pub remote_addr: String,
     pub token: String,
-    pub play_type: HttpStreamType,
+    pub play_type: OutputEnum,
     //当前观看人数
     pub user_count: u32,
 }
