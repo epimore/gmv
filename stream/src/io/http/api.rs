@@ -3,7 +3,7 @@ use axum::{Extension, Json, Router};
 use base::exception::GlobalResultExt;
 use base::log::{error, info};
 use base::tokio::sync::mpsc::Sender;
-use shared::info::media_info::{MediaConfig, MediaStreamConfig};
+use shared::info::media_info::{MediaConfig};
 use shared::info::media_info_ext::MediaMap;
 use shared::info::obj::{StreamKey, LISTEN_MEDIA, SDP_MEDIA, STREAM_ONLINE};
 use shared::info::res::Resp;

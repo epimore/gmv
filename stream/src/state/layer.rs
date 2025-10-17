@@ -323,9 +323,11 @@ pub mod filter_layer {
     }
 }
 pub mod muxer_layer {
-    use crate::media::context::format::mp4::Mp4Packet;
     use crate::media::context::format::MuxPacket;
+    use crate::media::context::format::mp4::Mp4Packet;
     use crate::state::FORMAT_BROADCAST_BUFFER;
+    use base::exception::{GlobalError, GlobalResult};
+    use base::log::error;
     use base::tokio::sync::broadcast;
     use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
     use shared::info::muxer::MuxerEnum;
@@ -344,6 +346,44 @@ pub mod muxer_layer {
         pub ts: Option<TsLayer>,
     }
     impl MuxerLayer {
+        pub fn get_rx(
+            &self,
+            muxer_enum: MuxerEnum,
+        ) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
+            match muxer_enum {
+                MuxerEnum::Flv => {
+                    if self.flv.is_none() {
+                        Err(GlobalError::new_biz_error(
+                            1100,
+                            &format!("muxer: {:?}未开启", muxer_enum),
+                            |msg| error!("{msg}"),
+                        ))?;
+                    }
+                    Ok(self.flv.as_ref().unwrap().tx.subscribe())
+                }
+                MuxerEnum::Mp4 => {
+                    unimplemented!()
+                }
+                MuxerEnum::Ts => {
+                    unimplemented!()
+                }
+                MuxerEnum::FMp4 => {
+                    unimplemented!()
+                }
+                MuxerEnum::HlsTs => {
+                    unimplemented!()
+                }
+                MuxerEnum::RtpFrame => {
+                    unimplemented!()
+                }
+                MuxerEnum::RtpPs => {
+                    unimplemented!()
+                }
+                MuxerEnum::RtpEnc => {
+                    unimplemented!()
+                }
+            }
+        }
         pub fn new(output: &OutputKind) -> Self {
             let mut layer = MuxerLayer::default();
             layer.put_if_absent(output);
@@ -356,7 +396,7 @@ pub mod muxer_layer {
                         self.flv = Some(FlvLayer::layer());
                     }
                 }
-                OutputKind::DashFmp4(inner) | OutputKind::HlsFmp4(inner) => {
+                OutputKind::DashFmp4(_) | OutputKind::HlsFmp4(_) => {
                     if self.fmp4.is_none() {
                         unimplemented!()
                     }
@@ -366,7 +406,7 @@ pub mod muxer_layer {
                         unimplemented!()
                     }
                 }
-                OutputKind::Rtsp(inner) | OutputKind::Gb28181Frame(inner) => {
+                OutputKind::Rtsp(_) | OutputKind::Gb28181Frame(_) => {
                     if self.rtp_frame.is_none() {
                         unimplemented!()
                     }
@@ -402,7 +442,7 @@ pub mod muxer_layer {
                 MuxerEnum::RtpFrame => self.rtp_frame = None,
                 MuxerEnum::RtpPs => self.rtp_ps = None,
                 MuxerEnum::RtpEnc => self.rtp_enc = None,
-                MuxerEnum::CMaf => self.fmp4 = None,
+                MuxerEnum::FMp4 => self.fmp4 = None,
                 MuxerEnum::HlsTs => self.hls_ts = None,
             }
         }

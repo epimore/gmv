@@ -2,7 +2,7 @@ use crate::info::format::{CMaf, Flv, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
 use crate::info::muxer::MuxerEnum;
 use base::serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 #[serde(crate = "base::serde")]
 pub enum OutputEnum {
     HttpFlv,
@@ -22,8 +22,8 @@ impl OutputEnum {
         match self {
             OutputEnum::HttpFlv => MuxerEnum::Flv,
             OutputEnum::Rtmp => MuxerEnum::Flv,
-            OutputEnum::DashFmp4 => MuxerEnum::CMaf,
-            OutputEnum::HlsFmp4 => MuxerEnum::CMaf,
+            OutputEnum::DashFmp4 => MuxerEnum::FMp4,
+            OutputEnum::HlsFmp4 => MuxerEnum::FMp4,
             OutputEnum::HlsTs => MuxerEnum::Ts,
             OutputEnum::Rtsp => MuxerEnum::RtpFrame,
             OutputEnum::Gb28181Frame => MuxerEnum::RtpFrame,

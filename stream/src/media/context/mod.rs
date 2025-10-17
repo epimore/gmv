@@ -201,26 +201,28 @@ impl MediaContext {
     // 问题如何传递信息【该使用写入结束信息】
     // 回调
     fn handle_pkt_muxer(muxer: &mut MuxerContext, pkt: &AVPacket, ts: u64) {
-        if let Some(flv_context) = &mut muxer.flv {
-            flv_context.write_packet(pkt, ts);
+        if let Some(context) = &mut muxer.flv {
+            context.write_packet(pkt, ts);
         }
-        if let Some(mp4_context) = &muxer.mp4 { unimplemented!() }
-        if let Some(ts_context) = &muxer.ts { unimplemented!() }
-        if let Some(rtp_frame_context) = &muxer.rtp_frame { unimplemented!() }
-        if let Some(rtp_ps_context) = &muxer.rtp_ps { unimplemented!() }
-        if let Some(rtp_enc_context) = &muxer.rtp_enc { unimplemented!() }
-        if let Some(frame_context) = &muxer.frame { unimplemented!() }
+        if let Some(context) = &muxer.mp4 { unimplemented!() }
+        if let Some(context) = &muxer.ts { unimplemented!() }
+        if let Some(context) = &muxer.rtp_frame { unimplemented!() }
+        if let Some(context) = &muxer.rtp_ps { unimplemented!() }
+        if let Some(context) = &muxer.rtp_enc { unimplemented!() }
+        if let Some(context) = &muxer.hls_ts { unimplemented!() }
+        if let Some(context) = &muxer.fmp4 { unimplemented!() }
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext, pkt: &AVPacket) {
-        if let Some(flv_context) = &mut muxer.flv {
-            // flv_context.write_packet(pkt);
+        if let Some(context) = &mut muxer.flv {
+            // context.write_packet(pkt);
         }
-        if let Some(mp4_context) = &muxer.mp4 { unimplemented!() }
-        if let Some(ts_context) = &muxer.ts { unimplemented!() }
-        if let Some(rtp_frame_context) = &muxer.rtp_frame { unimplemented!() }
-        if let Some(rtp_ps_context) = &muxer.rtp_ps { unimplemented!() }
-        if let Some(rtp_enc_context) = &muxer.rtp_enc { unimplemented!() }
-        if let Some(frame_context) = &muxer.frame { unimplemented!() }
+        if let Some(context) = &muxer.mp4 { unimplemented!() }
+        if let Some(context) = &muxer.ts { unimplemented!() }
+        if let Some(context) = &muxer.rtp_frame { unimplemented!() }
+        if let Some(context) = &muxer.rtp_ps { unimplemented!() }
+        if let Some(context) = &muxer.rtp_enc { unimplemented!() }
+        if let Some(context) = &muxer.hls_ts { unimplemented!() }
+        if let Some(context) = &muxer.fmp4 { unimplemented!() }
     }
 
     fn handle_event(&mut self, event: ContextEvent) {

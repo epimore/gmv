@@ -1,9 +1,7 @@
 use crate::info::codec::Codec;
 use crate::info::filter::Filter;
-use crate::info::output1::Output;
-use base::serde::{Deserialize, Serialize};
-use crate::info::format::Muxer;
 use crate::info::output::OutputKind;
+use base::serde::{Deserialize, Serialize};
 
 // #[derive(Serialize, Deserialize, Debug)]
 // #[serde(crate = "base::serde")]
@@ -42,14 +40,14 @@ pub struct MediaConfig {
 //     pub filter: Filter,
 // }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
-#[serde(crate = "base::serde")]
-pub struct MediaAction {
-    pub enable_codec: bool,
-    pub enable_filter: bool,
-    pub enable_output: bool,
-    pub codec: Codec,
-    pub filter: Filter,
-    pub output: Output,
-}
+// #[derive(Serialize, Deserialize, Debug, Default, Clone)]
+// #[serde(crate = "base::serde")]
+// pub struct MediaAction {
+//     pub enable_codec: bool,
+//     pub enable_filter: bool,
+//     pub enable_output: bool,
+//     pub codec: Option<Codec>,
+//     pub filter: Filter,
+//     pub output: OutputKind,
+// }
 
