@@ -11,7 +11,6 @@ use base::bytes::Bytes;
 use base::chrono::Local;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 

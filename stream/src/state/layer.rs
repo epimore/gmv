@@ -330,9 +330,9 @@ pub mod muxer_layer {
     use base::log::error;
     use base::tokio::sync::broadcast;
     use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
-    use shared::info::muxer::MuxerEnum;
     use shared::info::output::OutputKind;
     use std::sync::Arc;
+    use crate::media::context::format::muxer::MuxerEnum;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {

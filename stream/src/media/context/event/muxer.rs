@@ -1,8 +1,7 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::flv::FlvContext;
-use crate::media::context::format::muxer::MuxerContext;
+use crate::media::context::format::muxer::{MuxerContext, MuxerEnum};
 use crate::state::layer::muxer_layer::{CMafLayer, FlvLayer, HlsTsLayer, Mp4Layer, RtpEncLayer, RtpFrameLayer, RtpPsLayer, TsLayer};
-use shared::info::muxer::MuxerEnum;
 
 pub enum MuxerEvent {
     Open(MuxerKind),

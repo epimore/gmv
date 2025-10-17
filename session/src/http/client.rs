@@ -1,4 +1,3 @@
-use std::net::Ipv4Addr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;

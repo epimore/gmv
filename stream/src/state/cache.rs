@@ -21,8 +21,9 @@ use crate::general::cfg;
 use crate::general::cfg::ServerConf;
 use crate::io::hook_handler::{OutEvent, OutEventRes};
 use crate::media::context::event::ContextEvent;
-use crate::media::context::event::muxer::{MuxerEvent};
+use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::format::MuxPacket;
+use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -40,9 +41,8 @@ use base::tokio::sync::{Notify, broadcast, mpsc};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use parking_lot::RwLock;
-use shared::info::media_info::{MediaConfig};
+use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
-use shared::info::muxer::MuxerEnum;
 use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
 use shared::info::output::{OutputEnum, OutputKind};
 
@@ -377,29 +377,7 @@ pub fn update_token(
                             }
                         }
                     }
-                    // state.sessions.get_mut(ssrc).map(|stream_trace| {
-                    //     stream_trace.converter.muxer.close_by_muxer_type(muxer_enum)
-                    // });
                 };
-                // if let Some(ut) = user_map.remove(&remote_addr) {
-                // if user_map.len() == 0 {
-                //     if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
-                //         if let Some(timeout) = out_expires {
-                //             let when = Instant::now() + *timeout;
-                //             state.expirations.insert((
-                //                 when,
-                //                 *ssrc,
-                //                 StreamDirection::StreamOut(ut.play_type),
-                //             ));
-                //             let notify =
-                //                 state.next_expiration().map(|ts| ts > when).unwrap_or(true);
-                //             if notify {
-                //                 SESSION.shared.background_task.notify_one();
-                //             }
-                //         }
-                //     }
-                // }
-                // }
             }
         }
     }
@@ -574,20 +552,26 @@ impl Shared {
                         stream_id,
                         converter,
                         mpsc_bus,
-                        output,
                         ..
                     }) = state.sessions.get_mut(&ssrc)
                     {
                         //流注册时，加入的无输出,超时检查
-                        if let Some(InnerTrace { user_map, output_trace,.. }) =
-                            state.inner.get(stream_id)
+                        if let Some(InnerTrace {
+                            user_map,
+                            output_trace,
+                            ..
+                        }) = state.inner.get(stream_id)
                         {
                             if let Some(output_enum) = mux_tp {
                                 //释放复用器
-                                if output_trace.get_muxer_size(output_enum)==0 {
-                                    converter.muxer.close_by_muxer_type(output_enum.to_muxer_enum());
+                                if output_trace.get_muxer_size(output_enum) == 0 {
+                                    converter.muxer.close_by_muxer_type(
+                                        MuxerEnum::from_output_enum(output_enum),
+                                    );
                                     let _ = mpsc_bus
-                                        .try_publish(MuxerEvent::Close(output_enum.to_muxer_enum()))
+                                        .try_publish(MuxerEvent::Close(
+                                            MuxerEnum::from_output_enum(output_enum),
+                                        ))
                                         .hand_log(|msg| error!("{msg}"));
                                 }
                             }
@@ -712,13 +696,13 @@ impl OutputTrace {
     }
     //减少@OutputEnum点播数据，并判断该@OutputEnum对应的MuxerEnum是否已无输出使用
     //返回（@OutputEnum的点播数量、None在使用/Some无输出使用）
-    fn subtract(&self, output: OutputEnum) -> (isize, Option<MuxerEnum>) {
-        let last = match output {
+    fn subtract(&self, output_enum: OutputEnum) -> (isize, Option<MuxerEnum>) {
+        let last = match output_enum {
             OutputEnum::HttpFlv => {
                 if self.http_flv.load(Ordering::SeqCst) == 1
                     && self.rtmp.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 self.http_flv.fetch_sub(1, Ordering::SeqCst)
             }
@@ -726,7 +710,7 @@ impl OutputTrace {
                 if self.rtmp.load(Ordering::SeqCst) == 1
                     && self.http_flv.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 self.rtmp.fetch_sub(1, Ordering::SeqCst)
             }
@@ -734,7 +718,7 @@ impl OutputTrace {
                 if self.dash_fmp4.load(Ordering::SeqCst) == 1
                     && self.hls_fmp4.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 self.dash_fmp4.fetch_sub(1, Ordering::SeqCst)
             }
@@ -742,14 +726,14 @@ impl OutputTrace {
                 if self.hls_fmp4.load(Ordering::SeqCst) == 1
                     && self.dash_fmp4.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 self.hls_fmp4.fetch_sub(1, Ordering::SeqCst)
             }
             OutputEnum::HlsTs => {
                 let val = self.hls_ts.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
@@ -757,7 +741,7 @@ impl OutputTrace {
                 if self.rtsp.load(Ordering::SeqCst) == 1
                     && self.gb28181_frame.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 self.rtsp.fetch_sub(1, Ordering::SeqCst)
             }
@@ -765,35 +749,35 @@ impl OutputTrace {
                 if self.gb28181_frame.load(Ordering::SeqCst) == 1
                     && self.rtsp.load(Ordering::SeqCst) == 0
                 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 self.gb28181_frame.fetch_sub(1, Ordering::SeqCst)
             }
             OutputEnum::Gb28181Ps => {
                 let val = self.gb28181_ps.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
             OutputEnum::WebRtc => {
                 let val = self.web_rtc.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
             OutputEnum::LocalMp4 => {
                 let val = self.local_mp4.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
             OutputEnum::LocalTs => {
                 let val = self.local_ts.fetch_sub(1, Ordering::SeqCst);
                 if val == 1 {
-                    return (0, Some(output.to_muxer_enum()));
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
