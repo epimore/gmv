@@ -1,6 +1,7 @@
 cargo fix --allow-dirty --allow-staged
 cargo build --release --target x86_64-unknown-linux-gnu
-cat logs/gb_2025-10-18.log |grep -A 1 '2025-10-18 20:18' | sed 's/\\n/\n/g'
+cat logs/gb_2025-10-19.log |grep -A 1 '2025-10-19 20:2' | sed 's/\\n/\n/g'
+run --package gmv-session --bin gmv-session -- start -c ./session/config.yml
 
 9.8-9.14 完成SESSION注册BUG+已有功能实现回放+MP4录像
 9.15- 大华相机调试+图片采集（是否推流采集？）
