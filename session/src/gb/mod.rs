@@ -16,6 +16,7 @@ pub use core::rw::RWSession;
 mod core;
 pub mod handler;
 mod io;
+mod sip_tcp_splitter;
 
 #[derive(Debug, Get, Deserialize)]
 #[serde(crate = "base::serde")]
