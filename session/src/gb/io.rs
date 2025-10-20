@@ -6,7 +6,7 @@ use rsip::message::HeadersExt;
 
 use crate::gb::handler;
 use base::exception::GlobalResultExt;
-use base::log::{debug, error, info};
+use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Package, Protocol, Zip};
 
 use crate::gb::core::event::EventSession;
@@ -18,15 +18,30 @@ use crate::gb::sip_tcp_splitter::complete_pkt;
 fn compact_for_log(raw: &str) -> String {
     raw.replace('\r', "").replace('\n', "\\n")
 }
+fn is_sip_keepalive_or_empty(bytes: &Bytes) -> bool {
+    let data = bytes.as_ref();
 
+    // 空数据
+    if data.is_empty() {
+        return true;
+    }
+
+    // 只有空白字符
+    data.iter()
+        .all(|&b| matches!(b, b'\r' | b'\n' | b' ' | b'\t'))
+}
 pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>) {
     let mut buffer = BytesMut::new();
     while let Some(zip) = input.recv().await {
         match zip {
-            Zip::Data(Package {
-                association,
-                data,
-            }) => {
+            Zip::Data(Package { association, data }) => {
+                if is_sip_keepalive_or_empty(&data) {
+                    let _ = output_tx
+                        .send(Zip::Data(Package { association, data }))
+                        .await
+                        .hand_log(|msg| error!("数据发送失败:{msg}"));
+                    continue;
+                }
                 if let Protocol::TCP = association.protocol {
                     buffer.extend_from_slice(&data);
                     match complete_pkt(&mut buffer) {
@@ -57,7 +72,7 @@ pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>) {
     info!("gb read exit");
 }
 async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>) {
-    match SipMessage::try_from(data) {
+    match SipMessage::try_from(data.clone()) {
         Ok(msg) => {
             match msg {
                 SipMessage::Request(req) => {
@@ -65,7 +80,7 @@ async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>
                     let headers = compact_for_log(&format!("{}", &req.headers));
                     let body = compact_for_log(&GB18030.decode(&req.body).0);
                     debug!(
-                        "接收:{:?} Request: {} {} {} {} {}",
+                        "接收:{:?} \\nRequest: \\n{} {} {} \\n{} \\n{}",
                         &association, &req.method, &req.uri, &req.version, headers, body
                     );
                     let _ = handler::requester::hand_request(req, output_tx, &association).await;
@@ -74,7 +89,7 @@ async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>
                     let headers = compact_for_log(&format!("{}", &res.headers));
                     let body = compact_for_log(&GB18030.decode(&res.body).0);
                     debug!(
-                        "接收:{:?} Response: {} {} {} {}",
+                        "接收:{:?} \\nResponse: {} {} \\n{} \\n{}",
                         &association, &res.version, &res.status_code, headers, body
                     );
                     match (
@@ -102,7 +117,10 @@ async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>
             }
         }
         Err(err) => {
-            debug!("接收: invalid data {err:?}");
+            warn!(
+                "接收: {association:?},\\n{:?} \\ninvalid data {err:?}",
+                &GB18030.decode(&data).0
+            );
         }
     }
 }
@@ -111,7 +129,7 @@ pub async fn write(mut output_rx: Receiver<Zip>, output: Sender<Zip>) {
         match &zip {
             Zip::Data(pkg) => {
                 let payload = compact_for_log(&GB18030.decode(pkg.get_data()).0);
-                debug!("发送:{:?} 负载: {}", pkg.get_association(), payload);
+                debug!("发送:{:?} \\n负载: {}", pkg.get_association(), payload);
             }
             Zip::Event(ent) => {
                 info!(
