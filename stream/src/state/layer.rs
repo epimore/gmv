@@ -324,7 +324,7 @@ pub mod filter_layer {
 }
 pub mod muxer_layer {
     use crate::media::context::format::MuxPacket;
-    use crate::media::context::format::mp4::Mp4Packet;
+    use crate::media::context::format::muxer::MuxerEnum;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::exception::{GlobalError, GlobalResult};
     use base::log::error;
@@ -332,7 +332,6 @@ pub mod muxer_layer {
     use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
     use shared::info::output::OutputKind;
     use std::sync::Arc;
-    use crate::media::context::format::muxer::MuxerEnum;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
@@ -362,7 +361,14 @@ pub mod muxer_layer {
                     Ok(self.flv.as_ref().unwrap().tx.subscribe())
                 }
                 MuxerEnum::Mp4 => {
-                    unimplemented!()
+                    if self.mp4.is_none() {
+                        Err(GlobalError::new_biz_error(
+                            1100,
+                            &format!("muxer: {:?}未开启", muxer_enum),
+                            |msg| error!("{msg}"),
+                        ))?;
+                    }
+                    Ok(self.mp4.as_ref().unwrap().tx.subscribe())
                 }
                 MuxerEnum::Ts => {
                     unimplemented!()
@@ -423,7 +429,7 @@ pub mod muxer_layer {
                 }
                 OutputKind::LocalMp4(inner) => {
                     if self.mp4.is_none() {
-                        unimplemented!()
+                        self.mp4 = Some(Mp4Layer::layer(inner.fmt.clone()));
                     }
                 }
                 OutputKind::LocalTs(inner) => {
@@ -459,7 +465,7 @@ pub mod muxer_layer {
     }
     #[derive(Clone)]
     pub struct Mp4Layer {
-        pub tx: broadcast::Sender<Arc<Mp4Packet>>,
+        pub tx: broadcast::Sender<Arc<MuxPacket>>,
         pub mp4: Mp4,
     }
     impl Mp4Layer {

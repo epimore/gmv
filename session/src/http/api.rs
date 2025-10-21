@@ -90,6 +90,13 @@ async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> J
         }
     }
 }
+//let recommendations = [
+//     ("短视频平台", "1-10分钟，<500MB"),
+//     ("在线课程", "15-45分钟，<1GB"),
+//     ("电影", "按章节或90-120分钟分片"),
+//     ("监控视频", "按1小时或1GB分片"),
+//     ("直播录制", "按2-4小时，考虑CDN分片"),
+// ];
 async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<Resp<String>> {
     info!("download_mp4: body = {:?}", &info);
     match get_gmv_token(headers) {
