@@ -8,6 +8,7 @@ use crate::media::context::format::ts::TsContext;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use base::serde::{Deserialize, Serialize};
 use shared::info::output::OutputEnum;
+use crate::media::context::format::FmtMuxer;
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(crate = "base::serde")]
@@ -59,7 +60,11 @@ impl MuxerContext {
                 context.flv = Some(flv_context);
             });
         }
-        if let Some(mp4_layer) = &muxer.mp4 { unimplemented!() }
+        if let Some(mp4_layer) = &muxer.mp4 { 
+            let _ = Mp4Context::init_context(demuxer_context, mp4_layer.tx.clone()).map(|mp4_context| {
+                context.mp4 = Some(mp4_context);
+            });
+        }
         if let Some(ts_layer) = &muxer.ts { unimplemented!() }
         if let Some(hls_ts_layer) = &muxer.hls_ts { unimplemented!() }
         if let Some(rtp_frame_layer) = &muxer.rtp_frame { unimplemented!() }

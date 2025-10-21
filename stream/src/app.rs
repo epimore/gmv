@@ -39,7 +39,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
             .build()
             .unwrap()
             .block_on(async {
-                let st = tokio::spawn(async move {
+                let rtp = tokio::spawn(async move {
                     info!("Stream server start running...");
                     rtp_handler::run(tu).await?;
                     error!("Stream server stop");
@@ -52,7 +52,7 @@ impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSo
                     error!("Web server stop");
                     Ok::<(), GlobalError>(())
                 });
-                st.await.hand_log(|msg| error!("Stream:{msg}"))??;
+                rtp.await.hand_log(|msg| error!("Stream:{msg}"))??;
                 web.await.hand_log(|msg| error!("WEB:{msg}"))??;
                 Ok::<(), GlobalError>(())
             })?;

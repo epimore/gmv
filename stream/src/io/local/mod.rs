@@ -1,3 +1,6 @@
+mod mp4;
+mod ts;
+
 use base::bytes::Bytes;
 
 pub struct StreamData {
