@@ -1,4 +1,4 @@
-use crate::io::hook_handler::{OutEvent, OutEventRes};
+use crate::io::event_handler::{Event, EventRes, OutEvent, OutEventRes};
 use crate::io::http::out::DisconnectAwareStream;
 use crate::io::http::{res_401, res_404};
 use crate::media::context::event::inner::InnerEvent;
@@ -37,9 +37,9 @@ pub async fn handler(stream_id: String, token: &String, addr: SocketAddr)
             let info = StreamPlayInfo::new(bsi, remote_addr.clone(), token.clone(), OutputEnum::HttpFlv, user_count);
             let (tx, rx) = oneshot::channel();
             let event_tx = cache::get_event_tx();
-            let _ = event_tx.send((OutEvent::OnPlay(info), Some(tx))).await.hand_log(|msg| error!("{msg}"));
+            let _ = event_tx.send((Event::Out(OutEvent::OnPlay(info)), Some(tx))).await.hand_log(|msg| error!("{msg}"));
             match rx.await.hand_log(|msg| error!("{msg}")) {
-                Ok(OutEventRes::OnPlay(Some(true))) => {
+                Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
                     match cache::get_muxer_rx(&ssrc,MuxerEnum::Flv) {
                         Ok(rx) => {
                             //插入用户
@@ -48,7 +48,7 @@ pub async fn handler(stream_id: String, token: &String, addr: SocketAddr)
                                 cache::update_token(&stream_id, OutputEnum::HttpFlv, token.clone(), false, addr);
                                 if let Some((bsi, user_count)) = cache::get_base_stream_info_by_stream_id(&stream_id) {
                                     let info = StreamPlayInfo::new(bsi, remote_addr, token, OutputEnum::HttpFlv, user_count);
-                                    let _ = event_tx.try_send((OutEvent::OffPlay(info), None)).hand_log(|msg| error!("{msg}"));
+                                    let _ = event_tx.try_send((Event::Out(OutEvent::OffPlay(info)), None)).hand_log(|msg| error!("{msg}"));
                                 }
                             }));
                             send_frame(ssrc, rx, on_disconnect).await

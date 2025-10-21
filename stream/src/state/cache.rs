@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::general::cfg;
 use crate::general::cfg::ServerConf;
-use crate::io::hook_handler::{OutEvent, OutEventRes};
+use crate::io::event_handler::{Event, EventRes, OutEvent, OutEventRes};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::format::MuxPacket;
@@ -260,7 +260,7 @@ fn stream_register(
     let state = &mut *guard;
     let next_expiration = state.next_expiration();
     if let Some(stream_trace) = state.sessions.get_mut(&ssrc) {
-        //首次流闲置超时，非永不超时则-默认6秒
+        //[用户端无拉流]首次流闲置超时，非永不超时则-默认6秒
         if let Some(mut expires) = stream_trace.out_expires {
             if expires == Duration::default() {
                 expires = Duration::from_millis(STREAM_IDLE_TIME_OUT);
@@ -293,7 +293,7 @@ fn stream_register(
             .shared
             .event_tx
             .clone()
-            .try_send((OutEvent::StreamRegister(stream_info), None))
+            .try_send((Event::Out(OutEvent::StreamRegister(stream_info)), None))
             .hand_log(|msg| error!("{msg}"));
         stream_trace.register_ts = time;
 
@@ -303,6 +303,17 @@ fn stream_register(
         ));
     }
     None
+}
+/// 主动推流：【rtmp-push,local-mp4/ts,rtsp-push,gb28181-push,webRtc-push】
+/// 两种方式触发
+/// 1.在流注册时检测是否主动推流；即初始化的媒体流是否需主动推流，
+/// 2.通过API接口添加的输出流OUTPUT，检测是否需主动推流
+/// ????初始化需推流，在流注册前API又添加需推流输出？？？如何确定初始化推流
+///
+/// API添加流注册，可确定outputKind
+fn event_push_stream(output:&OutputLayer){
+
+
 }
 
 pub fn get_muxer_rx(
@@ -325,7 +336,7 @@ pub fn get_server_conf() -> &'static ServerConf {
     conf
 }
 
-pub fn get_event_tx() -> mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)> {
+pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
     SESSION.shared.event_tx.clone()
 }
 
@@ -450,7 +461,7 @@ impl Session {
                 .build()
                 .hand_log(|msg| error!("{msg}"))
                 .unwrap();
-            let _ = rt.block_on(OutEvent::event_loop(rx));
+            let _ = rt.block_on(Event::event_loop(rx));
         });
         session
     }
@@ -473,7 +484,7 @@ struct Shared {
     state: RwLock<State>,
     background_task: Notify,
     server_conf: ServerConf,
-    event_tx: mpsc::Sender<(OutEvent, Option<Sender<OutEventRes>>)>,
+    event_tx: mpsc::Sender<(Event, Option<Sender<EventRes>>)>,
 }
 
 impl Shared {
@@ -540,7 +551,7 @@ impl Shared {
                                     .shared
                                     .event_tx
                                     .clone()
-                                    .try_send((OutEvent::StreamInTimeout(stream_state), None))
+                                    .try_send((Event::Out(OutEvent::StreamInTimeout(stream_state)), None))
                                     .hand_log(|msg| error!("{msg}"));
                             }
                         }
@@ -603,7 +614,7 @@ impl Shared {
                                 .shared
                                 .event_tx
                                 .clone()
-                                .try_send((OutEvent::StreamIdle(stream_info), None))
+                                .try_send((Event::Out(OutEvent::StreamIdle(stream_info)), None))
                                 .hand_log(|msg| error!("{msg}"));
                         }
                     }
