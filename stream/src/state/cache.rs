@@ -32,7 +32,7 @@ use crate::state::{HALF_TIME_OUT, RTP_BUFFER_SIZE, STREAM_IDLE_TIME_OUT};
 use base::bus;
 use base::chrono::{Local, Timelike};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, info, warn};
+use base::log::{debug, error, info, warn};
 use base::net::state::Association;
 use base::once_cell::sync::Lazy;
 use base::tokio;
@@ -40,6 +40,8 @@ use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::{Notify, broadcast, mpsc};
 use base::tokio::time;
 use base::tokio::time::Instant;
+use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::{GlobalRuntime, RuntimeType};
 use parking_lot::RwLock;
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
@@ -304,17 +306,6 @@ fn stream_register(
     }
     None
 }
-/// 主动推流：【rtmp-push,local-mp4/ts,rtsp-push,gb28181-push,webRtc-push】
-/// 两种方式触发
-/// 1.在流注册时检测是否主动推流；即初始化的媒体流是否需主动推流，
-/// 2.通过API接口添加的输出流OUTPUT，检测是否需主动推流
-/// ????初始化需推流，在流注册前API又添加需推流输出？？？如何确定初始化推流
-///
-/// API添加流注册，可确定outputKind
-fn event_push_stream(output:&OutputLayer){
-
-
-}
 
 pub fn get_muxer_rx(
     ssrc: &u32,
@@ -445,38 +436,40 @@ impl Session {
             }),
         };
         let shared = session.shared.clone();
-        thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .thread_name("SESSION")
-                .build()
-                .hand_log(|msg| error!("{msg}"))
-                .unwrap();
-            let _ = rt.block_on(Self::purge_expired_task(shared));
-        });
-        thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .thread_name("HOOK-EVENT")
-                .build()
-                .hand_log(|msg| error!("{msg}"))
-                .unwrap();
-            let _ = rt.block_on(Event::event_loop(rx));
-        });
+        let rt = GlobalRuntime::get_runtime(&RuntimeType::Custom("MAIN".to_string())).unwrap();
+        rt
+            .rt_handle
+            .spawn(Self::purge_expired_task(shared, rt.cancel.clone()));
+        rt
+            .rt_handle
+            .spawn(Event::event_loop(rx, rt.cancel.clone()));
         session
     }
 
-    async fn purge_expired_task(shared: Arc<Shared>) -> GlobalResult<()> {
+    async fn purge_expired_task(
+        shared: Arc<Shared>,
+        cancel_token: CancellationToken,
+    ) -> GlobalResult<()> {
         loop {
             if let Some(when) = shared.purge_expired_state()? {
                 tokio::select! {
                     _ = time::sleep_until(when) =>{},
                     _ = shared.background_task.notified() =>{},
+                    _ = cancel_token.cancelled() => {break;}
                 }
             } else {
-                shared.background_task.notified().await;
+                tokio::select! {
+                    _ = shared.background_task.notified() => {}
+                    _ = cancel_token.cancelled() => {break;}
+                }
             }
         }
+        // 清理
+        let mut state = shared.state.write();
+        state.sessions.clear();
+        state.inner.clear();
+        state.expirations.clear();
+        Ok(())
     }
 }
 
@@ -551,7 +544,10 @@ impl Shared {
                                     .shared
                                     .event_tx
                                     .clone()
-                                    .try_send((Event::Out(OutEvent::StreamInTimeout(stream_state)), None))
+                                    .try_send((
+                                        Event::Out(OutEvent::StreamInTimeout(stream_state)),
+                                        None,
+                                    ))
                                     .hand_log(|msg| error!("{msg}"));
                             }
                         }
@@ -642,7 +638,7 @@ struct StreamTrace {
     //addr , udp/tcp protocol
     origin_trans: Option<(String, String)>,
     mpsc_bus: bus::mpsc::TypedMessageBus,
-    broadcast_bus: bus::broadcast::TypedMessageBus, //回调移除未使用的协议????
+    broadcast_bus: bus::broadcast::TypedMessageBus,
     converter: ConverterLayer,
     media_ext: Option<MediaExt>,
     output: OutputLayer,

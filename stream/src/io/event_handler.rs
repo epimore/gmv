@@ -1,12 +1,15 @@
 use crate::io::http::call::{HttpClient, HttpSession};
 use base::exception::GlobalResultExt;
 use base::log::{error, info};
+use base::tokio::select;
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio::sync::oneshot::Sender;
+use base::tokio_util::sync::CancellationToken;
 use pretend::Pretend;
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
 use shared::info::obj::{BaseStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use crate::state::layer::output_layer::OutputLayer;
 
 pub enum Event {
     Out(OutEvent),
@@ -15,6 +18,25 @@ pub enum Event {
 
 pub enum InnerEvent {}
 
+pub enum StreamActive{
+    RtmpPush,
+    LocalMp4,
+    LocalTs,
+    RtspPush,
+    Gb28181Push,
+    WebRtcPush,
+}
+/// 主动推流：【rtmp-push,local-mp4/ts,rtsp-push,gb28181-push,webRtc-push】
+/// 两种方式触发
+/// 1.在流注册时检测是否主动推流；即初始化的媒体流是否需主动推流，
+/// 2.通过API接口添加的输出流OUTPUT，检测是否需主动推流
+/// ????初始化需推流，在流注册前API又添加需推流输出？？？如何确定初始化推流
+///
+/// API添加流注册，可确定outputKind
+fn event_push_stream(output:&OutputLayer){
+
+
+}
 //对外发送事件
 pub enum OutEvent {
     //流媒体触发事件，回调信令
@@ -50,16 +72,22 @@ pub enum OutEventRes {
 }
 
 impl Event {
-    pub async fn event_loop(mut rx: Receiver<(Event, Option<Sender<EventRes>>)>) {
+    pub async fn event_loop(mut rx: Receiver<(Event, Option<Sender<EventRes>>)>,cancel_token: CancellationToken) {
         let pretend = HttpClient::template()
             .as_ref()
             .expect("Http client template init failed");
-        while let Some((event, tx)) = rx.recv().await {
-            match event {
-                Event::Out(out) => {
-                    Self::hand_out(out, tx, pretend).await;
-                }
-                Event::Inner(inner) => {}
+        loop {
+            select! {
+               biased; // 按编写顺序检查分支
+               Some((event, tx)) = rx.recv() =>{
+                    match event {
+                        Event::Out(out) => {
+                            Self::hand_out(out, tx, pretend).await;
+                        }
+                        Event::Inner(inner) => {}
+                    }
+                },
+                _ = cancel_token.cancelled() => {break;}
             }
         }
     }

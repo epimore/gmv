@@ -1,74 +1,108 @@
-use std::net::UdpSocket;
-use base::log::{error, info};
+use crate::general::cfg::ServerConf;
+use crate::io::{http, rtp_handler};
+use crate::media;
+use crate::state::cache;
 use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::{logger, tokio};
+use base::log::{error, info};
 use base::tokio::sync::mpsc;
-use crate::io::{http, rtp_handler};
-use crate::state::cache;
-use crate::{media};
-use crate::general::cfg::ServerConf;
+use base::utils::rt::{GlobalRuntime, RuntimeType};
+use base::{logger, tokio};
+use std::net::UdpSocket;
 
 pub struct App {
     conf: ServerConf,
 }
 
-impl Daemon<(std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSocket>))> for App {
-    fn init_privilege() -> GlobalResult<(Self, (std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSocket>)))>
+impl
+Daemon<(
+    GlobalRuntime,
+    std::net::TcpListener,
+    (Option<std::net::TcpListener>, Option<UdpSocket>),
+)> for App
+{
+    fn init_privilege() -> GlobalResult<(
+        Self,
+        (
+            GlobalRuntime,
+            std::net::TcpListener,
+            (Option<std::net::TcpListener>, Option<UdpSocket>),
+        ),
+    )>
     where
         Self: Sized,
     {
+        let rt = GlobalRuntime::register_default(RuntimeType::Custom("MAIN".to_string()))?;
         let app = App {
-            conf: cache::get_server_conf().clone()
+            conf: cache::get_server_conf().clone(),
         };
         logger::Logger::init()?;
-        banner();
-        let http_listener = http::listen_http_server(*(app.conf.get_http_port()))?;
-        let tu = rtp_handler::listen_gb_server(*(app.conf.get_rtp_port()))?;
-        Ok((app, (http_listener, tu)))
+        let http_port = *app.conf.get_http_port();
+        let http_listener = http::listen_http_server(http_port)?;
+        let rtp_port = *app.conf.get_rtp_port();
+        let tu = rtp_handler::listen_media_server(rtp_port)?;
+        banner(http_port, rtp_port);
+        Ok((app, (rt, http_listener, tu)))
     }
 
-    fn run_app(self, t: (std::net::TcpListener, (Option<std::net::TcpListener>, Option<UdpSocket>))) -> GlobalResult<()> {
-        let (http_listener, tu) = t;
+    fn run_app(
+        self,
+        t: (
+            GlobalRuntime,
+            std::net::TcpListener,
+            (Option<std::net::TcpListener>, Option<UdpSocket>),
+        ),
+    ) -> GlobalResult<()> {
+        let (rt, http_listener, tu) = t;
         let conf = self.conf;
         let node_name = conf.get_name().clone();
         let (tx, rx) = mpsc::channel(100);
-        media::build_worker_run(rx);
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let rtp = tokio::spawn(async move {
-                    info!("Stream server start running...");
-                    rtp_handler::run(tu).await?;
-                    error!("Stream server stop");
-                    Ok::<(), GlobalError>(())
-                });
 
-                let web = tokio::spawn(async move {
-                    info!("Web server start running...");
-                    http::run(&node_name, http_listener, tx).await?;
-                    error!("Web server stop");
-                    Ok::<(), GlobalError>(())
-                });
-                rtp.await.hand_log(|msg| error!("Stream:{msg}"))??;
-                web.await.hand_log(|msg| error!("WEB:{msg}"))??;
-                Ok::<(), GlobalError>(())
-            })?;
-        error!("APP abnormally stopped...");
+        let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
+        network_rt
+            .rt_handle
+            .spawn(rtp_handler::run(tu, network_rt.cancel.clone()));
+        network_rt.rt_handle.spawn(http::run(
+            node_name,
+            http_listener,
+            tx,
+            network_rt.cancel.clone(),
+        ));
+
+        let compute_rt = GlobalRuntime::register_default(RuntimeType::CommonCompute)?;
+        compute_rt.rt_handle.spawn(media::handle_process(rx));
+
+        rt.rt_handle.block_on(GlobalRuntime::order_shutdown(&[
+            RuntimeType::CommonNetwork,
+            RuntimeType::Custom("MAIN".to_string()),
+            RuntimeType::CommonCompute,
+        ]));
+        info!(
+          r#"
+          ┌─────────────────────────────────────┐
+          │ Application Shutdown · 🟡 Bye...     │
+          └─────────────────────────────────────┘"#
+        );
         Ok(())
     }
 }
 
-fn banner() {
-    let br = r#"
-            ___   __  __  __   __    _      ___    _____    ___     ___     ___   __  __
-    o O O  / __| |  \/  | \ \ / /   (_)    / __|  |_   _|  | _ \   | __|   /   \ |  \/  |
-   o      | (_ | | |\/| |  \ V /     _     \__ \    | |    |   /   | _|    | - | | |\/| |
-  oO__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   _|_|_   |_|_\   |___|   |_|_| |_|__|_|
- {======|_|""G""|_|""M""|_|""V""|_|"":""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|
+fn banner(http_port: u16, rtp_port: u16) {
+    info!(
+        r#"
+            ___   __  __  __   __    _      ___    _____    ___    ___    ___    __  __
+    o O O  / __| |  \/  | \ \ / /   (_)    / __|  |_   _|  | _ \  | __|  /   \  |  \/  |
+   o      | (_ | | |\/| |  \ V /     _     \__ \    | |    |   /  | _|   | - |  | |\/| |
+  oO__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   _|_|_   |_|_\  |___|  |_|_|  |_|__|_|
+ [======|_|""G""|_|""M""|_|""V""|_|"":""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|==]
 ./0--000'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
-"#;
-    info!("{}", br);
-}
+
+┌──────────────────┬──────────────────┬──────────────┬─────────────┐
+│ Service          │ Address          │ Protocols    │  Status     │
+├──────────────────┼──────────────────┼──────────────┼─────────────┤
+│ HTTP Server      │ 0.0.0.0:{:<5}    │ HTTP         │ 🟢 Ready     │
+│ RTP Media Stream │ 0.0.0.0:{:<5}    │ TCP, UDP     │ 🟢 Listening │
+└──────────────────┴──────────────────┴──────────────┴─────────────┘"#,
+        http_port, rtp_port
+    );
+    }
