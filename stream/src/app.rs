@@ -15,16 +15,14 @@ pub struct App {
 }
 
 impl
-Daemon<(
-    GlobalRuntime,
-    std::net::TcpListener,
-    (Option<std::net::TcpListener>, Option<UdpSocket>),
-)> for App
+    Daemon<(
+        std::net::TcpListener,
+        (Option<std::net::TcpListener>, Option<UdpSocket>),
+    )> for App
 {
     fn init_privilege() -> GlobalResult<(
         Self,
         (
-            GlobalRuntime,
             std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
         ),
@@ -32,7 +30,6 @@ Daemon<(
     where
         Self: Sized,
     {
-        let rt = GlobalRuntime::register_default(RuntimeType::Custom("MAIN".to_string()))?;
         let app = App {
             conf: cache::get_server_conf().clone(),
         };
@@ -41,19 +38,18 @@ Daemon<(
         let http_listener = http::listen_http_server(http_port)?;
         let rtp_port = *app.conf.get_rtp_port();
         let tu = rtp_handler::listen_media_server(rtp_port)?;
-        banner(http_port, rtp_port);
-        Ok((app, (rt, http_listener, tu)))
+        banner(http_port, rtp_port, |msg| info!("{msg}"));
+        Ok((app, (http_listener, tu)))
     }
 
     fn run_app(
         self,
         t: (
-            GlobalRuntime,
             std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
         ),
     ) -> GlobalResult<()> {
-        let (rt, http_listener, tu) = t;
+        let (http_listener, tu) = t;
         let conf = self.conf;
         let node_name = conf.get_name().clone();
         let (tx, rx) = mpsc::channel(100);
@@ -72,23 +68,16 @@ Daemon<(
         let compute_rt = GlobalRuntime::register_default(RuntimeType::CommonCompute)?;
         compute_rt.rt_handle.spawn(media::handle_process(rx));
 
-        rt.rt_handle.block_on(GlobalRuntime::order_shutdown(&[
-            RuntimeType::CommonNetwork,
-            RuntimeType::Custom("MAIN".to_string()),
-            RuntimeType::CommonCompute,
-        ]));
-        info!(
-          r#"
-          ┌─────────────────────────────────────┐
-          │ Application Shutdown · 🟡 Bye...     │
-          └─────────────────────────────────────┘"#
+        GlobalRuntime::order_shutdown(
+            &[RuntimeType::CommonNetwork, RuntimeType::CommonCompute],
+            |msg| info!("{msg}"),
         );
         Ok(())
     }
 }
 
-fn banner(http_port: u16, rtp_port: u16) {
-    info!(
+fn banner<F: FnOnce(String)>(http_port: u16, rtp_port: u16, f: F) {
+    let msg = format!(
         r#"
             ___   __  __  __   __    _      ___    _____    ___    ___    ___    __  __
     o O O  / __| |  \/  | \ \ / /   (_)    / __|  |_   _|  | _ \  | __|  /   \  |  \/  |
@@ -105,4 +94,5 @@ fn banner(http_port: u16, rtp_port: u16) {
 └──────────────────┴──────────────────┴──────────────┴─────────────┘"#,
         http_port, rtp_port
     );
-    }
+    f(msg);
+}
