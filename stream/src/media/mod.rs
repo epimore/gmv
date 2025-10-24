@@ -18,34 +18,34 @@ pub mod rtp;
 pub mod context;
 
 pub const DEFAULT_IO_BUF_SIZE: usize = 32768;
-pub fn build_worker_run(rx: Receiver<u32>) {
-    // 限制最大并发流数量，防止资源耗尽
-    let mut concurrency_limit = std::thread::available_parallelism()
-        .map(|n| n.get() * 10) // CPU核心数*10
-        .unwrap_or(10);
-    if concurrency_limit < 8 {
-        concurrency_limit = 8;
-    };
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(8)
-            .max_blocking_threads(concurrency_limit)
-            .enable_all()
-            .thread_name("media-worker")
-            .build()
-            .hand_log(|msg| error!("{}",msg))
-            .unwrap()
-            .block_on({
-                // unsafe {
-                // avformat_network_init();
-                // av_log_set_level(AV_LOG_DEBUG as c_int);
-                // };
-                handle_run(rx)
-            });
-    });
-}
+// pub fn build_worker_run(rx: Receiver<u32>) {
+//     // 限制最大并发流数量，防止资源耗尽
+//     let mut concurrency_limit = std::thread::available_parallelism()
+//         .map(|n| n.get() * 10) // CPU核心数*10
+//         .unwrap_or(10);
+//     if concurrency_limit < 8 {
+//         concurrency_limit = 8;
+//     };
+//     std::thread::spawn(move || {
+//         tokio::runtime::Builder::new_multi_thread()
+//             .worker_threads(8)
+//             .max_blocking_threads(concurrency_limit)
+//             .enable_all()
+//             .thread_name("media-worker")
+//             .build()
+//             .hand_log(|msg| error!("{}",msg))
+//             .unwrap()
+//             .block_on({
+//                 // unsafe {
+//                 // avformat_network_init();
+//                 // av_log_set_level(AV_LOG_DEBUG as c_int);
+//                 // };
+//                 handle_process(rx)
+//             });
+//     });
+// }
 //todo! 转发媒体流，不进入MediaContext
-async fn handle_run(mut rx: Receiver<u32>) {
+pub async fn handle_process(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
         if let Ok(mut sc_rx) = cache::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
             //此处可以不使用超时等待，统一流输入超时处理即可；输入超时-清理该ssrc所有信息，包含此处的发送句柄，完成资源释放
