@@ -436,13 +436,10 @@ impl Session {
             }),
         };
         let shared = session.shared.clone();
-        let rt = GlobalRuntime::get_runtime(&RuntimeType::Custom("MAIN".to_string())).unwrap();
-        rt
-            .rt_handle
+        let rt = GlobalRuntime::get_main_runtime();
+        rt.rt_handle
             .spawn(Self::purge_expired_task(shared, rt.cancel.clone()));
-        rt
-            .rt_handle
-            .spawn(Event::event_loop(rx, rt.cancel.clone()));
+        rt.rt_handle.spawn(Event::event_loop(rx, rt.cancel.clone()));
         session
     }
 
