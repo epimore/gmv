@@ -9,6 +9,7 @@ use base::log::{error, info};
 use base::serde::Deserialize;
 use base::serde_default;
 use base::tokio::net::TcpListener;
+use base::tokio_util::sync::CancellationToken;
 
 mod api;
 mod hook;
@@ -43,11 +44,10 @@ impl Http {
 
     pub fn listen_http_server(&self) -> GlobalResult<std::net::TcpListener> {
         let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", self.port)).hand_log(|msg| error!("{msg}"))?;
-        info!("Listen to http web addr = 0.0.0.0:{} ...", self.port);
         Ok(listener)
     }
 
-    pub async fn run(&self, listener: std::net::TcpListener) -> GlobalResult<()> {
+    pub async fn run(&self, listener: std::net::TcpListener, cancel_token: CancellationToken) -> GlobalResult<()> {
         listener.set_nonblocking(true).hand_log(|msg| error!("{msg}"))?;
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         // 创建包含所有路由的统一Router
@@ -60,10 +60,14 @@ impl Http {
         let app = Router::new()
             .nest(&format!("{}",self.prefix), all_routes);
 
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-            .await
-            .hand_log(|msg| error!("{msg}"))?;
-        Ok(())
+        let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(async move {
+                cancel_token.cancelled().await;
+            });
+        match server.await.hand_log(|msg| error!("{msg}")) {
+            Ok(()) => Ok(()),
+            error => error,
+        }
     }
 
     /// 404 Not Found

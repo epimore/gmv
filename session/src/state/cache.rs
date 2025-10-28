@@ -21,6 +21,8 @@ use base::tokio::sync::Notify;
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::{rand, serde_json, tokio};
+use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 use shared::info::media_info::MediaConfig;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
@@ -335,15 +337,14 @@ impl Cache {
             )
         };
         let shared = cache.shared.clone();
-        thread::Builder::new().name("General:Cache".to_string()).spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().hand_log(|msg| error!("{msg}")).unwrap();
-            let _ = rt.block_on(Self::purge_expired_task(shared));
-        }).expect("General:Cache background thread create failed");
+        let rt = GlobalRuntime::get_main_runtime();
+        rt.rt_handle.spawn(Self::purge_expired_task(shared,rt.cancel));
         cache
     }
 
-    async fn purge_expired_task(shared: Arc<Shared>) {
+    async fn purge_expired_task(shared: Arc<Shared>,cancel_token: CancellationToken,) {
         loop {
+            if cancel_token.is_cancelled() { break; }
             if let Some(when) = shared.purge_expired_keys().await {
                 tokio::select! {
                     _ = time::sleep_until(when) =>{},
@@ -353,6 +354,9 @@ impl Cache {
                 shared.background_task.notified().await;
             }
         }
+        let mut state = shared.state.lock();
+        state.expirations.clear();
+        state.entities.clear();
     }
 }
 

@@ -1,16 +1,17 @@
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 
-use base::serde::Deserialize;
-use base::tokio::sync::mpsc;
 use base::cfg_lib::conf;
 use base::constructor::Get;
+use base::serde::Deserialize;
+use base::tokio::sync::mpsc;
 
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{error, info};
 use base::net;
-use base::net::state::{CHANNEL_BUFFER_SIZE};
-
+use base::net::state::{CHANNEL_BUFFER_SIZE, Zip};
+use base::tokio::select;
+use base::tokio_util::sync::CancellationToken;
 pub use core::rw::RWSession;
 
 mod core;
@@ -21,38 +22,38 @@ mod sip_tcp_splitter;
 #[derive(Debug, Get, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.session")]
-pub struct SessionConf {
+pub struct SessionInfo {
     lan_ip: Ipv4Addr,
     wan_ip: Ipv4Addr,
     lan_port: u16,
     wan_port: u16,
 }
 
-
-impl SessionConf {
+impl SessionInfo {
     pub fn get_session_by_conf() -> Self {
-        SessionConf::conf()
+        SessionInfo::conf()
     }
 
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
-        let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.get_wan_port())).hand_log(|msg| error! {"{msg}"})?;
+        let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.get_wan_port()))
+            .hand_log(|msg| error! {"{msg}"})?;
         let res = net::sdx::listen(net::state::Protocol::ALL, socket_addr);
-        info!("Listen to gb28181 session over tcp and udp,listen: 0.0.0.0:{}; wan ip: {}", self.get_wan_port(), self.get_wan_ip());
         res
     }
 
-    pub async fn run(tu: (Option<std::net::TcpListener>, Option<UdpSocket>)) -> GlobalResult<()> {
+    pub async fn run(
+        tu: (Option<std::net::TcpListener>, Option<UdpSocket>),
+        cancel_token: CancellationToken,
+    ) -> GlobalResult<()> {
         let (output, input) = net::sdx::run_by_tokio(tu).await?;
         let (output_tx, output_rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
-        let read_task = base::tokio::spawn(async move {
-            io::read(input, output_tx).await;
+        base::tokio::spawn(io::read(input, output_tx, cancel_token.child_token()));
+        let output_sender = output.clone();
+        base::tokio::spawn(io::write(output_rx, output, cancel_token.child_token()));
+        base::tokio::spawn(async move {
+            cancel_token.cancelled().await;
+            let _ = output_sender.send(Zip::build_shutdown_zip(None)).await;
         });
-        let write_task = base::tokio::spawn(async move {
-            io::write(output_rx, output).await;
-        });
-        read_task.await.hand_log(|msg| error!("读取数据异常:{msg}"))?;
-        write_task.await.hand_log(|msg| error!("写出数据异常:{msg}"))?;
         Ok(())
     }
 }
-

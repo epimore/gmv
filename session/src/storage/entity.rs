@@ -42,7 +42,7 @@ pub struct GmvRecord {
 
 impl GmvRecord {
     pub async fn rm_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<()> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         sqlx::query("delete from GMV_RECORD where biz_id=?")
             .bind(biz_id)
             .execute(pool)
@@ -51,7 +51,7 @@ impl GmvRecord {
     }
 
     pub async fn insert_single_gmv_record(&self) -> GlobalResult<()> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         sqlx::query("insert into GMV_RECORD (BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,LT,STREAM_APP_NAME) values (?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&self.biz_id)
             .bind(&self.device_id)
@@ -70,21 +70,21 @@ impl GmvRecord {
     }
 
     pub async fn query_gmv_record_run_by_device_id_channel_id(device_id: &str, channel_id: &str) -> GlobalResult<Option<GmvRecord>> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvRecord>("select biz_id,device_id,channel_id,user_id,st,et,speed,ct,state,lt,stream_app_name from GMV_RECORD where state=0 and device_id=? and channel_id=?")
             .bind(device_id).bind(channel_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 
     pub async fn query_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<Option<GmvRecord>> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvRecord>("select biz_id,device_id,channel_id,user_id,st,et,speed,ct,state,lt,stream_app_name from GMV_RECORD where biz_id=?")
             .bind(biz_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 
     pub async fn update_gmv_record_by_biz_id(&self) -> GlobalResult<()> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         sqlx::query("update GMV_RECORD set state=?,lt=? where biz_id=?")
             .bind(&self.state)
             .bind(&self.lt)
@@ -112,7 +112,7 @@ pub struct GmvOauth {
 
 impl GmvOauth {
     pub async fn read_gmv_oauth_by_device_id(device_id: &String) -> GlobalResult<Option<GmvOauth>> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvOauth>("select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=?")
             .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
@@ -136,7 +136,7 @@ pub struct GmvDevice {
 
 impl GmvDevice {
     pub async fn query_gmv_device_by_device_id(device_id: &String) -> GlobalResult<Option<GmvDevice>> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, Self>(r#"select device_id,transport,register_expires,
         register_time,local_addr,sip_from,sip_to,status,gb_version from GMV_DEVICE where device_id=?"#)
             .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
@@ -144,7 +144,7 @@ impl GmvDevice {
     }
 
     pub async fn insert_single_gmv_device_by_register(&self) -> GlobalResult<()> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         sqlx::query(r#"insert into GMV_DEVICE (device_id,transport,register_expires,
         register_time,local_addr,sip_from,sip_to,status,gb_version) values (?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),transport=VALUES(transport),register_expires=VALUES(register_expires),
@@ -163,7 +163,7 @@ impl GmvDevice {
         Ok(())
     }
     pub async fn update_gmv_device_status_by_device_id(device_id: &String, status: u8) -> GlobalResult<()> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         sqlx::query("update GMV_DEVICE set status=? where device_id=?")
             .bind(status)
             .bind(device_id)
@@ -200,7 +200,7 @@ pub struct GmvDeviceExt {
 impl GmvDeviceExt {
     pub async fn update_gmv_device_ext_info(vs: Vec<(String, String)>) -> GlobalResult<()> {
         let ext = Self::build(vs);
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         sqlx::query("update GMV_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?")
             .bind(ext.device_type)
             .bind(ext.manufacturer)
@@ -271,7 +271,7 @@ pub struct GmvDeviceChannel {
 impl GmvDeviceChannel {
     pub async fn insert_gmv_device_channel(device_id: &String, vs: Vec<(String, String)>) -> GlobalResult<Vec<GmvDeviceChannel>> {
         let dc_ls = Self::build(device_id, vs);
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
          model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
          longitude,latitude,ptz_type,supply_light_type,alias_name) ");
@@ -401,7 +401,7 @@ pub struct GmvFileInfo {
 
 impl GmvFileInfo {
     pub async fn query_gmv_file_info_by_id(id: i64) -> GlobalResult<GmvFileInfo> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvFileInfo>("select id,device_id,channel_id,biz_time,biz_id,file_type,file_size,file_name,file_format,dir_path,abs_path,note,is_del,create_time from GMV_FILE_INFO where id=?")
             .bind(id)
             .fetch_one(pool)
@@ -410,7 +410,7 @@ impl GmvFileInfo {
     }
 
     pub async fn rm_gmv_file_info_by_id(biz_id: i64) -> GlobalResult<()> {
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         sqlx::query("delete from GMV_FILE_INFO where id=?")
             .bind(biz_id)
             .execute(pool)
@@ -422,7 +422,7 @@ impl GmvFileInfo {
         if arr.is_empty() {
             return Ok(());
         }
-        let pool = get_conn_by_pool()?;
+        let pool = get_conn_by_pool();
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_FILE_INFO
                 (DEVICE_ID, CHANNEL_ID, BIZ_TIME, BIZ_ID, FILE_TYPE, FILE_SIZE,
                  FILE_NAME, FILE_FORMAT, DIR_PATH,ABS_PATH, NOTE, IS_DEL, CREATE_TIME) ");
@@ -569,7 +569,7 @@ mod tests {
             device_id: "34020000001110000001".to_string(),
             ..Default::default()
         };
-        let pool = get_conn_by_pool().unwrap();
+        let pool = get_conn_by_pool();
         let res = sqlx::query("update GMV_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?")
             .bind(ext.device_type)
             .bind(ext.manufacturer)
@@ -595,7 +595,7 @@ mod tests {
             device_id: "34020000001110000001".to_string(),
             ..Default::default()
         };
-        let pool = get_conn_by_pool().unwrap();
+        let pool = get_conn_by_pool();
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
          model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
          longitude,latitude,ptz_type,supply_light_type,alias_name) ");
@@ -632,7 +632,6 @@ mod tests {
 
     fn init() {
         init_cfg("/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/config.yml".to_string());
-        let _ = mysqlx::init_conn_pool();
     }
 
     // #[tokio::test]
