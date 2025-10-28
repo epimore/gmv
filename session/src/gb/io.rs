@@ -1,4 +1,4 @@
-use base::bytes::{Buf, Bytes, BytesMut};
+use base::bytes::{Bytes, BytesMut};
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use encoding_rs::GB18030;
 use rsip::SipMessage;

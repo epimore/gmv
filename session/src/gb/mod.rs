@@ -7,10 +7,9 @@ use base::serde::Deserialize;
 use base::tokio::sync::mpsc;
 
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::{error, info};
+use base::log::error;
 use base::net;
 use base::net::state::{CHANNEL_BUFFER_SIZE, Zip};
-use base::tokio::select;
 use base::tokio_util::sync::CancellationToken;
 pub use core::rw::RWSession;
 
