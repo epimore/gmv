@@ -8,7 +8,7 @@ use crate::gb::handler;
 use base::exception::GlobalResultExt;
 use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Package, Protocol, Zip};
-
+use base::tokio_util::sync::CancellationToken;
 use crate::gb::core::event::EventSession;
 pub use crate::gb::core::rw::RWSession;
 use crate::gb::handler::parser;
@@ -30,9 +30,10 @@ fn is_sip_keepalive_or_empty(bytes: &Bytes) -> bool {
     data.iter()
         .all(|&b| matches!(b, b'\r' | b'\n' | b' ' | b'\t'))
 }
-pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>) {
+pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>, cancel_token: CancellationToken) {
     let mut buffer = BytesMut::new();
     while let Some(zip) = input.recv().await {
+        if cancel_token.is_cancelled() { break; }
         match zip {
             Zip::Data(Package { association, data }) => {
                 if is_sip_keepalive_or_empty(&data) {
@@ -69,7 +70,6 @@ pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>) {
             }
         }
     }
-    info!("gb read exit");
 }
 async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>) {
     match SipMessage::try_from(data.clone()) {
@@ -124,8 +124,12 @@ async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>
         }
     }
 }
-pub async fn write(mut output_rx: Receiver<Zip>, output: Sender<Zip>) {
+pub async fn write(mut output_rx: Receiver<Zip>, output: Sender<Zip>, cancel_token: CancellationToken) {
     while let Some(zip) = output_rx.recv().await {
+        if cancel_token.is_cancelled() {
+            let _ = output.send(Zip::build_shutdown_zip(None)).await;
+            break;
+        }
         match &zip {
             Zip::Data(pkg) => {
                 let payload = compact_for_log(&GB18030.decode(pkg.get_data()).0);
@@ -144,6 +148,4 @@ pub async fn write(mut output_rx: Receiver<Zip>, output: Sender<Zip>) {
             .await
             .hand_log(|msg| error!("数据发送失败:{msg}"));
     }
-
-    info!("gb write exit");
 }

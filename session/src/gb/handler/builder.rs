@@ -19,7 +19,7 @@ use base::rand::prelude::StdRng;
 use base::rand::{Rng, SeedableRng, thread_rng};
 
 use crate::gb::handler::parser;
-use crate::gb::SessionConf;
+use crate::gb::SessionInfo;
 use crate::gb::core::event::Ident;
 use crate::gb::core::rw::RWSession;
 use crate::storage::entity::GmvOauth;
@@ -257,7 +257,7 @@ impl RequestBuilder {
                 }
             }
         }
-        let conf = SessionConf::get_session_by_conf();
+        let conf = SessionInfo::get_session_by_conf();
         let server_ip = &conf.get_wan_ip().to_string();
         let server_port = conf.get_wan_port();
         //domain宜采用ID统一编码的前十位编码,扩展支持十位编码加“.spvmn.cn”后缀格式,或采用IP:port格式,port宜采用5060;这里统一使用device_id的前十位,不再调用DB进行判断原设备的使用方式
@@ -575,7 +575,7 @@ impl SdpBuilder {
 
     ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
     fn build_common_play(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
-        let conf = SessionConf::get_session_by_conf();
+        let conf = SessionInfo::get_session_by_conf();
         let session_ip = &conf.get_wan_ip().to_string();
         let mut sdp = String::with_capacity(300);
         sdp.push_str("v=0\r\n");
