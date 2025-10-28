@@ -1,6 +1,6 @@
 use base::bytes::{Buf, Bytes};
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::info;
+use base::log::{debug, info};
 use crossbeam_channel::Receiver;
 use std::ptr;
 use crate::media::context::RtpState;
@@ -157,7 +157,7 @@ impl RtpPacketBuffer {
             if self.queue_count == self.queue_window {
                 break;
             }
-            let pkt = self.packet_rx.recv().hand_log(|_| info!("ssrc:{}, 关闭RTP传输通道",self.ssrc))?;
+            let pkt = self.packet_rx.recv().hand_log(|_| debug!("ssrc:{}, 关闭RTP传输通道",self.ssrc))?;
             let seq_num = pkt.seq;
 
             //检查是否为有效的数据包

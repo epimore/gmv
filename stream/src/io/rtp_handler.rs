@@ -25,7 +25,7 @@ pub async fn run(
     tu: (Option<std::net::TcpListener>, Option<UdpSocket>),
     cancel: CancellationToken,
 ) -> GlobalResult<()> {
-    let (_output, mut input) = net::sdx::run_by_tokio(tu).await?;
+    let (output, mut input) = net::sdx::run_by_tokio(tu).await?;
     let mut tcp_rtp_buffer = TcpRtpBuffer::register_buffer();
     loop {
         select! {
@@ -49,6 +49,7 @@ pub async fn run(
                 }
             }
             _ = cancel.cancelled() => {
+                let _ = output.send(Zip::build_shutdown_zip(None)).await;
                 break;
             }
         }
