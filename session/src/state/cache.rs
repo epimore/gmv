@@ -1,7 +1,6 @@
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;

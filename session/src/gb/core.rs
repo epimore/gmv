@@ -4,7 +4,7 @@
 pub mod rw {
     use std::collections::{BTreeSet, HashMap};
     use std::sync::Arc;
-    use std::thread;
+    
     use std::time::Duration;
 
     use parking_lot::Mutex;
@@ -332,7 +332,7 @@ pub mod event {
     use std::collections::hash_map::Entry;
     use std::collections::{BTreeSet, HashMap};
     use std::sync::Arc;
-    use std::thread;
+    
 
     use parking_lot::Mutex;
     use rsip::{Response, SipMessage};

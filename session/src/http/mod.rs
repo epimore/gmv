@@ -5,7 +5,7 @@ use axum::response::Response;
 use axum::Router;
 use base::cfg_lib::conf;
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::{error, info};
+use base::log::error;
 use base::serde::Deserialize;
 use base::serde_default;
 use base::tokio::net::TcpListener;

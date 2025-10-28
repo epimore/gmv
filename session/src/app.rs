@@ -4,10 +4,9 @@ use crate::gb::SessionInfo;
 use crate::http::Http;
 use crate::state::runner::{PicsRunner, Runner};
 use base::daemon::Daemon;
-use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, info};
+use base::exception::GlobalResult;
+use base::log::info;
 use base::logger;
-use base::tokio;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 
 #[derive(Debug)]
@@ -66,7 +65,7 @@ impl
 fn banner<F: FnOnce(String)>(http_port: u16, rtp_port: u16, f: F) {
     let msg = format!(
         r#"
-            ___   __  __  __   __    _      ___     ___     ___     ___     ___     ___    _  _
+            ___   __  __  __   __    _      ___     ___     ___     ___     ___     ___     _  _
     o O O  / __| |  \/  | \ \ / /   (_)    / __|   | __|   / __|   / __|   |_ _|   / _ \   | \| |
    o      | (_ | | |\/| |  \ V /     _     \__ \   | _|    \__ \   \__ \    | |   | (_) |  | .` |
   o0__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   |___|   |___/   |___/   |___|   \___/   |_|\_|
