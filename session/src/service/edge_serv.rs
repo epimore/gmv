@@ -57,7 +57,7 @@ pub async fn upload(bytes: Bytes, session_id: &str, file_id_opt: Option<&String>
     let img = image::load_from_memory(&bytes).hand_log(|msg| error!("{msg}"))?;
     img.save(&save_path).hand_log(|msg| error!("{msg}"))?;
     let size = fs::metadata(save_path).hand_log(|msg| error!("{msg}"))?.len();
-    info.file_size = Some(size);
+    info.file_size = size;
     GmvFileInfo::insert_gmv_file_info(vec![info]).await?;
     Ok(())
 }

@@ -1,4 +1,6 @@
 use crate::io::http::call::{HttpClient, HttpSession};
+use crate::io::local::mp4::LocalStoreMp4Context;
+use crate::state::layer::output_layer::OutputLayer;
 use base::exception::GlobalResultExt;
 use base::log::{error, info};
 use base::tokio::select;
@@ -9,34 +11,33 @@ use pretend::Pretend;
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
 use shared::info::obj::{BaseStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
-use crate::state::layer::output_layer::OutputLayer;
+use shared::info::output::OutputKind;
 
 pub enum Event {
     Out(OutEvent),
+    Active(ActiveEvent),
     Inner(InnerEvent),
 }
 
-pub enum InnerEvent {}
-
-pub enum StreamActive{
-    RtmpPush,
-    LocalMp4,
-    LocalTs,
-    RtspPush,
-    Gb28181Push,
-    WebRtcPush,
+pub enum InnerEvent {
+    RecordInfo(StreamRecordInfo),
 }
+pub enum ActiveEvent {
+    RtmpPush(u32),
+    LocalStoreMp4(LocalStoreMp4Context),
+    LocalStoreTs(u32),
+    RtspPush(u32),
+    Gb28181Push(u32),
+    WebRtcPush(u32),
+}
+
 /// 主动推流：【rtmp-push,local-mp4/ts,rtsp-push,gb28181-push,webRtc-push】
 /// 两种方式触发
-/// 1.在流注册时检测是否主动推流；即初始化的媒体流是否需主动推流，
+/// 1.初始化的媒体流检测是否需主动推流，
 /// 2.通过API接口添加的输出流OUTPUT，检测是否需主动推流
-/// ????初始化需推流，在流注册前API又添加需推流输出？？？如何确定初始化推流
 ///
 /// API添加流注册，可确定outputKind
-fn event_push_stream(output:&OutputLayer){
-
-
-}
+fn event_push_stream(output: &OutputLayer) {}
 //对外发送事件
 pub enum OutEvent {
     //流媒体触发事件，回调信令
@@ -72,7 +73,10 @@ pub enum OutEventRes {
 }
 
 impl Event {
-    pub async fn event_loop(mut rx: Receiver<(Event, Option<Sender<EventRes>>)>,cancel_token: CancellationToken) {
+    pub async fn event_loop(
+        mut rx: Receiver<(Event, Option<Sender<EventRes>>)>,
+        cancel_token: CancellationToken,
+    ) {
         let pretend = HttpClient::template()
             .as_ref()
             .expect("Http client template init failed");
@@ -84,13 +88,29 @@ impl Event {
                         Event::Out(out) => {
                             Self::hand_out(out, tx, pretend).await;
                         }
-                        Event::Inner(inner) => {}
+                        Event::Active(active) => {
+                            Self::hand_active(active,tx).await;
+                        },
+                        Event::Inner(inner) => todo!()
                     }
                 },
                 _ = cancel_token.cancelled() => {break;}
             }
         }
     }
+    async fn hand_active(active_event: ActiveEvent, tx: Option<Sender<EventRes>>) {
+        match active_event {
+            ActiveEvent::RtmpPush(_) => {}
+            ActiveEvent::LocalStoreMp4(ctx) => {
+                ctx.store();
+            }
+            ActiveEvent::LocalStoreTs(_) => {}
+            ActiveEvent::RtspPush(_) => {}
+            ActiveEvent::Gb28181Push(_) => {}
+            ActiveEvent::WebRtcPush(_) => {}
+        }
+    }
+
     async fn hand_out(
         out_event: OutEvent,
         tx: Option<Sender<EventRes>>,
@@ -114,7 +134,9 @@ impl Event {
                 let res = pretend.on_play(&spi).await;
                 info!("on_play returned: {:?}", res);
                 if let Ok(res) = res.hand_log(|msg| error!("{msg}")) {
-                    let _ = tx.unwrap().send(EventRes::Out(OutEventRes::OnPlay(res.value().data)));
+                    let _ = tx
+                        .unwrap()
+                        .send(EventRes::Out(OutEventRes::OnPlay(res.value().data)));
                 }
             }
             OutEvent::StreamIdle(bsi) => {
