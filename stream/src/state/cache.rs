@@ -1,3 +1,4 @@
+use std::any::Any;
 /// 1. 插入需监听的media信息【启动监听媒体流输入是否超时】，发送ssrc给rtp接收端监听;
 /// 2. rtp接收端监听ssrc同时订阅事件获取StreamConfig；
 /// 3. 插入media ext信息【此时session服务应发送指令给设备推流】;
@@ -19,7 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::general::cfg;
 use crate::general::cfg::ServerConf;
-use crate::io::event_handler::{Event, EventRes, OutEvent, OutEventRes};
+use crate::io::event_handler;
+use crate::io::event_handler::{ActiveEvent, Event, EventRes, OutEvent, OutEventRes};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::format::MuxPacket;
@@ -37,7 +39,7 @@ use base::net::state::Association;
 use base::once_cell::sync::Lazy;
 use base::tokio;
 use base::tokio::sync::oneshot::Sender;
-use base::tokio::sync::{Notify, broadcast, mpsc};
+use base::tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::tokio_util::sync::CancellationToken;
@@ -45,11 +47,11 @@ use base::utils::rt::{GlobalRuntime, RuntimeType};
 use parking_lot::RwLock;
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
-use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
+use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamRecordInfo, StreamState};
 use shared::info::output::{OutputEnum, OutputKind};
+use crate::io::local::mp4::{LocalStoreMp4Context, Mp4StoreSender};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
-
 pub fn add_output(action: OutputKind) {
     todo!()
 }
@@ -69,7 +71,7 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
         media_config.filter,
         &media_config.output,
     );
-    let output = OutputLayer::new(media_config.output);
+    let output = OutputLayer::new(media_config.output.clone());
 
     let stream_trace = StreamTrace {
         stream_id: stream_id.clone(),
@@ -86,6 +88,9 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
         media_ext: None,
         output,
     };
+
+    let event = stream_trace.build_from_output_kind(media_config.output);
+
     let inner = InnerTrace {
         ssrc,
         user_map: Default::default(),
@@ -112,6 +117,12 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
     drop(state);
     if should_notify {
         SESSION.shared.background_task.notify_one();
+    }
+    //若为主动推流/存储，则发送事件激活
+    if let Some(active_event) = event {
+        let _ = get_event_tx()
+            .try_send((Event::Active(active_event), None))
+            .hand_log(|msg| error!("{msg}"));
     }
     Ok(ssrc)
 }
@@ -639,6 +650,35 @@ struct StreamTrace {
     converter: ConverterLayer,
     media_ext: Option<MediaExt>,
     output: OutputLayer,
+}
+impl StreamTrace {
+
+    fn build_from_output_kind(&self,output_kind: OutputKind)->Option<ActiveEvent>{
+        match output_kind{
+            OutputKind::HttpFlv(_) => None,
+            OutputKind::Rtmp(_) => {unimplemented!()},
+            OutputKind::DashFmp4(_) => None,
+            OutputKind::HlsFmp4(_) => None,
+            OutputKind::HlsTs(_) => None,
+            OutputKind::Rtsp(_) => {unimplemented!()},
+            OutputKind::Gb28181Frame(_) => {unimplemented!()},
+            OutputKind::Gb28181Ps(_) => {unimplemented!()},
+            OutputKind::WebRtc(_) => {unimplemented!()},
+            OutputKind::LocalMp4(info) => {
+                let context = LocalStoreMp4Context {
+                    path: info.path,
+                    file_name: self.stream_id.clone(),
+                    pkt_rx: self.converter.muxer.get_rx(MuxerEnum::Mp4).unwrap(),
+                    record_event_tx: SESSION.shared.event_tx.clone(),
+                    record_info_event_rx: self.mpsc_bus.sub_type_channel::<Mp4StoreSender>().unwrap(),
+                    file_size: 0,
+                    ts: 0,
+                };
+                Some(ActiveEvent::LocalStoreMp4(context))
+            },
+            OutputKind::LocalTs(_) => {unimplemented!()},
+        }
+    }
 }
 
 struct InnerTrace {
