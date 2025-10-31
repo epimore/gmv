@@ -194,9 +194,7 @@ impl FmtMuxer for Mp4Context {
 
             let out_vec = &mut *out_buf_ptr;
             let header_bytes = Bytes::from(std::mem::replace(out_vec, Vec::new()));
-
             let header = Bytes::from(header_bytes);
-
             Ok(Mp4Context {
                 header,
                 pkt_tx,

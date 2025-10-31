@@ -1,22 +1,22 @@
 use crate::media::context::codec::CodecContext;
 use crate::media::context::event::ContextEvent;
 use crate::media::context::filter::FilterContext;
+use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::muxer::MuxerContext;
 use crate::media::rtp::RtpPacketBuffer;
 use crate::state::msg::StreamConfig;
 use base::bus::mpsc::TypedReceiver;
-use base::exception::typed::common::MessageBusError;
 use base::exception::GlobalResult;
-use rsmpeg::ffi::AVPacket;
+use base::exception::typed::common::MessageBusError;
 use base::log::debug;
+use rsmpeg::ffi::AVPacket;
 use shared::info::media_info_ext::MediaExt;
-use crate::media::context::format::FmtMuxer;
 
-pub mod event;
-pub mod format;
 mod codec;
+pub mod event;
 mod filter;
+pub mod format;
 mod utils;
 
 /// FFmpeg的AVFormatContext和AVCodecContext实例非线程安全，必须为每个线程创建独立实例
@@ -24,11 +24,11 @@ mod utils;
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 
 pub struct RtpState {
-    pub timestamp: u32,  // 读取rtp包的timestamp
-    pub marker: bool,  // 读取rtp包的mark
+    pub timestamp: u32, // 读取rtp包的timestamp
+    pub marker: bool,   // 读取rtp包的mark
 
-    pub last_32: u32,          // 上一次 RTP timestamp（32-bit）
-    pub last_unwrapped: i64,   // 上一次展开 timestamp，用于累积 diff
+    pub last_32: u32,        // 上一次 RTP timestamp（32-bit）
+    pub last_unwrapped: i64, // 上一次展开 timestamp，用于累积 diff
 }
 impl RtpState {
     pub fn new() -> Self {
@@ -104,7 +104,12 @@ impl MediaContext {
         let rtp_buffer = RtpPacketBuffer::init(ssrc, stream_config.rtp_rx)?;
         // Box → raw pointer
         let rtp_state_ptr = Box::into_raw(Box::new(RtpState::new()));
-        let demuxer_context = DemuxerContext::start_demuxer(ssrc, &stream_config.media_ext, rtp_buffer, rtp_state_ptr)?;
+        let demuxer_context = DemuxerContext::start_demuxer(
+            ssrc,
+            &stream_config.media_ext,
+            rtp_buffer,
+            rtp_state_ptr,
+        )?;
         let converter = stream_config.converter;
         let context = MediaContext {
             codec_context: CodecContext::init(converter.codec),
@@ -136,19 +141,21 @@ impl MediaContext {
                 }
 
                 let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
-                if ret < 0 { break; }
+                if ret < 0 {
+                    break;
+                }
 
-                let tb = (*(*fmt_ctx)
-                    .streams
-                    .offset(pkt.stream_index as isize)
-                    .read())
-                    .time_base;
+                let tb = (*(*fmt_ctx).streams.offset(pkt.stream_index as isize).read()).time_base;
 
                 // 更新 RTP 状态并获取展开 timestamp 和帧间差值
                 let rtp_state = &mut *self.rtp_state;
-                let (cur_unwrapped, duration_ticks) = rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
+                let (cur_unwrapped, duration_ticks) =
+                    rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
 
-                let rtp_tb = AVRational { num: 1, den: self.media_ext.clock_rate };
+                let rtp_tb = AVRational {
+                    num: 1,
+                    den: self.media_ext.clock_rate,
+                };
                 let pts_rescaled = av_rescale_q(cur_unwrapped, rtp_tb, tb);
                 let duration_rescaled = if duration_ticks > 0 {
                     av_rescale_q(duration_ticks, rtp_tb, tb)
@@ -184,13 +191,13 @@ impl MediaContext {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
             }
             //write end
+            Self::handle_pkt_muxer_end(&mut self.muxer_context);
         }
 
         fn rpt_diff_u32(a: u32, b: u32) -> u32 {
             if a >= b { a - b } else { b.wrapping_sub(a) }
         }
     }
-
 
     fn handle_codec(codec: &mut CodecContext) {}
     fn handle_filter(filter: &mut FilterContext) {}
@@ -204,34 +211,66 @@ impl MediaContext {
         if let Some(context) = &mut muxer.flv {
             context.write_packet(pkt, ts);
         }
-        if let Some(context) = &muxer.mp4 { unimplemented!() }
-        if let Some(context) = &muxer.ts { unimplemented!() }
-        if let Some(context) = &muxer.rtp_frame { unimplemented!() }
-        if let Some(context) = &muxer.rtp_ps { unimplemented!() }
-        if let Some(context) = &muxer.rtp_enc { unimplemented!() }
-        if let Some(context) = &muxer.hls_ts { unimplemented!() }
-        if let Some(context) = &muxer.fmp4 { unimplemented!() }
-    }
-    fn handle_pkt_muxer_end(muxer: &mut MuxerContext, pkt: &AVPacket) {
-        if let Some(context) = &mut muxer.flv {
-            // context.write_packet(pkt);
+        if let Some(context) = &mut muxer.mp4 {
+            context.write_packet(pkt, ts);
         }
-        if let Some(context) = &muxer.mp4 { unimplemented!() }
-        if let Some(context) = &muxer.ts { unimplemented!() }
-        if let Some(context) = &muxer.rtp_frame { unimplemented!() }
-        if let Some(context) = &muxer.rtp_ps { unimplemented!() }
-        if let Some(context) = &muxer.rtp_enc { unimplemented!() }
-        if let Some(context) = &muxer.hls_ts { unimplemented!() }
-        if let Some(context) = &muxer.fmp4 { unimplemented!() }
+        if let Some(context) = &muxer.ts {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.rtp_frame {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.rtp_ps {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.rtp_enc {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.hls_ts {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.fmp4 {
+            unimplemented!()
+        }
+    }
+    fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
+        if let Some(context) = &mut muxer.flv {
+            unimplemented!()
+        }
+        if let Some(context) = &mut muxer.mp4 {
+            context.flush();
+        }
+        if let Some(context) = &muxer.ts {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.rtp_frame {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.rtp_ps {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.rtp_enc {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.hls_ts {
+            unimplemented!()
+        }
+        if let Some(context) = &muxer.fmp4 {
+            unimplemented!()
+        }
     }
 
     fn handle_event(&mut self, event: ContextEvent) {
         match event {
-            ContextEvent::Codec(_) => { unimplemented!() }
+            ContextEvent::Codec(_) => {
+                unimplemented!()
+            }
             ContextEvent::Muxer(m_event) => {
                 m_event.handle_event(&mut self.muxer_context, &self.demuxer_context);
             }
-            ContextEvent::Filter(_) => { unimplemented!() }
+            ContextEvent::Filter(_) => {
+                unimplemented!()
+            }
             ContextEvent::Inner(i_event) => {
                 i_event.handle_event(&self);
             }

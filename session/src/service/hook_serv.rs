@@ -68,7 +68,7 @@ pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
 
 
 pub async fn end_record(stream_record_info: StreamRecordInfo) {
-    if let Some(path_file_name) = stream_record_info.file_name {
+    if let Some(path_file_name) = stream_record_info.path_file_name {
         if let Ok((abs_path, dir_path, biz_id, extension)) = get_path(&path_file_name) {
             if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&biz_id).await {
                 let total_secs = record.et.sub(record.st).num_seconds();

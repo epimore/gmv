@@ -89,7 +89,7 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
         output,
     };
 
-    let event = stream_trace.build_from_output_kind(media_config.output);
+    let event = stream_trace.build_from_output_kind(media_config.output,ssrc);
 
     let inner = InnerTrace {
         ssrc,
@@ -344,7 +344,7 @@ pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
 }
 
 //更新用户数据:in_out:true-插入,false-移除
-//所有输出【gb28181 udp转发:操作人token+目标地址，Local存储操作人+MP4:127.0.0.1:1,Ts:127.0.0.1:2】皆通过此计算是否idle：
+//所有输出【gb28181 udp转发:操作人token+目标地址，Local存储操作人+MP4:0.0.0.0:1,Ts:0.0.0.0:2】皆通过此计算是否idle：
 pub fn update_token(
     stream_id: &String,
     output_enum: OutputEnum,
@@ -355,10 +355,10 @@ pub fn update_token(
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
     if let Some(InnerTrace {
-        user_map,
-        ssrc,
-        output_trace,
-    }) = state.inner.get_mut(stream_id)
+                    user_map,
+                    ssrc,
+                    output_trace,
+                }) = state.inner.get_mut(stream_id)
     {
         match in_out {
             //插入用户数据及加一点播记录
@@ -508,8 +508,8 @@ impl Shared {
                 StreamDirection::StreamIn => {
                     let mut del = false;
                     if let Some(StreamTrace {
-                        in_on, in_timeout, ..
-                    }) = state.sessions.get_mut(&ssrc)
+                                    in_on, in_timeout, ..
+                                }) = state.sessions.get_mut(&ssrc)
                     {
                         if in_on.load(Ordering::SeqCst) {
                             in_on.store(false, Ordering::SeqCst);
@@ -528,11 +528,11 @@ impl Shared {
                     }
                     if del {
                         if let Some(StreamTrace {
-                            stream_id,
-                            register_ts,
-                            origin_trans,
-                            ..
-                        }) = state.sessions.remove(&ssrc)
+                                        stream_id,
+                                        register_ts,
+                                        origin_trans,
+                                        ..
+                                    }) = state.sessions.remove(&ssrc)
                         {
                             if let Some(InnerTrace { ssrc, user_map, .. }) =
                                 state.inner.remove(&stream_id)
@@ -565,18 +565,18 @@ impl Shared {
                 //此处不需刷新输出，由下一个过期判断
                 StreamDirection::StreamOut(mux_tp) => {
                     if let Some(StreamTrace {
-                        stream_id,
-                        converter,
-                        mpsc_bus,
-                        ..
-                    }) = state.sessions.get_mut(&ssrc)
+                                    stream_id,
+                                    converter,
+                                    mpsc_bus,
+                                    ..
+                                }) = state.sessions.get_mut(&ssrc)
                     {
                         //流注册时，加入的无输出,超时检查
                         if let Some(InnerTrace {
-                            user_map,
-                            output_trace,
-                            ..
-                        }) = state.inner.get(stream_id)
+                                        user_map,
+                                        output_trace,
+                                        ..
+                                    }) = state.inner.get(stream_id)
                         {
                             if let Some(output_enum) = mux_tp {
                                 //释放复用器
@@ -653,21 +653,21 @@ struct StreamTrace {
     output: OutputLayer,
 }
 impl StreamTrace {
-
-    fn build_from_output_kind(&self,output_kind: OutputKind)->Option<ActiveEvent>{
-        match output_kind{
+    fn build_from_output_kind(&self, output_kind: OutputKind, ssrc: u32) -> Option<ActiveEvent> {
+        match output_kind {
             OutputKind::HttpFlv(_) => None,
-            OutputKind::Rtmp(_) => {unimplemented!()},
+            OutputKind::Rtmp(_) => { unimplemented!() }
             OutputKind::DashFmp4(_) => None,
             OutputKind::HlsFmp4(_) => None,
             OutputKind::HlsTs(_) => None,
-            OutputKind::Rtsp(_) => {unimplemented!()},
-            OutputKind::Gb28181Frame(_) => {unimplemented!()},
-            OutputKind::Gb28181Ps(_) => {unimplemented!()},
-            OutputKind::WebRtc(_) => {unimplemented!()},
+            OutputKind::Rtsp(_) => { unimplemented!() }
+            OutputKind::Gb28181Frame(_) => { unimplemented!() }
+            OutputKind::Gb28181Ps(_) => { unimplemented!() }
+            OutputKind::WebRtc(_) => { unimplemented!() }
             OutputKind::LocalMp4(info) => {
                 let context = LocalStoreMp4Context {
                     path: info.path,
+                    ssrc,
                     file_name: self.stream_id.clone(),
                     pkt_rx: self.converter.muxer.get_rx(MuxerEnum::Mp4).unwrap(),
                     record_event_tx: SESSION.shared.event_tx.clone(),
@@ -676,8 +676,8 @@ impl StreamTrace {
                     ts: 0,
                 };
                 Some(ActiveEvent::LocalStoreMp4(context))
-            },
-            OutputKind::LocalTs(_) => {unimplemented!()},
+            }
+            OutputKind::LocalTs(_) => { unimplemented!() }
         }
     }
 }
