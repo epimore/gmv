@@ -5,11 +5,11 @@ use pretend::{pretend, Pretend, Result};
 use pretend::{Json, Url};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{StreamKey, StreamRecordInfo};
+use shared::info::obj::{SingleParam, StreamKey, StreamInfoQo, StreamRecordInfo};
 use shared::info::res::Resp;
 use std::str::FromStr;
 use std::time::Duration;
-use crate::state::model::{AlarmInfo, SingleParam};
+use crate::state::model::{AlarmInfo};
 
 const TIME_OUT: u64 = 8000;
 pub struct HttpClient;
@@ -53,7 +53,7 @@ pub trait HttpStream {
     #[request(method = "POST", path = "/stream/online")]
     async fn stream_online(&self, json: &StreamKey) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/record/info")]
-    async fn record_info(&self, json: &SingleParam<String>) -> Result<Json<Resp<StreamRecordInfo>>>;
+    async fn record_info(&self, json: &StreamInfoQo) -> Result<Json<Resp<StreamRecordInfo>>>;
 }
 
 #[pretend]

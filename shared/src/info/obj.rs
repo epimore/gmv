@@ -26,7 +26,17 @@ pub const SDP_MEDIA: &str = "/sdp/media";
 pub const STREAM_ONLINE: &str = "/stream/online";
 pub const PLAY_PATH: &str = "/play/{stream_id}";
 
-//todo record info
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct SingleParam<T> {
+    pub param: T,
+}
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct StreamInfoQo {
+    pub ssrc: u32,
+    pub output_enum: OutputEnum,
+}
 
 #[derive(New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]

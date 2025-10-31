@@ -1,10 +1,10 @@
-use crate::state::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamNode};
+use crate::state::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo};
 use crate::service::{edge_serv, api_serv};
 use axum::http::{HeaderMap, HeaderName};
 use axum::{Json, Router};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, info};
-use shared::info::obj::{StreamRecordInfo, CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK, PLAY_SPEED, RM_FILE};
+use shared::info::obj::{SingleParam, StreamRecordInfo, CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK, PLAY_SPEED, RM_FILE};
 use shared::info::res::Resp;
 
 pub fn routes() -> Router {
@@ -125,13 +125,11 @@ async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>
         }
     }
 }
-async fn downing_info(headers: HeaderMap, Json(info): Json<StreamNode>) -> Json<Resp<StreamRecordInfo>> {
+async fn downing_info(headers: HeaderMap, Json(info): Json<StreamQo>) -> Json<Resp<StreamRecordInfo>> {
     info!("downing_info: body = {:?}", &info);
     match get_gmv_token(headers) {
         Ok(token) => {
-            let stream_id = info.stream_id;
-            let stream_server = info.stream_server;
-            match api_serv::download_info_by_stream_id(stream_id, stream_server, token).await {
+            match api_serv::download_info_by_stream_id(info, token).await {
                 Ok(data) => { Json(Resp::build_success_data(data)) }
                 Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
             }

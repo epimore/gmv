@@ -4,8 +4,8 @@ use crate::http::client::{HttpClient, HttpStream};
 use crate::service::{KEY_STREAM_IN, RELOAD_EXPIRES};
 use crate::state;
 use crate::state::cache::AccessMode;
-use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, SingleParam, StreamInfo, StreamMode, TransMode};
-use crate::state::{DownloadConf, StreamConf};
+use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamMode, StreamQo, TransMode};
+use crate::state::{cache, DownloadConf, StreamConf};
 use crate::storage::entity::{GmvRecord};
 use crate::utils::id_builder;
 use base::bytes::Bytes;
@@ -18,8 +18,8 @@ use base::tokio::time::{sleep, Instant};
 use shared::info::format::{Flv, Mp4};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::{MediaMap};
-use shared::info::obj::{BaseStreamInfo, StreamKey, StreamRecordInfo};
-use shared::info::output::{HttpFlvOutput, LocalMp4Output, OutputKind};
+use shared::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
+use shared::info::output::{HttpFlvOutput, LocalMp4Output, OutputEnum, OutputKind};
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -51,13 +51,15 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     Ok(StreamInfo::build(stream_id, node_name))
 }
 
-pub async fn download_info_by_stream_id(stream_id: String, stream_server: String, _token: String) -> GlobalResult<StreamRecordInfo> {
+pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> GlobalResult<StreamRecordInfo> {
+    let (stream_server,ssrc) = cache::Cache::stream_map_query_node_ssrc(&info.stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
     let conf = StreamConf::get_stream_conf();
     match conf.node_map.get(&stream_server) {
         None => { Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}"))) }
         Some(node) => {
             let p = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
-            let json_obj = p.record_info(&SingleParam { param: stream_id }).await.hand_log(|msg| error!("{msg}"))?;
+            let output_enum = info.media_type.unwrap_or(OutputEnum::LocalMp4);
+            let json_obj = p.record_info(&StreamInfoQo { ssrc, output_enum }).await.hand_log(|msg| error!("{msg}"))?;
             let value = json_obj.value();
             if value.code == 200 {
                 match value.data {
@@ -259,7 +261,7 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                 p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
                 let (call_id, seq) = CmdStream::invite_ack(device_id, &res)?;
                 return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                    state::cache::Cache::stream_map_insert_info(stream_id.clone(), node_name.clone(), call_id, seq, am, from_tag, to_tag);
+                    state::cache::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc, node_name.clone(), call_id, seq, am, from_tag, to_tag);
                     state::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);
                     Ok((stream_id, node_name))
                 } else {

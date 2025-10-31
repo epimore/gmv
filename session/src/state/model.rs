@@ -8,13 +8,8 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
-use shared::info::output::OutputKind;
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(crate = "base::serde")]
-pub struct SingleParam<T> {
-    pub param: T,
-}
+use shared::info::media_info_ext::MediaType;
+use shared::info::output::{OutputEnum, OutputKind};
 
 pub enum StreamMode {
     Udp,
@@ -32,12 +27,11 @@ impl StreamMode {
         }
     }
 }
-
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
-pub struct StreamNode {
+pub struct StreamQo {
     pub stream_id: String,
-    pub stream_server: String,
+    pub media_type: Option<OutputEnum>,
 }
 
 // 传输方式 默认udp 模式, TcpPassive 被动模式,TcpActive 主动模式
