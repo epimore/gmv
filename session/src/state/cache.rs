@@ -85,7 +85,7 @@ impl Cache {
     }
 
     //当媒体流注册时，需插入建立关系,成功插入：true
-    pub fn stream_map_insert_info(stream_id: String, stream_node_name: String, call_id: String, seq: u32, am: AccessMode, from_tag: String, to_tag: String) -> bool {
+    pub fn stream_map_insert_info(stream_id: String,ssrc:u32, stream_node_name: String, call_id: String, seq: u32, am: AccessMode, from_tag: String, to_tag: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => { false }
             Entry::Vacant(vac) => {
@@ -97,11 +97,19 @@ impl Cache {
                     am,
                     from_tag,
                     to_tag,
+                    ssrc,
                 };
                 vac.insert(stream_table);
                 true
             }
         }
+    }
+    pub fn stream_map_query_node_ssrc(stream_id: &String)->Option<(String,u32)>{
+        GENERAL_CACHE.shared.stream_map.get(stream_id)
+            .map(|item| {
+                let node_name = item.stream_node_name.clone();
+                (node_name,item.ssrc)
+            })
     }
 
     pub fn stream_map_query_node_name(stream_id: &String) -> Option<String> {
@@ -380,6 +388,7 @@ struct StreamTable {
     am: AccessMode,
     from_tag: String,
     to_tag: String,
+    ssrc: u32
 }
 
 struct DeviceTable {
@@ -453,6 +462,7 @@ mod tests {
             am: AccessMode::Live,
             from_tag: "".to_string(),
             to_tag: "".to_string(),
+            ssrc: 0,
         };
         let map = DashMap::new();
         map.insert(1, table);
