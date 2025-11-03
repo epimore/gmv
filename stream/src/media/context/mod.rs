@@ -235,7 +235,7 @@ impl MediaContext {
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
         if let Some(context) = &mut muxer.flv {
-            unimplemented!()
+           context.flush();
         }
         if let Some(context) = &mut muxer.mp4 {
             context.flush();
