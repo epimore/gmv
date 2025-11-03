@@ -71,9 +71,13 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) {
     if let Some(path_file_name) = stream_record_info.path_file_name {
         if let Ok((abs_path, dir_path, biz_id, extension)) = get_path(&path_file_name) {
             if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&biz_id).await {
-                let total_secs = record.et.sub(record.st).num_seconds();
-                let per = (stream_record_info.timestamp as i64) * 100 / total_secs;
-                if per > 5 { record.state = 2; } else { record.state = 1; }
+                if stream_record_info.file_size==0||stream_record_info.timestamp==0 {
+                    record.state = 3;
+                }else{
+                    let total_secs = record.et.sub(record.st).num_seconds();
+                    let per = (stream_record_info.timestamp as i64) * 100 / total_secs;
+                    if per > 5 { record.state = 2; } else { record.state = 1; }
+                }
                 record.lt = Local::now().naive_local();
                 if let Ok(_) = record.update_gmv_record_by_biz_id().await {
                     let file_info = GmvFileInfo {

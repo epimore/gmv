@@ -719,7 +719,7 @@ impl OutputTrace {
             OutputEnum::DashFmp4 => self.dash_fmp4.fetch_add(1, Ordering::SeqCst),
             OutputEnum::HlsFmp4 => self.hls_fmp4.fetch_add(1, Ordering::SeqCst),
             OutputEnum::HlsTs => self.hls_ts.fetch_add(1, Ordering::SeqCst),
-            OutputEnum::Rtsp => self.rtmp.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::Rtsp => self.rtsp.fetch_add(1, Ordering::SeqCst),
             OutputEnum::Gb28181Frame => self.gb28181_frame.fetch_add(1, Ordering::SeqCst),
             OutputEnum::Gb28181Ps => self.gb28181_ps.fetch_add(1, Ordering::SeqCst),
             OutputEnum::WebRtc => self.web_rtc.fetch_add(1, Ordering::SeqCst),
