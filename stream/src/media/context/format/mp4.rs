@@ -7,11 +7,11 @@ use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
 use rsmpeg::ffi::{
-    av_free, av_guess_format, av_malloc, av_packet_ref,
-    av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context,
-    avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, AVFormatContext,
-    AVIOContext, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational,
-    AVFMT_FLAG_FLUSH_PACKETS, AV_PKT_FLAG_KEY,
+    av_free, av_guess_format, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref,
+    av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context,
+    avformat_free_context, avformat_new_stream, avformat_write_header, avio_alloc_context,
+    avio_context_free, av_interleaved_write_frame, AVFormatContext, AVIOContext, AVPacket,
+    AVRational, AVFMT_FLAG_FLUSH_PACKETS, AV_PKT_FLAG_KEY,
 };
 use std::ffi::{c_int, c_void, CString};
 use std::os::raw::c_uchar;
@@ -35,17 +35,19 @@ impl Drop for Mp4Context {
     fn drop(&mut self) {
         unsafe {
             if !self.fmt_ctx.is_null() {
-                rsmpeg::ffi::avformat_free_context(self.fmt_ctx);
+                avformat_free_context(self.fmt_ctx);
                 self.fmt_ctx = ptr::null_mut();
             }
             if !self.avio_ctx.is_null() {
+                // avio_context_free expects pointer-to-pointer
                 avio_context_free(&mut self.avio_ctx);
                 self.avio_ctx = ptr::null_mut();
             }
-            // io_buf 由 avio_context_free 释放
+            // io_buf 由 avio_context_free 释放（如果 avio_ctx 已存在）
             self.io_buf = ptr::null_mut();
 
             if !self.out_buf_ptr.is_null() {
+                // 回收 heap 上的 Vec<u8>
                 drop(Box::from_raw(self.out_buf_ptr));
                 self.out_buf_ptr = ptr::null_mut();
             }
@@ -62,6 +64,7 @@ impl FmtMuxer for Mp4Context {
         Self: Sized,
     {
         unsafe {
+            // 分配 io buffer
             let io_buf_size = DEFAULT_IO_BUF_SIZE;
             let io_buf = av_malloc(io_buf_size) as *mut u8;
             if io_buf.is_null() {
@@ -71,11 +74,12 @@ impl FmtMuxer for Mp4Context {
                 ));
             }
 
+            // 准备 out_vec 的 Box，并取得裸指针
             let out_box: Box<Vec<u8>> = Box::new(Vec::new());
             let out_buf_ptr: *mut Vec<u8> = Box::into_raw(out_box);
 
-            // avio_alloc_context expects u8* buffer; we're writing, so write_flag=1
-            let avio_ctx = avio_alloc_context(
+            // avio_alloc_context expects u8* buffer; we're写操作(write_flag=1)
+            let mut avio_ctx = avio_alloc_context(
                 io_buf,
                 io_buf_size as c_int,
                 1,
@@ -85,9 +89,8 @@ impl FmtMuxer for Mp4Context {
                 None,
             );
             if avio_ctx.is_null() {
-                // io_buf 由 avio_context_free 释放；但这里 avio_ctx 创建失败，只能手动 free
+                // avio_ctx 创建失败：需要手动释放 io_buf 与 out_buf_ptr
                 av_free(io_buf as *mut c_void);
-                // 回收 out_buf_ptr
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error(
                     "Failed to allocate AVIO context",
@@ -95,9 +98,12 @@ impl FmtMuxer for Mp4Context {
                 ));
             }
 
+            // 分配 format context
             let fmt_ctx = avformat_alloc_context();
             if fmt_ctx.is_null() {
-                avio_context_free(&mut (avio_ctx.clone()));
+                // 清理已创建的资源
+                avio_context_free(&mut avio_ctx); // 正确传入可变引用
+                // avio_context_free 会释放 io_buf（因为 avio_ctx 持有它）
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error(
                     "Failed to alloc format context",
@@ -105,23 +111,28 @@ impl FmtMuxer for Mp4Context {
                 ));
             }
 
+            // 绑定 avio 到 fmt_ctx
             (*fmt_ctx).pb = avio_ctx;
-            (*fmt_ctx).oformat = av_guess_format(MP4.as_ptr(), ptr::null(), ptr::null());
-            // MP4：可以保留 FLUSH_PACKETS 标志以保证实时写入小片段
-            (*fmt_ctx).flags |= AVFMT_FLAG_FLUSH_PACKETS as i32;
-            if (*fmt_ctx).oformat.is_null() {
-                avio_context_free(&mut (avio_ctx.clone()));
-                rsmpeg::ffi::avformat_free_context(fmt_ctx);
+            let guessed = av_guess_format(MP4.as_ptr(), ptr::null(), ptr::null());
+            if guessed.is_null() {
+                // 如果找不到 MP4 输出格式，释放资源
+                avio_context_free(&mut avio_ctx);
+                avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error(
                     "MP4 format not supported",
                     |msg| warn!("{msg}"),
                 ));
             }
+            (*fmt_ctx).oformat = guessed;
 
+            // MP4：可以保留 FLUSH_PACKETS 标志以保证实时写入小片段
+            (*fmt_ctx).flags |= AVFMT_FLAG_FLUSH_PACKETS as i32;
+
+            // 检查 demuxer 的 codecpar 列表
             if demuxer_context.codecpar_list.is_empty() {
-                avio_context_free(&mut (avio_ctx.clone()));
-                rsmpeg::ffi::avformat_free_context(fmt_ctx);
+                avio_context_free(&mut avio_ctx);
+                avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error(
                     "No codec parameters available",
@@ -129,21 +140,44 @@ impl FmtMuxer for Mp4Context {
                 ));
             }
 
+            // 检查输入 fmt_ctx 是否可用
             let in_fmt = demuxer_context.avio.fmt_ctx;
+            if in_fmt.is_null() {
+                avio_context_free(&mut avio_ctx);
+                avformat_free_context(fmt_ctx);
+                drop(Box::from_raw(out_buf_ptr));
+                return Err(GlobalError::new_sys_error(
+                    "Input format context is null",
+                    |msg| warn!("{msg}"),
+                ));
+            }
+
             let nb_in = (*in_fmt).nb_streams as usize;
 
-            let mut in_tbs: Vec<AVRational> = Vec::with_capacity(nb_in);
-            let mut out_tbs: Vec<AVRational> = Vec::with_capacity(nb_in);
+            // 如果 codecpar_list 的长度大于输入流数，认为不合法
+            if demuxer_context.codecpar_list.len() > nb_in {
+                avio_context_free(&mut avio_ctx);
+                avformat_free_context(fmt_ctx);
+                drop(Box::from_raw(out_buf_ptr));
+                return Err(GlobalError::new_sys_error(
+                    "Codecpar list length exceeds input nb_streams",
+                    |msg| warn!("{msg}"),
+                ));
+            }
+
+            let mut in_tbs: Vec<AVRational> = Vec::with_capacity(demuxer_context.codecpar_list.len());
+            let mut out_tbs: Vec<AVRational> = Vec::with_capacity(demuxer_context.codecpar_list.len());
 
             // 建立输出流，并对齐时基
             for i in 0..demuxer_context.codecpar_list.len() {
                 let codecpar = demuxer_context.codecpar_list[i];
 
+                // 读取输入流指针，确保在 nb_in 范围内（上面已检查）
                 let in_st = *(*in_fmt).streams.offset(i as isize);
                 let out_st = avformat_new_stream(fmt_ctx, ptr::null_mut());
                 if out_st.is_null() {
-                    avio_context_free(&mut (avio_ctx.clone()));
-                    rsmpeg::ffi::avformat_free_context(fmt_ctx);
+                    avio_context_free(&mut avio_ctx);
+                    avformat_free_context(fmt_ctx);
                     drop(Box::from_raw(out_buf_ptr));
                     return Err(GlobalError::new_sys_error(
                         "Failed to create stream",
@@ -153,8 +187,8 @@ impl FmtMuxer for Mp4Context {
 
                 let ret = avcodec_parameters_copy((*out_st).codecpar, codecpar);
                 if ret < 0 {
-                    avio_context_free(&mut (avio_ctx.clone()));
-                    rsmpeg::ffi::avformat_free_context(fmt_ctx);
+                    avio_context_free(&mut avio_ctx);
+                    avformat_free_context(fmt_ctx);
                     drop(Box::from_raw(out_buf_ptr));
                     return Err(GlobalError::new_sys_error(
                         &format!("Codecpar copy failed: {}", ret),
@@ -172,8 +206,8 @@ impl FmtMuxer for Mp4Context {
             }
 
             if (*fmt_ctx).nb_streams == 0 {
-                avio_context_free(&mut (avio_ctx.clone()));
-                rsmpeg::ffi::avformat_free_context(fmt_ctx);
+                avio_context_free(&mut avio_ctx);
+                avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error(
                     "No streams added to muxer",
@@ -183,8 +217,9 @@ impl FmtMuxer for Mp4Context {
 
             let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
             if ret < 0 {
-                avio_context_free(&mut (avio_ctx.clone()));
-                rsmpeg::ffi::avformat_free_context(fmt_ctx);
+                // 写 header 失败：释放资源并返回错误
+                avio_context_free(&mut avio_ctx);
+                avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
                 return Err(GlobalError::new_sys_error(
                     &format!("MP4 header write failed: {}", show_ffmpeg_error_msg(ret)),
@@ -192,9 +227,15 @@ impl FmtMuxer for Mp4Context {
                 ));
             }
 
+            // 取出 header bytes（如果 avio 的 write callback 已向 out_vec 写入）
             let out_vec = &mut *out_buf_ptr;
-            let header_bytes = Bytes::from(std::mem::replace(out_vec, Vec::new()));
-            let header = Bytes::from(header_bytes);
+            let header = if out_vec.is_empty() {
+                Bytes::new()
+            } else {
+                let header_bytes = std::mem::replace(out_vec, Vec::new());
+                Bytes::from(header_bytes)
+            };
+
             Ok(Mp4Context {
                 header,
                 pkt_tx,
@@ -261,7 +302,7 @@ impl FmtMuxer for Mp4Context {
                 si, cloned.pts, cloned.dts, cloned.duration,
             );
 
-            let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
+            let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
             av_packet_unref(&mut cloned);
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
@@ -277,7 +318,7 @@ impl FmtMuxer for Mp4Context {
             let data_base = Bytes::from(out_vec.clone());
             out_vec.clear();
 
-            // determine keyframe (if video)
+            // determine keyframe (use cloned.flags 更可靠)
             let is_key_out = (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
 
             let mux_packet = MuxPacket {
@@ -292,7 +333,9 @@ impl FmtMuxer for Mp4Context {
 
     fn flush(&mut self) {
         unsafe {
-            av_write_trailer(self.fmt_ctx);
+            if !self.fmt_ctx.is_null() {
+                av_write_trailer(self.fmt_ctx);
+            }
         }
     }
 }
