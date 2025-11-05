@@ -6,13 +6,7 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
-use rsmpeg::ffi::{
-    av_free, av_guess_format, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref,
-    av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context,
-    avformat_free_context, avformat_new_stream, avformat_write_header, avio_alloc_context,
-    avio_context_free, av_interleaved_write_frame, AVFormatContext, AVIOContext, AVPacket,
-    AVRational, AVFMT_FLAG_FLUSH_PACKETS, AV_PKT_FLAG_KEY,
-};
+use rsmpeg::ffi::{av_free, av_guess_format, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context, avformat_free_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, av_interleaved_write_frame, AVFormatContext, AVIOContext, AVPacket, AVRational, AVFMT_FLAG_FLUSH_PACKETS, AV_PKT_FLAG_KEY, AVDictionary, av_dict_set, av_dict_free};
 use std::ffi::{c_int, c_void, CString};
 use std::os::raw::c_uchar;
 use std::ptr;
@@ -215,9 +209,20 @@ impl FmtMuxer for Mp4Context {
                 ));
             }
 
-            let ret = avformat_write_header(fmt_ctx, ptr::null_mut());
+            let mut opts: *mut AVDictionary = ptr::null_mut();
+            // movflags 用 fragmented mp4 以避免需要 seek（适合非 seek 的 avio 回调）
+            let key = CString::new("movflags").unwrap();
+            let val = CString::new("frag_keyframe+empty_moov+default_base_moof+faststart").unwrap();
+            let set_ret = av_dict_set(&mut opts, key.as_ptr(), val.as_ptr(), 0);
+            if set_ret < 0 {
+                // 如果设置字典失败也不要 panic，继续但记录 warn
+                warn!("Failed to set mp4 movflags dict: {}", set_ret);
+            }
+
+            let ret = unsafe { avformat_write_header(fmt_ctx, &mut opts) };
             if ret < 0 {
                 // 写 header 失败：释放资源并返回错误
+                av_dict_free(&mut opts);
                 avio_context_free(&mut avio_ctx);
                 avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
@@ -235,7 +240,7 @@ impl FmtMuxer for Mp4Context {
                 let header_bytes = std::mem::replace(out_vec, Vec::new());
                 Bytes::from(header_bytes)
             };
-
+            av_dict_free(&mut opts);
             Ok(Mp4Context {
                 header,
                 pkt_tx,

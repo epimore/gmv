@@ -43,7 +43,7 @@ impl LocalStoreMp4Context {
             cache::update_token(&self.file_name, OutputEnum::LocalMp4, format!("store_mp4_{}",self.file_name), true, STORE_MP4_ADDR);
             match self.run().await {
                 Ok(_) => {
-                    let info = StreamRecordInfo{ path_file_name: Some(format!("{}/mp4/{}",self.path, self.file_name)),file_size: self.file_size as u64,timestamp: self.ts as u32, state: 2 };
+                    let info = StreamRecordInfo{ path_file_name: Some(format!("{}/mp4/{}.mp4",self.path, self.file_name)),file_size: self.file_size as u64,timestamp: self.ts as u32, state: 2 };
                     let _ = self.record_event_tx
                         .send((Event::Out(OutEvent::EndRecord(info)), None))
                         .await
@@ -52,7 +52,7 @@ impl LocalStoreMp4Context {
                 Err(_) => {
                     let mut info = StreamRecordInfo::default();
                     info.state = 3;
-                    info.path_file_name = Some(format!("{}/mp4/{}",self.path, self.file_name));
+                    info.path_file_name = Some(format!("{}/mp4/{}.mp4",self.path, self.file_name));
                     let _ = self.record_event_tx
                         .send((Event::Out(OutEvent::EndRecord(info)), None))
                         .await
@@ -72,7 +72,7 @@ impl LocalStoreMp4Context {
             .hand_log(|msg| error!("{msg}"))?;
 
         // 2. 创建文件
-        let file_path = dir_path.join(&self.file_name);
+        let file_path = dir_path.join(&self.file_name).with_extension("mp4");
         let mut file = fs::File::create(&file_path)
             .await
             .hand_log(|msg| error!("{msg}"))?;

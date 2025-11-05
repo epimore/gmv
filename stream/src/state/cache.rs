@@ -91,7 +91,7 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
         output,
     };
 
-    let event = stream_trace.build_from_output_kind(media_config.output);
+    let event = stream_trace.build_from_output_kind(media_config.output,ssrc);
 
     let inner = InnerTrace {
         ssrc,
@@ -665,7 +665,7 @@ struct StreamTrace {
     output: OutputLayer,
 }
 impl StreamTrace {
-    fn build_from_output_kind(&self, output_kind: OutputKind) -> Option<ActiveEvent> {
+    fn build_from_output_kind(&self, output_kind: OutputKind,ssrc:u32) -> Option<ActiveEvent> {
         match output_kind {
             OutputKind::HttpFlv(_) => None,
             OutputKind::Rtmp(_) => {
@@ -689,7 +689,7 @@ impl StreamTrace {
             OutputKind::LocalMp4(info) => {
                 let context = LocalStoreMp4Context {
                     path: info.path,
-                    ssrc: 0,
+                    ssrc,
                     file_name: self.stream_id.clone(),
                     pkt_rx: self.converter.muxer.get_rx(MuxerEnum::Mp4).unwrap(),
                     record_event_tx: SESSION.shared.event_tx.clone(),
