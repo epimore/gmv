@@ -6,7 +6,7 @@ use base::tokio::sync::mpsc::Sender;
 use base::tokio::sync::oneshot;
 use shared::info::media_info::{MediaConfig};
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{SingleParam, StreamInfoQo, StreamKey, StreamRecordInfo, LISTEN_MEDIA, SDP_MEDIA, STREAM_ONLINE};
+use shared::info::obj::{SingleParam, StreamInfoQo, StreamKey, StreamRecordInfo, LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE};
 use shared::info::output::OutputEnum;
 use shared::info::res::Resp;
 use crate::io::local::mp4::Mp4StoreSender;
@@ -16,6 +16,7 @@ pub fn routes(tx: Sender<u32>) -> Router {
         .route(LISTEN_MEDIA, axum::routing::post(listen_media).layer(Extension(tx.clone())))
         .route(SDP_MEDIA, axum::routing::post(sdp_media))
         .route(STREAM_ONLINE, axum::routing::post(stream_online))
+        .route(RECORD_INFO, axum::routing::post(record_info))
 }
 
 async fn listen_media(Extension(tx): Extension<Sender<u32>>, Json(config): Json<MediaConfig>) -> Json<Resp<()>> {

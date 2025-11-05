@@ -25,6 +25,7 @@ pub const LISTEN_MEDIA: &str = "/listen/media";
 pub const SDP_MEDIA: &str = "/sdp/media";
 pub const STREAM_ONLINE: &str = "/stream/online";
 pub const PLAY_PATH: &str = "/play/{stream_id}";
+pub const RECORD_INFO: &str = "/record/info";
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
