@@ -33,7 +33,8 @@ pub struct LocalStoreMp4Context {
     
     pub file_size: usize,
     pub ts: u64, //second
-    pub state: u8, //录制状态，0-未开始，1-进行中，2-完成,3-失败
+    pub state: u8, //录制状态，0=进行，1=完成，2=录制部分，3=失败
+
 }
 
 impl LocalStoreMp4Context {
@@ -43,7 +44,7 @@ impl LocalStoreMp4Context {
             cache::update_token(&self.file_name, OutputEnum::LocalMp4, format!("store_mp4_{}",self.file_name), true, STORE_MP4_ADDR);
             match self.run().await {
                 Ok(_) => {
-                    let info = StreamRecordInfo{ path_file_name: Some(format!("{}/mp4/{}.mp4",self.path, self.file_name)),file_size: self.file_size as u64,timestamp: self.ts as u32, state: 2 };
+                    let info = StreamRecordInfo{ path_file_name: Some(format!("{}/mp4/{}.mp4",self.path, self.file_name)),file_size: self.file_size as u64,timestamp: self.ts as u32, state: 1 };
                     let _ = self.record_event_tx
                         .send((Event::Out(OutEvent::EndRecord(info)), None))
                         .await
@@ -121,7 +122,6 @@ impl LocalStoreMp4Context {
                                 file.write_all(&pkt.data).await.hand_log(|msg| error!("{msg}"))?;
                                 self.ts = pkt.timestamp;
                                 self.file_size += pkt.data.len();
-                                self.state = 1;
                                 break;
                             }
                         }
