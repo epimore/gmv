@@ -1,17 +1,18 @@
-use std::ops::Sub;
-use std::path::Path;
-use base::bytes::Bytes;
-use base::chrono::Local;
-use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::error;
-use base::serde_json;
-use shared::info::obj::{BaseStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
 use crate::gb::handler::cmd::CmdStream;
 use crate::service::KEY_STREAM_IN;
 use crate::state;
 use crate::state::DownloadConf;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::utils::id_builder;
+use base::bytes::Bytes;
+use base::cfg_lib::conf::init_cfg;
+use base::chrono::Local;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::log::error;
+use base::serde_json;
+use shared::info::obj::{BaseStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use std::ops::Sub;
+use std::path::Path;
 
 pub async fn stream_register(base_stream_info: BaseStreamInfo) {
     let key_stream_in_id = format!("{}{}", KEY_STREAM_IN,base_stream_info.stream_id);
@@ -103,14 +104,16 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) {
     };
 }
 
-fn get_path(path_file_name: &String) -> GlobalResult<(String, String, String, String)> {
+fn get_path(path_file_name: &str) -> GlobalResult<(String, String, String, String)> {
     let path = Path::new(&path_file_name);
     let biz_id = path.file_stem().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
     let extension = path.extension().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
     let p_path = path.parent().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
-    let l_path = p_path.file_name().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let l_path1 = p_path.file_name().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let p_path = p_path.parent().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let l_path2 = p_path.file_name().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
     let d_path = DownloadConf::get_download_conf().storage_path;
-    let dir_path = Path::new(&d_path).join(l_path).to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
+    let dir_path = Path::new(&d_path).join(l_path2).join(l_path1).to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
     let abs_path = p_path.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
     Ok((abs_path, dir_path, biz_id, extension))
 }
