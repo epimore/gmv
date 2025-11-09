@@ -54,6 +54,8 @@ pub trait HttpStream {
     async fn stream_online(&self, json: &StreamKey) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/record/info")]
     async fn record_info(&self, json: &StreamInfoQo) -> Result<Json<Resp<StreamRecordInfo>>>;
+    #[request(method = "POST", path = "/close/output")]
+    async fn close_output(&self, json: &StreamInfoQo) -> Result<Json<Resp<()>>>;
 }
 
 #[pretend]

@@ -11,6 +11,7 @@ use base::tokio::sync::{broadcast, mpsc, oneshot};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use base::bus::mpsc::TypedReceiver;
 use base::tokio::fs::File;
 use base::tokio::sync::oneshot::Sender;
@@ -21,7 +22,13 @@ use crate::media::context::event::inner::InnerEvent;
 use crate::state::cache;
 
 const STORE_MP4_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1));
-pub struct Mp4StoreSender(pub oneshot::Sender<StreamRecordInfo>);
+
+pub enum Mp4OutputInnerEvent {
+    StoreInfo(oneshot::Sender<StreamRecordInfo>), //获取当前录制信息
+    Close,//用于主动关闭录制
+}
+
+// pub struct Mp4StoreSender(pub oneshot::Sender<StreamRecordInfo>);
 pub struct LocalStoreMp4Context {
     pub path: String,
     pub ssrc: u32,
@@ -29,8 +36,7 @@ pub struct LocalStoreMp4Context {
     pub file_name: String, //stream_id
     pub pkt_rx: broadcast::Receiver<Arc<MuxPacket>>, //数据接收端，当发送端drop，即录制完成
     pub record_event_tx: mpsc::Sender<(Event, Option<oneshot::Sender<EventRes>>)>, //用于主动发送录制报错、录制结束
-    pub record_info_event_rx: TypedReceiver<Mp4StoreSender>, //获取当前录制信息
-    
+    pub inner_event_rx: TypedReceiver<Mp4OutputInnerEvent>, //获取当前录制信息
     pub file_size: usize,
     pub ts: u64, //second
     pub state: u8, //录制状态，0=进行，1=完成，2=录制部分，3=失败
@@ -41,7 +47,7 @@ impl LocalStoreMp4Context {
 
     pub fn store(mut self) {
         tokio::spawn(async move {
-            cache::update_token(&self.file_name, OutputEnum::LocalMp4, format!("store_mp4_{}",self.file_name), true, STORE_MP4_ADDR);
+            cache::update_token(&self.file_name, OutputEnum::LocalMp4, format!("store_mp4_{}",self.file_name), true, STORE_MP4_ADDR,None);
             match self.run().await {
                 Ok(_) => {
                     let info = StreamRecordInfo{ path_file_name: Some(format!("{}/mp4/{}.mp4",self.path, self.file_name)),file_size: self.file_size as u64,timestamp: self.ts as u32, state: 1 };
@@ -60,7 +66,7 @@ impl LocalStoreMp4Context {
                         .hand_log(|msg| error!("{msg}"));
                 }
             }
-            cache::update_token(&self.file_name, OutputEnum::LocalMp4, format!("store_mp4_{}",self.file_name), false, STORE_MP4_ADDR);
+            cache::update_token(&self.file_name, OutputEnum::LocalMp4, format!("store_mp4_{}",self.file_name), false, STORE_MP4_ADDR,Some(Duration::from_millis(200)));
         });
     }
 
@@ -94,10 +100,15 @@ impl LocalStoreMp4Context {
                         Err(_) => break,//发送端drop，录制结束
                     }
                 }
-                record_info_tx = self.record_info_event_rx.recv() => {
-                    if let Ok(record_info_tx) = record_info_tx {
-                       let info = StreamRecordInfo{path_file_name: None,file_size: self.file_size as u64,timestamp: self.ts as u32,state: self.state};
-                        let _ = record_info_tx.0.send(info);
+                inner_event_res = self.inner_event_rx.recv() => {
+                    if let Ok(inner_event) = inner_event_res {
+                        match inner_event {
+                            Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
+                                let info = StreamRecordInfo{path_file_name: None,file_size: self.file_size as u64,timestamp: self.ts as u32,state: self.state};
+                                let _ = record_info_tx.send(info);
+                            }
+                            Mp4OutputInnerEvent::Close => {break;}
+                        }
                     }
                 }
             }
@@ -128,10 +139,15 @@ impl LocalStoreMp4Context {
                         Err(_) => break,//发送端drop，录制结束
                     }
                 }
-                record_info_tx = self.record_info_event_rx.recv() => {
-                    if let Ok(record_info_tx) = record_info_tx {
-                       let info = StreamRecordInfo{path_file_name: None,file_size: self.file_size as u64,timestamp: self.ts as u32,state: self.state};
-                        let _ = record_info_tx.0.send(info);
+                inner_event_res = self.inner_event_rx.recv() => {
+                    if let Ok(inner_event) = inner_event_res {
+                        match inner_event {
+                            Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
+                                let info = StreamRecordInfo{path_file_name: None,file_size: self.file_size as u64,timestamp: self.ts as u32,state: self.state};
+                                let _ = record_info_tx.send(info);
+                            }
+                            Mp4OutputInnerEvent::Close => {break;}
+                        }
                     }
                 }
             }
