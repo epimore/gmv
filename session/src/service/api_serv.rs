@@ -11,7 +11,7 @@ use crate::utils::id_builder;
 use base::bytes::Bytes;
 use base::chrono::{Local, TimeZone};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{error, warn};
 use base::serde_json;
 use base::tokio::sync::mpsc;
 use base::tokio::time::{sleep, Instant};
@@ -77,16 +77,27 @@ pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> Globa
     }
 }
 
-//todo stream -> stop api
-pub async fn download_stop(_stream_id: String, _token: String) -> GlobalResult<bool> {
-    unimplemented!();
-    /*let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
+pub async fn download_stop(stream_id: String, token: String) -> GlobalResult<bool> {
+    let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
-        if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&stream_id).await {
-            record.state = 3;
-            record.lt = Local::now().naive_local();
-            record.update_gmv_record_by_biz_id().await?;
+        let (stream_server,ssrc) = cache::Cache::stream_map_query_node_ssrc(&stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
+        let conf = StreamConf::get_stream_conf();
+        match conf.node_map.get(&stream_server) {
+            None => {  warn!("close from stream be failed: {};stream server not found",&stream_id); }
+            Some(node) => {
+                let p = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
+                let json_obj = p.close_output(&StreamInfoQo { ssrc, output_enum:OutputEnum::LocalMp4 }).await.hand_log(|msg| error!("{msg}"))?;
+                let value = json_obj.value();
+                if value.code != 200 {
+                    warn!("close from stream be failed: {}",&stream_id);
+                }
+            }
         }
+        // if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&stream_id).await {
+        //     record.state = 2;
+        //     record.lt = Local::now().naive_local();
+        //     record.update_gmv_record_by_biz_id().await?;
+        // }
         if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
             let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
         }
@@ -99,7 +110,7 @@ pub async fn download_stop(_stream_id: String, _token: String) -> GlobalResult<b
         state::cache::Cache::ssrc_sn_set(ssrc_num);
         return Ok(true);
     }
-    Ok(false)*/
+    Ok(false)
 }
 
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<String> {

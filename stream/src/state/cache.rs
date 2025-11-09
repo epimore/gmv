@@ -13,8 +13,8 @@ use std::any::Any;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -22,11 +22,11 @@ use crate::general::cfg;
 use crate::general::cfg::ServerConf;
 use crate::io::event_handler;
 use crate::io::event_handler::{ActiveEvent, Event, EventRes, OutEvent, OutEventRes};
-use crate::io::local::mp4::{LocalStoreMp4Context, Mp4StoreSender};
-use crate::media::context::event::ContextEvent;
+use crate::io::local::mp4::{LocalStoreMp4Context, Mp4OutputInnerEvent};
 use crate::media::context::event::muxer::MuxerEvent;
-use crate::media::context::format::MuxPacket;
+use crate::media::context::event::ContextEvent;
 use crate::media::context::format::muxer::MuxerEnum;
+use crate::media::context::format::MuxPacket;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -40,7 +40,7 @@ use base::net::state::Association;
 use base::once_cell::sync::Lazy;
 use base::tokio;
 use base::tokio::sync::oneshot::Sender;
-use base::tokio::sync::{Notify, broadcast, mpsc, oneshot};
+use base::tokio::sync::{broadcast, mpsc, oneshot, Notify};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::tokio_util::sync::CancellationToken;
@@ -354,6 +354,7 @@ pub fn update_token(
     user_token: String,
     in_out: bool,
     remote_addr: SocketAddr,
+    expire:Option<Duration>
 ) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
@@ -379,24 +380,38 @@ pub fn update_token(
                 //减一点播记录返回Some(muxer_enum)则表示该复用器已无输出使用,交由定时器清理关闭该复用器，（若该ssrc对应使用用户为0，则清理该ssrc对应的所有数据）
                 user_map.remove(&remote_addr);
                 if let (_, Some(_muxer_enum)) = output_trace.subtract(output_enum) {
-                    if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
-                        if let Some(timeout) = out_expires {
+                    let mut notify = false;
+                    match expire {
+                        None => {
+                            if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
+                                if let Some(timeout) = out_expires {
+                                    let ssrc = *ssrc;
+                                    let when = Instant::now() + *timeout;
+                                    notify =
+                                        state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                                    state.expirations.insert((
+                                        when,
+                                        ssrc,
+                                        StreamDirection::StreamOut(Some(output_enum)),
+                                    ));
+                                }
+                            }
+                        }
+                        Some(duration) => {
                             let ssrc = *ssrc;
-                            let when = Instant::now() + *timeout;
-                            let notify =
+                            let when = Instant::now() + duration;
+                            notify =
                                 state.next_expiration().map(|ts| ts > when).unwrap_or(true);
                             state.expirations.insert((
                                 when,
                                 ssrc,
                                 StreamDirection::StreamOut(Some(output_enum)),
                             ));
-
-                            
-                            if notify {
-                                
-                                SESSION.shared.background_task.notify_one();
-                            }
                         }
+                    }
+                    if notify {
+
+                        SESSION.shared.background_task.notify_one();
                     }
                 };
             }
@@ -693,9 +708,9 @@ impl StreamTrace {
                     file_name: self.stream_id.clone(),
                     pkt_rx: self.converter.muxer.get_rx(MuxerEnum::Mp4).unwrap(),
                     record_event_tx: SESSION.shared.event_tx.clone(),
-                    record_info_event_rx: self
+                    inner_event_rx: self
                         .mpsc_bus
-                        .sub_type_channel::<Mp4StoreSender>()
+                        .sub_type_channel::<Mp4OutputInnerEvent>()
                         .unwrap(),
                     file_size: 0,
                     ts: 0,

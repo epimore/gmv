@@ -42,7 +42,12 @@ impl MuxerEvent {
             // cache缓存的media layer；在发布关闭事件时做出判断-关闭是否muxer/filter等关联输出是否为空，为空则直接释放对应的ssrc资源,不会造成空转
             MuxerEvent::Close(muxer_enum) => match muxer_enum {
                 MuxerEnum::Flv => muxer_context.flv = None,
-                MuxerEnum::Mp4 => muxer_context.mp4 = None,
+                MuxerEnum::Mp4 => {
+                    if let Some(mp4_ctx) = &mut muxer_context.mp4 {
+                        mp4_ctx.flush();
+                        muxer_context.mp4 = None;
+                    }
+                },
                 MuxerEnum::Ts => muxer_context.ts = None,
                 MuxerEnum::FMp4 => muxer_context.fmp4 = None,
                 MuxerEnum::HlsTs => muxer_context.hls_ts = None,
