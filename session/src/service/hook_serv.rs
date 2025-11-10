@@ -6,7 +6,7 @@ use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::utils::id_builder;
 use base::bytes::Bytes;
 use base::cfg_lib::conf::init_cfg;
-use base::chrono::Local;
+use base::chrono::{Local, NaiveDateTime};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde_json;
@@ -15,7 +15,7 @@ use std::ops::Sub;
 use std::path::Path;
 
 pub async fn stream_register(base_stream_info: BaseStreamInfo) {
-    let key_stream_in_id = format!("{}{}", KEY_STREAM_IN,base_stream_info.stream_id);
+    let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, base_stream_info.stream_id);
     if let Some((_, Some(tx))) = state::cache::Cache::state_get(&key_stream_in_id) {
         let vec = serde_json::to_vec(&base_stream_info).unwrap();
         let bytes = Bytes::from(vec);
@@ -32,7 +32,10 @@ pub fn stream_input_timeout(stream_state: StreamState) {
     if let Some(am) = state::cache::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
         state::cache::Cache::stream_map_remove(&stream_id, None);
         if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
-            state::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((am, &ssrc_str)))));
+            state::cache::Cache::device_map_remove(
+                &device_id,
+                Some((&channel_id, Some((am, &ssrc_str)))),
+            );
         }
     }
 }
@@ -55,10 +58,14 @@ pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
     let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
         if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
-            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
+            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag)
+                .await;
         }
         if let Some(am) = state::cache::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
-            state::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((am, &ssrc_str)))));
+            state::cache::Cache::device_map_remove(
+                &device_id,
+                Some((&channel_id, Some((am, &ssrc_str)))),
+            );
             state::cache::Cache::stream_map_remove(&stream_id, None);
         }
         let ssrc = base_stream_info.rtp_info.ssrc;
@@ -67,17 +74,21 @@ pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
     }
 }
 
-
 pub async fn end_record(stream_record_info: StreamRecordInfo) {
     if let Some(path_file_name) = stream_record_info.path_file_name {
         if let Ok((abs_path, dir_path, biz_id, extension)) = get_path(&path_file_name) {
             if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&biz_id).await {
-                if stream_record_info.file_size==0||stream_record_info.timestamp==0 {
+                if stream_record_info.file_size == 0 || stream_record_info.timestamp == 0 {
                     record.state = 3;
-                }else{
+                } else {
                     let total_secs = record.et.sub(record.st).num_seconds();
-                    let per = (stream_record_info.timestamp as i64) * 100 / total_secs;
-                    if per > 5 { record.state = 2; } else { record.state = 1; }
+                    let per = (stream_record_info.timestamp as i64) * 1000 / total_secs;
+
+                    if per > 98 {
+                        record.state = 1;
+                    } else {
+                        record.state = 2;
+                    }
                 }
                 record.lt = Local::now().naive_local();
                 if let Ok(_) = record.update_gmv_record_by_biz_id().await {
@@ -106,14 +117,40 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) {
 
 fn get_path(path_file_name: &str) -> GlobalResult<(String, String, String, String)> {
     let path = Path::new(&path_file_name);
-    let biz_id = path.file_stem().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
-    let extension = path.extension().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
-    let p_path = path.parent().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
-    let l_path1 = p_path.file_name().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
-    let p_path = p_path.parent().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
-    let l_path2 = p_path.file_name().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let biz_id = path
+        .file_stem()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .to_str()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .to_string();
+    let extension = path
+        .extension()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .to_str()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .to_string();
+    let p_path = path
+        .parent()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let l_path1 = p_path
+        .file_name()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let p_path = p_path
+        .parent()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let l_path2 = p_path
+        .file_name()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
     let d_path = DownloadConf::get_download_conf().storage_path;
-    let dir_path = Path::new(&d_path).join(l_path2).join(l_path1).to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
-    let abs_path = p_path.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
+    let dir_path = Path::new(&d_path)
+        .join(l_path2)
+        .join(l_path1)
+        .to_str()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .to_string();
+    let abs_path = p_path
+        .to_str()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .to_string();
     Ok((abs_path, dir_path, biz_id, extension))
 }
