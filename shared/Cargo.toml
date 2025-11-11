@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 base = { path = "../../pigs/base", features = ["net"] }
 paste = "1.0"
+utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
 
 #[patch.crates-io]
 #reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -1,9 +1,10 @@
 use base::serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Capture {}
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(crate = "base::serde")]
 pub struct Filter {
     //抽图

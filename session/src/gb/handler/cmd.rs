@@ -1,7 +1,7 @@
 use crate::gb::core::event::{Container, EventSession, Ident};
 use crate::gb::core::rw::RequestOutput;
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
-use crate::state::model::{PtzControlModel, StreamMode};
+use crate::state::model::{PtzControlModel, TransMode};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::tokio::sync::mpsc;
@@ -80,20 +80,20 @@ pub struct CmdNotify;
 pub struct CmdStream;
 
 impl CmdStream {
-    pub async fn download_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32, speed: u8)
+    pub async fn download_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32, speed: u8)
                                  -> GlobalResult<(Response, MediaExt, String, String)> {
         let (ident, msg) = RequestBuilder::download(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)
             .await.hand_log(|msg| warn!("{msg}"))?;
         Self::invite_stream(ident, msg).await
     }
 
-    pub async fn play_back_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32)
+    pub async fn play_back_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32)
                                   -> GlobalResult<(Response, MediaExt, String, String)> {
         let (ident, msg) = RequestBuilder::playback(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)
             .await.hand_log(|msg| warn!("{msg}"))?;
         Self::invite_stream(ident, msg).await
     }
-    pub async fn play_live_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String)
+    pub async fn play_live_invite(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String)
                                   -> GlobalResult<(Response, MediaExt, String, String)> {
         let (ident, msg) = RequestBuilder::play_live_request(device_id, channel_id, dst_ip, dst_port, stream_mode, ssrc)
             .await.hand_log(|msg| warn!("{msg}"))?;

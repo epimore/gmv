@@ -1,6 +1,7 @@
 use base::serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub enum Codec {
     //video

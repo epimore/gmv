@@ -1,6 +1,7 @@
 use crate::info::output::OutputEnum;
 use base::constructor::New;
 use base::serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 //session
 pub const PLAY_LIVING: &str = "/api/play/live/stream";
@@ -16,8 +17,8 @@ pub const RM_FILE: &str = "/api/rm/file";
 pub const STREAM_REGISTER: &str = "/stream/register";
 pub const INPUT_TIMEOUT: &str = "/stream/input/timeout";
 pub const ON_PLAY: &str = "/on/play";
-pub const STREAM_IDLE: &str = "/stream/idle";
 pub const OFF_PLAY: &str = "/off/play";
+pub const STREAM_IDLE: &str = "/stream/idle";
 pub const END_RECORD: &str = "/end/record";
 
 //stream
@@ -28,19 +29,19 @@ pub const PLAY_PATH: &str = "/play/{stream_id}";
 pub const RECORD_INFO: &str = "/record/info";
 pub const CLOSE_OUTPUT: &str = "/close/output";
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(ToSchema,Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct SingleParam<T> {
     pub param: T,
 }
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(ToSchema,Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamInfoQo {
     pub ssrc: u32,
     pub output_enum: OutputEnum,
 }
 
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(ToSchema,New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamState {
     pub base_stream_info: BaseStreamInfo,
@@ -48,7 +49,7 @@ pub struct StreamState {
     // record_name: Option<String>,
 }
 
-#[derive(New, Serialize, Deserialize, Debug,Default)]
+#[derive(ToSchema,New, Serialize, Deserialize, Debug,Default)]
 #[serde(crate = "base::serde")]
 pub struct StreamRecordInfo {
     //录制完成时返回路径+文件名
@@ -63,7 +64,7 @@ pub struct StreamRecordInfo {
     // pub bytes_sec: usize,
 }
 
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(ToSchema,New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamPlayInfo {
     pub base_stream_info: BaseStreamInfo,
@@ -74,7 +75,7 @@ pub struct StreamPlayInfo {
     pub user_count: u32,
 }
 
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(ToSchema,New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct BaseStreamInfo {
     pub rtp_info: RtpInfo,
@@ -82,14 +83,14 @@ pub struct BaseStreamInfo {
     pub in_time: u32,
 }
 
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(ToSchema,New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct NetSource {
     pub remote_addr: String,
     pub protocol: String,
 }
 
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(ToSchema,New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct RtpInfo {
     pub ssrc: u32,
@@ -97,7 +98,7 @@ pub struct RtpInfo {
     pub origin_trans: Option<NetSource>,
     pub server_name: String,
 }
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(ToSchema,New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamKey {
     pub ssrc: u32,

@@ -1,8 +1,14 @@
 use base::serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+#[derive(ToSchema,Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct EmptyResponse;
+
 
 /// () 被 serde 序列化为一个空对象 {}
 /// 传入的是 None，并启用了 skip_serializing_if = "Option::is_none"，那么 data 字段会被完全省略。
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(ToSchema,Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct Resp<T> {
     pub code: u16,
