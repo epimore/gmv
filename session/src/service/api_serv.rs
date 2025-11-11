@@ -4,7 +4,7 @@ use crate::http::client::{HttpClient, HttpStream};
 use crate::service::{KEY_STREAM_IN, RELOAD_EXPIRES};
 use crate::state;
 use crate::state::cache::AccessMode;
-use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamMode, StreamQo, TransMode};
+use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo, TransMode};
 use crate::state::{cache, DownloadConf, StreamConf};
 use crate::storage::entity::{GmvRecord};
 use crate::utils::id_builder;
@@ -254,13 +254,13 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
             if res.code == 200 {
                 let (res, media_ext, from_tag, to_tag) = match am {
                     AccessMode::Live => {
-                        CmdStream::play_live_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc).await?
+                        CmdStream::play_live_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, TransMode::Udp, &ssrc).await?
                     }
                     AccessMode::Back => {
-                        CmdStream::play_back_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et).await?
+                        CmdStream::play_back_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, TransMode::Udp, &ssrc, st, et).await?
                     }
                     AccessMode::Down => {
-                        CmdStream::download_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, StreamMode::Udp, &ssrc, st, et, 1).await?
+                        CmdStream::download_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, TransMode::Udp, &ssrc, st, et, 1).await?
                     }
                 };
 

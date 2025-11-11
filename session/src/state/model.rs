@@ -6,91 +6,98 @@ use anyhow::anyhow;
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
+use utoipa::ToSchema;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
 use shared::info::media_info_ext::MediaType;
 use shared::info::output::{OutputEnum, OutputKind};
 
-pub enum StreamMode {
-    Udp,
-    TcpActive,
-    TcpPassive,
-}
-
-impl StreamMode {
-    pub fn build(m: u8) -> GlobalResult<Self> {
-        match m {
-            0 => { Ok(StreamMode::Udp) }
-            1 => { Ok(StreamMode::TcpActive) }
-            2 => { Ok(StreamMode::TcpPassive) }
-            _ => { Err(SysErr(anyhow!("无效流模式"))) }
-        }
-    }
-}
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(ToSchema,Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamQo {
+    /// 媒体流ID
     pub stream_id: String,
+    /// 输出类型
     pub media_type: Option<OutputEnum>,
 }
 
-// 传输方式 默认udp 模式, TcpPassive 被动模式,TcpActive 主动模式
-#[derive(Serialize, Deserialize, Debug,Copy, Clone)]
+
+#[derive(ToSchema,Serialize, Deserialize, Debug,Copy, Clone)]
 #[serde(crate = "base::serde")]
+/// 传输方式 默认udp 模式, TcpPassive 被动模式,TcpActive 主动模式
 pub enum TransMode {
     Udp,
     TcpActive,
     TcpPassive,
 }
-#[derive(Debug, Deserialize, Serialize,Clone)]
+#[derive(ToSchema,Debug, Deserialize, Serialize,Clone)]
 #[serde(crate = "base::serde")]
 pub struct CustomMediaConfig {
+    /// 媒体流输出信息
     pub output: OutputKind,
+    /// 媒体流转码信息
     pub codec: Option<Codec>,
+    /// 媒体流过滤信息
     pub filter: Filter,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(ToSchema,Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 pub struct PlayLiveModel {
+    /// 设备id
     pub device_id: String,
+    /// 通道id
     pub channel_id: Option<String>,
+    /// 传输方式：udp, tcp_active, tcp_passive
     pub trans_mode: Option<TransMode>,
+    /// 自定义媒体处理：如转码、过滤、输出格式等
     pub custom_media_config: Option<CustomMediaConfig>,
 }
 
-#[derive(Debug, Deserialize, Serialize,Clone)]
+#[derive(ToSchema,Debug, Deserialize, Serialize,Clone)]
 #[serde(crate = "base::serde")]
 pub struct PlayBackModel {
+    /// 设备ID
     pub device_id: String,
+    /// 通道ID
     pub channel_id: Option<String>,
+    /// 媒体流传输方式
     pub trans_mode: Option<TransMode>,
+    /// 媒体流自定义处理信息
     pub custom_media_config: Option<CustomMediaConfig>,
+    /// 历史视频回放开始时间
     pub st: u32,
+    /// 历史视频回放结束时间
     pub et: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(ToSchema,Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySeekModel {
+    /// 媒体流ID
     pub streamId: String,
+    /// 媒体流拖动：单位S
     pub seekSecond: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(ToSchema,Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySpeedModel {
+    /// 媒体流ID
     pub streamId: String,
+    /// 媒体流倍速播放：0.5/1/2/4
     pub speedRate: f32,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(ToSchema,Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PtzControlModel {
+    /// 设备ID
     pub deviceId: String,
+    /// 通道ID
     pub channelId: String,
     ///镜头左移右移 0:停止 1:左移 2:右移
     pub leftRight: u8,
@@ -106,7 +113,7 @@ pub struct PtzControlModel {
     pub zoomSpeed: u8,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(ToSchema,Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct StreamInfo {
@@ -138,7 +145,7 @@ impl StreamInfo {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(ToSchema,Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct AlarmInfo {

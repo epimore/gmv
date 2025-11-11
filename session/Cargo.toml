@@ -1,6 +1,6 @@
 [package]
 name = "gmv-session"
-version = "0.1.0"
+version = "2.0.0-alpha.0.1"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,6 +9,7 @@ edition = "2024"
 #base = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "ff413519", features = ["net"] }
 shared = { path = "../shared" }
 rsip = "0.4"
+#rsipstack = "0.2.91"
 sqlx = { version = "0.8",default-features = false}
 base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
 uuid = { version = "1.7.0", features = ["v4"] }
@@ -31,3 +32,6 @@ pretend = "0.4"
 pretend-reqwest = "0.4"
 axum = {version = "0.8",features = ["multipart"]}
 #webrtc-sdp = "0.3"
+#utoipa-axum = "=0.2"
+utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0", features = ["axum"] }

@@ -24,7 +24,7 @@ use crate::gb::core::event::Ident;
 use crate::gb::core::rw::RWSession;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
-use crate::state::model::{PtzControlModel, StreamMode};
+use crate::state::model::{PtzControlModel, TransMode};
 
 pub struct ResponseBuilder;
 
@@ -295,20 +295,20 @@ impl RequestBuilder {
         Ok((headers, uri))
     }
 
-    pub async fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::play_live(channel_id, dst_ip, dst_port, stream_mode, ssrc)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
 
     // 点播历史视频
-    pub async fn playback(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn playback(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::playback(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
     // 云端录像
-    pub async fn download(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn download(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
         let sdp = SdpBuilder::download(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
@@ -557,24 +557,24 @@ impl SdpBuilder {
         sdp
     }
 
-    pub fn playback(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<String> {
+    pub fn playback(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
         let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Playback", &st_et, true, None)?;
         Ok(sdp)
     }
 
-    pub fn download(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, st: u32, et: u32, download_speed: u8) -> GlobalResult<String> {
+    pub fn download(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32, download_speed: u8) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
         let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Download", &st_et, true, Some(download_speed))?;
         Ok(sdp)
     }
-    pub fn play_live(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String) -> GlobalResult<String> {
+    pub fn play_live(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String) -> GlobalResult<String> {
         let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Play", "0 0", false, None)?;
         Ok(sdp)
     }
 
     ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
-    fn build_common_play(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: StreamMode, ssrc: &String, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
+    fn build_common_play(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
         let conf = SessionInfo::get_session_by_conf();
         let session_ip = &conf.get_wan_ip().to_string();
         let mut sdp = String::with_capacity(300);
@@ -587,15 +587,15 @@ impl SdpBuilder {
         sdp.push_str(&format!("c=IN IP4 {}\r\n", media_ip));
         sdp.push_str(&format!("t={}\r\n", st_et));
         match stream_mode {
-            StreamMode::Udp => {
+            TransMode::Udp => {
                 sdp.push_str(&format!("m=video {} RTP/AVP 96 97 98 99 100\r\n", media_port))
             }
-            StreamMode::TcpActive => {
+            TransMode::TcpActive => {
                 sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n", media_port));
                 sdp.push_str("a=setup:active\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
-            StreamMode::TcpPassive => {
+            TransMode::TcpPassive => {
                 sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n", media_port));
                 sdp.push_str("a=setup:passive\r\n");
                 sdp.push_str("a=connection:new\r\n");

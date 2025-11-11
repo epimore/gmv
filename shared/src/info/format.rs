@@ -1,9 +1,10 @@
 use base::serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct Mp4 {}
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct CMaf {
     //    // 设置关键的 muxer options
@@ -12,22 +13,22 @@ pub struct CMaf {
     pub min_frag_duration: u64,
     pub movflags: String,
 }
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct Flv {}
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct RtpFrame {}
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct RtpPs {}
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct RtpEnc {}
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct Ts {}
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct HlsTs {}

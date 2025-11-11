@@ -9,6 +9,7 @@ use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use base::{logger, tokio};
 use std::net::UdpSocket;
+use base::cfg_lib::{default_cli_basic, CliBasic};
 
 pub struct App {
     conf: ServerConf,
@@ -20,6 +21,10 @@ impl
         (Option<std::net::TcpListener>, Option<UdpSocket>),
     )> for App
 {
+    fn cli_basic() -> CliBasic {
+        default_cli_basic!()
+    }
+
     fn init_privilege() -> GlobalResult<(
         Self,
         (

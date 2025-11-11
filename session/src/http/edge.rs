@@ -8,13 +8,38 @@ use axum::{
 use std::collections::HashMap;
 
 use base::{bytes::Bytes, log::error};
-
 use crate::{http::UPLOAD_PICTURE, service::edge_serv, utils::edge_token};
 
 pub fn routes() -> Router {
     Router::new().route(UPLOAD_PICTURE, post(upload_picture))
 }
 
+#[utoipa::path(
+    post,
+    path = "/edge/upload/picture",
+    params(
+        ("SessionID" = String, Query, description = "Edge 会话 ID", example = "sess_abc123"),
+        ("token" = String, Query, description = "认证 token", example = "tkn_xyz789"),
+        ("fileId" = String, Query, description = "文件ID", example = "field_id_123132"),
+    ),
+    request_body(
+        content_type = "multipart/form-data",
+        content = Object,
+        example = json!({
+            "description": "支持两种上传方式：",
+            "1. multipart/form-data": "表单中包含一个 image 类型的 file 字段",
+            "2. raw binary": "直接发送 image/png、image/jpeg 等 image/* 类型的二进制数据"
+        })
+    ),
+    responses(
+        (status = 200, description = "上传成功", body = String, example = "File uploaded successfully as form-data"),
+        (status = 400, description = "请求参数或格式错误", body = String, example = "Missing `SessionID`"),
+        (status = 401, description = "Token 无效", body = String, example = "Invalid token"),
+        (status = 500, description = "服务器内部错误", body = String, example = "Failed to upload file: ...")
+    ),
+    tag = "图片采集"
+)]
+/// 图片采集上传接收接口
 async fn upload_picture(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,

@@ -1,5 +1,5 @@
 use std::net::UdpSocket;
-
+use base::cfg_lib::{default_cli_basic, CliBasic};
 use crate::gb::SessionInfo;
 use crate::http::Http;
 use crate::state::runner::{PicsRunner, Runner};
@@ -21,6 +21,10 @@ impl
         (Option<std::net::TcpListener>, Option<UdpSocket>),
     )> for AppInfo
 {
+    fn cli_basic() -> CliBasic {
+        default_cli_basic!()
+    }
+
     fn init_privilege() -> GlobalResult<(
         Self,
         (
