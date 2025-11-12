@@ -14,7 +14,7 @@ pub fn routes() -> Router {
         .route(END_RECORD, axum::routing::post(end_record))
 }
 
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/stream/register",
     request_body = BaseStreamInfo,
@@ -24,14 +24,14 @@ pub fn routes() -> Router {
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
-)]
+))]
 /// 媒体流注册回调接口
 async fn stream_register(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
     info!("stream_register = {:?}", &info);
     hook_serv::stream_register(info).await;
     Json(Resp::build_success())
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/stream/input/timeout",
     request_body = StreamState,
@@ -41,14 +41,14 @@ async fn stream_register(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
-)]
+))]
 /// 媒体流输入超时回调接口
 async fn stream_input_timeout(Json(info): Json<StreamState>) -> Json<Resp<()>> {
     info!("stream_input_timeout = {:?}", &info);
     hook_serv::stream_input_timeout(info);
     Json(Resp::build_success())
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/on/play",
     request_body = StreamPlayInfo,
@@ -58,13 +58,13 @@ async fn stream_input_timeout(Json(info): Json<StreamState>) -> Json<Resp<()>> {
         (status = 500, description = "服务器内部错误", body = Resp<bool>)
     ),
     tag = "流媒体服务回调接口"
-)]
+))]
 /// 媒体流播放回调接口
 async fn on_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<bool>> {
     info!("on_play = {:?}", &info);
     Json(Resp::<bool>::build_success_data(hook_serv::on_play(info)))
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/off/play",
     request_body = StreamPlayInfo,
@@ -74,14 +74,14 @@ async fn on_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<bool>> {
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
-)]
+))]
 /// 媒体流关闭播放回调接口
 async fn off_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<()>> {
     info!("off_play = {:?}", &info);
     hook_serv::off_play(info).await;
     Json(Resp::build_success())
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/stream/idle",
     request_body = BaseStreamInfo,
@@ -91,14 +91,14 @@ async fn off_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<()>> {
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
-)]
+))]
 /// 媒体流空闲回调接口
 async fn stream_idle(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
     info!("stream_idle = {:?}", &info);
     hook_serv::stream_idle(info).await;
     Json(Resp::build_success())
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/end/record",
     request_body = StreamRecordInfo,
@@ -108,7 +108,7 @@ async fn stream_idle(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
-)]
+))]
 /// 媒体流录制完成回调接口
 async fn end_record(Json(info): Json<StreamRecordInfo>) -> Json<Resp<()>> {
     info!("end_record = {:?}", &info);
