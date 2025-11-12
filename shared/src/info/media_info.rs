@@ -3,6 +3,7 @@ use crate::info::filter::Filter;
 use crate::info::output::OutputKind;
 use base::serde::{Deserialize, Serialize};
 
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct MediaConfig {

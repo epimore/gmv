@@ -23,6 +23,27 @@ pub fn routes(node: &str) -> Router {
     )
 }
 
+
+#[cfg_attr(
+    debug_assertions,
+    utoipa::path(
+        get,
+        path = "/play/{stream_id}",
+        request_body = (),
+        params(
+            ("stream_id" = String, Path, description = "流 ID"),
+            ("gmv-token" = String, Query, description = "认证 token", example = "tkn_xyz789")
+        ),
+        responses(
+            (status = 200, description = "成功播放流", body = Vec<u8>, content_type = "video/flv"),
+            (status = 401, description = "gmv-token 无效"),
+            (status = 404, description = "流未找到"),
+            (status = 500, description = "内部服务器错误")
+        ),
+        tag = "HTTP播放音视频"
+    )
+)]
+/// 根据HTTP-URL请求播放
 async fn handler(Path(stream_id): Path<String>, Query(map): Query<HashMap<String, String>>, ConnectInfo(addr): ConnectInfo<SocketAddr>)
                  -> Response<Body> {
     info!("stream play:stream_id: {}, param: {:?}", stream_id, map);
