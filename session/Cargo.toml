@@ -1,36 +1,30 @@
 [package]
 name = "gmv-session"
-version = "2.0.0-alpha.0.1"
-edition = "2024"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-#base = { package = "common_db",git = "https://github.com/epimore/pigs.git",rev = "ff413519", features = ["net"] }
 shared = { path = "../shared" }
-rsip = "0.4"
-#rsipstack = "0.2.91"
-sqlx = { version = "0.8",default-features = false}
 base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
-uuid = { version = "1.7.0", features = ["v4"] }
+
+rsip = "0.4"
+sqlx = { version = "0.8", default-features = false }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"
-#poem = { version = "3.1", features = ["rustls"] }
-#poem-openapi = { version = "5.1", features = ["swagger-ui"] }
-#reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sdp-types = "0.1"
-regex = "1.10"
 image = "0.25"
-rayon = "1.10"
-crossbeam-channel = "0.5"
-parking_lot = "0.12"
-url = "2.5"
 cron = "0.15"
-anyhow = { workspace = true }
-#thiserror = { workspace = true }
 pretend = "0.4"
 pretend-reqwest = "0.4"
-axum = {version = "0.8",features = ["multipart"]}
-#webrtc-sdp = "0.3"
-utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
+axum = { version = "0.8", features = ["multipart"] }
+
+# 共享依赖（自动继承版本）
+anyhow.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+regex.workspace = true
+url.workspace = true
+rayon.workspace = true
+uuid.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
