@@ -2,6 +2,7 @@ use crate::general::cfg::ServerConf;
 use crate::io::{http, rtp_handler};
 use crate::media;
 use crate::state::cache;
+use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info};
@@ -9,7 +10,6 @@ use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use base::{logger, tokio};
 use std::net::UdpSocket;
-use base::cfg_lib::{default_cli_basic, CliBasic};
 
 pub struct App {
     conf: ServerConf,
@@ -43,7 +43,9 @@ impl
         let http_listener = http::listen_http_server(http_port)?;
         let rtp_port = *app.conf.get_rtp_port();
         let tu = rtp_handler::listen_media_server(rtp_port)?;
-        banner(http_port, rtp_port, |msg| info!("{msg}"));
+        banner(Self::cli_basic().version, http_port, rtp_port, |msg| {
+            info!("{msg}")
+        });
         Ok((app, (http_listener, tu)))
     }
 
@@ -81,7 +83,7 @@ impl
     }
 }
 
-fn banner<F: FnOnce(String)>(http_port: u16, rtp_port: u16, f: F) {
+fn banner<F: FnOnce(String)>(version: &str, http_port: u16, rtp_port: u16, f: F) {
     let msg = format!(
         r#"
             ___   __  __  __   __    _      ___    _____    ___    ___    ___    __  __
@@ -90,14 +92,14 @@ fn banner<F: FnOnce(String)>(http_port: u16, rtp_port: u16, f: F) {
   oO__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   _|_|_   |_|_\  |___|  |_|_|  |_|__|_|
  [======|_|""G""|_|""M""|_|""V""|_|"":""|_|""S""|_|""T""|_|""R""|_|""E""|_|""A""|_|""M""|==]
 ./0--000'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
-
+{:>30}: {}
 ┌──────────────────┬──────────────────┬──────────────┬──────────────┐
 │ Service          │ Address          │ Protocols    │  Status      │
 ├──────────────────┼──────────────────┼──────────────┼──────────────┤
 │ HTTP Server      │ 0.0.0.0:{:<5}    │ HTTP         │ 🟢 Ready     │
 │ RTP Media Stream │ 0.0.0.0:{:<5}    │ TCP, UDP     │ 🟢 Listening │
 └──────────────────┴──────────────────┴──────────────┴──────────────┘"#,
-        http_port, rtp_port
+        "Version",version, http_port, rtp_port
     );
     f(msg);
 }

@@ -1,12 +1,12 @@
 [package]
 name = "shared"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 base = { path = "../../pigs/base", features = ["net"] }
 paste = "1.0"
-utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
 
-#[patch.crates-io]
-#reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 共享依赖
+utoipa.workspace = true
+anyhow.workspace = true

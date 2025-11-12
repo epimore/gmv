@@ -1,11 +1,28 @@
-
 [workspace]
 resolver = "2"
-members = ["session", "shared", "stream"]
+members = [
+    "session",
+    "shared",
+    "stream",
+]
+
+[workspace.package]
+version = "2.0.0-alpha.0.1"
+edition = "2024"
+authors = ["Kz. <kz986542@gmail.com>"]
+about = "致力于打造一个音视频AI平台:信令+流媒体+AI"
 
 [workspace.dependencies]
 anyhow = "1"
 thiserror = "2"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+rayon = "1.10"
+regex = "1.10"
+url = "2.5"
+uuid = { version = "1.7", features = ["v4"] }
+utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
 
 [profile.dev]
 debug = true
