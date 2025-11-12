@@ -44,3 +44,5 @@ rsmpeg = { version = "0.14.2+ffmpeg.6.1", default-features = false, features = [
 pretend = "0.4"
 pretend-reqwest = "0.4"
 #typed-builder = "0.23"
+utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "9.0", features = ["axum"] }

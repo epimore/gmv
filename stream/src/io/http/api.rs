@@ -9,7 +9,7 @@ use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
 use shared::info::obj::{LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE, SingleParam, StreamInfoQo, StreamKey, StreamRecordInfo, DOWNLOAD_STOP, CLOSE_OUTPUT};
 use shared::info::output::OutputEnum;
-use shared::info::res::Resp;
+use shared::info::res::{EmptyResponse, Resp};
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
@@ -23,6 +23,18 @@ pub fn routes(tx: Sender<u32>) -> Router {
         .route(CLOSE_OUTPUT, axum::routing::post(close_output))
 }
 
+#[cfg_attr(debug_assertions, utoipa::path(
+    post,
+    path = "/listen/media",
+    request_body = MediaConfig,
+    responses(
+        (status = 200, description = "实时流播放成功", body = Resp<EmptyResponse>),
+        (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
+        (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
+    ),
+    tag = "媒体流操作"
+))]
+/// 1.媒体流监听
 async fn listen_media(
     Extension(tx): Extension<Sender<u32>>,
     Json(config): Json<MediaConfig>,
@@ -39,6 +51,18 @@ async fn listen_media(
     Json(json)
 }
 
+#[cfg_attr(debug_assertions, utoipa::path(
+    post,
+    path = "/sdp/media",
+    request_body = MediaMap,
+    responses(
+        (status = 200, description = "实时流播放成功", body = Resp<EmptyResponse>),
+        (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
+        (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
+    ),
+    tag = "媒体流操作"
+))]
+/// 2.媒体流SDP信息
 async fn sdp_media(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
     info!("sdp_media: {:?}", &sdp);
     let json = match cache::init_media_ext(sdp.ssrc, sdp.ext) {
@@ -49,6 +73,18 @@ async fn sdp_media(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
     Json(json)
 }
 
+#[cfg_attr(debug_assertions, utoipa::path(
+    post,
+    path = "/stream/online",
+    request_body = StreamKey,
+    responses(
+        (status = 200, description = "实时流播放成功", body = Resp<bool>),
+        (status = 401, description = "Token无效", body = Resp<bool>),
+        (status = 500, description = "服务器内部错误", body = Resp<bool>)
+    ),
+    tag = "媒体流操作"
+))]
+/// 查看媒体流是否在线
 async fn stream_online(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
     info!("stream_online: {:?}", &stream_key);
     let json = Json(Resp::<bool>::build_success_data(cache::is_exist(
@@ -58,6 +94,18 @@ async fn stream_online(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
     json
 }
 
+#[cfg_attr(debug_assertions, utoipa::path(
+    post,
+    path = "/record/info",
+    request_body = StreamInfoQo,
+    responses(
+        (status = 200, description = "实时流播放成功", body = Resp<StreamRecordInfo>),
+        (status = 401, description = "Token无效", body = Resp<StreamRecordInfo>),
+        (status = 500, description = "服务器内部错误", body = Resp<StreamRecordInfo>)
+    ),
+    tag = "媒体流操作"
+))]
+/// 查看录制进度信息
 async fn record_info(Json(info): Json<StreamInfoQo>) -> Json<Resp<StreamRecordInfo>> {
     info!("record_info: {:?}", &info);
     match info.output_enum {
@@ -83,6 +131,17 @@ async fn record_info(Json(info): Json<StreamInfoQo>) -> Json<Resp<StreamRecordIn
     info!("record_info response: {:?}", &json);
     json
 }
+#[cfg_attr(debug_assertions, utoipa::path(
+    post,
+    path = "/close/output",
+    request_body = StreamInfoQo,
+    responses(
+        (status = 200, description = "实时流播放成功", body = Resp<EmptyResponse>),
+        (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
+        (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
+    ),
+    tag = "媒体流操作"
+))]
 ///主动关闭录制
 async fn close_output(Json(output): Json<StreamInfoQo>) -> Json<Resp<()>> {
     info!("close_output: {:?}", &output);

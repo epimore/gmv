@@ -61,6 +61,7 @@ static SAMPLE_RATE_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock
     map
 });
 
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub enum MediaType {
@@ -86,16 +87,19 @@ impl MediaType {
     }
 }
 
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub struct MediaMap {
     pub ssrc: u32,
     pub ext: MediaExt,
 }
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(crate = "base::serde")]
 pub struct RtpEncrypt {}
 
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(crate = "base::serde")]
 pub struct MediaExt {
@@ -128,6 +132,7 @@ pub struct MediaExt {
     }
 }
 
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(crate = "base::serde")]
 pub struct VideoParams {
@@ -193,6 +198,7 @@ impl VideoParams {
         }
     }
 }
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub struct AudioParams {

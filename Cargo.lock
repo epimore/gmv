@@ -1267,6 +1267,8 @@ dependencies = [
  "rtp-types",
  "shared",
  "tokio-stream",
+ "utoipa",
+ "utoipa-swagger-ui",
 ]
 
 [[package]]

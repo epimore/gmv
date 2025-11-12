@@ -13,6 +13,8 @@ use std::net::SocketAddr;
 mod api;
 pub mod call;
 mod out;
+#[cfg(debug_assertions)]
+mod doc;
 
 pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
     let listener =
@@ -30,9 +32,18 @@ pub async fn run(
         .set_nonblocking(true)
         .hand_log(|msg| error!("{msg}"))?;
     let listener = TcpListener::from_std(std_http_listener).hand_log(|msg| error!("{msg}"))?;
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(out::routes(&node))
         .merge(api::routes(tx.clone()));
+
+    #[cfg(debug_assertions)]
+    {
+        use utoipa_swagger_ui::SwaggerUi;
+        app = Router::new()
+            .merge(app)
+            .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
+    }
+    
     let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
