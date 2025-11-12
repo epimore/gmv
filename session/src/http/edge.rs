@@ -14,7 +14,7 @@ pub fn routes() -> Router {
     Router::new().route(UPLOAD_PICTURE, post(upload_picture))
 }
 
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/edge/upload/picture",
     params(
@@ -38,7 +38,7 @@ pub fn routes() -> Router {
         (status = 500, description = "服务器内部错误", body = String, example = "Failed to upload file: ...")
     ),
     tag = "图片采集"
-)]
+))]
 /// 图片采集上传接收接口
 async fn upload_picture(
     headers: HeaderMap,

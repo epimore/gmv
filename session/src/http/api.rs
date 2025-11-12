@@ -22,7 +22,7 @@ pub fn routes() -> Router {
         .route(RM_FILE, axum::routing::post(rm_file))
 }
 
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/play/live/stream",
     request_body = PlayLiveModel,
@@ -35,7 +35,7 @@ pub fn routes() -> Router {
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 点播实时视频
 async fn play_living(headers: HeaderMap, Json(info): Json<PlayLiveModel>) -> Json<Resp<StreamInfo>> {
     info!("play_live: body = {:?}", &info);
@@ -51,7 +51,7 @@ async fn play_living(headers: HeaderMap, Json(info): Json<PlayLiveModel>) -> Jso
         }
     }
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/play/back/stream",
     request_body = PlayBackModel,
@@ -64,7 +64,7 @@ async fn play_living(headers: HeaderMap, Json(info): Json<PlayLiveModel>) -> Jso
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 点播历史视频
 async fn play_back(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<Resp<StreamInfo>> {
     info!("play_back: body = {:?}", &info);
@@ -80,7 +80,7 @@ async fn play_back(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<
         }
     }
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/play/seek",
     request_body = PlaySeekModel,
@@ -93,7 +93,7 @@ async fn play_back(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 历史视频拖动播放
 async fn play_seek(headers: HeaderMap, Json(info): Json<PlaySeekModel>) -> Json<Resp<bool>> {
     info!("play_seek: body = {:?}", &info);
@@ -109,7 +109,7 @@ async fn play_seek(headers: HeaderMap, Json(info): Json<PlaySeekModel>) -> Json<
         }
     }
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/play/speed",
     request_body = PlaySpeedModel,
@@ -122,7 +122,7 @@ async fn play_seek(headers: HeaderMap, Json(info): Json<PlaySeekModel>) -> Json<
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 历史视频倍速播放
 async fn play_speed(headers: HeaderMap, Json(info): Json<PlaySpeedModel>) -> Json<Resp<bool>> {
     info!("play_speed: body = {:?}", &info);
@@ -138,7 +138,7 @@ async fn play_speed(headers: HeaderMap, Json(info): Json<PlaySpeedModel>) -> Jso
         }
     }
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/control/ptz",
     request_body = PtzControlModel,
@@ -151,7 +151,7 @@ async fn play_speed(headers: HeaderMap, Json(info): Json<PlaySpeedModel>) -> Jso
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 摄像机云台控制
 async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> Json<Resp<bool>> {
     info!("control_ptz: body = {:?}", &info);
@@ -174,7 +174,7 @@ async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> J
 //     ("监控视频", "按1小时或1GB分片"),
 //     ("直播录制", "按2-4小时，考虑CDN分片"),
 // ];
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/download/mp4",
     request_body = PlayBackModel,
@@ -187,7 +187,7 @@ async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> J
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 历史视频mp4录制
 async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<Resp<String>> {
     info!("download_mp4: body = {:?}", &info);
@@ -203,7 +203,7 @@ async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Js
         }
     }
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/download/stop",
     request_body = SingleParam<String>,
@@ -216,7 +216,7 @@ async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Js
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 停止视频录制
 async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>) -> Json<Resp<bool>> {
     info!("download_stop: body = {:?}", &info);
@@ -232,7 +232,7 @@ async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>
         }
     }
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/download/info",
     request_body = StreamQo,
@@ -245,7 +245,7 @@ async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 查看录制中的视频进度信息
 async fn downing_info(headers: HeaderMap, Json(info): Json<StreamQo>) -> Json<Resp<StreamRecordInfo>> {
     info!("downing_info: body = {:?}", &info);
@@ -261,7 +261,7 @@ async fn downing_info(headers: HeaderMap, Json(info): Json<StreamQo>) -> Json<Re
         }
     }
 }
-#[utoipa::path(
+#[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/api/file/remove",
     request_body = SingleParam<i64>,
@@ -274,7 +274,7 @@ async fn downing_info(headers: HeaderMap, Json(info): Json<StreamQo>) -> Json<Re
         ("gmv_token" = [])
     ),
     tag = "设备媒体流操作API"
-)]
+))]
 /// 物理删除云端录制的视频
 async fn rm_file(headers: HeaderMap, Json(info): Json<SingleParam<i64>>) -> Json<Resp<()>> {
     info!("rm_file: body = {:?}", &info);

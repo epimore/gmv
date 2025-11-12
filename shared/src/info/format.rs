@@ -1,10 +1,11 @@
 use base::serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct Mp4 {}
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct CMaf {
     //    // 设置关键的 muxer options
@@ -13,22 +14,28 @@ pub struct CMaf {
     pub min_frag_duration: u64,
     pub movflags: String,
 }
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct Flv {}
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct RtpFrame {}
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct RtpPs {}
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct RtpEnc {}
 
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct Ts {}
-#[derive(ToSchema,Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct HlsTs {}

@@ -6,13 +6,13 @@ use anyhow::anyhow;
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
-use utoipa::ToSchema;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
 use shared::info::media_info_ext::MediaType;
 use shared::info::output::{OutputEnum, OutputKind};
 
-#[derive(ToSchema,Serialize, Deserialize, Debug)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamQo {
     /// 媒体流ID
@@ -21,8 +21,8 @@ pub struct StreamQo {
     pub media_type: Option<OutputEnum>,
 }
 
-
-#[derive(ToSchema,Serialize, Deserialize, Debug,Copy, Clone)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(crate = "base::serde")]
 /// 传输方式 默认udp 模式, TcpPassive 被动模式,TcpActive 主动模式
 pub enum TransMode {
@@ -30,7 +30,8 @@ pub enum TransMode {
     TcpActive,
     TcpPassive,
 }
-#[derive(ToSchema,Debug, Deserialize, Serialize,Clone)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(crate = "base::serde")]
 pub struct CustomMediaConfig {
     /// 媒体流输出信息
@@ -41,7 +42,8 @@ pub struct CustomMediaConfig {
     pub filter: Filter,
 }
 
-#[derive(ToSchema,Debug, Deserialize, Serialize)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 pub struct PlayLiveModel {
     /// 设备id
@@ -54,7 +56,8 @@ pub struct PlayLiveModel {
     pub custom_media_config: Option<CustomMediaConfig>,
 }
 
-#[derive(ToSchema,Debug, Deserialize, Serialize,Clone)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(crate = "base::serde")]
 pub struct PlayBackModel {
     /// 设备ID
@@ -71,7 +74,8 @@ pub struct PlayBackModel {
     pub et: u32,
 }
 
-#[derive(ToSchema,Debug, Deserialize, Serialize)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySeekModel {
@@ -81,7 +85,8 @@ pub struct PlaySeekModel {
     pub seekSecond: u32,
 }
 
-#[derive(ToSchema,Debug, Deserialize, Serialize)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PlaySpeedModel {
@@ -91,7 +96,8 @@ pub struct PlaySpeedModel {
     pub speedRate: f32,
 }
 
-#[derive(ToSchema,Debug, Deserialize, Serialize, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct PtzControlModel {
@@ -113,7 +119,8 @@ pub struct PtzControlModel {
     pub zoomSpeed: u8,
 }
 
-#[derive(ToSchema,Debug, Deserialize, Serialize)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct StreamInfo {
@@ -129,23 +136,28 @@ impl StreamInfo {
             None => {
                 let node_stream = stream_conf.get_node_map().get(&node_name).unwrap();
                 Self {
-                    flv: format!("http://{}:{}/{node_name}/play/{stream_id}.flv", node_stream.pub_ip, node_stream.local_port),
-                    m3u8: format!("http://{}:{}/{node_name}/play/{stream_id}.m3u8", node_stream.pub_ip, node_stream.local_port),
+                    flv: format!(
+                        "http://{}:{}/{node_name}/play/{stream_id}.flv",
+                        node_stream.pub_ip, node_stream.local_port
+                    ),
+                    m3u8: format!(
+                        "http://{}:{}/{node_name}/play/{stream_id}.m3u8",
+                        node_stream.pub_ip, node_stream.local_port
+                    ),
                     streamId: stream_id,
                 }
             }
-            Some(addr) => {
-                Self {
-                    flv: format!("{addr}/{node_name}/play/{stream_id}.flv"),
-                    m3u8: format!("{addr}/{node_name}/play/{stream_id}.m3u8"),
-                    streamId: stream_id,
-                }
-            }
+            Some(addr) => Self {
+                flv: format!("{addr}/{node_name}/play/{stream_id}.flv"),
+                m3u8: format!("{addr}/{node_name}/play/{stream_id}.m3u8"),
+                streamId: stream_id,
+            },
         }
     }
 }
 
-#[derive(ToSchema,Debug, Deserialize, Serialize, Default)]
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
 pub struct AlarmInfo {

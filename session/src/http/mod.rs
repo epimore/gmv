@@ -10,12 +10,12 @@ use base::serde_default;
 use base::tokio::net::TcpListener;
 use base::tokio_util::sync::CancellationToken;
 use std::net::SocketAddr;
-use utoipa_swagger_ui::SwaggerUi;
 
 mod api;
 pub mod client;
 mod edge;
 mod hook;
+#[cfg(debug_assertions)]
 mod doc;
 
 pub const UPLOAD_PICTURE: &str = "/edge/upload/picture";
@@ -60,15 +60,17 @@ impl Http {
             .hand_log(|msg| error!("{msg}"))?;
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         // 创建包含所有路由的统一Router
-        let all_routes = Router::new()
+        let mut app = Router::new()
             .nest(&self.prefix,edge::routes())
             .nest("/session/hook", hook::routes())
             .nest(&self.prefix,api::routes());
-
-        let app = Router::new()
-            .merge(all_routes)
-            .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
-
+        #[cfg(debug_assertions)]
+        {
+            use utoipa_swagger_ui::SwaggerUi;
+            app = Router::new()
+                .merge(app)
+                .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
+        }
         let server = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
