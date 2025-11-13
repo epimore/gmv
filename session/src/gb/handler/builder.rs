@@ -64,9 +64,8 @@ impl ResponseBuilder {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
-        let domain = parser::header::get_domain(&req)?;
         response_header.push(typed::WwwAuthenticate {
-            realm: domain,
+            realm: format!("{}@{}",&req.uri.user().unwrap_or(""),&req.uri.host().to_string()),
             algorithm: Some(headers::auth::Algorithm::Md5),
             qop: Some(headers::auth::Qop::Auth),
             nonce: Uuid::new_v4().as_simple().to_string(),
