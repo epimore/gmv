@@ -1,22 +1,27 @@
 use base::bytes::{Bytes, BytesMut};
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use encoding_rs::GB18030;
-use rsip::SipMessage;
 use rsip::message::HeadersExt;
+use rsip::{Error, SipMessage};
+use std::sync::{Arc, LazyLock};
 
+use crate::gb::core::event::EventSession;
+pub use crate::gb::core::rw::RWSession;
 use crate::gb::handler;
-use base::exception::GlobalResultExt;
+use crate::gb::handler::parser;
+use crate::gb::layer::anti;
+use crate::gb::layer::anti::AntiReplayKind;
+use crate::gb::sip_tcp_splitter::complete_pkt;
+use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Package, Protocol, Zip};
 use base::tokio_util::sync::CancellationToken;
-use crate::gb::core::event::EventSession;
-pub use crate::gb::core::rw::RWSession;
-use crate::gb::handler::parser;
-use crate::gb::sip_tcp_splitter::complete_pkt;
+use regex::Regex;
 
+static R_LOG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\r\n]+").expect("Failed to compile log new line regex"));
 /// 将日志内容压缩为单行，保留可还原换行信息
 fn compact_for_log(raw: &str) -> String {
-    raw.replace('\r', "").replace('\n', "\\n")
+    R_LOG.replace_all(raw, "\\n").into_owned()
 }
 fn is_sip_keepalive_or_empty(bytes: &Bytes) -> bool {
     let data = bytes.as_ref();
@@ -30,10 +35,17 @@ fn is_sip_keepalive_or_empty(bytes: &Bytes) -> bool {
     data.iter()
         .all(|&b| matches!(b, b'\r' | b'\n' | b' ' | b'\t'))
 }
-pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>, cancel_token: CancellationToken) {
+pub async fn read(
+    mut input: Receiver<Zip>,
+    output_tx: Sender<Zip>,
+    cancel_token: CancellationToken,
+    anti_ctx: Arc<anti::AntiReplayContext>,
+) {
     let mut buffer = BytesMut::new();
     while let Some(zip) = input.recv().await {
-        if cancel_token.is_cancelled() { break; }
+        if cancel_token.is_cancelled() {
+            break;
+        }
         match zip {
             Zip::Data(Package { association, data }) => {
                 if is_sip_keepalive_or_empty(&data) {
@@ -51,12 +63,13 @@ pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>, cancel_token
                         }
                         Some(pks) => {
                             for data in pks {
-                                hand_pkt(data, &association, output_tx.clone()).await;
+                                hand_pkt(data, &association, output_tx.clone(), anti_ctx.clone())
+                                    .await;
                             }
                         }
                     }
                 } else {
-                    hand_pkt(data, &association, output_tx.clone()).await;
+                    hand_pkt(data, &association, output_tx.clone(), anti_ctx.clone()).await;
                 }
             }
             Zip::Event(event) => {
@@ -71,7 +84,12 @@ pub async fn read(mut input: Receiver<Zip>, output_tx: Sender<Zip>, cancel_token
         }
     }
 }
-async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>) {
+async fn hand_pkt(
+    data: Bytes,
+    association: &Association,
+    output_tx: Sender<Zip>,
+    anti_ctx: Arc<anti::AntiReplayContext>,
+) {
     match SipMessage::try_from(data.clone()) {
         Ok(msg) => {
             match msg {
@@ -80,16 +98,39 @@ async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>
                     let headers = compact_for_log(&format!("{}", &req.headers));
                     let body = compact_for_log(&GB18030.decode(&req.body).0);
                     debug!(
-                        "接收:{:?} \\nRequest: \\n{} {} {} \\n{} \\n{}",
+                        "接收:{:?} \\nRequest: \\n{} {} {} \\n{} \\n{}\\n",
                         &association, &req.method, &req.uri, &req.version, headers, body
                     );
-                    let _ = handler::requester::hand_request(req, output_tx, &association).await;
+                    //防重放处理
+                    match anti_ctx.process_request(&req, &association.remote_addr.to_string()) {
+                        Ok(kind) => match kind {
+                            AntiReplayKind::NeedProcess => {
+                                let _ =
+                                    handler::requester::hand_request(req, output_tx, &association)
+                                        .await;
+                            }
+                            AntiReplayKind::RespondWithCached(res) => {
+                                let zip = Zip::build_data(Package::new(
+                                    association.clone(),
+                                    Bytes::from(res),
+                                ));
+                                let _ = output_tx
+                                    .clone()
+                                    .send(zip)
+                                    .await
+                                    .hand_log(|msg| error!("{msg}"));
+                            }
+                            AntiReplayKind::SilentDrop => {}
+                            AntiReplayKind::QueuedForProcessing => {}
+                        },
+                        Err(_error) => {}
+                    }
                 }
                 SipMessage::Response(res) => {
                     let headers = compact_for_log(&format!("{}", &res.headers));
                     let body = compact_for_log(&GB18030.decode(&res.body).0);
                     debug!(
-                        "接收:{:?} \\nResponse: {} {} \\n{} \\n{}",
+                        "接收:{:?} \\nResponse: {} {} \\n{} \\n{}\\n",
                         &association, &res.version, &res.status_code, headers, body
                     );
                     match (
@@ -124,7 +165,12 @@ async fn hand_pkt(data: Bytes, association: &Association, output_tx: Sender<Zip>
         }
     }
 }
-pub async fn write(mut output_rx: Receiver<Zip>, output: Sender<Zip>, cancel_token: CancellationToken) {
+pub async fn write(
+    mut output_rx: Receiver<Zip>,
+    output: Sender<Zip>,
+    cancel_token: CancellationToken,
+    anti_ctx: Arc<anti::AntiReplayContext>,
+) {
     while let Some(zip) = output_rx.recv().await {
         if cancel_token.is_cancelled() {
             let _ = output.send(Zip::build_shutdown_zip(None)).await;
@@ -133,7 +179,26 @@ pub async fn write(mut output_rx: Receiver<Zip>, output: Sender<Zip>, cancel_tok
         match &zip {
             Zip::Data(pkg) => {
                 let payload = compact_for_log(&GB18030.decode(pkg.get_data()).0);
-                debug!("发送:{:?} \\n负载: {}", pkg.get_association(), payload);
+                debug!("发送:{:?} \\n负载: {}\\n", pkg.get_association(), &payload);
+                if let Ok(sm) = SipMessage::try_from(payload) {
+                    if sm.is_response() {
+                        if let Ok(count) = anti_ctx
+                            .process_response(&pkg.get_association().remote_addr.to_string(), &sm)
+                        {
+                            for i in 0..count {
+                                let zip = Zip::build_data(Package::new(
+                                    pkg.get_association().clone(),
+                                    Bytes::from(sm.clone()),
+                                ));
+                                let _ = output
+                                    .send(zip)
+                                    .await
+                                    .hand_log(|msg| error!("数据发送失败:{msg}"));
+                            }
+                            continue;
+                        }
+                    }
+                }
             }
             Zip::Event(ent) => {
                 info!(
