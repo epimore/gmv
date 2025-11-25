@@ -13,6 +13,7 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::exception::GlobalError::SysErr;
 use base::log::{error, warn};
 use base::net::state::{Association, Package, Zip};
+use base::tokio;
 use base::tokio::sync::mpsc::Sender;
 
 use crate::gb::handler::{cmd, parser};
@@ -181,11 +182,12 @@ impl Register {
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
-
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
         // query subscribe device msg
-        cmd::CmdQuery::lazy_query_device_info(device_id).await?;
-        // cmd::CmdQuery::lazy_subscribe_device_catalog(device_id).await?;
-        cmd::CmdQuery::lazy_query_device_catalog(device_id).await
+        cmd::CmdQuery::query_device_info(device_id).await?;
+        // cmd::CmdQuery::subscribe_device_catalog(device_id).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        cmd::CmdQuery::query_device_catalog(device_id).await
     }
 
     async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {

@@ -80,21 +80,35 @@ fn maybe_next_packet(buf: &BytesMut) -> bool {
         return false;
     }
 
-    // 提前看前几字节
-    let prefix = &buf[..std::cmp::min(16, buf.len())];
-    if let Ok(s) = std::str::from_utf8(prefix) {
-        let s = s.trim_start();
-        // 常见方法名和响应行
-        const METHODS: &[&str] = &[
-            "REGISTER", "INVITE", "ACK", "BYE", "CANCEL",
-            "OPTIONS", "MESSAGE", "INFO", "PRACK", "SUBSCRIBE",
-            "NOTIFY", "UPDATE", "REFER", "SIP/2.0",
-        ];
-        for m in METHODS {
-            if s.starts_with(m) {
-                return true;
-            }
+    // 直接字节级检查，避免UTF-8转换开销
+    let prefix = &buf[..std::cmp::min(24, buf.len())];
+
+    // 检查SIP响应如: "SIP/2.0 200 "
+    if prefix.len() >= 12 && &prefix[..8] == b"SIP/2.0 " {
+        // 检查状态码是3位数字加空格: "200 "
+        let status_part = &prefix[8..12];
+        return status_part[0].is_ascii_digit() &&
+            status_part[1].is_ascii_digit() &&
+            status_part[2].is_ascii_digit() &&
+            status_part[3] == b' ';
+    }
+
+    // 检查SIP请求如："REGISTER sip:130909115229300920@10.64.49.44:7100 SIP/2.0"
+    const METHOD_PREFIXES: &[&[u8]] = &[
+        b"REGISTER ", b"INVITE ", b"ACK ", b"BYE ", b"CANCEL ",
+        b"OPTIONS ", b"MESSAGE ", b"INFO ", b"PRACK ", b"SUBSCRIBE ",
+        b"NOTIFY ", b"UPDATE ", b"REFER ", b"PUBLISH ",
+    ];
+
+    for method_prefix in METHOD_PREFIXES {
+        if prefix.len() >= method_prefix.len() + 4 &&
+            prefix.starts_with(method_prefix) {
+
+            // 检查 "sip:" 或 "sips"
+            let uri_part = &prefix[method_prefix.len()..];
+            return uri_part.starts_with(b"sip:") || uri_part.starts_with(b"sips:");
         }
     }
+
     false
 }
