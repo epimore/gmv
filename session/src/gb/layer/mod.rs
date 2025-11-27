@@ -35,6 +35,16 @@
 - **宽松策略**：超时短，**覆盖SIP事务超时即可**（如3-30秒）。目的是处理网络重传。
 - **严格策略**：超时长，**需要覆盖整个业务会话的生命周期**（如10分钟至1小时）。目的是防止在会话有效期内被重放。
 */
+use crate::gb::layer::anti::AntiReplayContext;
+use crate::gb::layer::trans::TransactionContext;
+use base::net::state::Zip;
+use base::tokio::runtime::Handle;
+use base::tokio::sync::mpsc::Sender;
+use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
+
+pub mod anti;
+mod extract;
 /// # GB/T 28181 防重放策略分类
 ///
 /// | 请求类型 | 示例方法 | 防重放策略 | 理由与详细说明 |
@@ -54,5 +64,16 @@
 /// - **宽松策略**: 用于幂等操作，允许请求重试，确保通信可靠性
 /// - **严格策略**: 用于非幂等操作，防止重复执行，确保业务正确性
 pub mod trans;
-pub mod anti;
-mod extract;
+
+pub struct LayerContext {
+    pub anti_ctx: AntiReplayContext,
+    pub trans_ctx: TransactionContext,
+}
+impl LayerContext {
+    pub fn init(rt: Handle, cancel_token: CancellationToken, output: Sender<Zip>) -> Self {
+        Self {
+            anti_ctx: AntiReplayContext::init(),
+            trans_ctx: TransactionContext::init(rt, cancel_token, output),
+        }
+    }
+}

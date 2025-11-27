@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 const MAX_ANTI_REPLAY_SIZE: usize = 1000 * 1024;
 //宽松策略8秒，且响应相同内容
 const LOOSE_POLICY_TTL: Duration = Duration::from_secs(8);
-//严格策略8分钟，且不做响应
-const STRICT_POLICY_TTL: Duration = Duration::from_secs(8 * 60);
+//严格策略1分钟，且不做响应
+const STRICT_POLICY_TTL: Duration = Duration::from_secs(60);
 
 /// 防重放策略类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -32,7 +32,7 @@ pub enum AntiReplayPolicy {
     },
     /// 严格防重放 - 用于非幂等操作
     Strict {
-        /// 严格策略的缓存时间 8分钟，静默丢弃不响应
+        /// 严格策略的缓存时间 1分钟，静默丢弃不响应
         cache_ttl: Duration,
     },
 }
@@ -183,7 +183,7 @@ impl AntiReplayPolicy {
 /// 防重放 key
 pub trait AntiReplay: Send + Sync + HeaderItemExt {
     //call_id+cseq(seq+method)+from_tag+from_network
-    fn generate_key(&self, from_network: &str) -> GlobalResult<String> {
+    fn generate_anti_key(&self, from_network: &str) -> GlobalResult<String> {
         Ok(format!(
             "{}:{}:{}:{}",
             self.call_id()?.value(),
@@ -202,15 +202,15 @@ pub enum AntiReplayKind {
     /// 需要正常处理业务逻辑
     NeedProcess,
     /// 使用缓存的响应内容回复
-    RespondWithCached(SipMessage),
+    RespondWithCached(Response),
     /// 静默丢弃，不发送任何响应
     SilentDrop,
     /// 请求已加入排队，等待处理完成
     QueuedForProcessing,
 }
 struct Shard {
-    //key : (AntiReplayPolicy,request_count,Option<SipMessage>)
-    anti_map: HashMap<String, (AntiReplayPolicy, usize, Option<SipMessage>)>,
+    //key : (AntiReplayPolicy,request_count,Option<Response>)
+    anti_map: HashMap<String, (AntiReplayPolicy, usize, Option<Response>)>,
     expire_set: BTreeSet<(Instant, String)>,
 }
 pub struct AntiReplayContext {
@@ -222,7 +222,7 @@ impl AntiReplayContext {
         request: &Request,
         from_network: &str,
     ) -> GlobalResult<AntiReplayKind> {
-        let key = request.generate_key(from_network)?;
+        let key = request.generate_anti_key(from_network)?;
         let mut shard = self.shard.write();
         let replay_len = shard.anti_map.len();
         match shard.anti_map.entry(key) {
@@ -263,13 +263,9 @@ impl AntiReplayContext {
 
     ///将响应信息添加到缓存，并返回原始请求次数；
     /// 一个请求亦可多次响应，1xx:临时响应；2xx-6xx:最终响应
-    pub fn process_response(
-        &self,
-        from_network: &str,
-        response: &SipMessage,
-    ) -> GlobalResult<usize> {
+    pub fn process_response(&self, from_network: &str, response: &Response) -> GlobalResult<usize> {
         self.clean();
-        let key = response.generate_key(from_network)?;
+        let key = response.generate_anti_key(from_network)?;
         let mut shard = self.shard.write();
         match shard.anti_map.entry(key) {
             Entry::Occupied(mut occ) => {
