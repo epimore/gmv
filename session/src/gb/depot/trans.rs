@@ -1,16 +1,18 @@
-use crate::gb::layer::extract::HeaderItemExt;
+use crate::gb::depot::extract::HeaderItemExt;
+use crate::gb::io::{compact_for_log, send_sip_pkt_out};
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, warn};
+use base::log::{debug, error, warn};
 use base::net::state::{Association, Package, Zip};
 use base::tokio;
 use base::tokio::runtime::Handle;
-use base::tokio::sync::Notify;
 use base::tokio::sync::mpsc::Sender;
+use base::tokio::sync::{Notify, oneshot};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::tokio_util::sync::CancellationToken;
 use base::utils::rt::GlobalRuntime;
+use encoding_rs::GB18030;
 use parking_lot::RwLock;
 use rsip::headers::UntypedHeader;
 use rsip::{Method, Request, Response, SipMessage};
@@ -53,6 +55,7 @@ struct TransEntity {
     msg: Bytes,
     association: Association,
     expire_instant: Instant,
+    trans_tx: oneshot::Sender<GlobalResult<Response>>,
 }
 
 impl TransactionIdentifier for rsip::SipMessage {}
@@ -87,17 +90,20 @@ impl Shared {
                         let expire = now + EXPIRE_TTL;
                         entity.retry_count += 1;
                         entity.expire_instant = expire;
-                        let _ = self
-                            .output
-                            .try_send(Zip::build_data(Package {
-                                association: entity.association.clone(),
-                                data: entity.msg.clone(),
-                            }))
-                            .hand_log(|msg| warn!("{}事务重试:{msg}", &nk));
+                        send_sip_pkt_out(
+                            &self.output,
+                            entity.msg.clone(),
+                            entity.association.clone(),
+                            Some("Trans"),
+                        );
                         state.expire_set.insert((expire, nk));
                     } else {
-                        warn!("响应超时：{}", &nk);
-                        occ.remove();
+                        let entity1 = occ.remove();
+                        let _ = entity1.trans_tx.send(Err(GlobalError::new_biz_error(
+                            1000,
+                            "响应超时",
+                            |msg| error!("{msg}"),
+                        )));
                     }
                 }
                 Entry::Vacant(_) => {}
@@ -144,18 +150,24 @@ impl TransactionContext {
         ctx
     }
 
-    pub fn process_request(&self, request: &Request, association: Association) -> GlobalResult<()> {
-        if Self::no_response(request) {
+    pub fn process_request(
+        &self,
+        request: Request,
+        association: Association,
+        trans_tx: oneshot::Sender<GlobalResult<Response>>,
+    ) -> GlobalResult<()> {
+        if Self::no_response(&request) {
             return Ok(());
         }
-        let key = request.generate_trans_key()?;
+        let key = (&request).generate_trans_key()?;
         let expire_instant = Instant::now().add(EXPIRE_TTL);
         let entity = TransEntity {
             current_state: None,
             retry_count: 0,
-            msg: Bytes::from(request.clone()),
+            msg: Bytes::from(request),
             association,
             expire_instant,
+            trans_tx,
         };
 
         let mut state = self.shared.state.write();
@@ -172,7 +184,7 @@ impl TransactionContext {
             }
         }
     }
-    pub fn handle_response(&self, response: Response) -> GlobalResult<Option<Response>> {
+    pub fn handle_response(&self, response: Response) -> GlobalResult<()> {
         let key = response.generate_trans_key()?;
         let mut guard = self.shared.state.write();
         let state = &mut *guard;
@@ -189,23 +201,22 @@ impl TransactionContext {
                             .expire_set
                             .remove(&(old_instant, occ.key().to_string()));
                         state.expire_set.insert((expire, occ.key().to_string()));
-                        Ok(None)
                     }
-                    200..=699 => {
+                    _ => {
                         let (key, entity) = occ.remove_entry();
+                        if let Err(_) = entity.trans_tx.send(Ok(response)) {
+                            debug!("request point drop:{}", &key)
+                        }
                         state.expire_set.remove(&(entity.expire_instant, key));
-                        Ok(Some(response))
-                    }
-                    code => {
-                        error!("非法响应：key = {},Code = {code};", occ.key());
-                        Ok(Some(response))
                     }
                 }
             }
-            Entry::Vacant(vac) => Err(GlobalError::new_sys_error("未知或超时响应:丢弃", |msg| {
-                warn!("{}:{msg}", vac.key())
-            }))?,
+            Entry::Vacant(vac) => Err(GlobalError::new_sys_error(
+                "未知或超时响应:丢弃",
+                |msg| warn!("{}:{msg}", vac.key()),
+            ))?,
         }
+        Ok(())
     }
 
     fn no_response(request: &Request) -> bool {

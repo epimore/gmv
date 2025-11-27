@@ -27,6 +27,7 @@ pub mod rw {
     use base::tokio::time::Instant;
     use base::tokio_util::sync::CancellationToken;
     use base::utils::rt::GlobalRuntime;
+    use crate::gb::depot::SipPackage;
 
     static RW_SESSION: Lazy<RWSession> = Lazy::new(|| RWSession::init());
 
@@ -94,7 +95,7 @@ pub mod rw {
             Ok(())
         }
 
-        pub fn insert(device_id: &String, tx: Sender<Zip>, heartbeat: u8, bill: &Association) {
+        pub fn insert(device_id: &String, tx: Sender<SipPackage>, heartbeat: u8, bill: &Association) {
             let expires = Duration::from_secs(heartbeat as u64 * 3);
             let when = Instant::now() + expires;
 
@@ -311,7 +312,7 @@ pub mod rw {
 
     struct State {
         //映射设备ID，会话发送端，过期瞬时，心跳周期，网络三元组，device_id,msg,dst_addr,time,duration,bill
-        sessions: HashMap<String, (Sender<Zip>, Instant, Duration, Association)>,
+        sessions: HashMap<String, (Sender<SipPackage>, Instant, Duration, Association)>,
         //标识设备状态过期时刻，instant,device_id
         expirations: BTreeSet<(Instant, String)>,
         //映射网络三元组与设备ID，bill,device_id

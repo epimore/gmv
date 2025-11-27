@@ -33,22 +33,22 @@ impl CmdQuery {
         let (ident, msg) = RequestBuilder::subscribe_device_catalog(device_id).await?;
         RequestOutput::new(ident, msg, None).do_send()
     }
-    pub async fn lazy_query_device_info(device_id: &String) -> GlobalResult<()> {
-        let (ident, msg) = RequestBuilder::query_device_info(device_id).await?;
-        let when = Instant::now() + Duration::from_secs(2);
-        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
-    }
-    pub async fn lazy_query_device_catalog(device_id: &String) -> GlobalResult<()> {
-        let (ident, msg) = RequestBuilder::query_device_catalog(device_id).await?;
-        let when = Instant::now() + Duration::from_secs(2);
-        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
-    }
-
-    pub async fn lazy_subscribe_device_catalog(device_id: &String) -> GlobalResult<()> {
-        let (ident, msg) = RequestBuilder::subscribe_device_catalog(device_id).await?;
-        let when = Instant::now() + Duration::from_secs(2);
-        EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
-    }
+    // pub async fn lazy_query_device_info(device_id: &String) -> GlobalResult<()> {
+    //     let (ident, msg) = RequestBuilder::query_device_info(device_id).await?;
+    //     let when = Instant::now() + Duration::from_secs(2);
+    //     EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
+    // }
+    // pub async fn lazy_query_device_catalog(device_id: &String) -> GlobalResult<()> {
+    //     let (ident, msg) = RequestBuilder::query_device_catalog(device_id).await?;
+    //     let when = Instant::now() + Duration::from_secs(2);
+    //     EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
+    // }
+    //
+    // pub async fn lazy_subscribe_device_catalog(device_id: &String) -> GlobalResult<()> {
+    //     let (ident, msg) = RequestBuilder::subscribe_device_catalog(device_id).await?;
+    //     let when = Instant::now() + Duration::from_secs(2);
+    //     EventSession::listen_event(&ident.clone(), when, Container::build_actor(ident, msg, None))
+    // }
 }
 
 pub struct CmdControl;

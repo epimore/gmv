@@ -1,9 +1,14 @@
-use crate::gb::layer::extract::HeaderItemExt;
+use crate::gb::depot::extract::HeaderItemExt;
+use crate::gb::handler;
+use crate::gb::io::{compact_for_log, send_sip_pkt_out};
 use base::bytes::Bytes;
 use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::error;
+use base::net::state::{Association, Package, Zip};
 use base::serde::Serialize;
+use base::tokio::sync::mpsc::Sender;
+use encoding_rs::GB18030;
 use parking_lot::RwLock;
 use rsip::headers::UntypedHeader;
 use rsip::param::Tag;
@@ -202,7 +207,7 @@ pub enum AntiReplayKind {
     /// 需要正常处理业务逻辑
     NeedProcess,
     /// 使用缓存的响应内容回复
-    RespondWithCached(Response),
+    RespondWithCached(Bytes),
     /// 静默丢弃，不发送任何响应
     SilentDrop,
     /// 请求已加入排队，等待处理完成
@@ -210,7 +215,7 @@ pub enum AntiReplayKind {
 }
 struct Shard {
     //key : (AntiReplayPolicy,request_count,Option<Response>)
-    anti_map: HashMap<String, (AntiReplayPolicy, usize, Option<Response>)>,
+    anti_map: HashMap<String, (AntiReplayPolicy, usize, Option<Bytes>)>,
     expire_set: BTreeSet<(Instant, String)>,
 }
 pub struct AntiReplayContext {
@@ -218,6 +223,26 @@ pub struct AntiReplayContext {
 }
 impl AntiReplayContext {
     pub fn process_request(
+        &self,
+        output: &Sender<Zip>,
+        request: &Request,
+        association: Association,
+    ) -> GlobalResult<bool> {
+        if let Ok(kind) = self.handle_request(request, &association.remote_addr.to_string()) {
+            match kind {
+                AntiReplayKind::NeedProcess => {
+                    return Ok(true);
+                }
+                AntiReplayKind::RespondWithCached(res) => {
+                    send_sip_pkt_out(&output, res, association, Some("Anti"));
+                }
+                AntiReplayKind::SilentDrop => {}
+                AntiReplayKind::QueuedForProcessing => {}
+            }
+        }
+        Ok(false)
+    }
+    fn handle_request(
         &self,
         request: &Request,
         from_network: &str,
@@ -263,7 +288,7 @@ impl AntiReplayContext {
 
     ///将响应信息添加到缓存，并返回原始请求次数；
     /// 一个请求亦可多次响应，1xx:临时响应；2xx-6xx:最终响应
-    pub fn process_response(&self, from_network: &str, response: &Response) -> GlobalResult<usize> {
+    pub fn process_response(&self, from_network: &str, response: Response) -> GlobalResult<usize> {
         self.clean();
         let key = response.generate_anti_key(from_network)?;
         let mut shard = self.shard.write();
@@ -273,7 +298,7 @@ impl AntiReplayContext {
                 match policy {
                     //只有宽松的才缓存响应
                     AntiReplayPolicy::Loose { .. } => {
-                        *res = Some(response.clone());
+                        *res = Some(Bytes::from(response));
                     }
                     AntiReplayPolicy::Strict { .. } => {}
                 }
