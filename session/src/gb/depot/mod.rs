@@ -35,13 +35,15 @@
 - **宽松策略**：超时短，**覆盖SIP事务超时即可**（如3-30秒）。目的是处理网络重传。
 - **严格策略**：超时长，**需要覆盖整个业务会话的生命周期**（如10分钟至1小时）。目的是防止在会话有效期内被重放。
 */
-use crate::gb::layer::anti::AntiReplayContext;
-use crate::gb::layer::trans::TransactionContext;
-use base::net::state::Zip;
+use crate::gb::depot::anti::AntiReplayContext;
+use crate::gb::depot::trans::TransactionContext;
+use base::exception::GlobalResult;
+use base::net::state::{Association, Zip};
 use base::tokio::runtime::Handle;
 use base::tokio::sync::mpsc::Sender;
+use base::tokio::sync::oneshot;
 use base::tokio_util::sync::CancellationToken;
-use base::utils::rt::GlobalRuntime;
+use rsip::{Request, Response, SipMessage};
 
 pub mod anti;
 mod extract;
@@ -65,15 +67,42 @@ mod extract;
 /// - **严格策略**: 用于非幂等操作，防止重复执行，确保业务正确性
 pub mod trans;
 
-pub struct LayerContext {
+pub struct DepotContext {
     pub anti_ctx: AntiReplayContext,
     pub trans_ctx: TransactionContext,
 }
-impl LayerContext {
+impl DepotContext {
     pub fn init(rt: Handle, cancel_token: CancellationToken, output: Sender<Zip>) -> Self {
         Self {
             anti_ctx: AntiReplayContext::init(),
             trans_ctx: TransactionContext::init(rt, cancel_token, output),
         }
+    }
+}
+pub type TransRx = oneshot::Receiver<GlobalResult<Response>>;
+pub type TransTx = oneshot::Sender<GlobalResult<Response>>;
+
+pub enum SipMsg {
+    Response(Response),
+    Request(Request, TransTx),
+}
+pub struct SipPackage {
+    pub sip_msg: SipMsg,
+    pub association: Association,
+}
+impl SipPackage {
+    pub fn build_response(response: Response, association: Association) -> Self {
+        Self {
+            sip_msg: SipMsg::Response(response),
+            association,
+        }
+    }
+    pub fn build_request(request: Request, association: Association) -> (TransRx, Self) {
+        let (tx, rx) = oneshot::channel();
+        let sip_pkg = Self {
+            sip_msg: SipMsg::Request(request, tx),
+            association,
+        };
+        (rx, sip_pkg)
     }
 }

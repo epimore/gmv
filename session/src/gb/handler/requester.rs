@@ -20,13 +20,14 @@ use crate::gb::handler::{cmd, parser};
 use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::handler::parser::xml::KV2Model;
 use crate::gb::core::rw::RWSession;
+use crate::gb::depot::SipPackage;
 use crate::state::AlarmConf;
 use crate::state::model::AlarmInfo;
 use crate::http::client::{HttpBiz, HttpClient};
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
 
-pub async fn hand_request(req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
+pub async fn hand_request(req: Request, tx: Sender<SipPackage>, bill: &Association) -> GlobalResult<()> {
     let device_id = parser::header::get_device_id_by_request(&req)?;
     //校验设备是否注册
     if req.method == Method::Register {
@@ -123,7 +124,7 @@ impl State {
 struct Register;
 
 impl Register {
-    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
+    async fn process(device_id: &String, req: Request, tx: Sender<SipPackage>, bill: &Association) -> GlobalResult<()> {
         let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
             .ok_or(SysErr(anyhow!("device id = [{}] 未知设备，拒绝接入",device_id)))
             .hand_log(|msg| warn!("{msg}"))?;
@@ -175,11 +176,12 @@ impl Register {
             }
         }
     }
-    async fn login_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Association, oauth: GmvOauth) -> GlobalResult<()> {
+    async fn login_ok(device_id: &String, req: &Request, tx: Sender<SipPackage>, bill: &Association, oauth: GmvOauth) -> GlobalResult<()> {
         RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register().await?;
         let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
+        SipPackage::build(ok_response,bill.clone())
         let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
         let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;

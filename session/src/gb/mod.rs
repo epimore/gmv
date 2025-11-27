@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::gb::layer::anti;
+use crate::gb::depot::SipPackage;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::net;
@@ -16,9 +16,9 @@ use base::tokio_util::sync::CancellationToken;
 pub use core::rw::RWSession;
 
 mod core;
+mod depot;
 pub mod handler;
 mod io;
-mod layer;
 mod sip_tcp_splitter;
 
 #[derive(Debug, Get, Deserialize)]
@@ -48,23 +48,23 @@ impl SessionInfo {
         cancel_token: CancellationToken,
     ) -> GlobalResult<()> {
         let handle = Handle::current();
-        // let anti_ctx = Arc::new(anti::AntiReplayContext::init());
         let (output, input) = net::sdx::run_by_tokio(tu).await?;
-        let ctx = Arc::new(layer::LayerContext::init(
+        let ctx = Arc::new(depot::DepotContext::init(
             handle.clone(),
             cancel_token.clone(),
             output.clone(),
         ));
-        let (output_tx, output_rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
         base::tokio::spawn(io::read(
             input,
-            output_tx,
+            output.clone(),
+            sip_pkg_tx,
             cancel_token.child_token(),
             ctx.clone(),
         ));
         let output_sender = output.clone();
         base::tokio::spawn(io::write(
-            output_rx,
+            sip_pkg_rx,
             output,
             cancel_token.child_token(),
             ctx,
