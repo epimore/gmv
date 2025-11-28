@@ -5,8 +5,7 @@ use rsip::message::HeadersExt;
 use rsip::{Error, SipMessage};
 use std::sync::{Arc, LazyLock};
 
-use crate::gb::core::event::EventSession;
-pub use crate::gb::core::rw::RWSession;
+pub use crate::gb::core::rw::RWContext;
 use crate::gb::depot::anti::AntiReplayKind;
 use crate::gb::depot::{DepotContext, SipMsg, SipPackage};
 use crate::gb::handler;
@@ -93,7 +92,7 @@ pub async fn read(
                     event.type_code, event.association
                 );
                 if event.get_type_code() == &0u8 {
-                    RWSession::clean_rw_session_by_bill(event.get_association());
+                    RWContext::clean_rw_session_by_bill(event.get_association());
                 }
             }
         }

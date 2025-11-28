@@ -39,7 +39,7 @@ pub trait HeaderItemExt: HeadersExt {
         self.call_id_header().hand_log(|msg| warn!("{msg}"))
     }
 
-    fn from_tag(&self) -> GlobalResult<Tag> {
+    fn header_from_tag(&self) -> GlobalResult<Tag> {
         self.from_header()
             .hand_log(|msg| warn!("{msg}"))?
             .tag()
@@ -54,7 +54,7 @@ pub trait HeaderItemExt: HeadersExt {
 
     //request 非必带
     //response【除100 Trying响应不能有To Tag】必带
-    fn to_tag(&self) -> GlobalResult<Option<Tag>> {
+    fn header_to_tag(&self) -> GlobalResult<Option<Tag>> {
         let tag = self
             .to_header()
             .hand_log(|msg| warn!("{msg}"))?

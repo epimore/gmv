@@ -13,7 +13,7 @@ use base::net;
 use base::net::state::{CHANNEL_BUFFER_SIZE, Zip};
 use base::tokio::runtime::Handle;
 use base::tokio_util::sync::CancellationToken;
-pub use core::rw::RWSession;
+pub use core::rw::RWContext;
 
 mod core;
 mod depot;
@@ -49,6 +49,7 @@ impl SessionInfo {
     ) -> GlobalResult<()> {
         let handle = Handle::current();
         let (output, input) = net::sdx::run_by_tokio(tu).await?;
+        RWContext::init(output.clone());
         let ctx = Arc::new(depot::DepotContext::init(
             handle.clone(),
             cancel_token.clone(),

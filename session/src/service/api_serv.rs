@@ -1,5 +1,5 @@
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
-use crate::gb::RWSession;
+use crate::gb::RWContext;
 use crate::http::client::{HttpClient, HttpStream};
 use crate::service::{KEY_STREAM_IN, RELOAD_EXPIRES};
 use crate::state;
@@ -32,7 +32,7 @@ use std::time::Duration;
 */
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_live_model.device_id;
-    if !RWSession::has_session_by_device_id(device_id) {
+    if !RWContext::has_session_by_device_id(device_id) {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
     let channel_id = if let Some(channel_id) = &play_live_model.channel_id {
@@ -77,7 +77,7 @@ pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> Globa
     }
 }
 
-pub async fn download_stop(stream_id: String, token: String) -> GlobalResult<bool> {
+pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bool> {
     let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
         let (stream_server,ssrc) = cache::Cache::stream_map_query_node_ssrc(&stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
@@ -115,7 +115,7 @@ pub async fn download_stop(stream_id: String, token: String) -> GlobalResult<boo
 
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<String> {
     let device_id = &play_back_model.device_id;
-    if !RWSession::has_session_by_device_id(device_id) {
+    if !RWContext::has_session_by_device_id(device_id) {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
     let channel_id = if let Some(channel_id) = &play_back_model.channel_id {
@@ -165,7 +165,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
 
 pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_back_model.device_id;
-    if !RWSession::has_session_by_device_id(device_id) {
+    if !RWContext::has_session_by_device_id(device_id) {
         return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
     }
     let channel_id = if let Some(channel_id) = &play_back_model.channel_id {
@@ -270,7 +270,7 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                     ext: media_ext,
                 };
                 p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
-                let (call_id, seq) = CmdStream::invite_ack(device_id, &res)?;
+                let (call_id, seq) = CmdStream::invite_ack(device_id, &res).await?;
                 return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
                     state::cache::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc, node_name.clone(), call_id, seq, am, from_tag, to_tag);
                     state::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);

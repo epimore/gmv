@@ -24,7 +24,7 @@ use sqlx::FromRow;
 //   `STREAM_APP_NAME` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '流媒体名称',
 //   PRIMARY KEY (`BIZ_ID`)
 // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='云端录像';
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, New, FromRow)]
 #[serde(crate = "base::serde")]
 pub struct GmvRecord {
     pub biz_id: String,
@@ -95,19 +95,19 @@ impl GmvRecord {
     }
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, New, FromRow)]
 #[serde(crate = "base::serde")]
 pub struct GmvOauth {
-    device_id: String,
-    domain_id: String,
-    domain: String,
-    pwd: Option<String>,
+   pub device_id: String,
+   pub domain_id: String,
+   pub domain: String,
+   pub pwd: Option<String>,
     //0-false,1-true
-    pwd_check: u8,
-    alias: Option<String>,
+   pub pwd_check: u8,
+   pub alias: Option<String>,
     //0-停用,1-启用
-    status: u8,
-    heartbeat_sec: u8,
+   pub status: u8,
+   pub heartbeat_sec: u8,
 }
 
 impl GmvOauth {
@@ -119,18 +119,18 @@ impl GmvOauth {
     }
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Get, Set, New, FromRow)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, New, FromRow)]
 #[serde(crate = "base::serde")]
 pub struct GmvDevice {
-    device_id: String,
-    transport: String,
-    register_expires: u32,
-    register_time: NaiveDateTime,
-    local_addr: String,
-    sip_from: String,
-    sip_to: String,
-    status: u8,
-    gb_version: Option<String>,
+   pub device_id: String,
+   pub transport: String,
+   pub register_expires: u32,
+   pub register_time: NaiveDateTime,
+   pub local_addr: String,
+   pub sip_from: String,
+   pub sip_to: String,
+   pub status: u8,
+   pub gb_version: Option<String>,
 }
 
 
@@ -187,14 +187,14 @@ impl GmvDevice {
     }
 }
 
-#[derive(Default, Debug, Clone, Get, FromRow)]
+#[derive(Default, Debug, Clone, FromRow)]
 pub struct GmvDeviceExt {
-    device_id: String,
-    device_type: Option<String>,
-    manufacturer: String,
-    model: String,
-    firmware: String,
-    max_camera: Option<u8>,
+   pub device_id: String,
+   pub device_type: Option<String>,
+   pub manufacturer: String,
+   pub model: String,
+   pub firmware: String,
+   pub max_camera: Option<u8>,
 }
 
 impl GmvDeviceExt {
