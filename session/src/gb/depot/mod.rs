@@ -46,7 +46,7 @@ use base::tokio_util::sync::CancellationToken;
 use rsip::{Request, Response, SipMessage};
 
 pub mod anti;
-mod extract;
+pub mod extract;
 /// # GB/T 28181 防重放策略分类
 ///
 /// | 请求类型 | 示例方法 | 防重放策略 | 理由与详细说明 |

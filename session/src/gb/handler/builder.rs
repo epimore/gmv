@@ -1,54 +1,59 @@
-use std::net::SocketAddr;
-use std::fmt::Write;
-use base::log::{error};
-use rsip::{Error, Header, header, headers, Method, Param, param, Request, Response, SipMessage, uri, Uri};
+use base::log::error;
 use rsip::Header::Via;
+use rsip::Param::Other;
 use rsip::headers::typed;
 use rsip::message::HeadersExt;
 use rsip::param::{OtherParam, OtherParamValue};
-use rsip::Param::Other;
 use rsip::prelude::*;
+use rsip::{
+    Error, Header, Method, Param, Request, Response, SipMessage, Uri, header, headers, param, uri,
+};
+use std::fmt::Write;
+use std::net::SocketAddr;
+use std::ops::Add;
+use std::sync::atomic::{AtomicU16, Ordering};
 use uuid::Uuid;
 
-use anyhow::anyhow;
-use base::chrono::Local;
-use base::exception::{GlobalResult, GlobalResultExt};
-use base::exception::GlobalError::SysErr;
-use base::log::warn;
-use base::rand::prelude::StdRng;
-use base::rand::{Rng, SeedableRng, thread_rng};
-
-use crate::gb::handler::parser;
 use crate::gb::SessionInfo;
-use crate::gb::core::event::Ident;
-use crate::gb::core::rw::RWSession;
+use crate::gb::core::rw::RWContext;
+use crate::gb::handler::parser;
+use crate::state::model::{PtzControlModel, TransMode};
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
-use crate::state::model::{PtzControlModel, TransMode};
+use anyhow::anyhow;
+use base::cfg_lib::{default_cli_basic, CliBasic};
+use base::chrono::{Local, TimeDelta};
+use base::exception::GlobalError::SysErr;
+use base::exception::{GlobalResult, GlobalResultExt};
+use base::log::warn;
+use base::rand;
+use base::rand::distributions::{Alphanumeric, DistString};
+use base::rand::prelude::StdRng;
+use base::rand::{Rng, SeedableRng, thread_rng};
+use crate::utils::date_time::TimeFormatter;
 
+static GLOBE_SN:AtomicU16 = AtomicU16::new(1);
+
+fn get_sn() -> u16 {
+    loop {
+        let current = GLOBE_SN.load(Ordering::Relaxed);
+        let next = if current == u16::MAX { 1 } else { current + 1 };
+
+        match GLOBE_SN.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::Relaxed) {
+            Ok(_) => return current,
+            Err(_) => continue,
+        }
+    }
+}
+
+fn cli_basic() -> CliBasic {
+    default_cli_basic!()
+}
 pub struct ResponseBuilder;
 
 impl ResponseBuilder {
-    pub fn get_tag_by_header_to(response: &Response) -> GlobalResult<String> {
-        let tag = response.to_header()
-            .hand_log(|msg| warn!("{msg}"))?
-            .tag()
-            .hand_log(|msg| warn!("{msg}"))?
-            .ok_or(SysErr(anyhow!("to tag is none")))?
-            .to_string();
-        Ok(tag)
-    }
-    pub fn get_tag_by_header_from(response: &Response) -> GlobalResult<String> {
-        let tag = response.from_header()
-            .hand_log(|msg| warn!("{msg}"))?
-            .tag()
-            .hand_log(|msg| warn!("{msg}"))?
-            .ok_or(SysErr(anyhow!("from tag is none")))?
-            .to_string();
-        Ok(tag)
-    }
 
-    pub fn build_401_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
+    pub fn build_401_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
@@ -57,29 +62,42 @@ impl ResponseBuilder {
             headers: response_header,
             version: rsip::Version::V2,
             body: Default::default(),
-        }.into())
+        })
     }
 
-    pub fn unauthorized_register_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
+    pub fn unauthorized_register_response(
+        req: &Request,
+        socket_addr: &SocketAddr,
+    ) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
-        response_header.push(typed::WwwAuthenticate {
-            realm: format!("{}@{}",&req.uri.user().unwrap_or(""),&req.uri.host().to_string()),
-            algorithm: Some(headers::auth::Algorithm::Md5),
-            qop: Some(headers::auth::Qop::Auth),
-            nonce: Uuid::new_v4().as_simple().to_string(),
-            ..Default::default()
-        }.into());
+        response_header.push(
+            typed::WwwAuthenticate {
+                realm: format!(
+                    "{}@{}",
+                    &req.uri.user().unwrap_or(""),
+                    &req.uri.host().to_string()
+                ),
+                algorithm: Some(headers::auth::Algorithm::Md5),
+                qop: Some(headers::auth::Qop::Auth),
+                nonce: Uuid::new_v4().as_simple().to_string(),
+                ..Default::default()
+            }
+            .into(),
+        );
         Ok(rsip::Response {
             status_code: 401.into(),
             headers: response_header,
             version: rsip::Version::V2,
             body: Default::default(),
-        }.into())
+        })
     }
 
-    pub fn build_register_ok_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
+    pub fn build_ok_response(
+        req: &Request,
+        socket_addr: &SocketAddr,
+    ) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
@@ -88,10 +106,13 @@ impl ResponseBuilder {
             headers: response_header,
             version: rsip::Version::V2,
             body: Default::default(),
-        }.into())
+        })
     }
 
-    pub fn build_logout_ok_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<SipMessage> {
+    pub fn build_logout_ok_response(
+        req: &Request,
+        socket_addr: &SocketAddr,
+    ) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let now = Local::now();
         let date = now.format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -102,36 +123,64 @@ impl ResponseBuilder {
             headers: response_header,
             version: rsip::Version::V2,
             body: Default::default(),
-        }.into())
+        })
     }
 
-
-    fn build_response_header(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<rsip::Headers> {
+    fn build_response_header(
+        req: &Request,
+        socket_addr: &SocketAddr,
+    ) -> GlobalResult<rsip::Headers> {
         let via_header = parser::header::get_via_header(req)?;
         let mut params = via_header.params().hand_log(|msg| warn!("{msg}"))?;
         if params.iter_mut().any(|param| {
             if (*param).eq(&Other(OtherParam::from("rport"), None)) {
-                *param = Other(OtherParam::from("rport"), Some(OtherParamValue::from(socket_addr.port().to_string())));
+                *param = Other(
+                    OtherParam::from("rport"),
+                    Some(OtherParamValue::from(socket_addr.port().to_string())),
+                );
                 return true;
             }
             false
         }) {
-            params.push(Param::Received(param::Received::from(socket_addr.ip().to_string())));
+            params.push(Param::Received(param::Received::from(
+                socket_addr.ip().to_string(),
+            )));
         }
         let mut via: typed::Via = via_header.typed().hand_log(|msg| warn!("{msg}"))?;
         via.params = params;
         let mut headers: rsip::Headers = Default::default();
         headers.push(Via(via.untyped()));
-        headers.push(req.from_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
+        headers.push(
+            req.from_header()
+                .hand_log(|msg| warn!("{msg}"))?
+                .clone()
+                .into(),
+        );
         let mut rng = thread_rng();
-        let to = req.to_header().hand_log(|msg| warn!("{msg}"))?.typed().hand_log(|msg| warn!("{msg}"))?;
-        let to = to.with_tag(rng.gen_range(123456789u32..987654321u32).to_string().into());
+        let to = req
+            .to_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .typed()
+            .hand_log(|msg| warn!("{msg}"))?;
+        let to = to.with_tag(rng.gen_range(123456789u32..u32::MAX).to_string().into());
         headers.push(to.into());
-        headers.push(req.call_id_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
-        headers.push(req.cseq_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
+        headers.push(
+            req.call_id_header()
+                .hand_log(|msg| warn!("{msg}"))?
+                .clone()
+                .into(),
+        );
+        headers.push(
+            req.cseq_header()
+                .hand_log(|msg| warn!("{msg}"))?
+                .clone()
+                .into(),
+        );
         headers.push(Header::ContentLength(Default::default()));
-        headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
-        let _ = req.contact_header().map(|contact| headers.push(contact.clone().into()));
+        headers.push(rsip::headers::UserAgent::new(cli_basic().version).into());
+        let _ = req
+            .contact_header()
+            .map(|contact| headers.push(contact.clone().into()));
         Ok(headers)
     }
 }
@@ -140,40 +189,53 @@ pub struct RequestBuilder;
 
 #[allow(unused)]
 impl RequestBuilder {
-    pub async fn query_preset(device_id: &String, channel_id_opt: Option<&String>) -> GlobalResult<(Ident, SipMessage)> {
-        let xml = XmlBuilder::query_preset(channel_id_opt.unwrap_or(device_id));
-        let message_request = Self::build_message_request(channel_id_opt, device_id, xml).await;
-        message_request
-    }
-    pub async fn query_device_info(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn build_query_device_info(device_id: &String) -> GlobalResult<Request> {
         let xml = XmlBuilder::query_device_info(device_id);
-        let message_request = Self::build_message_request(None, device_id, xml).await;
-        message_request
+        RequestBuilder::build_msg_req(None, device_id, xml).await
     }
-    pub async fn query_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn query_device_catalog(device_id: &String) -> GlobalResult<Request> {
         let xml = XmlBuilder::query_device_catalog(device_id);
-        let message_request = Self::build_message_request(None, device_id, xml).await;
-        message_request
+        RequestBuilder::build_msg_req(None, device_id, xml).await
     }
-    pub async fn subscribe_device_catalog(device_id: &String) -> GlobalResult<(Ident, SipMessage)> {
-        let xml = XmlBuilder::query_device_catalog(device_id);
-        let message_request = Self::build_subscribe_request(device_id, xml).await;
-        message_request
+    pub async fn subscribe_device_catalog(
+        device_id: &String,
+        expire: u32,
+    ) -> GlobalResult<Request> {
+        let xml = XmlBuilder::subscribe_device_catalog(device_id, expire);
+        RequestBuilder::build_sub_req(device_id, xml).await
     }
 
-    pub async fn control_snapshot_image(device_id: &String, channel_id: &String, num: u8, interval: u8, uri: &String, session_id: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn control_snapshot_image(
+        device_id: &String,
+        channel_id: &String,
+        num: u8,
+        interval: u8,
+        uri: &String,
+        session_id: &String,
+    ) -> GlobalResult<Request> {
         let xml = XmlBuilder::control_snapshot_image(channel_id, num, interval, uri, session_id);
-        let message_request = Self::build_message_request(Some(channel_id), device_id, xml).await;
-        message_request
-    }
-    pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<(Ident, SipMessage)> {
-        let xml = XmlBuilder::control_ptz(ptz_control_model);
-        let message_request = Self::build_message_request(Some(&ptz_control_model.channelId), &ptz_control_model.deviceId, xml).await;
+        let message_request = RequestBuilder::build_msg_req(Some(channel_id), device_id, xml).await;
         message_request
     }
 
-    async fn build_message_request(channel_id_opt: Option<&String>, device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(channel_id_opt, device_id, false, false, None, None).await?;
+    pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<Request> {
+        let xml = XmlBuilder::control_ptz(ptz_control_model);
+        let message_request = RequestBuilder::build_msg_req(
+            Some(&ptz_control_model.channelId),
+            &ptz_control_model.deviceId,
+            xml,
+        )
+            .await;
+        message_request
+    }
+
+    pub async fn build_msg_req(
+        channel_id_opt: Option<&String>,
+        device_id: &String,
+        body: String,
+    ) -> GlobalResult<Request> {
+        let (mut headers, uri) =
+            Self::build_request_header(channel_id_opt, device_id, false, false, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = thread_rng();
@@ -182,42 +244,65 @@ impl RequestBuilder {
         headers.push(cs_eq);
         headers.push(rsip::headers::ContentType::new("Application/MANSCDP+xml").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        let request_msg: SipMessage = Request {
+        let request_msg = Request {
             method: Method::Message,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
-        }.into();
-        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
-        Ok((ident, request_msg))
+        };
+        Ok(request_msg)
     }
 
-    async fn build_subscribe_request(device_id: &String, body: String) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(None, device_id, true, true, None, None).await?;
+    pub async fn build_sub_req(
+        device_id: &String,
+        body: String,
+    ) -> GlobalResult<Request> {
+        let (mut headers, uri) =
+            Self::build_request_header(None, device_id, true, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = thread_rng();
         let cs_eq_str = format!("{} SUBSCRIBE", rng.gen_range(12u8..255u8));
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
-        headers.push(rsip::headers::Event::new(format!("Catalog;id={}", rng.gen_range(123456789u32..987654321u32))).into());
+        headers.push(
+            rsip::headers::Event::new(format!(
+                "Catalog;id={}",
+                rng.gen_range(123456789u32..987654321u32)
+            ))
+                .into(),
+        );
         headers.push(rsip::headers::ContentType::new("Application/MANSCDP+xml").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        let request_msg: SipMessage = Request {
+        let request_msg = Request {
             method: Method::Subscribe,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
-        }.into();
-        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
-        Ok((ident, request_msg))
+        };
+        Ok(request_msg)
     }
 
-
-    async fn common_info_request(device_id: &String, channel_id: &String, body: &str, from_tag: &str, to_tag: &str, seq: Option<u32>, call_id: Option<String>) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag)).await?;
+    async fn common_info_request(
+        device_id: &String,
+        channel_id: &String,
+        body: &str,
+        from_tag: &str,
+        to_tag: &str,
+        seq: Option<u32>,
+        call_id: Option<String>,
+    ) -> GlobalResult<Request> {
+        let (mut headers, uri) = Self::build_request_header(
+            Some(channel_id),
+            device_id,
+            false,
+            true,
+            Some(from_tag),
+            Some(to_tag),
+        )
+        .await?;
         let call_id = call_id.unwrap_or_else(|| Uuid::new_v4().as_simple().to_string());
         headers.push(rsip::headers::CallId::new(&call_id).into());
         let seq = seq.map(|seq| seq).unwrap_or_else(|| {
@@ -230,134 +315,294 @@ impl RequestBuilder {
 
         headers.push(rsip::headers::ContentType::new("Application/MANSRTSP").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        let msg = Request {
+        let request = Request {
             method: Method::Info,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
-        }.into();
-        let ident = Ident::new(device_id.to_string(), call_id, cs_eq_str);
-        Ok((ident, msg))
+        };
+        Ok(request)
     }
 
     /// 构建下发请求头
-    async fn build_request_header(channel_id: Option<&String>, device_id: &String, expires: bool, contact: bool, from_tag: Option<&str>, to_tag: Option<&str>)
-                                  -> GlobalResult<(rsip::Headers, Uri)> {
-        let bill = RWSession::get_bill_by_device_id(device_id).ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线"))).hand_log(|msg| warn!("{msg}"))?;
+    async fn build_request_header(
+        channel_id: Option<&String>,
+        device_id: &String,
+        expires: bool,
+        contact: bool,
+        from_tag: Option<&str>,
+        to_tag: Option<&str>,
+    ) -> GlobalResult<(rsip::Headers, Uri)> {
+        let bill = RWContext::get_bill_by_device_id(device_id)
+            .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
+            .hand_log(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
         if channel_id.is_some() {
             let channel_id = channel_id.unwrap();
-            let channel_status = mapper::get_device_channel_status(device_id, channel_id).await?.ok_or(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，未知或无效")))?;
+            let channel_status = mapper::get_device_channel_status(device_id, channel_id)
+                .await?
+                .ok_or(SysErr(anyhow!(
+                    "设备：{device_id} - 通道：{channel_id}，未知或无效"
+                )))?;
             match &channel_status.to_ascii_uppercase()[..] {
-                "OK" | "ON" | "ONLINE" | "ONLY" | "" => { dst_id = channel_id }
-                _ => {
-                    Err(SysErr(anyhow!("设备：{device_id} - 通道：{channel_id}，已下线")))?
-                }
+                "OK" | "ON" | "ONLINE" | "ONLY" | "" => dst_id = channel_id,
+                _ => Err(SysErr(anyhow!(
+                    "设备：{device_id} - 通道：{channel_id}，已下线"
+                )))?,
             }
         }
         let conf = SessionInfo::get_session_by_conf();
         let server_ip = &conf.get_wan_ip().to_string();
         let server_port = conf.get_wan_port();
         //domain宜采用ID统一编码的前十位编码,扩展支持十位编码加“.spvmn.cn”后缀格式,或采用IP:port格式,port宜采用5060;这里统一使用device_id的前十位,不再调用DB进行判断原设备的使用方式
-        // let gmv_device = GmvDevice::query_gmv_device_by_device_id(&device_id.to_string())?.ok_or(SysErr(anyhow!("设备：{device_id}-{channel_id:?}未注册或已离线。")))?;
-        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
-            .ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))
+        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
+            .await?
+            .ok_or(SysErr(anyhow!("device id = [{}] 未知设备", device_id)))
             .hand_log(|msg| warn!("{msg}"))?;
-        if oauth.get_status() == &0u8 {
-            warn!("device id = [{}] 未启用设备,无法下发指令",&device_id);
+        if oauth.status == 0u8 {
+            warn!("device id = [{}] 未启用设备,无法下发指令", &device_id);
         }
-        let domain_id = oauth.get_domain_id();
-        let domain = &format!("{}.spvmn.cn", oauth.get_domain());
+        let domain_id = oauth.domain_id;
+        let domain = &format!("{}.spvmn.cn", oauth.domain);
 
         let transport = bill.get_protocol().get_value();
         let uri_str = format!("sip:{}@{}", dst_id, domain);
         let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
-        let mut rng = StdRng::from_entropy();
         let mut headers: rsip::Headers = Default::default();
-        headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}", transport, server_ip, server_port, rng.gen_range(123456789u32..987654321u32))).into());
-        headers.push(rsip::headers::From::new(format!("<sip:{}@{}>;tag={}", domain_id, domain, from_tag.unwrap_or(&rng.gen_range(123456789u32..987654321u32).to_string()))).into());
-        to_tag.map(|tag| {
-            headers.push(rsip::headers::To::new(format!("<sip:{}@{}>;tag={}", dst_id, domain, tag)).into())
-        }).unwrap_or_else(
-            || { headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, domain)).into()) }
+        headers.push(
+            rsip::headers::Via::new(format!(
+                "SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}",
+                transport,
+                server_ip,
+                server_port,
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
+            ))
+            .into(),
         );
+        headers.push(
+            rsip::headers::From::new(format!(
+                "<sip:{}@{}>;tag={}",
+                domain_id,
+                domain,
+                from_tag.unwrap_or(&Alphanumeric.sample_string(&mut rand::thread_rng(), 16))
+            ))
+            .into(),
+        );
+        to_tag
+            .map(|tag| {
+                headers.push(
+                    rsip::headers::To::new(format!("<sip:{}@{}>;tag={}", dst_id, domain, tag))
+                        .into(),
+                )
+            })
+            .unwrap_or_else(|| {
+                headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, domain)).into())
+            });
         if expires {
-            let expires = RWSession::get_expires_by_device_id(device_id).ok_or(SysErr(anyhow!("device id = [{}] 未知设备",device_id)))?;
+            let expires = RWContext::get_expires_by_device_id(device_id)
+                .ok_or(SysErr(anyhow!("device id = [{}] 未知设备", device_id)))?;
             headers.push(rsip::headers::Expires::new(expires.as_secs().to_string()).into());
         }
         if contact {
-            headers.push(rsip::headers::Contact::new(format!("<sip:{}@{}:{}>", domain_id, server_ip, server_port)).into());
+            headers.push(
+                rsip::headers::Contact::new(format!(
+                    "<sip:{}@{}:{}>",
+                    domain_id, server_ip, server_port
+                ))
+                .into(),
+            );
         }
         headers.push(rsip::headers::MaxForwards::new("70").into());
-        headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
+        headers.push(rsip::headers::UserAgent::new(cli_basic().version).into());
         Ok((headers, uri))
     }
 
-    pub async fn play_live_request(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn play_live_request(
+        device_id: &String,
+        channel_id: &String,
+        dst_ip: &String,
+        dst_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+    ) -> GlobalResult<Request> {
         let sdp = SdpBuilder::play_live(channel_id, dst_ip, dst_port, stream_mode, ssrc)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
-
     // 点播历史视频
-    pub async fn playback(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn playback(
+        device_id: &String,
+        channel_id: &String,
+        dst_ip: &String,
+        dst_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        st: u32,
+        et: u32,
+    ) -> GlobalResult<Request> {
         let sdp = SdpBuilder::playback(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
     // 云端录像
-    pub async fn download(device_id: &String, channel_id: &String, dst_ip: &String, dst_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32, speed: u8) -> GlobalResult<(Ident, SipMessage)> {
-        let sdp = SdpBuilder::download(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et, speed)?;
+    pub async fn download(
+        device_id: &String,
+        channel_id: &String,
+        dst_ip: &String,
+        dst_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        st: u32,
+        et: u32,
+        speed: u8,
+    ) -> GlobalResult<Request> {
+        let sdp = SdpBuilder::download(
+            channel_id,
+            dst_ip,
+            dst_port,
+            stream_mode,
+            ssrc,
+            st,
+            et,
+            speed,
+        )?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
-    pub async fn build_bye_request(seq: u32, call_id: String, device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, Some(from_tag), Some(to_tag)).await?;
+    pub async fn build_bye_request(
+        seq: u32,
+        call_id: String,
+        device_id: &String,
+        channel_id: &String,
+        from_tag: &str,
+        to_tag: &str,
+    ) -> GlobalResult<Request> {
+        let (mut headers, uri) = Self::build_request_header(
+            Some(channel_id),
+            device_id,
+            false,
+            true,
+            Some(from_tag),
+            Some(to_tag),
+        )
+        .await?;
         headers.push(rsip::headers::CallId::new(&call_id).into());
         let cs_eq_str = format!("{} BYE", seq);
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
-        let msg = Request {
+        let request = Request {
             method: Method::Bye,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: Default::default(),
-        }.into();
-        let ident = Ident::new(device_id.to_string(), call_id, cs_eq_str);
-        Ok((ident, msg))
+        };
+        Ok(request)
     }
 
     // 拍照
     // 云台控制
     // 查询硬盘录像情况
     // 拖动播放
-    pub async fn seek(device_id: &String, channel_id: &String, seek: u32, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn seek(
+        device_id: &String,
+        channel_id: &String,
+        seek: u32,
+        from_tag: &str,
+        to_tag: &str,
+        seq: u32,
+        call_id: String,
+    ) -> GlobalResult<Request> {
         let sdp = SdpBuilder::info_seek(seek);
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
+        Self::common_info_request(
+            device_id,
+            channel_id,
+            &sdp,
+            from_tag,
+            to_tag,
+            Some(seq),
+            Some(call_id),
+        )
+        .await
     }
 
     // 倍速播放
-    pub async fn speed(device_id: &String, channel_id: &String, speed: f32, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn speed(
+        device_id: &String,
+        channel_id: &String,
+        speed: f32,
+        from_tag: &str,
+        to_tag: &str,
+        seq: u32,
+        call_id: String,
+    ) -> GlobalResult<Request> {
         let sdp = SdpBuilder::info_speed(speed);
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
+        Self::common_info_request(
+            device_id,
+            channel_id,
+            &sdp,
+            from_tag,
+            to_tag,
+            Some(seq),
+            Some(call_id),
+        )
+        .await
     }
 
     // 暂停回放
-    pub async fn pause(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn pause(
+        device_id: &String,
+        channel_id: &String,
+        from_tag: &str,
+        to_tag: &str,
+        seq: u32,
+        call_id: String,
+    ) -> GlobalResult<Request> {
         let sdp = SdpBuilder::info_pause();
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
+        Self::common_info_request(
+            device_id,
+            channel_id,
+            &sdp,
+            from_tag,
+            to_tag,
+            Some(seq),
+            Some(call_id),
+        )
+        .await
     }
 
     // 恢复回放
-    pub async fn replay(device_id: &String, channel_id: &String, from_tag: &str, to_tag: &str, seq: u32, call_id: String) -> GlobalResult<(Ident, SipMessage)> {
+    pub async fn replay(
+        device_id: &String,
+        channel_id: &String,
+        from_tag: &str,
+        to_tag: &str,
+        seq: u32,
+        call_id: String,
+    ) -> GlobalResult<Request> {
         let sdp = SdpBuilder::info_replay();
-        Self::common_info_request(device_id, channel_id, &sdp, from_tag, to_tag, Some(seq), Some(call_id)).await
+        Self::common_info_request(
+            device_id,
+            channel_id,
+            &sdp,
+            from_tag,
+            to_tag,
+            Some(seq),
+            Some(call_id),
+        )
+        .await
     }
 
-    async fn build_stream_request(device_id: &String, channel_id: &String, ssrc: &str, body: String) -> GlobalResult<(Ident, SipMessage)> {
-        let (mut headers, uri) = Self::build_request_header(Some(channel_id), device_id, false, true, None, None).await?;
+    async fn build_stream_request(
+        device_id: &String,
+        channel_id: &String,
+        ssrc: &str,
+        body: String,
+    ) -> GlobalResult<Request> {
+        let (mut headers, uri) =
+            Self::build_request_header(Some(channel_id), device_id, false, true, None, None)
+                .await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = thread_rng();
@@ -365,44 +610,72 @@ impl RequestBuilder {
         let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
         headers.push(cs_eq);
 
-        let from: &headers::From = header!(
-            headers.iter(),
-            Header::From,
-            Error::missing_header("From")
-        ).hand_log(|msg| error!("{msg}"))?;
-        headers.push(rsip::headers::Subject::new(format!("{}:{},{}:0", channel_id, ssrc, from.uri().unwrap().auth.unwrap().user)).into());
+        let from: &headers::From =
+            header!(headers.iter(), Header::From, Error::missing_header("From"))
+                .hand_log(|msg| error!("{msg}"))?;
+        headers.push(
+            rsip::headers::Subject::new(format!(
+                "{}:{},{}:0",
+                channel_id,
+                ssrc,
+                from.uri().unwrap().auth.unwrap().user
+            ))
+            .into(),
+        );
         headers.push(rsip::headers::ContentType::new("Application/SDP").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        let msg = Request {
+        let request = Request {
             method: Method::Invite,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
-        }.into();
-        let ident = Ident::new(device_id.to_string(), call_id_str, cs_eq_str);
-        Ok((ident, msg))
+        }
+        .into();
+        Ok(request)
     }
 
-    pub fn build_ack_request_by_response(res: &Response) -> GlobalResult<SipMessage> {
+    pub fn build_ack_request_by_response(res: &Response) -> GlobalResult<Request> {
         let mut headers: rsip::Headers = Default::default();
-        headers.push(res.to_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
+        headers.push(
+            res.to_header()
+                .hand_log(|msg| warn!("{msg}"))?
+                .clone()
+                .into(),
+        );
         let from = res.from_header().hand_log(|msg| warn!("{msg}"))?;
         headers.push(from.clone().into());
-        headers.push(res.call_id_header().hand_log(|msg| warn!("{msg}"))?.clone().into());
-        let mut rng = thread_rng();
-        let via: typed::Via = res.via_header().hand_log(|msg| warn!("{msg}"))?.typed().hand_log(|msg| warn!("{msg}"))?;
-        headers.push(rsip::headers::Via::new(format!("SIP/2.0/{} {};rport;branch=z9hG4bK{}",
-                                                     via.transport.to_string(),
-                                                     via.uri.to_string(),
-                                                     rng.gen_range(123456789u32..987654321u32))).into());
-        let seq = res.cseq_header().hand_log(|msg| warn!("{msg}"))?.seq().hand_log(|msg| warn!("{msg}"))?;
+        headers.push(
+            res.call_id_header()
+                .hand_log(|msg| warn!("{msg}"))?
+                .clone()
+                .into(),
+        );
+        let via: typed::Via = res
+            .via_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .typed()
+            .hand_log(|msg| warn!("{msg}"))?;
+        headers.push(
+            rsip::headers::Via::new(format!(
+                "SIP/2.0/{} {};rport;branch=z9hG4bK{}",
+                via.transport.to_string(),
+                via.uri.to_string(),
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
+            ))
+            .into(),
+        );
+        let seq = res
+            .cseq_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .seq()
+            .hand_log(|msg| warn!("{msg}"))?;
         headers.push(rsip::headers::CSeq::new(format!("{seq} ACK")).into());
         let uri = from.uri().hand_log(|msg| warn!("{msg}"))?;
         let uri_str = uri.to_string();
         headers.push(rsip::headers::Contact::new(format!("<{uri_str}>")).into());
         headers.push(rsip::headers::MaxForwards::new("70").into());
-        headers.push(rsip::headers::UserAgent::new("GMV 0.1").into());
+        headers.push(rsip::headers::UserAgent::new(cli_basic().version).into());
         headers.push(rsip::headers::ContentLength::default().into());
         Ok(rsip::Request {
             method: Method::Ack,
@@ -410,11 +683,11 @@ impl RequestBuilder {
             headers,
             version: rsip::common::version::Version::V2,
             body: Default::default(),
-        }.into())
+        })
     }
 }
 
-struct XmlBuilder;
+pub struct XmlBuilder;
 
 ///编码格式：2022 GB18030
 /// 2016 GB2312
@@ -424,9 +697,15 @@ impl XmlBuilder {
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB18030\"?>\r\n");
         xml.push_str("<Control>\r\n");
         xml.push_str("<CmdType>DeviceControl</CmdType>\r\n");
-        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp()));
-        xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", ptz_control_model.channelId));
-        xml.push_str(&*format!("<PTZCmd>{}</PTZCmd>\r\n", Self::build_cmd_ptz_line(ptz_control_model)));
+        xml.push_str(&*format!("<SN>{}</SN>\r\n", get_sn()));
+        xml.push_str(&*format!(
+            "<DeviceID>{}</DeviceID>\r\n",
+            ptz_control_model.channelId
+        ));
+        xml.push_str(&*format!(
+            "<PTZCmd>{}</PTZCmd>\r\n",
+            Self::build_cmd_ptz_line(ptz_control_model)
+        ));
         xml.push_str("<Info>\r\n");
         xml.push_str("<ControlPriority>5</ControlPriority>\r\n");
         xml.push_str("</Info>\r\n");
@@ -467,12 +746,21 @@ impl XmlBuilder {
         }
         cmd_line
     }
-    pub fn control_snapshot_image(channel_id: &String, num: u8, interval: u8, uri: &String, session_id: &String) -> String {
+    pub fn control_snapshot_image(
+        channel_id: &String,
+        num: u8,
+        interval: u8,
+        uri: &String,
+        session_id: &String,
+    ) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\"?>\r\n");
         xml.push_str("<Control>\r\n");
         xml.push_str("<CmdType>DeviceConfig</CmdType>\r\n");
-        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
+        xml.push_str(&*format!(
+            "<SN>{}</SN>\r\n",
+            get_sn()
+        ));
         xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", channel_id));
         xml.push_str("<SnapShotConfig>\r\n");
         xml.push_str(&*format!("<SnapNum>{}</SnapNum>\r\n", num));
@@ -489,7 +777,10 @@ impl XmlBuilder {
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
         xml.push_str("<Query>\r\n");
         xml.push_str("<CmdType>PresetQuery</CmdType>\r\n");
-        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
+        xml.push_str(&*format!(
+            "<SN>{}</SN>\r\n",
+            get_sn()
+        ));
         xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", device_id));
         xml.push_str("</Query>\r\n");
         xml
@@ -499,7 +790,10 @@ impl XmlBuilder {
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
         xml.push_str("<Query>\r\n");
         xml.push_str("<CmdType>DeviceInfo</CmdType>\r\n");
-        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
+        xml.push_str(&*format!(
+            "<SN>{}</SN>\r\n",
+            get_sn()
+        ));
         xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", device_id));
         xml.push_str("</Query>\r\n");
         xml
@@ -510,8 +804,29 @@ impl XmlBuilder {
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
         xml.push_str("<Query>\r\n");
         xml.push_str("<CmdType>Catalog</CmdType>\r\n");
-        xml.push_str(&*format!("<SN>{}</SN>\r\n", Local::now().timestamp_subsec_millis()));
+        xml.push_str(&*format!(
+            "<SN>{}</SN>\r\n",
+            get_sn()
+        ));
         xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", device_id));
+        xml.push_str("</Query>\r\n");
+        xml
+    }
+    pub fn subscribe_device_catalog(device_id: &String,expire_sec:u32) -> String {
+        let now = Local::now();
+        let start = TimeFormatter::local_time_ios_format(now);
+        let end = TimeFormatter::local_time_ios_format(now.add(TimeDelta::seconds(expire_sec as i64)));
+        let mut xml = String::new();
+        xml.push_str("<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n");
+        xml.push_str("<Query>\r\n");
+        xml.push_str("<CmdType>Catalog</CmdType>\r\n");
+        xml.push_str(&*format!(
+            "<SN>{}</SN>\r\n",
+            get_sn()
+        ));
+        xml.push_str(&*format!("<DeviceID>{}</DeviceID>\r\n", device_id));
+        xml.push_str(&*format!("<StartTime>{}</StartTime>\r\n", start));
+        xml.push_str(&*format!("<EndTime>{}</EndTime>\r\n", end));
         xml.push_str("</Query>\r\n");
         xml
     }
@@ -556,24 +871,87 @@ impl SdpBuilder {
         sdp
     }
 
-    pub fn playback(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32) -> GlobalResult<String> {
+    pub fn playback(
+        channel_id: &String,
+        media_ip: &String,
+        media_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        st: u32,
+        et: u32,
+    ) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
-        let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Playback", &st_et, true, None)?;
+        let sdp = Self::build_common_play(
+            channel_id,
+            media_ip,
+            media_port,
+            stream_mode,
+            ssrc,
+            "Playback",
+            &st_et,
+            true,
+            None,
+        )?;
         Ok(sdp)
     }
 
-    pub fn download(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String, st: u32, et: u32, download_speed: u8) -> GlobalResult<String> {
+    pub fn download(
+        channel_id: &String,
+        media_ip: &String,
+        media_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        st: u32,
+        et: u32,
+        download_speed: u8,
+    ) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
-        let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Download", &st_et, true, Some(download_speed))?;
+        let sdp = Self::build_common_play(
+            channel_id,
+            media_ip,
+            media_port,
+            stream_mode,
+            ssrc,
+            "Download",
+            &st_et,
+            true,
+            Some(download_speed),
+        )?;
         Ok(sdp)
     }
-    pub fn play_live(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String) -> GlobalResult<String> {
-        let sdp = Self::build_common_play(channel_id, media_ip, media_port, stream_mode, ssrc, "Play", "0 0", false, None)?;
+    pub fn play_live(
+        channel_id: &String,
+        media_ip: &String,
+        media_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+    ) -> GlobalResult<String> {
+        let sdp = Self::build_common_play(
+            channel_id,
+            media_ip,
+            media_port,
+            stream_mode,
+            ssrc,
+            "Play",
+            "0 0",
+            false,
+            None,
+        )?;
         Ok(sdp)
     }
 
     ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
-    fn build_common_play(channel_id: &String, media_ip: &String, media_port: u16, stream_mode: TransMode, ssrc: &String, name: &str, st_et: &str, u: bool, download_speed: Option<u8>) -> GlobalResult<String> {
+    fn build_common_play(
+        channel_id: &String,
+        media_ip: &String,
+        media_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        name: &str,
+        st_et: &str,
+        u: bool,
+        download_speed: Option<u8>,
+    ) -> GlobalResult<String> {
         let conf = SessionInfo::get_session_by_conf();
         let session_ip = &conf.get_wan_ip().to_string();
         let mut sdp = String::with_capacity(300);
@@ -586,16 +964,23 @@ impl SdpBuilder {
         sdp.push_str(&format!("c=IN IP4 {}\r\n", media_ip));
         sdp.push_str(&format!("t={}\r\n", st_et));
         match stream_mode {
-            TransMode::Udp => {
-                sdp.push_str(&format!("m=video {} RTP/AVP 96 97 98 99 100\r\n", media_port))
-            }
+            TransMode::Udp => sdp.push_str(&format!(
+                "m=video {} RTP/AVP 96 97 98 99 100\r\n",
+                media_port
+            )),
             TransMode::TcpActive => {
-                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n", media_port));
+                sdp.push_str(&format!(
+                    "m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n",
+                    media_port
+                ));
                 sdp.push_str("a=setup:active\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
             TransMode::TcpPassive => {
-                sdp.push_str(&format!("m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n", media_port));
+                sdp.push_str(&format!(
+                    "m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n",
+                    media_port
+                ));
                 sdp.push_str("a=setup:passive\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
@@ -614,8 +999,8 @@ impl SdpBuilder {
 
 #[cfg(test)]
 mod tests {
-    use base::chrono::Local;
     use crate::state::model::PtzControlModel;
+    use base::chrono::Local;
 
     #[test]
     fn test_date_format() {

@@ -1,68 +1,77 @@
 use base::log::{debug, info, LevelFilter};
-use quick_xml::encoding;
 use encoding_rs::GB18030;
-use rsip::{Method, Request};
+use quick_xml::encoding;
 use rsip::headers::ToTypedHeader;
 use rsip::message::HeadersExt;
 use rsip::services::DigestGenerator;
+use rsip::{Method, Request};
 
 use anyhow::anyhow;
 use base::bytes::Bytes;
 use base::chrono::{Duration, Local};
-use base::exception::{GlobalResult, GlobalResultExt};
 use base::exception::GlobalError::SysErr;
+use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::net::state::{Association, Package, Zip};
 use base::tokio;
 use base::tokio::sync::mpsc::Sender;
 
-use crate::gb::handler::{cmd, parser};
+use crate::gb::core::rw::RWContext;
+use crate::gb::depot::SipPackage;
 use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::handler::parser::xml::KV2Model;
-use crate::gb::core::rw::RWSession;
-use crate::gb::depot::SipPackage;
-use crate::state::AlarmConf;
-use crate::state::model::AlarmInfo;
+use crate::gb::handler::{cmd, parser};
 use crate::http::client::{HttpBiz, HttpClient};
+use crate::state::model::AlarmInfo;
+use crate::state::AlarmConf;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
 
-pub async fn hand_request(req: Request, tx: Sender<SipPackage>, bill: &Association) -> GlobalResult<()> {
+pub async fn hand_request(
+    req: Request,
+    tx: Sender<SipPackage>,
+    bill: &Association,
+) -> GlobalResult<()> {
     let device_id = parser::header::get_device_id_by_request(&req)?;
     //校验设备是否注册
     if req.method == Method::Register {
-        let _ = Register::process(&device_id, req, tx, bill).await.hand_log(|msg| error!("设备 = [{}],注册失败;err={}",&device_id,msg));
+        let _ = Register::process(&device_id, req, tx, bill)
+            .await
+            .hand_log(|msg| error!("设备 = [{}],注册失败;err={}", &device_id, msg));
         Ok(())
     } else {
         match State::check_session(tx.clone(), bill, &device_id).await? {
-            State::Usable | State::ReCache => {
-                match req.method {
-                    Method::Ack => { Ok(()) }
-                    Method::Bye => { Ok(()) }
-                    Method::Cancel => { Ok(()) }
-                    Method::Info => { Ok(()) }
-                    Method::Invite => { Ok(()) }
-                    Method::Message => { Message::process(&device_id, req, tx.clone(), bill).await }
-                    Method::Notify => { Notify::process(&device_id, req, tx.clone(), bill).await }
-                    Method::Options => { Ok(()) }
-                    Method::PRack => { Ok(()) }
-                    Method::Publish => { Ok(()) }
-                    Method::Refer => { Ok(()) }
-                    Method::Subscribe => { Ok(()) }
-                    Method::Update => { Ok(()) }
-                    _ => {
-                        info!("invalid method");
-                        Ok(())
-                    }
+            State::Usable | State::ReCache => match req.method {
+                Method::Ack => Ok(()),
+                Method::Bye => Ok(()),
+                Method::Cancel => Ok(()),
+                Method::Info => Ok(()),
+                Method::Invite => Ok(()),
+                Method::Message => Message::process(&device_id, req, tx.clone(), bill).await,
+                Method::Notify => Notify::process(&device_id, req, tx.clone(), bill).await,
+                Method::Options => Ok(()),
+                Method::PRack => Ok(()),
+                Method::Publish => Ok(()),
+                Method::Refer => Ok(()),
+                Method::Subscribe => Ok(()),
+                Method::Update => Ok(()),
+                _ => {
+                    info!("invalid method");
+                    Ok(())
                 }
-            }
+            },
             State::Expired => {
-                let unregister_response = ResponseBuilder::build_401_response(&req, bill.get_remote_addr())?;
-                let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(unregister_response)));
-                let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
+                let unregister_response =
+                    ResponseBuilder::build_401_response(&req, bill.get_remote_addr())?;
+                let sip_package = SipPackage::build_response(unregister_response, bill.clone());
+                let _ = tx
+                    .clone()
+                    .send(sip_package)
+                    .await
+                    .hand_log(|msg| warn!("{msg}"));
                 Ok(())
             }
-            State::Invalid => { Ok(()) }
+            State::Invalid => Ok(()),
         }
     }
 }
@@ -87,8 +96,14 @@ impl State {
     /// 2)设备未在注册有效期内，重新注册
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
-    async fn check_session(tx: Sender<Zip>, bill: &Association, device_id: &String) -> GlobalResult<State> {
-        if RWSession::get_device_id_by_association(bill).is_some() || RWSession::has_session_by_device_id(device_id) {
+    async fn check_session(
+        tx: Sender<SipPackage>,
+        bill: &Association,
+        device_id: &String,
+    ) -> GlobalResult<State> {
+        if RWContext::get_device_id_by_association(bill).is_some()
+            || RWContext::has_session_by_device_id(device_id)
+        {
             Ok(State::Usable)
         } else {
             match mapper::get_device_status_info(device_id).await? {
@@ -104,10 +119,11 @@ impl State {
                         //判断是否在注册有效期内
                         if reg_ts + Duration::seconds(expire as i64) > Local::now().naive_local() {
                             //刷新缓存
-                            RWSession::insert(device_id, tx, heart, bill);
+                            RWContext::insert(device_id, tx, heart, bill);
                             //如果设备是离线状态，则更新为在线
                             if on == 0 {
-                                GmvDevice::update_gmv_device_status_by_device_id(device_id, 1).await?;
+                                GmvDevice::update_gmv_device_status_by_device_id(device_id, 1)
+                                    .await?;
                             }
                             Ok(State::ReCache)
                         } else {
@@ -124,17 +140,26 @@ impl State {
 struct Register;
 
 impl Register {
-    async fn process(device_id: &String, req: Request, tx: Sender<SipPackage>, bill: &Association) -> GlobalResult<()> {
-        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
-            .ok_or(SysErr(anyhow!("device id = [{}] 未知设备，拒绝接入",device_id)))
+    async fn process(
+        device_id: &String,
+        req: Request,
+        tx: Sender<SipPackage>,
+        bill: &Association,
+    ) -> GlobalResult<()> {
+        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
+            .await?
+            .ok_or(SysErr(anyhow!(
+                "device id = [{}] 未知设备，拒绝接入",
+                device_id
+            )))
             .hand_log(|msg| warn!("{msg}"))?;
-        if oauth.get_status() == &0u8 {
-            warn!("device id = [{}] 未启用设备，拒绝接入",device_id);
+        if oauth.status == 0u8 {
+            warn!("device id = [{}] 未启用设备，拒绝接入", device_id);
             return Ok(());
         }
-        match oauth.get_pwd_check() {
+        match oauth.pwd_check {
             //不进行鉴权校验
-            &0u8 => {
+            0u8 => {
                 let expires = parser::header::get_expires(&req)?;
                 if expires > 0 {
                     Self::login_ok(device_id, &req, tx, bill, oauth).await
@@ -145,13 +170,11 @@ impl Register {
             }
             _ => {
                 match req.authorization_header() {
-                    None => {
-                        Self::unauthorized(&req, tx, bill).await
-                    }
+                    None => Self::unauthorized(&req, tx, bill).await,
                     Some(auth) => {
                         match auth.typed() {
                             Ok(au) => {
-                                let pwd_opt = oauth.get_pwd().clone().unwrap_or_default();
+                                let pwd_opt = oauth.pwd.clone().unwrap_or_default();
                                 let dsg = DigestGenerator::from(&au, &pwd_opt, &Method::Register);
                                 if dsg.verify(&au.response) {
                                     let expires = parser::header::get_expires(&req)?;
@@ -167,7 +190,7 @@ impl Register {
                                 }
                             }
                             Err(err) => {
-                                warn!("device_id = {},register request err ={}",device_id,err);
+                                warn!("device_id = {},register request err ={}", device_id, err);
                                 Self::unauthorized(&req, tx, bill).await
                             }
                         }
@@ -176,35 +199,60 @@ impl Register {
             }
         }
     }
-    async fn login_ok(device_id: &String, req: &Request, tx: Sender<SipPackage>, bill: &Association, oauth: GmvOauth) -> GlobalResult<()> {
-        RWSession::insert(device_id, tx.clone(), *oauth.get_heartbeat_sec(), bill);
+    async fn login_ok(
+        device_id: &String,
+        req: &Request,
+        tx: Sender<SipPackage>,
+        bill: &Association,
+        oauth: GmvOauth,
+    ) -> GlobalResult<()> {
+        RWContext::insert(device_id, tx.clone(), oauth.heartbeat_sec, bill);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
-        gmv_device.update_gmv_device_by_register().await?;
-        let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
-        SipPackage::build(ok_response,bill.clone())
-        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
-        let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
+        gmv_device.insert_single_gmv_device_by_register().await?;
+        let ok_response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
+        let sip_package = SipPackage::build_response(ok_response, bill.clone());
+        let _ = tx
+            .clone()
+            .send(sip_package)
+            .await
+            .hand_log(|msg| warn!("{msg}"));
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-        // query subscribe device msg
         cmd::CmdQuery::query_device_info(device_id).await?;
-        // cmd::CmdQuery::subscribe_device_catalog(device_id).await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        cmd::CmdQuery::query_device_catalog(device_id).await
+        cmd::CmdQuery::query_device_catalog(device_id).await?;
+        cmd::CmdQuery::subscribe_device_catalog(device_id, gmv_device.register_expires).await
     }
 
-    async fn logout_ok(device_id: &String, req: &Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
+    async fn logout_ok(
+        device_id: &String,
+        req: &Request,
+        tx: Sender<SipPackage>,
+        bill: &Association,
+    ) -> GlobalResult<()> {
         let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_remote_addr())?;
-        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(ok_response)));
-        let _ = tx.clone().send(zip).await.hand_log(|msg| warn!("{msg}"));
+        let sip_package = SipPackage::build_response(ok_response, bill.clone());
+        let _ = tx
+            .clone()
+            .send(sip_package)
+            .await
+            .hand_log(|msg| warn!("{msg}"));
         GmvDevice::update_gmv_device_status_by_device_id(device_id, 0).await?;
-        RWSession::clean_rw_session_and_net(device_id).await;
+        RWContext::clean_rw_session_and_net(device_id).await;
         Ok(())
     }
 
-    async fn unauthorized(req: &Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
-        let unauthorized_register_response = ResponseBuilder::unauthorized_register_response(&req, bill.get_remote_addr())?;
-        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(unauthorized_register_response)));
-        let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
+    async fn unauthorized(
+        req: &Request,
+        tx: Sender<SipPackage>,
+        bill: &Association,
+    ) -> GlobalResult<()> {
+        let unauthorized_register_response =
+            ResponseBuilder::unauthorized_register_response(&req, bill.get_remote_addr())?;
+        let sip_package = SipPackage::build_response(unauthorized_register_response, bill.clone());
+        let _ = tx
+            .clone()
+            .send(sip_package)
+            .await
+            .hand_log(|msg| warn!("{msg}"));
         Ok(())
     }
 }
@@ -212,19 +260,32 @@ impl Register {
 struct Message;
 
 impl Message {
-    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
+    async fn process(
+        device_id: &String,
+        req: Request,
+        tx: Sender<SipPackage>,
+        bill: &Association,
+    ) -> GlobalResult<()> {
         use parser::xml::*;
         match parse_xlm_to_vec(&req.body) {
             Ok(vs) => {
-                let response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
+                let response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
                 for (k, v) in &vs {
                     if MESSAGE_TYPE.contains(&&k[..]) {
                         match &v[..] {
-                            MESSAGE_KEEP_ALIVE => { Self::keep_alive(device_id, vs, bill).await; }
+                            MESSAGE_KEEP_ALIVE => {
+                                Self::keep_alive(device_id, vs, bill).await;
+                            }
                             MESSAGE_CONFIG_DOWNLOAD => {}
-                            MESSAGE_NOTIFY_CATALOG => { Self::device_catalog(device_id, vs).await; }
-                            MESSAGE_DEVICE_INFO => { Self::device_info(vs).await; }
-                            MESSAGE_ALARM => { let _ = Self::message_notify_alarm(device_id, vs).await; }
+                            MESSAGE_NOTIFY_CATALOG => {
+                                Self::device_catalog(device_id, vs).await;
+                            }
+                            MESSAGE_DEVICE_INFO => {
+                                Self::device_info(vs).await;
+                            }
+                            MESSAGE_ALARM => {
+                                let _ = Self::message_notify_alarm(device_id, vs).await;
+                            }
                             MESSAGE_RECORD_INFO => {}
                             MESSAGE_MEDIA_STATUS => {}
                             MESSAGE_BROADCAST => {}
@@ -232,21 +293,24 @@ impl Message {
                             MESSAGE_DEVICE_CONTROL => {}
                             MESSAGE_DEVICE_CONFIG => {}
                             MESSAGE_PRESET_QUERY => {}
-                            NOTIFY_UPLOAD_SNAP_SHOT_FINISHED => {}
                             _ => {
-                                warn!("device_id = {};message -- > {} 不支持。", device_id,v)
+                                warn!("device_id = {};message -- > {} 不支持。", device_id, v)
                             }
                         }
-                        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(response)));
-                        let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
                         break;
                     }
                 }
+                let sip_package = SipPackage::build_response(response, bill.clone());
+                let _ = tx
+                    .clone()
+                    .send(sip_package)
+                    .await
+                    .hand_log(|msg| warn!("{msg}"));
                 Ok(())
             }
             Err(err) => {
                 let val = encoding::decode(&req.body, GB18030).hand_log(|msg| error!("{msg}"))?;
-                Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]",val)))?
+                Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]", val)))?
             }
         }
     }
@@ -265,17 +329,25 @@ impl Message {
                     _ => {}
                 }
             }
-            debug!("keep_alive: device_id = {},status = {}",&device_id,&status);
+            debug!(
+                "keep_alive: device_id = {},status = {}",
+                &device_id, &status
+            );
         }
-        RWSession::heart(device_id, bill.clone());
+        RWContext::heart(device_id, bill.clone());
     }
 
     async fn device_info(vs: Vec<(String, String)>) {
-        let _ = GmvDeviceExt::update_gmv_device_ext_info(vs).await.hand_log(|msg| error!("{msg}"));
+        let _ = GmvDeviceExt::update_gmv_device_ext_info(vs)
+            .await
+            .hand_log(|msg| error!("{msg}"));
     }
 
     async fn device_catalog(device_id: &String, vs: Vec<(String, String)>) {
-        if let Ok(_arr) = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs).await.hand_log(|msg| error!("{msg}")) {
+        if let Ok(_arr) = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs)
+            .await
+            .hand_log(|msg| error!("{msg}"))
+        {
             //通过预置位探测是否有云台可用
             // for dc in arr {
             //     let _ = CmdQuery::query_preset(&dc.device_id, Some(&dc.channel_id)).await.hand_log(|msg| error!("{msg}"));
@@ -283,12 +355,18 @@ impl Message {
         }
     }
 
-    async fn message_notify_alarm(device_id: &String, vs: Vec<(String, String)>) -> GlobalResult<()> {
+    async fn message_notify_alarm(
+        device_id: &String,
+        vs: Vec<(String, String)>,
+    ) -> GlobalResult<()> {
         let mut info = AlarmInfo::kv_to_model(vs)?;
         info.deviceId = device_id.clone();
         let conf = AlarmConf::get_alarm_conf();
         let pretend = HttpClient::template(conf.push_url.as_ref().unwrap())?;
-        let _ = pretend.call_alarm_info(&info).await.hand_log(|msg| error!("{msg}"))?;
+        let _ = pretend
+            .call_alarm_info(&info)
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 }
@@ -296,11 +374,16 @@ impl Message {
 struct Notify;
 
 impl Notify {
-    async fn process(device_id: &String, req: Request, tx: Sender<Zip>, bill: &Association) -> GlobalResult<()> {
+    async fn process(
+        device_id: &String,
+        req: Request,
+        tx: Sender<SipPackage>,
+        bill: &Association,
+    ) -> GlobalResult<()> {
         use parser::xml::*;
         match parse_xlm_to_vec(&req.body) {
             Ok(vs) => {
-                let response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
+                let response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
                 for (k, v) in &vs {
                     if MESSAGE_TYPE.contains(&&**k) {
                         match &v[..] {
@@ -311,16 +394,20 @@ impl Notify {
                                 debug!("cmdType暂不支持;{k} : {v}");
                             }
                         }
-                        let zip = Zip::build_data(Package::new(bill.clone(), Bytes::from(response)));
-                        let _ = tx.clone().send(zip).await.hand_log(|msg| error!("{msg}"));
                         break;
                     }
                 }
+                let sip_package = SipPackage::build_response(response, bill.clone());
+                let _ = tx
+                    .clone()
+                    .send(sip_package)
+                    .await
+                    .hand_log(|msg| warn!("{msg}"));
                 Ok(())
             }
             Err(err) => {
                 let val = encoding::decode(&req.body, GB18030).hand_log(|msg| error!("{msg}"))?;
-                Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]",val)))?
+                Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]", val)))?
             }
         }
     }
@@ -328,12 +415,12 @@ impl Notify {
 
 #[cfg(test)]
 mod tests {
+    use base::chrono::Local;
+    use base::log::LevelFilter;
     use rsip::headers::Authorization;
     use rsip::headers::ToTypedHeader;
-    use rsip::{headers, Method};
     use rsip::services::DigestGenerator;
-    use base::log::LevelFilter;
-    use base::chrono::Local;
+    use rsip::{headers, Method};
 
     #[test]
     fn test_time_stamp() {

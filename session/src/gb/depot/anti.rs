@@ -193,7 +193,7 @@ pub trait AntiReplay: Send + Sync + HeaderItemExt {
             "{}:{}:{}:{}",
             self.call_id()?.value(),
             self.cs_eq()?.value(),
-            self.from_tag()?.value(),
+            self.header_from_tag()?.value(),
             from_network
         ))
     }

@@ -15,7 +15,7 @@ use base::utils::rt::GlobalRuntime;
 use encoding_rs::GB18030;
 use parking_lot::RwLock;
 use rsip::headers::UntypedHeader;
-use rsip::{Method, Request, Response, SipMessage};
+use rsip::{Headers, Method, Request, Response, SipMessage};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Add;
@@ -157,6 +157,13 @@ impl TransactionContext {
         trans_tx: oneshot::Sender<GlobalResult<Response>>,
     ) -> GlobalResult<()> {
         if Self::no_response(&request) {
+            let response = rsip::Response {
+                status_code: 200.into(),
+                headers: Headers::default(),
+                version: rsip::Version::V2,
+                body: Default::default(),
+            };
+            let _ = trans_tx.send(Ok(response));
             return Ok(());
         }
         let key = (&request).generate_trans_key()?;
@@ -221,5 +228,15 @@ impl TransactionContext {
 
     fn no_response(request: &Request) -> bool {
         matches!(request.method(), Method::Ack)
+    }
+
+    fn dis_retry(request: &Request) -> bool {
+        if let body = request.body() {
+            if let Ok(body_str) = std::str::from_utf8(body) {
+                return matches!(request.method(), Method::Message)
+                    && body_str.contains("<CmdType>Keepalive</CmdType>");
+            }
+        }
+        false
     }
 }
