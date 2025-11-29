@@ -105,7 +105,7 @@ async fn hand_pkt(
     sip_pkg_tx: Sender<SipPackage>,
     ctx: Arc<DepotContext>,
 ) {
-    match SipMessage::try_from(data.clone()) {
+    match SipMessage::try_from(data) {
         Ok(msg) => {
             match msg {
                 SipMessage::Request(req) => {
@@ -134,36 +134,12 @@ async fn hand_pkt(
                     );
                     //事务
                     let _ = ctx.trans_ctx.handle_response(res);
-                    // if let Ok(Some(res)) = ctx.trans_ctx.handle_response(res) {
-                    //     match (
-                    //         res.call_id_header(),
-                    //         res.cseq_header(),
-                    //         parser::header::get_device_id_by_response(&res),
-                    //     ) {
-                    //         (Ok(call_id), Ok(cs_eq), Ok(to_device_id)) => {
-                    //             let _ = EventSession::handle_response(
-                    //                 to_device_id,
-                    //                 call_id.clone().into(),
-                    //                 cs_eq.clone().into(),
-                    //                 res,
-                    //             )
-                    //                 .await;
-                    //         }
-                    //         (call_res, cseq_res, device_id_res) => {
-                    //             error!(
-                    //             "call={:?}, cseq={:?}, device_id={:?}",
-                    //             call_res, cseq_res, device_id_res
-                    //         );
-                    //         }
-                    //     }
-                    // }
                 }
             }
         }
         Err(err) => {
             warn!(
-                "接收: {association:?},\\n{:?} \\ninvalid data {err:?}",
-                &GB18030.decode(&data).0
+                "接收: {association:?},\\n invalid data {err:?}",
             );
         }
     }
@@ -193,10 +169,10 @@ pub async fn write(
                 }
                 send_sip_pkt_out(&output, data, sip_pkg.association, None);
             }
-            SipMsg::Request(r, ttx) => {
+            SipMsg::Request(r, cb) => {
                 if let Ok(()) =
                     ctx.trans_ctx
-                        .process_request(r.clone(), sip_pkg.association.clone(), ttx)
+                        .process_request(r.clone(), sip_pkg.association.clone(), cb)
                 {
                     send_sip_pkt_out(&output, Bytes::from(r), sip_pkg.association, None);
                 }
@@ -216,8 +192,8 @@ pub fn send_sip_pkt_out(
         None => {
             debug!("发送:{:?} \\n负载: {}\\n", association, log);
         }
-        Some(log) => {
-            debug!("[{}] 发送:{:?} \\n负载: {}\\n", log, association, log);
+        Some(p_log) => {
+            debug!("[{}] 发送:{:?} \\n负载: {}\\n", p_log, association, log);
         }
     }
     let zip = Zip::build_data(Package::new(association, data));

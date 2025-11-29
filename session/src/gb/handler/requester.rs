@@ -235,7 +235,7 @@ impl Register {
             .await
             .hand_log(|msg| warn!("{msg}"));
         GmvDevice::update_gmv_device_status_by_device_id(device_id, 0).await?;
-        RWContext::clean_rw_session_and_net(device_id).await;
+        RWContext::clean_rw_session_and_net(device_id);
         Ok(())
     }
 

@@ -3,9 +3,9 @@ use crate::gb::RWContext;
 use crate::http::client::{HttpClient, HttpStream};
 use crate::service::{KEY_STREAM_IN, RELOAD_EXPIRES};
 use crate::state;
-use crate::state::cache::AccessMode;
+use crate::state::session::AccessMode;
 use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo, TransMode};
-use crate::state::{cache, DownloadConf, StreamConf};
+use crate::state::{session, DownloadConf, StreamConf};
 use crate::storage::entity::{GmvRecord};
 use crate::utils::id_builder;
 use base::bytes::Bytes;
@@ -43,16 +43,16 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     let am = AccessMode::Live;
     //查看直播流是否已存在,有则直接返回
     if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &am).await? {
-        state::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+        state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
         return Ok(StreamInfo::build(stream_id, node_name));
     }
     let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, 0, 0, play_live_model.trans_mode, play_live_model.custom_media_config).await?;
-    state::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+    state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
     Ok(StreamInfo::build(stream_id, node_name))
 }
 
 pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> GlobalResult<StreamRecordInfo> {
-    let (stream_server,ssrc) = cache::Cache::stream_map_query_node_ssrc(&info.stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
+    let (stream_server,ssrc) = session::Cache::stream_map_query_node_ssrc(&info.stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
     let conf = StreamConf::get_stream_conf();
     match conf.node_map.get(&stream_server) {
         None => { Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}"))) }
@@ -78,9 +78,9 @@ pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> Globa
 }
 
 pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bool> {
-    let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
+    let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
-        let (stream_server,ssrc) = cache::Cache::stream_map_query_node_ssrc(&stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
+        let (stream_server,ssrc) = session::Cache::stream_map_query_node_ssrc(&stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
         let conf = StreamConf::get_stream_conf();
         match conf.node_map.get(&stream_server) {
             None => {  warn!("close from stream be failed: {};stream server not found",&stream_id); }
@@ -93,21 +93,16 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
                 }
             }
         }
-        // if let Ok(Some(mut record)) = GmvRecord::query_gmv_record_by_biz_id(&stream_id).await {
-        //     record.state = 2;
-        //     record.lt = Local::now().naive_local();
-        //     record.update_gmv_record_by_biz_id().await?;
-        // }
         if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
             let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
         }
-        if let Some(am) = state::cache::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
-            state::cache::Cache::device_map_remove(&device_id, Some((&channel_id, Some((am, &ssrc_str)))));
-            state::cache::Cache::stream_map_remove(&stream_id, None);
+        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
+            state::session::Cache::device_map_remove(&device_id, Some((&channel_id, Some((am, &ssrc_str)))));
+            state::session::Cache::stream_map_remove(&stream_id, None);
         }
         let ssrc = u32::from_str_radix(&ssrc_str, 10).hand_log(|msg| error!("{msg}"))?;
         let ssrc_num = (ssrc % 10000) as u16;
-        state::cache::Cache::ssrc_sn_set(ssrc_num);
+        state::session::Cache::ssrc_sn_set(ssrc_num);
         return Ok(true);
     }
     Ok(false)
@@ -145,7 +140,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         }
     });
     let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, st - 2, et + 1, play_back_model.trans_mode, Some(down_conf)).await?;
-    state::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+    state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
     let record = GmvRecord {
         biz_id: stream_id.clone(),
         device_id: device_id.to_string(),
@@ -176,19 +171,19 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
     let am = AccessMode::Back;
     //查看流是否已存在,有则直接返回
     if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &am).await? {
-        state::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+        state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
         return Ok(StreamInfo::build(stream_id, node_name));
     }
     let st = play_back_model.st;
     let et = play_back_model.et;
     let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, st, et, play_back_model.trans_mode, play_back_model.custom_media_config).await?;
-    state::cache::Cache::stream_map_insert_token(stream_id.clone(), token);
+    state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
     Ok(StreamInfo::build(stream_id, node_name))
 }
 
 pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
     let (device_id, channel_id, _ssrc) = id_builder::de_stream_id(&*seek_mode.streamId)?;
-    let (call_id, seq, from_tag, to_tag) = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&seek_mode.streamId)
+    let (call_id, seq, from_tag, to_tag) = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&seek_mode.streamId)
         .ok_or_else(|| GlobalError::new_biz_error(1100, "流不存在", |msg| error!("{msg}")))?;
     CmdStream::play_seek(&device_id, &channel_id, seek_mode.seekSecond, &from_tag, &to_tag, seq, call_id).await?;
     Ok(true)
@@ -196,7 +191,7 @@ pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool
 
 pub async fn speed(speed_mode: PlaySpeedModel, _token: String) -> GlobalResult<bool> {
     let (device_id, channel_id, _ssrc) = id_builder::de_stream_id(&*speed_mode.streamId)?;
-    let (call_id, seq, from_tag, to_tag) = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&speed_mode.streamId)
+    let (call_id, seq, from_tag, to_tag) = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&speed_mode.streamId)
         .ok_or_else(|| GlobalError::new_biz_error(1100, "流不存在", |msg| error!("{msg}")))?;
     CmdStream::play_speed(&device_id, &channel_id, speed_mode.speedRate, &from_tag, &to_tag, seq, call_id).await?;
     Ok(true)
@@ -217,8 +212,8 @@ pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalRe
 //缓存流信息
 async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &String, am: AccessMode, st: u32, et: u32,
                              _trans_mode: Option<TransMode>, custom_media_config: Option<CustomMediaConfig>) -> GlobalResult<(String, String)> {
-    let u16ssrc = state::cache::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
-    let mut node_sets = state::cache::Cache::stream_map_order_node();
+    let u16ssrc = state::session::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
+    let mut node_sets = state::session::Cache::stream_map_order_node();
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, u16ssrc, true).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let conf = StreamConf::get_stream_conf();
@@ -272,8 +267,8 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                 p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
                 let (call_id, seq) = CmdStream::invite_ack(device_id, &res,association).await?;
                 return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                    state::cache::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc, node_name.clone(), call_id, seq, am, from_tag, to_tag);
-                    state::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);
+                    state::session::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc, node_name.clone(), call_id, seq, am, from_tag, to_tag);
+                    state::session::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);
                     Ok((stream_id, node_name))
                 } else {
                     CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await?;
@@ -294,14 +289,14 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
 // session存在: 返回Some,
 
 async fn enable_invite_stream(device_id: &String, channel_id: &String, am: &AccessMode) -> GlobalResult<Option<(String, String)>> {
-    match state::cache::Cache::device_map_get_invite_info(device_id, channel_id, am) {
+    match state::session::Cache::device_map_get_invite_info(device_id, channel_id, am) {
         None => {
             Ok(None)
         }
         //session -> true
         Some((stream_id, ssrc)) => {
             let mut res = None;
-            if let Some(node_name) = state::cache::Cache::stream_map_query_node_name(&stream_id) {
+            if let Some(node_name) = state::session::Cache::stream_map_query_node_name(&stream_id) {
                 //确认stream是否存在
                 if let Some(stream_node) = StreamConf::get_stream_conf().node_map.get(&node_name) {
                     let pretend = HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port)?;
@@ -317,12 +312,12 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, am: &Acce
             //stream中无stream_id映射,同步剔除session中映射
             //向设备发送关闭流
             if res.is_none() {
-                state::cache::Cache::device_map_remove(device_id, None);
-                state::cache::Cache::stream_map_remove(&stream_id, None);
+                state::session::Cache::device_map_remove(device_id, None);
+                state::session::Cache::stream_map_remove(&stream_id, None);
                 let ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
                 let ssrc_num = (ssrc % 10000) as u16;
-                state::cache::Cache::ssrc_sn_set(ssrc_num);
-                let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
+                state::session::Cache::ssrc_sn_set(ssrc_num);
+                let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
                 if let Ok((device_id, channel_id, _ssrc_str)) = id_builder::de_stream_id(&stream_id) {
                     if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
                         let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
@@ -339,12 +334,12 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
     let (tx, mut rx) = mpsc::channel(8);
     let when = Instant::now() + Duration::from_secs(secs);
     let key = format!("{}{stream_id}", KEY_STREAM_IN);
-    state::cache::Cache::state_insert(key.clone(), Bytes::new(), Some(when), Some(tx));
+    state::session::Cache::state_insert(key.clone(), Bytes::new(), Some(when), Some(tx));
     let mut res = None;
     if let Some(Some(bytes)) = rx.recv().await {
         res = serde_json::from_slice::<BaseStreamInfo>(&*bytes).ok();
     }
-    state::cache::Cache::state_remove(&key);
+    state::session::Cache::state_remove(&key);
     res
 }
 

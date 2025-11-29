@@ -38,12 +38,15 @@
 use crate::gb::depot::anti::AntiReplayContext;
 use crate::gb::depot::trans::TransactionContext;
 use base::exception::GlobalResult;
+use base::log::{debug, error};
 use base::net::state::{Association, Zip};
 use base::tokio::runtime::Handle;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio::sync::oneshot;
 use base::tokio_util::sync::CancellationToken;
-use rsip::{Request, Response, SipMessage};
+use rsip::{Request, Response};
+use std::fmt::Display;
+use std::pin::Pin;
 
 pub mod anti;
 pub mod extract;
@@ -81,10 +84,36 @@ impl DepotContext {
 }
 pub type TransRx = oneshot::Receiver<GlobalResult<Response>>;
 pub type TransTx = oneshot::Sender<GlobalResult<Response>>;
+pub type Callback = Box<dyn FnOnce(GlobalResult<Response>) + Sync + Send + 'static>;
+pub fn default_log_callback(action_name: impl Display + Send + Sync + 'static) -> Callback {
+    let action = format!("{}", action_name);
+
+    Box::new(move |result: GlobalResult<Response>| match result {
+        Ok(resp) => {
+            let code = resp.status_code.code();
+            if (200..300).contains(&code) {
+                debug!("{}: 请求成功 (status={})", action, code);
+            } else {
+                error!("{}: 请求失败 (status={})", action, code);
+            }
+        }
+        Err(e) => {
+            error!("{}: 请求异常 - {}", action, e);
+        }
+    })
+}
+
+pub fn default_response_callback(tx: TransTx) -> Callback {
+    Box::new(move |result: GlobalResult<Response>| {
+        if let Err(_) = tx.send(result) {
+            debug!("request point drop");
+        }
+    })
+}
 
 pub enum SipMsg {
     Response(Response),
-    Request(Request, TransTx),
+    Request(Request, Callback),
 }
 pub struct SipPackage {
     pub sip_msg: SipMsg,
@@ -97,12 +126,11 @@ impl SipPackage {
             association,
         }
     }
-    pub fn build_request(request: Request, association: Association) -> (TransRx, Self) {
-        let (tx, rx) = oneshot::channel();
+    pub fn build_request(request: Request, association: Association, callback: Callback) -> Self {
         let sip_pkg = Self {
-            sip_msg: SipMsg::Request(request, tx),
+            sip_msg: SipMsg::Request(request, callback),
             association,
         };
-        (rx, sip_pkg)
+        sip_pkg
     }
 }

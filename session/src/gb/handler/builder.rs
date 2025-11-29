@@ -178,7 +178,7 @@ impl ResponseBuilder {
                 .into(),
         );
         headers.push(Header::ContentLength(Default::default()));
-        headers.push(rsip::headers::UserAgent::new(cli_basic().version).into());
+        headers.push(rsip::headers::UserAgent::new(format!("Gmv {}",cli_basic().version)).into());
         let _ = req
             .contact_header()
             .map(|contact| headers.push(contact.clone().into()));
@@ -415,7 +415,7 @@ impl RequestBuilder {
             );
         }
         headers.push(rsip::headers::MaxForwards::new("70").into());
-        headers.push(rsip::headers::UserAgent::new(cli_basic().version).into());
+        headers.push(rsip::headers::UserAgent::new(format!("Gmv {}",cli_basic().version)).into());
         Ok((headers, uri,bill))
     }
 
@@ -676,7 +676,7 @@ impl RequestBuilder {
         let uri_str = uri.to_string();
         headers.push(rsip::headers::Contact::new(format!("<{uri_str}>")).into());
         headers.push(rsip::headers::MaxForwards::new("70").into());
-        headers.push(rsip::headers::UserAgent::new(cli_basic().version).into());
+        headers.push(rsip::headers::UserAgent::new(format!("Gmv {}",cli_basic().version)).into());
         headers.push(rsip::headers::ContentLength::default().into());
         Ok(rsip::Request {
             method: Method::Ack,
