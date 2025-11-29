@@ -1,4 +1,5 @@
-use crate::gb::core::rw::{SipRequestOutput};
+use crate::gb::RWContext;
+use crate::gb::core::rw::SipRequestOutput;
 use crate::gb::depot::SipPackage;
 use crate::gb::depot::extract::HeaderItemExt;
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
@@ -23,24 +24,25 @@ pub struct CmdQuery;
 
 impl CmdQuery {
     pub async fn query_device_info(device_id: &String) -> GlobalResult<()> {
-        let request = RequestBuilder::build_query_device_info(device_id).await?;
-        SipRequestOutput::new(device_id, request)
+        let (request, association) = RequestBuilder::build_query_device_info(device_id).await?;
+        SipRequestOutput::new(device_id, association, request)
             .send_log("query_device_info")
             .await;
         Ok(())
     }
 
     pub async fn query_device_catalog(device_id: &String) -> GlobalResult<()> {
-        let request = RequestBuilder::query_device_catalog(device_id).await?;
-        SipRequestOutput::new(device_id, request)
+        let (request, association) = RequestBuilder::query_device_catalog(device_id).await?;
+        SipRequestOutput::new(device_id, association, request)
             .send_log("query_device_catalog")
             .await;
         Ok(())
     }
 
     pub async fn subscribe_device_catalog(device_id: &String, expire: u32) -> GlobalResult<()> {
-        let request = RequestBuilder::subscribe_device_catalog(device_id, expire).await?;
-        SipRequestOutput::new(device_id, request)
+        let (request, association) =
+            RequestBuilder::subscribe_device_catalog(device_id, expire).await?;
+        SipRequestOutput::new(device_id, association, request)
             .send_log("subscribe_device_catalog")
             .await;
         Ok(())
@@ -51,8 +53,8 @@ pub struct CmdControl;
 
 impl CmdControl {
     pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<()> {
-        let request = RequestBuilder::control_ptz(ptz_control_model).await?;
-        SipRequestOutput::new(&ptz_control_model.deviceId, request)
+        let (request, association) = RequestBuilder::control_ptz(ptz_control_model).await?;
+        SipRequestOutput::new(&ptz_control_model.deviceId, association, request)
             .send_log("control_ptz")
             .await;
         Ok(())
@@ -66,11 +68,11 @@ impl CmdControl {
         uri: &String,
         session_id: &String,
     ) -> GlobalResult<()> {
-        let request = RequestBuilder::control_snapshot_image(
+        let (request, association) = RequestBuilder::control_snapshot_image(
             device_id, channel_id, num, interval, uri, session_id,
         )
         .await?;
-        SipRequestOutput::new(device_id, request)
+        SipRequestOutput::new(device_id, association, request)
             .send_log("snapshot_image")
             .await;
         Ok(())
@@ -92,8 +94,8 @@ impl CmdStream {
         st: u32,
         et: u32,
         speed: u8,
-    ) -> GlobalResult<(Response, MediaExt, String, String)> {
-        let request = RequestBuilder::download(
+    ) -> GlobalResult<(Response, MediaExt, String, String, Association)> {
+        let (request, association) = RequestBuilder::download(
             device_id,
             channel_id,
             dst_ip,
@@ -106,7 +108,7 @@ impl CmdStream {
         )
         .await
         .hand_log(|msg| warn!("{msg}"))?;
-        Self::invite_stream(device_id, request).await
+        Self::invite_stream(device_id, association, request).await
     }
 
     pub async fn play_back_invite(
@@ -118,8 +120,8 @@ impl CmdStream {
         ssrc: &String,
         st: u32,
         et: u32,
-    ) -> GlobalResult<(Response, MediaExt, String, String)> {
-        let request = RequestBuilder::playback(
+    ) -> GlobalResult<(Response, MediaExt, String, String, Association)> {
+        let (request, association) = RequestBuilder::playback(
             device_id,
             channel_id,
             dst_ip,
@@ -131,7 +133,7 @@ impl CmdStream {
         )
         .await
         .hand_log(|msg| warn!("{msg}"))?;
-        Self::invite_stream(device_id, request).await
+        Self::invite_stream(device_id, association, request).await
     }
     pub async fn play_live_invite(
         device_id: &String,
@@ -140,8 +142,8 @@ impl CmdStream {
         dst_port: u16,
         stream_mode: TransMode,
         ssrc: &String,
-    ) -> GlobalResult<(Response, MediaExt, String, String)> {
-        let request = RequestBuilder::play_live_request(
+    ) -> GlobalResult<(Response, MediaExt, String, String, Association)> {
+        let (request, association) = RequestBuilder::play_live_request(
             device_id,
             channel_id,
             dst_ip,
@@ -151,17 +153,18 @@ impl CmdStream {
         )
         .await
         .hand_log(|msg| warn!("{msg}"))?;
-        Self::invite_stream(device_id, request).await
+        Self::invite_stream(device_id, association, request).await
     }
 
     pub async fn invite_ack(
         device_id: &String,
         response: &Response,
+        association: Association,
     ) -> GlobalResult<(String, u32)> {
         let ack_request = RequestBuilder::build_ack_request_by_response(response)?;
         let call_id = ack_request.call_id()?.to_string();
         let seq = ack_request.seq()?;
-        SipRequestOutput::new(device_id, ack_request)
+        SipRequestOutput::new(device_id, association, ack_request)
             .send_log("invite_ack")
             .await;
         Ok((call_id, seq))
@@ -175,10 +178,10 @@ impl CmdStream {
         seq: u32,
         call_id: String,
     ) -> GlobalResult<()> {
-        let request =
+        let (request, association) =
             RequestBuilder::speed(device_id, channel_id, speed, from_tag, to_tag, seq, call_id)
                 .await?;
-        SipRequestOutput::new(device_id, request)
+        SipRequestOutput::new(device_id, association, request)
             .send_log("play_speed")
             .await;
         Ok(())
@@ -192,10 +195,10 @@ impl CmdStream {
         seq: u32,
         call_id: String,
     ) -> GlobalResult<()> {
-        let request =
+        let (request, association) =
             RequestBuilder::seek(device_id, channel_id, seek, from_tag, to_tag, seq, call_id)
                 .await?;
-        SipRequestOutput::new(device_id, request)
+        SipRequestOutput::new(device_id, association, request)
             .send_log("play_seek")
             .await;
         Ok(())
@@ -209,21 +212,24 @@ impl CmdStream {
         from_tag: &str,
         to_tag: &str,
     ) -> GlobalResult<()> {
-        let request = RequestBuilder::build_bye_request(
+        let (request, association) = RequestBuilder::build_bye_request(
             seq, call_id, device_id, channel_id, from_tag, to_tag,
         )
         .await?;
-        SipRequestOutput::new(device_id, request)
+        SipRequestOutput::new(device_id, association, request)
             .send_log("play_bye")
             .await;
         Ok(())
     }
-    
+
     async fn invite_stream(
         device_id: &String,
+        association: Association,
         request: Request,
-    ) -> GlobalResult<(Response, MediaExt, String, String)> {
-        let res = SipRequestOutput::new(device_id, request).send().await?;
+    ) -> GlobalResult<(Response, MediaExt, String, String, Association)> {
+        let res = SipRequestOutput::new(device_id, association.clone(), request)
+            .send()
+            .await?;
         let code = res.status_code.code();
         let code_msg = res.status_code.to_string();
         if code >= 200 || code <= 299 {
@@ -233,7 +239,7 @@ impl CmdStream {
                     .header_to_tag()?
                     .ok_or(SysErr(anyhow!("to tag is none")))?
                     .to_string();
-                return Ok((res, ext, from_tag, to_tag));
+                return Ok((res, ext, from_tag, to_tag, association));
             }
         }
         Err(GlobalError::new_biz_error(3000, &code_msg, |msg| {

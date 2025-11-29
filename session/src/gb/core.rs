@@ -35,13 +35,14 @@ pub mod rw {
         //更新设备状态
         db_task: Sender<String>,
         io_tx: Sender<Zip>,
+        sip_tx: Sender<SipPackage>,
     }
 
     impl RWContext {
         pub fn get_ctx() -> &'static RWContext{
             RW_CTX.get().expect("RWContext not initialized")
         }
-        pub fn init(io_tx: Sender<Zip>) {
+        pub fn init(io_tx: Sender<Zip>,sip_tx: Sender<SipPackage>) {
             let (tx, rx) = mpsc::channel(16);
             let session = RWContext {
                 shared: Arc::new(Shared {
@@ -54,6 +55,7 @@ pub mod rw {
                 }),
                 db_task: tx.clone(),
                 io_tx,
+                sip_tx,
             };
             let shared = session.shared.clone();
             let rt = GlobalRuntime::get_main_runtime();
@@ -101,7 +103,6 @@ pub mod rw {
 
         pub fn insert(
             device_id: &String,
-            tx: Sender<SipPackage>,
             heartbeat: u8,
             bill: &Association,
         ) {
@@ -113,9 +114,9 @@ pub mod rw {
             let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
             state.expirations.insert((when, device_id.clone()));
             //当插入时，已有该设备映射时，需删除老数据，插入新数据
-            if let Some((_tx, when, _expires, old_bill)) = state
+            if let Some((when, _expires, old_bill)) = state
                 .sessions
-                .insert(device_id.clone(), (tx, when, expires, bill.clone()))
+                .insert(device_id.clone(), (when, expires, bill.clone()))
             {
                 state.expirations.remove(&(when, device_id.clone()));
                 state.bill_map.remove(&old_bill);
@@ -137,7 +138,7 @@ pub mod rw {
                 state
                     .sessions
                     .remove(&device_id)
-                    .map(|(_tx, when, _expires, _bill)| {
+                    .map(|(when, _expires, _bill)| {
                         state.expirations.remove(&(when, device_id));
                     });
             });
@@ -156,7 +157,7 @@ pub mod rw {
                 let mut guard = Self::get_ctx().shared.state.lock();
 
                 let state = &mut *guard;
-                if let Some((_tx, when, _expires, bill)) = state.sessions.remove(device_id) {
+                if let Some(( when, _expires, bill)) = state.sessions.remove(device_id) {
                     state.expirations.remove(&(when, device_id.clone()));
                     state.bill_map.remove(&bill);
                     //通知网络出口关闭TCP连接
@@ -184,7 +185,7 @@ pub mod rw {
             state
                 .sessions
                 .get_mut(device_id)
-                .map(|(_tx, when, expires, bill)| {
+                .map(|(when, expires, bill)| {
                     //UDP的无连接状态，需根据心跳实时刷新其网络三元组
                     if &Protocol::UDP == bill.get_protocol() {
                         state.bill_map.remove(bill);
@@ -198,35 +199,24 @@ pub mod rw {
                 });
         }
 
-        pub fn get_bill_by_device_id(device_id: &String) -> Option<Association> {
-            let guard = Self::get_ctx().shared.state.lock();
-
-            let option_bill = guard
-                .sessions
-                .get(device_id)
-                .map(|(_tx, _when, _expires, bill)| bill.clone());
-
-            option_bill
-        }
-
         pub fn get_expires_by_device_id(device_id: &String) -> Option<Duration> {
             let guard = Self::get_ctx().shared.state.lock();
             let option_expires = guard
                 .sessions
                 .get(device_id)
-                .map(|(_tx, _when, expires, _bill)| *expires);
+                .map(|(_when, expires, _bill)| *expires);
 
             option_expires
         }
 
-        pub fn get_output_sender_by_device_id(
+        pub fn get_association_by_device_id(
             device_id: &String,
-        ) -> Option<(Sender<SipPackage>, Association)> {
+        ) -> Option<(Association)> {
             let guard = Self::get_ctx().shared.state.lock();
             let opt = guard
                 .sessions
                 .get(device_id)
-                .map(|(sender, _, _, bill)| (sender.clone(), bill.clone()));
+                .map(|(_, _, bill)| (bill.clone()));
 
             opt
         }
@@ -240,11 +230,12 @@ pub mod rw {
 
     pub struct SipRequestOutput<'a> {
         pub device_id: &'a String,
+        pub association: Association,
         pub request: Request,
     }
     impl<'a> SipRequestOutput<'a> {
-        pub fn new(device_id: &'a String, request: Request) -> Self {
-            Self { device_id, request }
+        pub fn new(device_id: &'a String, association: Association,request: Request) -> Self {
+            Self { device_id,association, request }
         }
         pub async fn send_log(self, log: &str) {
             let id = self.device_id;
@@ -264,11 +255,8 @@ pub mod rw {
         }
 
         pub async fn send(self) -> GlobalResult<Response> {
-            let (request_sender, association) =
-                RWContext::get_output_sender_by_device_id(self.device_id)
-                    .ok_or(SysErr(anyhow!("设备 {},已下线", self.device_id)))?;
-            let (rx, sip_pkg) = SipPackage::build_request(self.request, association);
-            request_sender
+            let (rx, sip_pkg) = SipPackage::build_request(self.request, self.association);
+            RWContext::get_ctx().sip_tx
                 .send(sip_pkg)
                 .await
                 .hand_log(|msg| error!("{msg}"))?;
@@ -299,7 +287,7 @@ pub mod rw {
                     .try_send(device_id.clone())
                     .hand_log(|msg| warn!("{msg}"));
                 //移除会话map
-                if let Some((_tx, when, _dur, bill)) = state.sessions.remove(device_id) {
+                if let Some((when, _dur, bill)) = state.sessions.remove(device_id) {
                     state.bill_map.remove(&bill);
                     state.expirations.remove(&(when, device_id.to_string()));
                     //通知网络出口关闭TCP连接
@@ -317,7 +305,7 @@ pub mod rw {
 
     struct State {
         //映射设备ID，会话发送端，过期瞬时，心跳周期，网络三元组，device_id,msg,dst_addr,time,duration,bill
-        sessions: HashMap<String, (Sender<SipPackage>, Instant, Duration, Association)>,
+        sessions: HashMap<String, (Instant, Duration, Association)>,
         //标识设备状态过期时刻，instant,device_id
         expirations: BTreeSet<(Instant, String)>,
         //映射网络三元组与设备ID，bill,device_id

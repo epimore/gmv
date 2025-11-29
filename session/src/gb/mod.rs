@@ -49,13 +49,13 @@ impl SessionInfo {
     ) -> GlobalResult<()> {
         let handle = Handle::current();
         let (output, input) = net::sdx::run_by_tokio(tu).await?;
-        RWContext::init(output.clone());
+        let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
+        RWContext::init(output.clone(), sip_pkg_tx.clone());
         let ctx = Arc::new(depot::DepotContext::init(
             handle.clone(),
             cancel_token.clone(),
             output.clone(),
         ));
-        let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
         base::tokio::spawn(io::read(
             input,
             output.clone(),

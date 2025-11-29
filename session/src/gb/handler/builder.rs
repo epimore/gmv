@@ -26,6 +26,7 @@ use base::chrono::{Local, TimeDelta};
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::warn;
+use base::net::state::Association;
 use base::rand;
 use base::rand::distributions::{Alphanumeric, DistString};
 use base::rand::prelude::StdRng;
@@ -189,18 +190,18 @@ pub struct RequestBuilder;
 
 #[allow(unused)]
 impl RequestBuilder {
-    pub async fn build_query_device_info(device_id: &String) -> GlobalResult<Request> {
+    pub async fn build_query_device_info(device_id: &String) -> GlobalResult<(Request,Association)> {
         let xml = XmlBuilder::query_device_info(device_id);
         RequestBuilder::build_msg_req(None, device_id, xml).await
     }
-    pub async fn query_device_catalog(device_id: &String) -> GlobalResult<Request> {
+    pub async fn query_device_catalog(device_id: &String) -> GlobalResult<(Request,Association)> {
         let xml = XmlBuilder::query_device_catalog(device_id);
         RequestBuilder::build_msg_req(None, device_id, xml).await
     }
     pub async fn subscribe_device_catalog(
         device_id: &String,
         expire: u32,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let xml = XmlBuilder::subscribe_device_catalog(device_id, expire);
         RequestBuilder::build_sub_req(device_id, xml).await
     }
@@ -212,13 +213,13 @@ impl RequestBuilder {
         interval: u8,
         uri: &String,
         session_id: &String,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let xml = XmlBuilder::control_snapshot_image(channel_id, num, interval, uri, session_id);
         let message_request = RequestBuilder::build_msg_req(Some(channel_id), device_id, xml).await;
         message_request
     }
 
-    pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<Request> {
+    pub async fn control_ptz(ptz_control_model: &PtzControlModel) -> GlobalResult<(Request,Association)> {
         let xml = XmlBuilder::control_ptz(ptz_control_model);
         let message_request = RequestBuilder::build_msg_req(
             Some(&ptz_control_model.channelId),
@@ -233,8 +234,8 @@ impl RequestBuilder {
         channel_id_opt: Option<&String>,
         device_id: &String,
         body: String,
-    ) -> GlobalResult<Request> {
-        let (mut headers, uri) =
+    ) -> GlobalResult<(Request,Association)> {
+        let (mut headers, uri,association) =
             Self::build_request_header(channel_id_opt, device_id, false, false, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
@@ -251,14 +252,14 @@ impl RequestBuilder {
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
         };
-        Ok(request_msg)
+        Ok((request_msg,association))
     }
 
     pub async fn build_sub_req(
         device_id: &String,
         body: String,
-    ) -> GlobalResult<Request> {
-        let (mut headers, uri) =
+    ) -> GlobalResult<(Request,Association)> {
+        let (mut headers, uri,association) =
             Self::build_request_header(None, device_id, true, true, None, None).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
@@ -275,14 +276,14 @@ impl RequestBuilder {
         );
         headers.push(rsip::headers::ContentType::new("Application/MANSCDP+xml").into());
         headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        let request_msg = Request {
+        let request = Request {
             method: Method::Subscribe,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
         };
-        Ok(request_msg)
+        Ok((request,association))
     }
 
     async fn common_info_request(
@@ -293,8 +294,8 @@ impl RequestBuilder {
         to_tag: &str,
         seq: Option<u32>,
         call_id: Option<String>,
-    ) -> GlobalResult<Request> {
-        let (mut headers, uri) = Self::build_request_header(
+    ) -> GlobalResult<(Request,Association)> {
+        let (mut headers, uri,association) = Self::build_request_header(
             Some(channel_id),
             device_id,
             false,
@@ -322,7 +323,7 @@ impl RequestBuilder {
             version: rsip::common::version::Version::V2,
             body: body.as_bytes().to_vec(),
         };
-        Ok(request)
+        Ok((request,association))
     }
 
     /// 构建下发请求头
@@ -333,8 +334,8 @@ impl RequestBuilder {
         contact: bool,
         from_tag: Option<&str>,
         to_tag: Option<&str>,
-    ) -> GlobalResult<(rsip::Headers, Uri)> {
-        let bill = RWContext::get_bill_by_device_id(device_id)
+    ) -> GlobalResult<(rsip::Headers, Uri,Association)> {
+        let bill = RWContext::get_association_by_device_id(device_id)
             .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
             .hand_log(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
@@ -415,7 +416,7 @@ impl RequestBuilder {
         }
         headers.push(rsip::headers::MaxForwards::new("70").into());
         headers.push(rsip::headers::UserAgent::new(cli_basic().version).into());
-        Ok((headers, uri))
+        Ok((headers, uri,bill))
     }
 
     pub async fn play_live_request(
@@ -425,7 +426,7 @@ impl RequestBuilder {
         dst_port: u16,
         stream_mode: TransMode,
         ssrc: &String,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let sdp = SdpBuilder::play_live(channel_id, dst_ip, dst_port, stream_mode, ssrc)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
@@ -440,7 +441,7 @@ impl RequestBuilder {
         ssrc: &String,
         st: u32,
         et: u32,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let sdp = SdpBuilder::playback(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
@@ -456,7 +457,7 @@ impl RequestBuilder {
         st: u32,
         et: u32,
         speed: u8,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let sdp = SdpBuilder::download(
             channel_id,
             dst_ip,
@@ -477,8 +478,8 @@ impl RequestBuilder {
         channel_id: &String,
         from_tag: &str,
         to_tag: &str,
-    ) -> GlobalResult<Request> {
-        let (mut headers, uri) = Self::build_request_header(
+    ) -> GlobalResult<(Request,Association)> {
+        let (mut headers, uri,association) = Self::build_request_header(
             Some(channel_id),
             device_id,
             false,
@@ -498,7 +499,7 @@ impl RequestBuilder {
             version: rsip::common::version::Version::V2,
             body: Default::default(),
         };
-        Ok(request)
+        Ok((request,association))
     }
 
     // 拍照
@@ -513,7 +514,7 @@ impl RequestBuilder {
         to_tag: &str,
         seq: u32,
         call_id: String,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let sdp = SdpBuilder::info_seek(seek);
         Self::common_info_request(
             device_id,
@@ -536,7 +537,7 @@ impl RequestBuilder {
         to_tag: &str,
         seq: u32,
         call_id: String,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let sdp = SdpBuilder::info_speed(speed);
         Self::common_info_request(
             device_id,
@@ -558,7 +559,7 @@ impl RequestBuilder {
         to_tag: &str,
         seq: u32,
         call_id: String,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let sdp = SdpBuilder::info_pause();
         Self::common_info_request(
             device_id,
@@ -580,7 +581,7 @@ impl RequestBuilder {
         to_tag: &str,
         seq: u32,
         call_id: String,
-    ) -> GlobalResult<Request> {
+    ) -> GlobalResult<(Request,Association)> {
         let sdp = SdpBuilder::info_replay();
         Self::common_info_request(
             device_id,
@@ -599,8 +600,8 @@ impl RequestBuilder {
         channel_id: &String,
         ssrc: &str,
         body: String,
-    ) -> GlobalResult<Request> {
-        let (mut headers, uri) =
+    ) -> GlobalResult<(Request,Association)> {
+        let (mut headers, uri,association) =
             Self::build_request_header(Some(channel_id), device_id, false, true, None, None)
                 .await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
@@ -632,7 +633,7 @@ impl RequestBuilder {
             body: body.as_bytes().to_vec(),
         }
         .into();
-        Ok(request)
+        Ok((request,association))
     }
 
     pub fn build_ack_request_by_response(res: &Response) -> GlobalResult<Request> {
