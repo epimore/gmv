@@ -252,7 +252,7 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
         //next 将sdp支持从session固定的，转为stream支持的
         if let Ok(res) = p.stream_init(&msc).await.hand_log(|msg| error!("{msg}")) {
             if res.code == 200 {
-                let (res, media_ext, from_tag, to_tag) = match am {
+                let (res, media_ext, from_tag, to_tag,association) = match am {
                     AccessMode::Live => {
                         CmdStream::play_live_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, TransMode::Udp, &ssrc).await?
                     }
@@ -270,7 +270,7 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                     ext: media_ext,
                 };
                 p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
-                let (call_id, seq) = CmdStream::invite_ack(device_id, &res).await?;
+                let (call_id, seq) = CmdStream::invite_ack(device_id, &res,association).await?;
                 return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
                     state::cache::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc, node_name.clone(), call_id, seq, am, from_tag, to_tag);
                     state::cache::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);

@@ -40,7 +40,7 @@ pub async fn hand_request(
             .hand_log(|msg| error!("设备 = [{}],注册失败;err={}", &device_id, msg));
         Ok(())
     } else {
-        match State::check_session(tx.clone(), bill, &device_id).await? {
+        match State::check_session(bill, &device_id).await? {
             State::Usable | State::ReCache => match req.method {
                 Method::Ack => Ok(()),
                 Method::Bye => Ok(()),
@@ -97,7 +97,6 @@ impl State {
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
     async fn check_session(
-        tx: Sender<SipPackage>,
         bill: &Association,
         device_id: &String,
     ) -> GlobalResult<State> {
@@ -119,7 +118,7 @@ impl State {
                         //判断是否在注册有效期内
                         if reg_ts + Duration::seconds(expire as i64) > Local::now().naive_local() {
                             //刷新缓存
-                            RWContext::insert(device_id, tx, heart, bill);
+                            RWContext::insert(device_id, heart, bill);
                             //如果设备是离线状态，则更新为在线
                             if on == 0 {
                                 GmvDevice::update_gmv_device_status_by_device_id(device_id, 1)
@@ -206,7 +205,7 @@ impl Register {
         bill: &Association,
         oauth: GmvOauth,
     ) -> GlobalResult<()> {
-        RWContext::insert(device_id, tx.clone(), oauth.heartbeat_sec, bill);
+        RWContext::insert(device_id, oauth.heartbeat_sec, bill);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register().await?;
         let ok_response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
