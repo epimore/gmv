@@ -399,11 +399,6 @@ struct DeviceTable {
     ssrc: String,
 }
 
-//下个大版本-抽象会话
-//voice  发言
-//dialog  对话
-//context  上下文
-//session  会话
 struct Shared {
     state: Mutex<State>,
     background_task: Notify,
@@ -447,7 +442,7 @@ impl AccessMode {}
 
 #[cfg(test)]
 mod tests {
-    use crate::state::cache::{AccessMode, Cache, StreamTable, GENERAL_CACHE};
+    use crate::state::session::{AccessMode, Cache, StreamTable, GENERAL_CACHE};
     use base::dashmap::{DashMap, DashSet};
     use base::rand;
     use base::rand::prelude::IteratorRandom;

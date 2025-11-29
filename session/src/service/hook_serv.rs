@@ -16,7 +16,7 @@ use std::path::Path;
 
 pub async fn stream_register(base_stream_info: BaseStreamInfo) {
     let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, base_stream_info.stream_id);
-    if let Some((_, Some(tx))) = state::cache::Cache::state_get(&key_stream_in_id) {
+    if let Some((_, Some(tx))) = state::session::Cache::state_get(&key_stream_in_id) {
         let vec = serde_json::to_vec(&base_stream_info).unwrap();
         let bytes = Bytes::from(vec);
         let _ = tx.try_send(Some(bytes)).hand_log(|msg| error!("{msg}"));
@@ -27,12 +27,12 @@ pub async fn stream_register(base_stream_info: BaseStreamInfo) {
 pub fn stream_input_timeout(stream_state: StreamState) {
     let ssrc = stream_state.base_stream_info.rtp_info.ssrc;
     let ssrc_num = (ssrc % 10000) as u16;
-    state::cache::Cache::ssrc_sn_set(ssrc_num);
+    state::session::Cache::ssrc_sn_set(ssrc_num);
     let stream_id = stream_state.base_stream_info.stream_id;
-    if let Some(am) = state::cache::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
-        state::cache::Cache::stream_map_remove(&stream_id, None);
+    if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
+        state::session::Cache::stream_map_remove(&stream_id, None);
         if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
-            state::cache::Cache::device_map_remove(
+            state::session::Cache::device_map_remove(
                 &device_id,
                 Some((&channel_id, Some((am, &ssrc_str)))),
             );
@@ -43,34 +43,34 @@ pub fn stream_input_timeout(stream_state: StreamState) {
 pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
     let gmv_token = stream_play_info.token;
     let stream_id = stream_play_info.base_stream_info.stream_id;
-    state::cache::Cache::stream_map_contains_token(&stream_id, &gmv_token)
+    state::session::Cache::stream_map_contains_token(&stream_id, &gmv_token)
 }
 
 pub async fn off_play(stream_play_info: StreamPlayInfo) {
     let stream_id = stream_play_info.base_stream_info.stream_id;
     let gmv_token = stream_play_info.token;
-    state::cache::Cache::stream_map_remove(&stream_id, Some(&gmv_token));
+    state::session::Cache::stream_map_remove(&stream_id, Some(&gmv_token));
 }
 
 //无人观看则关闭流
 pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
     let stream_id = base_stream_info.stream_id;
-    let cst_info = state::cache::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
+    let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
         if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
             let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag)
                 .await;
         }
-        if let Some(am) = state::cache::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
-            state::cache::Cache::device_map_remove(
+        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
+            state::session::Cache::device_map_remove(
                 &device_id,
                 Some((&channel_id, Some((am, &ssrc_str)))),
             );
-            state::cache::Cache::stream_map_remove(&stream_id, None);
+            state::session::Cache::stream_map_remove(&stream_id, None);
         }
         let ssrc = base_stream_info.rtp_info.ssrc;
         let ssrc_num = (ssrc % 10000) as u16;
-        state::cache::Cache::ssrc_sn_set(ssrc_num);
+        state::session::Cache::ssrc_sn_set(ssrc_num);
     }
 }
 

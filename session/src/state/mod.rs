@@ -11,7 +11,7 @@ use url::Url;
 use base::constructor::Get;
 
 pub mod model;
-pub mod cache;
+pub mod session;
 mod schedule;
 pub mod runner;
 

@@ -1,7 +1,7 @@
 use crate::gb::RWContext;
 use crate::gb::core::rw::SipRequestOutput;
-use crate::gb::depot::SipPackage;
 use crate::gb::depot::extract::HeaderItemExt;
+use crate::gb::depot::{SipPackage, default_response_callback};
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
 use crate::state::model::{PtzControlModel, TransMode};
 use anyhow::anyhow;
@@ -9,8 +9,9 @@ use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::net::state::Association;
-use base::tokio::sync::mpsc;
+use base::tokio;
 use base::tokio::sync::mpsc::Sender;
+use base::tokio::sync::{mpsc, oneshot};
 use base::tokio::time::Instant;
 use regex::Regex;
 use rsip::prelude::{HeadersExt, UntypedHeader};
@@ -162,7 +163,7 @@ impl CmdStream {
         association: Association,
     ) -> GlobalResult<(String, u32)> {
         let ack_request = RequestBuilder::build_ack_request_by_response(response)?;
-        let call_id = ack_request.call_id()?.to_string();
+        let call_id = ack_request.call_id()?.value().to_string();
         let seq = ack_request.seq()?;
         SipRequestOutput::new(device_id, association, ack_request)
             .send_log("invite_ack")
@@ -227,9 +228,12 @@ impl CmdStream {
         association: Association,
         request: Request,
     ) -> GlobalResult<(Response, MediaExt, String, String, Association)> {
-        let res = SipRequestOutput::new(device_id, association.clone(), request)
-            .send()
+        let (tx, rx) = oneshot::channel();
+        let cb = default_response_callback(tx);
+        SipRequestOutput::new(device_id, association.clone(), request)
+            .send(cb)
             .await?;
+        let res = rx.await.hand_log(|msg|error!("{msg}"))??;
         let code = res.status_code.code();
         let code_msg = res.status_code.to_string();
         if code >= 200 || code <= 299 {

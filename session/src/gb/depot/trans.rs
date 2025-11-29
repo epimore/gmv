@@ -21,6 +21,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::Duration;
+use crate::gb::depot::Callback;
 
 const EXPIRE_TTL: Duration = Duration::from_secs(2);
 
@@ -55,7 +56,7 @@ struct TransEntity {
     msg: Bytes,
     association: Association,
     expire_instant: Instant,
-    trans_tx: oneshot::Sender<GlobalResult<Response>>,
+    cb: Callback,
 }
 
 impl TransactionIdentifier for rsip::SipMessage {}
@@ -70,7 +71,7 @@ struct Shared {
     output: Sender<Zip>,
 }
 impl Shared {
-    async fn next_step(&self) -> Option<Instant> {
+    fn next_step(&self) -> Option<Instant> {
         let now = Instant::now();
         let mut guard = self.state.write();
         let state = &mut *guard;
@@ -99,7 +100,7 @@ impl Shared {
                         state.expire_set.insert((expire, nk));
                     } else {
                         let entity1 = occ.remove();
-                        let _ = entity1.trans_tx.send(Err(GlobalError::new_biz_error(
+                        (entity1.cb)(Err(GlobalError::new_biz_error(
                             1000,
                             "响应超时",
                             |msg| error!("{msg}"),
@@ -116,7 +117,7 @@ impl Shared {
             if cancel_token.is_cancelled() {
                 break;
             }
-            if let Some(when) = shared.next_step().await {
+            if let Some(when) = shared.next_step() {
                 tokio::select! {
                     _ = time::sleep_until(when) =>{},
                     _ = shared.background_task.notified() =>{},
@@ -154,7 +155,7 @@ impl TransactionContext {
         &self,
         request: Request,
         association: Association,
-        trans_tx: oneshot::Sender<GlobalResult<Response>>,
+        cb: Callback,
     ) -> GlobalResult<()> {
         if Self::no_response(&request) {
             let response = rsip::Response {
@@ -163,7 +164,7 @@ impl TransactionContext {
                 version: rsip::Version::V2,
                 body: Default::default(),
             };
-            let _ = trans_tx.send(Ok(response));
+            cb(Ok(response));
             return Ok(());
         }
         let key = (&request).generate_trans_key()?;
@@ -174,7 +175,7 @@ impl TransactionContext {
             msg: Bytes::from(request),
             association,
             expire_instant,
-            trans_tx,
+            cb,
         };
 
         let mut state = self.shared.state.write();
@@ -211,9 +212,7 @@ impl TransactionContext {
                     }
                     _ => {
                         let (key, entity) = occ.remove_entry();
-                        if let Err(_) = entity.trans_tx.send(Ok(response)) {
-                            debug!("request point drop:{}", &key)
-                        }
+                        (entity.cb)(Ok(response));
                         state.expire_set.remove(&(entity.expire_instant, key));
                     }
                 }

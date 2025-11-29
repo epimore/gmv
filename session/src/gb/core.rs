@@ -3,6 +3,7 @@
 /// TCP：连接断开或三次心跳超时则移除会话
 pub mod rw {
     use std::collections::{BTreeSet, HashMap};
+    use std::fmt::format;
     use std::sync::{Arc, LazyLock, OnceLock};
 
     use std::time::Duration;
@@ -10,7 +11,7 @@ pub mod rw {
     use parking_lot::Mutex;
     use rsip::{Request, Response, SipMessage};
 
-    use crate::gb::depot::SipPackage;
+    use crate::gb::depot::{Callback, SipPackage, default_log_callback};
     use crate::storage::entity::GmvDevice;
     use anyhow::anyhow;
     use base::bytes::Bytes;
@@ -39,10 +40,10 @@ pub mod rw {
     }
 
     impl RWContext {
-        pub fn get_ctx() -> &'static RWContext{
+        pub fn get_ctx() -> &'static RWContext {
             RW_CTX.get().expect("RWContext not initialized")
         }
-        pub fn init(io_tx: Sender<Zip>,sip_tx: Sender<SipPackage>) {
+        pub fn init(io_tx: Sender<Zip>, sip_tx: Sender<SipPackage>) {
             let (tx, rx) = mpsc::channel(16);
             let session = RWContext {
                 shared: Arc::new(Shared {
@@ -101,11 +102,7 @@ pub mod rw {
             Ok(())
         }
 
-        pub fn insert(
-            device_id: &String,
-            heartbeat: u8,
-            bill: &Association,
-        ) {
+        pub fn insert(device_id: &String, heartbeat: u8, bill: &Association) {
             let expires = Duration::from_secs(heartbeat as u64 * 3);
             let when = Instant::now() + expires;
 
@@ -152,12 +149,12 @@ pub mod rw {
         }
 
         //用于清理rw_session数据及端口TCP网络连接
-        pub async fn clean_rw_session_and_net(device_id: &String) {
+        pub fn clean_rw_session_and_net(device_id: &String) {
             let res = {
                 let mut guard = Self::get_ctx().shared.state.lock();
 
                 let state = &mut *guard;
-                if let Some(( when, _expires, bill)) = state.sessions.remove(device_id) {
+                if let Some((when, _expires, bill)) = state.sessions.remove(device_id) {
                     state.expirations.remove(&(when, device_id.clone()));
                     state.bill_map.remove(&bill);
                     //通知网络出口关闭TCP连接
@@ -172,7 +169,8 @@ pub mod rw {
             };
 
             if let Some(association) = res {
-                let _ = Self::get_ctx().io_tx
+                let _ = Self::get_ctx()
+                    .io_tx
                     .try_send(Zip::build_event(Event::new(association, 0)))
                     .hand_log(|msg| warn!("{msg}"));
             }
@@ -209,9 +207,7 @@ pub mod rw {
             option_expires
         }
 
-        pub fn get_association_by_device_id(
-            device_id: &String,
-        ) -> Option<(Association)> {
+        pub fn get_association_by_device_id(device_id: &String) -> Option<(Association)> {
             let guard = Self::get_ctx().shared.state.lock();
             let opt = guard
                 .sessions
@@ -234,33 +230,26 @@ pub mod rw {
         pub request: Request,
     }
     impl<'a> SipRequestOutput<'a> {
-        pub fn new(device_id: &'a String, association: Association,request: Request) -> Self {
-            Self { device_id,association, request }
-        }
-        pub async fn send_log(self, log: &str) {
-            let id = self.device_id;
-            if let Ok(res) = self.send().await {
-                if res.status_code.code() < 200 || res.status_code.code() > 299 {
-                    error!(
-                        "{}: 执行失败; device_id = {},res_code = {}",
-                        log, id, res.status_code
-                    );
-                } else {
-                    debug!(
-                        "{}: 执行成功; device_id = {},res_code = {}",
-                        log, id, res.status_code
-                    );
-                }
+        pub fn new(device_id: &'a String, association: Association, request: Request) -> Self {
+            Self {
+                device_id,
+                association,
+                request,
             }
         }
 
-        pub async fn send(self) -> GlobalResult<Response> {
-            let (rx, sip_pkg) = SipPackage::build_request(self.request, self.association);
-            RWContext::get_ctx().sip_tx
+        pub async fn send_log(self, log: &str) {
+            let cb = default_log_callback(format!("{}:{}", log, self.device_id));
+            let _ = self.send(cb).await;
+        }
+
+        pub async fn send(self, cb: Callback) -> GlobalResult<()> {
+            let sip_pkg = SipPackage::build_request(self.request, self.association, cb);
+            RWContext::get_ctx()
+                .sip_tx
                 .send(sip_pkg)
                 .await
-                .hand_log(|msg| error!("{msg}"))?;
-            rx.await.hand_log(|msg| error!("{msg}"))?
+                .hand_log(|msg| error!("{msg}"))
         }
     }
 
@@ -292,9 +281,10 @@ pub mod rw {
                     state.expirations.remove(&(when, device_id.to_string()));
                     //通知网络出口关闭TCP连接
                     if Protocol::TCP == bill.protocol {
-                            let _ = RWContext::get_ctx().io_tx
-                                .try_send(Zip::build_event(Event::new(bill, 0)))
-                                .hand_log(|msg| warn!("{msg}"));
+                        let _ = RWContext::get_ctx()
+                            .io_tx
+                            .try_send(Zip::build_event(Event::new(bill, 0)))
+                            .hand_log(|msg| warn!("{msg}"));
                     }
                 }
             }

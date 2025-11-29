@@ -249,7 +249,6 @@ impl AntiReplayContext {
     ) -> GlobalResult<AntiReplayKind> {
         let key = request.generate_anti_key(from_network)?;
         let mut shard = self.shard.write();
-        let replay_len = shard.anti_map.len();
         match shard.anti_map.entry(key) {
             Entry::Occupied(mut occ) => {
                 let (pol, count, res) = occ.get_mut();
@@ -265,12 +264,6 @@ impl AntiReplayContext {
                 }
             }
             Entry::Vacant(mut vac) => {
-                if replay_len >= MAX_ANTI_REPLAY_SIZE {
-                    Err(GlobalError::new_sys_error(
-                        "防重放缓存已达上限",
-                        |msg| error!("{}:{msg}", vac.key()),
-                    ))?
-                }
                 let policy = AntiReplayPolicy::policy_by_request(request)?;
                 let now = Instant::now();
                 let duration = match policy {
@@ -310,12 +303,14 @@ impl AntiReplayContext {
         }
     }
     fn clean(&self) {
-        let cutoff = (Instant::now() + Duration::from_nanos(1), String::new());
+        let cutoff = (Instant::now(), String::new());
         let mut shard = self.shard.write();
-        let mut expired_set = shard.expire_set.split_off(&(cutoff));
-        for (_, key) in expired_set {
-            shard.anti_map.remove(&key);
+        let shard = &mut *shard;
+        let unexpired  = shard.expire_set.split_off(&(cutoff));
+        for (_, key) in shard.expire_set.iter() {
+            shard.anti_map.remove(key);
         }
+        shard.expire_set = unexpired;
     }
     pub fn init() -> Self {
         let shard = Shard {
