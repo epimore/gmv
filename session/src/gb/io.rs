@@ -14,6 +14,7 @@ use crate::gb::sip_tcp_splitter::complete_pkt;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Package, Protocol, Zip};
+use base::tokio;
 use base::tokio_util::sync::CancellationToken;
 use regex::Regex;
 
@@ -121,8 +122,10 @@ async fn hand_pkt(
                         ctx.anti_ctx
                             .process_request(&output, &req, association.clone())
                     {
-                        let _ =
-                            handler::requester::hand_request(req, sip_pkg_tx, &association).await;
+                        let association = association.clone();
+                        tokio::spawn(async move{
+                            let _ = handler::requester::hand_request(req, sip_pkg_tx, association).await;
+                        });
                     }
                 }
                 SipMessage::Response(res) => {

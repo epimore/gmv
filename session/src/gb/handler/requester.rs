@@ -30,25 +30,25 @@ use crate::storage::mapper;
 pub async fn hand_request(
     req: Request,
     tx: Sender<SipPackage>,
-    bill: &Association,
+    bill: Association,
 ) -> GlobalResult<()> {
     let device_id = parser::header::get_device_id_by_request(&req)?;
     //校验设备是否注册
     if req.method == Method::Register {
-        let _ = Register::process(&device_id, req, tx, bill)
+        let _ = Register::process(&device_id, req, tx, &bill)
             .await
             .hand_log(|msg| error!("设备 = [{}],注册失败;err={}", &device_id, msg));
         Ok(())
     } else {
-        match State::check_session(bill, &device_id).await? {
+        match State::check_session(&bill, &device_id).await? {
             State::Usable | State::ReCache => match req.method {
                 Method::Ack => Ok(()),
                 Method::Bye => Ok(()),
                 Method::Cancel => Ok(()),
                 Method::Info => Ok(()),
                 Method::Invite => Ok(()),
-                Method::Message => Message::process(&device_id, req, tx.clone(), bill).await,
-                Method::Notify => Notify::process(&device_id, req, tx.clone(), bill).await,
+                Method::Message => Message::process(&device_id, req, tx.clone(), &bill).await,
+                Method::Notify => Notify::process(&device_id, req, tx.clone(), &bill).await,
                 Method::Options => Ok(()),
                 Method::PRack => Ok(()),
                 Method::Publish => Ok(()),
@@ -63,7 +63,7 @@ pub async fn hand_request(
             State::Expired => {
                 let unregister_response =
                     ResponseBuilder::build_401_response(&req, bill.get_remote_addr())?;
-                let sip_package = SipPackage::build_response(unregister_response, bill.clone());
+                let sip_package = SipPackage::build_response(unregister_response, bill);
                 let _ = tx
                     .clone()
                     .send(sip_package)
