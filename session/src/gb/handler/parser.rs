@@ -105,6 +105,7 @@ pub mod xml {
     pub const MESSAGE_DEVICE_INFO: &str = "DeviceInfo";
     pub const MESSAGE_ALARM: &str = "Alarm";
     pub const MESSAGE_RECORD_INFO: &str = "RecordInfo";
+    pub const MESSAGE_UPLOAD_SNAPSHOT_FINISHED: &str = "UploadSnapShotFinished";
     pub const MESSAGE_MEDIA_STATUS: &str = "MediaStatus";
     pub const MESSAGE_BROADCAST: &str = "Broadcast";
     pub const MESSAGE_DEVICE_STATUS: &str = "DeviceStatus";

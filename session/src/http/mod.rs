@@ -18,7 +18,7 @@ mod hook;
 #[cfg(debug_assertions)]
 mod doc;
 
-pub const UPLOAD_PICTURE: &str = "/edge/upload/picture";
+pub const UPLOAD_PICTURE: &str = "/edge/upload/picture/{token}";
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "http")]
