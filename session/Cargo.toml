@@ -5,8 +5,7 @@ edition.workspace = true
 
 [dependencies]
 shared = { path = "../shared" }
-base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
-
+base = { package = "base_db",git = "https://github.com/epimore/pigs.git", features = ["net"] }
 rsip = "0.4"
 sqlx = { version = "0.8", default-features = false }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
