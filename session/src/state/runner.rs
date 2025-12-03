@@ -33,7 +33,7 @@ impl PicsRunner {
 
             for item in arr {
                 let (token, session_id) = edge_token::build_token_session_id(&item.0, &item.1)?;
-                let url = format!("{}?token={}", pics_conf.push_url.clone().unwrap(), token);
+                let url = format!("{}/{}", pics_conf.push_url.clone().unwrap(), token);
                 cmd::CmdControl::snapshot_image(&item.0, &item.1, pics_conf.num, pics_conf.interval, &url, &session_id).await?;
             }
             //图片上传延迟3秒，缓解带宽瓶颈

@@ -6,8 +6,9 @@ use axum::{
     Router,
 };
 use std::collections::HashMap;
-
+use axum::extract::Path;
 use base::{bytes::Bytes, log::error};
+use base::log::debug;
 use crate::{http::UPLOAD_PICTURE, service::edge_serv, utils::edge_token};
 
 pub fn routes() -> Router {
@@ -16,7 +17,7 @@ pub fn routes() -> Router {
 
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
-    path = "/edge/upload/picture",
+    path = "/edge/upload/picture/{token}",
     params(
         ("SessionID" = String, Query, description = "Edge 会话 ID", example = "sess_abc123"),
         ("token" = String, Query, description = "认证 token", example = "tkn_xyz789"),
@@ -41,13 +42,13 @@ pub fn routes() -> Router {
 ))]
 /// 图片采集上传接收接口
 async fn upload_picture(
+    Path(token): Path<String>,
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
     req: Request,
 ) -> Result<impl IntoResponse, String> {
     let session_id = get_param(&params, "SessionID")?;
-    let token = get_param(&params, "token")?;
-    edge_token::check(session_id, token).map_err(|_| "Invalid token".to_string())?;
+    edge_token::check(session_id, &token).map_err(|_| "Invalid token".to_string())?;
     let file_id_opt = params
         .iter()
         .find(|(key, _)| key.to_lowercase().ends_with("fileid"))

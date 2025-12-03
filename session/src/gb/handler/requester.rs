@@ -292,6 +292,7 @@ impl Message {
                             MESSAGE_DEVICE_CONTROL => {}
                             MESSAGE_DEVICE_CONFIG => {}
                             MESSAGE_PRESET_QUERY => {}
+                            MESSAGE_UPLOAD_SNAPSHOT_FINISHED => {}
                             _ => {
                                 warn!("device_id = {};message -- > {} 不支持。", device_id, v)
                             }
