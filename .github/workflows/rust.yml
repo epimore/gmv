@@ -15,15 +15,17 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-
-    - name: Install FFmpeg 6.1
+    - name: Build FFmpeg 6.1
       run: |
-        sudo add-apt-repository ppa:savoury1/ffmpeg6 -y
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev
-
-    - name: Build
-      run: cargo build --verbose
+        git clone https://github.com/FFmpeg/FFmpeg -b release/6.1
+        cd FFmpeg
+        ./configure --enable-shared --prefix=/usr
+        make -j$(nproc)
+        sudo make install
+    - name: Build Rust
+      env:
+        PKG_CONFIG_PATH: /usr/lib/pkgconfig
+      run: cargo build --release
 
     - name: Run tests
       run: cargo test --verbose
