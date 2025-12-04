@@ -272,52 +272,23 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.2.0"
+source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
 dependencies = [
  "aes",
  "base64 0.22.1",
  "block-modes",
  "bytebuffer",
  "bytes",
- "cfg_lib 0.1.0",
+ "cfg_lib",
  "chrono",
- "constructor 0.2.0",
+ "constructor",
  "ctor",
  "daemonize",
  "dashmap",
- "exception 0.1.0",
+ "exception",
  "fern",
  "hex",
- "log",
- "once_cell",
- "rand",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "tokio",
- "tokio-util",
- "users",
-]
-
-[[package]]
-name = "base"
-version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git#cfd5a508d17410cdc43163b15d75606750aa2000"
-dependencies = [
- "aes",
- "base64 0.22.1",
- "block-modes",
- "bytebuffer",
- "bytes",
- "cfg_lib 0.1.0 (git+https://github.com/epimore/pigs.git)",
- "chrono",
- "constructor 0.2.0 (git+https://github.com/epimore/pigs.git)",
- "ctor",
- "daemonize",
- "dashmap",
- "exception 0.1.0 (git+https://github.com/epimore/pigs.git)",
- "fern",
- "hex",
+ "libc",
  "log",
  "once_cell",
  "rand",
@@ -351,9 +322,9 @@ checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
 [[package]]
 name = "base_db"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git#cfd5a508d17410cdc43163b15d75606750aa2000"
+source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
 dependencies = [
- "base 0.2.0 (git+https://github.com/epimore/pigs.git)",
+ "base",
  "sqlx",
 ]
 
@@ -557,18 +528,9 @@ checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
 dependencies = [
- "cfg_macro 0.1.0",
- "clap",
- "once_cell",
-]
-
-[[package]]
-name = "cfg_lib"
-version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git#cfd5a508d17410cdc43163b15d75606750aa2000"
-dependencies = [
- "cfg_macro 0.1.0 (git+https://github.com/epimore/pigs.git)",
+ "cfg_macro",
  "clap",
  "once_cell",
 ]
@@ -576,16 +538,7 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "cfg_macro"
-version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git#cfd5a508d17410cdc43163b15d75606750aa2000"
+source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -695,16 +648,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "constructor"
 version = "0.2.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "constructor"
-version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git#cfd5a508d17410cdc43163b15d75606750aa2000"
+source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1036,16 +980,7 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
-dependencies = [
- "anyhow",
- "log",
- "thiserror 2.0.12",
-]
-
-[[package]]
-name = "exception"
-version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git#cfd5a508d17410cdc43163b15d75606750aa2000"
+source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
 dependencies = [
  "anyhow",
  "log",
@@ -1329,7 +1264,7 @@ version = "2.0.0-alpha.0.1"
 dependencies = [
  "anyhow",
  "axum",
- "base 0.2.0 (git+https://github.com/epimore/pigs.git)",
+ "base",
  "crossbeam-channel",
  "futures-core",
  "futures-util",
@@ -3092,7 +3027,7 @@ name = "shared"
 version = "2.0.0-alpha.0.1"
 dependencies = [
  "anyhow",
- "base 0.2.0",
+ "base",
  "paste",
  "utoipa",
 ]
