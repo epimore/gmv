@@ -15,16 +15,24 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build FFmpeg 6.1
+
+    - name: Install dependencies
       run: |
-        git clone https://github.com/FFmpeg/FFmpeg -b release/6.1
+        sudo apt update
+        sudo apt install -y nasm pkg-config
+
+    - name: Build and install FFmpeg 6.1
+      run: |
+        git clone --depth=1 https://github.com/FFmpeg/FFmpeg -b release/6.1
         cd FFmpeg
-        ./configure --enable-shared --prefix=/usr
+        ./configure --enable-shared --prefix=/usr/local
         make -j$(nproc)
         sudo make install
+        sudo ldconfig
+
     - name: Build Rust
       env:
-        PKG_CONFIG_PATH: /usr/lib/pkgconfig
+        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
       run: cargo build --release
 
     - name: Run tests
