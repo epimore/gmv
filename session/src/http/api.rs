@@ -8,6 +8,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use shared::info::obj::{SingleParam, StreamRecordInfo, CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK, PLAY_SPEED, RM_FILE};
 use shared::info::res::{EmptyResponse, Resp};
+use crate::http::get_gmv_token;
 
 pub fn routes() -> Router {
     Router::new()
@@ -288,21 +289,5 @@ async fn rm_file(headers: HeaderMap, Json(info): Json<SingleParam<i64>>) -> Json
         Err(_) => {
             Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
         }
-    }
-}
-
-fn get_gmv_token(headers: HeaderMap) -> GlobalResult<String> {
-    let header_name = HeaderName::from_static("gmv-token");
-    if let Some(value) = headers.get(&header_name) {
-        match value.to_str() {
-            Ok(token) => {
-                Ok(token.to_string())
-            }
-            Err(_) => {
-                Err(GlobalError::new_biz_error(1100, "Gmv-Token is invalid", |msg| error!("{}", msg)))
-            }
-        }
-    } else {
-        Err(GlobalError::new_biz_error(1100, "Gmv-Token not found", |msg| error!("{}", msg)))
     }
 }

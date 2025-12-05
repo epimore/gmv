@@ -1,7 +1,7 @@
 use crate::gb::RWContext;
 use crate::gb::core::rw::SipRequestOutput;
 use crate::gb::depot::extract::HeaderItemExt;
-use crate::gb::depot::{SipPackage, default_response_callback};
+use crate::gb::depot::{SipPackage, default_response_callback, Callback};
 use crate::gb::handler::builder::{RequestBuilder, ResponseBuilder};
 use crate::state::model::{PtzControlModel, TransMode};
 use anyhow::anyhow;
@@ -77,6 +77,25 @@ impl CmdControl {
             .send_log("snapshot_image")
             .await;
         Ok(())
+    }
+    pub async fn snapshot_image_call(
+        device_id: &String,
+        channel_id: &String,
+        num: u8,
+        interval: u8,
+        uri: &String,
+        session_id: &String,
+    ) -> GlobalResult<Response> {
+        let (request, association) = RequestBuilder::control_snapshot_image(
+            device_id, channel_id, num, interval, uri, session_id,
+        )
+        .await?;
+        let (tx,rx) = oneshot::channel();
+        let cb = default_response_callback(tx);
+        SipRequestOutput::new(device_id, association, request)
+            .send(cb)
+            .await?;
+        rx.await.hand_log(|msg|error!("{msg}"))?
     }
 }
 

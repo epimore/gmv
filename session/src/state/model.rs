@@ -3,6 +3,7 @@ use base::serde::{Deserialize, Serialize};
 use crate::gb::handler::parser::xml::KV2Model;
 use crate::state;
 use anyhow::anyhow;
+use base::constructor::New;
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
@@ -196,3 +197,21 @@ impl KV2Model for AlarmInfo {
         Ok(model)
     }
 }
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct DeviceChannelIdent {
+    pub device_id: String,
+    pub channel_id: String,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct SnapshotImage {
+    pub device_channel_ident: DeviceChannelIdent,
+    /// 默认拍一张
+    pub count: Option<u8>,
+}
+

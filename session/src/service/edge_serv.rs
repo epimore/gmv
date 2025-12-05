@@ -4,6 +4,7 @@
 2.生成缩略图存储
 3.持久化2/3地址索引到数据库建立设备时间关系
 */
+use crate::gb::depot::extract::HeaderItemExt;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::storage::pics::Pics;
 use crate::utils::edge_token;
@@ -13,6 +14,37 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use base::serde_json;
+use base::tokio::sync::mpsc;
+use base::tokio::time::Instant;
+use rsip::StatusCodeKind;
+use shared::info::obj::BaseStreamInfo;
+use crate::gb::handler::cmd;
+use crate::service::{EXPIRES, KEY_SNAPSHOT_IMAGE, KEY_STREAM_IN};
+use crate::state;
+use crate::state::model::SnapshotImage;
+use crate::utils::edge_token::build_session_id;
+
+pub async fn snapshot_image(info:SnapshotImage) ->GlobalResult<String>{
+    let pics_conf = Pics::get_pics_by_conf();
+    let (token, session_id) = edge_token::build_token_session_id(&info.device_channel_ident.device_id, &info.device_channel_ident.channel_id)?;
+    let url = format!("{}/{}", pics_conf.push_url.clone().unwrap(), token);
+    let count = info.count.unwrap_or_else(|| pics_conf.num);
+    let response = cmd::CmdControl::snapshot_image_call(&info.device_channel_ident.device_id, &info.device_channel_ident.channel_id, count, pics_conf.interval, &url, &session_id).await?;
+    if !matches!(response.status_code.kind(),StatusCodeKind::Successful)  {
+        Err(GlobalError::new_sys_error("snapshot image failed", |msg| error!("{msg}")))?
+    };
+    let (tx, mut rx) = mpsc::channel(8);
+    let when = Instant::now() + Duration::from_secs(EXPIRES);
+    let key = format!("{}{}", KEY_SNAPSHOT_IMAGE,session_id);
+    state::session::Cache::state_insert(key.clone(), Bytes::new(), Some(when), Some(tx));
+    if let Some(Some(_)) = rx.recv().await {
+        state::session::Cache::state_remove(&key);
+        return Ok(session_id)
+    }
+    Err(GlobalError::new_biz_error(1100,"快照失败:设备不支持或响应超时", |msg| error!("{msg}")))?
+}
 
 pub async fn upload(bytes: Bytes, session_id: &str, file_id_opt: Option<&String>) -> GlobalResult<()> {
     let (device_id, channel_id) = edge_token::split_dc(session_id)?;

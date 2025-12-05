@@ -1,18 +1,51 @@
+use crate::http::{get_gmv_token};
+use crate::service::api_serv;
+use crate::state::model::{PtzControlModel, SnapshotImage};
+use crate::{service::edge_serv, utils::edge_token};
+use axum::extract::Path;
 use axum::{
+    Json, Router,
     extract::{FromRequest, Multipart, Query, Request},
     http::HeaderMap,
     response::IntoResponse,
     routing::post,
-    Router,
 };
-use std::collections::HashMap;
-use axum::extract::Path;
+use base::log::{debug, info};
 use base::{bytes::Bytes, log::error};
-use base::log::debug;
-use crate::{http::UPLOAD_PICTURE, service::edge_serv, utils::edge_token};
-
+use shared::info::res::Resp;
+use std::collections::HashMap;
+pub const UPLOAD_PICTURE: &str ="/upload/picture/{token}";
+pub const SNAPSHOT_IMAGE: &str = "/snapshot/image";
 pub fn routes() -> Router {
-    Router::new().route(UPLOAD_PICTURE, post(upload_picture))
+    Router::new()
+        .route(UPLOAD_PICTURE, post(upload_picture))
+        .route(SNAPSHOT_IMAGE, post(snapshot_image))
+}
+
+#[cfg_attr(debug_assertions, utoipa::path(
+    post,
+    path = "/edge/snapshot/image",
+    request_body = SnapshotImage,
+    responses(
+        (status = 200, description = "抓拍成功", body = Resp<bool>),
+        (status = 401, description = "Token无效", body = Resp<bool>),
+        (status = 500, description = "服务器内部错误", body = Resp<bool>)
+    ),
+    security(
+        ("gmv_token" = [])
+    ),
+    tag = "图片采集"
+))]
+/// 采集摄像机当前画面快照
+async fn snapshot_image(headers: HeaderMap, Json(info): Json<SnapshotImage>) -> Json<Resp<String>> {
+    info!("snapshot_image: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => match edge_serv::snapshot_image(info).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(Resp::build_failed_by_msg(err.to_string())),
+        },
+        Err(_) => Json(Resp::build_failed_by_msg("Gmv-Token is invalid")),
+    }
 }
 
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -66,9 +99,7 @@ async fn upload_picture(
         ct if ct.starts_with("multipart/form-data") => {
             handle_multipart_upload(req, session_id, file_id_opt).await
         }
-        ct if ct.starts_with("image/") => {
-            handle_binary_upload(req, session_id, file_id_opt).await
-        }
+        ct if ct.starts_with("image/") => handle_binary_upload(req, session_id, file_id_opt).await,
         _ => {
             let err = format!(
                 "Unsupported Content-Type: {}. Use multipart/form-data or image/*",
@@ -94,12 +125,10 @@ async fn handle_multipart_upload(
     session_id: &str,
     file_id_opt: Option<&String>,
 ) -> Result<&'static str, String> {
-    let mut multipart = Multipart::from_request(req, &())
-        .await
-        .map_err(|e| {
-            error!("Failed to parse multipart: {}", e);
-            format!("Failed to parse multipart: {}", e)
-        })?;
+    let mut multipart = Multipart::from_request(req, &()).await.map_err(|e| {
+        error!("Failed to parse multipart: {}", e);
+        format!("Failed to parse multipart: {}", e)
+    })?;
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
         error!("Failed to get next field: {}", e);
@@ -132,12 +161,10 @@ async fn handle_binary_upload(
     session_id: &str,
     file_id_opt: Option<&String>,
 ) -> Result<&'static str, String> {
-    let data = Bytes::from_request(req, &())
-        .await
-        .map_err(|e| {
-            error!("Failed to get request body: {}", e);
-            format!("Failed to get request body: {}", e)
-        })?;
+    let data = Bytes::from_request(req, &()).await.map_err(|e| {
+        error!("Failed to get request body: {}", e);
+        format!("Failed to get request body: {}", e)
+    })?;
 
     edge_serv::upload(data, session_id, file_id_opt)
         .await

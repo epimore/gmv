@@ -1,8 +1,8 @@
 use utoipa::OpenApi;
 // 安全配置
 use crate::http::api;
-use crate::http::hook;
 use crate::http::edge;
+use crate::http::hook;
 use crate::state::model::*;
 use shared::info::obj::*;
 use utoipa::Modify;
@@ -41,7 +41,8 @@ impl Modify for SecurityAddon {
         hook::off_play,
         hook::stream_idle,
         hook::end_record,
-        edge::upload_picture
+        edge::upload_picture,
+        edge::snapshot_image
     ),
     components(
         schemas(
@@ -56,6 +57,7 @@ impl Modify for SecurityAddon {
             BaseStreamInfo,
             StreamPlayInfo,
             StreamState,
+            SnapshotImage
         ),
     ),
     modifiers(&SecurityAddon),

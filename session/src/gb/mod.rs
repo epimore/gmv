@@ -16,7 +16,7 @@ use base::tokio_util::sync::CancellationToken;
 pub use core::rw::RWContext;
 
 mod core;
-mod depot;
+pub mod depot;
 pub mod handler;
 mod io;
 mod sip_tcp_splitter;

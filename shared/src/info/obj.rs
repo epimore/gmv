@@ -3,15 +3,15 @@ use base::constructor::New;
 use base::serde::{Deserialize, Serialize};
 
 //session
-pub const PLAY_LIVING: &str = "/api/play/live/stream";
-pub const PLAY_BACK: &str = "/api/play/back/stream";
-pub const PLAY_SEEK: &str = "/api/play/back/seek";
-pub const PLAY_SPEED: &str = "/api/play/back/speed";
-pub const CONTROL_PTZ: &str = "/api/control/ptz";
-pub const DOWNLOAD_MP4: &str = "/api/download/mp4";
-pub const DOWNLOAD_STOP: &str = "/api/download/stop";
-pub const DOWNING_INFO: &str = "/api/downing/info";
-pub const RM_FILE: &str = "/api/rm/file";
+pub const PLAY_LIVING: &str = "/play/live/stream";
+pub const PLAY_BACK: &str = "/play/back/stream";
+pub const PLAY_SEEK: &str = "/play/back/seek";
+pub const PLAY_SPEED: &str = "/play/back/speed";
+pub const CONTROL_PTZ: &str = "/control/ptz";
+pub const DOWNLOAD_MP4: &str = "/download/mp4";
+pub const DOWNLOAD_STOP: &str = "/download/stop";
+pub const DOWNING_INFO: &str = "/downing/info";
+pub const RM_FILE: &str = "/rm/file";
 
 pub const STREAM_REGISTER: &str = "/stream/register";
 pub const INPUT_TIMEOUT: &str = "/stream/input/timeout";

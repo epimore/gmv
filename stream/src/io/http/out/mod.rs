@@ -16,9 +16,9 @@ mod flv;
 mod hls;
 mod dash;
 //收到流-》media 长期阻塞 ——》无输出流
-pub fn routes(node: &str) -> Router {
+pub fn routes() -> Router {
     Router::new().route(
-        &format!("/{}{}", node, PLAY_PATH),
+        PLAY_PATH,
         axum::routing::get(handler),
     )
 }

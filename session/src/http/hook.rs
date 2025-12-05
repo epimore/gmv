@@ -16,7 +16,7 @@ pub fn routes() -> Router {
 
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
-    path = "/stream/register",
+    path = "/hook/stream/register",
     request_body = BaseStreamInfo,
     responses(
         (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
@@ -33,7 +33,7 @@ async fn stream_register(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
 }
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
-    path = "/stream/input/timeout",
+    path = "/hook/stream/input/timeout",
     request_body = StreamState,
     responses(
         (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
@@ -50,7 +50,7 @@ async fn stream_input_timeout(Json(info): Json<StreamState>) -> Json<Resp<()>> {
 }
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
-    path = "/on/play",
+    path = "/hook/on/play",
     request_body = StreamPlayInfo,
     responses(
         (status = 200, description = "文件删除成功", body = Resp<bool>),
@@ -66,7 +66,7 @@ async fn on_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<bool>> {
 }
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
-    path = "/off/play",
+    path = "/hook/off/play",
     request_body = StreamPlayInfo,
     responses(
         (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
@@ -83,7 +83,7 @@ async fn off_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<()>> {
 }
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
-    path = "/stream/idle",
+    path = "/hook/stream/idle",
     request_body = BaseStreamInfo,
     responses(
         (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
@@ -100,7 +100,7 @@ async fn stream_idle(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
 }
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
-    path = "/end/record",
+    path = "/hook/end/record",
     request_body = StreamRecordInfo,
     responses(
         (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),

@@ -57,8 +57,6 @@ impl
         ),
     ) -> GlobalResult<()> {
         let (http_listener, tu) = t;
-        let conf = self.conf;
-        let node_name = conf.get_name().clone();
         let (tx, rx) = mpsc::channel(100);
 
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
@@ -66,7 +64,6 @@ impl
             .rt_handle
             .spawn(rtp_handler::run(tu, network_rt.cancel.clone()));
         network_rt.rt_handle.spawn(http::run(
-            node_name,
             http_listener,
             tx,
             network_rt.cancel.clone(),

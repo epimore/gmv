@@ -13,15 +13,17 @@ use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::net::state::{Association, Package, Zip};
-use base::tokio;
+use base::{serde_json, tokio};
 use base::tokio::sync::mpsc::Sender;
 
 use crate::gb::core::rw::RWContext;
 use crate::gb::depot::SipPackage;
 use crate::gb::handler::builder::ResponseBuilder;
-use crate::gb::handler::parser::xml::KV2Model;
+use crate::gb::handler::parser::xml::{KV2Model, MESSAGE_UPLOAD_SNAPSHOT_SESSION_ID};
 use crate::gb::handler::{cmd, parser};
 use crate::http::client::{HttpBiz, HttpClient};
+use crate::service::{KEY_SNAPSHOT_IMAGE, KEY_STREAM_IN};
+use crate::state;
 use crate::state::model::AlarmInfo;
 use crate::state::AlarmConf;
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
@@ -292,7 +294,9 @@ impl Message {
                             MESSAGE_DEVICE_CONTROL => {}
                             MESSAGE_DEVICE_CONFIG => {}
                             MESSAGE_PRESET_QUERY => {}
-                            MESSAGE_UPLOAD_SNAPSHOT_FINISHED => {}
+                            MESSAGE_UPLOAD_SNAPSHOT_FINISHED => {
+                                Self::handle_snapshot_image(vs)
+                            }
                             _ => {
                                 warn!("device_id = {};message -- > {} 不支持。", device_id, v)
                             }
@@ -311,6 +315,15 @@ impl Message {
             Err(err) => {
                 let val = encoding::decode(&req.body, GB18030).hand_log(|msg| error!("{msg}"))?;
                 Err(SysErr(anyhow!("xml解析失败: {err:?}; xml = [{}]", val)))?
+            }
+        }
+    }
+
+    fn handle_snapshot_image(vs:Vec<(String,String)>){
+        if let Some((_, v)) = vs.iter().find(|(k, _)| k == MESSAGE_UPLOAD_SNAPSHOT_SESSION_ID) {
+            let key = format!("{}{}", KEY_SNAPSHOT_IMAGE, v);
+            if let Some((_, Some(tx))) = state::session::Cache::state_get(&key) {
+                let _ = tx.try_send(Some(Bytes::new())).hand_log(|msg| error!("{msg}"));
             }
         }
     }

@@ -23,7 +23,6 @@ pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
 }
 
 pub async fn run(
-    node: String,
     std_http_listener: std::net::TcpListener,
     tx: Sender<u32>,
     cancel_token: CancellationToken,
@@ -33,15 +32,13 @@ pub async fn run(
         .hand_log(|msg| error!("{msg}"))?;
     let listener = TcpListener::from_std(std_http_listener).hand_log(|msg| error!("{msg}"))?;
     let mut app = Router::new()
-        .merge(out::routes(&node))
+        .merge(out::routes())
         .merge(api::routes(tx.clone()));
 
     #[cfg(debug_assertions)]
     {
         use utoipa_swagger_ui::SwaggerUi;
-        app = Router::new()
-            .merge(app)
-            .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
+        app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
     }
     
     let server = axum::serve(

@@ -1,9 +1,9 @@
 use axum::Router;
 use axum::body::Body;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::Response;
 use base::cfg_lib::conf;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde::Deserialize;
 use base::serde_default;
@@ -18,7 +18,6 @@ mod hook;
 #[cfg(debug_assertions)]
 mod doc;
 
-pub const UPLOAD_PICTURE: &str = "/edge/upload/picture/{token}";
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "http")]
@@ -61,15 +60,13 @@ impl Http {
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         // 创建包含所有路由的统一Router
         let mut app = Router::new()
-            .nest(&self.prefix,edge::routes())
-            .nest("/session/hook", hook::routes())
-            .nest(&self.prefix,api::routes());
+            .nest("/edge",edge::routes())
+            .nest("/hook", hook::routes())
+            .nest("/api",api::routes());
         #[cfg(debug_assertions)]
         {
             use utoipa_swagger_ui::SwaggerUi;
-            app = Router::new()
-                .merge(app)
-                .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
+            app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
         }
         let server = axum::serve(
             listener,
@@ -109,5 +106,21 @@ impl Http {
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Body::from("500 Internal Server Error"))
             .unwrap()
+    }
+}
+
+pub fn get_gmv_token(headers: HeaderMap) -> GlobalResult<String> {
+    let header_name = HeaderName::from_static("gmv-token");
+    if let Some(value) = headers.get(&header_name) {
+        match value.to_str() {
+            Ok(token) => {
+                Ok(token.to_string())
+            }
+            Err(_) => {
+                Err(GlobalError::new_biz_error(1100, "Gmv-Token is invalid", |msg| error!("{}", msg)))
+            }
+        }
+    } else {
+        Err(GlobalError::new_biz_error(1100, "Gmv-Token not found", |msg| error!("{}", msg)))
     }
 }

@@ -31,16 +31,16 @@ impl HttpClient {
 
 #[pretend]
 pub trait HttpSession {
-    #[request(method = "POST", path = "/session/hook/stream/register")]
+    #[request(method = "POST", path = "/hook/stream/register")]
     async fn stream_register(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
-    #[request(method = "POST", path = "/session/hook/stream/input/timeout")]
+    #[request(method = "POST", path = "/hook/stream/input/timeout")]
     async fn stream_input_timeout(&self, json: &StreamState) -> Result<Json<Resp<()>>>;
-    #[request(method = "POST", path = "/session/hook/on/play")]
+    #[request(method = "POST", path = "/hook/on/play")]
     async fn on_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<bool>>>;
-    #[request(method = "POST", path = "/session/hook/stream/idle")]
+    #[request(method = "POST", path = "/hook/stream/idle")]
     async fn stream_idle(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
-    #[request(method = "POST", path = "/session/hook/off/play")]
+    #[request(method = "POST", path = "/hook/off/play")]
     async fn off_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<()>>>;
-    #[request(method = "POST", path = "/session/hook/end/record")]
+    #[request(method = "POST", path = "/hook/end/record")]
     async fn end_record(&self, json: &StreamRecordInfo) -> Result<Json<Resp<()>>>;
 }
