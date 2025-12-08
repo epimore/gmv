@@ -2,9 +2,9 @@ cargo fix --allow-dirty --allow-staged
 cargo build --release --target x86_64-unknown-linux-gnu
 cat logs/gb_2025-11-25.log |grep 'REGISTER sip:34020000001117000219' | sed 's/\\n/\n/g'
 run --package gmv-session --bin gmv-session -- start -c ./session/config.yml
-服务端画面截图保存为封面？
-9.8-9.14 完成SESSION注册BUG+已有功能实现回放+MP4录像
-9.15- 大华相机调试+图片采集（是否推流采集？）
+1.文档、视频
+2.tcp
+3.机器学习
 流播放地址：
 /flv/{stream_id}/{token}
 /hls/{stream_id}/{token}

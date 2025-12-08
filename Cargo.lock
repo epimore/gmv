@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
+source = "git+https://github.com/epimore/pigs.git?rev=934890fb#934890fb46592bc19596884cb739ce3793616f44"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -322,7 +322,7 @@ checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
 [[package]]
 name = "base_db"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
+source = "git+https://github.com/epimore/pigs.git?rev=934890fb#934890fb46592bc19596884cb739ce3793616f44"
 dependencies = [
  "base",
  "sqlx",
@@ -528,7 +528,7 @@ checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
+source = "git+https://github.com/epimore/pigs.git?rev=934890fb#934890fb46592bc19596884cb739ce3793616f44"
 dependencies = [
  "cfg_macro",
  "clap",
@@ -538,7 +538,7 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
+source = "git+https://github.com/epimore/pigs.git?rev=934890fb#934890fb46592bc19596884cb739ce3793616f44"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -648,7 +648,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 [[package]]
 name = "constructor"
 version = "0.2.0"
-source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
+source = "git+https://github.com/epimore/pigs.git?rev=934890fb#934890fb46592bc19596884cb739ce3793616f44"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -980,7 +980,7 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=10bbe44#10bbe44132f6a5beb3024ad44b4da3227b961773"
+source = "git+https://github.com/epimore/pigs.git?rev=934890fb#934890fb46592bc19596884cb739ce3793616f44"
 dependencies = [
  "anyhow",
  "log",

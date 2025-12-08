@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 shared = { path = "../shared" }
-base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "10bbe44", features = ["net"] }
+base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "934890fb", features = ["net"] }
 #base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
 
 rsip = "0.4"
