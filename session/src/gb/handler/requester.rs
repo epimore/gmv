@@ -43,7 +43,7 @@ pub async fn hand_request(
         Ok(())
     } else {
         match State::check_session(&bill, &device_id).await? {
-            State::Usable | State::ReCache => match req.method {
+            State::Enable | State::ReCache => match req.method {
                 Method::Ack => Ok(()),
                 Method::Bye => Ok(()),
                 Method::Cancel => Ok(()),
@@ -81,7 +81,7 @@ pub async fn hand_request(
 #[derive(Eq, PartialEq)]
 enum State {
     //可用的
-    Usable,
+    Enable,
     //需重新插入缓存的
     ReCache,
     //过期需重新注册的
@@ -105,7 +105,8 @@ impl State {
         if RWContext::get_device_id_by_association(bill).is_some()
             || RWContext::has_session_by_device_id(device_id)
         {
-            Ok(State::Usable)
+            RWContext::keep_alive(device_id, bill.clone());
+            Ok(State::Enable)
         } else {
             match mapper::get_device_status_info(device_id).await? {
                 None => {
@@ -347,7 +348,7 @@ impl Message {
                 &device_id, &status
             );
         }
-        RWContext::heart(device_id, bill.clone());
+        RWContext::keep_alive(device_id, bill.clone());
     }
 
     async fn device_info(vs: Vec<(String, String)>) {

@@ -252,14 +252,20 @@ impl Cache {
     }
 
     pub fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
+        let mut should_notify = false;
         let mut guard = GENERAL_CACHE.shared.state.lock();
-
         match expire {
             None => { guard.entities.insert(key, (data, None, call_tx)); }
             Some(ins) => {
+                should_notify = guard.next_expiration().map(|ts| ts > ins).unwrap_or(true);
+
                 guard.entities.insert(key.clone(), (data, Some(ins), call_tx));
                 guard.expirations.insert((ins, key));
             }
+        }
+        drop(guard);
+        if should_notify {
+            GENERAL_CACHE.shared.background_task.notify_one();
         }
     }
 
@@ -373,7 +379,6 @@ struct State {
     expirations: BTreeSet<(Instant, String)>,
 }
 
-#[allow(unused)]
 impl State {
     fn next_expiration(&self) -> Option<Instant> {
         self.expirations.first().map(|expiration| expiration.0)

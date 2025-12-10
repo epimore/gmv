@@ -65,6 +65,11 @@ struct State {
     anti_map: HashMap<String, TransEntity>,
     expire_set: BTreeSet<(Instant, String)>,
 }
+impl State {
+    fn next_expiration(&self) -> Option<Instant> {
+        self.expire_set.first().map(|expiration| expiration.0)
+    }
+}
 struct Shared {
     state: RwLock<State>,
     background_task: Notify,
@@ -177,9 +182,9 @@ impl TransactionContext {
             expire_instant,
             cb,
         };
-
         let mut state = self.shared.state.write();
         let state = &mut *state;
+        let should_notify = state.next_expiration().map(|ts| ts > expire_instant).unwrap_or(true);
         match state.anti_map.entry(key) {
             Entry::Occupied(occ) => Err(GlobalError::new_sys_error(
                 "事务中已存在该请求，请稍后尝试",
@@ -188,9 +193,12 @@ impl TransactionContext {
             Entry::Vacant(vac) => {
                 state.expire_set.insert((expire_instant, vac.key().clone()));
                 vac.insert(entity);
-                Ok(())
             }
         }
+        if should_notify {
+            self.shared.background_task.notify_one();
+        }
+        Ok(())
     }
     pub fn handle_response(&self, response: Response) -> GlobalResult<()> {
         let key = response.generate_trans_key()?;

@@ -4,13 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-base = { git = "https://github.com/epimore/pigs.git",rev = "934890fb",features = ["net"] }
+base = { git = "https://github.com/epimore/pigs.git",rev = "a81dea9a",features = ["net"] }
 shared = { path = "../shared" }
 
 futures-core = "0.3"
 futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
-rsmpeg = { version = "0.14.2+ffmpeg.6.1", default-features = false, features = ["link_system_ffmpeg"] }
+rsmpeg = { version = "0.14.2", default-features = false, features = ["link_system_ffmpeg"] }
 pretend = "0.4"
 pretend-reqwest = "0.4"
 axum = "0.8"

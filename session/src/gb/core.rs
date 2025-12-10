@@ -176,7 +176,7 @@ pub mod rw {
             }
         }
 
-        pub fn heart(device_id: &String, new_bill: Association) {
+        pub fn keep_alive(device_id: &String, new_bill: Association) {
             let mut guard = Self::get_ctx().shared.state.lock();
 
             let state = &mut *guard;
