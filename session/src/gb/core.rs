@@ -4,6 +4,7 @@
 pub mod rw {
     use std::collections::{BTreeSet, HashMap};
     use std::fmt::format;
+    use std::net::IpAddr;
     use std::sync::{Arc, LazyLock, OnceLock};
 
     use std::time::Duration;
@@ -44,7 +45,7 @@ pub mod rw {
             RW_CTX.get().expect("RWContext not initialized")
         }
         pub fn init(io_tx: Sender<Zip>, sip_tx: Sender<SipPackage>) {
-            let (tx, rx) = mpsc::channel(16);
+            let (tx, rx) = mpsc::channel(64);
             let session = RWContext {
                 shared: Arc::new(Shared {
                     state: Mutex::new(State {
@@ -102,22 +103,20 @@ pub mod rw {
             Ok(())
         }
 
-        pub fn insert(device_id: &String, heartbeat: u8, bill: &Association) {
-            let expires = Duration::from_secs(heartbeat as u64 * 3);
-            let when = Instant::now() + expires;
-
+        pub fn insert(device_id: &String, device_session: DeviceSession) {
+            let when = device_session.timeout_instant;
+            let association = device_session.association.clone();
             let mut state = Self::get_ctx().shared.state.lock();
 
             let notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
             state.expirations.insert((when, device_id.clone()));
             //当插入时，已有该设备映射时，需删除老数据，插入新数据
-            if let Some((when, _expires, old_bill)) = state
-                .sessions
-                .insert(device_id.clone(), (when, expires, bill.clone()))
-            {
-                state.expirations.remove(&(when, device_id.clone()));
-                state.bill_map.remove(&old_bill);
-                state.bill_map.insert(bill.clone(), device_id.clone());
+            if let Some(old_ds) = state.sessions.insert(device_id.clone(), device_session) {
+                state.expirations.remove(&(old_ds.timeout_instant, device_id.clone()));
+                state.bill_map.remove(&old_ds.association);
+                state
+                    .bill_map
+                    .insert(association, device_id.clone());
             }
             drop(state);
 
@@ -132,12 +131,9 @@ pub mod rw {
 
             let state = &mut *guard;
             state.bill_map.remove(bill).map(|device_id| {
-                state
-                    .sessions
-                    .remove(&device_id)
-                    .map(|(when, _expires, _bill)| {
-                        state.expirations.remove(&(when, device_id));
-                    });
+                state.sessions.remove(&device_id).map(|ds| {
+                    state.expirations.remove(&(ds.timeout_instant, device_id));
+                });
             });
         }
 
@@ -154,12 +150,14 @@ pub mod rw {
                 let mut guard = Self::get_ctx().shared.state.lock();
 
                 let state = &mut *guard;
-                if let Some((when, _expires, bill)) = state.sessions.remove(device_id) {
-                    state.expirations.remove(&(when, device_id.clone()));
-                    state.bill_map.remove(&bill);
+                if let Some(ds) = state.sessions.remove(device_id) {
+                    state
+                        .expirations
+                        .remove(&(ds.timeout_instant, device_id.clone()));
+                    state.bill_map.remove(&ds.association);
                     //通知网络出口关闭TCP连接
-                    if &Protocol::TCP == bill.get_protocol() {
-                        Some(bill)
+                    if &Protocol::TCP == ds.association.get_protocol() {
+                        Some(ds.association)
                     } else {
                         None
                     }
@@ -178,43 +176,42 @@ pub mod rw {
 
         pub fn keep_alive(device_id: &String, new_bill: Association) {
             let mut guard = Self::get_ctx().shared.state.lock();
-
             let state = &mut *guard;
-            state
-                .sessions
-                .get_mut(device_id)
-                .map(|(when, expires, bill)| {
-                    //UDP的无连接状态，需根据心跳实时刷新其网络三元组
-                    if &Protocol::UDP == bill.get_protocol() {
-                        state.bill_map.remove(bill);
-                        state.bill_map.insert(bill.clone(), device_id.clone());
-                        *bill = new_bill;
-                    }
-                    state.expirations.remove(&(*when, device_id.clone()));
-                    let ct = Instant::now() + *expires;
-                    *when = ct;
-                    state.expirations.insert((ct, device_id.clone()));
-                });
+            let ct = state.sessions.get_mut(device_id).map(|ds| {
+                let ct = Instant::now() + ds.expires;
+                state.bill_map.remove(&ds.association);
+                state
+                    .bill_map
+                    .insert(new_bill.clone(), device_id.clone());
+                ds.association = new_bill;
+                state
+                    .expirations
+                    .remove(&(ds.timeout_instant, device_id.clone()));
+                ds.timeout_instant = ct;
+                state.expirations.insert((ct, device_id.clone()));
+                ct
+            });
+            if let Some(when) = ct {
+                if state.next_expiration().map(|ts| ts > when).unwrap_or(true) {
+                    Self::get_ctx().shared.background_task.notify_one();
+                }
+            }
         }
 
         pub fn get_expires_by_device_id(device_id: &String) -> Option<Duration> {
             let guard = Self::get_ctx().shared.state.lock();
-            let option_expires = guard
-                .sessions
-                .get(device_id)
-                .map(|(_when, expires, _bill)| *expires);
-
-            option_expires
+            guard.sessions.get(device_id).map(|ds| ds.expires)
         }
 
-        pub fn get_association_by_device_id(device_id: &String) -> Option<(Association)> {
+        pub fn get_ds_by_device_id(device_id: &String) -> Option<(String, Association, bool)> {
             let guard = Self::get_ctx().shared.state.lock();
-            let opt = guard
-                .sessions
-                .get(device_id)
-                .map(|(_, _, bill)| (bill.clone()));
-
-            opt
+            guard.sessions.get(device_id).map(|ds| {
+                (
+                    ds.contact_uri.clone(),
+                    ds.association.clone(),
+                    ds.support_lr,
+                )
+            })
         }
 
         pub fn has_session_by_device_id(device_id: &String) -> bool {
@@ -276,14 +273,16 @@ pub mod rw {
                     .try_send(device_id.clone())
                     .hand_log(|msg| warn!("{msg}"));
                 //移除会话map
-                if let Some((when, _dur, bill)) = state.sessions.remove(device_id) {
-                    state.bill_map.remove(&bill);
-                    state.expirations.remove(&(when, device_id.to_string()));
+                if let Some(ds) = state.sessions.remove(device_id) {
+                    state.bill_map.remove(&ds.association);
+                    state
+                        .expirations
+                        .remove(&(ds.timeout_instant, device_id.to_string()));
                     //通知网络出口关闭TCP连接
-                    if Protocol::TCP == bill.protocol {
+                    if Protocol::TCP == ds.association.protocol {
                         let _ = RWContext::get_ctx()
                             .io_tx
-                            .try_send(Zip::build_event(Event::new(bill, 0)))
+                            .try_send(Zip::build_event(Event::new(ds.association, 0)))
                             .hand_log(|msg| warn!("{msg}"));
                     }
                 }
@@ -292,10 +291,34 @@ pub mod rw {
             Ok(None)
         }
     }
+    pub struct DeviceSession {
+        pub contact_uri: String, // 来自 REGISTER Contact
+        pub association: Association,
+        pub support_lr: bool,         // Contact 是否有 lr
+        pub expires: Duration,        //心跳有效期
+        pub timeout_instant: Instant, //下个过期时刻
+    }
+    impl DeviceSession {
+        pub fn build(contact_uri: String, association: Association, heartbeat: u8) -> Self {
+            let expires = Duration::from_secs(heartbeat as u64 * 3);
+            let timeout_instant = Instant::now() + expires;
+            Self {
+                contact_uri,
+                association,
+                support_lr: false,
+                expires,
+                timeout_instant,
+            }
+        }
+        pub fn enable_lr(&mut self) {
+            self.support_lr = true;
+        }
+    }
 
     struct State {
         //映射设备ID，会话发送端，过期瞬时，心跳周期，网络三元组，device_id,msg,dst_addr,time,duration,bill
-        sessions: HashMap<String, (Instant, Duration, Association)>,
+        // sessions: HashMap<String, (Instant, Duration, Association)>,
+        sessions: HashMap<String, DeviceSession>,
         //标识设备状态过期时刻，instant,device_id
         expirations: BTreeSet<(Instant, String)>,
         //映射网络三元组与设备ID，bill,device_id

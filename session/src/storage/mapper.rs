@@ -15,13 +15,13 @@ pub async fn get_device_channel_status(device_id: &String, channel_id: &String) 
     Ok(res.map(|(v, )| v))
 }
 
-pub async fn get_device_status_info(device_id: &String) -> GlobalResult<Option<(u8, u8, u32, NaiveDateTime, u8)>> {
-    let pool = get_conn_by_pool();
-    let res = sqlx::query_as::<_, (u8, u8, u32, NaiveDateTime, u8)>(
-        "SELECT o.HEARTBEAT_SEC,o.`STATUS`,d.REGISTER_EXPIRES,d.REGISTER_TIME,d.`STATUS` FROM GMV_OAUTH o INNER JOIN GMV_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
-    ).bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
-    Ok(res)
-}
+// pub async fn get_device_status_info(device_id: &String) -> GlobalResult<Option<(u8, u8, u32, NaiveDateTime, u8)>> {
+//     let pool = get_conn_by_pool();
+//     let res = sqlx::query_as::<_, (u8, u8, u32, NaiveDateTime, u8)>(
+//         "SELECT o.HEARTBEAT_SEC,o.`STATUS`,d.REGISTER_EXPIRES,d.REGISTER_TIME,d.`STATUS` FROM GMV_OAUTH o INNER JOIN GMV_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
+//     ).bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
+//     Ok(res)
+// }
 
 pub async fn get_snapshot_dc_by_limit(start: u32, count: u32) -> GlobalResult<Vec<(String, String)>> {
     let pool = get_conn_by_pool();
@@ -61,13 +61,6 @@ mod test {
         init();
         let result = get_device_channel_status(&"34020000001110000001".to_string(), &"34020000001320000180".to_string()).await;
         println!("{:?}", result);
-    }
-
-    // #[tokio::test]
-    async fn test_get_device_status_info() {
-        init();
-        let status_info = get_device_status_info(&"34020000001110000001".to_string()).await;
-        println!("{:?}", status_info);
     }
 
     fn init() {

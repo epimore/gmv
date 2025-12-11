@@ -80,6 +80,7 @@ async fn upload_picture(
     Query(params): Query<HashMap<String, String>>,
     req: Request,
 ) -> Result<impl IntoResponse, String> {
+    info!("upload_picture: token = {:?}", &token);
     let session_id = get_param(&params, "SessionID")?;
     edge_token::check(session_id, &token).map_err(|_| "Invalid token".to_string())?;
     let file_id_opt = params

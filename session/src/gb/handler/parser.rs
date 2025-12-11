@@ -1,27 +1,33 @@
 pub mod header {
+    use anyhow::anyhow;
+    use base::exception::GlobalError::SysErr;
+    use base::exception::{GlobalResult, GlobalResultExt};
+    use base::log::warn;
     use rsip::headers::Via;
     use rsip::prelude::{HasHeaders, HeadersExt};
-    use rsip::{Header, Request, Response};
-    use anyhow::anyhow;
-    use base::exception::{GlobalResult, GlobalResultExt};
-    use base::exception::GlobalError::{SysErr};
-    use base::log::{warn};
+    use rsip::{Header, Param, Request, Response};
 
     pub fn get_device_id_by_request(req: &Request) -> GlobalResult<String> {
-        let from_user = req.from_header()
+        let from_user = req
+            .from_header()
             .hand_log(|msg| warn!("{msg}"))?
-            .uri().hand_log(|msg| warn!("{msg}"))?
-            .auth.ok_or(SysErr(anyhow!("user is none")))
+            .uri()
+            .hand_log(|msg| warn!("{msg}"))?
+            .auth
+            .ok_or(SysErr(anyhow!("user is none")))
             .hand_log(|msg| warn!("{msg}"))?
             .user;
         Ok(from_user)
     }
 
     pub fn get_device_id_by_response(req: &Response) -> GlobalResult<String> {
-        let from_user = req.to_header()
+        let from_user = req
+            .to_header()
             .hand_log(|msg| warn!("{msg}"))?
-            .uri().hand_log(|msg| warn!("{msg}"))?
-            .auth.ok_or(SysErr(anyhow!("user is none")))
+            .uri()
+            .hand_log(|msg| warn!("{msg}"))?
+            .auth
+            .ok_or(SysErr(anyhow!("user is none")))
             .hand_log(|msg| warn!("{msg}"))?
             .user;
         Ok(from_user)
@@ -33,35 +39,61 @@ pub mod header {
     }
 
     pub fn get_transport(req: &Request) -> GlobalResult<String> {
-        let transport = get_via_header(req)?.trasnport().hand_log(|msg| warn!("{msg}"))?.to_string();
+        let transport = get_via_header(req)?
+            .trasnport()
+            .hand_log(|msg| warn!("{msg}"))?
+            .to_string();
         Ok(transport)
     }
 
     pub fn get_local_addr(req: &Request) -> GlobalResult<String> {
-        let local_addr = get_via_header(req)?.uri().hand_log(|msg| warn!("{msg}"))?.host_with_port.to_string();
+        let local_addr = get_via_header(req)?
+            .uri()
+            .hand_log(|msg| warn!("{msg}"))?
+            .host_with_port
+            .to_string();
         Ok(local_addr)
     }
-
-    pub fn get_from(req: &Request) -> GlobalResult<String> {
-        let from = req.from_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?.to_string();
-        Ok(from)
+    pub fn enable_lr(req: &Request) -> GlobalResult<u8> {
+        let contact = req.contact_header().hand_log(|msg| warn!("{msg}"))?;
+        if let Ok(ps) = contact.params() {
+            if ps.iter().any(|param| param == &Param::Lr) {
+                return Ok(1);
+            }
+        }
+        Ok(0)
     }
 
-    pub fn get_to(req: &Request) -> GlobalResult<String> {
-        let to = req.to_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?.to_string();
-        Ok(to)
+    pub fn get_contact_uri(req: &Request) -> GlobalResult<String> {
+        let contact = req.contact_header().hand_log(|msg| warn!("{msg}"))?;
+        Ok(contact.uri().hand_log(|msg| warn!("{msg}"))?.to_string())
     }
+    // pub fn get_from(req: &Request) -> GlobalResult<String> {
+    //     let from = req.from_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?.to_string();
+    //     Ok(from)
+    // }
+    //
+    // pub fn get_to(req: &Request) -> GlobalResult<String> {
+    //     let to = req.to_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?.to_string();
+    //     Ok(to)
+    // }
 
     pub fn get_expires(req: &Request) -> GlobalResult<u32> {
-        let expires = req.expires_header()
+        let expires = req
+            .expires_header()
             .ok_or(SysErr(anyhow!("无参数expires")))
             .hand_log(|msg| warn!("{msg}"))?
-            .seconds().hand_log(|msg| warn!("{msg}"))?;
+            .seconds()
+            .hand_log(|msg| warn!("{msg}"))?;
         Ok(expires)
     }
 
     pub fn get_domain(req: &Request) -> GlobalResult<String> {
-        let to_uri = req.to_header().hand_log(|msg| warn!("{msg}"))?.uri().hand_log(|msg| warn!("{msg}"))?;
+        let to_uri = req
+            .to_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .uri()
+            .hand_log(|msg| warn!("{msg}"))?;
         Ok(to_uri.host_with_port.to_string())
     }
 
@@ -80,7 +112,9 @@ pub mod header {
                         // };
                     }
                 }
-                _ => { continue; }
+                _ => {
+                    continue;
+                }
             };
         }
         None
@@ -88,17 +122,22 @@ pub mod header {
 }
 
 pub mod xml {
+    use anyhow::anyhow;
+    use base::exception::GlobalError::SysErr;
+    use base::exception::{GlobalResult, GlobalResultExt};
+    use base::log::{debug, error};
+    use encoding_rs::GB18030;
+    use quick_xml::events::Event;
+    use quick_xml::{Reader, encoding};
     use std::ops::Deref;
     use std::str::from_utf8;
-    use encoding_rs::GB18030;
-    use base::log::{debug, error};
-    use quick_xml::events::Event;
-    use quick_xml::{encoding, Reader};
-    use anyhow::{anyhow};
-    use base::exception::{GlobalResult, GlobalResultExt};
-    use base::exception::GlobalError::SysErr;
 
-    pub const MESSAGE_TYPE: [&'static str; 4] = ["Query,CmdType", "Control,CmdType", "Response,CmdType", "Notify,CmdType"];
+    pub const MESSAGE_TYPE: [&'static str; 4] = [
+        "Query,CmdType",
+        "Control,CmdType",
+        "Response,CmdType",
+        "Notify,CmdType",
+    ];
     pub const MESSAGE_KEEP_ALIVE: &str = "Keepalive";
     pub const MESSAGE_CONFIG_DOWNLOAD: &str = "ConfigDownload";
     pub const MESSAGE_NOTIFY_CATALOG: &str = "Catalog";
@@ -121,7 +160,8 @@ pub mod xml {
     pub const RESPONSE_MAX_CAMERA: &str = "Response,MaxCamera";
     pub const RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID: &str = "Response,DeviceList,Item,DeviceID";
     pub const RESPONSE_DEVICE_LIST_ITEM_NAME: &str = "Response,DeviceList,Item,Name";
-    pub const RESPONSE_DEVICE_LIST_ITEM_MANUFACTURER: &str = "Response,DeviceList,Item,Manufacturer";
+    pub const RESPONSE_DEVICE_LIST_ITEM_MANUFACTURER: &str =
+        "Response,DeviceList,Item,Manufacturer";
     pub const RESPONSE_DEVICE_LIST_ITEM_MODEL: &str = "Response,DeviceList,Item,Model";
     pub const RESPONSE_DEVICE_LIST_ITEM_OWNER: &str = "Response,DeviceList,Item,Owner";
     pub const RESPONSE_DEVICE_LIST_ITEM_CIVIL_CODE: &str = "Response,DeviceList,Item,CivilCode";
@@ -132,7 +172,8 @@ pub mod xml {
     pub const RESPONSE_DEVICE_LIST_ITEM_LONGITUDE: &str = "Response,DeviceList,Item,Longitude";
     pub const RESPONSE_DEVICE_LIST_ITEM_LATITUDE: &str = "Response,DeviceList,Item,Latitude";
     pub const RESPONSE_DEVICE_LIST_ITEM_PTZ_TYPE: &str = "Response,DeviceList,Item,Info,PTZType";
-    pub const RESPONSE_DEVICE_LIST_ITEM_SUPPLY_LIGHT_TYPE: &str = "Response,DeviceList,Item,SupplyLightType";
+    pub const RESPONSE_DEVICE_LIST_ITEM_SUPPLY_LIGHT_TYPE: &str =
+        "Response,DeviceList,Item,SupplyLightType";
     pub const RESPONSE_DEVICE_LIST_ITEM_IP_ADDRESS: &str = "Response,DeviceList,Item,IPAddress";
     pub const RESPONSE_DEVICE_LIST_ITEM_PORT: &str = "Response,DeviceList,Item,Port";
     pub const RESPONSE_DEVICE_LIST_ITEM_PASSWORD: &str = "Response,DeviceList,Item,Password";
@@ -142,7 +183,6 @@ pub mod xml {
     pub const NOTIFY_STATUS: &str = "Notify,Status";
     pub const NOTIFY_TYPE: &str = "Notify,NotifyType";
     pub const NOTIFY_UPLOAD_SNAP_SHOT_FINISHED: &str = "UploadSnapShotFinished";
-
 
     pub const NOTIFY_ALARM_PRIORITY: &str = "Notify,AlarmPriority";
     pub const NOTIFY_ALARM_TIME: &str = "Notify,AlarmTime";
@@ -167,7 +207,8 @@ pub mod xml {
                 }
                 Ok(Event::Text(e)) => {
                     //此处使用GB18030进行解析,兼容新版本要求
-                    let val = encoding::decode(e.deref(), GB18030).hand_log(|msg| error!("{msg}"))?;
+                    let val =
+                        encoding::decode(e.deref(), GB18030).hand_log(|msg| error!("{msg}"))?;
                     let len = tag.split(",").collect::<Vec<&str>>().len() - 1;
                     if k != len || j {
                         k = len;
@@ -183,9 +224,11 @@ pub mod xml {
                     j = b;
                     b = true;
                 }
-                Err(e) => {
-                    Err(SysErr(anyhow!("Error at position {}: {:?}", xml_reader.buffer_position(), e)))?
-                }
+                Err(e) => Err(SysErr(anyhow!(
+                    "Error at position {}: {:?}",
+                    xml_reader.buffer_position(),
+                    e
+                )))?,
                 Ok(Event::Eof) => break,
                 _ => (),
             }

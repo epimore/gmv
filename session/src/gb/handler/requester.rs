@@ -1,22 +1,22 @@
-use base::log::{debug, info, LevelFilter};
+use base::log::{LevelFilter, debug, info};
 use encoding_rs::GB18030;
 use quick_xml::encoding;
 use rsip::headers::ToTypedHeader;
 use rsip::message::HeadersExt;
 use rsip::services::DigestGenerator;
-use rsip::{Method, Request};
+use rsip::{Method, Param, Request};
 
 use anyhow::anyhow;
 use base::bytes::Bytes;
-use base::chrono::{Duration, Local};
+use base::chrono::{Duration, Local, NaiveDateTime};
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::net::state::{Association, Package, Zip};
-use base::{serde_json, tokio};
 use base::tokio::sync::mpsc::Sender;
+use base::{serde_json, tokio};
 
-use crate::gb::core::rw::RWContext;
+use crate::gb::core::rw::{DeviceSession, RWContext};
 use crate::gb::depot::SipPackage;
 use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::handler::parser::xml::{KV2Model, MESSAGE_UPLOAD_SNAPSHOT_SESSION_ID};
@@ -24,9 +24,9 @@ use crate::gb::handler::{cmd, parser};
 use crate::http::client::{HttpBiz, HttpClient};
 use crate::service::{KEY_SNAPSHOT_IMAGE, KEY_STREAM_IN};
 use crate::state;
-use crate::state::model::AlarmInfo;
 use crate::state::AlarmConf;
-use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
+use crate::state::model::AlarmInfo;
+use crate::storage::entity::{DeviceStatus, GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
 use crate::storage::mapper;
 
 pub async fn hand_request(
@@ -98,32 +98,45 @@ impl State {
     /// 2)设备未在注册有效期内，重新注册
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
-    async fn check_session(
-        bill: &Association,
-        device_id: &String,
-    ) -> GlobalResult<State> {
+    async fn check_session(bill: &Association, device_id: &String) -> GlobalResult<State> {
         if RWContext::get_device_id_by_association(bill).is_some()
             || RWContext::has_session_by_device_id(device_id)
         {
             RWContext::keep_alive(device_id, bill.clone());
             Ok(State::Enable)
         } else {
-            match mapper::get_device_status_info(device_id).await? {
+            match DeviceStatus::get_device_status(device_id).await? {
                 None => {
                     warn!("未知设备：{device_id}");
                     Ok(State::Invalid)
                 }
-                Some((heart, enable, expire, reg_ts, on)) => {
+                Some(ds) => {
+                    let DeviceStatus {
+                        heartbeat,
+                        enable,
+                        expires,
+                        register_time,
+                        online,
+                        contact_uri,
+                        lr,
+                    } = ds;
                     if enable == 0 {
                         warn!("未启用设备: {device_id}");
                         Ok(State::Invalid)
                     } else {
                         //判断是否在注册有效期内
-                        if reg_ts + Duration::seconds(expire as i64) > Local::now().naive_local() {
+                        if register_time + Duration::seconds(expires as i64)
+                            > Local::now().naive_local()
+                        {
+                            let mut device_session =
+                                DeviceSession::build(contact_uri, bill.clone(), heartbeat);
+                            if lr == 1 {
+                                device_session.enable_lr();
+                            }
                             //刷新缓存
-                            RWContext::insert(device_id, heart, bill);
+                            RWContext::insert(device_id, device_session);
                             //如果设备是离线状态，则更新为在线
-                            if on == 0 {
+                            if online == 0 {
                                 GmvDevice::update_gmv_device_status_by_device_id(device_id, 1)
                                     .await?;
                             }
@@ -208,7 +221,13 @@ impl Register {
         bill: &Association,
         oauth: GmvOauth,
     ) -> GlobalResult<()> {
-        RWContext::insert(device_id, oauth.heartbeat_sec, bill);
+        let contact_uri = parser::header::get_contact_uri(req)?;
+        let mut device_session =
+            DeviceSession::build(contact_uri, bill.clone(), oauth.heartbeat_sec);
+        if parser::header::enable_lr(req)? == 1 {
+            device_session.enable_lr();
+        }
+        RWContext::insert(device_id, device_session);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register().await?;
         let ok_response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
@@ -295,9 +314,7 @@ impl Message {
                             MESSAGE_DEVICE_CONTROL => {}
                             MESSAGE_DEVICE_CONFIG => {}
                             MESSAGE_PRESET_QUERY => {}
-                            MESSAGE_UPLOAD_SNAPSHOT_FINISHED => {
-                                Self::handle_snapshot_image(vs)
-                            }
+                            MESSAGE_UPLOAD_SNAPSHOT_FINISHED => Self::handle_snapshot_image(vs),
                             _ => {
                                 warn!("device_id = {};message -- > {} 不支持。", device_id, v)
                             }
@@ -320,11 +337,16 @@ impl Message {
         }
     }
 
-    fn handle_snapshot_image(vs:Vec<(String,String)>){
-        if let Some((_, v)) = vs.iter().find(|(k, _)| k == MESSAGE_UPLOAD_SNAPSHOT_SESSION_ID) {
+    fn handle_snapshot_image(vs: Vec<(String, String)>) {
+        if let Some((_, v)) = vs
+            .iter()
+            .find(|(k, _)| k == MESSAGE_UPLOAD_SNAPSHOT_SESSION_ID)
+        {
             let key = format!("{}{}", KEY_SNAPSHOT_IMAGE, v);
             if let Some((_, Some(tx))) = state::session::Cache::state_get(&key) {
-                let _ = tx.try_send(Some(Bytes::new())).hand_log(|msg| error!("{msg}"));
+                let _ = tx
+                    .try_send(Some(Bytes::new()))
+                    .hand_log(|msg| error!("{msg}"));
             }
         }
     }
@@ -434,7 +456,7 @@ mod tests {
     use rsip::headers::Authorization;
     use rsip::headers::ToTypedHeader;
     use rsip::services::DigestGenerator;
-    use rsip::{headers, Method};
+    use rsip::{Method, headers};
 
     #[test]
     fn test_time_stamp() {
