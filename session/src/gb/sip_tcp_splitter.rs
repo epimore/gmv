@@ -1,112 +1,100 @@
+use std::collections::VecDeque;
 use base::bytes::{Buf, Bytes, BytesMut};
 use std::str;
 
-/// 粘包拆包处理（标准 + 容错）
-pub fn complete_pkt(buffer: &mut BytesMut) -> Option<Vec<Bytes>> {
-    let mut packets = Vec::new();
-
+/// SIP over TCP 拆包器：
+/// - 支持粘包、拆包、多包连续
+/// - 支持无 Content-Length（国产设备常见）
+/// - 不使用 UTF-8 解析（SIP header 是 ASCII）
+/// - 容错 CL 格式
+/// - 处理非法数据（防御性编码）
+pub fn complete_pkt(buffer: &mut BytesMut, packets: &mut VecDeque<Bytes>) {
     loop {
-        // 1️⃣ 查找头部结束符
+        // 必须先能找到 header 结束符
         let Some(header_end) = find_header_end(buffer) else {
-            // header 未收完整
             break;
         };
 
-        // 2️⃣ 提取 header
-        let headers = &buffer[..header_end];
-        let headers_str = match str::from_utf8(headers) {
+        let header_bytes = &buffer[..header_end + 4]; // 包含 \r\n\r\n
+        let headers = match std::str::from_utf8(header_bytes) {
             Ok(v) => v,
             Err(_) => {
-                // 非 UTF8 数据，丢弃缓冲，防止死循环
-                buffer.clear();
-                break;
+                // SIP header 必须是 ASCII，解析失败表示脏数据
+                // 清掉无效数据，但不清空整个 buffer，尽量避免丢包
+                buffer.advance(header_end + 4);
+                continue;
             }
         };
 
-        // 3️⃣ 解析 Content-Length
-        let content_length = parse_content_length(headers_str).unwrap_or(0);
+        // 解析 Content-Length
+        let content_length = parse_content_length(headers);
+
+        // 总长度 = header + body
         let total_len = header_end + 4 + content_length;
 
         if buffer.len() < total_len {
-            // 未收全，退出等待下次
+            // 半包 body，等待更多数据
             break;
         }
 
-        // 4️⃣ 提取完整报文
+        // 提取完整报文
         let pkt = buffer.split_to(total_len).freeze();
-        packets.push(pkt);
+        packets.push_back(pkt);
 
-        // 5️⃣ 清理多余空行
+        // 清除额外空行（部分设备会在包之间增加空行）
         while buffer.starts_with(b"\r\n") {
             buffer.advance(2);
         }
 
-        // 6️⃣ 检查下一条报文是否存在
-        // 如果后续不是以 SIP/2.0 或 方法名开头，则继续等待
-        if !maybe_next_packet(buffer) {
+        // 检查下一条是否有可能是 SIP 包
+        if !maybe_sip_start(buffer) {
             break;
         }
     }
-
-    if packets.is_empty() {
-        None
-    } else {
-        Some(packets)
-    }
 }
 
-/// 查找 SIP 头部结束标志 "\r\n\r\n"
+/// 查找 \r\n\r\n 的位置
 fn find_header_end(buf: &BytesMut) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-/// 解析 Content-Length (大小写不敏感 + 兼容简写 l:)
-fn parse_content_length(headers: &str) -> Option<usize> {
+/// 解析 Content-Length（支持大小写、前后空格）
+/// 若未找到，则返回 0（国产设备常见）
+fn parse_content_length(headers: &str) -> usize {
     for line in headers.lines() {
-        let line_lower = line.trim().to_ascii_lowercase();
-        if let Some(v) = line_lower.strip_prefix("content-length:") {
-            return v.trim().parse::<usize>().ok();
-        }
-        if let Some(v) = line_lower.strip_prefix("l:") {
-            return v.trim().parse::<usize>().ok();
+        let line_lower = line.to_ascii_lowercase();
+        if line_lower.starts_with("content-length:") {
+            // 截取 ":" 后部分
+            if let Some(v) = line.splitn(2, ':').nth(1) {
+                return v.trim().parse::<usize>().unwrap_or(0);
+            }
         }
     }
-    None
+    0
 }
 
-/// 判断当前缓冲区是否可能是下一条 SIP 报文的开头
-fn maybe_next_packet(buf: &BytesMut) -> bool {
-    if buf.len() < 8 {
+/// 粗略判断下一条报文是否可能以 SIP 开始
+/// 只用于避免误判，不能严格验证
+fn maybe_sip_start(buf: &BytesMut) -> bool {
+    if buf.len() < 4 {
         return false;
     }
 
-    // 直接字节级检查，避免UTF-8转换开销
-    let prefix = &buf[..std::cmp::min(24, buf.len())];
-
-    // 检查SIP响应如: "SIP/2.0 200 "
-    if prefix.len() >= 12 && &prefix[..8] == b"SIP/2.0 " {
-        // 检查状态码是3位数字加空格: "200 "
-        let status_part = &prefix[8..12];
-        return status_part[0].is_ascii_digit() &&
-            status_part[1].is_ascii_digit() &&
-            status_part[2].is_ascii_digit() &&
-            status_part[3] == b' ';
+    // SIP/2.0 Response
+    if buf.starts_with(b"SIP/2.0 ") {
+        return true;
     }
 
-    // 检查SIP请求如："REGISTER sip:130909115229300920@10.64.49.44:7100 SIP/2.0"
-    const METHOD_PREFIXES: &[&[u8]] = &[
-        b"REGISTER ", b"INVITE ", b"ACK ", b"BYE ", b"CANCEL ",
-        b"OPTIONS ", b"MESSAGE ", b"INFO ", b"PRACK ", b"SUBSCRIBE ",
-        b"NOTIFY ", b"UPDATE ", b"REFER ", b"PUBLISH ",
+    // Request 行：METHOD SP URI
+    // METHOD：REGISTER / INVITE / MESSAGE / OPTIONS / BYE / ACK / CANCEL / INFO 等
+    const METHODS: [&[u8]; 9] = [
+        b"REGISTER", b"INVITE", b"MESSAGE", b"OPTIONS",
+        b"BYE", b"ACK", b"CANCEL", b"INFO", b"UPDATE",
     ];
 
-    for method_prefix in METHOD_PREFIXES {
-        if prefix.len() >= method_prefix.len() + 4 &&
-            prefix.starts_with(method_prefix) {
-
-            // 检查 "sip:" 或 "sips"
-            let uri_part = &prefix[method_prefix.len()..];
-            return uri_part.starts_with(b"sip:") || uri_part.starts_with(b"sips:");
+    for m in METHODS {
+        if buf.starts_with(m) {
+            return true;
         }
     }
 

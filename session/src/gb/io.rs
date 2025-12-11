@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use base::bytes::{Bytes, BytesMut};
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use encoding_rs::GB18030;
@@ -16,13 +17,18 @@ use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Package, Protocol, Zip};
 use base::tokio;
 use base::tokio_util::sync::CancellationToken;
-use regex::Regex;
 
-static R_LOG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\r\n]+").expect("Failed to compile log new line regex"));
 /// 将日志内容压缩为单行，保留可还原换行信息
 pub fn compact_for_log(raw: &str) -> String {
-    R_LOG.replace_all(raw, "\\n").into_owned()
+    let mut result = String::with_capacity(raw.len() * 2);
+    for c in raw.chars() {
+        match c {
+            '\r' => (), // 忽略回车
+            '\n' => result.push_str("\\n"),
+            _ => result.push(c),
+        }
+    }
+    result
 }
 fn is_sip_keepalive_or_empty(bytes: &Bytes) -> bool {
     let data = bytes.as_ref();
@@ -44,6 +50,7 @@ pub async fn read(
     ctx: Arc<DepotContext>,
 ) {
     let mut buffer = BytesMut::new();
+    let mut pks = VecDeque::new();
     while let Some(zip) = input.recv().await {
         if cancel_token.is_cancelled() {
             break;
@@ -59,22 +66,16 @@ pub async fn read(
                 }
                 if let Protocol::TCP = association.protocol {
                     buffer.extend_from_slice(&data);
-                    match complete_pkt(&mut buffer) {
-                        None => {
-                            continue;
-                        }
-                        Some(pks) => {
-                            for data in pks {
-                                hand_pkt(
-                                    data,
-                                    output.clone(),
-                                    &association,
-                                    sip_pkg_tx.clone(),
-                                    ctx.clone(),
-                                )
-                                .await;
-                            }
-                        }
+                    complete_pkt(&mut buffer, &mut pks);
+                    while let Some(data) = pks.pop_front() {
+                        hand_pkt(
+                            data,
+                            output.clone(),
+                            &association,
+                            sip_pkg_tx.clone(),
+                            ctx.clone(),
+                        )
+                        .await;
                     }
                 } else {
                     hand_pkt(
@@ -123,8 +124,9 @@ async fn hand_pkt(
                             .process_request(&output, &req, association.clone())
                     {
                         let association = association.clone();
-                        tokio::spawn(async move{
-                            let _ = handler::requester::hand_request(req, sip_pkg_tx, association).await;
+                        tokio::spawn(async move {
+                            let _ = handler::requester::hand_request(req, sip_pkg_tx, association)
+                                .await;
                         });
                     }
                 }
@@ -141,9 +143,7 @@ async fn hand_pkt(
             }
         }
         Err(err) => {
-            warn!(
-                "接收: {association:?},\\n invalid data {err:?}",
-            );
+            warn!("接收: {association:?},\\n invalid data {err:?}",);
         }
     }
 }
