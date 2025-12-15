@@ -230,7 +230,7 @@ impl Register {
         RWContext::insert(device_id, device_session);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register().await?;
-        let ok_response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
+        let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
         let sip_package = SipPackage::build_response(ok_response, bill.clone());
         let _ = tx
             .clone()
@@ -239,7 +239,9 @@ impl Register {
             .hand_log(|msg| warn!("{msg}"));
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
         cmd::CmdQuery::query_device_info(device_id).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         cmd::CmdQuery::query_device_catalog(device_id).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         cmd::CmdQuery::subscribe_device_catalog(device_id, gmv_device.register_expires).await
     }
 

@@ -94,10 +94,19 @@ impl ResponseBuilder {
         })
     }
 
-    pub fn build_ok_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<Response> {
+    pub fn build_register_ok_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);
+        Ok(rsip::Response {
+            status_code: 200.into(),
+            headers: response_header,
+            version: rsip::Version::V2,
+            body: Default::default(),
+        })
+    }
+    pub fn build_ok_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<Response> {
+        let response_header = Self::build_response_header(req, socket_addr)?;
         Ok(rsip::Response {
             status_code: 200.into(),
             headers: response_header,
@@ -153,13 +162,17 @@ impl ResponseBuilder {
                 .clone()
                 .into(),
         );
-        let mut rng = thread_rng();
+
         let to = req
             .to_header()
             .hand_log(|msg| warn!("{msg}"))?
             .typed()
             .hand_log(|msg| warn!("{msg}"))?;
-        let to = to.with_tag(rng.gen_range(123456789u32..u32::MAX).to_string().into());
+        let to = to.with_tag(
+            Alphanumeric
+                .sample_string(&mut rand::thread_rng(), 16)
+                .into(),
+        );
         headers.push(to.into());
         headers.push(
             req.call_id_header()
@@ -175,9 +188,17 @@ impl ResponseBuilder {
         );
         headers.push(Header::ContentLength(Default::default()));
         headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
-        let _ = req
-            .contact_header()
-            .map(|contact| headers.push(contact.clone().into()));
+        let conf = SessionInfo::get_session_by_conf();
+        let server_ip = &conf.get_wan_ip().to_string();
+        let server_port = conf.get_wan_port();
+        let domain_id = parser::header::get_device_id_by_request(req)?;
+        headers.push(
+            rsip::headers::Contact::new(format!(
+                "<sip:{}@{}:{}>",
+                domain_id, server_ip, server_port
+            ))
+            .into(),
+        );
         Ok(headers)
     }
 }
@@ -335,7 +356,7 @@ impl RequestBuilder {
         from_tag: Option<&str>,
         to_tag: Option<&str>,
     ) -> GlobalResult<(rsip::Headers, Uri, Association)> {
-        let (uri_str, bill, lr) = RWContext::get_ds_by_device_id(device_id)
+        let (uri_str, association, lr) = RWContext::get_ds_by_device_id(device_id)
             .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
             .hand_log(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
@@ -365,15 +386,15 @@ impl RequestBuilder {
             warn!("device id = [{}] 未启用设备,无法下发指令", &device_id);
         }
         let domain_id = oauth.domain_id;
-        let domain = &format!("{}.spvmn.cn", oauth.domain);
+        let domain = &format!("{}:{}", server_ip, server_port);
 
-        let transport = bill.get_protocol().get_value();
+        let transport = association.get_protocol().get_value();
 
         let mut headers: rsip::Headers = Default::default();
         if lr {
             headers.push(rsip::headers::Route::new(format!("{};lr", uri_str)).into())
         }
-        let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
+
         headers.push(
             rsip::headers::Via::new(format!(
                 "SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}",
@@ -393,15 +414,17 @@ impl RequestBuilder {
             ))
             .into(),
         );
+        let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
+        let r_uri = &uri.host_with_port.to_string();
         to_tag
             .map(|tag| {
                 headers.push(
-                    rsip::headers::To::new(format!("<sip:{}@{}>;tag={}", dst_id, domain, tag))
+                    rsip::headers::To::new(format!("<sip:{}@{}>;tag={}", dst_id, r_uri, tag))
                         .into(),
                 )
             })
             .unwrap_or_else(|| {
-                headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, domain)).into())
+                headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, r_uri)).into())
             });
         if expires {
             let expires = RWContext::get_expires_by_device_id(device_id)
@@ -419,7 +442,8 @@ impl RequestBuilder {
         }
         headers.push(rsip::headers::MaxForwards::new("70").into());
         headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
-        Ok((headers, uri, bill))
+
+        Ok((headers, uri, association))
     }
 
     pub async fn play_live_request(
@@ -504,8 +528,17 @@ impl RequestBuilder {
         };
         Ok((request, association))
     }
-    //todo ack uri
-    pub fn build_ack_request_by_response(res: &Response) -> GlobalResult<Request> {
+
+    pub fn build_ack_request_by_response(
+        res: &Response,
+        device_id: &String,
+    ) -> GlobalResult<Request> {
+        let (uri_str, _association, _lr) = RWContext::get_ds_by_device_id(device_id)
+            .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
+            .hand_log(|msg| warn!("{msg}"))?;
+        let conf = SessionInfo::get_session_by_conf();
+        let server_ip = &conf.get_wan_ip().to_string();
+        let server_port = conf.get_wan_port();
         let mut headers: rsip::Headers = Default::default();
         headers.push(
             res.to_header()
@@ -533,7 +566,7 @@ impl RequestBuilder {
                 via.uri.to_string(),
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
             ))
-                .into(),
+            .into(),
         );
         let seq = res
             .cseq_header()
@@ -541,11 +574,16 @@ impl RequestBuilder {
             .seq()
             .hand_log(|msg| warn!("{msg}"))?;
         headers.push(rsip::headers::CSeq::new(format!("{seq} ACK")).into());
+        let domain_id = parser::header::get_device_id_by_response(res)?;
 
-
-        let uri = from.uri().hand_log(|msg| warn!("{msg}"))?;
-        let uri_str = uri.to_string();
-        headers.push(rsip::headers::Contact::new(format!("<{uri_str}>")).into());
+        let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
+        headers.push(
+            rsip::headers::Contact::new(format!(
+                "<sip:{}@{}:{}>",
+                domain_id, server_ip, server_port
+            ))
+            .into(),
+        );
         headers.push(rsip::headers::MaxForwards::new("70").into());
         headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
         headers.push(rsip::headers::ContentLength::default().into());
@@ -690,7 +728,6 @@ impl RequestBuilder {
         .into();
         Ok((request, association))
     }
-
 }
 
 pub struct XmlBuilder;

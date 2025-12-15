@@ -181,7 +181,7 @@ impl CmdStream {
         response: &Response,
         association: Association,
     ) -> GlobalResult<(String, u32)> {
-        let ack_request = RequestBuilder::build_ack_request_by_response(response)?;
+        let ack_request = RequestBuilder::build_ack_request_by_response(response,device_id)?;
         let call_id = ack_request.call_id()?.value().to_string();
         let seq = ack_request.seq()?;
         SipRequestOutput::new(device_id, association, ack_request)
