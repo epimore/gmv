@@ -34,7 +34,7 @@ pub async fn get_snapshot_dc_by_limit(start: u32, count: u32) -> GlobalResult<Ve
     AND b.`status` = 1
     AND DATE_ADD(b.register_time,INTERVAL b.register_expires SECOND)>NOW()
     AND LEFT(b.GB_VERSION, 1) >= '3'
-    and c.MODEL not like '%udio%'
+    and c.SNAPSHOT = 1
     AND !(c.`status` = 'OFF' OR c.`status` = 'OFFLINE' )
     ORDER BY c.DEVICE_ID,c.CHANNEL_ID limit ?,?";
     let dcs: Vec<(String, String)> = sqlx::query_as(script).bind(start).bind(count).fetch_all(pool).await.hand_log(|msg| error!("{msg}"))?;
