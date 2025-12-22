@@ -51,14 +51,14 @@ impl ServerConf {
 
 #[cfg(test)]
 mod tests {
-    use crate::general::cfg::StreamConf;
+    use crate::general::cfg::{ServerConf};
     use base::cfg_lib::conf::init_cfg;
 
     //   hls 与 flv: 都为false时，触发panic
     #[test]
     fn test_check_init_conf() {
         init_cfg("config.yml".to_string());
-        let cf: StreamConf = StreamConf::conf();
+        let cf: ServerConf = ServerConf::init_by_conf();
         println!("{:?}", cf);
     }
 }
