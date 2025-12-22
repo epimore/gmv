@@ -13,8 +13,8 @@ use std::any::Any;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -23,10 +23,10 @@ use crate::general::cfg::ServerConf;
 use crate::io::event_handler;
 use crate::io::event_handler::{ActiveEvent, Event, EventRes, OutEvent, OutEventRes};
 use crate::io::local::mp4::{LocalStoreMp4Context, Mp4OutputInnerEvent};
-use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::event::ContextEvent;
-use crate::media::context::format::muxer::MuxerEnum;
+use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::format::MuxPacket;
+use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -40,7 +40,7 @@ use base::net::state::Association;
 use base::once_cell::sync::Lazy;
 use base::tokio;
 use base::tokio::sync::oneshot::Sender;
-use base::tokio::sync::{broadcast, mpsc, oneshot, Notify};
+use base::tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::tokio_util::sync::CancellationToken;
@@ -91,7 +91,7 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
         output,
     };
 
-    let event = stream_trace.build_from_output_kind(media_config.output,ssrc);
+    let event = stream_trace.build_from_output_kind(media_config.output, ssrc);
 
     let inner = InnerTrace {
         ssrc,
@@ -112,12 +112,13 @@ pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
             vac.insert(stream_trace);
             should_notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
             state.inner.insert(stream_id, inner);
-            state.expirations.insert((when, ssrc, StreamDirection::StreamIn));
+            state
+                .expirations
+                .insert((when, ssrc, StreamDirection::StreamIn));
         }
     }
     drop(state);
     if should_notify {
-        
         SESSION.shared.background_task.notify_one();
     }
     //若为主动推流/存储，则发送事件激活
@@ -287,7 +288,6 @@ fn stream_register(
                 .expirations
                 .insert((when, ssrc, StreamDirection::StreamOut(None)));
             if notify {
-                
                 SESSION.shared.background_task.notify_one();
             }
         }
@@ -299,6 +299,7 @@ fn stream_register(
             ssrc,
             Some(net_source),
             SESSION.shared.server_conf.get_name().clone(),
+            SESSION.shared.server_conf.get_proxy_addr().clone(),
         );
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -354,7 +355,7 @@ pub fn update_token(
     user_token: String,
     in_out: bool,
     remote_addr: SocketAddr,
-    expire:Option<Duration>
+    expire: Option<Duration>,
 ) {
     let mut guard = SESSION.shared.state.write();
     let state = &mut *guard;
@@ -383,7 +384,8 @@ pub fn update_token(
                     let mut notify = false;
                     match expire {
                         None => {
-                            if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc) {
+                            if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc)
+                            {
                                 if let Some(timeout) = out_expires {
                                     let ssrc = *ssrc;
                                     let when = Instant::now() + *timeout;
@@ -400,8 +402,7 @@ pub fn update_token(
                         Some(duration) => {
                             let ssrc = *ssrc;
                             let when = Instant::now() + duration;
-                            notify =
-                                state.next_expiration().map(|ts| ts > when).unwrap_or(true);
+                            notify = state.next_expiration().map(|ts| ts > when).unwrap_or(true);
                             state.expirations.insert((
                                 when,
                                 ssrc,
@@ -410,7 +411,6 @@ pub fn update_token(
                         }
                     }
                     if notify {
-
                         SESSION.shared.background_task.notify_one();
                     }
                 };
@@ -427,8 +427,9 @@ pub fn get_base_stream_info_by_stream_id(stream_id: &String) -> Option<(BaseStre
             if let Some((protocol, origin_addr)) = &stream_trace.origin_trans {
                 let stream_in_reported_time = stream_trace.register_ts;
                 let server_name = SESSION.shared.server_conf.get_name().to_string();
+                let proxy_addr = SESSION.shared.server_conf.get_proxy_addr().to_string();
                 let net_source = NetSource::new(origin_addr.to_string(), protocol.to_string());
-                let rtp_info = RtpInfo::new(*ssrc, Some(net_source), server_name);
+                let rtp_info = RtpInfo::new(*ssrc, Some(net_source), server_name, proxy_addr);
                 let stream_info =
                     BaseStreamInfo::new(rtp_info, stream_id.to_string(), stream_in_reported_time);
                 return Some((stream_info, user_map.len() as u32));
@@ -521,13 +522,12 @@ impl Shared {
         let state = &mut *guard;
         let now = Instant::now();
         let mut notify_one = false;
-        
+
         while let Some(&(when, ssrc, direction)) = state.expirations.iter().next() {
-            
             if when > now {
                 return Ok(Some(when));
             }
-            
+
             state.expirations.remove(&(when, ssrc, direction));
             match direction {
                 StreamDirection::StreamIn => {
@@ -567,9 +567,10 @@ impl Shared {
                                     ssrc, &stream_id
                                 );
                                 let server_name = SESSION.shared.server_conf.get_name().to_string();
+                                let proxy_addr = SESSION.shared.server_conf.get_proxy_addr().to_string();
                                 let opt_net = origin_trans
                                     .map(|(addr, protocol)| NetSource::new(addr, protocol));
-                                let rtp_info = RtpInfo::new(ssrc, opt_net, server_name);
+                                let rtp_info = RtpInfo::new(ssrc, opt_net, server_name,proxy_addr);
                                 let stream_info =
                                     BaseStreamInfo::new(rtp_info, stream_id, register_ts);
                                 let stream_state =
@@ -596,7 +597,6 @@ impl Shared {
                         ..
                     }) = state.sessions.get_mut(&ssrc)
                     {
-                        
                         //流注册时，加入的无输出,超时检查
                         if let Some(InnerTrace {
                             user_map,
@@ -621,7 +621,7 @@ impl Shared {
                                 continue;
                             }
                         }
-                        
+
                         state.inner.remove(stream_id);
                         if let Some(stream_trace) = state.sessions.remove(&ssrc) {
                             info!(
@@ -635,6 +635,7 @@ impl Shared {
                                 ssrc,
                                 opt_net,
                                 SESSION.shared.server_conf.get_name().clone(),
+                                SESSION.shared.server_conf.get_proxy_addr().clone(),
                             );
                             let stream_info = BaseStreamInfo::new(
                                 rtp_info,
@@ -653,7 +654,6 @@ impl Shared {
             }
         }
         if notify_one {
-            
             SESSION.shared.background_task.notify_one();
         }
         Ok(None)
@@ -680,7 +680,7 @@ struct StreamTrace {
     output: OutputLayer,
 }
 impl StreamTrace {
-    fn build_from_output_kind(&self, output_kind: OutputKind,ssrc:u32) -> Option<ActiveEvent> {
+    fn build_from_output_kind(&self, output_kind: OutputKind, ssrc: u32) -> Option<ActiveEvent> {
         match output_kind {
             OutputKind::HttpFlv(_) => None,
             OutputKind::Rtmp(_) => {

@@ -104,6 +104,7 @@ pub struct RtpInfo {
     //媒体流源地址,tcp/udp
     pub origin_trans: Option<NetSource>,
     pub server_name: String,
+    pub proxy_addr: String,
 }
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(New, Serialize, Deserialize, Debug)]

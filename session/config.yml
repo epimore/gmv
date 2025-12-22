@@ -65,8 +65,6 @@ server:
     storage_path: ./pics/raw  #图片存储地址
     storage_format: jpeg  #图片存储格式：jpeg,bmp,farbfeld,gif,hdr,ico,exr,png,pnm,qoi,tga,tiff,avif,webp;默认jpeg
   stream:
-    proxy_enable: false #是否统一代理流出口,否-使用流媒体服务的公网ip返回结果
-    proxy_addr: https://epimore.cn #流代理地址;eg:https://epimore.cn/s1/play/4FEqqzfqsa0Vzqqq2lqqc1lqq4fa.flv?gmv-token=uxxx
     nodes:
       - name: s1 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
         pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址

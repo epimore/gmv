@@ -131,28 +131,11 @@ pub struct StreamInfo {
 }
 
 impl StreamInfo {
-    pub fn build(stream_id: String, node_name: String) -> Self {
-        let stream_conf = state::StreamConf::get_stream_conf();
-        match stream_conf.get_proxy_addr() {
-            None => {
-                let node_stream = stream_conf.get_node_map().get(&node_name).unwrap();
-                Self {
-                    flv: format!(
-                        "http://{}:{}/{node_name}/play/{stream_id}.flv",
-                        node_stream.pub_ip, node_stream.local_port
-                    ),
-                    m3u8: format!(
-                        "http://{}:{}/{node_name}/play/{stream_id}.m3u8",
-                        node_stream.pub_ip, node_stream.local_port
-                    ),
-                    streamId: stream_id,
-                }
-            }
-            Some(addr) => Self {
-                flv: format!("{addr}/{node_name}/play/{stream_id}.flv"),
-                m3u8: format!("{addr}/{node_name}/play/{stream_id}.m3u8"),
-                streamId: stream_id,
-            },
+    pub fn build(stream_id: String, proxy_addr: String) -> Self {
+        Self {
+            flv: format!("{}/play/{}.flv",proxy_addr,stream_id),
+            m3u8: format!("{}/play/{}.m3u8",proxy_addr,stream_id),
+            streamId: stream_id,
         }
     }
 }

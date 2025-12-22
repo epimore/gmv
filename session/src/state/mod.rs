@@ -54,12 +54,10 @@ impl CheckFromConf for AlarmConf {
     }
 }
 
-#[derive(Debug, Get, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.stream")]
 pub struct StreamConf {
-    pub proxy_enable: bool,
-    pub proxy_addr: Option<String>,
     #[serde(default = "default_node_map")]
     pub node_map: HashMap<String, StreamNode>,
     pub nodes: Vec<StreamNode>,

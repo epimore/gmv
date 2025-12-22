@@ -42,13 +42,13 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     };
     let am = AccessMode::Live;
     //查看直播流是否已存在,有则直接返回
-    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &am).await? {
+    if let Some((stream_id, proxy_addr)) = enable_invite_stream(device_id, channel_id, &am).await? {
         state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-        return Ok(StreamInfo::build(stream_id, node_name));
+        return Ok(StreamInfo::build(stream_id, proxy_addr));
     }
-    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, 0, 0, play_live_model.trans_mode, play_live_model.custom_media_config).await?;
+    let (stream_id, _node_name,proxy_addr) = start_invite_stream(device_id, channel_id, &token, am, 0, 0, play_live_model.trans_mode, play_live_model.custom_media_config).await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    Ok(StreamInfo::build(stream_id, node_name))
+    Ok(StreamInfo::build(stream_id, proxy_addr))
 }
 
 pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> GlobalResult<StreamRecordInfo> {
@@ -139,7 +139,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
             filter: Default::default(),
         }
     });
-    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, st - 2, et + 1, play_back_model.trans_mode, Some(down_conf)).await?;
+    let (stream_id, node_name,_proxy_addr) = start_invite_stream(device_id, channel_id, &token, am, st - 2, et + 1, play_back_model.trans_mode, Some(down_conf)).await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
     let record = GmvRecord {
         biz_id: stream_id.clone(),
@@ -170,15 +170,15 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
     };
     let am = AccessMode::Back;
     //查看流是否已存在,有则直接返回
-    if let Some((stream_id, node_name)) = enable_invite_stream(device_id, channel_id, &am).await? {
+    if let Some((stream_id, proxy_addr)) = enable_invite_stream(device_id, channel_id, &am).await? {
         state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-        return Ok(StreamInfo::build(stream_id, node_name));
+        return Ok(StreamInfo::build(stream_id, proxy_addr));
     }
     let st = play_back_model.st;
     let et = play_back_model.et;
-    let (stream_id, node_name) = start_invite_stream(device_id, channel_id, &token, am, st, et, play_back_model.trans_mode, play_back_model.custom_media_config).await?;
+    let (stream_id, _node_name,proxy_addr) = start_invite_stream(device_id, channel_id, &token, am, st, et, play_back_model.trans_mode, play_back_model.custom_media_config).await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    Ok(StreamInfo::build(stream_id, node_name))
+    Ok(StreamInfo::build(stream_id, proxy_addr))
 }
 
 pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
@@ -211,7 +211,7 @@ pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalRe
 //发起实时点播 -> 监听设备响应
 //缓存流信息
 async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &String, am: AccessMode, st: u32, et: u32,
-                             _trans_mode: Option<TransMode>, custom_media_config: Option<CustomMediaConfig>) -> GlobalResult<(String, String)> {
+                             _trans_mode: Option<TransMode>, custom_media_config: Option<CustomMediaConfig>) -> GlobalResult<(String, String, String)> {
     let u16ssrc = state::session::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
     let mut node_sets = state::session::Cache::stream_map_order_node();
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, u16ssrc, true).await?;
@@ -266,10 +266,10 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                 };
                 p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
                 let (call_id, seq) = CmdStream::invite_ack(device_id, &res,association).await?;
-                return if let Some(_base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
-                    state::session::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc, node_name.clone(), call_id, seq, am, from_tag, to_tag);
+                return if let Some(base_stream_info) = listen_stream_by_stream_id(&stream_id, RELOAD_EXPIRES).await {
+                    state::session::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc,base_stream_info.rtp_info.proxy_addr.clone(), node_name.clone(), call_id, seq, am, from_tag, to_tag);
                     state::session::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);
-                    Ok((stream_id, node_name))
+                    Ok((stream_id, node_name,base_stream_info.rtp_info.proxy_addr))
                 } else {
                     CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await?;
                     Err(GlobalError::new_biz_error(1100, "未接收到监控推流", |msg| error!("{msg}")))
@@ -296,7 +296,7 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, am: &Acce
         //session -> true
         Some((stream_id, ssrc)) => {
             let mut res = None;
-            if let Some(node_name) = state::session::Cache::stream_map_query_node_name(&stream_id) {
+            if let Some((node_name,proxy_addr)) = state::session::Cache::stream_map_query_node(&stream_id) {
                 //确认stream是否存在
                 if let Some(stream_node) = StreamConf::get_stream_conf().node_map.get(&node_name) {
                     let pretend = HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port)?;
@@ -305,7 +305,7 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, am: &Acce
                     let json_obj = pretend.stream_online(&stream_key).await.hand_log(|msg| error!("{msg}"))?;
                     if let Some(true) = json_obj.data {
                         //stream -> true
-                        res = Some((stream_id.clone(), node_name));
+                        res = Some((stream_id.clone(), proxy_addr));
                     }
                 }
             }

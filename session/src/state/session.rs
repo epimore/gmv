@@ -15,13 +15,13 @@ use base::once_cell::sync::Lazy;
 use base::rand::seq::IteratorRandom;
 use base::serde::de::DeserializeOwned;
 use base::serde::{Deserialize, Serialize};
-use base::tokio::sync::mpsc::Sender;
 use base::tokio::sync::Notify;
+use base::tokio::sync::mpsc::Sender;
 use base::tokio::time;
 use base::tokio::time::Instant;
-use base::{rand, serde_json, tokio};
 use base::tokio_util::sync::CancellationToken;
 use base::utils::rt::GlobalRuntime;
+use base::{rand, serde_json, tokio};
 use shared::info::media_info::MediaConfig;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
@@ -33,7 +33,13 @@ pub struct Cache {
 impl Cache {
     pub fn ssrc_sn_get() -> Option<u16> {
         let mut rng = rand::thread_rng();
-        if let Some(val) = GENERAL_CACHE.shared.ssrc_sn.iter().choose(&mut rng).map(|v| *v) {
+        if let Some(val) = GENERAL_CACHE
+            .shared
+            .ssrc_sn
+            .iter()
+            .choose(&mut rng)
+            .map(|v| *v)
+        {
             return GENERAL_CACHE.shared.ssrc_sn.remove(&val);
         }
         None
@@ -78,19 +84,28 @@ impl Cache {
                 opt_sets.insert(gmv_token);
                 true
             }
-            Entry::Vacant(_vac) => {
-                false
-            }
+            Entry::Vacant(_vac) => false,
         }
     }
 
     //当媒体流注册时，需插入建立关系,成功插入：true
-    pub fn stream_map_insert_info(stream_id: String,ssrc:u32, stream_node_name: String, call_id: String, seq: u32, am: AccessMode, from_tag: String, to_tag: String) -> bool {
+    pub fn stream_map_insert_info(
+        stream_id: String,
+        ssrc: u32,
+        proxy_addr: String,
+        stream_node_name: String,
+        call_id: String,
+        seq: u32,
+        am: AccessMode,
+        from_tag: String,
+        to_tag: String,
+    ) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
-            Entry::Occupied(_) => { false }
+            Entry::Occupied(_) => false,
             Entry::Vacant(vac) => {
                 let stream_table = StreamTable {
                     gmv_token_sets: HashSet::new(),
+                    proxy_addr,
                     stream_node_name,
                     call_id,
                     seq,
@@ -104,20 +119,19 @@ impl Cache {
             }
         }
     }
-    pub fn stream_map_query_node_ssrc(stream_id: &String)->Option<(String,u32)>{
-        GENERAL_CACHE.shared.stream_map.get(stream_id)
-            .map(|item| {
-                let node_name = item.stream_node_name.clone();
-                (node_name,item.ssrc)
-            })
+    pub fn stream_map_query_node_ssrc(stream_id: &String) -> Option<(String, u32)> {
+        GENERAL_CACHE.shared.stream_map.get(stream_id).map(|item| {
+            let node_name = item.stream_node_name.clone();
+            (node_name, item.ssrc)
+        })
     }
 
-    pub fn stream_map_query_node_name(stream_id: &String) -> Option<String> {
-        GENERAL_CACHE.shared.stream_map.get(stream_id)
-            .map(|item| {
-                let node_name = item.value().stream_node_name.clone();
-                node_name
-            })
+    pub fn stream_map_query_node(stream_id: &String) -> Option<(String, String)> {
+        GENERAL_CACHE.shared.stream_map.get(stream_id).map(|item| {
+            let node_name = item.value().stream_node_name.clone();
+            let proxy_addr = item.value().proxy_addr.clone();
+            (node_name,proxy_addr)
+        })
     }
 
     //移除流与用户关系
@@ -128,23 +142,20 @@ impl Cache {
             None => {
                 GENERAL_CACHE.shared.stream_map.remove(stream_id);
             }
-            Some(token) => {
-                match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
-                    Entry::Occupied(mut occ) => {
-                        let sets = &mut occ.get_mut().gmv_token_sets;
-                        sets.remove(token);
-                    }
-                    Entry::Vacant(_vac) => {}
+            Some(token) => match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
+                Entry::Occupied(mut occ) => {
+                    let sets = &mut occ.get_mut().gmv_token_sets;
+                    sets.remove(token);
                 }
-            }
+                Entry::Vacant(_vac) => {}
+            },
         }
     }
-
 
     //确认流与用户是否建立了关系
     pub fn stream_map_contains_token(stream_id: &String, gmv_token: &String) -> bool {
         match GENERAL_CACHE.shared.stream_map.get(stream_id) {
-            None => { false }
+            None => false,
             Some(inner_ref) => {
                 let sets = &inner_ref.value().gmv_token_sets;
                 sets.contains(gmv_token)
@@ -152,14 +163,24 @@ impl Cache {
         }
     }
 
-    pub fn stream_map_build_call_id_seq_from_to_tag(stream_id: &String) -> Option<(String, u32, String, String)> {
-        GENERAL_CACHE.shared.stream_map.get_mut(stream_id)
+    pub fn stream_map_build_call_id_seq_from_to_tag(
+        stream_id: &String,
+    ) -> Option<(String, u32, String, String)> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
             .map(|mut ref_mut| {
                 // let (_tokens, _node_name, call_id, seq, _play_type, from_tag, to_tag) = ref_mut.value_mut();
                 let stream_table = ref_mut.value_mut();
                 let seq = &mut stream_table.seq;
                 *seq += 1;
-                (stream_table.call_id.clone(), *seq, stream_table.from_tag.clone(), stream_table.to_tag.clone())
+                (
+                    stream_table.call_id.clone(),
+                    *seq,
+                    stream_table.from_tag.clone(),
+                    stream_table.to_tag.clone(),
+                )
             })
     }
 
@@ -172,7 +193,14 @@ impl Cache {
 
     //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
     //层层插入
-    pub fn device_map_insert(device_id: String, channel_id: String, ssrc: String, stream_id: String, am: AccessMode, config: MediaConfig) {
+    pub fn device_map_insert(
+        device_id: String,
+        channel_id: String,
+        ssrc: String,
+        stream_id: String,
+        am: AccessMode,
+        config: MediaConfig,
+    ) {
         let device_table = DeviceTable {
             channel_id,
             am,
@@ -201,7 +229,10 @@ impl Cache {
       2.1 (PlayType,ssrc)= none => remove(device_id下channel_id)
       2.2 (PlayType,ssrc)= some => remove(device_id下channel_id下(PlayType,ssrc))
     */
-    pub fn device_map_remove(device_id: &String, opt_channel_ssrc: Option<(&String, Option<(AccessMode, &String)>)>) {
+    pub fn device_map_remove(
+        device_id: &String,
+        opt_channel_ssrc: Option<(&String, Option<(AccessMode, &String)>)>,
+    ) {
         match opt_channel_ssrc {
             None => {
                 GENERAL_CACHE.shared.device_map.remove(device_id);
@@ -210,16 +241,12 @@ impl Cache {
                 match GENERAL_CACHE.shared.device_map.entry(device_id.to_string()) {
                     Entry::Occupied(mut m_occ) => {
                         let s_vec = m_occ.get_mut();
-                        s_vec.retain(|device_table| {
-                            match channel_ssrc {
-                                None => {
-                                    !device_table.channel_id.eq(channel_id)
-                                }
-                                Some((am, ssrc)) => {
-                                    !device_table.channel_id.eq(channel_id)
-                                        && !device_table.am.eq(&am)
-                                        && !device_table.ssrc.eq(ssrc)
-                                }
+                        s_vec.retain(|device_table| match channel_ssrc {
+                            None => !device_table.channel_id.eq(channel_id),
+                            Some((am, ssrc)) => {
+                                !device_table.channel_id.eq(channel_id)
+                                    && !device_table.am.eq(&am)
+                                    && !device_table.ssrc.eq(ssrc)
                             }
                         });
                         // 如果vec empty，则删除device_id
@@ -235,9 +262,13 @@ impl Cache {
     }
 
     //返回stream_id,ssrc
-    pub fn device_map_get_invite_info(device_id: &String, channel_id: &String, am: &AccessMode) -> Option<(String, String)> {
+    pub fn device_map_get_invite_info(
+        device_id: &String,
+        channel_id: &String,
+        am: &AccessMode,
+    ) -> Option<(String, String)> {
         match GENERAL_CACHE.shared.device_map.get(device_id) {
-            None => { None }
+            None => None,
             Some(m_map) => {
                 let mut iter = m_map.value().iter();
                 iter.find_map(|device_table| {
@@ -245,21 +276,29 @@ impl Cache {
                         return Some((device_table.stream_id.clone(), device_table.ssrc.clone()));
                     }
                     None
-                }
-                )
+                })
             }
         }
     }
 
-    pub fn state_insert(key: String, data: Bytes, expire: Option<Instant>, call_tx: Option<Sender<Option<Bytes>>>) {
+    pub fn state_insert(
+        key: String,
+        data: Bytes,
+        expire: Option<Instant>,
+        call_tx: Option<Sender<Option<Bytes>>>,
+    ) {
         let mut should_notify = false;
         let mut guard = GENERAL_CACHE.shared.state.lock();
         match expire {
-            None => { guard.entities.insert(key, (data, None, call_tx)); }
+            None => {
+                guard.entities.insert(key, (data, None, call_tx));
+            }
             Some(ins) => {
                 should_notify = guard.next_expiration().map(|ts| ts > ins).unwrap_or(true);
 
-                guard.entities.insert(key.clone(), (data, Some(ins), call_tx));
+                guard
+                    .entities
+                    .insert(key.clone(), (data, Some(ins), call_tx));
                 guard.expirations.insert((ins, key));
             }
         }
@@ -273,23 +312,28 @@ impl Cache {
         let guard = GENERAL_CACHE.shared.state.lock();
 
         match guard.entities.get(key) {
-            None => {
-                None
-            }
-            Some((val, _, opt_tx)) => {
-                Some((val.clone(), opt_tx.clone()))
-            }
+            None => None,
+            Some((val, _, opt_tx)) => Some((val.clone(), opt_tx.clone())),
         }
     }
 
-    pub fn state_insert_obj<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, call_tx: Option<Sender<Option<Bytes>>>) {
+    pub fn state_insert_obj<'a, T: Serialize + Deserialize<'a>>(
+        key: String,
+        obj: &T,
+        call_tx: Option<Sender<Option<Bytes>>>,
+    ) {
         //此处不会panic，obj满足序列化与反序列化
         let vec = serde_json::to_vec(obj).unwrap();
         let bytes = Bytes::from(vec);
         Self::state_insert(key, bytes, None, call_tx);
     }
 
-    pub fn state_insert_obj_by_timer<'a, T: Serialize + Deserialize<'a>>(key: String, obj: &T, expire: Duration, call_tx: Option<Sender<Option<Bytes>>>) {
+    pub fn state_insert_obj_by_timer<'a, T: Serialize + Deserialize<'a>>(
+        key: String,
+        obj: &T,
+        expire: Duration,
+        call_tx: Option<Sender<Option<Bytes>>>,
+    ) {
         //此处不会panic，obj满足序列化与反序列化
         let vec = serde_json::to_vec(obj).unwrap();
         let bytes = Bytes::from(vec);
@@ -309,15 +353,16 @@ impl Cache {
         None
     }
 
-    pub fn state_get_obj<T: Serialize + DeserializeOwned>(key: &str) -> GlobalResult<Option<(T, Option<Sender<Option<Bytes>>>)>> {
+    pub fn state_get_obj<T: Serialize + DeserializeOwned>(
+        key: &str,
+    ) -> GlobalResult<Option<(T, Option<Sender<Option<Bytes>>>)>> {
         let guard = GENERAL_CACHE.shared.state.lock();
 
         match guard.entities.get(key) {
-            None => {
-                Ok(None)
-            }
+            None => Ok(None),
             Some((val, _, opt_tx)) => {
-                let data: T = serde_json::from_slice(&val.clone()).hand_log(|msg| error!("{msg}"))?;
+                let data: T =
+                    serde_json::from_slice(&val.clone()).hand_log(|msg| error!("{msg}"))?;
 
                 Ok(Some((data, opt_tx.clone())))
             }
@@ -334,30 +379,29 @@ impl Cache {
 
     fn init() -> Self {
         let cache = Self {
-            shared: Arc::new(
-                Shared {
-                    state: Mutex::new(
-                        State {
-                            entities: HashMap::new(),
-                            expirations: BTreeSet::new(),
-                        }
-                    ),
-                    background_task: Notify::new(),
-                    ssrc_sn: Self::init_ssrc_sn(),
-                    stream_map: Default::default(),
-                    device_map: Default::default(),
-                }
-            )
+            shared: Arc::new(Shared {
+                state: Mutex::new(State {
+                    entities: HashMap::new(),
+                    expirations: BTreeSet::new(),
+                }),
+                background_task: Notify::new(),
+                ssrc_sn: Self::init_ssrc_sn(),
+                stream_map: Default::default(),
+                device_map: Default::default(),
+            }),
         };
         let shared = cache.shared.clone();
         let rt = GlobalRuntime::get_main_runtime();
-        rt.rt_handle.spawn(Self::purge_expired_task(shared,rt.cancel));
+        rt.rt_handle
+            .spawn(Self::purge_expired_task(shared, rt.cancel));
         cache
     }
 
-    async fn purge_expired_task(shared: Arc<Shared>,cancel_token: CancellationToken,) {
+    async fn purge_expired_task(shared: Arc<Shared>, cancel_token: CancellationToken) {
         loop {
-            if cancel_token.is_cancelled() { break; }
+            if cancel_token.is_cancelled() {
+                break;
+            }
             if let Some(when) = shared.purge_expired_keys().await {
                 tokio::select! {
                     _ = time::sleep_until(when) =>{},
@@ -387,13 +431,14 @@ impl State {
 
 struct StreamTable {
     gmv_token_sets: HashSet<String>,
+    proxy_addr: String,
     stream_node_name: String,
     call_id: String,
     seq: u32,
     am: AccessMode,
     from_tag: String,
     to_tag: String,
-    ssrc: u32
+    ssrc: u32,
 }
 
 struct DeviceTable {
@@ -447,7 +492,7 @@ impl AccessMode {}
 
 #[cfg(test)]
 mod tests {
-    use crate::state::session::{AccessMode, Cache, StreamTable, GENERAL_CACHE};
+    use crate::state::session::{AccessMode, Cache, GENERAL_CACHE, StreamTable};
     use base::dashmap::{DashMap, DashSet};
     use base::rand;
     use base::rand::prelude::IteratorRandom;
@@ -456,6 +501,7 @@ mod tests {
     fn test_ref_mut() {
         let table = StreamTable {
             gmv_token_sets: Default::default(),
+            proxy_addr: "".to_string(),
             stream_node_name: "".to_string(),
             call_id: "".to_string(),
             seq: 0,
@@ -466,12 +512,11 @@ mod tests {
         };
         let map = DashMap::new();
         map.insert(1, table);
-        map.get_mut(&1)
-            .map(|mut ref_mut| {
-                let stream_table = ref_mut.value_mut();
-                let seq = &mut stream_table.seq;
-                *seq += 1;
-            });
+        map.get_mut(&1).map(|mut ref_mut| {
+            let stream_table = ref_mut.value_mut();
+            let seq = &mut stream_table.seq;
+            *seq += 1;
+        });
         println!("{:?}", map.get_mut(&1).map(|item| item.value().seq));
     }
 
@@ -496,7 +541,9 @@ mod tests {
         for _i in 0..10 {
             if let Some(val) = sets.iter().choose(&mut rng).map(|v| *v) {
                 match sets.remove(&val) {
-                    None => { println!("end"); }
+                    None => {
+                        println!("end");
+                    }
                     Some(val) => {
                         println!("val = {}", val);
                         sets.insert(val);
