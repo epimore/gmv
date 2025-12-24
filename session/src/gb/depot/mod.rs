@@ -46,7 +46,6 @@ use base::tokio::sync::oneshot;
 use base::tokio_util::sync::CancellationToken;
 use rsip::{Request, Response};
 use std::fmt::Display;
-use std::pin::Pin;
 
 pub mod anti;
 pub mod extract;

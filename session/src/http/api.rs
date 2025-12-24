@@ -1,11 +1,8 @@
 use crate::state::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo};
 use crate::service::{edge_serv, api_serv};
-use axum::http::{HeaderMap, HeaderName};
+use axum::http::HeaderMap;
 use axum::{Json, Router};
-use base::exception::{GlobalError, GlobalResult};
-use base::log::{error, info};
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
+use base::log::info;
 use shared::info::obj::{SingleParam, StreamRecordInfo, CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK, PLAY_SPEED, RM_FILE};
 use shared::info::res::{EmptyResponse, Resp};
 use crate::http::get_gmv_token;

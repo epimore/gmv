@@ -6,7 +6,7 @@ use rsip::message::HeadersExt;
 use rsip::param::{OtherParam, OtherParamValue};
 use rsip::prelude::*;
 use rsip::{
-    Error, Header, Method, Param, Request, Response, SipMessage, Uri, header, headers, param, uri,
+    Error, Header, Method, Param, Request, Response, Uri, header, headers, param, uri,
 };
 use std::fmt::Write;
 use std::net::SocketAddr;
@@ -30,8 +30,7 @@ use base::log::warn;
 use base::net::state::Association;
 use base::rand;
 use base::rand::distributions::{Alphanumeric, DistString};
-use base::rand::prelude::StdRng;
-use base::rand::{Rng, SeedableRng, thread_rng};
+use base::rand::{Rng, thread_rng};
 
 static GLOBE_SN: AtomicU16 = AtomicU16::new(1);
 

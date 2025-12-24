@@ -2,7 +2,6 @@ pub mod mp4;
 pub mod ts;
 
 use base::bytes::Bytes;
-use base::exception::GlobalResultExt;
 
 pub struct StreamData {
     pub data: Bytes,

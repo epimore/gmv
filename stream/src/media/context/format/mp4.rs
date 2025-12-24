@@ -8,7 +8,6 @@ use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
 use rsmpeg::ffi::{av_free, av_guess_format, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context, avformat_free_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, av_interleaved_write_frame, AVFormatContext, AVIOContext, AVPacket, AVRational, AVFMT_FLAG_FLUSH_PACKETS, AV_PKT_FLAG_KEY, AVDictionary, av_dict_set, av_dict_free};
 use std::ffi::{c_int, c_void, CString};
-use std::os::raw::c_uchar;
 use std::ptr;
 use std::sync::Arc;
 

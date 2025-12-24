@@ -4,11 +4,11 @@ use crate::media;
 use crate::state::cache;
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
-use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, info};
+use base::exception::GlobalResult;
+use base::log::info;
 use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
-use base::{logger, tokio};
+use base::logger;
 use std::net::UdpSocket;
 
 pub struct App {

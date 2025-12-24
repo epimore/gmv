@@ -7,6 +7,7 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio::time::sleep;
 use crate::gb::handler::cmd;
+use crate::service::edge_serv;
 use crate::state::schedule;
 use crate::state::schedule::ScheduleTask;
 use crate::storage::{mapper};
@@ -34,6 +35,7 @@ impl PicsRunner {
             for item in arr {
                 let (token, session_id) = edge_token::build_token_session_id(&item.0, &item.1)?;
                 let url = format!("{}/{}", pics_conf.push_url.clone().unwrap(), token);
+                edge_serv::cache_pic_token(token,pics_conf.num);
                 cmd::CmdControl::snapshot_image(&item.0, &item.1, pics_conf.num, pics_conf.interval, &url, &session_id).await?;
             }
             //图片上传延迟3秒，缓解带宽瓶颈

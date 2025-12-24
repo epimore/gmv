@@ -26,8 +26,6 @@ pub struct Http {
     pub port: u16,
     #[serde(default = "default_timeout")]
     pub timeout: u16,
-    #[serde(default = "default_prefix")]
-    pub prefix: String,
     #[serde(default = "default_server_name")]
     pub server_name: String,
     #[serde(default = "default_version")]
@@ -35,7 +33,6 @@ pub struct Http {
 }
 serde_default!(default_port, u16, 8080);
 serde_default!(default_timeout, u16, 30);
-serde_default!(default_prefix, String, env!("CARGO_PKG_NAME").to_string());
 serde_default!(default_server_name, String, env!("CARGO_PKG_NAME").to_string());
 serde_default!(default_version, String, env!("CARGO_PKG_VERSION").to_string());
 impl Http {

@@ -369,6 +369,14 @@ impl Cache {
         }
     }
 
+    pub fn opt_state<F>(key:String,f:F)->bool
+    where
+        F: FnOnce(&mut Bytes, &mut Option<Instant>, &mut Option<Sender<Option<Bytes>>>) -> bool,
+    {
+        let mut guard = GENERAL_CACHE.shared.state.lock();
+        let state = &mut *guard;
+        state.opt_state(key,f)
+    }
     fn init_ssrc_sn() -> DashSet<u16> {
         let sets = DashSet::new();
         for i in 1..10000 {
@@ -424,6 +432,56 @@ struct State {
 }
 
 impl State {
+    /// 对指定 key 的状态执行闭包操作。
+    ///
+    /// - 如果 key 不存在，返回 false。
+    /// - 如果 key 存在，调用 `f(bytes, instant, sender)`。
+    ///   闭包应返回 `true` 表示需要删除该条目，`false` 表示保留。
+    /// - 若删除，会自动从 `expirations` 中移除对应的 (Instant, key)。
+    ///
+    /// 返回：是否成功找到并处理了该 key（无论是否删除）。
+    pub fn opt_state<F>(&mut self, key: String, f: F) -> bool
+    where
+        F: FnOnce(&mut Bytes, &mut Option<Instant>, &mut Option<Sender<Option<Bytes>>>) -> bool,
+    {
+        match self.entities.entry(key) {
+            Occupied(mut occ) => {
+                let (bytes, when, sender) = occ.get_mut();
+                let should_remove = f(bytes, when, sender);
+
+                if should_remove {
+                    if let (k,(_,Some(when),_)) = occ.remove_entry() {
+                        self.expirations.remove(&(when,k));
+                    }
+                }
+                true
+            }
+            Vacant(_) => false,
+        }
+    }
+    // fn opt_state(&mut self,key:String)->bool{
+    //     match self.entities.entry(key) {
+    //         Occupied(mut occ) => {
+    //             let (bytes,_,_) = occ.get_mut();
+    //             let mut rm = false;
+    //             if bytes.len() == 1 {
+    //                 let i = bytes[0];
+    //                 if i==1 {
+    //                     rm =true;
+    //                 }else {
+    //                     *bytes = Bytes::copy_from_slice(&[i-1]);
+    //                 }
+    //             }else { rm=true; }
+    //             if rm {
+    //                 if let (k,(_,Some(when),_)) = occ.remove_entry() {
+    //                     self.expirations.remove(&(when,k));
+    //                 }
+    //             }
+    //             true
+    //         }
+    //         Vacant(_) => {false}
+    //     }
+    // }
     fn next_expiration(&self) -> Option<Instant> {
         self.expirations.first().map(|expiration| expiration.0)
     }

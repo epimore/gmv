@@ -3,7 +3,7 @@ use base::log::{error, warn};
 use rsip::headers::{CSeq, CallId};
 use rsip::message::HeadersExt;
 use rsip::param::{Branch, Tag};
-use rsip::{Method, Param, SipMessage};
+use rsip::{Method, Param};
 
 pub trait HeaderItemExt: HeadersExt {
     fn branch(&self) -> GlobalResult<Branch> {

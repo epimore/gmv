@@ -11,7 +11,6 @@ use pretend::Pretend;
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
 use shared::info::obj::{BaseStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
-use shared::info::output::OutputKind;
 
 pub enum Event {
     Out(OutEvent),

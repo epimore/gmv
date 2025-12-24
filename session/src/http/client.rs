@@ -5,7 +5,7 @@ use pretend::{pretend, Pretend, Result};
 use pretend::{Json, Url};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{SingleParam, StreamKey, StreamInfoQo, StreamRecordInfo};
+use shared::info::obj::{StreamKey, StreamInfoQo, StreamRecordInfo};
 use shared::info::res::Resp;
 use std::str::FromStr;
 use std::time::Duration;

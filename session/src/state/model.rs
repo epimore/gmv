@@ -1,15 +1,11 @@
 use base::serde::{Deserialize, Serialize};
 
 use crate::gb::handler::parser::xml::KV2Model;
-use crate::state;
-use anyhow::anyhow;
 use base::constructor::New;
-use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
-use shared::info::media_info_ext::MediaType;
 use shared::info::output::{OutputEnum, OutputKind};
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]

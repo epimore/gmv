@@ -1,4 +1,3 @@
-use base::chrono::NaiveDateTime;
 use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;

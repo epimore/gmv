@@ -16,7 +16,6 @@ log:
 http:
   port: 18567
   timeout: 30000   #请求超时 单位秒
-  prefix: /session
   server_name: GMV:SESSION
   version: v0.2
 
@@ -45,6 +44,9 @@ db:
       check_health: false    # 默认false,连接池维持健康测试
 server:
   session:
+    domain: "3402000000"
+    domain_id: "34020000002000000001"
+    http_source: http://127.0.0.1:18567
     lan_ip: 172.18.38.186  # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
     wan_ip: 192.168.0.22  # 公网IP
     lan_port: 25600  #lan端口

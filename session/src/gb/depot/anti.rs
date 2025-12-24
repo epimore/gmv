@@ -1,19 +1,14 @@
 use crate::gb::depot::extract::HeaderItemExt;
-use crate::gb::handler;
-use crate::gb::io::{compact_for_log, send_sip_pkt_out};
+use crate::gb::io::send_sip_pkt_out;
 use base::bytes::Bytes;
-use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::error;
-use base::net::state::{Association, Package, Zip};
+use base::net::state::{Association, Zip};
 use base::serde::Serialize;
 use base::tokio::sync::mpsc::Sender;
-use encoding_rs::GB18030;
 use parking_lot::RwLock;
 use rsip::headers::UntypedHeader;
-use rsip::param::Tag;
-use rsip::{Method, Request, Response, SipMessage};
-use std::borrow::Cow;
+use rsip::{Method, Request, Response};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -263,7 +258,7 @@ impl AntiReplayContext {
                     AntiReplayPolicy::Strict { .. } => Ok(AntiReplayKind::SilentDrop),
                 }
             }
-            Entry::Vacant(mut vac) => {
+            Entry::Vacant(vac) => {
                 let policy = AntiReplayPolicy::policy_by_request(request)?;
                 let now = Instant::now();
                 let duration = match policy {

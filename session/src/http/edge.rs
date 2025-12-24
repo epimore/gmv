@@ -1,6 +1,5 @@
-use crate::http::{get_gmv_token};
-use crate::service::api_serv;
-use crate::state::model::{PtzControlModel, SnapshotImage};
+use crate::http::get_gmv_token;
+use crate::state::model::SnapshotImage;
 use crate::{service::edge_serv, utils::edge_token};
 use axum::extract::Path;
 use axum::{
@@ -10,11 +9,13 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
-use base::log::{debug, info};
+use base::exception::GlobalError;
+use base::log::info;
 use base::{bytes::Bytes, log::error};
 use shared::info::res::Resp;
 use std::collections::HashMap;
-pub const UPLOAD_PICTURE: &str ="/upload/picture/{token}";
+
+pub const UPLOAD_PICTURE: &str = "/upload/picture/{token}";
 pub const SNAPSHOT_IMAGE: &str = "/snapshot/image";
 pub fn routes() -> Router {
     Router::new()
@@ -40,7 +41,7 @@ pub fn routes() -> Router {
 async fn snapshot_image(headers: HeaderMap, Json(info): Json<SnapshotImage>) -> Json<Resp<String>> {
     info!("snapshot_image: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => match edge_serv::snapshot_image(info).await {
+        Ok(_token) => match edge_serv::snapshot_image(info).await {
             Ok(data) => Json(Resp::build_success_data(data)),
             Err(err) => Json(Resp::build_failed_by_msg(err.to_string())),
         },
@@ -83,6 +84,12 @@ async fn upload_picture(
     info!("upload_picture: token = {:?}", &token);
     let session_id = get_param(&params, "SessionID")?;
     edge_token::check(session_id, &token).map_err(|_| "Invalid token".to_string())?;
+    if !edge_serv::check_pic_token(token) {
+        Err(GlobalError::new_biz_error(1100, "Invalid token", |msg| {
+            error!("{msg}")
+        }))
+        .map_err(|_| "Invalid token".to_string())?;
+    }
     let file_id_opt = params
         .iter()
         .find(|(key, _)| key.to_lowercase().ends_with("fileid"))

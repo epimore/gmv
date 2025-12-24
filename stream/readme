@@ -8,6 +8,9 @@ run --package gmv-session --bin gmv-session -- start -c ./session/config.yml
 流播放地址：
 /flv/{stream_id}/{token}
 /hls/{stream_id}/{token}
+1.heart
+2.domain
+3.picture token
 
 ffmpeg -re -i E:\book\mv\st\yddz.mp4 -vcodec copy -f rtp rtp://172.18.38.186:18568
 ffmpeg -re -i E:\code\rust\study\media\rsmpeg\tests\assets\vids\big_buck_bunny_1080p_24fps_h264.h264 -vcodec copy -f rtp rtp://172.18.38.186:18568
