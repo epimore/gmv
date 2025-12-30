@@ -5,9 +5,11 @@
 ## 文档地址：
 [2.0-release](https://github.com/epimore/gmv/wiki/%E6%96%87%E6%A1%A3%E7%89%88%E6%9C%AC:-2.0.0%E2%80%90release)
 
-### 🔗 1. 前端场景界面 demo（VUE 项目）：[simple-app](https://github.com/epimore/simple-app)
-### 🔗 2. 自定义业务场景 demo（JAVA 项目）：[simple-biz](https://github.com/epimore/simple-biz)
-
+### 🔗 1. 前端场景界面 demo（VUE 项目）：[gmv-vision](https://github.com/epimore/gmv-vision)
+- 注意：此为微前端构建，可参考接口调用
+### 🔗 2. 自定义业务场景 demo（JAVA 项目）：[gmv-java](https://github.com/epimore/epimore-gmv)
+- 注意：此为后端微服务构建，可参考接口调用
+- 
 ### ✨✨✨ 在线测试地址：[epimore.cn](https://epimore.cn)
 
 ## GMV:SESSION 信令服务已实现：
@@ -25,7 +27,7 @@ RTP -> PS -> H264 -> HTTP-FLV（直/点播）、MP4（录像）
     ...
 ```
 
-### v1版本：完成。
+### v1/V2版本：完成。
 1. 实时播放 - 完成
 2. 历史回放 - 完成
    1. 倍数播放 - 完成
@@ -38,11 +40,9 @@ RTP -> PS -> H264 -> HTTP-FLV（直/点播）、MP4（录像）
 6. 图片上传 - 完成
 7. 视频离线下载 - 完成
 
-### v2版本：预计25年年中启动
-// 流媒体服务使用ffmpeg实现,以扩展支持协议减少轮子。 OK
-1. 级联 -- SESSION
-2. 支持H265,HLS...  -- STREAM
-3. 统一响应码
+### v2版本
+#### 已重构完成v1内容，鲁棒性与扩展性更强；将持续维护及按需新增功能
+
 ## TODO:
 ### V3版本：预计25年底启动
 1. 按需推流
