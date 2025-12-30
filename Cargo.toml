@@ -7,14 +7,13 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0-alpha.0.1"
+version = "2.0.0-release"
 edition = "2024"
 authors = ["Kz. <kz986542@gmail.com>"]
-about = "致力于打造一个音视频AI平台:信令+流媒体+AI"
+#about = "致力于打造一个音视频AI平台:信令+流媒体+AI"
 
 [workspace.dependencies]
 anyhow = "1"
-thiserror = "2"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 rayon = "1.10"

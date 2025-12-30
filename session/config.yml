@@ -6,11 +6,11 @@ log:
     - crate_name: gmv_session::gb::io$  #信令日志
       level: debug #日志等级
       file_name_prefix: gb #日志文件前缀
-      additivity: false #是否记录到其默认日志文件中
     - crate_name: gmv_session::http  #请求日志
       level: info #日志等级
       file_name_prefix: web #日志文件前缀
-      additivity: false #是否记录到其默认日志文件中
+    - crate_name: sqlx  #sqlx用指全部,可sqlx::xxx
+      level: warn #日志等级
 
 
 http:
@@ -44,9 +44,9 @@ db:
       check_health: false    # 默认false,连接池维持健康测试
 server:
   session:
-    domain: "3402000000"
-    domain_id: "34020000002000000001"
-    http_source: http://127.0.0.1:18567
+    domain: "5101000000" #服务端sip域
+    domain_id: "51010000002000000001" #服务端sip域ID
+    http_source: http://127.0.0.1:18567 #服务端http接口根路径地址，暴露给三方业务访问调用，默认为本机+http端口，如有反向代理则需修改
     lan_ip: 172.18.38.186  # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
     wan_ip: 192.168.0.22  # 公网IP
     lan_port: 25600  #lan端口

@@ -9,4 +9,3 @@ paste = "1.0"
 
 # 共享依赖
 utoipa.workspace = true
-anyhow.workspace = true

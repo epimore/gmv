@@ -272,6 +272,38 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.2.0"
+source = "git+https://github.com/epimore/pigs.git?rev=778c1e24#778c1e2432e1e4acb513aeebc13c772907a9f2d4"
+dependencies = [
+ "aes",
+ "base64 0.22.1",
+ "block-modes",
+ "bytebuffer",
+ "bytes",
+ "cfg_lib 0.1.0 (git+https://github.com/epimore/pigs.git?rev=778c1e24)",
+ "chrono",
+ "constructor 0.2.0 (git+https://github.com/epimore/pigs.git?rev=778c1e24)",
+ "ctor",
+ "daemonize",
+ "dashmap",
+ "exception 0.1.0 (git+https://github.com/epimore/pigs.git?rev=778c1e24)",
+ "fern",
+ "hex",
+ "libc",
+ "log",
+ "once_cell",
+ "rand",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-util",
+ "users",
+]
+
+[[package]]
+name = "base"
+version = "0.2.0"
 source = "git+https://github.com/epimore/pigs.git?rev=a81dea9a#a81dea9afe0fc7b8eb4c25b08f57704d2e99c735"
 dependencies = [
  "aes",
@@ -279,13 +311,13 @@ dependencies = [
  "block-modes",
  "bytebuffer",
  "bytes",
- "cfg_lib",
+ "cfg_lib 0.1.0 (git+https://github.com/epimore/pigs.git?rev=a81dea9a)",
  "chrono",
- "constructor",
+ "constructor 0.2.0 (git+https://github.com/epimore/pigs.git?rev=a81dea9a)",
  "ctor",
  "daemonize",
  "dashmap",
- "exception",
+ "exception 0.1.0 (git+https://github.com/epimore/pigs.git?rev=a81dea9a)",
  "fern",
  "hex",
  "libc",
@@ -322,9 +354,9 @@ checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
 [[package]]
 name = "base_db"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=a81dea9a#a81dea9afe0fc7b8eb4c25b08f57704d2e99c735"
+source = "git+https://github.com/epimore/pigs.git?rev=778c1e24#778c1e2432e1e4acb513aeebc13c772907a9f2d4"
 dependencies = [
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=778c1e24)",
  "sqlx",
 ]
 
@@ -528,11 +560,31 @@ checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=a81dea9a#a81dea9afe0fc7b8eb4c25b08f57704d2e99c735"
+source = "git+https://github.com/epimore/pigs.git?rev=778c1e24#778c1e2432e1e4acb513aeebc13c772907a9f2d4"
 dependencies = [
- "cfg_macro",
+ "cfg_macro 0.1.0 (git+https://github.com/epimore/pigs.git?rev=778c1e24)",
  "clap",
  "once_cell",
+]
+
+[[package]]
+name = "cfg_lib"
+version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=a81dea9a#a81dea9afe0fc7b8eb4c25b08f57704d2e99c735"
+dependencies = [
+ "cfg_macro 0.1.0 (git+https://github.com/epimore/pigs.git?rev=a81dea9a)",
+ "clap",
+ "once_cell",
+]
+
+[[package]]
+name = "cfg_macro"
+version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=778c1e24#778c1e2432e1e4acb513aeebc13c772907a9f2d4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -644,6 +696,16 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "constructor"
+version = "0.2.0"
+source = "git+https://github.com/epimore/pigs.git?rev=778c1e24#778c1e2432e1e4acb513aeebc13c772907a9f2d4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
+]
 
 [[package]]
 name = "constructor"
@@ -980,6 +1042,16 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=778c1e24#778c1e2432e1e4acb513aeebc13c772907a9f2d4"
+dependencies = [
+ "anyhow",
+ "log",
+ "thiserror 2.0.12",
+]
+
+[[package]]
+name = "exception"
+version = "0.1.0"
 source = "git+https://github.com/epimore/pigs.git?rev=a81dea9a#a81dea9afe0fc7b8eb4c25b08f57704d2e99c735"
 dependencies = [
  "anyhow",
@@ -1233,20 +1305,18 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "gmv-session"
-version = "2.0.0-alpha.0.1"
+version = "2.0.0-release"
 dependencies = [
  "anyhow",
  "axum",
  "base_db",
  "cron",
- "crossbeam-channel",
  "encoding_rs",
  "image",
  "parking_lot",
  "pretend",
  "pretend-reqwest",
  "quick-xml",
- "rayon",
  "regex",
  "rsip",
  "sdp-types",
@@ -1260,11 +1330,10 @@ dependencies = [
 
 [[package]]
 name = "gmv-stream"
-version = "2.0.0-alpha.0.1"
+version = "2.0.0-release"
 dependencies = [
- "anyhow",
  "axum",
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=a81dea9a)",
  "crossbeam-channel",
  "futures-core",
  "futures-util",
@@ -1742,7 +1811,7 @@ checksum = "e19b23d53f35ce9f56aebc7d1bb4e6ac1e9c0db7ac85c8d1760c04379edced37"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2779,7 +2848,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3034,10 +3103,9 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "2.0.0-alpha.0.1"
+version = "2.0.0-release"
 dependencies = [
- "anyhow",
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=a81dea9a)",
  "paste",
  "utoipa",
 ]
@@ -3460,7 +3528,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix 1.0.8",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

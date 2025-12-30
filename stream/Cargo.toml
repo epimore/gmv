@@ -17,7 +17,6 @@ axum = "0.8"
 rtp-types = "0.1"
 
 # 共享依赖
-anyhow.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
 utoipa.workspace = true

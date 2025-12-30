@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 shared = { path = "../shared" }
-base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "a81dea9a", features = ["net"] }
+base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "778c1e24", features = ["net"] }
 #base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
 
 rsip = "0.4"
@@ -22,10 +22,8 @@ axum = { version = "0.8", features = ["multipart"] }
 # 共享依赖（自动继承版本）
 anyhow.workspace = true
 parking_lot.workspace = true
-crossbeam-channel.workspace = true
 regex.workspace = true
 url.workspace = true
-rayon.workspace = true
 uuid.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
