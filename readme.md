@@ -2,7 +2,8 @@
 
 
 ## 🌟 TCP/UDP端口复用、单机/集群部署、SWAGGER接口文档、不做破坏性更新【接口稳定】、开箱即用【无需编译链接各种依赖】
-## 2.0文档地址：https://github.com/epimore/gmv/wiki/%E6%96%87%E6%A1%A3%E7%89%88%E6%9C%AC:-2.0.0%E2%80%90release
+## 文档地址：
+[2.0-release](https://github.com/epimore/gmv/wiki/%E6%96%87%E6%A1%A3%E7%89%88%E6%9C%AC:-2.0.0%E2%80%90release)
 
 ### 🔗 1. 前端场景界面 demo（VUE 项目）：[simple-app](https://github.com/epimore/simple-app)
 ### 🔗 2. 自定义业务场景 demo（JAVA 项目）：[simple-biz](https://github.com/epimore/simple-biz)
