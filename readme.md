@@ -36,24 +36,28 @@ RTP -> PS -> H264 -> HTTP-FLV（直/点播）、MP4（录像）
 6. 图片上传 - 完成
 7. 视频离线下载 - 完成
 
-## TODO:
 ### v2版本：预计25年年中启动
-// 流媒体服务使用ffmpeg实现,以扩展支持协议减少轮子。
+// 流媒体服务使用ffmpeg实现,以扩展支持协议减少轮子。 OK
 1. 级联 -- SESSION
 2. 支持H265,HLS...  -- STREAM
 3. 统一响应码
+## TODO:
 ### V3版本：预计25年底启动
 1. 按需推流
 2. 图片AI识别-插件化业务场景
 3. 多数据库配置
 
-![0](./sources/swagger.png "API文档")
-![1](./sources/d_list.png "设备目录")
-![2](./sources/d_add.png "设备添加")
-![3](./sources/c_list.png "设备目录通道")
-![4](./sources/c_d_list.png "通道目录操作")
-![5](./sources/c_play.png "通道点播")
-![6](./sources/playback.png "历史回放")
+![0](./sources/docs.png "API文档")
+![1](./sources/c_list1.png "设备目录")
+![1](./sources/c_list2.png "设备目录")
+![1](./sources/c_list3.png "设备目录")
+![2](./sources/d_add1.png "设备添加")
+![2](./sources/d_add2.png "设备添加")
+![2](./sources/d_add3.png "设备添加")
+![3](./sources/pics.png "图片采集")
+![4](./sources/event.png "事件推送")
+![5](./sources/pl.png "通道点播")
+![6](./sources/pb.png "历史回放")
 ![7](./sources/down.png "云端下载")
 
 ## 微信交流添加：epimore;备注GMV
