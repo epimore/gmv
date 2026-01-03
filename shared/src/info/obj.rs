@@ -55,13 +55,13 @@ pub struct StreamState {
 #[derive(New, Serialize, Deserialize, Debug, Default)]
 #[serde(crate = "base::serde")]
 pub struct StreamRecordInfo {
-    //录制完成时返回路径+文件名
+    ///录制完成时返回路径+文件名
     pub path_file_name: Option<String>,
     //单位kb,
     pub file_size: u64,
-    //媒体流进度时间,方便计算进度，单位秒
+    ///媒体流进度时间,方便计算进度，单位秒
     pub timestamp: u32,
-    //录制状态，0-未开始，1-进行中，2-完成,3-失败
+    ///录制状态，0-未开始，1-进行中，2-完成,3-失败
     pub state: u8,
     //每秒录制字节数
     // pub bytes_sec: usize,
