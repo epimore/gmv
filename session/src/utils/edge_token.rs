@@ -15,15 +15,19 @@ pub fn build_file_name(device_id: &str, channel_id: &str) -> GlobalResult<String
 }
 
 pub fn build_token_session_id(device_id: &str, channel_id: &str) -> GlobalResult<(String, String)> {
+    let session_id = build_session_id(device_id, channel_id)?;
+    let input = format!("{}@{}", KEY, session_id);
+    let token = crypto::generate_token(&input);
+    Ok((token, session_id))
+}
+
+pub fn build_session_id(device_id: &str, channel_id: &str)->GlobalResult<String>{
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
     let mils = since_the_epoch.as_millis();
     let text = format!("{}{}{}", device_id, channel_id, mils);
-    let session_id = dig62::en(&text)?;
-    let input = format!("{}@{}", KEY, session_id);
-    let token = crypto::generate_token(&input);
-    Ok((token, session_id))
+    dig62::en(&text)
 }
 
 //返回(device_id, channel_id)

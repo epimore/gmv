@@ -9,6 +9,9 @@ server:
   rtcp_port: 18569 #监听rtcp媒体流端口;  暂未实现
   http_port: 18570 #流媒体API端口
   hook_uri: http://127.0.0.1:18567/session/hook #信令服务的地址
+  #流代理地址:http://127.0.0.1:[server.http_port]，用于如nginx代理
+  #默认播放地址：http://127.0.0.1:[server.http_port]/[server.name]/play/[stream_id].flv?gmv-token=uxxx
+  proxy_addr: https://epimore.cn #eg:https://epimore.cn/s1/play/4FEqqzfqsa0Vzqqq2lqqc1lqq4fa.flv?gmv-token=uxxx;
 stream: #开启信令订阅监听时，可自定义修改；
   expires: 6 #i32 单位秒；默认无人观看后，6秒关闭流；0为立即关闭；负为永不关闭
 
