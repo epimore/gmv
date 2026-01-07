@@ -17,7 +17,7 @@ mod codec;
 pub mod event;
 mod filter;
 pub mod format;
-mod utils;
+pub mod utils;
 
 /// FFmpeg的AVFormatContext和AVCodecContext实例非线程安全，必须为每个线程创建独立实例
 /// 通过av_lockmgr_register注册全局锁管理器，处理编解码器初始化等非线程安全操作

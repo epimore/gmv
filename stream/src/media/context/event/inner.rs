@@ -3,10 +3,14 @@ use base::log::error;
 use base::tokio::sync::oneshot;
 use crate::media::context::format::FmtMuxer;
 use crate::media::context::MediaContext;
+use crate::general::mp::MediaParam;
+use crate::media::context::utils::extradata;
 
 pub enum InnerEvent {
     FlvHeader(oneshot::Sender<Bytes>),
     Mp4Header(oneshot::Sender<Bytes>),
+    CmafHeader(oneshot::Sender<Bytes>),
+    MediaParam(oneshot::Sender<MediaParam>),
     //...
 }
 impl InnerEvent {
@@ -34,6 +38,24 @@ impl InnerEvent {
                             error!("mp4_header send to the receiver dropped");
                         }
                     }
+                }
+            }
+            InnerEvent::CmafHeader(sender) => {
+                match &media_context.muxer_context.fmp4 {
+                    None => {
+                        error!("no fmp4 context");
+                    }
+                    Some(context) => {
+                        if let Err(_) = sender.send(context.get_header()) {
+                            error!("fmp4_header send to the receiver dropped");
+                        }
+                    }
+                }
+            }
+            InnerEvent::MediaParam(sender) => {
+                let param = extradata::parse_media_param(&media_context.demuxer_context);
+                if let Err(_) = sender.send(param) {
+                    error!("media params send to the receiver dropped");
                 }
             }
         }

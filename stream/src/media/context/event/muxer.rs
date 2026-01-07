@@ -1,3 +1,4 @@
+use crate::media::context::format::cmaf::CmafFmp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::flv::FlvContext;
 use crate::media::context::format::FmtMuxer;
@@ -24,7 +25,9 @@ impl MuxerEvent {
                     unimplemented!()
                 }
                 MuxerKind::FMp4(fmp4) => {
-                    unimplemented!()
+                    let _ = CmafFmp4Context::init_context(demuxer_context, fmp4.tx).map(|ctx| {
+                        muxer_context.fmp4 = Some(ctx);
+                    });
                 }
                 MuxerKind::HlsTs(hls_ts) => {
                     unimplemented!()

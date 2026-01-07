@@ -332,6 +332,7 @@ pub mod muxer_layer {
     use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
     use shared::info::output::OutputKind;
     use std::sync::Arc;
+    use crate::media::context::format::muxer::MuxerEnum::FMp4;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
@@ -404,7 +405,7 @@ pub mod muxer_layer {
                 }
                 OutputKind::DashFmp4(_) | OutputKind::HlsFmp4(_) => {
                     if self.fmp4.is_none() {
-                        unimplemented!()
+                        self.fmp4 = Some(CMafLayer::layer(CMaf::default()));
                     }
                 }
                 OutputKind::HlsTs(inner) => {
@@ -484,10 +485,13 @@ pub mod muxer_layer {
     }
 
     #[derive(Clone)]
-    pub struct CMafLayer {}
+    pub struct CMafLayer {
+        pub tx: broadcast::Sender<Arc<MuxPacket>>,
+    }
     impl CMafLayer {
         pub fn layer(cmaf: CMaf) -> Self {
-            unimplemented!()
+            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
+            Self { tx }
         }
     }
     #[derive(Clone)]

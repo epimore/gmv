@@ -58,8 +58,8 @@ async fn handler(Path(stream_id): Path<String>, Query(map): Query<HashMap<String
                 "flv" => { flv::handler(id.to_string(), token.unwrap(), addr).await }
                 "m3u8" => { hls::m3u8_handler().await }
                 "ts" => { hls::segment_handler().await }
-                "mp4" => { dash::mpd_handler().await }
-                "m4s" => { dash::segment_handler().await }
+                "mp4" => dash::mpd_handler(id.to_string()).await,
+                "m4s" => dash::segment_handler(id.to_string(), token.unwrap(), addr).await,
                 _ => { res_404() }
             }
         }
