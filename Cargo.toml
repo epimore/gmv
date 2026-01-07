@@ -4,6 +4,7 @@ members = [
     "session",
     "shared",
     "stream",
+#    "ruminate"
 ]
 
 [workspace.package]
