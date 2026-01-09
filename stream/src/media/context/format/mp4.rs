@@ -123,7 +123,7 @@ impl FmtMuxer for Mp4Context {
             (*fmt_ctx).flags |= AVFMT_FLAG_FLUSH_PACKETS as i32;
 
             // 检查 demuxer 的 codecpar 列表
-            if demuxer_context.codecpar_list.is_empty() {
+            if demuxer_context.params.is_empty() {
                 avio_context_free(&mut avio_ctx);
                 avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
@@ -148,7 +148,7 @@ impl FmtMuxer for Mp4Context {
             let nb_in = (*in_fmt).nb_streams as usize;
 
             // 如果 codecpar_list 的长度大于输入流数，认为不合法
-            if demuxer_context.codecpar_list.len() > nb_in {
+            if demuxer_context.params.len() > nb_in {
                 avio_context_free(&mut avio_ctx);
                 avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
@@ -158,12 +158,12 @@ impl FmtMuxer for Mp4Context {
                 ));
             }
 
-            let mut in_tbs: Vec<AVRational> = Vec::with_capacity(demuxer_context.codecpar_list.len());
-            let mut out_tbs: Vec<AVRational> = Vec::with_capacity(demuxer_context.codecpar_list.len());
+            let mut in_tbs: Vec<AVRational> = Vec::with_capacity(demuxer_context.params.len());
+            let mut out_tbs: Vec<AVRational> = Vec::with_capacity(demuxer_context.params.len());
 
             // 建立输出流，并对齐时基
-            for i in 0..demuxer_context.codecpar_list.len() {
-                let codecpar = demuxer_context.codecpar_list[i];
+            for i in 0..demuxer_context.params.len() {
+                let codecpar = demuxer_context.params.get(i).unwrap().codecpar;
 
                 // 读取输入流指针，确保在 nb_in 范围内（上面已检查）
                 let in_st = *(*in_fmt).streams.offset(i as isize);

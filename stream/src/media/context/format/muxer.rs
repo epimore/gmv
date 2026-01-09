@@ -53,7 +53,7 @@ pub struct MuxerContext {
 
 }
 impl MuxerContext {
-    pub fn init(demuxer_context: &DemuxerContext,muxer: MuxerLayer) -> MuxerContext {
+    pub fn init(demuxer_context: &DemuxerContext,muxer: &MuxerLayer) -> MuxerContext {
         let mut context = MuxerContext::default();
         if let Some(flv_layer) = &muxer.flv {
             let _ = FlvContext::init_context(demuxer_context, flv_layer.tx.clone()).map(|flv_context| {

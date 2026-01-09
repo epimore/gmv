@@ -123,14 +123,14 @@ pub struct PtzControlModel {
 pub struct StreamInfo {
     pub streamId: String,
     pub flv: String,
-    pub m3u8: String,
+    pub dash: String,
 }
 
 impl StreamInfo {
     pub fn build(stream_id: String, proxy_addr: String) -> Self {
         Self {
             flv: format!("{}/play/{}.flv",proxy_addr,stream_id),
-            m3u8: format!("{}/play/{}.m3u8",proxy_addr,stream_id),
+            dash: format!("{}/play/{}.fmp4", proxy_addr, stream_id),
             streamId: stream_id,
         }
     }

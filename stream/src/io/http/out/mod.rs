@@ -1,28 +1,25 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
+use crate::io::http::{res_401, res_404};
 use axum::Router;
-use shared::info::obj::{PLAY_PATH};
-use base::bytes::Bytes;
-use futures_core::Stream;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query};
 use axum::response::Response;
-use base::log::info;
-use crate::io::http::{res_401, res_404};
+use base::bytes::Bytes;
+use base::log::{debug, info, warn};
+use futures_core::Stream;
+use shared::info::obj::PLAY_PATH;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::str::FromStr;
+use std::task::{Context, Poll};
 
+mod dash;
 mod flv;
 mod hls;
-mod dash;
 //收到流-》media 长期阻塞 ——》无输出流
 pub fn routes() -> Router {
-    Router::new().route(
-        PLAY_PATH,
-        axum::routing::get(handler),
-    )
+    Router::new().route(PLAY_PATH, axum::routing::get(handler))
 }
-
 
 #[cfg_attr(
     debug_assertions,
@@ -44,23 +41,39 @@ pub fn routes() -> Router {
     )
 )]
 /// 根据HTTP-URL请求播放
-async fn handler(Path(stream_id): Path<String>, Query(map): Query<HashMap<String, String>>, ConnectInfo(addr): ConnectInfo<SocketAddr>)
-                 -> Response<Body> {
-    info!("stream play:stream_id: {}, param: {:?}", stream_id, map);
+async fn handler(
+    Path(stream_id): Path<String>,
+    Query(map): Query<HashMap<String, String>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response<Body> {
+    debug!("stream play:stream_id: {}, param: {:?}", stream_id, map);
     let token = map.get("gmv-token");
     if token.is_none() {
         return res_401();
     }
+    let token = token.unwrap().clone();
     match stream_id.rsplit_once('.') {
-        None => { res_404() }
+        None => res_404(),
         Some((id, tp)) => {
             match tp {
-                "flv" => { flv::handler(id.to_string(), token.unwrap(), addr).await }
-                "m3u8" => { hls::m3u8_handler().await }
-                "ts" => { hls::segment_handler().await }
-                "mp4" => dash::mpd_handler(id.to_string()).await,
-                "m4s" => dash::segment_handler(id.to_string(), token.unwrap(), addr).await,
-                _ => { res_404() }
+                "flv" => {
+                    info!("flv stream play:stream_id: {}, param: {:?}", stream_id, map);
+                    flv::handler(id.to_string(), &token, addr).await
+                }
+                "m3u8" => hls::m3u8_handler().await,
+                "ts" => hls::segment_handler().await,
+                "fmp4" => dash::mpd_handler(id.to_string()).await, // MPD manifest
+                "m4is" => dash::init_segment(id.to_string()).await, // CMAF init
+                "m4s" => {
+                    info!("ll-dash stream play:stream_id: {}, param: {:?}", stream_id, map);
+                    dash::segment_handler(id.to_string(), &token, addr).await // media chunk stream
+                    /*if let Some(Ok(seg)) = map.get("seg").map(|seg| u32::from_str(seg)) {
+                        dash::segment_handler(id.to_string(), &token, addr).await // media chunk stream
+                    } else {
+                        res_404()
+                    }*/
+                }
+                _ => res_404(),
             }
         }
     }
@@ -73,14 +86,11 @@ struct DisconnectAwareStream<S> {
 
 impl<S> Stream for DisconnectAwareStream<S>
 where
-    S: Stream<Item=Result<Bytes, std::convert::Infallible>> + Unpin,
+    S: Stream<Item = Result<Bytes, std::convert::Infallible>> + Unpin,
 {
     type Item = Result<Bytes, std::convert::Infallible>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.inner).poll_next(cx)
     }
 }

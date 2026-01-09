@@ -15,11 +15,11 @@ use base::log::{error, warn};
 use base::serde_json;
 use base::tokio::sync::mpsc;
 use base::tokio::time::{sleep, Instant};
-use shared::info::format::{Flv, Mp4};
+use shared::info::format::{CMaf, Flv, Mp4};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::{MediaMap};
 use shared::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
-use shared::info::output::{HttpFlvOutput, LocalMp4Output, OutputEnum, OutputKind};
+use shared::info::output::{DashFmp4Output, HttpFlvOutput, LocalMp4Output, OutputEnum, OutputKind};
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -225,7 +225,9 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                 expires: None,
                 codec: None,
                 filter: Default::default(),
-                output:OutputKind::HttpFlv(HttpFlvOutput{fmt:Flv::default()}),
+                //默认使用dash，以兼容H.265
+                output:OutputKind::DashFmp4(DashFmp4Output{fmt:CMaf::default()}),
+                // output:OutputKind::HttpFlv(HttpFlvOutput{fmt:Flv::default()}),
             }
         }
         Some(cmc) => {

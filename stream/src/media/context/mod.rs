@@ -2,7 +2,7 @@ use crate::media::context::codec::CodecContext;
 use crate::media::context::event::ContextEvent;
 use crate::media::context::filter::FilterContext;
 use crate::media::context::format::FmtMuxer;
-use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::demuxer::{DemuxerContext, ParamStream};
 use crate::media::context::format::muxer::MuxerContext;
 use crate::media::rtp::RtpPacketBuffer;
 use crate::state::msg::StreamConfig;
@@ -10,8 +10,14 @@ use base::bus::mpsc::TypedReceiver;
 use base::exception::GlobalResult;
 use base::exception::typed::common::MessageBusError;
 use base::log::debug;
-use rsmpeg::ffi::AVPacket;
+use rsmpeg::ffi::{
+    AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
+};
+use rsmpeg::ffi::{AVPacket, av_free, av_malloc};
 use shared::info::media_info_ext::MediaExt;
+use std::ptr;
+use std::sync::Arc;
+use crate::state::layer::muxer_layer::MuxerLayer;
 
 mod codec;
 pub mod event;
@@ -87,6 +93,11 @@ pub struct MediaContext {
     pub context_event_rx: TypedReceiver<ContextEvent>,
     pub demuxer_context: DemuxerContext,
     pub rtp_state: *mut RtpState,
+    // pub h264_ps: Option<H264ParameterSets>,
+    // pub h265_ps: Option<H265ParameterSets>,
+    // pub aac_asc: Option<[u8; 2]>,
+    /// 是否还允许修复 codecpar
+    pub codecpar_fixable: bool,
 }
 impl Drop for MediaContext {
     fn drop(&mut self) {
@@ -99,8 +110,9 @@ impl Drop for MediaContext {
         }
     }
 }
+
 impl MediaContext {
-    pub fn init(ssrc: u32, stream_config: StreamConfig) -> GlobalResult<MediaContext> {
+    pub fn init(ssrc: u32, stream_config: StreamConfig) -> GlobalResult<(MediaContext,MuxerLayer)> {
         let rtp_buffer = RtpPacketBuffer::init(ssrc, stream_config.rtp_rx)?;
         // Box → raw pointer
         let rtp_state_ptr = Box::into_raw(Box::new(RtpState::new()));
@@ -111,20 +123,22 @@ impl MediaContext {
             rtp_state_ptr,
         )?;
         let converter = stream_config.converter;
+
         let context = MediaContext {
             codec_context: CodecContext::init(converter.codec),
             filter_context: FilterContext::init(converter.filter),
             ssrc,
             media_ext: stream_config.media_ext,
             context_event_rx: stream_config.context_event_rx,
-            muxer_context: MuxerContext::init(&demuxer_context, converter.muxer),
+            muxer_context: Default::default(),
             demuxer_context,
             rtp_state: rtp_state_ptr,
+            codecpar_fixable: true,
         };
-        Ok(context)
+        Ok((context,converter.muxer))
     }
 
-    pub fn invoke(&mut self) {
+    pub fn invoke(&mut self,muxer_layer:MuxerLayer) {
         use rsmpeg::ffi::{AVRational, av_rescale_q};
 
         unsafe {
@@ -134,17 +148,25 @@ impl MediaContext {
             //write body
             let mut pkt = std::mem::zeroed::<AVPacket>();
             loop {
+                let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
+                if ret < 0 {
+                    break;
+                }
+                //todo key idr and init mux_ctx writer heder after repair_codecpar_extradata
+                if self.codecpar_fixable {
+                    if repair_codecpar_extradata(&pkt, &mut self.demuxer_context.params) {
+                        self.codecpar_fixable = false;
+                        self.muxer_context = MuxerContext::init(&self.demuxer_context, &muxer_layer);
+                    } else {
+                        continue;
+                    }
+                }
                 match self.context_event_rx.try_recv() {
                     Ok(event) => self.handle_event(event),
                     Err(MessageBusError::ChannelClosed) => break,
                     Err(_) => {}
                 }
-
-                let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
-                if ret < 0 {
-                    break;
-                }
-
+                //fill_stream_from_media_ext(st, media_ext);
                 let tb = (*(*fmt_ctx).streams.offset(pkt.stream_index as isize).read()).time_base;
 
                 // 更新 RTP 状态并获取展开 timestamp 和帧间差值
@@ -235,7 +257,7 @@ impl MediaContext {
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
         if let Some(context) = &mut muxer.flv {
-           context.flush();
+            context.flush();
         }
         if let Some(context) = &mut muxer.mp4 {
             context.flush();
@@ -276,4 +298,202 @@ impl MediaContext {
             }
         }
     }
+}
+#[derive(Default)]
+pub struct H264ParameterSets {
+    pub sps: Option<Vec<u8>>,
+    pub pps: Option<Vec<u8>>,
+}
+
+#[derive(Default)]
+pub struct H265ParameterSets {
+    pub vps: Option<Vec<u8>>,
+    pub sps: Option<Vec<u8>>,
+    pub pps: Option<Vec<u8>>,
+}
+
+fn for_each_nalu_annexb(data: &[u8], mut f: impl FnMut(&[u8])) {
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        let start = if data[i..].starts_with(&[0, 0, 0, 1]) {
+            i + 4
+        } else if data[i..].starts_with(&[0, 0, 1]) {
+            i + 3
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let mut end = start;
+        while end + 3 < data.len()
+            && !data[end..].starts_with(&[0, 0, 0, 1])
+            && !data[end..].starts_with(&[0, 0, 1])
+        {
+            end += 1;
+        }
+
+        f(&data[start..end]);
+        i = end;
+    }
+}
+fn extract_h264_ps(pkt: &AVPacket, ps: &mut H264ParameterSets) {
+    unsafe {
+        let data = std::slice::from_raw_parts(pkt.data, pkt.size as usize);
+
+        for_each_nalu_annexb(data, |nalu| {
+            let nal_type = nalu[0] & 0x1F;
+            match nal_type {
+                7 if ps.sps.is_none() => ps.sps = Some(nalu.to_vec()),
+                8 if ps.pps.is_none() => ps.pps = Some(nalu.to_vec()),
+                _ => {}
+            }
+        });
+    }
+}
+fn extract_h265_ps(pkt: &AVPacket, ps: &mut H265ParameterSets) {
+    unsafe {
+        let data = std::slice::from_raw_parts(pkt.data, pkt.size as usize);
+
+        for_each_nalu_annexb(data, |nalu| {
+            let nal_type = (nalu[0] >> 1) & 0x3F;
+            match nal_type {
+                32 if ps.vps.is_none() => ps.vps = Some(nalu.to_vec()),
+                33 if ps.sps.is_none() => ps.sps = Some(nalu.to_vec()),
+                34 if ps.pps.is_none() => ps.pps = Some(nalu.to_vec()),
+                _ => {}
+            }
+        });
+    }
+}
+fn parse_aac_asc_from_adts(adts: &[u8]) -> Option<[u8; 2]> {
+    if adts.len() < 7 {
+        return None;
+    }
+
+    // syncword 0xFFF
+    if adts[0] != 0xFF || (adts[1] & 0xF0) != 0xF0 {
+        return None;
+    }
+
+    let profile = ((adts[2] & 0xC0) >> 6) + 1;
+    let sf_index = (adts[2] & 0x3C) >> 2;
+    let chan_cfg = ((adts[2] & 0x01) << 2) | ((adts[3] & 0xC0) >> 6);
+
+    let asc0 = (profile << 3) | (sf_index >> 1);
+    let asc1 = ((sf_index & 1) << 7) | (chan_cfg << 3);
+
+    Some([asc0, asc1])
+}
+fn extract_aac_asc(pkt: &AVPacket) -> Option<[u8; 2]> {
+    unsafe {
+        let data = std::slice::from_raw_parts(pkt.data, pkt.size as usize);
+        parse_aac_asc_from_adts(data)
+    }
+}
+unsafe fn repair_codecpar_extradata(
+    pkt: &AVPacket,
+    demuxer_streams: &mut Vec<ParamStream>,
+) -> bool {
+    let mut all_ready = true;
+
+    for param_stream in demuxer_streams.iter_mut() {
+        let codecpar = param_stream.codecpar;
+
+        match (*codecpar).codec_id {
+            AVCodecID_AV_CODEC_ID_H264 => {
+                // 修复 H264 PS
+                let ps = param_stream
+                    .repair
+                    .h264_ps
+                    .get_or_insert_with(Default::default);
+                extract_h264_ps(pkt, ps);
+
+                if ps.sps.is_none() || ps.pps.is_none() {
+                    all_ready = false;
+                    continue;
+                }
+
+                let sps = ps.sps.as_ref().unwrap();
+                let pps = ps.pps.as_ref().unwrap();
+                let extradata_size = 4 + sps.len() + 4 + pps.len();
+                let extradata = av_malloc(extradata_size) as *mut u8;
+
+                // 填充 extradata
+                let mut offset = 0;
+                for nal in [sps, pps] {
+                    ptr::copy_nonoverlapping([0, 0, 0, 1].as_ptr(), extradata.add(offset), 4);
+                    offset += 4;
+                    ptr::copy_nonoverlapping(nal.as_ptr(), extradata.add(offset), nal.len());
+                    offset += nal.len();
+                }
+
+                // 释放旧 extradata
+                if !(*codecpar).extradata.is_null() {
+                    av_free((*codecpar).extradata as *mut _);
+                }
+
+                (*codecpar).extradata = extradata;
+                (*codecpar).extradata_size = extradata_size as i32;
+            }
+
+            AVCodecID_AV_CODEC_ID_HEVC => {
+                // 修复 H265 PS
+                let ps = param_stream
+                    .repair
+                    .h265_ps
+                    .get_or_insert_with(Default::default);
+                extract_h265_ps(pkt, ps);
+
+                if ps.vps.is_none() || ps.sps.is_none() || ps.pps.is_none() {
+                    all_ready = false;
+                    continue;
+                }
+
+                let vps = ps.vps.as_ref().unwrap();
+                let sps = ps.sps.as_ref().unwrap();
+                let pps = ps.pps.as_ref().unwrap();
+
+                let extradata_size = 4 + vps.len() + 4 + sps.len() + 4 + pps.len();
+                let extradata = av_malloc(extradata_size) as *mut u8;
+                let mut offset = 0;
+
+                for nal in [vps, sps, pps] {
+                    ptr::copy_nonoverlapping([0, 0, 0, 1].as_ptr(), extradata.add(offset), 4);
+                    offset += 4;
+                    ptr::copy_nonoverlapping(nal.as_ptr(), extradata.add(offset), nal.len());
+                    offset += nal.len();
+                }
+
+                if !(*codecpar).extradata.is_null() {
+                    av_free((*codecpar).extradata as *mut _);
+                }
+
+                (*codecpar).extradata = extradata;
+                (*codecpar).extradata_size = extradata_size as i32;
+            }
+
+            AVCodecID_AV_CODEC_ID_AAC => {
+                // 修复 AAC ASC
+                if param_stream.repair.aac_asc.is_none() {
+                    if let Some(asc) = extract_aac_asc(pkt) {
+                        param_stream.repair.aac_asc = Some(asc);
+
+                        if !(*codecpar).extradata.is_null() {
+                            av_free((*codecpar).extradata as *mut _);
+                        }
+
+                        (*codecpar).extradata = av_malloc(2) as *mut u8;
+                        (*codecpar).extradata_size = 2;
+                        ptr::copy_nonoverlapping(asc.as_ptr(), (*codecpar).extradata, 2);
+                    } else {
+                        all_ready = false;
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    all_ready
 }

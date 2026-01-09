@@ -98,7 +98,7 @@ impl FmtMuxer for FlvContext {
                 return Err(GlobalError::new_sys_error("FLV format not supported", |msg| warn!("{msg}")));
             }
 
-            if demuxer_context.codecpar_list.is_empty() {
+            if demuxer_context.params.is_empty() {
                 avio_context_free(&mut (avio_ctx.clone()));
                 rsmpeg::ffi::avformat_free_context(fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
@@ -113,8 +113,8 @@ impl FmtMuxer for FlvContext {
             let mut video_si: i32 = -1;
 
             // 建立输出流，并对齐时基
-            for i in 0..demuxer_context.codecpar_list.len() {
-                let codecpar = demuxer_context.codecpar_list[i];
+            for i in 0..demuxer_context.params.len() {
+                let codecpar = demuxer_context.params.get(i).unwrap().codecpar;
 
                 let in_st = *(*in_fmt).streams.offset(i as isize);
                 let out_st = avformat_new_stream(fmt_ctx, ptr::null_mut());

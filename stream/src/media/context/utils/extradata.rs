@@ -1,7 +1,9 @@
 use base::chrono;
 use crate::general::mp::{Audio, MediaParam, Video};
 use crate::media::context::format::demuxer::DemuxerContext;
-
+use rsmpeg::ffi::{
+    AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,AVCodecID_AV_CODEC_ID_OPUS
+};
 pub fn parse_media_param(ctx: &DemuxerContext) -> MediaParam {
     let mut video: Option<Video> = None;
     let mut audio: Option<Audio> = None;
@@ -9,8 +11,7 @@ pub fn parse_media_param(ctx: &DemuxerContext) -> MediaParam {
     unsafe {
         let fmt = ctx.avio.fmt_ctx;
 
-        for (i, codecpar) in ctx.codecpar_list.iter().enumerate() {
-            let codecpar = *codecpar;
+        for (i, codecpar) in ctx.params.iter().enumerate().map(|(i, param)| (i, param.codecpar)) {
             let st = *(*fmt).streams.offset(i as isize);
 
             match (*codecpar).codec_type {
@@ -92,13 +93,11 @@ unsafe fn video_codec_string(codecpar: *mut rsmpeg::ffi::AVCodecParameters) -> S
 
             format!("avc1.{:02X}{:02X}{:02X}", profile, compat, level)
         }
-        AVCodecID_AV_CODEC_ID_H265 => "hev1.1.6.L120.B0".into(),
+        AVCodecID_AV_CODEC_ID_HEVC => "hev1.1.6.L120.B0".into(),
         _ => "unknown".into(),
     }
 }
 unsafe fn audio_codec_string(codecpar: *mut rsmpeg::ffi::AVCodecParameters) -> String {
-    use rsmpeg::ffi::*;
-
     match (*codecpar).codec_id {
         AVCodecID_AV_CODEC_ID_AAC => "mp4a.40.2".into(),
         AVCodecID_AV_CODEC_ID_OPUS => "opus".into(),
@@ -115,3 +114,52 @@ fn estimate_audio_bandwidth(sample_rate: u32, channels: u32) -> u32 {
     (sample_rate * channels * 2 * 8).min(256_000)
 }
 
+use rsmpeg::ffi::*;
+use std::ptr;
+use rsmpeg::ffi::{AVERROR_EOF};
+
+pub unsafe fn rebuild_codecpar_extradata_with_ffmpeg(
+    in_par: *const AVCodecParameters,
+    out_par: *mut AVCodecParameters,
+) -> Result<(), i32> {
+    let codec_id = (*in_par).codec_id;
+    let codec = avcodec_find_decoder(codec_id);
+    if codec.is_null() {
+        return Err(AVERROR_DECODER_NOT_FOUND);
+    }
+
+    // 1. alloc codec ctx
+    let codec_ctx = avcodec_alloc_context3(codec);
+    if codec_ctx.is_null() {
+        //内存不足
+        return Err(-1);
+    }
+
+    // 2. copy parameters → codec ctx
+    let ret = avcodec_parameters_to_context(codec_ctx, in_par);
+    if ret < 0 {
+        avcodec_free_context(&mut (codec_ctx as *mut _));
+        return Err(ret);
+    }
+
+    // ⚠️ 关键点：不要设置 get_format / hwaccel
+    // ⚠️ 只为了生成 extradata
+
+    // 3. open codec（生成 extradata）
+    let ret = avcodec_open2(codec_ctx, codec, ptr::null_mut());
+    if ret < 0 {
+        avcodec_free_context(&mut (codec_ctx as *mut _));
+        return Err(ret);
+    }
+
+    // 4. codec ctx → out_par（生成 avcC / hvcC / ASC）
+    let ret = avcodec_parameters_from_context(out_par, codec_ctx);
+
+    avcodec_free_context(&mut (codec_ctx as *mut _));
+
+    if ret < 0 {
+        return Err(ret);
+    }
+
+    Ok(())
+}

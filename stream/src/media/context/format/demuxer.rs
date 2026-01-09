@@ -6,7 +6,7 @@ use shared::info::media_info_ext::MediaExt;
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
-use crate::media::context::RtpState;
+use crate::media::context::{H264ParameterSets, H265ParameterSets, RtpState};
 
 
 /// 不会 free RtpState（因为它只是一个裸指针）。
@@ -20,7 +20,7 @@ pub struct AvioResource {
     pub io_buf: *mut u8,
     pub avio_ctx: *mut AVIOContext,
 }
-unsafe impl Send for AvioResource {} // only safe if you ensure no concurrent mutable use across threads
+// unsafe impl Send for AvioResource {} // only safe if you ensure no concurrent mutable use across threads
 
 impl Drop for AvioResource {
     fn drop(&mut self) {
@@ -53,29 +53,33 @@ impl Drop for AvioResource {
         }
     }
 }
-
-#[derive(Clone)]
 pub struct DemuxerContext {
-    pub avio: Arc<AvioResource>,
+    pub avio: AvioResource,
     /// we own `*mut AVCodecParameters` pointers and must free them in Drop
-    pub codecpar_list: Vec<*mut rsmpeg::ffi::AVCodecParameters>,
-    /// (input_stream_index, is_video)
-    pub stream_mapping: Vec<(usize, bool)>,
+    pub params: Vec<ParamStream>,
 }
-impl Drop for DemuxerContext {
+pub struct ParamStream {
+    pub codecpar: *mut AVCodecParameters,
+    pub repair: ParamRepairState,
+}
+impl Drop for ParamStream {
     fn drop(&mut self) {
-        unsafe {
-            for &par in &self.codecpar_list {
-                if !par.is_null() {
-                    // avcodec_parameters_free takes *mut *mut AVCodecParameters
-                    let mut p = par;
-                    avcodec_parameters_free(&mut p);
-                    // p now NULL
-                }
+        if !self.codecpar.is_null() {
+            let mut p = self.codecpar;
+            unsafe {
+                avcodec_parameters_free(&mut p);
             }
         }
     }
 }
+
+#[derive(Default)]
+pub struct ParamRepairState {
+    pub h264_ps: Option<H264ParameterSets>,
+    pub h265_ps: Option<H265ParameterSets>,
+    pub aac_asc: Option<[u8; 2]>,
+}
+
 
 /// Helper: create an AVFormatContext and set custom IO flag
 unsafe fn alloc_fmt_ctx_with_custom_io() -> GlobalResult<*mut AVFormatContext> { unsafe {
@@ -339,29 +343,6 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
             }
         }
     }
-    // 如果 extradata 缺失，调用 ensure_extradata
-    //使用 av_bitstream_filter_init("h264_mp4toannexb") 创建过滤器上下文，然后在每次收到 AVPacket 后，用 av_bitstream_filter_filter 处理后再写入输出。
-    if (*par).extradata.is_null() || is_extradata_incomplete((*par).codec_id, (*par).extradata_size) {
-        let ret = ensure_extradata((*stream).codecpar, (*par).codec_id, stream);
-        if ret == 0 {
-            info!(
-                "extradata filled: codec_id={} size={}",
-                (*par).codec_id,
-                (*par).extradata_size
-            );
-        } else {
-            warn!(
-                "extradata not filled: codec_id={}",
-                (*par).codec_id
-            );
-        }
-    } else {
-        info!(
-            "extradata already present: codec_id={} size={}",
-            (*par).codec_id,
-            (*par).extradata_size
-        );
-    }
     info!(
         "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
         stream,
@@ -369,86 +350,6 @@ unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt
         (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
         (*stream).r_frame_rate.num, (*stream).r_frame_rate.den
     );
-}}
-fn is_extradata_incomplete(codec_id: AVCodecID, size: i32) -> bool {
-    match codec_id {
-        AVCodecID_AV_CODEC_ID_H264 => size < 50,
-        AVCodecID_AV_CODEC_ID_HEVC => size < 80,
-        AVCodecID_AV_CODEC_ID_AAC => size < 2,
-        _ => false,
-    }
-}
-unsafe fn ensure_extradata(
-    codecpar: *mut AVCodecParameters,
-    codec_id: AVCodecID,
-    st: *mut AVStream,
-) -> i32 { unsafe {
-    use rsmpeg::ffi::*;
-
-    match codec_id {
-        // --- 视频 ---
-        AVCodecID_AV_CODEC_ID_H264 => {
-            return apply_bsf(st, "h264_mp4toannexb\0");
-        }
-        AVCodecID_AV_CODEC_ID_HEVC => {
-            return apply_bsf(st, "hevc_mp4toannexb\0");
-        }
-        AVCodecID_AV_CODEC_ID_MPEG4 => {
-            return apply_bsf(st, "mpeg4_unpack_bframes\0");
-        }
-
-        // --- 音频 ---
-        AVCodecID_AV_CODEC_ID_AAC => {
-            return apply_bsf(st, "aac_adtstoasc\0");
-        }
-
-        AVCodecID_AV_CODEC_ID_PCM_ALAW   // G.711 A-law
-        | AVCodecID_AV_CODEC_ID_PCM_MULAW // G.711 μ-law
-        | AVCodecID_AV_CODEC_ID_ADPCM_G722
-        | AVCodecID_AV_CODEC_ID_G723_1
-        | AVCodecID_AV_CODEC_ID_G729 => {
-            // 这些 codec 不需要 extradata
-            return 0;
-        }
-
-        _ => {
-            warn!("No extradata handler for codec_id={}", codec_id);
-            return -1;
-        }
-    }
-}}
-
-/// 使用 FFmpeg bsf 填充 extradata
-unsafe fn apply_bsf(st: *mut AVStream, bsf_name: &str) -> i32 { unsafe {
-    use rsmpeg::ffi::*;
-    let mut bsf: *mut AVBSFContext = std::ptr::null_mut();
-    let filter = av_bsf_get_by_name(bsf_name.as_ptr() as *const i8);
-    if filter.is_null() {
-        base::log::error!("BSF {} not found", bsf_name);
-        return -1;
-    }
-
-    if av_bsf_alloc(filter, &mut bsf) < 0 {
-        return -1;
-    }
-
-    avcodec_parameters_copy((*bsf).par_in, (*st).codecpar);
-    if av_bsf_init(bsf) < 0 {
-        av_bsf_free(&mut bsf);
-        return -1;
-    }
-
-    // 应用一次 extradata 更新
-    avcodec_parameters_copy((*st).codecpar, (*bsf).par_out);
-
-    base::log::info!(
-        "Applied bsf {} on stream, extradata size={}",
-        bsf_name,
-        (*(*st).codecpar).extradata_size
-    );
-
-    av_bsf_free(&mut bsf);
-    0
 }}
 
 
@@ -563,11 +464,9 @@ impl DemuxerContext {
 
             // 8) collect codecpar_list & stream mapping
             let nb_streams = (*fmt_ctx).nb_streams as usize;
-            let mut codecpar_list: Vec<*mut rsmpeg::ffi::AVCodecParameters> = Vec::with_capacity(nb_streams);
-            let mut stream_mapping: Vec<(usize, bool)> = Vec::with_capacity(nb_streams);
+            let mut params: Vec<ParamStream> = Vec::with_capacity(nb_streams);
             for i in 0..nb_streams {
                 let st = *(*fmt_ctx).streams.add(i);
-                fill_stream_from_media_ext(st, media_ext);
                 let codecpar = avcodec_parameters_alloc();
                 if codecpar.is_null() {
                     // cleanup: close input (which will free pb), and let AvioResource::drop handle opaque/io_buf
@@ -575,26 +474,29 @@ impl DemuxerContext {
                     return Err(GlobalError::new_sys_error("Failed to allocate codec parameters", |msg| error!("{msg}")));
                 }
                 avcodec_parameters_copy(codecpar, (*st).codecpar);
-                let is_video = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO;
-                codecpar_list.push(codecpar);
-                stream_mapping.push((i, is_video));
+                let ps = ParamStream { codecpar, repair: Default::default() };
+                params.push(ps);
                 info!("Stream {}: codec_id={}, tb={}/{}", i, (*codecpar).codec_id, (*st).time_base.num, (*st).time_base.den);
+                if (*st).time_base.num <= 0 || (*st).time_base.den <= 0 {
+                    if media_ext.clock_rate > 0 {
+                        (*st).time_base = AVRational { num: 1, den: media_ext.clock_rate };
+                    }
+                }
             }
 
             // free dict
             rsmpeg::ffi::av_dict_free(&mut dict_opts);
 
             // 9) Build AvioResource and return DemuxerContext
-            let avio_res = AvioResource {
+            let avio = AvioResource {
                 fmt_ctx,
-                io_buf: io_buf,
+                io_buf,
                 avio_ctx: pb,
             };
 
             Ok(DemuxerContext {
-                avio: Arc::new(avio_res),
-                codecpar_list,
-                stream_mapping,
+                avio,
+                params,
             })
         }
     }
