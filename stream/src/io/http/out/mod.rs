@@ -62,16 +62,11 @@ async fn handler(
                 }
                 "m3u8" => hls::m3u8_handler().await,
                 "ts" => hls::segment_handler().await,
-                "fmp4" => dash::mpd_handler(id.to_string()).await, // MPD manifest
+                "mpd" => dash::mpd_handler(id.to_string()).await, // MPD manifest
                 "m4is" => dash::init_segment(id.to_string()).await, // CMAF init
-                "m4s" => {
+                "m4s" | "fmp4" => {
                     info!("ll-dash stream play:stream_id: {}, param: {:?}", stream_id, map);
                     dash::segment_handler(id.to_string(), &token, addr).await // media chunk stream
-                    /*if let Some(Ok(seg)) = map.get("seg").map(|seg| u32::from_str(seg)) {
-                        dash::segment_handler(id.to_string(), &token, addr).await // media chunk stream
-                    } else {
-                        res_404()
-                    }*/
                 }
                 _ => res_404(),
             }
@@ -86,7 +81,7 @@ struct DisconnectAwareStream<S> {
 
 impl<S> Stream for DisconnectAwareStream<S>
 where
-    S: Stream<Item = Result<Bytes, std::convert::Infallible>> + Unpin,
+    S: Stream<Item=Result<Bytes, std::convert::Infallible>> + Unpin,
 {
     type Item = Result<Bytes, std::convert::Infallible>;
 

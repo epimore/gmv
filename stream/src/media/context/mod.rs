@@ -5,11 +5,12 @@ use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::demuxer::{DemuxerContext, ParamStream};
 use crate::media::context::format::muxer::MuxerContext;
 use crate::media::rtp::RtpPacketBuffer;
+use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::msg::StreamConfig;
 use base::bus::mpsc::TypedReceiver;
 use base::exception::GlobalResult;
 use base::exception::typed::common::MessageBusError;
-use base::log::debug;
+use base::log::{debug, error};
 use rsmpeg::ffi::{
     AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
 };
@@ -17,7 +18,7 @@ use rsmpeg::ffi::{AVPacket, av_free, av_malloc};
 use shared::info::media_info_ext::MediaExt;
 use std::ptr;
 use std::sync::Arc;
-use crate::state::layer::muxer_layer::MuxerLayer;
+use log::info;
 
 mod codec;
 pub mod event;
@@ -93,9 +94,6 @@ pub struct MediaContext {
     pub context_event_rx: TypedReceiver<ContextEvent>,
     pub demuxer_context: DemuxerContext,
     pub rtp_state: *mut RtpState,
-    // pub h264_ps: Option<H264ParameterSets>,
-    // pub h265_ps: Option<H265ParameterSets>,
-    // pub aac_asc: Option<[u8; 2]>,
     /// 是否还允许修复 codecpar
     pub codecpar_fixable: bool,
 }
@@ -112,7 +110,10 @@ impl Drop for MediaContext {
 }
 
 impl MediaContext {
-    pub fn init(ssrc: u32, stream_config: StreamConfig) -> GlobalResult<(MediaContext,MuxerLayer)> {
+    pub fn init(
+        ssrc: u32,
+        stream_config: StreamConfig,
+    ) -> GlobalResult<(MediaContext, MuxerLayer)> {
         let rtp_buffer = RtpPacketBuffer::init(ssrc, stream_config.rtp_rx)?;
         // Box → raw pointer
         let rtp_state_ptr = Box::into_raw(Box::new(RtpState::new()));
@@ -135,30 +136,37 @@ impl MediaContext {
             rtp_state: rtp_state_ptr,
             codecpar_fixable: true,
         };
-        Ok((context,converter.muxer))
+        Ok((context, converter.muxer))
     }
 
-    pub fn invoke(&mut self,muxer_layer:MuxerLayer) {
+    pub fn invoke(&mut self, muxer_layer: MuxerLayer) {
         use rsmpeg::ffi::{AVRational, av_rescale_q};
 
         unsafe {
             let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
             //write start
-
+            let mut retry = 0;
             //write body
             let mut pkt = std::mem::zeroed::<AVPacket>();
             loop {
                 let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
                 if ret < 0 {
-                    break;
+                    return;
                 }
-                //todo key idr and init mux_ctx writer heder after repair_codecpar_extradata
                 if self.codecpar_fixable {
                     if repair_codecpar_extradata(&pkt, &mut self.demuxer_context.params) {
                         self.codecpar_fixable = false;
-                        self.muxer_context = MuxerContext::init(&self.demuxer_context, &muxer_layer);
+                        self.muxer_context =
+                            MuxerContext::init(&self.demuxer_context, &muxer_layer);
                     } else {
-                        continue;
+                        retry += 1;
+                        rsmpeg::ffi::av_packet_unref(&mut pkt);
+                        if retry < 240 {
+                            continue;
+                        } else {
+                            error!("ssrc={}: repair codecpar extradata failed", self.ssrc);
+                            return;
+                        }
                     }
                 }
                 match self.context_event_rx.try_recv() {
@@ -184,24 +192,22 @@ impl MediaContext {
                 } else {
                     av_rescale_q((self.media_ext.clock_rate / 25) as i64, rtp_tb, tb)
                 };
-
-                pkt.pts = pts_rescaled;
-                pkt.dts = pts_rescaled;
                 pkt.duration = duration_rescaled;
 
-                debug!(
-                    "DEMX RTP: raw_ts={} unwrapped={} pts={} dts={} duration={} (tb={}/{})",
-                    rtp_state.last_32,
-                    cur_unwrapped,
-                    pkt.pts,
-                    pkt.dts,
-                    pkt.duration,
-                    tb.num,
-                    tb.den
-                );
+                // info!(
+                //     "DEMX RTP: raw_ts={} unwrapped={} pts={} dts={} duration={} (tb={}/{})",
+                //     rtp_state.last_32,
+                //     cur_unwrapped,
+                //     pkt.pts,
+                //     pkt.dts,
+                //     pkt.duration,
+                //     tb.num,
+                //     tb.den
+                // );
 
                 // 通过 pts 计算累计真实时长（秒）
                 let real_ts = pts_rescaled as f64 * tb.num as f64 / tb.den as f64;
+
                 // 暂不实现处理codec
                 // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
                 // 暂不实现处理filter
@@ -251,8 +257,8 @@ impl MediaContext {
         if let Some(context) = &muxer.hls_ts {
             unimplemented!()
         }
-        if let Some(context) = &muxer.fmp4 {
-            unimplemented!()
+        if let Some(context) = &mut muxer.fmp4 {
+            context.write_packet(pkt, ts);
         }
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
@@ -277,8 +283,8 @@ impl MediaContext {
         if let Some(context) = &muxer.hls_ts {
             unimplemented!()
         }
-        if let Some(context) = &muxer.fmp4 {
-            unimplemented!()
+        if let Some(context) = &mut muxer.fmp4 {
+            context.flush();
         }
     }
 
@@ -398,9 +404,22 @@ unsafe fn repair_codecpar_extradata(
 
     for param_stream in demuxer_streams.iter_mut() {
         let codecpar = param_stream.codecpar;
-
+        debug!(
+    "codec_id(enum)={} codec_tag={} extradata_size={}",
+    (*codecpar).codec_id,
+    (*codecpar).codec_tag,
+    (*codecpar).extradata_size
+);
         match (*codecpar).codec_id {
             AVCodecID_AV_CODEC_ID_H264 => {
+                // 打印当前extradata状态
+                if !(*codecpar).extradata.is_null() && (*codecpar).extradata_size > 0 {
+                    let size = (*codecpar).extradata_size as usize;
+                    let slice = std::slice::from_raw_parts((*codecpar).extradata, size.min(32));
+                    debug!("Current H264 extradata (first {} of {}): {:02X?}",
+                        slice.len(), size, slice);
+                }
+
                 // 修复 H264 PS
                 let ps = param_stream
                     .repair
@@ -410,13 +429,25 @@ unsafe fn repair_codecpar_extradata(
 
                 if ps.sps.is_none() || ps.pps.is_none() {
                     all_ready = false;
+                    debug!("H264: Waiting for SPS/PPS");
                     continue;
                 }
 
                 let sps = ps.sps.as_ref().unwrap();
                 let pps = ps.pps.as_ref().unwrap();
+
+                debug!("H264 SPS ({} bytes): {:02X?}", sps.len(), sps);
+                debug!("H264 PPS ({} bytes): {:02X?}", pps.len(), pps);
+
                 let extradata_size = 4 + sps.len() + 4 + pps.len();
                 let extradata = av_malloc(extradata_size) as *mut u8;
+
+                // 验证内存分配
+                if extradata.is_null() {
+                    error!("Failed to allocate {} bytes for extradata", extradata_size);
+                    all_ready = false;
+                    continue;
+                }
 
                 // 填充 extradata
                 let mut offset = 0;
@@ -427,13 +458,30 @@ unsafe fn repair_codecpar_extradata(
                     offset += nal.len();
                 }
 
+                // 验证填充大小
+                if offset != extradata_size {
+                    error!("Extradata size mismatch: expected {}, got {}", extradata_size, offset);
+                    av_free(extradata as *mut _);
+                    all_ready = false;
+                    continue;
+                }
+
+                // 打印新建的extradata
+                let new_extradata_slice = std::slice::from_raw_parts(extradata, extradata_size);
+                debug!("New H264 AnnexB extradata ({} bytes): {:02X?}",
+                    extradata_size, new_extradata_slice);
+
                 // 释放旧 extradata
                 if !(*codecpar).extradata.is_null() {
+                    debug!("Freeing old extradata at {:p}", (*codecpar).extradata);
                     av_free((*codecpar).extradata as *mut _);
                 }
 
                 (*codecpar).extradata = extradata;
                 (*codecpar).extradata_size = extradata_size as i32;
+
+                debug!("H264 extradata updated: ptr={:p}, size={}",
+                    (*codecpar).extradata, (*codecpar).extradata_size);
             }
 
             AVCodecID_AV_CODEC_ID_HEVC => {
@@ -493,6 +541,7 @@ unsafe fn repair_codecpar_extradata(
 
             _ => {}
         }
+        debug!("codecpar extradata_size={}", (*codecpar).extradata_size);
     }
 
     all_ready

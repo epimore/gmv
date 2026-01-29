@@ -3,13 +3,10 @@ cargo build --release --target x86_64-unknown-linux-gnu
 cat logs/gb_2025-11-25.log |grep 'REGISTER sip:34020000001117000219' | sed 's/\\n/\n/g'
 run --package gmv-session --bin gmv-session -- start -c ./session/config.yml
 1.文档、视频
-2.tcp
+2.db默认明文，支持加密
 3.机器学习
 流播放地址：
-/flv/{stream_id}/{token}
-/hls/{stream_id}/{token}
-1. 级联 -- SESSION
-2. 支持H265,HLS...  -- STREAM
+2. 支持H265,FMP4...  -- STREAM sed
 3. 统一响应码
 
 ffmpeg -re -i E:\book\mv\st\yddz.mp4 -vcodec copy -f rtp rtp://172.18.38.186:18568

@@ -375,7 +375,14 @@ pub mod muxer_layer {
                     unimplemented!()
                 }
                 MuxerEnum::FMp4 => {
-                    unimplemented!()
+                    if self.fmp4.is_none() {
+                        Err(GlobalError::new_biz_error(
+                            1100,
+                            &format!("muxer: {:?}未开启", muxer_enum),
+                            |msg| error!("{msg}"),
+                        ))?;
+                    }
+                    Ok(self.fmp4.as_ref().unwrap().tx.subscribe())
                 }
                 MuxerEnum::HlsTs => {
                     unimplemented!()

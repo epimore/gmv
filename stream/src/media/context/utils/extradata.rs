@@ -116,7 +116,6 @@ fn estimate_audio_bandwidth(sample_rate: u32, channels: u32) -> u32 {
 
 use rsmpeg::ffi::*;
 use std::ptr;
-use rsmpeg::ffi::{AVERROR_EOF};
 
 pub unsafe fn rebuild_codecpar_extradata_with_ffmpeg(
     in_par: *const AVCodecParameters,

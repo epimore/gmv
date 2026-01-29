@@ -11,8 +11,9 @@ use axum::body::Body;
 use axum::response::Response;
 use base::bytes::Bytes;
 use base::chrono;
+use base::chrono::Local;
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{error, warn};
 use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
 use futures_core::Stream;
@@ -26,8 +27,13 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
+use crate::general::util::{dump, DumpStream};
 
-async fn handler_fmp4(stream_id: String, token: &String, addr: SocketAddr) -> Response<Body> {
+pub async fn segment_handler(
+    stream_id: String,
+    token: &String,
+    addr: SocketAddr,
+) -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, user_count)) => {
@@ -110,7 +116,8 @@ async fn send_fmp4(
         Ok(h) => h,
         Err(_) => return res_404(),
     };
-
+    // warn!("header: {:02X?}", &init_segment[..]);
+    dump("fmp4init",&init_segment,false).expect("dump fmp4init failed");
     // 2. 等待第一个关键帧 fragment（moof+mdat）
     let first_fragment = match timeout(Duration::from_millis(TIME_OUT), async {
         loop {
@@ -126,7 +133,8 @@ async fn send_fmp4(
         Ok(Some(data)) => data,
         _ => return res_404(),
     };
-
+    // warn!("idr: {:02X?}", &first_fragment[0..100]);
+    dump("fmp4idr",&first_fragment,false).expect("dump fmp4idr failed");
     // 3. 组合 stream
     let init_stream = stream::once(Box::pin(async move {
         Ok::<_, std::convert::Infallible>(init_segment)
@@ -142,15 +150,21 @@ async fn send_fmp4(
 
     let full_stream = init_stream.chain(first_frag_stream).chain(live_stream);
 
+    let full_stream = DumpStream {
+        inner: full_stream,
+        name: "fmp4all",
+    };
+
     let wrapped = DisconnectAwareStream {
         inner: full_stream,
         on_drop: on_disconnect,
     };
 
     Response::builder()
+        // .header("Content-Type", "application/octet-stream")
         .header("Content-Type", "video/mp4")
         .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
+        // .header("Connection", "keep-alive")
         .body(Body::from_stream(wrapped))
         .unwrap()
 }
@@ -168,8 +182,14 @@ impl Stream for Fmp4Stream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(pkt))) => Poll::Ready(Some(Ok(pkt.data.clone()))),
-            Poll::Ready(Some(Err(_))) => Poll::Pending, // lagged
+            Poll::Ready(Some(Ok(pkt))) => {
+                dump("fmp4live",&pkt.data,false).expect("dump fmp4all failed");
+
+                Poll::Ready(Some(Ok(pkt.data.clone())))},
+            Poll::Ready(Some(Err(_))) => {
+                warn!("BroadcastStream error");
+                Poll::Ready(None)
+            }
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -316,12 +336,4 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
 
     xml.push_str("</Period></MPD>");
     xml
-}
-
-pub async fn segment_handler(
-    stream_id: String,
-    token: &String,
-    addr: SocketAddr,
-) -> Response<Body> {
-    handler_fmp4(stream_id, token, addr).await
 }
