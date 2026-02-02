@@ -5,7 +5,7 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio;
 use base::tokio::sync::mpsc::Receiver;
-use rsmpeg::ffi::{av_log_set_level, av_strerror, AVPacket, AV_LOG_QUIET};
+use rsmpeg::ffi::{av_log_set_level, av_strerror, AVPacket, AV_LOG_INFO, AV_LOG_QUIET};
 use std::ffi::c_int;
 use std::sync::Arc;
 use base::bytes::Bytes;
@@ -21,14 +21,17 @@ pub const DEFAULT_IO_BUF_SIZE: usize = 32768;
 //todo! 转发媒体流，不进入MediaContext
 pub async fn handle_process(mut rx: Receiver<u32>) {
     unsafe {
-        av_log_set_level(AV_LOG_QUIET);
+        av_log_set_level(AV_LOG_INFO as c_int);
+        // av_log_set_level(AV_LOG_QUIET);
     }
     while let Some(ssrc) = rx.recv().await {
         if let Ok(mut sc_rx) = cache::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
             //此处可以不使用超时等待，统一流输入超时处理即可；输入超时-清理该ssrc所有信息，包含此处的发送句柄，完成资源释放
             if let Ok(stream_config) = sc_rx.recv().await.hand_log(|msg| error!("{}",msg)) {
                 let _ = tokio::task::spawn_blocking(move || {
-                    let _ = MediaContext::init(ssrc, stream_config).map(| (mut ctx,muxer_layer)| ctx.invoke(muxer_layer));
+                    let _ = MediaContext::init(ssrc, stream_config)
+                        .map(| (mut ctx,muxer_layer)|
+                            ctx.invoke(muxer_layer));
                 });
             }
         }

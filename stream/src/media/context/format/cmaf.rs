@@ -23,7 +23,8 @@ use std::ffi::{CStr, CString, c_int, c_void};
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-static VIDEO_DECODE_TIME: AtomicI64 = AtomicI64::new(0);
+use log::error;
+
 static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 pub struct CmafFmp4Context {
     pub init_segment: Bytes, // CMAF init.mp4
@@ -38,7 +39,6 @@ pub struct CmafFmp4Context {
 
     video_stream_index: i32,
     started: bool,
-    fragment_buf: Fmp4FragmentBuffer,
 }
 impl Drop for CmafFmp4Context {
     fn drop(&mut self) {
@@ -97,10 +97,9 @@ impl FmtMuxer for CmafFmp4Context {
             (*fmt_ctx).pb = avio_ctx;
             (*fmt_ctx).oformat = av_guess_format(MP4.as_ptr(), ptr::null(), ptr::null());
             (*fmt_ctx).max_delay = 0;
-            (*fmt_ctx).flags = AVFMT_FLAG_FLUSH_PACKETS as i32;
+            (*fmt_ctx).flags |= AVFMT_FLAG_FLUSH_PACKETS as i32;
             (*fmt_ctx).flags |= AVFMT_NOFILE as i32;
             (*fmt_ctx).flags |= AVFMT_FLAG_AUTO_BSF as i32;
-            (*fmt_ctx).flags |= AVFMT_FLAG_NOBUFFER as i32;
             if (*fmt_ctx).oformat.is_null() {
                 return Err(GlobalError::new_sys_error(
                     "Failed to alloc format context",
@@ -113,14 +112,7 @@ impl FmtMuxer for CmafFmp4Context {
             let mut options = ptr::null_mut::<rsmpeg::ffi::AVDictionary>();
 
             // 设置movflags
-            let movflags = CString::new(
-                "frag_keyframe+empty_moov+default_base_moof+skip_sidx+faststart+separate_moof+cmaf",
-            )
-            .unwrap();
-            // let movflags =
-            // CString::new("frag_keyframe+delay_moov+default_base_moof+separate_moof+cmaf").unwrap();
-            // let movflags = CString::new("frag_keyframe+empty_moov+default_base_moof").unwrap();
-            // CString::new("frag_keyframe+empty_moov+default_base_moof+cmaf+delay_moov").unwrap();
+            let movflags = CString::new("frag_keyframe+empty_moov+default_base_moof").unwrap();
             rsmpeg::ffi::av_dict_set(
                 &mut options,
                 CString::new("movflags").unwrap().as_ptr(),
@@ -128,15 +120,7 @@ impl FmtMuxer for CmafFmp4Context {
                 0,
             );
 
-            // // reset_timestamps重置时间戳
-            // let reset = CString::new("1").unwrap();
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("reset_timestamps").unwrap().as_ptr(),
-            //     reset.as_ptr(),
-            //     0,
-            // );
-            // 设置frag_duration为2秒
+            // // 设置frag_duration为2秒
             let frag_duration = CString::new("2000000").unwrap();
             rsmpeg::ffi::av_dict_set(
                 &mut options,
@@ -144,16 +128,16 @@ impl FmtMuxer for CmafFmp4Context {
                 frag_duration.as_ptr(),
                 0,
             );
-
-            // 设置其他CMAFFMP4参数
-            let min_frag_duration = CString::new("300000").unwrap();
+            //
+            // // 设置其他CMAFFMP4参数
+            let min_frag_duration = CString::new("1000000").unwrap();
             rsmpeg::ffi::av_dict_set(
                 &mut options,
                 CString::new("min_frag_duration").unwrap().as_ptr(),
                 min_frag_duration.as_ptr(),
                 0,
             );
-            // 设置 GOP 大小相关参数
+            // // 设置 GOP 大小相关参数
             // let gop_size = CString::new("25").unwrap(); // 25帧一个GOP
             // rsmpeg::ffi::av_dict_set(
             //     &mut options,
@@ -169,6 +153,7 @@ impl FmtMuxer for CmafFmp4Context {
                 avoid_negative_ts.as_ptr(),
                 0,
             );
+
             let (video_si, in_tbs) = params_trans(demuxer_context, fmt_ctx)?;
 
             let ret = avformat_write_header(fmt_ctx, &mut options);
@@ -179,7 +164,7 @@ impl FmtMuxer for CmafFmp4Context {
             if ret < 0 {
                 return Err(GlobalError::new_sys_error(
                     &format!("FMP4 header write failed: {}", show_ffmpeg_error_msg(ret)),
-                    |msg| warn!("{msg}"),
+                    |msg| error!("{msg}"),
                 ));
             }
 
@@ -199,7 +184,6 @@ impl FmtMuxer for CmafFmp4Context {
                 in_time_bases: in_tbs,
                 video_stream_index: video_si,
                 started: false,
-                fragment_buf: Fmp4FragmentBuffer::new(),
             })
         }
     }
@@ -209,19 +193,6 @@ impl FmtMuxer for CmafFmp4Context {
 
     fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) {
         unsafe {
-            // info!(
-            //     "FMP4 write packet: stream={}, pts={}, dts={}, duration={}, flags={}, keyframe={}",
-            //     pkt.stream_index,
-            //     pkt.pts,
-            //     pkt.dts,
-            //     pkt.duration,
-            //     pkt.flags,
-            //     pkt.flags & AV_PKT_FLAG_KEY as i32 != 0
-            // );
-
-            let mut cloned = std::mem::zeroed::<AVPacket>();
-            av_packet_ref(&mut cloned, pkt);
-
             let is_video = pkt.stream_index == self.video_stream_index;
             let is_key = is_video && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0);
 
@@ -229,20 +200,22 @@ impl FmtMuxer for CmafFmp4Context {
             if is_key {
                 if self.started {
                     // flush 上一个 fragment
-                    rsmpeg::ffi::av_write_frame(self.fmt_ctx, ptr::null_mut());
+                    // rsmpeg::ffi::av_write_frame(self.fmt_ctx, ptr::null_mut());
                     self.emit_fragment(timestamp, true);
+                } else {
+                    self.started = true;
                 }
-                self.started = true;
             }
 
             if !self.started {
-                av_packet_unref(&mut cloned);
                 return;
             }
-
+            let mut cloned = std::mem::zeroed::<AVPacket>();
+            av_packet_ref(&mut cloned, pkt);
             // === 2. 时间基 rescale（唯一允许的操作）===
             let in_tb = self.in_time_bases[pkt.stream_index as usize];
             let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
+            // (*out_st).time_base = AVRational { num: 1, den: 16000 };
             av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
             cloned.pos = -1;
 
@@ -254,10 +227,10 @@ impl FmtMuxer for CmafFmp4Context {
                 warn!("fMP4 write failed: {}", show_ffmpeg_error_msg(ret));
                 return;
             }
-
             // === 4. 立即收集输出 ===
-            self.emit_fragment(timestamp, is_key);
-
+            // if is_key {
+            //     self.emit_fragment(timestamp, is_key);
+            // }
         }
     }
 
@@ -266,6 +239,7 @@ impl FmtMuxer for CmafFmp4Context {
 
 impl CmafFmp4Context {
     unsafe fn emit_fragment(&mut self, timestamp: u64, is_key: bool) {
+        rsmpeg::ffi::av_write_frame(self.fmt_ctx, ptr::null_mut());
         let out_vec = &mut *self.out_buf_ptr;
         if out_vec.is_empty() {
             return;
@@ -316,6 +290,10 @@ fn params_trans(
             match (*codecpar).codec_type {
                 AVMediaType_AVMEDIA_TYPE_VIDEO => {
                     (*out_st).time_base = AVRational { num: 1, den: 90000 };
+                    // 设置帧率
+                    (*out_st).avg_frame_rate = AVRational { num: 25, den: 1 }; // 25fps
+                    (*out_st).r_frame_rate = AVRational { num: 25, den: 1 };
+                    // (*out_st).time_base = AVRational { num: 1, den: 90000 };
                     video_out_index = out_index;
                 }
                 AVMediaType_AVMEDIA_TYPE_AUDIO => {
@@ -327,28 +305,25 @@ fn params_trans(
 
             // codec_tag (mp4 required)
             (*(*out_st).codecpar).codec_tag = 0;
-            match (*codecpar).codec_id {
-                AVCodecID_AV_CODEC_ID_H264 => {
-                    (*(*out_st).codecpar).codec_tag =
-                        rsmpeg::ffi::MKTAG(b'a', b'v', b'c', b'1');
-                }
-                AVCodecID_AV_CODEC_ID_HEVC => {
-                    (*(*out_st).codecpar).codec_tag =
-                        rsmpeg::ffi::MKTAG(b'h', b'e', b'v', b'1');
-                }
-                AVCodecID_AV_CODEC_ID_AAC => {
-                    (*(*out_st).codecpar).codec_tag =
-                        rsmpeg::ffi::MKTAG(b'm', b'p', b'4', b'a');
-                }
-                _ => {}
-            }
+            // match (*codecpar).codec_id {
+            //     AVCodecID_AV_CODEC_ID_H264 => {
+            //         (*(*out_st).codecpar).codec_tag = rsmpeg::ffi::MKTAG(b'a', b'v', b'c', b'1');
+            //     }
+            //     AVCodecID_AV_CODEC_ID_HEVC => {
+            //         (*(*out_st).codecpar).codec_tag = rsmpeg::ffi::MKTAG(b'h', b'e', b'v', b'1');
+            //     }
+            //     AVCodecID_AV_CODEC_ID_AAC => {
+            //         (*(*out_st).codecpar).codec_tag = rsmpeg::ffi::MKTAG(b'm', b'p', b'4', b'a');
+            //     }
+            //     _ => {}
+            // }
 
             // === 保存 packet 原始 time_base（用于 rescale）===
             let in_st = *(*in_fmt).streams.offset(in_index as isize);
             packet_time_bases.push((*in_st).time_base);
 
-            debug!(
-                "stream map: in={} -> out={}, codec={:?}, pkt_tb={}/{} out_tb={}/{}",
+            println!(
+                "stream map: in={} -> out={}, codec={:?}, pkt_tb={}/{} out_tb={}/{},codecpar_size={},height-width=({},{}),pixel_format={}",
                 in_index,
                 out_index,
                 (*codecpar).codec_id,
@@ -356,120 +331,17 @@ fn params_trans(
                 (*in_st).time_base.den,
                 (*out_st).time_base.num,
                 (*out_st).time_base.den,
+                (*(*out_st).codecpar).extradata_size,
+                (*(*out_st).codecpar).height,
+                (*(*out_st).codecpar).width,
+                (*(*out_st).codecpar).format,
             );
         }
 
         if video_out_index < 0 {
-            return Err(GlobalError::new_sys_error(
-                "no video stream found",
-                |_| {},
-            ));
+            return Err(GlobalError::new_sys_error("no video stream found", |_| {}));
         }
 
         Ok((video_out_index, packet_time_bases))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParseState {
-    WaitingMoof, // 等待 moof
-    ReadingMoof, // 读取 moof
-}
-
-pub struct Fmp4FragmentBuffer {
-    buf: BytesMut,
-    state: ParseState,
-    has_idr: bool,
-
-    // 当前 box 信息
-    current_box_size: usize,
-    current_box_type: [u8; 4],
-
-    // fragment
-    fragment_buf: BytesMut,
-}
-impl Fmp4FragmentBuffer {
-    pub fn new() -> Self {
-        Self {
-            buf: BytesMut::with_capacity(64 * 1024),
-            state: ParseState::WaitingMoof,
-            has_idr: false,
-            current_box_size: 0,
-            current_box_type: [0; 4],
-            fragment_buf: BytesMut::new(),
-        }
-    }
-    pub fn append(&mut self, data: &[u8], idr: bool) {
-        self.buf.extend_from_slice(data);
-        if idr {
-            self.has_idr = idr;
-        }
-    }
-    pub fn take_fragment(&mut self) -> Option<(Bytes, bool)> {
-        loop {
-            match self.state {
-                ParseState::WaitingMoof => {
-                    if !self.try_parse_box()? {
-                        return None;
-                    }
-
-                    if &self.current_box_type == b"moof" {
-                        self.move_box_to();
-                        self.state = ParseState::ReadingMoof;
-                    } else {
-                        self.drop_current_box();
-                    }
-                }
-
-                ParseState::ReadingMoof => {
-                    if !self.try_parse_box()? {
-                        return None;
-                    }
-
-                    if &self.current_box_type == b"mdat" {
-                        self.move_box_to();
-                        self.state = ParseState::WaitingMoof;
-                        let has_idr = self.has_idr;
-                        self.has_idr = false;
-                        return Some((self.fragment_buf.split().freeze(), has_idr));
-                    } else {
-                        // CMAF 规范下 moof 后必须是 mdat
-                        self.drop_current_box();
-                        self.fragment_buf.clear();
-                        self.has_idr = false;
-                        self.state = ParseState::WaitingMoof;
-                    }
-                }
-            }
-        }
-    }
-    fn try_parse_box(&mut self) -> Option<bool> {
-        if self.buf.len() < 8 {
-            return Some(false);
-        }
-
-        let size =
-            u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
-
-        if size < 8 {
-            return Some(false);
-        }
-
-        if self.buf.len() < size {
-            return Some(false);
-        }
-
-        self.current_box_size = size;
-        self.current_box_type.copy_from_slice(&self.buf[4..8]);
-
-        Some(true)
-    }
-    fn move_box_to(&mut self) {
-        let box_data = self.buf.split_to(self.current_box_size);
-        self.fragment_buf.extend_from_slice(&box_data);
-    }
-
-    fn drop_current_box(&mut self) {
-        let _ = self.buf.split_to(self.current_box_size);
     }
 }

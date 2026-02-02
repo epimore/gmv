@@ -1,4 +1,5 @@
 use crate::general::mp::MediaParam;
+use crate::general::util::{DumpStream, dump};
 use crate::io::event_handler::{Event, EventRes, OutEvent, OutEventRes};
 use crate::io::http::out::DisconnectAwareStream;
 use crate::io::http::{res_401, res_404};
@@ -27,7 +28,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
-use crate::general::util::{dump, DumpStream};
 
 pub async fn segment_handler(
     stream_id: String,
@@ -117,7 +117,7 @@ async fn send_fmp4(
         Err(_) => return res_404(),
     };
     // warn!("header: {:02X?}", &init_segment[..]);
-    dump("fmp4init",&init_segment,false).expect("dump fmp4init failed");
+    dump("fmp4init", &init_segment, false).expect("dump fmp4init failed");
     // 2. 等待第一个关键帧 fragment（moof+mdat）
     let first_fragment = match timeout(Duration::from_millis(TIME_OUT), async {
         loop {
@@ -133,8 +133,7 @@ async fn send_fmp4(
         Ok(Some(data)) => data,
         _ => return res_404(),
     };
-    // warn!("idr: {:02X?}", &first_fragment[0..100]);
-    dump("fmp4idr",&first_fragment,false).expect("dump fmp4idr failed");
+    dump("fmp4idr", &first_fragment, false).expect("dump fmp4idr failed");
     // 3. 组合 stream
     let init_stream = stream::once(Box::pin(async move {
         Ok::<_, std::convert::Infallible>(init_segment)
@@ -183,9 +182,10 @@ impl Stream for Fmp4Stream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(pkt))) => {
-                dump("fmp4live",&pkt.data,false).expect("dump fmp4all failed");
+                dump("fmp4live", &pkt.data, true).expect("dump fmp4live failed");
 
-                Poll::Ready(Some(Ok(pkt.data.clone())))},
+                Poll::Ready(Some(Ok(pkt.data.clone())))
+            }
             Poll::Ready(Some(Err(_))) => {
                 warn!("BroadcastStream error");
                 Poll::Ready(None)

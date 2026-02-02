@@ -31,7 +31,7 @@ impl InnerEvent {
             InnerEvent::Mp4Header(sender) => {
                 match &media_context.muxer_context.mp4 {
                     None => {
-                        error!("no flv context");
+                        error!("no mp4 context");
                     }
                     Some(context) => {
                         if let Err(_) = sender.send(context.get_header()) {

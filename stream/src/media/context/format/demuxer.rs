@@ -285,72 +285,72 @@ pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
 }
 
 /// fill stream parameters from media_ext (your version, slightly simplified)
-unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt) { unsafe {
-    if stream.is_null() { return; }
-    let par = (*stream).codecpar;
-    if par.is_null() { return; }
-    // Video
-    if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-        if let Some((w, h)) = media_ext.video_params.resolution {
-            if (*par).width <= 0 || (*par).height <= 0 {
-                (*par).width = w;
-                (*par).height = h;
-            }
-        }
-        if let Some(br_kbps) = media_ext.video_params.bitrate {
-            let br = (br_kbps as i64) * 1000;
-            if (*par).bit_rate <= 0 {
-                (*par).bit_rate = br;
-            }
-        }
-        if (*stream).time_base.num <= 0 || (*stream).time_base.den <= 0 {
-            if media_ext.clock_rate > 0 {
-                (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
-            }
-        }
-        if let Some(fps) = media_ext.video_params.fps {
-            if (*stream).avg_frame_rate.num <= 0 || (*stream).avg_frame_rate.den <= 0 {
-                (*stream).avg_frame_rate = AVRational { num: fps, den: 1 };
-                (*stream).r_frame_rate = AVRational { num: fps, den: 1 };
-            }
-        } else if media_ext.clock_rate > 0 && ((*stream).time_base.num <= 0 || (*stream).time_base.den <= 0) {
-            (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
-        }
-        debug!(
-            "fill_stream: stream_id={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
-            (*stream).id,
-            (*stream).time_base.num, (*stream).time_base.den,
-            (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
-            (*stream).r_frame_rate.num, (*stream).r_frame_rate.den,
-        );
-    }
-
-    // Audio
-    if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
-        if let Some(ref sr_str) = media_ext.audio_params.sample_rate {
-            if let Ok(mut sr) = sr_str.parse::<i32>() {
-                if sr > 0 && sr < 1000 { sr *= 1000; }
-                if (*par).sample_rate <= 0 {
-                    (*par).sample_rate = sr;
-                }
-            }
-        }
-        if let Some(ref br_str) = media_ext.audio_params.bitrate {
-            if let Ok(br_kbps) = br_str.parse::<i64>() {
-                if (*par).bit_rate <= 0 {
-                    (*par).bit_rate = br_kbps * 1000;
-                }
-            }
-        }
-    }
-    info!(
-        "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
-        stream,
-        (*stream).time_base.num, (*stream).time_base.den,
-        (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
-        (*stream).r_frame_rate.num, (*stream).r_frame_rate.den
-    );
-}}
+// unsafe fn fill_stream_from_media_ext(stream: *mut AVStream, media_ext: &MediaExt) { unsafe {
+//     if stream.is_null() { return; }
+//     let par = (*stream).codecpar;
+//     if par.is_null() { return; }
+//     // Video
+//     if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+//         if let Some((w, h)) = media_ext.video_params.resolution {
+//             if (*par).width <= 0 || (*par).height <= 0 {
+//                 (*par).width = w;
+//                 (*par).height = h;
+//             }
+//         }
+//         if let Some(br_kbps) = media_ext.video_params.bitrate {
+//             let br = (br_kbps as i64) * 1000;
+//             if (*par).bit_rate <= 0 {
+//                 (*par).bit_rate = br;
+//             }
+//         }
+//         if (*stream).time_base.num <= 0 || (*stream).time_base.den <= 0 {
+//             if media_ext.clock_rate > 0 {
+//                 (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
+//             }
+//         }
+//         if let Some(fps) = media_ext.video_params.fps {
+//             if (*stream).avg_frame_rate.num <= 0 || (*stream).avg_frame_rate.den <= 0 {
+//                 (*stream).avg_frame_rate = AVRational { num: fps, den: 1 };
+//                 (*stream).r_frame_rate = AVRational { num: fps, den: 1 };
+//             }
+//         } else if media_ext.clock_rate > 0 && ((*stream).time_base.num <= 0 || (*stream).time_base.den <= 0) {
+//             (*stream).time_base = AVRational { num: 1, den: media_ext.clock_rate };
+//         }
+//         debug!(
+//             "fill_stream: stream_id={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
+//             (*stream).id,
+//             (*stream).time_base.num, (*stream).time_base.den,
+//             (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
+//             (*stream).r_frame_rate.num, (*stream).r_frame_rate.den,
+//         );
+//     }
+// 
+//     // Audio
+//     if (*par).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
+//         if let Some(ref sr_str) = media_ext.audio_params.sample_rate {
+//             if let Ok(mut sr) = sr_str.parse::<i32>() {
+//                 if sr > 0 && sr < 1000 { sr *= 1000; }
+//                 if (*par).sample_rate <= 0 {
+//                     (*par).sample_rate = sr;
+//                 }
+//             }
+//         }
+//         if let Some(ref br_str) = media_ext.audio_params.bitrate {
+//             if let Ok(br_kbps) = br_str.parse::<i64>() {
+//                 if (*par).bit_rate <= 0 {
+//                     (*par).bit_rate = br_kbps * 1000;
+//                 }
+//             }
+//         }
+//     }
+//     info!(
+//         "fill_stream: stream={:?} time_base={}/{} avg_frame_rate={}/{} r_frame_rate={}/{}",
+//         stream,
+//         (*stream).time_base.num, (*stream).time_base.den,
+//         (*stream).avg_frame_rate.num, (*stream).avg_frame_rate.den,
+//         (*stream).r_frame_rate.num, (*stream).r_frame_rate.den
+//     );
+// }}
 
 
 /// pick input format (reuse your logic)
@@ -438,9 +438,9 @@ impl DemuxerContext {
                     rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "nobuffer+discardcorrupt+ignidx");
-            set_dict!("analyzeduration", "1000000");
-            set_dict!("probesize", "32768");
+            set_dict!("fflags", "discardcorrupt+ignidx+genpts");
+            set_dict!("analyzeduration", "2000000");
+            set_dict!("probesize", "20480");
             set_dict!("fpsprobesize", "0");
 
             // 5) open input
