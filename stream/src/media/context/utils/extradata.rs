@@ -1,8 +1,8 @@
-use base::chrono;
 use crate::general::mp::{Audio, MediaParam, Video};
 use crate::media::context::format::demuxer::DemuxerContext;
+use base::chrono;
 use rsmpeg::ffi::{
-    AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,AVCodecID_AV_CODEC_ID_OPUS
+    AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_OPUS
 };
 pub fn parse_media_param(ctx: &DemuxerContext) -> MediaParam {
     let mut video: Option<Video> = None;
@@ -10,10 +10,9 @@ pub fn parse_media_param(ctx: &DemuxerContext) -> MediaParam {
 
     unsafe {
         let fmt = ctx.avio.fmt_ctx;
-
-        for (i, codecpar) in ctx.params.iter().enumerate().map(|(i, param)| (i, param.codecpar)) {
+        for i in 0..(*fmt).nb_streams {
             let st = *(*fmt).streams.offset(i as isize);
-
+            let codecpar = (*st).codecpar;
             match (*codecpar).codec_type {
                 rsmpeg::ffi::AVMediaType_AVMEDIA_TYPE_VIDEO => {
                     if video.is_none() {
@@ -113,7 +112,7 @@ fn estimate_video_bandwidth(w: u32, h: u32, fps: u32) -> u32 {
 fn estimate_audio_bandwidth(sample_rate: u32, channels: u32) -> u32 {
     (sample_rate * channels * 2 * 8).min(256_000)
 }
-
+/*
 use rsmpeg::ffi::*;
 use std::ptr;
 
@@ -161,4 +160,4 @@ pub unsafe fn rebuild_codecpar_extradata_with_ffmpeg(
     }
 
     Ok(())
-}
+}*/

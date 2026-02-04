@@ -1,6 +1,5 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::{FmtMuxer, MuxPacket, write_callback};
-use crate::media::context::utils::extradata::rebuild_codecpar_extradata_with_ffmpeg;
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
@@ -120,23 +119,23 @@ impl FmtMuxer for CmafFmp4Context {
                 0,
             );
 
-            // // 设置frag_duration为2秒
-            let frag_duration = CString::new("2000000").unwrap();
-            rsmpeg::ffi::av_dict_set(
-                &mut options,
-                CString::new("frag_duration").unwrap().as_ptr(),
-                frag_duration.as_ptr(),
-                0,
-            );
-            //
-            // // 设置其他CMAFFMP4参数
-            let min_frag_duration = CString::new("1000000").unwrap();
-            rsmpeg::ffi::av_dict_set(
-                &mut options,
-                CString::new("min_frag_duration").unwrap().as_ptr(),
-                min_frag_duration.as_ptr(),
-                0,
-            );
+            // // // 设置frag_duration为2秒
+            // let frag_duration = CString::new("2000000").unwrap();
+            // rsmpeg::ffi::av_dict_set(
+            //     &mut options,
+            //     CString::new("frag_duration").unwrap().as_ptr(),
+            //     frag_duration.as_ptr(),
+            //     0,
+            // );
+            // //
+            // // // 设置其他CMAFFMP4参数
+            // let min_frag_duration = CString::new("1000000").unwrap();
+            // rsmpeg::ffi::av_dict_set(
+            //     &mut options,
+            //     CString::new("min_frag_duration").unwrap().as_ptr(),
+            //     min_frag_duration.as_ptr(),
+            //     0,
+            // );
             // // 设置 GOP 大小相关参数
             // let gop_size = CString::new("25").unwrap(); // 25帧一个GOP
             // rsmpeg::ffi::av_dict_set(
@@ -240,6 +239,7 @@ impl FmtMuxer for CmafFmp4Context {
 impl CmafFmp4Context {
     unsafe fn emit_fragment(&mut self, timestamp: u64, is_key: bool) {
         rsmpeg::ffi::av_write_frame(self.fmt_ctx, ptr::null_mut());
+        rsmpeg::ffi::avio_flush((*self.fmt_ctx).pb);
         let out_vec = &mut *self.out_buf_ptr;
         if out_vec.is_empty() {
             return;
@@ -263,8 +263,9 @@ fn params_trans(
         let mut packet_time_bases = Vec::new();
         let mut video_out_index: i32 = -1;
 
-        for (in_index, param_stream) in demuxer_context.params.iter().enumerate() {
-            let codecpar = param_stream.codecpar;
+        for i in 0..demuxer_context.params.len() {
+            let in_st = *(*in_fmt).streams.offset(i as isize);
+            let codecpar = (*in_st).codecpar;
 
             if !matches!(
                 (*codecpar).codec_type,
@@ -319,12 +320,12 @@ fn params_trans(
             // }
 
             // === 保存 packet 原始 time_base（用于 rescale）===
-            let in_st = *(*in_fmt).streams.offset(in_index as isize);
+            let in_st = *(*in_fmt).streams.offset(i as isize);
             packet_time_bases.push((*in_st).time_base);
 
             println!(
                 "stream map: in={} -> out={}, codec={:?}, pkt_tb={}/{} out_tb={}/{},codecpar_size={},height-width=({},{}),pixel_format={}",
-                in_index,
+                i,
                 out_index,
                 (*codecpar).codec_id,
                 (*in_st).time_base.num,
