@@ -5,6 +5,8 @@ use std::io::Write;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
+use std::thread::sleep;
+use std::time::Duration;
 use base::bytes::Bytes;
 use futures_core::Stream;
 

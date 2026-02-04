@@ -473,7 +473,10 @@ impl DemuxerContext {
 
             // 8) collect codecpar_list & stream mapping
             let nb_streams = (*fmt_ctx).nb_streams as usize;
-            let mut params: Vec<ParamRepairState> = Vec::with_capacity(nb_streams);
+            let mut params: Vec<ParamRepairState> = (0..nb_streams)
+                .map(|_| Default::default())
+                .collect();
+                // Vec::with_capacity(nb_streams);
             // for i in 0..nb_streams {
             //     let st = *(*fmt_ctx).streams.add(i);
             //     let codecpar = avcodec_parameters_alloc();

@@ -11,7 +11,7 @@ use crate::state::msg::StreamConfig;
 use base::bus::mpsc::TypedReceiver;
 use base::exception::typed::common::MessageBusError;
 use base::exception::{GlobalError, GlobalResult};
-use log::error;
+use log::{error, info};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::AVPacket;
 use rsmpeg::ffi::{
@@ -31,6 +31,7 @@ pub mod utils;
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 
 pub struct RtpState {
+    pub first_pkt_timestamp: i64,
     pub timestamp: u32, // 读取rtp包的timestamp
     pub marker: bool,   // 读取rtp包的mark
 
@@ -40,6 +41,7 @@ pub struct RtpState {
 impl RtpState {
     pub fn new() -> Self {
         Self {
+            first_pkt_timestamp: 0,
             timestamp: 0,
             marker: false,
             last_32: 0,
@@ -141,15 +143,22 @@ impl MediaContext {
         let params = &mut self.demuxer_context.params;
         let mut pkts = VecDeque::with_capacity(128);
         let mut counter = 128;
-
+        let mut init_first_rtp_time = false;
         while counter > 0 {
             let mut pkt = std::mem::zeroed::<AVPacket>();
             let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
             if ret < 0 {
                 return Ok(pkts);
             }
+            if !init_first_rtp_time {
+                let rtp_state = &mut *self.rtp_state;
+                let (cur_unwrapped, _duration_ticks) =
+                    rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
+                rtp_state.first_pkt_timestamp = cur_unwrapped;
+                init_first_rtp_time = true;
+            }
             let mut all_ready = true;
-            for (i, param) in params.iter_mut().enumerate().map(|(i, param)| (i, param)) {
+            for (i, param) in params.iter_mut().enumerate() {
                 let st = *(*fmt_ctx).streams.offset(i as isize);
                 let codecpar = (*st).codecpar;
                 if matches!(
@@ -179,17 +188,19 @@ impl MediaContext {
             if cache_pkts.is_empty() {
                 return Ok(());
             }
-            self.muxer_context = MuxerContext::init(&self.demuxer_context, &muxer_layer);
-            let mut first_pts = 0;
-            let mut first_dts = 0;
-            if let Some(mut first_pkt) = cache_pkts.pop_front() {
-                first_pts = first_pkt.pts;
-                first_dts = first_pkt.dts;
-                self.process(first_dts, first_pts, &mut first_pkt)?;
-                rsmpeg::ffi::av_packet_unref(&mut first_pkt);
-            }
+            self.muxer_context = MuxerContext::init(&self.demuxer_context, muxer_layer);
             while let Some(mut pkt) = cache_pkts.pop_front() {
-                self.process(first_dts, first_pts, &mut pkt)?;
+                match self.context_event_rx.try_recv() {
+                    Ok(event) => self.handle_event(event),
+                    Err(MessageBusError::ChannelClosed) => {
+                        return Err(GlobalError::new_sys_error(
+                            "数据已释放，通道关闭",
+                            |msg| error!("{msg}"),
+                        ));
+                    }
+                    Err(_) => {}
+                }
+                self.process(&mut pkt)?;
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
             }
 
@@ -197,11 +208,19 @@ impl MediaContext {
             //write body
             let mut pkt = std::mem::zeroed::<AVPacket>();
             loop {
+                match self.context_event_rx.try_recv() {
+                    Ok(event) => self.handle_event(event),
+                    Err(MessageBusError::ChannelClosed) => {
+                        info!("ssrc = {} ;释放资源",self.ssrc);
+                        return Ok(());
+                    }
+                    Err(_) => {}
+                }
                 let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
                 if ret < 0 {
                     break;
                 }
-                self.process(first_dts, first_pts, &mut pkt)?;
+                self.process(&mut pkt)?;
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
             }
             //write end
@@ -213,46 +232,35 @@ impl MediaContext {
         }
         Ok(())
     }
-    unsafe fn process(
-        &mut self,
-        first_pts: i64,
-        first_dts: i64,
-        pkt: &mut AVPacket,
-    ) -> GlobalResult<()> {
+    unsafe fn process(&mut self, pkt: &mut AVPacket) -> GlobalResult<()> {
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
-        match self.context_event_rx.try_recv() {
-            Ok(event) => self.handle_event(event),
-            Err(MessageBusError::ChannelClosed) => {
-                return Err(GlobalError::new_sys_error(
-                    "数据已释放，通道关闭",
-                    |msg| error!("{msg}"),
-                ));
-            }
-            Err(_) => {}
-        }
         let rtp_state = &mut *self.rtp_state;
         let (cur_unwrapped, duration_ticks) =
             rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
         // //fill_stream_from_media_ext(st, media_ext);
-        let tb = (*(*fmt_ctx).streams.offset(pkt.stream_index as isize).read()).time_base;
+        let stream_tb = (*(*fmt_ctx).streams.offset(pkt.stream_index as isize).read()).time_base;
         // // 更新 RTP 状态并获取展开 timestamp 和帧间差值
-
+        let relative_time = cur_unwrapped - rtp_state.first_pkt_timestamp;
         let rtp_tb = AVRational {
             num: 1,
             den: self.media_ext.clock_rate,
         };
-        let pts_rescaled = av_rescale_q(cur_unwrapped, rtp_tb, tb);
+
+        let pts_rescaled = av_rescale_q(relative_time, rtp_tb, stream_tb);
         // let duration_rescaled = if duration_ticks > 0 {
         //     av_rescale_q(duration_ticks, rtp_tb, tb)
         // } else {
         //     av_rescale_q((self.media_ext.clock_rate / 25) as i64, rtp_tb, tb)
         // };
         // pkt.duration = duration_rescaled;
-
+        // pkt.pts = pts_rescaled;
+        // pkt.dts = pts_rescaled;
+        // if duration_ticks > 0 {
+        //     pkt.duration = av_rescale_q(duration_ticks, rtp_tb, stream_tb);
+        // }
         // 通过 pts 计算累计真实时长（秒）
-        let real_ts = pts_rescaled as f64 * tb.num as f64 / tb.den as f64;
-        pkt.pts = pkt.pts - first_pts;
-        pkt.dts = pkt.dts - first_dts;
+        let real_ts = pts_rescaled as f64 * stream_tb.num as f64 / stream_tb.den as f64;
+
         println!(
             "Packet : stream={}, dts={}, pts={}, duration={}, size={}, key={},timestamp={}",
             pkt.stream_index,

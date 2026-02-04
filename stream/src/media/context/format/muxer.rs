@@ -53,25 +53,28 @@ pub struct MuxerContext {
 
 }
 impl MuxerContext {
-    pub fn init(demuxer_context: &DemuxerContext,muxer: &MuxerLayer) -> MuxerContext {
+    pub fn init(demuxer_context: &DemuxerContext,muxer: MuxerLayer) -> MuxerContext {
+        println!("MuxerContext init 11111111");
         let mut context = MuxerContext::default();
-        if let Some(flv_layer) = &muxer.flv {
-            let _ = FlvContext::init_context(demuxer_context, flv_layer.tx.clone()).map(|flv_context| {
+        if let Some(flv_layer) = muxer.flv {
+            let _ = FlvContext::init_context(demuxer_context, flv_layer.tx).map(|flv_context| {
                 context.flv = Some(flv_context);
             });
         }
-        if let Some(mp4_layer) = &muxer.mp4 { 
-            let _ = Mp4Context::init_context(demuxer_context, mp4_layer.tx.clone()).map(|mp4_context| {
+        if let Some(mp4_layer) = muxer.mp4 { 
+            let _ = Mp4Context::init_context(demuxer_context, mp4_layer.tx).map(|mp4_context| {
                 context.mp4 = Some(mp4_context);
             });
         }
-        if let Some(ts_layer) = &muxer.ts { unimplemented!() }
-        if let Some(hls_ts_layer) = &muxer.hls_ts { unimplemented!() }
-        if let Some(rtp_frame_layer) = &muxer.rtp_frame { unimplemented!() }
-        if let Some(rtp_ps_layer) = &muxer.rtp_ps { unimplemented!() }
-        if let Some(rtp_enc_layer) = &muxer.rtp_enc { unimplemented!() }
-        if let Some(fmp4_layer) = &muxer.fmp4 {
-            let _ = CmafFmp4Context::init_context(demuxer_context, fmp4_layer.tx.clone()).map(|ctx| {
+        if let Some(ts_layer) = muxer.ts { unimplemented!() }
+        if let Some(hls_ts_layer) = muxer.hls_ts { unimplemented!() }
+        if let Some(rtp_frame_layer) = muxer.rtp_frame { unimplemented!() }
+        if let Some(rtp_ps_layer) = muxer.rtp_ps { unimplemented!() }
+        if let Some(rtp_enc_layer) = muxer.rtp_enc { unimplemented!() }
+        if let Some(fmp4_layer) = muxer.fmp4 {
+            println!("MuxerContext init fmp4_layer 11111111"); 
+            let _ = CmafFmp4Context::init_context(demuxer_context, fmp4_layer.tx).map(|ctx| {
+                println!("MuxerContext init fmp4_layer 22222222");
                 context.fmp4 = Some(ctx);
             });
         }

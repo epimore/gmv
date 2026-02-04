@@ -96,7 +96,7 @@ impl FmtMuxer for CmafFmp4Context {
             (*fmt_ctx).pb = avio_ctx;
             (*fmt_ctx).oformat = av_guess_format(MP4.as_ptr(), ptr::null(), ptr::null());
             (*fmt_ctx).max_delay = 0;
-            (*fmt_ctx).flags |= AVFMT_FLAG_FLUSH_PACKETS as i32;
+            // (*fmt_ctx).flags |= AVFMT_FLAG_FLUSH_PACKETS as i32;
             (*fmt_ctx).flags |= AVFMT_NOFILE as i32;
             (*fmt_ctx).flags |= AVFMT_FLAG_AUTO_BSF as i32;
             if (*fmt_ctx).oformat.is_null() {
@@ -145,13 +145,13 @@ impl FmtMuxer for CmafFmp4Context {
             //     0,
             // );
             // 确保时间戳连续
-            let avoid_negative_ts = CString::new("make_non_negative").unwrap();
-            rsmpeg::ffi::av_dict_set(
-                &mut options,
-                CString::new("avoid_negative_ts").unwrap().as_ptr(),
-                avoid_negative_ts.as_ptr(),
-                0,
-            );
+            // let avoid_negative_ts = CString::new("make_non_negative").unwrap();
+            // rsmpeg::ffi::av_dict_set(
+            //     &mut options,
+            //     CString::new("avoid_negative_ts").unwrap().as_ptr(),
+            //     avoid_negative_ts.as_ptr(),
+            //     0,
+            // );
 
             let (video_si, in_tbs) = params_trans(demuxer_context, fmt_ctx)?;
 
@@ -197,9 +197,9 @@ impl FmtMuxer for CmafFmp4Context {
 
             // === 1. fragment 切分点：仅 video keyframe ===
             if is_key {
+                self.started = true;
                 if self.started {
                     // flush 上一个 fragment
-                    // rsmpeg::ffi::av_write_frame(self.fmt_ctx, ptr::null_mut());
                     self.emit_fragment(timestamp, true);
                 } else {
                     self.started = true;
@@ -227,9 +227,9 @@ impl FmtMuxer for CmafFmp4Context {
                 return;
             }
             // === 4. 立即收集输出 ===
-            // if is_key {
-            //     self.emit_fragment(timestamp, is_key);
-            // }
+            if is_key {
+                self.emit_fragment(timestamp, is_key);
+            }
         }
     }
 
@@ -255,14 +255,13 @@ impl CmafFmp4Context {
 }
 fn params_trans(
     demuxer_context: &DemuxerContext,
-    fmt_ctx: *mut AVFormatContext,
+    out_fmt: *mut AVFormatContext,
 ) -> GlobalResult<(i32, Vec<AVRational>)> {
     unsafe {
         let in_fmt = demuxer_context.avio.fmt_ctx;
 
         let mut packet_time_bases = Vec::new();
         let mut video_out_index: i32 = -1;
-
         for i in 0..demuxer_context.params.len() {
             let in_st = *(*in_fmt).streams.offset(i as isize);
             let codecpar = (*in_st).codecpar;
@@ -274,7 +273,7 @@ fn params_trans(
                 continue;
             }
 
-            let out_st = avformat_new_stream(fmt_ctx, ptr::null_mut());
+            let out_st = avformat_new_stream(out_fmt, ptr::null_mut());
             if out_st.is_null() {
                 return Err(GlobalError::new_sys_error(
                     "avformat_new_stream failed",
@@ -285,21 +284,23 @@ fn params_trans(
             // copy codecpar
             avcodec_parameters_copy((*out_st).codecpar, codecpar);
 
-            let out_index = (*fmt_ctx).nb_streams as i32 - 1;
+            let out_index = (*out_fmt).nb_streams as i32 - 1;
 
             // === CMAF-mandated time_base ===
             match (*codecpar).codec_type {
                 AVMediaType_AVMEDIA_TYPE_VIDEO => {
-                    (*out_st).time_base = AVRational { num: 1, den: 90000 };
-                    // 设置帧率
-                    (*out_st).avg_frame_rate = AVRational { num: 25, den: 1 }; // 25fps
-                    (*out_st).r_frame_rate = AVRational { num: 25, den: 1 };
+                    (*out_st).time_base = (*in_st).time_base;
+                    // (*out_st).time_base = AVRational { num: 1, den: 90000 };
+                    // // 设置帧率
+                    // (*out_st).avg_frame_rate = AVRational { num: 25, den: 1 }; // 25fps
+                    // (*out_st).r_frame_rate = AVRational { num: 25, den: 1 };
                     // (*out_st).time_base = AVRational { num: 1, den: 90000 };
                     video_out_index = out_index;
                 }
                 AVMediaType_AVMEDIA_TYPE_AUDIO => {
-                    let sr = (*codecpar).sample_rate.max(1);
-                    (*out_st).time_base = AVRational { num: 1, den: sr };
+                    (*out_st).time_base = (*in_st).time_base;
+                    // let sr = (*codecpar).sample_rate.max(1);
+                    // (*out_st).time_base = AVRational { num: 1, den: sr };
                 }
                 _ => {}
             }
@@ -340,7 +341,7 @@ fn params_trans(
         }
 
         if video_out_index < 0 {
-            return Err(GlobalError::new_sys_error("no video stream found", |_| {}));
+            return Err(GlobalError::new_sys_error("no video stream found", |msg| error!("{msg}")));
         }
 
         Ok((video_out_index, packet_time_bases))
