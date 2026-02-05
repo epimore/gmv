@@ -476,25 +476,6 @@ impl DemuxerContext {
             let mut params: Vec<ParamRepairState> = (0..nb_streams)
                 .map(|_| Default::default())
                 .collect();
-                // Vec::with_capacity(nb_streams);
-            // for i in 0..nb_streams {
-            //     let st = *(*fmt_ctx).streams.add(i);
-            //     let codecpar = avcodec_parameters_alloc();
-            //     if codecpar.is_null() {
-            //         // cleanup: close input (which will free pb), and let AvioResource::drop handle opaque/io_buf
-            //         avformat_close_input(&mut (fmt_ctx as *mut _));
-            //         return Err(GlobalError::new_sys_error("Failed to allocate codec parameters", |msg| error!("{msg}")));
-            //     }
-            //     avcodec_parameters_copy(codecpar, (*st).codecpar);
-            //     let ps = ParamStream { codecpar, repair: Default::default() };
-            //     params.push(ps);
-            //     info!("Stream {}: codec_id={}, tb={}/{}", i, (*codecpar).codec_id, (*st).time_base.num, (*st).time_base.den);
-            //     if (*st).time_base.num <= 0 || (*st).time_base.den <= 0 {
-            //         if media_ext.clock_rate > 0 {
-            //             (*st).time_base = AVRational { num: 1, den: media_ext.clock_rate };
-            //         }
-            //     }
-            // }
 
             // free dict
             rsmpeg::ffi::av_dict_free(&mut dict_opts);

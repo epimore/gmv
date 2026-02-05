@@ -19,6 +19,7 @@ use rsmpeg::ffi::{
 };
 use shared::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
+use std::ffi::c_int;
 
 mod codec;
 pub mod event;
@@ -31,7 +32,7 @@ pub mod utils;
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 
 pub struct RtpState {
-    pub first_pkt_timestamp: i64,
+    pub first_unwrapped: i64,
     pub timestamp: u32, // 读取rtp包的timestamp
     pub marker: bool,   // 读取rtp包的mark
 
@@ -41,7 +42,7 @@ pub struct RtpState {
 impl RtpState {
     pub fn new() -> Self {
         Self {
-            first_pkt_timestamp: 0,
+            first_unwrapped: 0,
             timestamp: 0,
             marker: false,
             last_32: 0,
@@ -137,27 +138,32 @@ impl MediaContext {
         };
         Ok((context, converter.muxer))
     }
-    unsafe fn fix_basic_stream_info(&mut self) -> GlobalResult<VecDeque<AVPacket>> {
+    //读取数据帧补充修复流信息，缓存到VecDeque并返回(video_index,(rtp累计时间(未转换ticks),duration_ticks,pkt)
+    unsafe fn fix_basic_stream_info(
+        &mut self,
+    ) -> GlobalResult<(c_int, VecDeque<(i64, i64, AVPacket)>)> {
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
         let ext = &self.media_ext;
         let params = &mut self.demuxer_context.params;
         let mut pkts = VecDeque::with_capacity(128);
         let mut counter = 128;
         let mut init_first_rtp_time = false;
+        let mut v_idx = 0;
         while counter > 0 {
             let mut pkt = std::mem::zeroed::<AVPacket>();
             let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
             if ret < 0 {
-                return Ok(pkts);
+                return Ok((v_idx as c_int, pkts));
             }
+            let rtp_state = &mut *self.rtp_state;
+            let (cur_unwrapped, duration_ticks) =
+                rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
             if !init_first_rtp_time {
-                let rtp_state = &mut *self.rtp_state;
-                let (cur_unwrapped, _duration_ticks) =
-                    rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
-                rtp_state.first_pkt_timestamp = cur_unwrapped;
+                rtp_state.first_unwrapped = cur_unwrapped;
                 init_first_rtp_time = true;
             }
             let mut all_ready = true;
+
             for (i, param) in params.iter_mut().enumerate() {
                 let st = *(*fmt_ctx).streams.offset(i as isize);
                 let codecpar = (*st).codecpar;
@@ -166,30 +172,45 @@ impl MediaContext {
                     AVMediaType_AVMEDIA_TYPE_VIDEO | AVMediaType_AVMEDIA_TYPE_AUDIO
                 ) {
                     param.ready = repair_basic_stream_info(st, &pkt, ext, param);
+                    if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+                        v_idx = i;
+                    }
                 } else {
                     param.ready = true;
                 }
                 all_ready = all_ready && param.ready;
             }
-            pkts.push_back(pkt);
+            pkts.push_back((cur_unwrapped, duration_ticks, pkt));
             if all_ready {
                 break;
             }
             counter -= 1;
         }
-        Ok(pkts)
+        Ok((v_idx as c_int, pkts))
     }
 
     pub fn invoke(&mut self, muxer_layer: MuxerLayer) -> GlobalResult<()> {
         unsafe {
-            //write init
-            let mut cache_pkts = self.fix_basic_stream_info()?;
+            //修复流信息
+            let (v_idx, mut cache_pkts) = self.fix_basic_stream_info()?;
             //流结束
             if cache_pkts.is_empty() {
                 return Ok(());
             }
+            //初始化muxer
             self.muxer_context = MuxerContext::init(&self.demuxer_context, muxer_layer);
-            while let Some(mut pkt) = cache_pkts.pop_front() {
+            //消费缓存数据，以关键帧开始
+            let mut not_idr = true;
+            while let Some((cur_unwrapped, duration_ticks, mut pkt)) = cache_pkts.pop_front() {
+                if not_idr {
+                    if !(pkt.stream_index == v_idx && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0)) {
+                        rsmpeg::ffi::av_packet_unref(&mut pkt);
+                        continue;
+                    } else {
+                        (*self.rtp_state).first_unwrapped = cur_unwrapped;
+                        not_idr = false;
+                    }
+                }
                 match self.context_event_rx.try_recv() {
                     Ok(event) => self.handle_event(event),
                     Err(MessageBusError::ChannelClosed) => {
@@ -200,18 +221,37 @@ impl MediaContext {
                     }
                     Err(_) => {}
                 }
-                self.process(&mut pkt)?;
+                self.process(cur_unwrapped, duration_ticks, cur_unwrapped, &mut pkt)?;
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
             }
-
-            let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
-            //write body
             let mut pkt = std::mem::zeroed::<AVPacket>();
+            let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+            //若缓存数据无关键帧则再次等待
+            while not_idr {
+                let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
+                if ret < 0 {
+                    break;
+                }
+                let rtp_state = &mut *self.rtp_state;
+                let (cur_unwrapped, duration_ticks) =
+                    rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
+                if !(pkt.stream_index == v_idx && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0)) {
+                    rsmpeg::ffi::av_packet_unref(&mut pkt);
+                    continue;
+                } else {
+                    not_idr = false;
+                    (*self.rtp_state).first_unwrapped = cur_unwrapped;
+                    self.process(cur_unwrapped, duration_ticks, cur_unwrapped, &mut pkt)?;
+                    rsmpeg::ffi::av_packet_unref(&mut pkt);
+                }
+            }
+
+            //write body
             loop {
                 match self.context_event_rx.try_recv() {
                     Ok(event) => self.handle_event(event),
                     Err(MessageBusError::ChannelClosed) => {
-                        info!("ssrc = {} ;释放资源",self.ssrc);
+                        info!("ssrc = {} ;释放资源", self.ssrc);
                         return Ok(());
                     }
                     Err(_) => {}
@@ -220,7 +260,12 @@ impl MediaContext {
                 if ret < 0 {
                     break;
                 }
-                self.process(&mut pkt)?;
+
+                let rtp_state = &mut *self.rtp_state;
+                let first_unwrapped = rtp_state.first_unwrapped;
+                let (cur_unwrapped, duration_ticks) =
+                    rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
+                self.process(cur_unwrapped, duration_ticks, first_unwrapped, &mut pkt)?;
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
             }
             //write end
@@ -232,15 +277,18 @@ impl MediaContext {
         }
         Ok(())
     }
-    unsafe fn process(&mut self, pkt: &mut AVPacket) -> GlobalResult<()> {
+    unsafe fn process(
+        &mut self,
+        cur_unwrapped: i64,
+        duration_ticks: i64,
+        first_unwrapped: i64,
+        pkt: &mut AVPacket,
+    ) -> GlobalResult<()> {
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
-        let rtp_state = &mut *self.rtp_state;
-        let (cur_unwrapped, duration_ticks) =
-            rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
-        // //fill_stream_from_media_ext(st, media_ext);
+
         let stream_tb = (*(*fmt_ctx).streams.offset(pkt.stream_index as isize).read()).time_base;
         // // 更新 RTP 状态并获取展开 timestamp 和帧间差值
-        let relative_time = cur_unwrapped - rtp_state.first_pkt_timestamp;
+        let relative_time = cur_unwrapped - first_unwrapped;
         let rtp_tb = AVRational {
             num: 1,
             den: self.media_ext.clock_rate,
@@ -253,11 +301,11 @@ impl MediaContext {
         //     av_rescale_q((self.media_ext.clock_rate / 25) as i64, rtp_tb, tb)
         // };
         // pkt.duration = duration_rescaled;
-        // pkt.pts = pts_rescaled;
-        // pkt.dts = pts_rescaled;
-        // if duration_ticks > 0 {
-        //     pkt.duration = av_rescale_q(duration_ticks, rtp_tb, stream_tb);
-        // }
+        pkt.pts = pts_rescaled;
+        pkt.dts = pts_rescaled;
+        if duration_ticks > 0 {
+            pkt.duration = av_rescale_q(duration_ticks, rtp_tb, stream_tb);
+        }
         // 通过 pts 计算累计真实时长（秒）
         let real_ts = pts_rescaled as f64 * stream_tb.num as f64 / stream_tb.den as f64;
 

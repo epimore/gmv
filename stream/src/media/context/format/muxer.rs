@@ -54,7 +54,6 @@ pub struct MuxerContext {
 }
 impl MuxerContext {
     pub fn init(demuxer_context: &DemuxerContext,muxer: MuxerLayer) -> MuxerContext {
-        println!("MuxerContext init 11111111");
         let mut context = MuxerContext::default();
         if let Some(flv_layer) = muxer.flv {
             let _ = FlvContext::init_context(demuxer_context, flv_layer.tx).map(|flv_context| {
@@ -72,9 +71,7 @@ impl MuxerContext {
         if let Some(rtp_ps_layer) = muxer.rtp_ps { unimplemented!() }
         if let Some(rtp_enc_layer) = muxer.rtp_enc { unimplemented!() }
         if let Some(fmp4_layer) = muxer.fmp4 {
-            println!("MuxerContext init fmp4_layer 11111111"); 
             let _ = CmafFmp4Context::init_context(demuxer_context, fmp4_layer.tx).map(|ctx| {
-                println!("MuxerContext init fmp4_layer 22222222");
                 context.fmp4 = Some(ctx);
             });
         }
