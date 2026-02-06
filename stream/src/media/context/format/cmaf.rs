@@ -117,23 +117,23 @@ impl FmtMuxer for CmafFmp4Context {
                 0,
             );
 
-            // // // 设置frag_duration为2秒
-            // let frag_duration = CString::new("2000000").unwrap();
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("frag_duration").unwrap().as_ptr(),
-            //     frag_duration.as_ptr(),
-            //     0,
-            // );
-            // //
-            // // // 设置其他CMAFFMP4参数
-            // let min_frag_duration = CString::new("1000000").unwrap();
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("min_frag_duration").unwrap().as_ptr(),
-            //     min_frag_duration.as_ptr(),
-            //     0,
-            // );
+            // // 设置frag_duration为2秒
+            let frag_duration = CString::new("2000000").unwrap();
+            rsmpeg::ffi::av_dict_set(
+                &mut options,
+                CString::new("frag_duration").unwrap().as_ptr(),
+                frag_duration.as_ptr(),
+                0,
+            );
+            //
+            // // 设置其他CMAFFMP4参数
+            let min_frag_duration = CString::new("1000000").unwrap();
+            rsmpeg::ffi::av_dict_set(
+                &mut options,
+                CString::new("min_frag_duration").unwrap().as_ptr(),
+                min_frag_duration.as_ptr(),
+                0,
+            );
             // // 设置 GOP 大小相关参数
             let gop_size = CString::new("25").unwrap(); // 25帧一个GOP
             rsmpeg::ffi::av_dict_set(
@@ -143,13 +143,21 @@ impl FmtMuxer for CmafFmp4Context {
                 0,
             );
             // 确保时间戳连续
-            // let avoid_negative_ts = CString::new("make_non_negative").unwrap();
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("avoid_negative_ts").unwrap().as_ptr(),
-            //     avoid_negative_ts.as_ptr(),
-            //     0,
-            // );
+            let avoid_negative_ts = CString::new("make_non_negative").unwrap();
+            rsmpeg::ffi::av_dict_set(
+                &mut options,
+                CString::new("avoid_negative_ts").unwrap().as_ptr(),
+                avoid_negative_ts.as_ptr(),
+                0,
+            );
+            // reset_timestamps重置时间戳
+            let reset = CString::new("1").unwrap();
+            rsmpeg::ffi::av_dict_set(
+                &mut options,
+                CString::new("reset_timestamps").unwrap().as_ptr(),
+                reset.as_ptr(),
+                0,
+            );
             let mut in_timebase_map = HashMap::with_capacity(6);
             let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
             copy_streams(&mut in_timebase_map,in_fmt_ctx, out_fmt_ctx)?;
@@ -218,6 +226,13 @@ impl FmtMuxer for CmafFmp4Context {
 impl CmafFmp4Context {
     unsafe fn emit_fragment(&mut self, timestamp: u64, is_key: bool) {
         let out_vec = &mut *self.out_buf_ptr;
+        println!("av_interleaved_write_frame: {}",out_vec.len());
+        rsmpeg::ffi::av_write_frame(self.fmt_ctx, ptr::null_mut());
+        // let out_vec = &mut *self.out_buf_ptr;
+        // println!("av_write_frame: {}",out_vec.len());
+        // rsmpeg::ffi::avio_flush((*self.fmt_ctx).pb);
+        let out_vec = &mut *self.out_buf_ptr;
+        println!("avio_flush: {}",out_vec.len());
         if out_vec.is_empty() {
             return;
         }
