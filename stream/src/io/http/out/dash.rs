@@ -118,16 +118,35 @@ async fn send_fmp4(
     };
     // warn!("header: {:02X?}", &init_segment[..]);
     dump("fmp4init", &init_segment, false).expect("dump fmp4init failed");
-    // 2. 组合 stream
+    // 2. 等待第一个关键帧 fragment（moof+mdat）
+    let first_fragment = match timeout(Duration::from_millis(TIME_OUT), async {
+        loop {
+            match rx.recv().await {
+                Ok(pkt) if pkt.is_key => break Some(pkt.data.clone()),
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    })
+        .await
+    {
+        Ok(Some(data)) => data,
+        _ => return res_404(),
+    };
+    dump("fmp4idr", &first_fragment, false).expect("dump fmp4idr failed");
+    // 3. 组合 stream
     let init_stream = stream::once(Box::pin(async move {
         Ok::<_, std::convert::Infallible>(init_segment)
+    }));
+    let first_frag_stream = stream::once(Box::pin(async move {
+        Ok::<_, std::convert::Infallible>(first_fragment)
     }));
 
     let live_stream = Fmp4Stream {
         inner: BroadcastStream::new(rx),
     };
 
-    let full_stream = init_stream.chain(live_stream);
+    let full_stream = init_stream.chain(first_frag_stream).chain(live_stream);
 
     let full_stream = DumpStream {
         inner: full_stream,

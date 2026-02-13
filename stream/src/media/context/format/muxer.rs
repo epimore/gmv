@@ -1,4 +1,4 @@
-use crate::media::context::format::cmaf::CmafFmp4Context;
+use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::flv::FlvContext;
 use crate::media::context::format::hls_ts::HlsTsContext;

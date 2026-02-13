@@ -6,7 +6,7 @@ use rsmpeg::ffi::AVPacket;
 use std::ffi::{c_int, c_void};
 use std::sync::Arc;
 
-pub mod cmaf;
+pub mod fmp4;
 pub mod demuxer;
 pub mod flv;
 mod hls_ts;

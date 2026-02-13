@@ -17,7 +17,7 @@ mod rw;
 pub mod rtp;
 pub mod context;
 
-pub const DEFAULT_IO_BUF_SIZE: usize = 32768;
+pub const DEFAULT_IO_BUF_SIZE: usize = 1024*1024;
 //todo! 转发媒体流，不进入MediaContext
 pub async fn handle_process(mut rx: Receiver<u32>) {
     unsafe {

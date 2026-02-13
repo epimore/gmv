@@ -303,7 +303,7 @@ impl MediaContext {
 
         // pkt.pts = pts_rescaled;
         // pkt.dts = pts_rescaled;
-        pkt.duration = 0;
+        // pkt.duration = 0;
 
         // if let Some((pts, dts)) = base_pts_dts.get(pkt.stream_index as usize) {
         //     pkt.pts -= pts;
@@ -316,16 +316,16 @@ impl MediaContext {
         // 通过 pts 计算累计真实时长（秒）
         let real_ts = pts_rescaled as f64 * stream_tb.num as f64 / stream_tb.den as f64;
 
-        println!(
-            "Packet : stream={}, dts={}, pts={}, duration={}, size={}, key={},timestamp={}",
-            pkt.stream_index,
-            pkt.dts,
-            pkt.pts,
-            pkt.duration,
-            pkt.size,
-            (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0,
-            real_ts
-        );
+        // println!(
+        //     "Packet : stream={}, dts={}, pts={}, duration={}, size={}, key={},timestamp={}",
+        //     pkt.stream_index,
+        //     pkt.dts,
+        //     pkt.pts,
+        //     pkt.duration,
+        //     pkt.size,
+        //     (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0,
+        //     real_ts
+        // );
         // 暂不实现处理codec
         // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
         // 暂不实现处理filter
