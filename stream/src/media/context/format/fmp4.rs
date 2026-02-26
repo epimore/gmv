@@ -41,7 +41,9 @@ pub struct CmafFmp4Context {
 
     in_timebase_map: HashMap<c_int, AVRational>,
     v_idx: c_int,
-    last_keyframe_state: bool,
+    fragment_started_with_key: bool, // 当前片段是否以关键帧开始
+    fragment_has_data: bool,         // 当前片段是否已有数据（非空）
+    fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
     instant: Instant,
 }
 impl Drop for CmafFmp4Context {
@@ -115,67 +117,14 @@ impl FmtMuxer for CmafFmp4Context {
             // 创建AVDictionary
             let mut options = ptr::null_mut::<rsmpeg::ffi::AVDictionary>();
 
-            // 设置movflags
-            let movflags = CString::new("frag_keyframe+empty_moov+default_base_moof").unwrap();
+            // 设置movflags frag_keyframe
+            let movflags = CString::new("frag_custom+empty_moov+default_base_moof").unwrap();
             rsmpeg::ffi::av_dict_set(
                 &mut options,
                 CString::new("movflags").unwrap().as_ptr(),
                 movflags.as_ptr(),
                 0,
             );
-            // 设置最大延迟
-            // rsmpeg::ffi::av_dict_set_int(
-            //     &mut options,
-            //     CString::new("max_delay").unwrap().as_ptr(),
-            //     100_000, // 100ms
-            //     0,
-            // );
-            //
-            // 启用flush_packets
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("flush_packets").unwrap().as_ptr(),
-            //     CString::new("1").unwrap().as_ptr(),
-            //     0,
-            // );
-            // 设置frag_duration为500毫秒
-            let frag_duration = CString::new("500000").unwrap();
-            rsmpeg::ffi::av_dict_set(
-                &mut options,
-                CString::new("frag_duration").unwrap().as_ptr(),
-                frag_duration.as_ptr(),
-                0,
-            );
-            // // 设置 GOP 大小相关参数
-            // let gop_size = CString::new("25").unwrap(); // 25帧一个GOP
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("g").unwrap().as_ptr(),
-            //     gop_size.as_ptr(),
-            //     0,
-            // );
-            // rsmpeg::ffi::av_dict_set_int(
-            //     &mut options,
-            //     CString::new("fragmentation").unwrap().as_ptr(),
-            //     1,
-            //     0,
-            // );
-            // 确保时间戳连续
-            // let avoid_negative_ts = CString::new("make_non_negative").unwrap();
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("avoid_negative_ts").unwrap().as_ptr(),
-            //     avoid_negative_ts.as_ptr(),
-            //     0,
-            // );
-            // reset_timestamps重置时间戳
-            // let reset = CString::new("1").unwrap();
-            // rsmpeg::ffi::av_dict_set(
-            //     &mut options,
-            //     CString::new("reset_timestamps").unwrap().as_ptr(),
-            //     reset.as_ptr(),
-            //     0,
-            // );
             let mut in_timebase_map = HashMap::with_capacity(8);
             let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
             let v_idx = copy_streams(&mut in_timebase_map, in_fmt_ctx, out_fmt_ctx)?;
@@ -207,7 +156,9 @@ impl FmtMuxer for CmafFmp4Context {
                 out_buf_ptr,
                 in_timebase_map,
                 v_idx,
-                last_keyframe_state: false,
+                fragment_started_with_key: false,
+                fragment_has_data: false,
+                fragment_start_timestamp: 0,
                 instant: Instant::now(),
             })
         }
@@ -230,12 +181,22 @@ impl FmtMuxer for CmafFmp4Context {
                 }
                 Some(&in_tb) => {
                     let is_keyframe =
-                        self.v_idx == pkt.stream_index && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0;
+                        self.v_idx == pkt.stream_index && (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     let now = Instant::now();
-                    let time_exceeded = now >= self.instant + MAX_DURATION;
-                    // CMAF规范：片段应在关键帧处切割
-                    if time_exceeded || is_keyframe{
-                        self.flush_fragment(timestamp, self.last_keyframe_state);
+                    let time_exceeded = self.fragment_has_data && now >= self.instant + MAX_DURATION;
+                    // 判断是否需要刷新当前片段
+                    if time_exceeded || (is_keyframe && self.fragment_has_data) {
+                        // 刷新当前片段（使用片段开始时的状态和时间戳）
+                        self.flush_fragment(self.fragment_start_timestamp, self.fragment_started_with_key);
+                        self.fragment_has_data = false;
+                        // 新片段开始，其起始关键帧状态由当前帧决定
+                        self.fragment_started_with_key = is_keyframe;
+                        self.fragment_start_timestamp = timestamp;
+                        self.instant = now;
+                    } else if !self.fragment_has_data {
+                        // 这是新片段的第一个帧
+                        self.fragment_started_with_key = is_keyframe;
+                        self.fragment_start_timestamp = timestamp;
                         self.instant = now;
                     }
 
@@ -244,64 +205,16 @@ impl FmtMuxer for CmafFmp4Context {
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
                     av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
 
-                    // // 处理时间戳
-                    // cloned.pts = if pkt.pts != i64::MIN {
-                    //     av_rescale_q(pkt.pts, *in_tb, (*out_st).time_base)
-                    // } else { i64::MIN };
-                    //
-                    // cloned.dts = if pkt.dts != i64::MIN {
-                    //     av_rescale_q(pkt.dts, *in_tb, (*out_st).time_base)
-                    // } else { i64::MIN };
-                    //
-                    // cloned.duration = if pkt.duration > 0 {
-                    //     av_rescale_q(pkt.duration, *in_tb, (*out_st).time_base)
-                    // } else { 0 };
                     cloned.pos = -1;
-                    let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
+                    let ret = rsmpeg::ffi::av_interleaved_write_frame (self.fmt_ctx, &mut cloned);
                     if ret < 0 {
                         warn!("fMP4 write failed: {}", show_ffmpeg_error_msg(ret));
+                        av_packet_unref(&mut cloned);
                         return;
                     }
-                    // let instant = Instant::now();
-                    // if instant >= self.instant + MAX_DURATION || is_keyframe {
-                    //     // if is_key {
-                    //     //     rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, ptr::null_mut());
-                    //     // }
-                    //     // let ret = rsmpeg::ffi::av_write_frame(self.fmt_ctx, &mut cloned);
-                    //     // if ret < 0 {
-                    //     //     warn!("fMP4 write failed: {}", show_ffmpeg_error_msg(ret));
-                    //     // }
-                    //
-                    //     rsmpeg::ffi::avio_flush((*self.fmt_ctx).pb);
-                    //     self.emit_fragment(timestamp, is_keyframe);
-                    //     self.instant = instant;
-                    // }
-                    // else {
-                    //     let ret =
-                    //         rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
-                    //     if ret < 0 {
-                    //         warn!("fMP4 write failed: {}", show_ffmpeg_error_msg(ret));
-                    //         return;
-                    //     }
-                    // }
                     av_packet_unref(&mut cloned);
-                    // 记录关键帧状态用于下一个片段
-                    if is_keyframe {
-                        self.last_keyframe_state = true;
-                    }
-                    // let ret = if is_key {
-                    //     rsmpeg::ffi::av_write_frame(self.fmt_ctx, &mut cloned)
-                    // } else {
-                    //     rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned)
-                    // };
-                    // // let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
-                    // av_packet_unref(&mut cloned);
-                    // if ret < 0 {
-                    //     warn!("fMP4 write failed: {}", show_ffmpeg_error_msg(ret));
-                    //     return;
-                    // }
-                    //
-                    // self.emit_fragment(timestamp, is_key);
+                    // 标记片段已有数据
+                    self.fragment_has_data = true;
                 }
             }
         }
@@ -310,14 +223,20 @@ impl FmtMuxer for CmafFmp4Context {
     fn flush(&mut self) {
         unsafe {
             // 1. 写入所有缓冲帧
-            av_interleaved_write_frame(self.fmt_ctx, ptr::null_mut());
+            av_write_frame (self.fmt_ctx, ptr::null_mut());
 
             // 2. 写入尾部信息
             av_write_trailer(self.fmt_ctx);
 
             // 3. 刷新并发送最后一个片段
             avio_flush((*self.fmt_ctx).pb);
-            self.flush_fragment(0, false);
+            if self.fragment_has_data {
+                self.flush_fragment(
+                    self.fragment_start_timestamp,
+                    self.fragment_started_with_key,
+                );
+                self.fragment_has_data = false;
+            }
         }
     }
 }
@@ -326,61 +245,33 @@ impl CmafFmp4Context {
     fn flush_fragment(&mut self, timestamp: u64, is_key: bool) {
         unsafe {
             // 1. 先写入空帧强制刷新内部缓冲区
-            av_write_frame(self.fmt_ctx, ptr::null_mut());
+            av_write_frame (self.fmt_ctx, ptr::null_mut());
 
             // 2. 刷新IO缓冲区
             avio_flush((*self.fmt_ctx).pb);
-
+            println!(
+                "Begin flushing fragment: starts_with_key={}, timestamp={}",
+                is_key,
+                timestamp
+            );
             // 3. 获取数据并发送
             let out_vec = &mut *self.out_buf_ptr;
             if out_vec.is_empty() {
                 return;
             }
             println!(
-                "write_frame 1: {}, {}",
+                "Flushing fragment: {} bytes, starts_with_key={}, timestamp={}",
                 out_vec.len(),
-                is_key
+                is_key,
+                timestamp
             );
-            self.last_keyframe_state = false;
             let data = Bytes::from(std::mem::take(out_vec));
             let _ = self.pkt_tx.send(Arc::new(MuxPacket {
                 data,
-                is_key, // 使用传入的关键帧状态
+                is_key,
                 timestamp,
             }));
         }
-    }
-    unsafe fn emit_fragment(&mut self, timestamp: u64, is_key: bool) {
-        let out_vec = &mut *self.out_buf_ptr;
-        println!(
-            "write_frame 0: {}, {}",
-            out_vec.len(),
-            self.last_keyframe_state
-        );
-        if out_vec.is_empty() {
-            return;
-        }
-        println!(
-            "write_frame 1: {}, {}",
-            out_vec.len(),
-            self.last_keyframe_state
-        );
-
-        // let is_key = pkt.stream_index == self.v_idx && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0;
-        // if is_key {
-        // rsmpeg::ffi::av_write_frame(self.fmt_ctx, ptr::null_mut());
-        // let out_vec = &mut *self.out_buf_ptr;
-        // println!("av_write_frame: {}", out_vec.len());
-
-        // rsmpeg::ffi::avio_flush((*self.fmt_ctx).pb);
-        // let out_vec = &mut *self.out_buf_ptr;
-        // println!("avio_flush: {}", out_vec.len());
-        let data = Bytes::from(std::mem::take(out_vec));
-        let _ = self.pkt_tx.send(Arc::new(MuxPacket {
-            data,
-            is_key,
-            timestamp,
-        }));
     }
 }
 fn copy_streams(

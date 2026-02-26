@@ -11,14 +11,14 @@ use crate::state::{TIME_OUT, cache};
 use axum::body::Body;
 use axum::response::Response;
 use base::bytes::Bytes;
-use base::chrono;
 use base::chrono::Local;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
+use base::{chrono, tokio};
 use futures_core::Stream;
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, stream, future};
 use shared::info::obj::{BaseStreamInfo, StreamPlayInfo};
 use shared::info::output::OutputEnum;
 use std::collections::HashMap;
@@ -68,13 +68,17 @@ pub async fn segment_handler(
                                 addr,
                                 None,
                             );
-
+                            let event_tx_c = event_tx.clone();
+                            let token1 = token.clone();
+                            let token2 = token.clone();
+                            let remote_addr1 = remote_addr.clone();
+                            let stream_id1 = stream_id.clone();
                             let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
                                 Some(Box::new(move || {
                                     cache::update_token(
                                         &stream_id,
                                         OutputEnum::DashFmp4,
-                                        token.clone(),
+                                        token1,
                                         false,
                                         addr,
                                         None,
@@ -89,12 +93,30 @@ pub async fn segment_handler(
                                             OutputEnum::DashFmp4,
                                             user_count,
                                         );
-                                        let _ = event_tx
+                                        let _ = event_tx_c
                                             .try_send((Event::Out(OutEvent::OffPlay(info)), None));
                                     }
                                 }));
 
-                            send_fmp4(ssrc, rx, on_disconnect).await
+                            match send_fmp4(ssrc, rx, on_disconnect).await {
+                                Ok(res) => res,
+                                Err(_) => {
+                                    if let Some((bsi, user_count)) =
+                                        cache::get_base_stream_info_by_stream_id(&stream_id1)
+                                    {
+                                        let info = StreamPlayInfo::new(
+                                            bsi,
+                                            remote_addr1,
+                                            token2,
+                                            OutputEnum::DashFmp4,
+                                            user_count,
+                                        );
+                                        let _ = event_tx
+                                            .try_send((Event::Out(OutEvent::OffPlay(info)), None));
+                                    };
+                                    res_404()
+                                }
+                            }
                         }
                         Err(_) => res_404(),
                     }
@@ -110,43 +132,38 @@ async fn send_fmp4(
     ssrc: u32,
     mut rx: broadcast::Receiver<Arc<MuxPacket>>,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
-) -> Response<Body> {
+) -> GlobalResult<Response<Body>> {
     // 1. 获取 CMAF init segment
     let init_segment = match get_fmp4_init(ssrc).await {
         Ok(h) => h,
-        Err(_) => return res_404(),
+        Err(_) => return Ok(res_404()),
     };
     // warn!("header: {:02X?}", &init_segment[..]);
     dump("fmp4init", &init_segment, false).expect("dump fmp4init failed");
-    // 2. 等待第一个关键帧 fragment（moof+mdat）
-    let first_fragment = match timeout(Duration::from_millis(TIME_OUT), async {
-        loop {
-            match rx.recv().await {
-                Ok(pkt) if pkt.is_key => break Some(pkt.data.clone()),
-                Ok(_) => continue,
-                Err(_) => return None,
+
+    // 2. 创建一个 stream，等待第一个关键帧，然后发送所有后续帧
+    let broadcast_stream = BroadcastStream::new(rx);
+    let video_stream = broadcast_stream.skip_while(|item| {
+            // 跳过非关键帧，直到遇到第一个关键帧
+            future::ready(match item {
+                Ok(pkt) => !pkt.is_key,
+                Err(_) => false,
+            })
+        })
+        .map(|item| {
+            match item {
+                Ok(pkt) => Ok(pkt.data.clone()),
+                Err(_) => Ok(Bytes::new()),
             }
-        }
-    })
-        .await
-    {
-        Ok(Some(data)) => data,
-        _ => return res_404(),
-    };
-    dump("fmp4idr", &first_fragment, false).expect("dump fmp4idr failed");
+        });
+
+
     // 3. 组合 stream
     let init_stream = stream::once(Box::pin(async move {
         Ok::<_, std::convert::Infallible>(init_segment)
     }));
-    let first_frag_stream = stream::once(Box::pin(async move {
-        Ok::<_, std::convert::Infallible>(first_fragment)
-    }));
 
-    let live_stream = Fmp4Stream {
-        inner: BroadcastStream::new(rx),
-    };
-
-    let full_stream = init_stream.chain(first_frag_stream).chain(live_stream);
+    let full_stream = init_stream.chain(video_stream);
 
     let full_stream = DumpStream {
         inner: full_stream,
@@ -158,13 +175,13 @@ async fn send_fmp4(
         on_drop: on_disconnect,
     };
 
-    Response::builder()
+    Ok(Response::builder()
         // .header("Content-Type", "application/octet-stream")
         .header("Content-Type", "video/mp4")
         .header("Cache-Control", "no-cache")
         // .header("Connection", "keep-alive")
         .body(Body::from_stream(wrapped))
-        .unwrap()
+        .unwrap())
 }
 async fn get_fmp4_init(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
