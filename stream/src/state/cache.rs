@@ -614,7 +614,7 @@ impl Shared {
                                         .try_publish(MuxerEvent::Close(
                                             MuxerEnum::from_output_enum(output_enum),
                                         ))
-                                        .hand_log(|msg| error!("{msg}"));
+                                        .hand_log(|msg| info!("{msg}"));
                                 }
                             }
 

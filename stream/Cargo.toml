@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-#base = { git = "https://github.com/epimore/pigs.git",rev = "0ac18e3",features = ["net"] }
-base = { package = "base", path = "../../pigs/base", features = ["net"] }
+base = { git = "https://github.com/epimore/pigs.git",rev = "b83ba9f7094f4f2e0655620b717eff6ed477a56d",features = ["net"] }
+#base = { package = "base", path = "../../pigs/base", features = ["net"] }
 shared = { path = "../shared" }
 
 futures-core = "0.3"

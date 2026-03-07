@@ -257,7 +257,7 @@ impl CmafFmp4Context {
             if out_vec.is_empty() {
                 return false;
             }
-            println!(
+            debug!(
                 "Flushing fragment: {} bytes, starts_with_key={}, timestamp={}",
                 out_vec.len(),
                 is_key,

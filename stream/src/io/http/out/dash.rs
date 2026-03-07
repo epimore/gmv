@@ -180,11 +180,17 @@ impl Stream for Fmp4Stream {
         loop {
             match Pin::new(&mut self.inner).poll_next(cx) {
                 Poll::Ready(Some(Ok(pkt))) => {
-
+                    //当dts回退重新构建muxer时，两种方式。
                     if pkt.epoch != self.current_epoch {
+                        //单选1.断开连接，让客户端重新连接
+                        // if self.started {
+                        //     return Poll::Ready(None);
+                        // }
+                        //1. end
                         self.current_epoch = pkt.epoch;
-                        self.started = false;
-
+                        //单选2. 重发init片段
+                        // self.started = false;
+                        //2. end
                     }
 
                     if !self.started {
@@ -204,11 +210,9 @@ impl Stream for Fmp4Stream {
                     return Poll::Ready(Some(Ok(pkt.data.clone())));
                 }
                 Poll::Ready(Some(Err(_))) => {
-                    println!("error ..............");
-                    // 广播接收错误，忽略
                     continue;
                 }
-                Poll::Ready(None) =>{ println!("close .........");return Poll::Ready(None);} , // 发送者关闭
+                Poll::Ready(None) =>{ return Poll::Ready(None);} , // 发送者关闭
                 Poll::Pending => return Poll::Pending,
             }
         }
