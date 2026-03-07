@@ -1,12 +1,15 @@
-use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::gb::RWContext;
+use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::http::client::{HttpClient, HttpStream};
 use crate::service::{EXPIRES, KEY_STREAM_IN};
 use crate::state;
+use crate::state::model::{
+    CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
+    PtzControlModel, StreamInfo, StreamQo, TransMode,
+};
 use crate::state::session::AccessMode;
-use crate::state::model::{CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo, TransMode};
-use crate::state::{session, DownloadConf, StreamConf};
-use crate::storage::entity::{GmvRecord};
+use crate::state::{DownloadConf, StreamConf, session};
+use crate::storage::entity::GmvRecord;
 use crate::utils::id_builder;
 use base::bytes::Bytes;
 use base::chrono::{Local, TimeZone};
@@ -14,10 +17,10 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::serde_json;
 use base::tokio::sync::mpsc;
-use base::tokio::time::{sleep, Instant};
+use base::tokio::time::{Instant, sleep};
 use shared::info::format::{CMaf, Flv, Mp4};
 use shared::info::media_info::MediaConfig;
-use shared::info::media_info_ext::{MediaMap};
+use shared::info::media_info_ext::MediaMap;
 use shared::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
 use shared::info::output::{DashFmp4Output, HttpFlvOutput, LocalMp4Output, OutputEnum, OutputKind};
 use std::fs;
@@ -33,7 +36,9 @@ use std::time::Duration;
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_live_model.device_id;
     if !RWContext::has_session_by_device_id(device_id) {
-        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
+        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| {
+            error!("{msg}")
+        }));
     }
     let channel_id = if let Some(channel_id) = &play_live_model.channel_id {
         channel_id
@@ -41,37 +46,65 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
         device_id
     };
     let am = AccessMode::Live;
+    let output = play_live_model.custom_media_config.as_ref().map(|p| p.output.clone());
     //查看直播流是否已存在,有则直接返回
     if let Some((stream_id, proxy_addr)) = enable_invite_stream(device_id, channel_id, &am).await? {
         state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-        return Ok(StreamInfo::build(stream_id, proxy_addr));
+        return StreamInfo::build(stream_id, proxy_addr, output);
     }
-    let (stream_id, _node_name,proxy_addr) = start_invite_stream(device_id, channel_id, &token, am, 0, 0, play_live_model.trans_mode, play_live_model.custom_media_config).await?;
+    let (stream_id, _node_name, proxy_addr) = start_invite_stream(
+        device_id,
+        channel_id,
+        &token,
+        am,
+        0,
+        0,
+        play_live_model.trans_mode,
+        play_live_model.custom_media_config,
+    )
+    .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    Ok(StreamInfo::build(stream_id, proxy_addr))
+    StreamInfo::build(stream_id, proxy_addr, output)
 }
 
-pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> GlobalResult<StreamRecordInfo> {
-    let (stream_server,ssrc) = session::Cache::stream_map_query_node_ssrc(&info.stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
+pub async fn download_info_by_stream_id(
+    info: StreamQo,
+    _token: String,
+) -> GlobalResult<StreamRecordInfo> {
+    let (stream_server, ssrc) = session::Cache::stream_map_query_node_ssrc(&info.stream_id)
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}"))
+        })?;
     let conf = StreamConf::get_stream_conf();
     match conf.node_map.get(&stream_server) {
-        None => { Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}"))) }
+        None => Err(GlobalError::new_biz_error(
+            1100,
+            "stream_server 错误",
+            |msg| error!("{msg}"),
+        )),
         Some(node) => {
             let p = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
             let output_enum = info.media_type.unwrap_or(OutputEnum::LocalMp4);
-            let json_obj = p.record_info(&StreamInfoQo { ssrc, output_enum }).await.hand_log(|msg| error!("{msg}"))?;
+            let json_obj = p
+                .record_info(&StreamInfoQo { ssrc, output_enum })
+                .await
+                .hand_log(|msg| error!("{msg}"))?;
             let value = json_obj.value();
             if value.code == 200 {
                 match value.data {
-                    None => {
-                        Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}: {}", &value.msg)))
-                    }
-                    Some(info) => {
-                        Ok(info)
-                    }
+                    None => Err(GlobalError::new_biz_error(
+                        1100,
+                        "stream_server 错误",
+                        |msg| error!("{msg}: {}", &value.msg),
+                    )),
+                    Some(info) => Ok(info),
                 }
             } else {
-                Err(GlobalError::new_biz_error(1100, "stream_server 错误", |msg| error!("{msg}: {}", &value.msg)))
+                Err(GlobalError::new_biz_error(
+                    1100,
+                    "stream_server 错误",
+                    |msg| error!("{msg}: {}", &value.msg),
+                ))
             }
         }
     }
@@ -80,24 +113,43 @@ pub async fn download_info_by_stream_id(info: StreamQo, _token: String) -> Globa
 pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bool> {
     let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
-        let (stream_server,ssrc) = session::Cache::stream_map_query_node_ssrc(&stream_id).ok_or_else(|| GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}")))?;
+        let (stream_server, ssrc) = session::Cache::stream_map_query_node_ssrc(&stream_id)
+            .ok_or_else(|| {
+                GlobalError::new_biz_error(1100, "无效的媒体流ID", |msg| error!("{msg}"))
+            })?;
         let conf = StreamConf::get_stream_conf();
         match conf.node_map.get(&stream_server) {
-            None => {  warn!("close from stream be failed: {};stream server not found",&stream_id); }
+            None => {
+                warn!(
+                    "close from stream be failed: {};stream server not found",
+                    &stream_id
+                );
+            }
             Some(node) => {
                 let p = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
-                let json_obj = p.close_output(&StreamInfoQo { ssrc, output_enum:OutputEnum::LocalMp4 }).await.hand_log(|msg| error!("{msg}"))?;
+                let json_obj = p
+                    .close_output(&StreamInfoQo {
+                        ssrc,
+                        output_enum: OutputEnum::LocalMp4,
+                    })
+                    .await
+                    .hand_log(|msg| error!("{msg}"))?;
                 let value = json_obj.value();
                 if value.code != 200 {
-                    warn!("close from stream be failed: {}",&stream_id);
+                    warn!("close from stream be failed: {}", &stream_id);
                 }
             }
         }
         if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
-            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
+            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag)
+                .await;
         }
-        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
-            state::session::Cache::device_map_remove(&device_id, Some((&channel_id, Some((am, &ssrc_str)))));
+        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id)
+        {
+            state::session::Cache::device_map_remove(
+                &device_id,
+                Some((&channel_id, Some((am, &ssrc_str)))),
+            );
             state::session::Cache::stream_map_remove(&stream_id, None);
         }
         let ssrc = u32::from_str_radix(&ssrc_str, 10).hand_log(|msg| error!("{msg}"))?;
@@ -111,7 +163,9 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<String> {
     let device_id = &play_back_model.device_id;
     if !RWContext::has_session_by_device_id(device_id) {
-        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
+        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| {
+            error!("{msg}")
+        }));
     }
     let channel_id = if let Some(channel_id) = &play_back_model.channel_id {
         channel_id
@@ -120,8 +174,12 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     };
     let am = AccessMode::Down;
     //查看是否有任务
-    if let Some(_) = GmvRecord::query_gmv_record_run_by_device_id_channel_id(device_id, channel_id).await? {
-        return Err(GlobalError::new_biz_error(1000, "任务已存在", |msg| error!("{msg}")));
+    if let Some(_) =
+        GmvRecord::query_gmv_record_run_by_device_id_channel_id(device_id, channel_id).await?
+    {
+        return Err(GlobalError::new_biz_error(1000, "任务已存在", |msg| {
+            error!("{msg}")
+        }));
     }
     let st = play_back_model.st;
     let et = play_back_model.et;
@@ -130,16 +188,35 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     let date_str = Local::now().format("%Y%m%d").to_string();
     let path = Path::new(&storage_path).join(date_str);
     fs::create_dir_all(&path).hand_log(|msg| error!("{msg}"))?;
-    let abs_path = path.canonicalize().hand_log(|msg| error!("{msg}"))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
+    let abs_path = path
+        .canonicalize()
+        .hand_log(|msg| error!("{msg}"))?
+        .to_str()
+        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .to_string();
 
-    let down_conf = (&play_back_model).custom_media_config.clone().unwrap_or_else(|| {
-        CustomMediaConfig{
-            output: OutputKind::LocalMp4(LocalMp4Output{fmt:Mp4::default(),path:abs_path.clone()}),
+    let down_conf = (&play_back_model)
+        .custom_media_config
+        .clone()
+        .unwrap_or_else(|| CustomMediaConfig {
+            output: OutputKind::LocalMp4(LocalMp4Output {
+                fmt: Mp4::default(),
+                path: abs_path.clone(),
+            }),
             codec: None,
             filter: Default::default(),
-        }
-    });
-    let (stream_id, node_name,_proxy_addr) = start_invite_stream(device_id, channel_id, &token, am, st - 2, et + 1, play_back_model.trans_mode, Some(down_conf)).await?;
+        });
+    let (stream_id, node_name, _proxy_addr) = start_invite_stream(
+        device_id,
+        channel_id,
+        &token,
+        am,
+        st - 2,
+        et + 1,
+        play_back_model.trans_mode,
+        Some(down_conf),
+    )
+    .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
     let record = GmvRecord {
         biz_id: stream_id.clone(),
@@ -161,7 +238,9 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
 pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_back_model.device_id;
     if !RWContext::has_session_by_device_id(device_id) {
-        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
+        return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| {
+            error!("{msg}")
+        }));
     }
     let channel_id = if let Some(channel_id) = &play_back_model.channel_id {
         channel_id
@@ -169,31 +248,66 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
         device_id
     };
     let am = AccessMode::Back;
+    let output = play_back_model.custom_media_config.as_ref().map(|p| p.output.clone());
     //查看流是否已存在,有则直接返回
     if let Some((stream_id, proxy_addr)) = enable_invite_stream(device_id, channel_id, &am).await? {
         state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-        return Ok(StreamInfo::build(stream_id, proxy_addr));
+        return StreamInfo::build(stream_id, proxy_addr, output);
     }
     let st = play_back_model.st;
     let et = play_back_model.et;
-    let (stream_id, _node_name,proxy_addr) = start_invite_stream(device_id, channel_id, &token, am, st, et, play_back_model.trans_mode, play_back_model.custom_media_config).await?;
+    let (stream_id, _node_name, proxy_addr) = start_invite_stream(
+        device_id,
+        channel_id,
+        &token,
+        am,
+        st,
+        et,
+        play_back_model.trans_mode,
+        play_back_model.custom_media_config,
+    )
+    .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    Ok(StreamInfo::build(stream_id, proxy_addr))
+    StreamInfo::build(stream_id, proxy_addr, output)
 }
 
 pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
     let (device_id, channel_id, _ssrc) = id_builder::de_stream_id(&*seek_mode.streamId)?;
-    let (call_id, seq, from_tag, to_tag) = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&seek_mode.streamId)
-        .ok_or_else(|| GlobalError::new_biz_error(1100, "流不存在", |msg| error!("{msg}")))?;
-    CmdStream::play_seek(&device_id, &channel_id, seek_mode.seekSecond, &from_tag, &to_tag, seq, call_id).await?;
+    let (call_id, seq, from_tag, to_tag) =
+        state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&seek_mode.streamId)
+            .ok_or_else(|| {
+                GlobalError::new_biz_error(1100, "流不存在", |msg| error!("{msg}"))
+            })?;
+    CmdStream::play_seek(
+        &device_id,
+        &channel_id,
+        seek_mode.seekSecond,
+        &from_tag,
+        &to_tag,
+        seq,
+        call_id,
+    )
+    .await?;
     Ok(true)
 }
 
 pub async fn speed(speed_mode: PlaySpeedModel, _token: String) -> GlobalResult<bool> {
     let (device_id, channel_id, _ssrc) = id_builder::de_stream_id(&*speed_mode.streamId)?;
-    let (call_id, seq, from_tag, to_tag) = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&speed_mode.streamId)
-        .ok_or_else(|| GlobalError::new_biz_error(1100, "流不存在", |msg| error!("{msg}")))?;
-    CmdStream::play_speed(&device_id, &channel_id, speed_mode.speedRate, &from_tag, &to_tag, seq, call_id).await?;
+    let (call_id, seq, from_tag, to_tag) =
+        state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&speed_mode.streamId)
+            .ok_or_else(|| {
+                GlobalError::new_biz_error(1100, "流不存在", |msg| error!("{msg}"))
+            })?;
+    CmdStream::play_speed(
+        &device_id,
+        &channel_id,
+        speed_mode.speedRate,
+        &from_tag,
+        &to_tag,
+        seq,
+        call_id,
+    )
+    .await?;
     Ok(true)
 }
 
@@ -210,11 +324,24 @@ pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalRe
 //选择流媒体节点（可用+负载最小）-> 监听流注册
 //发起实时点播 -> 监听设备响应
 //缓存流信息
-async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &String, am: AccessMode, st: u32, et: u32,
-                             _trans_mode: Option<TransMode>, custom_media_config: Option<CustomMediaConfig>) -> GlobalResult<(String, String, String)> {
-    let u16ssrc = state::session::Cache::ssrc_sn_get().ok_or_else(|| GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| error!("{msg}")))?;
+async fn start_invite_stream(
+    device_id: &String,
+    channel_id: &String,
+    _token: &String,
+    am: AccessMode,
+    st: u32,
+    et: u32,
+    _trans_mode: Option<TransMode>,
+    custom_media_config: Option<CustomMediaConfig>,
+) -> GlobalResult<(String, String, String)> {
+    let u16ssrc = state::session::Cache::ssrc_sn_get().ok_or_else(|| {
+        GlobalError::new_biz_error(1100, "ssrc已用完,并发达上限,等待释放", |msg| {
+            error!("{msg}")
+        })
+    })?;
     let mut node_sets = state::session::Cache::stream_map_order_node();
-    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, u16ssrc, true).await?;
+    let (ssrc, stream_id) =
+        id_builder::build_ssrc_stream_id(device_id, channel_id, u16ssrc, true).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let conf = StreamConf::get_stream_conf();
     let msc = match custom_media_config {
@@ -226,38 +353,69 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                 codec: None,
                 filter: Default::default(),
                 //默认使用dash，以兼容H.265
-                output:OutputKind::DashFmp4(DashFmp4Output{fmt:CMaf::default()}),
+                output: OutputKind::DashFmp4(DashFmp4Output {
+                    fmt: CMaf::default(),
+                }),
                 // output:OutputKind::HttpFlv(HttpFlvOutput{fmt:Flv::default()}),
             }
         }
-        Some(cmc) => {
-            MediaConfig {
-                ssrc: u32ssrc,
-                stream_id: stream_id.clone(),
-                expires: None,
-                codec: cmc.codec,
-                output: cmc.output,
-                filter: cmc.filter,
-            }
-        }
+        Some(cmc) => MediaConfig {
+            ssrc: u32ssrc,
+            stream_id: stream_id.clone(),
+            expires: None,
+            codec: cmc.codec,
+            output: cmc.output,
+            filter: cmc.filter,
+        },
     };
 
     //选择负载最小的节点开始尝试：节点是否可用;
     while let Some((_, node_name)) = node_sets.pop_first() {
         let stream_node = conf.node_map.get(&node_name).unwrap();
-        let p = HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port).hand_log(|msg| error!("{msg}"))?;
+        let p =
+            HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port)
+                .hand_log(|msg| error!("{msg}"))?;
         //next 将sdp支持从session固定的，转为stream支持的
         if let Ok(res) = p.stream_init(&msc).await.hand_log(|msg| error!("{msg}")) {
             if res.code == 200 {
-                let (res, media_ext, from_tag, to_tag,association) = match am {
+                let (res, media_ext, from_tag, to_tag, association) = match am {
                     AccessMode::Live => {
-                        CmdStream::play_live_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, TransMode::Udp, &ssrc).await?
+                        CmdStream::play_live_invite(
+                            device_id,
+                            channel_id,
+                            &stream_node.pub_ip.to_string(),
+                            stream_node.pub_port,
+                            TransMode::Udp,
+                            &ssrc,
+                        )
+                        .await?
                     }
                     AccessMode::Back => {
-                        CmdStream::play_back_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, TransMode::Udp, &ssrc, st, et).await?
+                        CmdStream::play_back_invite(
+                            device_id,
+                            channel_id,
+                            &stream_node.pub_ip.to_string(),
+                            stream_node.pub_port,
+                            TransMode::Udp,
+                            &ssrc,
+                            st,
+                            et,
+                        )
+                        .await?
                     }
                     AccessMode::Down => {
-                        CmdStream::download_invite(device_id, channel_id, &stream_node.pub_ip.to_string(), stream_node.pub_port, TransMode::Udp, &ssrc, st, et, 1).await?
+                        CmdStream::download_invite(
+                            device_id,
+                            channel_id,
+                            &stream_node.pub_ip.to_string(),
+                            stream_node.pub_port,
+                            TransMode::Udp,
+                            &ssrc,
+                            st,
+                            et,
+                            1,
+                        )
+                        .await?
                     }
                 };
 
@@ -266,22 +424,58 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
                     ssrc: u32ssrc,
                     ext: media_ext,
                 };
-                p.stream_init_ext(&map).await.hand_log(|msg| error!("{msg}"))?;
-                let (call_id, seq) = CmdStream::invite_ack(device_id, &res,association).await?;
-                return if let Some(base_stream_info) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
-                    state::session::Cache::stream_map_insert_info(stream_id.clone(), u32ssrc,base_stream_info.rtp_info.proxy_addr.clone(), node_name.clone(), call_id, seq, am, from_tag, to_tag);
-                    state::session::Cache::device_map_insert(device_id.to_string(), channel_id.to_string(), ssrc, stream_id.clone(), am, msc);
-                    Ok((stream_id, node_name,base_stream_info.rtp_info.proxy_addr))
+                p.stream_init_ext(&map)
+                    .await
+                    .hand_log(|msg| error!("{msg}"))?;
+                let (call_id, seq) = CmdStream::invite_ack(device_id, &res, association).await?;
+                return if let Some(base_stream_info) =
+                    listen_stream_by_stream_id(&stream_id, EXPIRES).await
+                {
+                    state::session::Cache::stream_map_insert_info(
+                        stream_id.clone(),
+                        u32ssrc,
+                        base_stream_info.rtp_info.proxy_addr.clone(),
+                        node_name.clone(),
+                        call_id,
+                        seq,
+                        am,
+                        from_tag,
+                        to_tag,
+                    );
+                    state::session::Cache::device_map_insert(
+                        device_id.to_string(),
+                        channel_id.to_string(),
+                        ssrc,
+                        stream_id.clone(),
+                        am,
+                        msc,
+                    );
+                    Ok((stream_id, node_name, base_stream_info.rtp_info.proxy_addr))
                 } else {
-                    CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await?;
-                    Err(GlobalError::new_biz_error(1100, "未接收到监控推流", |msg| error!("{msg}")))
+                    CmdStream::play_bye(
+                        seq + 1,
+                        call_id,
+                        device_id,
+                        channel_id,
+                        &from_tag,
+                        &to_tag,
+                    )
+                    .await?;
+                    Err(GlobalError::new_biz_error(
+                        1100,
+                        "未接收到监控推流",
+                        |msg| error!("{msg}"),
+                    ))
                 };
             }
         }
     }
-    Err(GlobalError::new_biz_error(1100, "无可用流媒体服务", |msg| error!("{msg}")))
+    Err(GlobalError::new_biz_error(
+        1100,
+        "无可用流媒体服务",
+        |msg| error!("{msg}"),
+    ))
 }
-
 
 //首先查看session缓存中是否有映射关系,然后看stream中是否有相应数据:都为true时返回数据
 //当session有,stream无时：session调用stream->使其重新监听ssrc
@@ -290,21 +484,34 @@ async fn start_invite_stream(device_id: &String, channel_id: &String, _token: &S
 // session不存在：None，
 // session存在: 返回Some,
 
-async fn enable_invite_stream(device_id: &String, channel_id: &String, am: &AccessMode) -> GlobalResult<Option<(String, String)>> {
+async fn enable_invite_stream(
+    device_id: &String,
+    channel_id: &String,
+    am: &AccessMode,
+) -> GlobalResult<Option<(String, String)>> {
     match state::session::Cache::device_map_get_invite_info(device_id, channel_id, am) {
-        None => {
-            Ok(None)
-        }
+        None => Ok(None),
         //session -> true
         Some((stream_id, ssrc)) => {
             let mut res = None;
-            if let Some((node_name,proxy_addr)) = state::session::Cache::stream_map_query_node(&stream_id) {
+            if let Some((node_name, proxy_addr)) =
+                state::session::Cache::stream_map_query_node(&stream_id)
+            {
                 //确认stream是否存在
                 if let Some(stream_node) = StreamConf::get_stream_conf().node_map.get(&node_name) {
-                    let pretend = HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port)?;
+                    let pretend = HttpClient::template_ip_port(
+                        &stream_node.local_ip.to_string(),
+                        stream_node.local_port,
+                    )?;
                     let ssrc_num = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
-                    let stream_key = StreamKey { ssrc: ssrc_num, stream_id: Some(stream_id.clone()) };
-                    let json_obj = pretend.stream_online(&stream_key).await.hand_log(|msg| error!("{msg}"))?;
+                    let stream_key = StreamKey {
+                        ssrc: ssrc_num,
+                        stream_id: Some(stream_id.clone()),
+                    };
+                    let json_obj = pretend
+                        .stream_online(&stream_key)
+                        .await
+                        .hand_log(|msg| error!("{msg}"))?;
                     if let Some(true) = json_obj.data {
                         //stream -> true
                         res = Some((stream_id.clone(), proxy_addr));
@@ -319,10 +526,20 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, am: &Acce
                 let ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
                 let ssrc_num = (ssrc % 10000) as u16;
                 state::session::Cache::ssrc_sn_set(ssrc_num);
-                let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
-                if let Ok((device_id, channel_id, _ssrc_str)) = id_builder::de_stream_id(&stream_id) {
+                let cst_info =
+                    state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
+                if let Ok((device_id, channel_id, _ssrc_str)) = id_builder::de_stream_id(&stream_id)
+                {
                     if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
-                        let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag).await;
+                        let _ = CmdStream::play_bye(
+                            seq,
+                            call_id,
+                            &device_id,
+                            &channel_id,
+                            &from_tag,
+                            &to_tag,
+                        )
+                        .await;
                     }
                 }
             }
@@ -330,7 +547,6 @@ async fn enable_invite_stream(device_id: &String, channel_id: &String, am: &Acce
         }
     }
 }
-
 
 async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<BaseStreamInfo> {
     let (tx, mut rx) = mpsc::channel(8);
@@ -350,7 +566,7 @@ mod test {
     use base::chrono::Local;
     use base::tokio;
     use base::tokio::sync::mpsc;
-    use base::tokio::time::{sleep_until, Instant};
+    use base::tokio::time::{Instant, sleep_until};
     use std::time::Duration;
 
     #[tokio::test]

@@ -25,6 +25,7 @@ db:
     port: 33061
     db_name: gmv
     user: epimore
+    pass_crypto_enable: true #密码是否加密，默认不加密
     pass: clRXVjIzU1VrS3BEMXZmNxp5adMgQy599aQeu0tHYg0= #密码的密文
     attrs:
       log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
@@ -69,7 +70,7 @@ server:
   stream:
     nodes:
       - name: s1 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
-        pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
+        pub_ip: 192.168.0.22 #流媒体服务接收rtp流的公网地址
         pub_port: 18568 #流媒体服务接收rtp流的端口
         local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
         local_port: 18570 #节点局域网端口,用于流媒体服务之间通信

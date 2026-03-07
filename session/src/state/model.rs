@@ -2,11 +2,12 @@ use base::serde::{Deserialize, Serialize};
 
 use crate::gb::handler::parser::xml::KV2Model;
 use base::constructor::New;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
+use base::serde_json;
 use shared::info::codec::Codec;
 use shared::info::filter::Filter;
-use shared::info::output::{OutputEnum, OutputKind};
+use shared::info::output::{HttpFlvOutput, OutputEnum, OutputKind};
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
@@ -122,17 +123,30 @@ pub struct PtzControlModel {
 #[allow(non_snake_case)]
 pub struct StreamInfo {
     pub streamId: String,
-    pub flv: String,
-    pub dash: String,
+    pub url: String,
 }
 
 impl StreamInfo {
-    pub fn build(stream_id: String, proxy_addr: String) -> Self {
-        Self {
-            flv: format!("{}/play/{}.flv",proxy_addr,stream_id),
-            dash: format!("{}/play/{}.fmp4", proxy_addr, stream_id),
-            streamId: stream_id,
+    pub fn build(
+        stream_id: String,
+        proxy_addr: String,
+        out_kind: Option<OutputKind>,
+    ) -> GlobalResult<Self> {
+        let mut url = format!("{}/play/{}", proxy_addr, stream_id);
+        match out_kind {
+            None | Some(OutputKind::DashFmp4(_)) => {
+                url = format!("{}.fmp4", url);
+            }
+            Some(OutputKind::HttpFlv(_)) => {
+                url = format!("{}.flv", url);
+            }
+            _ => { Err(GlobalError::new_biz_error(1200, "unsupported output", |msg| error!("{msg}: {:?}",out_kind)))? }
         }
+        let info = Self {
+            url,
+            streamId: stream_id,
+        };
+        Ok(info)
     }
 }
 
@@ -194,3 +208,20 @@ pub struct SnapshotImage {
     pub count: Option<u8>,
 }
 
+#[test]
+fn test1() {
+    let a = PlayLiveModel {
+        device_id: "zzz111".to_string(),
+        channel_id: Some("12aa".to_string()),
+        trans_mode: None,
+        custom_media_config: Some(CustomMediaConfig {
+            output: OutputKind::HttpFlv(HttpFlvOutput {
+                fmt: Default::default(),
+            }),
+            codec: None,
+            filter: Default::default(),
+        }),
+    };
+    let json = serde_json::to_string(&a).unwrap();
+    println!("{}", json);
+}
