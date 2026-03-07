@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-base = { git = "https://github.com/epimore/pigs.git",rev = "778c1e24", features = ["net"] }
+base = { git = "https://github.com/epimore/pigs.git",rev = "b83ba9f7094f4f2e0655620b717eff6ed477a56d", features = ["net"] }
+#base = { package = "base", path = "../../pigs/base", features = ["net"] }
 paste = "1.0"
 
 # 共享依赖
