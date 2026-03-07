@@ -10,6 +10,7 @@ use rsmpeg::ffi::{av_free, av_guess_format, av_malloc, av_packet_ref, av_packet_
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
+use std::time::Instant;
 
 static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 
@@ -22,6 +23,7 @@ pub struct Mp4Context {
     out_buf_ptr: *mut Vec<u8>,
     in_time_bases: Vec<AVRational>,
     out_time_bases: Vec<AVRational>,
+    epoch:Instant
 }
 
 impl Drop for Mp4Context {
@@ -248,6 +250,7 @@ impl FmtMuxer for Mp4Context {
                 out_buf_ptr,
                 in_time_bases: in_tbs,
                 out_time_bases: out_tbs,
+                epoch: Instant::now(),
             })
         }
     }
@@ -256,25 +259,25 @@ impl FmtMuxer for Mp4Context {
         self.header.clone()
     }
 
-    fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) {
+    fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) ->GlobalResult<()>{
         unsafe {
             if pkt.size == 0 || pkt.data.is_null() {
                 warn!("Skipping empty or invalid packet");
-                return;
+                return Ok(());
             }
 
             // clone packet
             let mut cloned = std::mem::zeroed::<AVPacket>();
             if av_packet_ref(&mut cloned, pkt) < 0 {
                 warn!("Failed to ref packet");
-                return;
+                return Ok(());
             }
 
             let si = pkt.stream_index as usize;
             if si >= self.in_time_bases.len() || si >= self.out_time_bases.len() {
                 av_packet_unref(&mut cloned);
                 warn!("stream_index out of range: {}", si);
-                return;
+                return Ok(());
             }
 
             debug!(
@@ -310,13 +313,13 @@ impl FmtMuxer for Mp4Context {
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 warn!("MP4 write failed: {}, error: {}", ret, ffmpeg_error);
-                return;
+                return Ok(());
             }
 
             // pull produced data
             let out_vec = &mut *self.out_buf_ptr;
             if out_vec.is_empty() {
-                return;
+                return Ok(());
             }
             let data_base = Bytes::from(out_vec.clone());
             out_vec.clear();
@@ -328,9 +331,11 @@ impl FmtMuxer for Mp4Context {
                 data: data_base,
                 is_key: is_key_out,
                 timestamp,
+                epoch: self.epoch,
             };
 
             let _ = self.pkt_tx.send(Arc::new(mux_packet));
+            Ok(())
         }
     }
 

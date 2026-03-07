@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod msg;
 pub mod layer;
+pub mod mode;
 
 //格式化通道大小
 pub const FORMAT_BROADCAST_BUFFER: usize = 16;

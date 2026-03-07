@@ -43,7 +43,8 @@ where
     ) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(bytes))) => {
-                dump(self.name, &bytes, false).ok();
+                // dump(self.name, &bytes, false).ok();
+                // dump("live", &bytes, true).ok();
                 Poll::Ready(Some(Ok(bytes)))
             }
             other => other,

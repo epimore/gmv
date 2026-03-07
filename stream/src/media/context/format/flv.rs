@@ -8,6 +8,7 @@ use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, av
 use std::ffi::{c_int, c_void, CString};
 use std::ptr;
 use std::sync::Arc;
+use std::time::Instant;
 use crate::media::{show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 use crate::media::context::format::{write_callback, MuxPacket, FmtMuxer};
 
@@ -26,6 +27,7 @@ pub struct FlvContext {
     out_time_bases: Vec<AVRational>,
     video_stream_index: i32,
     started: bool,
+    epoch:Instant
 }
 
 impl Drop for FlvContext {
@@ -195,6 +197,7 @@ impl FmtMuxer for FlvContext {
                 out_time_bases: out_tbs,
                 video_stream_index: video_si,
                 started: false,
+                epoch: Instant::now(),
             })
         }
     }
@@ -203,11 +206,11 @@ impl FmtMuxer for FlvContext {
         self.header.clone()
     }
 
-    fn write_packet(&mut self, pkt: &AVPacket,timestamp: u64) {
+    fn write_packet(&mut self, pkt: &AVPacket,timestamp: u64) ->GlobalResult<()>{
         unsafe {
             if pkt.size == 0 || pkt.data.is_null() {
                 warn!("Skipping empty or invalid packet");
-                return;
+                return Ok(());
             }
 
             // 克隆
@@ -218,7 +221,7 @@ impl FmtMuxer for FlvContext {
             if si >= self.in_time_bases.len() || si >= self.out_time_bases.len() {
                 av_packet_unref(&mut cloned);
                 warn!("stream_index out of range: {}", si);
-                return;
+                return Ok(());
             }
 
             // 关键帧起播：先等视频关键帧
@@ -227,13 +230,13 @@ impl FmtMuxer for FlvContext {
                     let is_key = (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     if !is_key {
                         av_packet_unref(&mut cloned);
-                        return;
+                        return Ok(());
                     }
                     self.started = true;
                 } else {
                     // 未开始时，非视频流先不发，避免卡在等关键帧
                     av_packet_unref(&mut cloned);
-                    return;
+                    return Ok(());
                 }
             }
 
@@ -272,7 +275,7 @@ impl FmtMuxer for FlvContext {
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 warn!("FLV write failed: {}, error: {}", ret, ffmpeg_error);
-                return;
+                return Ok(());
             }
 
             // 刷新 IO
@@ -281,7 +284,7 @@ impl FmtMuxer for FlvContext {
             // 取出产出数据
             let out_vec = &mut *self.out_buf_ptr;
             if out_vec.is_empty() {
-                return;
+                return Ok(());
             }
             let data = Bytes::from(out_vec.clone());
             out_vec.clear();
@@ -290,7 +293,8 @@ impl FmtMuxer for FlvContext {
                 && pkt.stream_index == self.video_stream_index
                 && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0);
 
-            let _ = self.pkt_tx.send(Arc::new(MuxPacket { data, is_key: is_key_out, timestamp }));
+            let _ = self.pkt_tx.send(Arc::new(MuxPacket { data, is_key: is_key_out, timestamp, epoch: self.epoch }));
+            Ok(())
         }
     }
 

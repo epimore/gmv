@@ -7,18 +7,20 @@ use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
 use crate::media::context::format::MuxPacket;
 use crate::media::context::format::muxer::MuxerEnum;
-use crate::state::{TIME_OUT, cache};
+use crate::state::{TIME_OUT, cache, mode};
 use axum::body::Body;
 use axum::response::Response;
-use base::bytes::Bytes;
+use base::bytes::{Bytes, BytesMut};
+use base::cache::{CachedValue, CommonCache};
 use base::chrono::Local;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
+use base::tokio::sync::oneshot::error::RecvError;
 use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
 use base::{chrono, tokio};
 use futures_core::Stream;
-use futures_util::{StreamExt, stream, future};
+use futures_util::{StreamExt, future, stream};
 use shared::info::obj::{BaseStreamInfo, StreamPlayInfo};
 use shared::info::output::OutputEnum;
 use std::collections::HashMap;
@@ -26,7 +28,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_stream::wrappers::BroadcastStream;
 
 pub async fn segment_handler(
@@ -37,92 +39,96 @@ pub async fn segment_handler(
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, user_count)) => {
-            let ssrc = bsi.rtp_info.ssrc;
             let token = token.to_string();
+            let ssrc = bsi.rtp_info.ssrc;
             let remote_addr = addr.to_string();
+            let stream_user_cache_key = format!("STREAM_USER_CACHE:{}@{}", stream_id, token);
+            let can_play = match CommonCache::contains_key(&stream_user_cache_key) {
+                true => true,
+                false => {
+                    let info = StreamPlayInfo::new(
+                        bsi,
+                        remote_addr.clone(),
+                        token.clone(),
+                        OutputEnum::DashFmp4,
+                        user_count,
+                    );
+                    let (tx, rx) = oneshot::channel();
+                    let event_tx = cache::get_event_tx();
 
-            let info = StreamPlayInfo::new(
-                bsi,
-                remote_addr.clone(),
-                token.clone(),
-                OutputEnum::DashFmp4,
-                user_count,
-            );
-
-            let (tx, rx) = oneshot::channel();
-            let event_tx = cache::get_event_tx();
-
-            let _ = event_tx
-                .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
-                .await;
-
-            match rx.await {
-                Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
-                    match cache::get_muxer_rx(&ssrc, MuxerEnum::FMp4) {
-                        Ok(rx) => {
-                            cache::update_token(
-                                &stream_id,
-                                OutputEnum::DashFmp4,
-                                token.clone(),
-                                true,
-                                addr,
-                                None,
-                            );
-                            let event_tx_c = event_tx.clone();
-                            let token1 = token.clone();
-                            let token2 = token.clone();
-                            let remote_addr1 = remote_addr.clone();
-                            let stream_id1 = stream_id.clone();
-                            let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
-                                Some(Box::new(move || {
-                                    cache::update_token(
-                                        &stream_id,
-                                        OutputEnum::DashFmp4,
-                                        token1,
-                                        false,
-                                        addr,
-                                        None,
-                                    );
-                                    if let Some((bsi, user_count)) =
-                                        cache::get_base_stream_info_by_stream_id(&stream_id)
-                                    {
-                                        let info = StreamPlayInfo::new(
-                                            bsi,
-                                            remote_addr,
-                                            token,
-                                            OutputEnum::DashFmp4,
-                                            user_count,
-                                        );
-                                        let _ = event_tx_c
-                                            .try_send((Event::Out(OutEvent::OffPlay(info)), None));
-                                    }
-                                }));
-
-                            match send_fmp4(ssrc, rx, on_disconnect).await {
-                                Ok(res) => res,
-                                Err(_) => {
-                                    if let Some((bsi, user_count)) =
-                                        cache::get_base_stream_info_by_stream_id(&stream_id1)
-                                    {
-                                        let info = StreamPlayInfo::new(
-                                            bsi,
-                                            remote_addr1,
-                                            token2,
-                                            OutputEnum::DashFmp4,
-                                            user_count,
-                                        );
-                                        let _ = event_tx
-                                            .try_send((Event::Out(OutEvent::OffPlay(info)), None));
-                                    };
-                                    res_404()
-                                }
-                            }
-                        }
-                        Err(_) => res_404(),
+                    let _ = event_tx
+                        .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
+                        .await;
+                    match rx.await {
+                        Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => true,
+                        Ok(_) => return res_401(),
+                        Err(_) => false,
                     }
                 }
-                Ok(_) => res_401(),
-                Err(_) => res_404(),
+            };
+            if can_play {
+                match cache::get_muxer_rx(&ssrc, MuxerEnum::FMp4) {
+                    Ok(rx) => {
+                        cache::update_token(
+                            &stream_id,
+                            OutputEnum::DashFmp4,
+                            token.clone(),
+                            true,
+                            addr,
+                            None,
+                        );
+                        let event_tx = cache::get_event_tx();
+                        let token1 = token.clone();
+                        let token2 = token.clone();
+                        let remote_addr1 = remote_addr.clone();
+                        let stream_id1 = stream_id.clone();
+                        let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
+                            Some(Box::new(move || {
+                                cache::update_token(
+                                    &stream_id,
+                                    OutputEnum::DashFmp4,
+                                    token1,
+                                    false,
+                                    addr,
+                                    None,
+                                );
+
+                                let cache_stream_user = mode::CacheStreamUser {
+                                    expires_ttl: Some(Duration::from_secs(6)),
+                                    stream_id,
+                                    remote_addr,
+                                    token,
+                                };
+                                CommonCache::insert(
+                                    stream_user_cache_key,
+                                    CachedValue::from_any(Arc::new(cache_stream_user)),
+                                );
+                            }));
+
+                        match send_fmp4(ssrc, rx, on_disconnect).await {
+                            Ok(res) => res,
+                            Err(_) => {
+                                if let Some((bsi, user_count)) =
+                                    cache::get_base_stream_info_by_stream_id(&stream_id1)
+                                {
+                                    let info = StreamPlayInfo::new(
+                                        bsi,
+                                        remote_addr1,
+                                        token2,
+                                        OutputEnum::DashFmp4,
+                                        user_count,
+                                    );
+                                    let _ = event_tx
+                                        .try_send((Event::Out(OutEvent::OffPlay(info)), None));
+                                };
+                                res_404()
+                            }
+                        }
+                    }
+                    Err(_) => res_404(),
+                }
+            } else {
+                res_404()
             }
         }
     }
@@ -130,86 +136,88 @@ pub async fn segment_handler(
 
 async fn send_fmp4(
     ssrc: u32,
-    mut rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: broadcast::Receiver<Arc<MuxPacket>>,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
 ) -> GlobalResult<Response<Body>> {
-    // 1. 获取 CMAF init segment
     let init_segment = match get_fmp4_init(ssrc).await {
         Ok(h) => h,
         Err(_) => return Ok(res_404()),
     };
-    // warn!("header: {:02X?}", &init_segment[..]);
-    dump("fmp4init", &init_segment, false).expect("dump fmp4init failed");
-
-    // 2. 创建一个 stream，等待第一个关键帧，然后发送所有后续帧
-    let broadcast_stream = BroadcastStream::new(rx);
-    let video_stream = broadcast_stream.skip_while(|item| {
-            // 跳过非关键帧，直到遇到第一个关键帧
-            future::ready(match item {
-                Ok(pkt) => !pkt.is_key,
-                Err(_) => false,
-            })
-        })
-        .map(|item| {
-            match item {
-                Ok(pkt) => Ok(pkt.data.clone()),
-                Err(_) => Ok(Bytes::new()),
-            }
-        });
-
-
-    // 3. 组合 stream
-    let init_stream = stream::once(Box::pin(async move {
-        Ok::<_, std::convert::Infallible>(init_segment)
-    }));
-
-    let full_stream = init_stream.chain(video_stream);
-
-    let full_stream = DumpStream {
-        inner: full_stream,
-        name: "fmp4all",
-    };
-
+    let stream = Fmp4Stream::new(rx, init_segment.clone());
     let wrapped = DisconnectAwareStream {
-        inner: full_stream,
+        inner: stream,
         on_drop: on_disconnect,
     };
-
     Ok(Response::builder()
-        // .header("Content-Type", "application/octet-stream")
         .header("Content-Type", "video/mp4")
         .header("Cache-Control", "no-cache")
-        // .header("Connection", "keep-alive")
         .body(Body::from_stream(wrapped))
         .unwrap())
 }
-async fn get_fmp4_init(ssrc: u32) -> GlobalResult<Bytes> {
-    let (tx, rx) = oneshot::channel();
-    cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::CmafHeader(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
-}
+
 struct Fmp4Stream {
     inner: BroadcastStream<Arc<MuxPacket>>,
+    init: Bytes,
+    started: bool,
+    current_epoch: Instant,
+}
+
+impl Fmp4Stream {
+    pub fn new(rx: broadcast::Receiver<Arc<MuxPacket>>, init: Bytes) -> Self {
+        Self {
+            inner: BroadcastStream::new(rx),
+            init,
+            started: false,
+            current_epoch: Instant::now(),
+        }
+    }
 }
 
 impl Stream for Fmp4Stream {
     type Item = Result<Bytes, std::convert::Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(pkt))) => {
-                dump("fmp4live", &pkt.data, true).expect("dump fmp4live failed");
+        loop {
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(pkt))) => {
 
-                Poll::Ready(Some(Ok(pkt.data.clone())))
+                    if pkt.epoch != self.current_epoch {
+                        self.current_epoch = pkt.epoch;
+                        self.started = false;
+
+                    }
+
+                    if !self.started {
+                        if !pkt.is_key {
+                            continue;
+                        }
+
+                        self.started = true;
+
+                        let mut out = BytesMut::new();
+                        out.extend_from_slice(&self.init);
+                        out.extend_from_slice(&pkt.data);
+
+                        return Poll::Ready(Some(Ok(out.freeze())));
+                    }
+
+                    return Poll::Ready(Some(Ok(pkt.data.clone())));
+                }
+                Poll::Ready(Some(Err(_))) => {
+                    println!("error ..............");
+                    // 广播接收错误，忽略
+                    continue;
+                }
+                Poll::Ready(None) =>{ println!("close .........");return Poll::Ready(None);} , // 发送者关闭
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(Some(Err(_))) => {
-                warn!("BroadcastStream error");
-                Poll::Ready(None)
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
         }
     }
+}
+async fn get_fmp4_init(ssrc: u32) -> GlobalResult<Bytes> {
+    let (tx, rx) = oneshot::channel();
+    cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::CmafHeader(tx)))?;
+    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
 }
 
 pub async fn init_segment(stream_id: String) -> Response<Body> {

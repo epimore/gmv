@@ -442,8 +442,8 @@ impl DemuxerContext {
             }
             set_dict!("fflags", "discardcorrupt+ignidx+nobuffer");
             set_dict!("analyzeduration", "1000000"); //1秒
-            set_dict!("probesize", "65536"); //64kb
-            set_dict!("fpsprobesize", "10"); //10帧
+            set_dict!("probesize", "655360"); //640kb
+            set_dict!("fpsprobesize", "30"); //30帧
 
             // 5) open input
             let open_ret = avformat_open_input(

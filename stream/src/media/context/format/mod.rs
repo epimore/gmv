@@ -5,6 +5,7 @@ use base::tokio::sync::broadcast;
 use rsmpeg::ffi::AVPacket;
 use std::ffi::{c_int, c_void};
 use std::sync::Arc;
+use std::time::Instant;
 
 pub mod fmp4;
 pub mod demuxer;
@@ -20,6 +21,7 @@ pub struct MuxPacket {
     pub data: Bytes,
     pub is_key: bool,
     pub timestamp: u64,
+    pub epoch: Instant,
 }
 
 pub trait FmtMuxer {
@@ -30,7 +32,7 @@ pub trait FmtMuxer {
     where
         Self: Sized;
     fn get_header(&self) -> Bytes;
-    fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64);
+    fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64)->GlobalResult<()>;
     fn flush(&mut self);
 }
 

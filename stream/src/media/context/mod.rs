@@ -10,7 +10,7 @@ use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::msg::StreamConfig;
 use base::bus::mpsc::TypedReceiver;
 use base::exception::typed::common::MessageBusError;
-use base::exception::{GlobalError, GlobalResult};
+use base::exception::{BizError, GlobalError, GlobalResult};
 use log::{error, info};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::AVPacket;
@@ -20,6 +20,9 @@ use rsmpeg::ffi::{
 use shared::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
 use std::ffi::c_int;
+use std::time::Instant;
+use base::chrono::Local;
+use crate::media::context::format::fmp4::CmafFmp4Context;
 
 mod codec;
 pub mod event;
@@ -332,7 +335,7 @@ impl MediaContext {
         // Self::handle_filter(&mut self.filter_context);
 
         // 调用 muxer
-        Self::handle_pkt_muxer(&mut self.muxer_context, &pkt, real_ts as u64);
+        Self::handle_pkt_muxer(self, &pkt, real_ts as u64);
         Ok(())
     }
     fn handle_codec(codec: &mut CodecContext) {}
@@ -343,12 +346,13 @@ impl MediaContext {
     // 3.写入结束信息
     // 问题如何传递信息【该使用写入结束信息】
     // 回调
-    fn handle_pkt_muxer(muxer: &mut MuxerContext, pkt: &AVPacket, ts: u64) {
+    fn handle_pkt_muxer(&mut self, pkt: &AVPacket, ts: u64) {
+        let muxer = &mut self.muxer_context;
         if let Some(context) = &mut muxer.flv {
-            context.write_packet(pkt, ts);
+            let _ = context.write_packet(pkt, ts);
         }
         if let Some(context) = &mut muxer.mp4 {
-            context.write_packet(pkt, ts);
+            let _ = context.write_packet(pkt, ts);
         }
         if let Some(context) = &muxer.ts {
             unimplemented!()
@@ -366,7 +370,14 @@ impl MediaContext {
             unimplemented!()
         }
         if let Some(context) = &mut muxer.fmp4 {
-            context.write_packet(pkt, ts);
+            if let Err(GlobalError::BizErr(BizError { code: 600, .. })) =
+                context.write_packet(pkt, ts)
+            {
+                let _ = CmafFmp4Context::init_context(&self.demuxer_context, context.pkt_tx.clone()).map(|ctx| {
+                    *context = ctx;
+                    context.epoch =  Instant::now();
+                });
+            }
         }
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {

@@ -12,18 +12,19 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 
 use crate::general::cfg;
 use crate::general::cfg::ServerConf;
 use crate::io::event_handler::{ActiveEvent, Event, EventRes, OutEvent};
 use crate::io::local::mp4::{LocalStoreMp4Context, Mp4OutputInnerEvent};
-use crate::media::context::event::ContextEvent;
 use crate::media::context::event::muxer::MuxerEvent;
-use crate::media::context::format::MuxPacket;
+use crate::media::context::event::ContextEvent;
 use crate::media::context::format::muxer::MuxerEnum;
+use crate::media::context::format::MuxPacket;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -37,7 +38,7 @@ use base::net::state::Association;
 use base::once_cell::sync::Lazy;
 use base::tokio;
 use base::tokio::sync::oneshot::Sender;
-use base::tokio::sync::{Notify, broadcast, mpsc};
+use base::tokio::sync::{broadcast, mpsc, Notify};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::tokio_util::sync::CancellationToken;
@@ -45,9 +46,7 @@ use base::utils::rt::GlobalRuntime;
 use parking_lot::RwLock;
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
-use shared::info::obj::{
-    BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState,
-};
+use shared::info::obj::{BaseStreamInfo, NetSource, RtpInfo, StreamKey, StreamState};
 use shared::info::output::{OutputEnum, OutputKind};
 
 static SESSION: Lazy<Session> = Lazy::new(|| Session::init());
@@ -377,8 +376,10 @@ pub fn update_token(
                 //移除用户数据；
                 //减一点播记录返回Some(muxer_enum)则表示该复用器已无输出使用,交由定时器清理关闭该复用器，（若该ssrc对应使用用户为0，则清理该ssrc对应的所有数据）
                 user_map.remove(&remote_addr);
+
                 if let (_, Some(_muxer_enum)) = output_trace.subtract(output_enum) {
                     let mut notify = false;
+
                     match expire {
                         None => {
                             if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc)
@@ -386,6 +387,7 @@ pub fn update_token(
                                 if let Some(timeout) = out_expires {
                                     let ssrc = *ssrc;
                                     let when = Instant::now() + *timeout;
+
                                     notify =
                                         state.next_expiration().map(|ts| ts > when).unwrap_or(true);
                                     state.expirations.insert((
@@ -564,10 +566,11 @@ impl Shared {
                                     ssrc, &stream_id
                                 );
                                 let server_name = SESSION.shared.server_conf.get_name().to_string();
-                                let proxy_addr = SESSION.shared.server_conf.get_proxy_addr().to_string();
+                                let proxy_addr =
+                                    SESSION.shared.server_conf.get_proxy_addr().to_string();
                                 let opt_net = origin_trans
                                     .map(|(addr, protocol)| NetSource::new(addr, protocol));
-                                let rtp_info = RtpInfo::new(ssrc, opt_net, server_name,proxy_addr);
+                                let rtp_info = RtpInfo::new(ssrc, opt_net, server_name, proxy_addr);
                                 let stream_info =
                                     BaseStreamInfo::new(rtp_info, stream_id, register_ts);
                                 let stream_state =
@@ -614,6 +617,7 @@ impl Shared {
                                         .hand_log(|msg| error!("{msg}"));
                                 }
                             }
+
                             if user_map.len() > 0 {
                                 continue;
                             }
@@ -728,7 +732,7 @@ struct InnerTrace {
     output_trace: OutputTrace,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct OutputTrace {
     http_flv: AtomicIsize,
     rtmp: AtomicIsize,
@@ -784,90 +788,94 @@ impl OutputTrace {
     fn subtract(&self, output_enum: OutputEnum) -> (isize, Option<MuxerEnum>) {
         let last = match output_enum {
             OutputEnum::HttpFlv => {
-                if self.http_flv.load(Ordering::SeqCst) == 1
-                    && self.rtmp.load(Ordering::SeqCst) == 0
+                let last = self.http_flv.fetch_sub(1, Ordering::SeqCst);
+                if self.http_flv.load(Ordering::SeqCst) < 1 && self.rtmp.load(Ordering::SeqCst) < 1
                 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
-                self.http_flv.fetch_sub(1, Ordering::SeqCst)
+                last
             }
             OutputEnum::Rtmp => {
-                if self.rtmp.load(Ordering::SeqCst) == 1
-                    && self.http_flv.load(Ordering::SeqCst) == 0
+                let last = self.rtmp.fetch_sub(1, Ordering::SeqCst);
+                if self.rtmp.load(Ordering::SeqCst) < 1 && self.http_flv.load(Ordering::SeqCst) < 1
                 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
-                self.rtmp.fetch_sub(1, Ordering::SeqCst)
+                last
             }
             OutputEnum::DashFmp4 => {
-                if self.dash_fmp4.load(Ordering::SeqCst) == 1
-                    && self.hls_fmp4.load(Ordering::SeqCst) == 0
+                let last = self.dash_fmp4.fetch_sub(1, Ordering::SeqCst);
+                if self.dash_fmp4.load(Ordering::SeqCst) < 1
+                    && self.hls_fmp4.load(Ordering::SeqCst) < 1
                 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
-                self.dash_fmp4.fetch_sub(1, Ordering::SeqCst)
+                last
             }
             OutputEnum::HlsFmp4 => {
-                if self.hls_fmp4.load(Ordering::SeqCst) == 1
-                    && self.dash_fmp4.load(Ordering::SeqCst) == 0
+                let last = self.hls_fmp4.fetch_sub(1, Ordering::SeqCst);
+                if self.hls_fmp4.load(Ordering::SeqCst) < 1
+                    && self.dash_fmp4.load(Ordering::SeqCst) < 1
                 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
-                self.hls_fmp4.fetch_sub(1, Ordering::SeqCst)
+                last
             }
             OutputEnum::HlsTs => {
                 let val = self.hls_ts.fetch_sub(1, Ordering::SeqCst);
-                if val == 1 {
+                if val < 1 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
             OutputEnum::Rtsp => {
-                if self.rtsp.load(Ordering::SeqCst) == 1
-                    && self.gb28181_frame.load(Ordering::SeqCst) == 0
+                let last = self.rtsp.fetch_sub(1, Ordering::SeqCst);
+                if self.rtsp.load(Ordering::SeqCst) < 1
+                    && self.gb28181_frame.load(Ordering::SeqCst) < 1
                 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
-                self.rtsp.fetch_sub(1, Ordering::SeqCst)
+                last
             }
             OutputEnum::Gb28181Frame => {
-                if self.gb28181_frame.load(Ordering::SeqCst) == 1
-                    && self.rtsp.load(Ordering::SeqCst) == 0
+                let last = self.gb28181_frame.fetch_sub(1, Ordering::SeqCst);
+                if self.gb28181_frame.load(Ordering::SeqCst) < 1
+                    && self.rtsp.load(Ordering::SeqCst) < 1
                 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
-                self.gb28181_frame.fetch_sub(1, Ordering::SeqCst)
+                last
             }
             OutputEnum::Gb28181Ps => {
                 let val = self.gb28181_ps.fetch_sub(1, Ordering::SeqCst);
-                if val == 1 {
+                if val < 1 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
             OutputEnum::WebRtc => {
                 let val = self.web_rtc.fetch_sub(1, Ordering::SeqCst);
-                if val == 1 {
+                if val < 1 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
             OutputEnum::LocalMp4 => {
                 let val = self.local_mp4.fetch_sub(1, Ordering::SeqCst);
-                if val == 1 {
+                if val < 1 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
             OutputEnum::LocalTs => {
                 let val = self.local_ts.fetch_sub(1, Ordering::SeqCst);
-                if val == 1 {
+                if val < 1 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }
                 val
             }
         };
-        (last - 1, None)
+        (last, None)
     }
 }
 
