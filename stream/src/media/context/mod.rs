@@ -23,6 +23,7 @@ use std::ffi::c_int;
 use std::time::Instant;
 use base::chrono::Local;
 use crate::media::context::format::fmp4::CmafFmp4Context;
+use crate::media::context::utils::extradata::dump_stream_info;
 
 mod codec;
 pub mod event;
@@ -149,6 +150,7 @@ impl MediaContext {
     }
     //读取数据帧补充修复流信息
     unsafe fn fix_basic_stream_info(&mut self) -> GlobalResult<InitCacheInfo> {
+        dump_stream_info(&self.demuxer_context);
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
         let ext = &self.media_ext;
         let params = &mut self.demuxer_context.params;
@@ -204,6 +206,7 @@ impl MediaContext {
             }
             counter -= 1;
         }
+        dump_stream_info(&self.demuxer_context);
         Ok(cache_info)
     }
 

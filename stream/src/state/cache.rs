@@ -12,19 +12,18 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 
 use crate::general::cfg;
 use crate::general::cfg::ServerConf;
 use crate::io::event_handler::{ActiveEvent, Event, EventRes, OutEvent};
 use crate::io::local::mp4::{LocalStoreMp4Context, Mp4OutputInnerEvent};
-use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::event::ContextEvent;
-use crate::media::context::format::muxer::MuxerEnum;
+use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::format::MuxPacket;
+use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -38,7 +37,7 @@ use base::net::state::Association;
 use base::once_cell::sync::Lazy;
 use base::tokio;
 use base::tokio::sync::oneshot::Sender;
-use base::tokio::sync::{broadcast, mpsc, Notify};
+use base::tokio::sync::{Notify, broadcast, mpsc};
 use base::tokio::time;
 use base::tokio::time::Instant;
 use base::tokio_util::sync::CancellationToken;
@@ -722,6 +721,7 @@ impl StreamTrace {
             OutputKind::LocalTs(_) => {
                 unimplemented!()
             }
+            OutputKind::DashMp4(_) => None,
         }
     }
 }
@@ -737,6 +737,7 @@ struct OutputTrace {
     http_flv: AtomicIsize,
     rtmp: AtomicIsize,
     dash_fmp4: AtomicIsize,
+    dash_mp4: AtomicIsize,
     hls_fmp4: AtomicIsize,
     hls_ts: AtomicIsize,
     rtsp: AtomicIsize,
@@ -764,6 +765,7 @@ impl OutputTrace {
             OutputEnum::WebRtc => self.web_rtc.load(Ordering::Relaxed),
             OutputEnum::LocalMp4 => self.local_mp4.load(Ordering::Relaxed),
             OutputEnum::LocalTs => self.local_ts.load(Ordering::Relaxed),
+            OutputEnum::DashMp4 => self.dash_mp4.load(Ordering::Relaxed),
         }
     }
 
@@ -781,6 +783,7 @@ impl OutputTrace {
             OutputEnum::WebRtc => self.web_rtc.fetch_add(1, Ordering::SeqCst),
             OutputEnum::LocalMp4 => self.local_mp4.fetch_add(1, Ordering::SeqCst),
             OutputEnum::LocalTs => self.local_ts.fetch_add(1, Ordering::SeqCst),
+            OutputEnum::DashMp4 => self.dash_mp4.fetch_add(1, Ordering::SeqCst),
         }) + 1
     }
     //减少@OutputEnum点播数据，并判断该@OutputEnum对应的MuxerEnum是否已无输出使用
@@ -869,6 +872,13 @@ impl OutputTrace {
             }
             OutputEnum::LocalTs => {
                 let val = self.local_ts.fetch_sub(1, Ordering::SeqCst);
+                if val < 1 {
+                    return (0, Some(MuxerEnum::from_output_enum(output_enum)));
+                }
+                val
+            }
+            OutputEnum::DashMp4 => {
+                let val = self.dash_mp4.fetch_sub(1, Ordering::SeqCst);
                 if val < 1 {
                     return (0, Some(MuxerEnum::from_output_enum(output_enum)));
                 }

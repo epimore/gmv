@@ -16,6 +16,7 @@ pub mod muxer;
 mod ps;
 pub mod rtp;
 pub mod ts;
+pub mod dashmp4;
 
 pub struct MuxPacket {
     pub data: Bytes,

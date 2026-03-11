@@ -1,3 +1,4 @@
+use crate::media::context::format::dashmp4::DashCmafMp4Context;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::flv::FlvContext;
@@ -41,6 +42,11 @@ impl MuxerEvent {
                 MuxerKind::RtpEnc(rtp_enc) => {
                     unimplemented!()
                 }
+                MuxerKind::DashMp4(dash_mp4) => {
+                    let _ = DashCmafMp4Context::init_context(demuxer_context, dash_mp4.tx).map(|ctx| {
+                        muxer_context.dash_mp4 = Some(ctx);
+                    });
+                }
             },
             // cache缓存的media layer；在发布关闭事件时做出判断-关闭是否muxer/filter等关联输出是否为空，为空则直接释放对应的ssrc资源,不会造成空转
             MuxerEvent::Close(muxer_enum) => match muxer_enum {
@@ -57,6 +63,7 @@ impl MuxerEvent {
                 MuxerEnum::RtpFrame => muxer_context.rtp_frame = None,
                 MuxerEnum::RtpPs => muxer_context.rtp_ps = None,
                 MuxerEnum::RtpEnc => muxer_context.rtp_enc = None,
+                MuxerEnum::DashMp4 => {muxer_context.dash_mp4 = None}
             },
         }
     }
@@ -65,6 +72,7 @@ impl MuxerEvent {
 pub enum MuxerKind {
     Flv(FlvLayer),
     Mp4(Mp4Layer),
+    DashMp4(CMafLayer),
     Ts(TsLayer),
     FMp4(CMafLayer),
     HlsTs(HlsTsLayer),

@@ -1,9 +1,9 @@
 pub mod output_layer {
     use shared::impl_close;
     use shared::info::output::{
-        DashFmp4Output, Gb28181FrameOutput, Gb28181PsOutput, HlsFmp4Output, HlsTsOutput,
-        HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputKind, RtmpOutput, RtspOutput,
-        WebRtcOutput,
+        DashFmp4Output, DashMp4Output, Gb28181FrameOutput, Gb28181PsOutput, HlsFmp4Output,
+        HlsTsOutput, HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputKind, RtmpOutput,
+        RtspOutput, WebRtcOutput,
     };
     use shared::paste::paste;
 
@@ -11,6 +11,7 @@ pub mod output_layer {
         pub http_flv: Option<HttpFlvLayer>,
         pub rtmp: Option<RtmpLayer>,
         pub dash_fmp4: Option<DashFmp4Layer>,
+        pub dash_mp4: Option<DashMp4Layer>,
         pub hls_fmp4: Option<HlsFmp4Layer>,
         pub hls_ts: Option<HlsTsLayer>,
         pub rtsp: Option<RtspLayer>,
@@ -26,6 +27,7 @@ pub mod output_layer {
             http_flv,
             rtmp,
             dash_fmp4,
+            dash_mp4,
             hls_fmp4,
             hls_ts,
             rtsp,
@@ -43,6 +45,7 @@ pub mod output_layer {
                 http_flv: None,
                 rtmp: None,
                 dash_fmp4: None,
+                dash_mp4: None,
                 hls_fmp4: None,
                 hls_ts: None,
                 rtsp: None,
@@ -62,6 +65,9 @@ pub mod output_layer {
                 }
                 OutputKind::DashFmp4(inner) => {
                     layer.dash_fmp4 = Some(DashFmp4Layer::layer(inner));
+                }
+                OutputKind::DashMp4(inner) => {
+                    layer.dash_mp4 = Some(DashMp4Layer::layer(inner));
                 }
                 OutputKind::HlsFmp4(inner) => {
                     layer.hls_fmp4 = Some(HlsFmp4Layer::layer(inner));
@@ -159,6 +165,12 @@ pub mod output_layer {
                         return true;
                     }
                 }
+                OutputKind::DashMp4(inner) => {
+                    if self.dash_mp4.is_none() {
+                        self.dash_mp4 = Some(DashMp4Layer::layer(inner));
+                        return true;
+                    }
+                }
             }
             false
         }
@@ -223,6 +235,14 @@ pub mod output_layer {
     }
     pub struct DashFmp4Layer {
         pub dash_fmp4: DashFmp4Output,
+    }
+    pub struct DashMp4Layer {
+        pub dash_mp4: DashMp4Output,
+    }
+    impl DashMp4Layer {
+        pub fn layer(dash_mp4: DashMp4Output) -> Self {
+            Self { dash_mp4 }
+        }
     }
     impl DashFmp4Layer {
         pub fn layer(dash_fmp4: DashFmp4Output) -> Self {
@@ -323,8 +343,9 @@ pub mod filter_layer {
     }
 }
 pub mod muxer_layer {
-    use crate::media::context::format::MuxPacket;
     use crate::media::context::format::muxer::MuxerEnum;
+    use crate::media::context::format::muxer::MuxerEnum::FMp4;
+    use crate::media::context::format::MuxPacket;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::exception::{GlobalError, GlobalResult};
     use base::log::error;
@@ -332,12 +353,12 @@ pub mod muxer_layer {
     use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
     use shared::info::output::OutputKind;
     use std::sync::Arc;
-    use crate::media::context::format::muxer::MuxerEnum::FMp4;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
         pub flv: Option<FlvLayer>,
         pub fmp4: Option<CMafLayer>,
+        pub dash_mp4: Option<CMafLayer>,
         pub hls_ts: Option<HlsTsLayer>,
         pub rtp_frame: Option<RtpFrameLayer>,
         pub rtp_ps: Option<RtpPsLayer>,
@@ -396,6 +417,16 @@ pub mod muxer_layer {
                 MuxerEnum::RtpEnc => {
                     unimplemented!()
                 }
+                MuxerEnum::DashMp4 => {
+                    if self.dash_mp4.is_none() {
+                        Err(GlobalError::new_biz_error(
+                            1100,
+                            &format!("muxer: {:?}未开启", muxer_enum),
+                            |msg| error!("{msg}"),
+                        ))?;
+                    }
+                    Ok(self.dash_mp4.as_ref().unwrap().tx.subscribe())
+                }
             }
         }
         pub fn new(output: &OutputKind) -> Self {
@@ -445,6 +476,11 @@ pub mod muxer_layer {
                         unimplemented!()
                     }
                 }
+                OutputKind::DashMp4(_) => {
+                    if self.dash_mp4.is_none() {
+                        self.dash_mp4 = Some(CMafLayer::layer(CMaf::default()));
+                    }
+                }
             }
         }
 
@@ -456,8 +492,9 @@ pub mod muxer_layer {
                 MuxerEnum::RtpFrame => self.rtp_frame = None,
                 MuxerEnum::RtpPs => self.rtp_ps = None,
                 MuxerEnum::RtpEnc => self.rtp_enc = None,
-                MuxerEnum::FMp4 => self.fmp4 = None,
                 MuxerEnum::HlsTs => self.hls_ts = None,
+                MuxerEnum::DashMp4 => self.dash_mp4 = None,
+                MuxerEnum::FMp4 => self.fmp4 = None,
             }
         }
     }

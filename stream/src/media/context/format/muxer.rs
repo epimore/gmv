@@ -9,6 +9,7 @@ use crate::media::context::format::FmtMuxer;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use base::serde::{Deserialize, Serialize};
 use shared::info::output::OutputEnum;
+use crate::media::context::format::dashmp4::DashCmafMp4Context;
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(crate = "base::serde")]
@@ -17,6 +18,7 @@ pub enum MuxerEnum {
     Mp4,
     Ts,
     FMp4,
+    DashMp4,
     HlsTs,
     RtpFrame,
     RtpPs,
@@ -27,6 +29,7 @@ impl MuxerEnum {
         match output_enum {
             OutputEnum::HttpFlv => MuxerEnum::Flv,
             OutputEnum::Rtmp => MuxerEnum::Flv,
+            OutputEnum::DashMp4 => MuxerEnum::DashMp4,
             OutputEnum::DashFmp4 => MuxerEnum::FMp4,
             OutputEnum::HlsFmp4 => MuxerEnum::FMp4,
             OutputEnum::HlsTs => MuxerEnum::Ts,
@@ -44,6 +47,7 @@ impl MuxerEnum {
 pub struct MuxerContext {
     pub flv: Option<FlvContext>,
     pub mp4: Option<Mp4Context>,
+    pub dash_mp4: Option<DashCmafMp4Context>,
     pub ts: Option<TsContext>,
     pub hls_ts: Option<HlsTsContext>,
     pub fmp4: Option<CmafFmp4Context>,
@@ -73,6 +77,11 @@ impl MuxerContext {
         if let Some(fmp4_layer) = muxer.fmp4 {
             let _ = CmafFmp4Context::init_context(demuxer_context, fmp4_layer.tx).map(|ctx| {
                 context.fmp4 = Some(ctx);
+            });
+        }
+        if let Some(dash_mp4_layer) = muxer.dash_mp4 {
+            let _ = DashCmafMp4Context::init_context(demuxer_context, dash_mp4_layer.tx).map(|ctx| {
+                context.dash_mp4 = Some(ctx);
             });
         }
         context

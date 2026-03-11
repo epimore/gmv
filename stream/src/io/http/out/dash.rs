@@ -30,12 +30,82 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio_stream::wrappers::BroadcastStream;
+pub async fn segment(stream_id: String, token: &String, addr: SocketAddr) -> Response<Body> {
+    match cache::get_base_stream_info_by_stream_id(&stream_id) {
+        None => res_404(),
+        Some((bsi, user_count)) => {
+            let token = token.to_string();
+            let ssrc = bsi.rtp_info.ssrc;
+            let remote_addr = addr.to_string();
+            let stream_user_cache_key =
+                format!("SEGMENT_DASH_MP4_STREAM_USER_CACHE:{}@{}", stream_id, token);
+            let can_play = match CommonCache::contains_key(&stream_user_cache_key) {
+                true => true,
+                false => {
+                    let info = StreamPlayInfo::new(
+                        bsi,
+                        remote_addr.clone(),
+                        token.clone(),
+                        OutputEnum::DashFmp4,
+                        user_count,
+                    );
+                    let (tx, rx) = oneshot::channel();
+                    let event_tx = cache::get_event_tx();
 
-pub async fn segment_handler(
-    stream_id: String,
-    token: &String,
-    addr: SocketAddr,
-) -> Response<Body> {
+                    let _ = event_tx
+                        .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
+                        .await;
+                    match rx.await {
+                        Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
+                            cache::update_token(
+                                &stream_id,
+                                OutputEnum::DashFmp4,
+                                token.clone(),
+                                true,
+                                addr,
+                                None,
+                            );
+                            true
+                        }
+                        Ok(_) => return res_401(),
+                        Err(_) => false,
+                    }
+                }
+            };
+            if can_play {
+                let cache_stream_user = mode::CacheStreamUser1 {
+                    expires_ttl: Some(Duration::from_secs(6)),
+                    stream_id,
+                    remote_addr,
+                    token,
+                };
+                CommonCache::insert(
+                    stream_user_cache_key,
+                    CachedValue::from_any(Arc::new(cache_stream_user)),
+                );
+
+                match cache::get_muxer_rx(&ssrc, MuxerEnum::DashMp4) {
+                    Ok(mut rx) => {
+                        match rx.recv().await {
+                            Ok(pkt) => {
+                                Response::builder()
+                                    .header("Content-Type", "video/mp4")
+                                    .body(Body::from(pkt.data.clone()))
+                                    .unwrap()
+                            }
+                            Err(_) => { res_404() }
+                        }
+                    }
+                    _ => { res_404() }
+                }
+            }else {
+                res_404()
+            }
+        }
+    }
+}
+
+pub async fn chunk(stream_id: String, token: &String, addr: SocketAddr) -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, user_count)) => {
@@ -212,7 +282,9 @@ impl Stream for Fmp4Stream {
                 Poll::Ready(Some(Err(_))) => {
                     continue;
                 }
-                Poll::Ready(None) =>{ return Poll::Ready(None);} , // 发送者关闭
+                Poll::Ready(None) => {
+                    return Poll::Ready(None);
+                } // 发送者关闭
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -220,16 +292,21 @@ impl Stream for Fmp4Stream {
 }
 async fn get_fmp4_init(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
-    cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::CmafHeader(tx)))?;
+    cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::Fmp4Header(tx)))?;
     Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
 }
 
+async fn get_dash_mp4_init(ssrc: u32)-> GlobalResult<Bytes> {
+    let (tx, rx) = oneshot::channel();
+    cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::DashMp4Header(tx)))?;
+    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+}
 pub async fn init_segment(stream_id: String) -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, _)) => {
             let ssrc = bsi.rtp_info.ssrc;
-            match get_fmp4_init(ssrc).await {
+            match get_dash_mp4_init(ssrc).await {
                 Ok(init) => Response::builder()
                     .header("Content-Type", "video/mp4")
                     .header("Cache-Control", "max-age=3600")
@@ -263,6 +340,7 @@ async fn get_video_param(ssrc: u32) -> GlobalResult<MediaParam> {
     cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::MediaParam(tx)))?;
     Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
 }
+
 fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
     let mut xml = String::new();
 
@@ -273,15 +351,16 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
   xmlns="urn:mpeg:dash:schema:mpd:2011"
   profiles="urn:mpeg:dash:profile:isoff-live:2011"
   type="dynamic"
-  minimumUpdatePeriod="PT0.2S"
+  minimumUpdatePeriod="PT1S"
   timeShiftBufferDepth="PT30S"
-  suggestedPresentationDelay="PT3S"
+  suggestedPresentationDelay="PT2S"
   availabilityStartTime="{}"
-  minBufferTime="PT0.2S">
-  <ServiceDescription>
-  <Latency target="400" max="800"/>
-  </ServiceDescription>
+  publishTime="{}"
+  maxSegmentDuration="PT2S"
+  mediaPresentationDuration="PT60S"
+  minBufferTime="PT2S">
 "#,
+        mp.availability_start_time,
         mp.availability_start_time
     ));
 
@@ -305,10 +384,12 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
     frameRate="{}">
     <SegmentTemplate
       timescale="{}"
+      duration="{}"
+      startNumber="1"
       availabilityTimeOffset="0.1"
-      availabilityTimeComplete="false"
-      initialization="/{}/play/{}.m4is"
-      media="/{}/play/{}.m4s?seg=$Number$"/>
+      availabilityTimeComplete="true"
+      initialization="{}.m4it?gmv-token=abc123"
+      media="{}.m4s?gmv-token=abc123"/>
   </Representation>
 </AdaptationSet>
 "#,
@@ -318,15 +399,14 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
             v.height,
             v.frame_rate,
             v.timescale,
-            server_name,
+            v.timescale*2,
             stream_id,
-            server_name,
             stream_id,
         ));
     }
 
     // ===== Audio =====
-    if let Some(a) = &mp.audio {
+    /*if let Some(a) = &mp.audio {
         xml.push_str(&format!(
             r#"
 <AdaptationSet
@@ -360,7 +440,7 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
             server_name,
             stream_id,
         ));
-    }
+    }*/
 
     xml.push_str("</Period></MPD>");
     xml

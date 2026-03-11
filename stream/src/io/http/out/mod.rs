@@ -63,10 +63,14 @@ async fn handler(
                 "m3u8" => hls::m3u8_handler().await,
                 "ts" => hls::segment_handler().await,
                 "mpd" => dash::mpd_handler(id.to_string()).await, // MPD manifest
-                "m4is" => dash::init_segment(id.to_string()).await, // CMAF init
-                "m4s" | "fmp4" => {
-                    info!("ll-dash stream play:stream_id: {}, param: {:?}", stream_id, map);
-                    dash::segment_handler(id.to_string(), &token, addr).await // media chunk stream
+                "m4it" => dash::init_segment(id.to_string()).await, // CMAF init
+                "fmp4" => {
+                    info!("fmp4 dash chunk stream play:stream_id: {}, param: {:?}", stream_id, map);
+                    dash::chunk(id.to_string(), &token, addr).await // media chunk stream
+                }
+                "m4s" => {
+                    info!("mpeg dash segment stream play:stream_id: {}, param: {:?}", stream_id, map);
+                    dash::segment(id.to_string(), &token, addr).await
                 }
                 _ => res_404(),
             }

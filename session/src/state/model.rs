@@ -140,6 +140,9 @@ impl StreamInfo {
             Some(OutputKind::HttpFlv(_)) => {
                 url = format!("{}.flv", url);
             }
+            Some(OutputKind::DashMp4(_)) => {
+                url = format!("{}.mpd", url);
+            }
             _ => { Err(GlobalError::new_biz_error(1200, "unsupported output", |msg| error!("{msg}: {:?}",out_kind)))? }
         }
         let info = Self {

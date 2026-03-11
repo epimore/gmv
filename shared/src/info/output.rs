@@ -7,6 +7,7 @@ use base::serde::{Deserialize, Serialize};
 pub enum OutputEnum {
     HttpFlv,
     Rtmp,
+    DashMp4,
     DashFmp4,
     HlsFmp4,
     HlsTs,
@@ -25,6 +26,7 @@ pub enum OutputKind {
     HttpFlv(HttpFlvOutput),
     Rtmp(RtmpOutput),
     DashFmp4(DashFmp4Output),
+    DashMp4(DashMp4Output),
     HlsFmp4(HlsFmp4Output),
     HlsTs(HlsTsOutput),
     Rtsp(RtspOutput),
@@ -78,6 +80,12 @@ pub struct HlsFmp4Output {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct DashFmp4Output {
+    pub fmt: CMaf,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct DashMp4Output {
     pub fmt: CMaf,
 }
 
