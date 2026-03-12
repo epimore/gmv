@@ -279,6 +279,7 @@ impl DashCmafMp4Context {
         self.flush_fragment(timestamp, is_key)
     }
     fn flush_fragment(&mut self, timestamp: u64, is_key: bool) -> bool {
+        println!("to send ..........");
         unsafe {
             let out_vec = &mut *self.out_buf_ptr;
             if out_vec.is_empty() {
@@ -291,6 +292,7 @@ impl DashCmafMp4Context {
                 timestamp
             );
             let data = Bytes::from(std::mem::take(out_vec));
+            println!("----------- send size {}", data.len());
             let _ = self.pkt_tx.send(Arc::new(MuxPacket {
                 data,
                 is_key,

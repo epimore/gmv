@@ -12,7 +12,7 @@ use axum::body::Body;
 use axum::response::Response;
 use base::bytes::{Bytes, BytesMut};
 use base::cache::{CachedValue, CommonCache};
-use base::chrono::Local;
+use base::chrono::{Local, SecondsFormat};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::tokio::sync::oneshot::error::RecvError;
@@ -73,6 +73,7 @@ pub async fn segment(stream_id: String, token: &String, addr: SocketAddr) -> Res
                 }
             };
             if can_play {
+                println!("111111111111111");
                 let cache_stream_user = mode::CacheStreamUser1 {
                     expires_ttl: Some(Duration::from_secs(6)),
                     stream_id,
@@ -86,8 +87,10 @@ pub async fn segment(stream_id: String, token: &String, addr: SocketAddr) -> Res
 
                 match cache::get_muxer_rx(&ssrc, MuxerEnum::DashMp4) {
                     Ok(mut rx) => {
+                        println!("22222222222");
                         match rx.recv().await {
                             Ok(pkt) => {
+                                println!("---------------pkt len: {}",pkt.data.len());
                                 Response::builder()
                                     .header("Content-Type", "video/mp4")
                                     .body(Body::from(pkt.data.clone()))
@@ -360,8 +363,8 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
   mediaPresentationDuration="PT60S"
   minBufferTime="PT2S">
 "#,
-        mp.availability_start_time,
-        mp.availability_start_time
+        (mp.start_time - Duration::from_secs(30)).to_rfc3339_opts(SecondsFormat::Millis, true),
+        mp.start_time.to_rfc3339_opts(SecondsFormat::Millis, true)
     ));
 
     xml.push_str("<Period id=\"0\" start=\"PT0S\">");
@@ -389,7 +392,7 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
       availabilityTimeOffset="0.1"
       availabilityTimeComplete="true"
       initialization="{}.m4it?gmv-token=abc123"
-      media="{}.m4s?gmv-token=abc123"/>
+      media="{}.m4s?seg=$Number$&amp;gmv-token=abc123"/>
   </Representation>
 </AdaptationSet>
 "#,

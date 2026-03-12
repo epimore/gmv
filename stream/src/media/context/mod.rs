@@ -382,6 +382,9 @@ impl MediaContext {
                 });
             }
         }
+        if let Some(ctx) = &mut muxer.dash_mp4 {
+            let _ = ctx.write_packet(pkt, ts);
+        }
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
         if let Some(context) = &mut muxer.flv {

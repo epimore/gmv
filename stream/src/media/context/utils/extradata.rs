@@ -52,7 +52,7 @@ pub fn parse_media_param(ctx: &DemuxerContext) -> MediaParam {
     }
 
     MediaParam {
-        availability_start_time: chrono::Local::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        start_time: chrono::Local::now(),
         video,
         audio,
     }
