@@ -153,8 +153,6 @@ impl FmtMuxer for DashCmafMp4Context {
                 Bytes::from(std::mem::take(buf))
             };
 
-            info!("dash mp4 header len {}",init_data.len());
-
             Ok(Self {
                 init_segment: init_data,
                 pkt_tx,
@@ -257,7 +255,6 @@ impl DashCmafMp4Context {
                 timestamp
             );
             let data = Bytes::from(std::mem::take(out_vec));
-            println!("----------- send size {}", data.len());
             let _ = self.pkt_tx.send(Arc::new(MuxPacket {
                 data,
                 is_key,

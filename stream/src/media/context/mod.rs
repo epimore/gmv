@@ -150,7 +150,7 @@ impl MediaContext {
     }
     //读取数据帧补充修复流信息
     unsafe fn fix_basic_stream_info(&mut self) -> GlobalResult<InitCacheInfo> {
-        dump_stream_info(&self.demuxer_context);
+        // dump_stream_info(&self.demuxer_context);
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
         let ext = &self.media_ext;
         let params = &mut self.demuxer_context.params;

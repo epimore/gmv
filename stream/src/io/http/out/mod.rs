@@ -48,40 +48,32 @@ async fn handler(
 ) -> Response<Body> {
     debug!("stream play:stream_id: {}, param: {:?}", stream_id, map);
     let token = map.get("gmv-token");
-
+    if token.is_none() {
+        return res_401();
+    }
+    let token = token.unwrap().clone();
     match stream_id.rsplit_once('.') {
         None => res_404(),
         Some((id, tp)) => {
             match tp {
                 "flv" => {
-                    if token.is_none() {
-                        return res_401();
-                    }
-                    let token = token.unwrap().clone();
                     info!("flv stream play:stream_id: {}, param: {:?}", stream_id, map);
                     flv::handler(id.to_string(), &token, addr).await
                 }
                 "m3u8" => hls::m3u8_handler().await,
                 "ts" => hls::segment_handler().await,
                 "mpd" => {
-                    if token.is_none() {
-                        return res_401();
-                    }
-                    let token = token.unwrap().clone();
+                    debug!("mpeg dash mpd stream play:stream_id: {}, param: {:?}", stream_id, map);
                     dash::mpd_handler(id.to_string(), &token, addr).await
                 }, // MPD manifest
-                "m4it" => dash::init_segment(id.to_string()).await, // CMAF init
+                "m4it" => dash::init_segment(id.to_string(), &token).await, // CMAF init
                 "fmp4" => {
-                    if token.is_none() {
-                        return res_401();
-                    }
-                    let token = token.unwrap().clone();
                     info!("fmp4 dash chunk stream play:stream_id: {}, param: {:?}", stream_id, map);
                     dash::chunk(id.to_string(), &token, addr).await // media chunk stream
                 }
                 "m4s" => {
-                    info!("mpeg dash segment stream play:stream_id: {}, param: {:?}", stream_id, map);
-                    dash::segment(id.to_string()).await
+                    debug!("mpeg dash segment stream play:stream_id: {}, param: {:?}", stream_id, map);
+                    dash::segment(id.to_string(), &token).await
                 }
                 _ => res_404(),
             }

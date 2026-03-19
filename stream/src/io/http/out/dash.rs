@@ -30,16 +30,17 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio_stream::wrappers::BroadcastStream;
-pub async fn segment(stream_id: String) -> Response<Body> {
+pub async fn segment(stream_id: String, token: &String) -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, _user_count)) => {
+            let stream_user_cache_key = format!("STREAM_USER_CACHE:{}@{}", stream_id, token);
+            CommonCache::refresh(&stream_user_cache_key);
             let ssrc = bsi.rtp_info.ssrc;
             match cache::get_muxer_rx(&ssrc, MuxerEnum::DashMp4) {
                 Ok(mut rx) => {
                     match rx.recv().await {
                         Ok(pkt) => {
-                            println!("---------------pkt len: {}", pkt.data.len());
                             // dump("dash_seg",&pkt.data,true).unwrap();
                             Response::builder()
                                 .header("Content-Type", "video/mp4")
@@ -154,6 +155,199 @@ pub async fn chunk(stream_id: String, token: &String, addr: SocketAddr) -> Respo
     }
 }
 
+pub async fn init_segment(stream_id: String, token: &String) -> Response<Body> {
+    match cache::get_base_stream_info_by_stream_id(&stream_id) {
+        None => res_404(),
+        Some((bsi, _)) => {
+            let stream_user_cache_key = format!("STREAM_USER_CACHE:{}@{}", stream_id, token);
+            CommonCache::refresh(&stream_user_cache_key);
+            let ssrc = bsi.rtp_info.ssrc;
+            match get_dash_mp4_init(ssrc).await {
+                Ok(init) => Response::builder()
+                    .header("Content-Type", "video/mp4")
+                    .header("Cache-Control", "max-age=3600")
+                    .body(Body::from(init))
+                    .unwrap(),
+                Err(_) => res_404(),
+            }
+        }
+    }
+}
+
+pub async fn mpd_handler(stream_id: String, token: &String, addr: SocketAddr) -> Response<Body> {
+    match cache::get_base_stream_info_by_stream_id(&stream_id) {
+        None => res_404(),
+        Some((bsi, user_count)) => {
+            let token = token.to_string();
+            let ssrc = bsi.rtp_info.ssrc;
+            let remote_addr = addr.to_string();
+            let stream_user_cache_key =
+                format!("SEGMENT_DASH_MP4_STREAM_USER_CACHE:{}@{}", stream_id, token);
+            let can_play = match CommonCache::contains_key(&stream_user_cache_key) {
+                true => true,
+                false => {
+                    let info = StreamPlayInfo::new(
+                        bsi,
+                        remote_addr.clone(),
+                        token.clone(),
+                        OutputEnum::DashFmp4,
+                        user_count,
+                    );
+                    let (tx, rx) = oneshot::channel();
+                    let event_tx = cache::get_event_tx();
+
+                    let _ = event_tx
+                        .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
+                        .await;
+                    match rx.await {
+                        Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
+                            cache::update_token(
+                                &stream_id,
+                                OutputEnum::DashFmp4,
+                                token.clone(),
+                                true,
+                                addr,
+                                None,
+                            );
+                            let cache_stream_user = mode::CacheStreamUser1 {
+                                expires_ttl: Some(Duration::from_secs(6)),
+                                stream_id: stream_id.clone(),
+                                remote_addr,
+                                token,
+                            };
+                            CommonCache::insert(
+                                stream_user_cache_key.clone(),
+                                CachedValue::from_any(Arc::new(cache_stream_user)),
+                            );
+                            true
+                        }
+                        Ok(_) => return res_401(),
+                        Err(_) => false,
+                    }
+                }
+            };
+            if can_play {
+                CommonCache::refresh(&stream_user_cache_key);
+
+                match get_video_param(ssrc).await {
+                    Ok(mp) => {
+                        let mpd = generate_mpd(&stream_id, mp);
+                        Response::builder()
+                            .header("Content-Type", "application/dash+xml")
+                            .header("Cache-Control", "no-cache")
+                            .body(Body::from(mpd))
+                            .unwrap()
+                    }
+                    Err(_) => res_404(),
+                }
+            } else {
+                res_404()
+            }
+        }
+    }
+}
+
+async fn get_video_param(ssrc: u32) -> GlobalResult<MediaParam> {
+    let (tx, rx) = oneshot::channel();
+    cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::MediaParam(tx)))?;
+    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+}
+
+fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
+    let mut xml = String::new();
+
+    xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    xml.push_str(
+        r#"
+<MPD
+  xmlns="urn:mpeg:dash:schema:mpd:2011"
+  profiles="urn:mpeg:dash:profile:isoff-live:2011"
+  type="static"
+  mediaPresentationDuration="PT1H"
+  minBufferTime="PT1S">
+"#,
+    );
+
+    xml.push_str("<Period id=\"0\" start=\"PT0S\">");
+    // ===== Video =====
+    if let Some(v) = &mp.video {
+        xml.push_str(&format!(
+            r#"
+<AdaptationSet
+  mimeType="video/mp4"
+  segmentAlignment="true"
+  startWithSAP="1">
+  <Representation
+    id="v1"
+    bandwidth="{}"
+    codecs="{}"
+    width="{}"
+    height="{}"
+    frameRate="{}">
+    <SegmentTemplate
+      timescale="{}"
+      duration="{}"
+      startNumber="1"
+      presentationTimeOffset="0"
+      initialization="{}.m4it"
+      media="{}.m4s?seg=seg-$Number$">
+</SegmentTemplate>
+  </Representation>
+</AdaptationSet>
+"#,
+            v.bandwidth,
+            v.codec,
+            v.width,
+            v.height,
+            v.frame_rate,
+            v.timescale,
+            v.timescale * 2,
+            stream_id,
+            stream_id,
+        ));
+    }
+
+    // ===== Audio =====
+    /*if let Some(a) = &mp.audio {
+        xml.push_str(&format!(
+            r#"
+<AdaptationSet
+  mimeType="audio/mp4"
+  segmentAlignment="true"
+  startWithSAP="1">
+  <Representation
+    id="a1"
+    bandwidth="{}"
+    codecs="{}"
+    audioSamplingRate="{}">
+    <AudioChannelConfiguration
+      schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011"
+      value="{}"/>
+    <SegmentTemplate
+      timescale="{}"
+      availabilityTimeOffset="0.1"
+      availabilityTimeComplete="false"
+      initialization="/{}/play/{}.m4is"
+      media="/{}/play/{}.m4s?seg=$Number$"/>
+  </Representation>
+</AdaptationSet>
+"#,
+            a.bandwidth,
+            a.codec,
+            a.sample_rate,
+            a.channels,
+            a.timescale,
+            server_name,
+            stream_id,
+            server_name,
+            stream_id,
+        ));
+    }*/
+
+    xml.push_str("</Period></MPD>");
+    xml
+}
+
 async fn send_fmp4(
     ssrc: u32,
     rx: broadcast::Receiver<Arc<MuxPacket>>,
@@ -250,197 +444,4 @@ async fn get_dash_mp4_init(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
     cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::DashMp4Header(tx)))?;
     Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
-}
-pub async fn init_segment(stream_id: String) -> Response<Body> {
-    match cache::get_base_stream_info_by_stream_id(&stream_id) {
-        None => res_404(),
-        Some((bsi, _)) => {
-            let ssrc = bsi.rtp_info.ssrc;
-            match get_dash_mp4_init(ssrc).await {
-                Ok(init) => Response::builder()
-                    .header("Content-Type", "video/mp4")
-                    .header("Cache-Control", "max-age=3600")
-                    .body(Body::from(init))
-                    .unwrap(),
-                Err(_) => res_404(),
-            }
-        }
-    }
-}
-
-pub async fn mpd_handler(stream_id: String, token: &String, addr: SocketAddr) -> Response<Body> {
-    match cache::get_base_stream_info_by_stream_id(&stream_id) {
-        None => res_404(),
-        Some((bsi, user_count)) => {
-            let token = token.to_string();
-            let ssrc = bsi.rtp_info.ssrc;
-            let remote_addr = addr.to_string();
-            let stream_user_cache_key =
-                format!("SEGMENT_DASH_MP4_STREAM_USER_CACHE:{}@{}", stream_id, token);
-            let can_play = match CommonCache::contains_key(&stream_user_cache_key) {
-                true => true,
-                false => {
-                    let info = StreamPlayInfo::new(
-                        bsi,
-                        remote_addr.clone(),
-                        token.clone(),
-                        OutputEnum::DashFmp4,
-                        user_count,
-                    );
-                    let (tx, rx) = oneshot::channel();
-                    let event_tx = cache::get_event_tx();
-
-                    let _ = event_tx
-                        .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
-                        .await;
-                    match rx.await {
-                        Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
-                            cache::update_token(
-                                &stream_id,
-                                OutputEnum::DashFmp4,
-                                token.clone(),
-                                true,
-                                addr,
-                                None,
-                            );
-                            println!("insert --- user....");
-                            let cache_stream_user = mode::CacheStreamUser1 {
-                                expires_ttl: Some(Duration::from_secs(6)),
-                                stream_id: stream_id.clone(),
-                                remote_addr,
-                                token,
-                            };
-                            CommonCache::insert(
-                                stream_user_cache_key.clone(),
-                                CachedValue::from_any(Arc::new(cache_stream_user)),
-                            );
-                            true
-                        }
-                        Ok(_) => return res_401(),
-                        Err(_) => false,
-                    }
-                }
-            };
-            if can_play {
-                CommonCache::refresh(&stream_user_cache_key);
-
-                match get_video_param(ssrc).await {
-                    Ok(mp) => {
-                        let mpd = generate_mpd(&stream_id, mp);
-                        Response::builder()
-                            .header("Content-Type", "application/dash+xml")
-                            .header("Cache-Control", "no-cache")
-                            .body(Body::from(mpd))
-                            .unwrap()
-                    }
-                    Err(_) => res_404(),
-                }
-            } else {
-                res_404()
-            }
-        }
-    }
-}
-
-async fn get_video_param(ssrc: u32) -> GlobalResult<MediaParam> {
-    let (tx, rx) = oneshot::channel();
-    cache::try_publish_mpsc(&ssrc, ContextEvent::Inner(InnerEvent::MediaParam(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
-}
-
-fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
-    let mut xml = String::new();
-
-    xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
-    xml.push_str(
-        r#"
-<MPD
-  xmlns="urn:mpeg:dash:schema:mpd:2011"
-  profiles="urn:mpeg:dash:profile:isoff-live:2011"
-  type="static"
-  mediaPresentationDuration="PT1H"
-  minBufferTime="PT2S">
-"#,
-    );
-
-    xml.push_str("<Period id=\"0\" start=\"PT0S\">");
-    let server_conf = cache::get_server_conf();
-    let server_name = server_conf.get_name();
-    // ===== Video =====
-    if let Some(v) = &mp.video {
-        xml.push_str(&format!(
-            r#"
-<AdaptationSet
-  mimeType="video/mp4"
-  segmentAlignment="true"
-  startWithSAP="1">
-  <Representation
-    id="v1"
-    bandwidth="{}"
-    codecs="{}"
-    width="{}"
-    height="{}"
-    frameRate="{}">
-    <SegmentTemplate
-      timescale="{}"
-      duration="{}"
-      startNumber="1"
-      presentationTimeOffset="0"
-      initialization="{}.m4it"
-      media="{}.m4s?seg=seg-$Number$">
-</SegmentTemplate>
-  </Representation>
-</AdaptationSet>
-"#,
-            v.bandwidth,
-            v.codec,
-            v.width,
-            v.height,
-            v.frame_rate,
-            v.timescale,
-            v.timescale * 2,
-            stream_id,
-            stream_id,
-        ));
-    }
-
-    // ===== Audio =====
-    /*if let Some(a) = &mp.audio {
-        xml.push_str(&format!(
-            r#"
-<AdaptationSet
-  mimeType="audio/mp4"
-  segmentAlignment="true"
-  startWithSAP="1">
-  <Representation
-    id="a1"
-    bandwidth="{}"
-    codecs="{}"
-    audioSamplingRate="{}">
-    <AudioChannelConfiguration
-      schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011"
-      value="{}"/>
-    <SegmentTemplate
-      timescale="{}"
-      availabilityTimeOffset="0.1"
-      availabilityTimeComplete="false"
-      initialization="/{}/play/{}.m4is"
-      media="/{}/play/{}.m4s?seg=$Number$"/>
-  </Representation>
-</AdaptationSet>
-"#,
-            a.bandwidth,
-            a.codec,
-            a.sample_rate,
-            a.channels,
-            a.timescale,
-            server_name,
-            stream_id,
-            server_name,
-            stream_id,
-        ));
-    }*/
-
-    xml.push_str("</Period></MPD>");
-    xml
 }

@@ -61,7 +61,6 @@ impl InnerEvent {
                     }
                     Some(context) => {
                         let init = context.get_header();
-                        println!("init dash mp4 header len {}",init.len());
                         if let Err(_) = sender.send(init) {
                             error!("dash_header send to the receiver dropped");
                         }

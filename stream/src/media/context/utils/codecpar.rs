@@ -319,8 +319,8 @@ unsafe fn repair_codecpar(
             let sps = ps.sps.as_ref().unwrap();
             let pps = ps.pps.as_ref().unwrap();
 
-            println!("H264 SPS ({} bytes): {:02X?}", sps.len(), sps);
-            println!("H264 PPS ({} bytes): {:02X?}", pps.len(), pps);
+            debug!("H264 SPS ({} bytes): {:02X?}", sps.len(), sps);
+            debug!("H264 PPS ({} bytes): {:02X?}", pps.len(), pps);
 
             let extradata_size = 4 + sps.len() + 4 + pps.len();
             let extradata = av_malloc(extradata_size) as *mut u8;

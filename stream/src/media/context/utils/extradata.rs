@@ -460,7 +460,7 @@ fn is_codec_supported(codec: &str) -> bool {
 pub unsafe fn dump_stream_info(ctx: &DemuxerContext) {
     let fmt = ctx.avio.fmt_ctx;
     info!("=== Media Stream Info ===");
-    info!("Format: {:?}", (*fmt).iformat.as_ref().map(|f| f.name).unwrap_or(ptr::null()));
+    // info!("Format: {:?}", (*fmt).iformat.as_ref().map(|f| f.name).unwrap_or(ptr::null()));
 
     for i in 0..(*fmt).nb_streams {
         let st = *(*fmt).streams.offset(i as isize);

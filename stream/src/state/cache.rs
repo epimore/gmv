@@ -615,7 +615,6 @@ impl Shared {
                                         .hand_log(|msg| info!("{msg}"));
                                 }
                             }
-                            println!("current user size {}",user_map.len());
                             if user_map.len() > 0 {
                                 continue;
                             }

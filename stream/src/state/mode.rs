@@ -64,7 +64,6 @@ impl Cacheable for CacheStreamUser1 {
                     SocketAddr::from_str(&self.remote_addr).unwrap(),
                     None,
                 );
-                println!("remove --- user....");
 
                 let info = StreamPlayInfo::new(
                     bsi,
