@@ -129,19 +129,19 @@ impl Event {
                 let _ = res.hand_log(|msg| error!("{msg}"));
             }
             OutEvent::OnPlay(spi) => {
-                if spi.token=="abc123" {
-                    let _ = tx
-                        .unwrap()
-                        .send(EventRes::Out(OutEventRes::OnPlay(Some(true))));
-                }
-                info!("Calling on_play with: {:?}", spi);
-                // let res = pretend.on_play(&spi).await;
-                // info!("on_play returned: {:?}", res);
-                // if let Ok(res) = res.hand_log(|msg| error!("{msg}")) {
+                // if spi.token=="abc123" {
                 //     let _ = tx
                 //         .unwrap()
-                //         .send(EventRes::Out(OutEventRes::OnPlay(res.value().data)));
+                //         .send(EventRes::Out(OutEventRes::OnPlay(Some(true))));
                 // }
+                info!("Calling on_play with: {:?}", spi);
+                let res = pretend.on_play(&spi).await;
+                info!("on_play returned: {:?}", res);
+                if let Ok(res) = res.hand_log(|msg| error!("{msg}")) {
+                    let _ = tx
+                        .unwrap()
+                        .send(EventRes::Out(OutEventRes::OnPlay(res.value().data)));
+                }
             }
             OutEvent::StreamIdle(bsi) => {
                 info!("Calling stream_idle with: {:?}", bsi);

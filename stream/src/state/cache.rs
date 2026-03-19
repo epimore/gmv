@@ -378,7 +378,6 @@ pub fn update_token(
 
                 if let (_, Some(_muxer_enum)) = output_trace.subtract(output_enum) {
                     let mut notify = false;
-
                     match expire {
                         None => {
                             if let Some(StreamTrace { out_expires, .. }) = state.sessions.get(ssrc)
@@ -616,7 +615,7 @@ impl Shared {
                                         .hand_log(|msg| info!("{msg}"));
                                 }
                             }
-
+                            println!("current user size {}",user_map.len());
                             if user_map.len() > 0 {
                                 continue;
                             }

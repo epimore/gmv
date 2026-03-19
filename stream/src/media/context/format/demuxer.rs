@@ -440,7 +440,7 @@ impl DemuxerContext {
                     rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "discardcorrupt+ignidx+nobuffer+genpts");
+            set_dict!("fflags", "discardcorrupt+ignidx+nobuffer+genpts");//igndts
             set_dict!("analyzeduration", "1000000"); //1秒
             set_dict!("probesize", "655360"); //640kb
             set_dict!("fpsprobesize", "30"); //30帧

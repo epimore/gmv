@@ -25,7 +25,7 @@ use std::time::Instant;
 static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 pub struct DashCmafMp4Context {
     pub init_segment: Bytes, // CMAF init.mp4
-    pub pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
+    pub pkt_tx: Sender<Arc<MuxPacket>>,
 
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
@@ -37,8 +37,6 @@ pub struct DashCmafMp4Context {
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
     pub epoch: Instant,
-    last_dts: i64,
-    last_pts: i64,
 }
 impl Drop for DashCmafMp4Context {
     fn drop(&mut self) {
@@ -130,23 +128,6 @@ impl FmtMuxer for DashCmafMp4Context {
                 frag_duration.as_ptr(),
                 0,
             );
-            // 每个新片段重置时间戳
-            let reset = CString::new("1").unwrap();
-            av_dict_set(
-                &mut options,
-                CString::new("reset_timestamps").unwrap().as_ptr(),
-                reset.as_ptr(),
-                0,
-            );
-
-            // 避免负时间戳，强制从0开始
-            let avoid_negative = CString::new("make_zero").unwrap();
-            av_dict_set(
-                &mut options,
-                CString::new("avoid_negative_ts").unwrap().as_ptr(),
-                avoid_negative.as_ptr(),
-                0,
-            );
             let mut in_timebase_map = HashMap::with_capacity(8);
             let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
             let v_idx = fmp4::copy_streams(&mut in_timebase_map, in_fmt_ctx, out_fmt_ctx)?;
@@ -186,8 +167,6 @@ impl FmtMuxer for DashCmafMp4Context {
                 fragment_started_with_key: true,
                 fragment_start_timestamp: 0,
                 epoch: Instant::now(),
-                last_dts: 0,
-                last_pts: 0,
             })
         }
     }
@@ -203,25 +182,12 @@ impl FmtMuxer for DashCmafMp4Context {
             match self.in_timebase_map.get(&pkt.stream_index) {
                 None => {
                     warn!(
-                        "fMP4 write failed,stream index error: {}",
+                        "dash MP4 write failed,stream index error: {}",
                         &pkt.stream_index
                     );
                     return Ok(());
                 }
                 Some(&in_tb) => {
-                    //seek导致dts回退或跳跃，直接强制刷新缓存输出，以重新开始新的片段（dts为0）;此处模拟90kHz时基，1秒 = 90000
-                    //首帧时dts、pts为0
-                    let dts_jump = pkt.dts.abs_diff(self.last_dts) > 90000;
-                    let pts_jump = pkt.dts.abs_diff(self.last_dts) > 90000;
-                    if dts_jump && pts_jump {
-                        self.force_flush_fragment(
-                            self.fragment_start_timestamp,
-                            self.fragment_started_with_key,
-                        );
-                    }
-                    self.last_dts = pkt.dts;
-                    self.last_pts = pkt.pts;
-
                     // 写入当前帧
                     av_packet_ref(&mut cloned, pkt);
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
@@ -230,7 +196,7 @@ impl FmtMuxer for DashCmafMp4Context {
                     cloned.pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
                     if ret < 0 {
-                        warn!("fMP4 write failed:{}", show_ffmpeg_error_msg(ret));
+                        warn!("dash MP4 write failed:{}", show_ffmpeg_error_msg(ret));
                         av_packet_unref(&mut cloned);
                         return Ok(());
                     }
@@ -279,7 +245,6 @@ impl DashCmafMp4Context {
         self.flush_fragment(timestamp, is_key)
     }
     fn flush_fragment(&mut self, timestamp: u64, is_key: bool) -> bool {
-        println!("to send ..........");
         unsafe {
             let out_vec = &mut *self.out_buf_ptr;
             if out_vec.is_empty() {
