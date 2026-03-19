@@ -352,26 +352,16 @@ fn generate_mpd(stream_id: &str, mp: MediaParam) -> String {
     let mut xml = String::new();
 
     xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
-    xml.push_str(&format!(
+    xml.push_str(
         r#"
 <MPD
   xmlns="urn:mpeg:dash:schema:mpd:2011"
   profiles="urn:mpeg:dash:profile:isoff-live:2011"
-  type="dynamic"
-  minimumUpdatePeriod="PT1M"
-  timeShiftBufferDepth="PT1H"
-  suggestedPresentationDelay="PT2S"
-  availabilityStartTime="{}"
+  type="static"
   mediaPresentationDuration="PT1H"
-  maxSegmentDuration="PT2S"
   minBufferTime="PT2S">
-  <UTCTiming
- schemeIdUri="urn:mpeg:dash:utc:direct:2014"
- value="{}"/>
 "#,
-        mp.start_time.to_rfc3339_opts(SecondsFormat::Millis, true),
-        mp.start_time.to_rfc3339_opts(SecondsFormat::Millis, true),
-    ));
+    );
 
     xml.push_str("<Period id=\"0\" start=\"PT0S\">");
     let server_conf = cache::get_server_conf();
