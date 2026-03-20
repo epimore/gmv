@@ -460,10 +460,9 @@ fn is_codec_supported(codec: &str) -> bool {
 pub unsafe fn dump_stream_info(ctx: &DemuxerContext) {
     let fmt = ctx.avio.fmt_ctx;
     info!("=== Media Stream Info ===");
-    // info!("Format: {:?}", (*fmt).iformat.as_ref().map(|f| f.name).unwrap_or(ptr::null()));
 
     for i in 0..(*fmt).nb_streams {
-        let st = *(*fmt).streams.offset(i as isize);
+        let st = *(*fmt).streams.add(i as usize);
         let codecpar = (*st).codecpar;
 
         match (*codecpar).codec_type {
@@ -473,9 +472,12 @@ pub unsafe fn dump_stream_info(ctx: &DemuxerContext) {
                 info!("  Resolution: {}x{}", (*codecpar).width, (*codecpar).height);
                 info!("  Profile: {}", (*codecpar).profile);
                 info!("  Level: {}", (*codecpar).level);
+                info!("  format: {}", (*codecpar).format);
                 info!("  avg_frame_rate: {}/{}", (*st).avg_frame_rate.num, (*st).avg_frame_rate.den);
                 info!("  r_frame_rate: {}/{}", (*st).r_frame_rate.num, (*st).r_frame_rate.den);
                 info!("  time_base: {}/{}", (*st).time_base.num, (*st).time_base.den);
+                info!("  duration: {}", (*st).duration);
+                info!("  start time: {}", (*st).start_time);
                 info!("  Extradata size: {}", (*codecpar).extradata_size);
             }
             AVMediaType_AVMEDIA_TYPE_AUDIO => {

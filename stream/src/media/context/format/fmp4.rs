@@ -7,16 +7,7 @@ use base::log::{debug, info, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
 use log::error;
-use rsmpeg::ffi::{
-    AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_FLUSH_PACKETS,
-    AVFMT_FLAG_NOBUFFER, AVFMT_NOFILE, AVFormatContext, AVIOContext,
-    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
-    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational, AVStream, av_dict_set, av_free,
-    av_guess_format, av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts,
-    av_packet_unref, av_rescale_q, av_write_frame, av_write_trailer, avcodec_parameters_copy,
-    avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context,
-    avio_context_free, avio_flush,
-};
+use rsmpeg::ffi::{AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_FLUSH_PACKETS, AVFMT_FLAG_NOBUFFER, AVFMT_NOFILE, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational, AVStream, av_dict_set, av_free, av_guess_format, av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_frame, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, avio_flush, AV_NOPTS_VALUE};
 use rsmpeg::ffi::{
     AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
 };
@@ -181,7 +172,7 @@ impl FmtMuxer for CmafFmp4Context {
                 return Err(GlobalError::new_biz_error(
                     600,
                     "current dts < last dts",
-                    |msg| info!("{msg}"),
+                    |msg| info!("{msg};last: {},current: {}",self.last_dts,pkt.dts),
                 ));
             }
             self.last_dts = pkt.dts;
@@ -198,6 +189,9 @@ impl FmtMuxer for CmafFmp4Context {
                 Some(&in_tb) => {
                     // 写入当前帧
                     av_packet_ref(&mut cloned, pkt);
+                    if cloned.pts == AV_NOPTS_VALUE {
+                        cloned.pts = cloned.dts;
+                    }
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
                     av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
 
@@ -209,7 +203,18 @@ impl FmtMuxer for CmafFmp4Context {
                     cloned.pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
                     if ret < 0 {
-                        warn!("fMP4 write failed:{}", show_ffmpeg_error_msg(ret));
+                        warn!("FMP4 write failed:{}", show_ffmpeg_error_msg(ret));
+                        //尝试修正dts/pts
+                        cloned.dts += 1;
+                        cloned.pts += 1;
+                        if av_interleaved_write_frame(self.fmt_ctx, &mut cloned) < 0 {
+                            warn!(
+                                "FMP4 fix dts/pts write failed:{}",
+                                show_ffmpeg_error_msg(ret)
+                            );
+                        } else {
+                            info!("FMP4 fix dts/pts write succeed")
+                        }
                         av_packet_unref(&mut cloned);
                         return Ok(());
                     }

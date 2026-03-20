@@ -10,11 +10,11 @@ use base::tokio::sync::broadcast::Sender;
 use log::{debug, error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE, AVFormatContext,
-    AVIOContext, AVPacket, av_dict_set, av_free, av_guess_format, av_interleaved_write_frame,
-    av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref, av_write_frame,
-    av_write_trailer, avformat_alloc_context, avformat_write_header, avio_alloc_context,
-    avio_context_free, avio_flush,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE,
+    AVFormatContext, AVIOContext, AVPacket, av_dict_set, av_free, av_guess_format,
+    av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref,
+    av_write_frame, av_write_trailer, avformat_alloc_context, avformat_write_header,
+    avio_alloc_context, avio_context_free, avio_flush,
 };
 use std::collections::HashMap;
 use std::ffi::{CString, c_int, c_void};
@@ -37,6 +37,7 @@ pub struct DashCmafMp4Context {
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
     pub epoch: Instant,
+    last_dts: i64,
 }
 impl Drop for DashCmafMp4Context {
     fn drop(&mut self) {
@@ -113,8 +114,7 @@ impl FmtMuxer for DashCmafMp4Context {
             let mut options = ptr::null_mut::<rsmpeg::ffi::AVDictionary>();
 
             // 设置movflags frag_keyframe frag_custom frag_every_frame cmaf dash
-            let movflags =
-                CString::new("frag_keyframe+empty_moov+default_base_moof+dash").unwrap();
+            let movflags = CString::new("frag_keyframe+empty_moov+default_base_moof+dash").unwrap();
             rsmpeg::ffi::av_dict_set(
                 &mut options,
                 CString::new("movflags").unwrap().as_ptr(),
@@ -165,6 +165,7 @@ impl FmtMuxer for DashCmafMp4Context {
                 fragment_started_with_key: true,
                 fragment_start_timestamp: 0,
                 epoch: Instant::now(),
+                last_dts: i64::MIN,
             })
         }
     }
@@ -186,15 +187,36 @@ impl FmtMuxer for DashCmafMp4Context {
                     return Ok(());
                 }
                 Some(&in_tb) => {
+                    if pkt.dts < self.last_dts || pkt.dts - self.last_dts > 8 * in_tb.den as i64 {
+                        return Err(GlobalError::new_biz_error(
+                            600,
+                            "current dts < last dts or dts cross max limit",
+                            |msg| info!("{msg};last: {},current: {}",self.last_dts,pkt.dts),
+                        ));
+                    }
+                    self.last_dts = pkt.dts;
                     // 写入当前帧
                     av_packet_ref(&mut cloned, pkt);
+                    if cloned.pts == AV_NOPTS_VALUE {
+                        cloned.pts = cloned.dts;
+                    }
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
                     av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
-
                     cloned.pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
                     if ret < 0 {
                         warn!("dash MP4 write failed:{}", show_ffmpeg_error_msg(ret));
+                        //尝试修正dts/pts
+                        cloned.dts += 1;
+                        cloned.pts += 1;
+                        if av_interleaved_write_frame(self.fmt_ctx, &mut cloned) < 0 {
+                            warn!(
+                                "dash MP4 fix dts/pts write failed:{}",
+                                show_ffmpeg_error_msg(ret)
+                            );
+                        } else {
+                            info!("dash MP4 fix dts/pts write succeed")
+                        }
                         av_packet_unref(&mut cloned);
                         return Ok(());
                     }

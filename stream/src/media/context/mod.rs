@@ -22,6 +22,7 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::time::Instant;
 use base::chrono::Local;
+use crate::media::context::format::dashmp4::DashCmafMp4Context;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::utils::extradata::dump_stream_info;
 
@@ -69,7 +70,7 @@ impl RtpState {
             }
 
             // 最大 diff 限制，防止异常跳变
-            let max_diff = clock_rate as i64; // 1 秒最大 diff，可按需要调整
+            let max_diff = clock_rate as i64 * 3; // 3 秒最大 diff
             if diff < 0 {
                 diff = 0;
             } else if diff > max_diff {
@@ -379,11 +380,21 @@ impl MediaContext {
                 let _ = CmafFmp4Context::init_context(&self.demuxer_context, context.pkt_tx.clone()).map(|ctx| {
                     *context = ctx;
                     context.epoch =  Instant::now();
+                    context.write_packet(pkt, ts)
                 });
             }
         }
-        if let Some(ctx) = &mut muxer.dash_mp4 {
-            let _ = ctx.write_packet(pkt, ts);
+        if let Some(context) = &mut muxer.dash_mp4 {
+            //前端已对rtp输入做了排序，如果依旧出现dts回退或跳跃则：重置muxer
+            if let Err(GlobalError::BizErr(BizError { code: 600, .. })) =
+                context.write_packet(pkt, ts)
+            {
+                let _ = DashCmafMp4Context::init_context(&self.demuxer_context, context.pkt_tx.clone()).map(|ctx| {
+                    *context = ctx;
+                    context.epoch =  Instant::now();
+                    context.write_packet(pkt, ts)
+                });
+            }
         }
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
