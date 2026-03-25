@@ -17,12 +17,14 @@ mod ps;
 pub mod rtp;
 pub mod ts;
 pub mod dashmp4;
+pub mod hlsfmp4;
 
 pub struct MuxPacket {
     pub data: Bytes,
     pub is_key: bool,
     pub timestamp: u64,
     pub epoch: Instant,
+    pub seq:usize,
 }
 
 pub trait FmtMuxer {

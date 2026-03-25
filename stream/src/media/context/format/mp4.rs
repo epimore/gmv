@@ -332,6 +332,7 @@ impl FmtMuxer for Mp4Context {
                 is_key: is_key_out,
                 timestamp,
                 epoch: self.epoch,
+                seq: 0,
             };
 
             let _ = self.pkt_tx.send(Arc::new(mux_packet));

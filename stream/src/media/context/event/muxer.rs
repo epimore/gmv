@@ -1,10 +1,13 @@
+use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::dashmp4::DashCmafMp4Context;
-use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::flv::FlvContext;
-use crate::media::context::format::FmtMuxer;
+use crate::media::context::format::fmp4::CmafFmp4Context;
+use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::{MuxerContext, MuxerEnum};
-use crate::state::layer::muxer_layer::{CMafLayer, FlvLayer, HlsTsLayer, Mp4Layer, RtpEncLayer, RtpFrameLayer, RtpPsLayer, TsLayer};
+use crate::state::layer::muxer_layer::{
+    CMafLayer, FlvLayer, HlsTsLayer, Mp4Layer, RtpEncLayer, RtpFrameLayer, RtpPsLayer, TsLayer,
+};
 
 pub enum MuxerEvent {
     Open(MuxerKind),
@@ -44,7 +47,12 @@ impl MuxerEvent {
                 }
                 MuxerKind::DashMp4(dash_mp4) => {
                     let _ = DashCmafMp4Context::init_context(demuxer_context, dash_mp4.tx).map(|ctx| {
-                        muxer_context.dash_mp4 = Some(ctx);
+                            muxer_context.dash_mp4 = Some(ctx);
+                        });
+                }
+                MuxerKind::HlsMp4(hls_mp4) => {
+                    let _ = HlsFmp4Context::init_context(demuxer_context, hls_mp4.tx).map(|ctx| {
+                        muxer_context.hls_mp4 = Some(ctx);
                     });
                 }
             },
@@ -56,14 +64,15 @@ impl MuxerEvent {
                         mp4_ctx.flush();
                         muxer_context.mp4 = None;
                     }
-                },
+                }
                 MuxerEnum::Ts => muxer_context.ts = None,
                 MuxerEnum::FMp4 => muxer_context.fmp4 = None,
                 MuxerEnum::HlsTs => muxer_context.hls_ts = None,
                 MuxerEnum::RtpFrame => muxer_context.rtp_frame = None,
                 MuxerEnum::RtpPs => muxer_context.rtp_ps = None,
                 MuxerEnum::RtpEnc => muxer_context.rtp_enc = None,
-                MuxerEnum::DashMp4 => {muxer_context.dash_mp4 = None}
+                MuxerEnum::DashMp4 => muxer_context.dash_mp4 = None,
+                MuxerEnum::HlsMp4 => muxer_context.hls_mp4 = None,
             },
         }
     }
@@ -75,6 +84,7 @@ pub enum MuxerKind {
     DashMp4(CMafLayer),
     Ts(TsLayer),
     FMp4(CMafLayer),
+    HlsMp4(CMafLayer),
     HlsTs(HlsTsLayer),
     RtpFrame(RtpFrameLayer),
     RtpPs(RtpPsLayer),

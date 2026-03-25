@@ -293,7 +293,7 @@ impl FmtMuxer for FlvContext {
                 && pkt.stream_index == self.video_stream_index
                 && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0);
 
-            let _ = self.pkt_tx.send(Arc::new(MuxPacket { data, is_key: is_key_out, timestamp, epoch: self.epoch }));
+            let _ = self.pkt_tx.send(Arc::new(MuxPacket { data, is_key: is_key_out, timestamp, epoch: self.epoch, seq: 0 }));
             Ok(())
         }
     }

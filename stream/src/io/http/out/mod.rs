@@ -61,7 +61,8 @@ async fn handler(
                     flv::handler(id.to_string(), &token, addr).await
                 }
                 "m3u8" => hls::m3u8_handler().await,
-                "ts" => hls::segment_handler().await,
+                "hmp4" => hls::segment_mp4_handler().await,
+                "ts" => hls::segment_ts_handler().await,
                 "mpd" => {
                     debug!("mpeg dash mpd stream play:stream_id: {}, param: {:?}", stream_id, map);
                     dash::mpd_handler(id.to_string(), &token, addr).await

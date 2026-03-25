@@ -678,6 +678,7 @@ struct StreamTrace {
     output: OutputLayer,
 }
 impl StreamTrace {
+    //云端录制在init_media时，初始化输出端
     fn build_from_output_kind(&self, output_kind: OutputKind, ssrc: u32) -> Option<ActiveEvent> {
         match output_kind {
             OutputKind::HttpFlv(_) => None,
@@ -752,8 +753,11 @@ impl OutputTrace {
             OutputEnum::HttpFlv | OutputEnum::Rtmp => {
                 self.http_flv.load(Ordering::Relaxed) + self.rtmp.load(Ordering::Relaxed)
             }
-            OutputEnum::DashFmp4 | OutputEnum::HlsFmp4 => {
-                self.dash_fmp4.load(Ordering::Relaxed) + self.hls_fmp4.load(Ordering::Relaxed)
+            OutputEnum::DashFmp4 => {
+                self.dash_fmp4.load(Ordering::Relaxed)
+            }
+            OutputEnum::HlsFmp4 => {
+                self.hls_fmp4.load(Ordering::Relaxed)
             }
             OutputEnum::HlsTs => self.hls_ts.load(Ordering::Relaxed),
             OutputEnum::Rtsp | OutputEnum::Gb28181Frame => {

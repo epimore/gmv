@@ -10,6 +10,7 @@ use crate::state::layer::muxer_layer::MuxerLayer;
 use base::serde::{Deserialize, Serialize};
 use shared::info::output::OutputEnum;
 use crate::media::context::format::dashmp4::DashCmafMp4Context;
+use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(crate = "base::serde")]
@@ -18,6 +19,7 @@ pub enum MuxerEnum {
     Mp4,
     Ts,
     FMp4,
+    HlsMp4,
     DashMp4,
     HlsTs,
     RtpFrame,
@@ -31,7 +33,7 @@ impl MuxerEnum {
             OutputEnum::Rtmp => MuxerEnum::Flv,
             OutputEnum::DashMp4 => MuxerEnum::DashMp4,
             OutputEnum::DashFmp4 => MuxerEnum::FMp4,
-            OutputEnum::HlsFmp4 => MuxerEnum::FMp4,
+            OutputEnum::HlsFmp4 => MuxerEnum::HlsMp4,
             OutputEnum::HlsTs => MuxerEnum::Ts,
             OutputEnum::Rtsp => MuxerEnum::RtpFrame,
             OutputEnum::Gb28181Frame => MuxerEnum::RtpFrame,
@@ -50,6 +52,7 @@ pub struct MuxerContext {
     pub dash_mp4: Option<DashCmafMp4Context>,
     pub ts: Option<TsContext>,
     pub hls_ts: Option<HlsTsContext>,
+    pub hls_mp4: Option<HlsFmp4Context>,
     pub fmp4: Option<CmafFmp4Context>,
     pub rtp_ps: Option<RtpPsContext>,
     pub rtp_enc: Option<RtpEncContext>,
@@ -84,6 +87,12 @@ impl MuxerContext {
                 context.dash_mp4 = Some(ctx);
             });
         }
+        if let Some(hls_mp4_layer) = muxer.hls_mp4 {
+            let _ = HlsFmp4Context::init_context(demuxer_context, hls_mp4_layer.tx).map(|ctx| {
+                context.hls_mp4 = Some(ctx);
+            });
+        }
+        
         context
     }
 }

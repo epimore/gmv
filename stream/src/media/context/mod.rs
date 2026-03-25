@@ -2,29 +2,31 @@ use crate::media::context::codec::CodecContext;
 use crate::media::context::event::ContextEvent;
 use crate::media::context::filter::FilterContext;
 use crate::media::context::format::FmtMuxer;
+use crate::media::context::format::dashmp4::DashCmafMp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::fmp4::CmafFmp4Context;
+use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::MuxerContext;
 use crate::media::context::utils::codecpar::repair_basic_stream_info;
+use crate::media::context::utils::extradata::dump_stream_info;
+use crate::media::context::utils::time_scale::{ProcessResult, TimelineNormalizer};
 use crate::media::rtp::RtpPacketBuffer;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::msg::StreamConfig;
 use base::bus::mpsc::TypedReceiver;
+use base::chrono::Local;
 use base::exception::typed::common::MessageBusError;
 use base::exception::{BizError, GlobalError, GlobalResult};
-use log::{error, info};
+use log::{error, info, warn};
 use rsmpeg::avutil::AVRational;
-use rsmpeg::ffi::AVPacket;
 use rsmpeg::ffi::{
     AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
 };
+use rsmpeg::ffi::{AVMediaType, AVPacket};
 use shared::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::time::Instant;
-use base::chrono::Local;
-use crate::media::context::format::dashmp4::DashCmafMp4Context;
-use crate::media::context::format::fmp4::CmafFmp4Context;
-use crate::media::context::utils::extradata::dump_stream_info;
 
 mod codec;
 pub mod event;
@@ -115,13 +117,54 @@ impl Drop for MediaContext {
     }
 }
 //idr帧及以后开始缓存
-#[derive(Default)]
 struct InitCacheInfo {
-    //(rtp累计,duration_ticks,pkt)
+    //(rtp_ts累计,duration_ticks,pkt)
     pkts: VecDeque<(i64, i64, AVPacket)>,
-    base_pts_dts: Vec<(i64, i64)>,
+    base_dts_pts: Vec<(i64, i64)>,
 }
 impl MediaContext {
+    /// 判断是否有视频流
+    fn has_video_stream(&self) -> (bool, usize) {
+        unsafe {
+            let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+            if fmt_ctx.is_null() {
+                return (false, 0);
+            }
+
+            let nb_streams = (*fmt_ctx).nb_streams as usize;
+            for i in 0..nb_streams {
+                let stream = *(*fmt_ctx).streams.add(i);
+                let codecpar = (*stream).codecpar;
+
+                if !codecpar.is_null() && (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+                    return (true, i);
+                }
+            }
+        }
+        (false, 0)
+    }
+
+    /// 判断是否有音频流
+    fn has_audio_stream(&self) -> (bool, usize) {
+        unsafe {
+            let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+            if fmt_ctx.is_null() {
+                return (false, 0);
+            }
+
+            let nb_streams = (*fmt_ctx).nb_streams as usize;
+            for i in 0..nb_streams {
+                let stream = *(*fmt_ctx).streams.add(i);
+                let codecpar = (*stream).codecpar;
+
+                if !codecpar.is_null() && (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
+                    return (true, i);
+                }
+            }
+        }
+        (false, 0)
+    }
+
     pub fn init(
         ssrc: u32,
         stream_config: StreamConfig,
@@ -153,17 +196,31 @@ impl MediaContext {
     unsafe fn fix_basic_stream_info(&mut self) -> GlobalResult<InitCacheInfo> {
         // dump_stream_info(&self.demuxer_context);
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+        // 判断是否有视频流
+        let (has_video, v_idx) = self.has_video_stream();
+        let (has_audio, a_idx) = self.has_audio_stream();
         let ext = &self.media_ext;
         let params = &mut self.demuxer_context.params;
-        let mut cache_info = InitCacheInfo::default();
-        cache_info.base_pts_dts = (0..params.len()).map(|_| Default::default()).collect();
+        let mut cache_info = InitCacheInfo {
+            pkts: Default::default(),
+            base_dts_pts: Default::default(),
+        };
+        let mut audio_ready = false;
         let mut counter = 128;
         let mut init_first_rtp_time = false;
+        let mut video_keyframe_found = false;
         while counter > 0 {
             let mut pkt = std::mem::zeroed::<AVPacket>();
             let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
             if ret < 0 {
-                return Ok(cache_info);
+                Err(GlobalError::new_sys_error("pkt end or err", |msg| {
+                    warn!("{msg}")
+                }))?;
+            }
+            let idx = pkt.stream_index as usize;
+            if idx >= params.len() {
+                rsmpeg::ffi::av_packet_unref(&mut pkt);
+                continue;
             }
             let rtp_state = &mut *self.rtp_state;
             let (cur_unwrapped, duration_ticks) =
@@ -172,42 +229,99 @@ impl MediaContext {
                 rtp_state.first_unwrapped = cur_unwrapped;
                 init_first_rtp_time = true;
             }
-            let mut all_ready = true;
-            let mut started = false;
-            for (i, param) in params.iter_mut().enumerate() {
-                let st = *(*fmt_ctx).streams.offset(i as isize);
-                let codecpar = (*st).codecpar;
-                if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-                    param.ready = repair_basic_stream_info(st, &pkt, ext, param);
-                    if !started && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0 {
-                        started = true;
-                        //未发现idr时刷新数据，发现后不再刷新数据，固定视频基线pts/dts
-                        cache_info.base_pts_dts[i] = (pkt.pts, pkt.dts);
+            let st = *(*fmt_ctx).streams.offset(idx as isize);
+            let codecpar = (*st).codecpar;
+            // 修复流信息
+            match (*codecpar).codec_type {
+                AVMediaType_AVMEDIA_TYPE_VIDEO => {
+                    if !params[idx].ready {
+                        let ready = repair_basic_stream_info(st, &pkt, ext, &mut params[idx]);
+                        params[idx].ready = ready;
                     }
-                } else if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
-                    param.ready = repair_basic_stream_info(st, &pkt, ext, param);
-                    //未发现idr时刷新数据，发现后不再刷新数据，固定音频基线pts/dts
-                    if !started {
-                        cache_info.base_pts_dts[i] = (pkt.pts, pkt.dts);
+                    if !video_keyframe_found && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0 {
+                        video_keyframe_found = true;
+                        let dts = pkt.dts;
+                        let pts = pkt.pts;
+                        cache_info.base_dts_pts[idx] = (dts, pts);
                     }
-                } else {
-                    param.ready = true;
                 }
-                //发现idr及以后开始缓存数据
-                if started {
-                    cache_info
-                        .pkts
-                        .push_back((cur_unwrapped, duration_ticks, pkt));
+                AVMediaType_AVMEDIA_TYPE_AUDIO => {
+                    if !params[idx].ready {
+                        let ready = repair_basic_stream_info(st, &pkt, ext, &mut params[idx]);
+                        params[idx].ready = ready;
+                        if has_video
+                            && video_keyframe_found
+                            && cache_info.base_dts_pts.get(idx).is_none()
+                        {
+                            let dts = pkt.dts;
+                            let pts = pkt.pts;
+                            cache_info.base_dts_pts[idx] = (dts, pts);
+                        } else if !has_video && cache_info.base_dts_pts.get(idx).is_none() {
+                            let dts = pkt.dts;
+                            let pts = pkt.pts;
+                            cache_info.base_dts_pts[idx] = (dts, pts);
+                        }
+                    }
+                    audio_ready = true;
                 }
-                all_ready = all_ready && param.ready && started;
+                _ => {
+                    if has_video
+                        && video_keyframe_found
+                        && cache_info.base_dts_pts.get(idx).is_none()
+                    {
+                        let dts = pkt.dts;
+                        let pts = pkt.pts;
+                        cache_info.base_dts_pts[idx] = (dts, pts);
+                    } else if !has_video && cache_info.base_dts_pts.get(idx).is_none() {
+                        let dts = pkt.dts;
+                        let pts = pkt.pts;
+                        cache_info.base_dts_pts[idx] = (dts, pts);
+                    }
+                    params[idx].ready = true;
+                }
             }
-
-            if all_ready {
+            // 决定是否开始缓存
+            let should_cache = if has_video {
+                video_keyframe_found // 有视频流时，等待关键帧
+            } else {
+                audio_ready // 只有音频流时，有音频数据就开始
+            };
+            if should_cache {
+                cache_info
+                    .pkts
+                    .push_back((cur_unwrapped, duration_ticks, pkt));
+            } else {
+                rsmpeg::ffi::av_packet_unref(&mut pkt);
+            }
+            let all_ready = params.iter().all(|ready| ready.ready);
+            if all_ready && should_cache {
                 break;
             }
             counter -= 1;
         }
         dump_stream_info(&self.demuxer_context);
+        if has_video && cache_info.base_dts_pts.get(v_idx).is_none() {
+            Err(GlobalError::new_sys_error(
+                "pkt has video,but stream miss",
+                |msg| warn!("{msg}"),
+            ))?;
+        }
+        if has_audio && cache_info.base_dts_pts.get(a_idx).is_none() {
+            Err(GlobalError::new_sys_error(
+                "pkt has audio,but stream miss",
+                |msg| warn!("{msg}"),
+            ))?;
+        }
+        for i in 0..cache_info.base_dts_pts.len() {
+            if cache_info.base_dts_pts.get(i).is_none() {
+                if has_video {
+                    cache_info.base_dts_pts[i] = cache_info.base_dts_pts[v_idx];
+                } else {
+                    cache_info.base_dts_pts[i] = cache_info.base_dts_pts[a_idx];
+                }
+            }
+        }
+
         Ok(cache_info)
     }
 
@@ -219,8 +333,17 @@ impl MediaContext {
             if cache_info.pkts.is_empty() {
                 return Ok(());
             }
+            let nb_streams = self.demuxer_context.params.len();
+            let mut normalizer = TimelineNormalizer::new(nb_streams);
+            for i in 0..nb_streams {
+                let stream = *(*self.demuxer_context.avio.fmt_ctx).streams.add(i);
+                let media_type = (*stream).codecpar.as_ref().unwrap().codec_type;
+                normalizer.init_stream(i, media_type);
+            }
             //初始化muxer
             self.muxer_context = MuxerContext::init(&self.demuxer_context, muxer_layer);
+            // 记录第一个包的 RTP 时间
+            let first_rtp_time = cache_info.pkts.front().map(|(ts, _, _)| *ts).unwrap_or(0);
             //消费缓存数据，以关键帧开始
             while let Some((cur_unwrapped, duration_ticks, mut pkt)) = cache_info.pkts.pop_front() {
                 match self.context_event_rx.try_recv() {
@@ -236,8 +359,8 @@ impl MediaContext {
                 self.process(
                     cur_unwrapped,
                     duration_ticks,
-                    cur_unwrapped,
-                    &cache_info.base_pts_dts,
+                    first_rtp_time,
+                    &mut normalizer,
                     &mut pkt,
                 )?;
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
@@ -268,7 +391,7 @@ impl MediaContext {
                     cur_unwrapped,
                     duration_ticks,
                     first_unwrapped,
-                    &cache_info.base_pts_dts,
+                    &mut normalizer,
                     &mut pkt,
                 )?;
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
@@ -284,62 +407,38 @@ impl MediaContext {
     }
     unsafe fn process(
         &mut self,
-        cur_unwrapped: i64,
+        _cur_unwrapped: i64,
         _duration_ticks: i64,
-        first_unwrapped: i64,
-        base_pts_dts: &Vec<(i64, i64)>,
+        _first_unwrapped: i64,
+        normalizer: &mut TimelineNormalizer,
         pkt: &mut AVPacket,
     ) -> GlobalResult<()> {
-        let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+        if let (Some(master_clock_us), res) = normalizer.process(pkt) {
+            /*
 
-        let stream_tb = (*(*fmt_ctx).streams.offset(pkt.stream_index as isize).read()).time_base;
-        // // 更新 RTP 状态并获取展开 timestamp 和帧间差值
-        let relative_time = cur_unwrapped - first_unwrapped;
-        let rtp_tb = AVRational {
-            num: 1,
-            den: self.media_ext.clock_rate,
-        };
+            let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
 
-        let pts_rescaled = av_rescale_q(relative_time, rtp_tb, stream_tb);
-        // let duration_rescaled = if duration_ticks > 0 {
-        //     av_rescale_q(duration_ticks, rtp_tb, tb)
-        // } else {
-        //     av_rescale_q((self.media_ext.clock_rate / 25) as i64, rtp_tb, tb)
-        // };
-        // pkt.duration = duration_rescaled;
+            let stream_tb =
+                (*(*fmt_ctx).streams.offset(pkt.stream_index as isize).read()).time_base;
+            // // 更新 RTP 状态并获取展开 timestamp 和帧间差值
+            let relative_time = cur_unwrapped - first_unwrapped;
+            let rtp_tb = AVRational {
+                num: 1,
+                den: self.media_ext.clock_rate,
+            };
 
-        // pkt.pts = pts_rescaled;
-        // pkt.dts = pts_rescaled;
-        // pkt.duration = 0;
+            let pts_rescaled = av_rescale_q(relative_time, rtp_tb, stream_tb);
+            // 通过 pts 计算累计真实时长（秒）
+            let real_ts = pts_rescaled as f64 * stream_tb.num as f64 / stream_tb.den as f64;*/
 
-        // if let Some((pts, dts)) = base_pts_dts.get(pkt.stream_index as usize) {
-        //     pkt.pts -= pts;
-        //     pkt.dts -= dts;
-        // }
+            // 暂不实现处理codec
+            // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
+            // 暂不实现处理filter
+            // Self::handle_filter(&mut self.filter_context);
 
-        // if duration_ticks > 0 {
-        //     pkt.duration = av_rescale_q(duration_ticks, rtp_tb, stream_tb);
-        // }
-        // 通过 pts 计算累计真实时长（秒）
-        let real_ts = pts_rescaled as f64 * stream_tb.num as f64 / stream_tb.den as f64;
-
-        // println!(
-        //     "Packet : stream={}, dts={}, pts={}, duration={}, size={}, key={},timestamp={}",
-        //     pkt.stream_index,
-        //     pkt.dts,
-        //     pkt.pts,
-        //     pkt.duration,
-        //     pkt.size,
-        //     (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0,
-        //     real_ts
-        // );
-        // 暂不实现处理codec
-        // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
-        // 暂不实现处理filter
-        // Self::handle_filter(&mut self.filter_context);
-
-        // 调用 muxer
-        Self::handle_pkt_muxer(self, &pkt, real_ts as u64);
+            // 调用 muxer 其中master_clock_us需要转换为秒，供录制进度信息
+            Self::handle_pkt_muxer(self, res, &pkt, (master_clock_us / 1000_000) as u64);
+        }
         Ok(())
     }
     fn handle_codec(codec: &mut CodecContext) {}
@@ -350,7 +449,7 @@ impl MediaContext {
     // 3.写入结束信息
     // 问题如何传递信息【该使用写入结束信息】
     // 回调
-    fn handle_pkt_muxer(&mut self, pkt: &AVPacket, ts: u64) {
+    fn handle_pkt_muxer(&mut self, epoch: ProcessResult, pkt: &AVPacket, ts: u64) {
         let muxer = &mut self.muxer_context;
         if let Some(context) = &mut muxer.flv {
             let _ = context.write_packet(pkt, ts);
@@ -374,27 +473,22 @@ impl MediaContext {
             unimplemented!()
         }
         if let Some(context) = &mut muxer.fmp4 {
-            if let Err(GlobalError::BizErr(BizError { code: 600, .. })) =
-                context.write_packet(pkt, ts)
-            {
-                let _ = CmafFmp4Context::init_context(&self.demuxer_context, context.pkt_tx.clone()).map(|ctx| {
-                    *context = ctx;
-                    context.epoch =  Instant::now();
-                    context.write_packet(pkt, ts)
-                });
+            if epoch == ProcessResult::Discontinuity {
+                context.epoch = Instant::now();
             }
+            let _ = context.write_packet(pkt, ts);
         }
         if let Some(context) = &mut muxer.dash_mp4 {
-            //前端已对rtp输入做了排序，如果依旧出现dts回退或跳跃则：重置muxer
-            if let Err(GlobalError::BizErr(BizError { code: 600, .. })) =
-                context.write_packet(pkt, ts)
-            {
-                let _ = DashCmafMp4Context::init_context(&self.demuxer_context, context.pkt_tx.clone()).map(|ctx| {
-                    *context = ctx;
-                    context.epoch =  Instant::now();
-                    context.write_packet(pkt, ts)
-                });
+            if epoch == ProcessResult::Discontinuity {
+                context.epoch = Instant::now();
             }
+            let _ = context.write_packet(pkt, ts);
+        }
+        if let Some(context) = &mut muxer.hls_mp4 {
+            if epoch == ProcessResult::Discontinuity {
+                context.epoch = Instant::now();
+            }
+            let _ = context.write_packet(pkt, ts);
         }
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
@@ -420,6 +514,12 @@ impl MediaContext {
             unimplemented!()
         }
         if let Some(context) = &mut muxer.fmp4 {
+            context.flush();
+        }
+        if let Some(context) = &mut muxer.dash_mp4 {
+            context.flush();
+        }
+        if let Some(context) = &mut muxer.hls_mp4 {
             context.flush();
         }
     }

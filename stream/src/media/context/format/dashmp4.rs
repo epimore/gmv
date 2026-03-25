@@ -282,6 +282,7 @@ impl DashCmafMp4Context {
                 is_key,
                 timestamp,
                 epoch: self.epoch,
+                seq: 0,
             }));
             true
         }

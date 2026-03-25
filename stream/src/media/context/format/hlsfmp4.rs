@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 const MAX_DURATION: Duration = Duration::from_millis(500);
-pub struct CmafFmp4Context {
+pub struct HlsFmp4Context {
     pub init_segment: Bytes, // CMAF init.mp4
     pub pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
 
@@ -36,8 +36,9 @@ pub struct CmafFmp4Context {
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
     last_dts: i64,
     pub epoch: Instant, //当由于seek导致dts回退时，重新初始化mux cxt
+    pub seq: usize, //hls 片段序号
 }
-impl Drop for CmafFmp4Context {
+impl Drop for HlsFmp4Context {
     fn drop(&mut self) {
         unsafe {
             if !self.fmt_ctx.is_null() {
@@ -55,7 +56,7 @@ impl Drop for CmafFmp4Context {
         }
     }
 }
-impl FmtMuxer for CmafFmp4Context {
+impl FmtMuxer for HlsFmp4Context {
     fn init_context(
         demuxer_context: &DemuxerContext,
         pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
@@ -116,7 +117,7 @@ impl FmtMuxer for CmafFmp4Context {
                 movflags.as_ptr(),
                 0,
             );
-            let frag_duration = CString::new("500000").unwrap(); // 500ms
+            let frag_duration = CString::new("2000000").unwrap(); // 2s
             av_dict_set(
                 &mut options,
                 CString::new("frag_duration").unwrap().as_ptr(),
@@ -159,6 +160,7 @@ impl FmtMuxer for CmafFmp4Context {
                 // fragment_frame_count: 0,
                 last_dts: i64::MIN,
                 epoch: Instant::now(),
+                seq: 0,
             })
         }
     }
@@ -254,7 +256,7 @@ impl FmtMuxer for CmafFmp4Context {
     }
 }
 
-impl CmafFmp4Context {
+impl HlsFmp4Context {
     fn flush_fragment(&mut self, timestamp: u64, is_key: bool) -> bool {
         unsafe {
             let out_vec = &mut *self.out_buf_ptr;
@@ -267,13 +269,14 @@ impl CmafFmp4Context {
                 is_key,
                 timestamp
             );
+            self.seq += 1;
             let data = Bytes::from(std::mem::take(out_vec));
             let _ = self.pkt_tx.send(Arc::new(MuxPacket {
                 data,
                 is_key,
                 timestamp,
                 epoch: self.epoch,
-                seq: 0,
+                seq: self.seq,
             }));
             true
         }

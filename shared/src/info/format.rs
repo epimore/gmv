@@ -39,3 +39,7 @@ pub struct Ts {}
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(crate = "base::serde")]
 pub struct HlsTs {}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(crate = "base::serde")]
+pub struct HlsMp4 {}

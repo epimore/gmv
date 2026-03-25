@@ -343,9 +343,8 @@ pub mod filter_layer {
     }
 }
 pub mod muxer_layer {
-    use crate::media::context::format::muxer::MuxerEnum;
-    use crate::media::context::format::muxer::MuxerEnum::FMp4;
     use crate::media::context::format::MuxPacket;
+    use crate::media::context::format::muxer::MuxerEnum;
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::exception::{GlobalError, GlobalResult};
     use base::log::error;
@@ -359,6 +358,7 @@ pub mod muxer_layer {
         pub flv: Option<FlvLayer>,
         pub fmp4: Option<CMafLayer>,
         pub dash_mp4: Option<CMafLayer>,
+        pub hls_mp4: Option<CMafLayer>,
         pub hls_ts: Option<HlsTsLayer>,
         pub rtp_frame: Option<RtpFrameLayer>,
         pub rtp_ps: Option<RtpPsLayer>,
@@ -427,6 +427,16 @@ pub mod muxer_layer {
                     }
                     Ok(self.dash_mp4.as_ref().unwrap().tx.subscribe())
                 }
+                MuxerEnum::HlsMp4 => {
+                    if self.hls_mp4.is_none() {
+                        Err(GlobalError::new_biz_error(
+                            1100,
+                            &format!("muxer: {:?}未开启", muxer_enum),
+                            |msg| error!("{msg}"),
+                        ))?;
+                    }
+                    Ok(self.hls_mp4.as_ref().unwrap().tx.subscribe())
+                }
             }
         }
         pub fn new(output: &OutputKind) -> Self {
@@ -441,7 +451,12 @@ pub mod muxer_layer {
                         self.flv = Some(FlvLayer::layer());
                     }
                 }
-                OutputKind::DashFmp4(_) | OutputKind::HlsFmp4(_) => {
+                OutputKind::DashFmp4(_) => {
+                    if self.fmp4.is_none() {
+                        self.fmp4 = Some(CMafLayer::layer(CMaf::default()));
+                    }
+                }
+                OutputKind::HlsFmp4(_) => {
                     if self.fmp4.is_none() {
                         self.fmp4 = Some(CMafLayer::layer(CMaf::default()));
                     }
@@ -495,6 +510,7 @@ pub mod muxer_layer {
                 MuxerEnum::HlsTs => self.hls_ts = None,
                 MuxerEnum::DashMp4 => self.dash_mp4 = None,
                 MuxerEnum::FMp4 => self.fmp4 = None,
+                MuxerEnum::HlsMp4 => self.hls_mp4 = None,
             }
         }
     }
