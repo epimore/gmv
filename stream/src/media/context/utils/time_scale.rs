@@ -73,12 +73,12 @@ impl StreamTimeline {
         // ===== discontinuity 检测 =====
         if dts_diff <= 0 || dts_diff > MAX_DELTA_TICKS {
             result = ProcessResult::Discontinuity;
-
+            println!("-----Discontinuity: current dts: {}, last dts: {}",pkt.dts,self.last_dts);
             // 强制单调递增
             let delta = self.get_delta();
             pkt.dts = self.last_dts + delta;
             pkt.pts = pkt.dts;
-
+            println!("-----Discontinuity new: current dts: {}, last dts: {}",pkt.dts,self.last_dts);
             self.normal_delta = 0;
         }
 
@@ -150,10 +150,10 @@ impl TimelineNormalizer {
         if global > 0 {
             scale_global = unsafe { av_rescale_q(global, stream.time_base, AV_TIME_BASE_Q) };
         }
-        println!(
-            "pts: {}, global_base_us: {}, before diff: {}, scale_global diff: {}, tb: {:?}",
-            pts, self.global_base_us, global, scale_global, stream.time_base
-        );
+        // println!(
+        //     "pts: {}, global_base_us: {}, before diff: {}, scale_global diff: {}, tb: {:?}",
+        //     pts, self.global_base_us, global, scale_global, stream.time_base
+        // );
         let res = stream.process(pkt);
 
         (Some(scale_global), res)

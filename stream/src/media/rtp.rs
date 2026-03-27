@@ -1,9 +1,9 @@
+use crate::media::context::RtpState;
 use base::bytes::{Buf, Bytes};
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{debug, info};
 use crossbeam_channel::Receiver;
 use std::ptr;
-use crate::media::context::RtpState;
 
 pub struct RtpPacket {
     pub ssrc: u32,
@@ -31,8 +31,8 @@ pub struct RtpPacketBuffer {
     pub ssrc: u32,
     first_read_rtp_sn: u16, // 第一个读取的 RTP 包的序列号
     queue: [Option<RtpPacket>; BUFFER_SIZE],
-    queue_count: usize,  // 缓冲区有效的包数量
-    queue_window: usize,  //缓冲区窗口大小:4/8/16
+    queue_count: usize,             // 缓冲区有效的包数量
+    queue_window: usize,            //缓冲区窗口大小:4/8/16
     packet_rx: Receiver<RtpPacket>, //数据接收句柄
     remaining: Bytes,
 }
@@ -55,7 +55,10 @@ impl RtpPacketBuffer {
     // 计算起始序列号
     fn calculate_index(&mut self) -> GlobalResult<()> {
         loop {
-            let pkt = self.packet_rx.recv().hand_log(|_| info!("ssrc:{}, 关闭RTP传输通道",self.ssrc))?;
+            let pkt = self
+                .packet_rx
+                .recv()
+                .hand_log(|_| info!("ssrc:{}, 关闭RTP传输通道", self.ssrc))?;
             let seq_num = pkt.seq;
             let index = seq_num as usize % BUFFER_SIZE;
             let item = unsafe { self.queue.get_unchecked_mut(index) };
@@ -75,12 +78,27 @@ impl RtpPacketBuffer {
         Ok(())
     }
 
-
     //1 判断缓冲区数据数量：[queue_count <  queue_window]? 1.1 : 1.2
     //1.1阻塞线程等待数据+超时
     //1.2直接取数据
-    pub fn consume_packet(&mut self, max_consume_len: usize, buf: *mut u8, rtp_state: *mut RtpState) -> Option<usize>
-    {
+    pub fn consume_packet(
+        &mut self,
+        max_consume_len: usize,
+        buf: *mut u8,
+        rtp_state: *mut RtpState,
+    ) -> Option<usize> {
+        unsafe {
+            if (*rtp_state).can_consume_probe {
+                let copy_len = std::cmp::min((*rtp_state).probe_buffer.len(), max_consume_len);
+                ptr::copy_nonoverlapping((*rtp_state).probe_buffer.as_ptr(), buf, copy_len);
+                (*rtp_state).probe_buffer.advance(copy_len);
+                if (*rtp_state).probe_buffer.is_empty() {
+                    (*rtp_state).can_consume_probe = false;
+                }
+                return Some(copy_len);
+            }
+        }
+
         // 优先返回缓存的剩余数据
         if !self.remaining.is_empty() {
             let data = std::mem::take(&mut self.remaining);
@@ -95,7 +113,9 @@ impl RtpPacketBuffer {
             return Some(copy_len);
         }
         let is_end = self.reduce_packet().is_err();
-        if self.queue_count == 0 { return None; }
+        if self.queue_count == 0 {
+            return None;
+        }
         let mut index = self.first_read_rtp_sn as usize % BUFFER_SIZE;
         let mut size = 0;
         for i in 0..BUFFER_SIZE {
@@ -108,23 +128,19 @@ impl RtpPacketBuffer {
                 let mut pkt = std::mem::take(item).unwrap();
                 self.queue_count -= 1;
                 self.first_read_rtp_sn = pkt.seq + 1;
-
+                unsafe {
+                    if (*rtp_state).cache_to_probe {
+                        (*rtp_state).probe_buffer.extend_from_slice(&pkt.payload);
+                    }
+                }
                 if pkt.payload.len() <= max_consume_len {
                     unsafe {
-                        ptr::copy_nonoverlapping(
-                            pkt.payload.as_ptr(),
-                            buf,
-                            pkt.payload.len(),
-                        );
+                        ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, pkt.payload.len());
                     }
                     size = pkt.payload.len();
                 } else {
                     unsafe {
-                        ptr::copy_nonoverlapping(
-                            pkt.payload.as_ptr(),
-                            buf,
-                            max_consume_len,
-                        );
+                        ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, max_consume_len);
                     }
                     self.remaining = pkt.payload.split_off(max_consume_len);
                     size = max_consume_len;
@@ -135,7 +151,8 @@ impl RtpPacketBuffer {
                         if self.queue_window < MAX_QUEUE_WINDOW {
                             self.queue_window += 1;
                         }
-                    } else if i == 0 { //一个读写周期内，未丢包 && 大于最小缓冲区
+                    } else if i == 0 {
+                        //一个读写周期内，未丢包 && 大于最小缓冲区
                         if self.queue_window > MIN_QUEUE_WINDOW {
                             self.queue_window -= 1;
                         }
@@ -157,15 +174,22 @@ impl RtpPacketBuffer {
             if self.queue_count == self.queue_window {
                 break;
             }
-            let pkt = self.packet_rx.recv().hand_log(|_| debug!("ssrc:{}, 关闭RTP传输通道",self.ssrc))?;
+            let pkt = self
+                .packet_rx
+                .recv()
+                .hand_log(|_| debug!("ssrc:{}, 关闭RTP传输通道", self.ssrc))?;
             let seq_num = pkt.seq;
 
             //检查是否为有效的数据包
-            if seq_num >= self.first_read_rtp_sn || self.first_read_rtp_sn.wrapping_sub(seq_num) > ROUND_SIZE {
+            if seq_num >= self.first_read_rtp_sn
+                || self.first_read_rtp_sn.wrapping_sub(seq_num) > ROUND_SIZE
+            {
                 let index = seq_num as usize % BUFFER_SIZE;
                 let item = unsafe { self.queue.get_unchecked_mut(index) };
                 //检查是否有重复数据,避免相同数据导致queue_count虚假增加
-                if item.is_some() && item.as_ref().unwrap().seq == seq_num { continue; }
+                if item.is_some() && item.as_ref().unwrap().seq == seq_num {
+                    continue;
+                }
                 *item = Some(pkt);
                 self.queue_count += 1;
             }

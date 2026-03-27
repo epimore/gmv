@@ -27,6 +27,7 @@ use shared::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::time::Instant;
+use base::bytes::BytesMut;
 
 mod codec;
 pub mod event;
@@ -45,6 +46,9 @@ pub struct RtpState {
 
     pub last_32: u32,        // 上一次 RTP timestamp（32-bit）
     pub last_unwrapped: i64, // 上一次展开 timestamp，用于累积 diff
+    pub cache_to_probe: bool, //ffmpeg 探测媒体信息时ture需probe_buffer缓存,探测结束时为false
+    pub can_consume_probe: bool,  //是否可消费，ffmpeg 探测时缓存false，探测结束时消费true，消费完成后false
+    pub probe_buffer: BytesMut, //ffmpeg 探测媒体信息消费的数据
 }
 impl RtpState {
     pub fn new() -> Self {
@@ -54,6 +58,9 @@ impl RtpState {
             marker: false,
             last_32: 0,
             last_unwrapped: 0,
+            cache_to_probe: true,
+            can_consume_probe: false,
+            probe_buffer: BytesMut::with_capacity(640 * 1024),
         }
     }
 
@@ -194,6 +201,7 @@ impl MediaContext {
     }
     //读取数据帧补充修复流信息
     unsafe fn fix_basic_stream_info(&mut self) -> GlobalResult<InitCacheInfo> {
+        info!("to fix.......");
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
 
         let ext = &self.media_ext;

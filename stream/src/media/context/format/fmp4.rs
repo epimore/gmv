@@ -34,7 +34,6 @@ pub struct CmafFmp4Context {
     v_idx: c_int,
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
-    last_dts: i64,
     pub epoch: Instant, //当由于seek导致dts回退时，重新初始化mux cxt
 }
 impl Drop for CmafFmp4Context {
@@ -156,8 +155,6 @@ impl FmtMuxer for CmafFmp4Context {
                 v_idx,
                 fragment_started_with_key: true,
                 fragment_start_timestamp: 0,
-                // fragment_frame_count: 0,
-                last_dts: i64::MIN,
                 epoch: Instant::now(),
             })
         }
@@ -168,16 +165,6 @@ impl FmtMuxer for CmafFmp4Context {
 
     fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) -> GlobalResult<()> {
         unsafe {
-            if pkt.dts < self.last_dts {
-                return Err(GlobalError::new_biz_error(
-                    600,
-                    "current dts < last dts",
-                    |msg| info!("{msg};last: {},current: {}",self.last_dts,pkt.dts),
-                ));
-            }
-            self.last_dts = pkt.dts;
-            let mut cloned = std::mem::zeroed::<AVPacket>();
-
             match self.in_timebase_map.get(&pkt.stream_index) {
                 None => {
                     warn!(
@@ -187,34 +174,17 @@ impl FmtMuxer for CmafFmp4Context {
                     return Ok(());
                 }
                 Some(&in_tb) => {
+                    let mut cloned = std::mem::zeroed::<AVPacket>();
+
                     // 写入当前帧
                     av_packet_ref(&mut cloned, pkt);
-                    if cloned.pts == AV_NOPTS_VALUE {
-                        cloned.pts = cloned.dts;
-                    }
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
                     av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
-
-                    // if self.fragment_frame_count == 3 {
-                    //     cloned.pts += 1;
-                    //     cloned.dts += 1;
-                    // }
 
                     cloned.pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
                     if ret < 0 {
                         warn!("FMP4 write failed:{}", show_ffmpeg_error_msg(ret));
-                        //尝试修正dts/pts
-                        cloned.dts += 1;
-                        cloned.pts += 1;
-                        if av_interleaved_write_frame(self.fmt_ctx, &mut cloned) < 0 {
-                            warn!(
-                                "FMP4 fix dts/pts write failed:{}",
-                                show_ffmpeg_error_msg(ret)
-                            );
-                        } else {
-                            info!("FMP4 fix dts/pts write succeed")
-                        }
                         av_packet_unref(&mut cloned);
                         return Ok(());
                     }
@@ -228,7 +198,6 @@ impl FmtMuxer for CmafFmp4Context {
                     ) {
                         self.fragment_started_with_key = is_keyframe;
                         self.fragment_start_timestamp = timestamp;
-                        // self.fragment_frame_count = 1;
                     }
                 }
             }

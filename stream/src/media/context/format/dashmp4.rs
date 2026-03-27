@@ -37,7 +37,6 @@ pub struct DashCmafMp4Context {
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
     pub epoch: Instant,
-    last_dts: i64,
 }
 impl Drop for DashCmafMp4Context {
     fn drop(&mut self) {
@@ -165,7 +164,6 @@ impl FmtMuxer for DashCmafMp4Context {
                 fragment_started_with_key: true,
                 fragment_start_timestamp: 0,
                 epoch: Instant::now(),
-                last_dts: i64::MIN,
             })
         }
     }
@@ -176,8 +174,6 @@ impl FmtMuxer for DashCmafMp4Context {
 
     fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) -> GlobalResult<()> {
         unsafe {
-            let mut cloned = std::mem::zeroed::<AVPacket>();
-
             match self.in_timebase_map.get(&pkt.stream_index) {
                 None => {
                     warn!(
@@ -187,36 +183,15 @@ impl FmtMuxer for DashCmafMp4Context {
                     return Ok(());
                 }
                 Some(&in_tb) => {
-                    if pkt.dts < self.last_dts || pkt.dts - self.last_dts > 8 * in_tb.den as i64 {
-                        return Err(GlobalError::new_biz_error(
-                            600,
-                            "current dts < last dts or dts cross max limit",
-                            |msg| info!("{msg};last: {},current: {}",self.last_dts,pkt.dts),
-                        ));
-                    }
-                    self.last_dts = pkt.dts;
+                    let mut cloned = std::mem::zeroed::<AVPacket>();
                     // 写入当前帧
                     av_packet_ref(&mut cloned, pkt);
-                    if cloned.pts == AV_NOPTS_VALUE {
-                        cloned.pts = cloned.dts;
-                    }
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
                     av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
                     cloned.pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
                     if ret < 0 {
                         warn!("dash MP4 write failed:{}", show_ffmpeg_error_msg(ret));
-                        //尝试修正dts/pts
-                        cloned.dts += 1;
-                        cloned.pts += 1;
-                        if av_interleaved_write_frame(self.fmt_ctx, &mut cloned) < 0 {
-                            warn!(
-                                "dash MP4 fix dts/pts write failed:{}",
-                                show_ffmpeg_error_msg(ret)
-                            );
-                        } else {
-                            info!("dash MP4 fix dts/pts write succeed")
-                        }
                         av_packet_unref(&mut cloned);
                         return Ok(());
                     }

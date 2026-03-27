@@ -418,10 +418,10 @@ impl Stream for Fmp4Stream {
                         let mut out = BytesMut::new();
                         out.extend_from_slice(&self.init);
                         out.extend_from_slice(&pkt.data);
-
+                        let _ = dump("fmp4",&out,false);
                         return Poll::Ready(Some(Ok(out.freeze())));
                     }
-
+                    let _ = dump("fmp4",&pkt.data,false);
                     return Poll::Ready(Some(Ok(pkt.data.clone())));
                 }
                 Poll::Ready(Some(Err(_))) => {

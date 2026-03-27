@@ -313,6 +313,7 @@ impl FmtMuxer for Mp4Context {
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
                 warn!("MP4 write failed: {}, error: {}", ret, ffmpeg_error);
+                av_packet_unref(&mut cloned);
                 return Ok(());
             }
 

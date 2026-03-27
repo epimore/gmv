@@ -68,7 +68,6 @@ fn demux_rtp(rtp_data: Bytes, association: &Association) {
                 Some((rtp_tx, rtp_rx)) => {
                     // let _ = util::dump("rtp_ps", &rtp_data, false);
                     // let _ = util::dump("ps", pkt.payload(), false);
-                    println!("rev rtp ts: {}, seq: {}",pkt.timestamp(),pkt.sequence_number());
                     let packet = media::rtp::RtpPacket {
                         ssrc,
                         timestamp: pkt.timestamp(),

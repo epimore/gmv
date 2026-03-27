@@ -369,7 +369,7 @@ impl DemuxerContext {
         unsafe {
             // 0) pre-checks
             // allocate fmt_ctx
-            let fmt_ctx = alloc_fmt_ctx_with_custom_io()?;
+            let in_fmt_ctx = alloc_fmt_ctx_with_custom_io()?;
 
             // 1) pick input format
             let fmt_name = pick_input_format(media_ext);
@@ -377,7 +377,7 @@ impl DemuxerContext {
             let ifmt_name = CString::new(fmt_name).unwrap();
             let input_fmt = av_find_input_format(ifmt_name.as_ptr());
             if input_fmt.is_null() {
-                avformat_free_context(fmt_ctx);
+                avformat_free_context(in_fmt_ctx);
                 return Err(GlobalError::new_sys_error(
                     &format!("demuxer not found: {}", fmt_name),
                     |msg| error!("{msg}"),
@@ -388,46 +388,46 @@ impl DemuxerContext {
             let (pb, opaque_ptr, io_buf) = match alloc_avio_for_rtp(rtp_buffer, rtp_state) {
                 Ok(t) => t,
                 Err(e) => {
-                    avformat_free_context(fmt_ctx);
+                    avformat_free_context(in_fmt_ctx);
                     return Err(e);
                 }
             };
 
             // attach pb to fmt_ctx
-            (*fmt_ctx).pb = pb;
+            (*in_fmt_ctx).pb = pb;
 
             // 3) set codec hints if provided in media_ext
             if let Some(v_id) = &media_ext.video_params.codec_id {
                 let id = map_video_codec_id(v_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
-                    (*fmt_ctx).video_codec_id = id;
+                    (*in_fmt_ctx).video_codec_id = id;
                     let codec = avcodec_find_decoder(id);
                     if codec.is_null() {
                         // cleanup: free resources we just allocated
                         cleanup_early(pb, opaque_ptr, io_buf);
-                        avformat_free_context(fmt_ctx);
+                        avformat_free_context(in_fmt_ctx);
                         return Err(GlobalError::new_sys_error(
                             &format!("Video codec not found: {}", v_id),
                             |msg| error!("{msg}"),
                         ));
                     }
-                    (*fmt_ctx).video_codec = codec;
+                    (*in_fmt_ctx).video_codec = codec;
                 }
             }
             if let Some(a_id) = &media_ext.audio_params.codec_id {
                 let id = map_audio_codec_id(a_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
-                    (*fmt_ctx).audio_codec_id = id;
+                    (*in_fmt_ctx).audio_codec_id = id;
                     let codec = avcodec_find_decoder(id);
                     if codec.is_null() {
                         cleanup_early(pb, opaque_ptr, io_buf);
-                        avformat_free_context(fmt_ctx);
+                        avformat_free_context(in_fmt_ctx);
                         return Err(GlobalError::new_sys_error(
                             &format!("Audio codec not found: {}", a_id),
                             |msg| error!("{msg}"),
                         ));
                     }
-                    (*fmt_ctx).audio_codec = codec;
+                    (*in_fmt_ctx).audio_codec = codec;
                 }
             }
 
@@ -440,15 +440,15 @@ impl DemuxerContext {
                     rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "discardcorrupt+ignidx+nobuffer+genpts");//igndts
-            set_dict!("analyzeduration", "1000000"); //1秒
-            set_dict!("probesize", "655360"); //640kb
-            set_dict!("fpsprobesize", "30"); //30帧
-            // set_dict!("use_wallclock_as_timestamps", "1"); //生成递增的 PTS/DTS
+            set_dict!("fflags", "discardcorrupt+ignidx+nobuffer+genpts+igndts");
+            set_dict!("analyzeduration", "500000"); //软限制 0.5秒
+            set_dict!("max_analyze_duration", "1000000"); // 硬限制 1S
+            set_dict!("probesize", "65536"); //64kb
+            // set_dict!("fpsprobesize", "30"); //30帧
 
             // 5) open input
             let open_ret = avformat_open_input(
-                &mut (fmt_ctx as *mut _),
+                &mut (in_fmt_ctx as *mut _),
                 ptr::null(),
                 input_fmt,
                 &mut dict_opts,
@@ -458,32 +458,35 @@ impl DemuxerContext {
                 rsmpeg::ffi::av_dict_free(&mut dict_opts);
                 // avio_context_free and drop opaque handled by cleanup_early
                 cleanup_early(pb, opaque_ptr, io_buf);
-                avformat_free_context(fmt_ctx);
+                avformat_free_context(in_fmt_ctx);
                 let ffmpeg_error = show_ffmpeg_error_msg(open_ret);
                 return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| {
                     error!("{msg}")
                 }));
             }
-
             // 6) find stream info (with retry)
-            if let Err(e) = find_stream_info_with_retry(fmt_ctx, dict_opts, media_ext) {
+            if let Err(e) = find_stream_info_with_retry(in_fmt_ctx, dict_opts, media_ext) {
                 // close input and cleanup early: after avformat_close_input, pb is detached, but
-                avformat_close_input(&mut (fmt_ctx as *mut _));
+                avformat_close_input(&mut (in_fmt_ctx as *mut _));
                 return Err(e);
             }
 
-            // 8) collect codecpar_list & stream mapping
-            let nb_streams = (*fmt_ctx).nb_streams as usize;
+            // 8) update probe cache & collect codecpar_list & stream mapping & reset_timestamp_state
+            (*rtp_state).can_consume_probe = true;
+            (*rtp_state).cache_to_probe = false;
+            let nb_streams = (*in_fmt_ctx).nb_streams as usize;
+
             let mut params: Vec<ParamRepairState> = (0..nb_streams)
                 .map(|_| Default::default())
                 .collect();
-
+            println!("find stream info cache size: {}",(*rtp_state).probe_buffer.len());
+            (*in_fmt_ctx).flush_packets;
             // free dict
             rsmpeg::ffi::av_dict_free(&mut dict_opts);
 
             // 9) Build AvioResource and return DemuxerContext
             let avio = AvioResource {
-                fmt_ctx,
+                fmt_ctx: in_fmt_ctx,
                 io_buf,
                 avio_ctx: pb,
             };
@@ -491,6 +494,7 @@ impl DemuxerContext {
             Ok(DemuxerContext { avio, params })
         }
     }
+
 }
 
 #[cfg(test)]
