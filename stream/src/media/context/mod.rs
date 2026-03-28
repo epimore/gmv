@@ -26,6 +26,7 @@ use rsmpeg::ffi::{AVMediaType, AVPacket};
 use shared::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
 use std::ffi::c_int;
+use std::sync::Arc;
 use std::time::Instant;
 use base::bytes::BytesMut;
 
@@ -203,10 +204,10 @@ impl MediaContext {
     unsafe fn fix_basic_stream_info(&mut self) -> GlobalResult<InitCacheInfo> {
         info!("to fix.......");
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
-
+        info!("to fix.......1");
         let ext = &self.media_ext;
         let params = &mut self.demuxer_context.params;
-
+        info!("to fix.......2");
         let mut cache_info = InitCacheInfo {
             pkts: VecDeque::new(),
             timeline_normalizer: TimelineNormalizer::new(params.len()),
@@ -214,6 +215,7 @@ impl MediaContext {
         let mut has_video = false;
         for i in 0..params.len() {
             let stream = *(*fmt_ctx).streams.add(i);
+            info!("to fix.......3");
             let media_type = (*stream).codecpar.as_ref().unwrap().codec_type;
             if media_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
                 has_video = true;
@@ -226,17 +228,20 @@ impl MediaContext {
         let mut audio_ready = false;
 
         let mut counter = 0;
-
+        info!("to fix.......4");
         while counter < FIX_MAX_READ_FRAME {
             let mut pkt = std::mem::zeroed::<AVPacket>();
             if rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt) < 0 {
                 break;
             }
+
             let idx = pkt.stream_index as usize;
+            info!("to fix.......5， idx = {}", idx);
             if idx >= params.len() {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 continue;
             }
+            info!("to fix.......6");
             let st = *(*fmt_ctx).streams.add(idx);
             let codecpar = (*st).codecpar;
             // 统一修复流信息
