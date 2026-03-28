@@ -47,9 +47,6 @@ pub struct RtpState {
 
     pub last_32: u32,        // 上一次 RTP timestamp（32-bit）
     pub last_unwrapped: i64, // 上一次展开 timestamp，用于累积 diff
-    pub cache_to_probe: bool, //ffmpeg 探测媒体信息时ture需probe_buffer缓存,探测结束时为false
-    pub can_consume_probe: bool,  //是否可消费，ffmpeg 探测时缓存false，探测结束时消费true，消费完成后false
-    pub probe_buffer: BytesMut, //ffmpeg 探测媒体信息消费的数据
 }
 impl RtpState {
     pub fn new() -> Self {
@@ -59,9 +56,6 @@ impl RtpState {
             marker: false,
             last_32: 0,
             last_unwrapped: 0,
-            cache_to_probe: true,
-            can_consume_probe: false,
-            probe_buffer: BytesMut::with_capacity(640 * 1024),
         }
     }
 
@@ -202,12 +196,9 @@ impl MediaContext {
     }
     //读取数据帧补充修复流信息
     unsafe fn fix_basic_stream_info(&mut self) -> GlobalResult<InitCacheInfo> {
-        info!("to fix.......");
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
-        info!("to fix.......1");
         let ext = &self.media_ext;
         let params = &mut self.demuxer_context.params;
-        info!("to fix.......2");
         let mut cache_info = InitCacheInfo {
             pkts: VecDeque::new(),
             timeline_normalizer: TimelineNormalizer::new(params.len()),
@@ -215,7 +206,6 @@ impl MediaContext {
         let mut has_video = false;
         for i in 0..params.len() {
             let stream = *(*fmt_ctx).streams.add(i);
-            info!("to fix.......3");
             let media_type = (*stream).codecpar.as_ref().unwrap().codec_type;
             if media_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
                 has_video = true;
@@ -228,7 +218,6 @@ impl MediaContext {
         let mut audio_ready = false;
 
         let mut counter = 0;
-        info!("to fix.......4");
         while counter < FIX_MAX_READ_FRAME {
             let mut pkt = std::mem::zeroed::<AVPacket>();
             if rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt) < 0 {
@@ -236,12 +225,10 @@ impl MediaContext {
             }
 
             let idx = pkt.stream_index as usize;
-            info!("to fix.......5， idx = {}", idx);
             if idx >= params.len() {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 continue;
             }
-            info!("to fix.......6");
             let st = *(*fmt_ctx).streams.add(idx);
             let codecpar = (*st).codecpar;
             // 统一修复流信息
@@ -283,11 +270,6 @@ impl MediaContext {
                 break;
             }
         }
-        println!(
-            "read frame count: {},cache size: {}",
-            counter,
-            cache_info.pkts.len()
-        );
 
         if cache_info.timeline_normalizer.global_base_us == i64::MAX {
             cache_info.timeline_normalizer.global_base_us = 0
@@ -315,7 +297,7 @@ impl MediaContext {
                     Err(MessageBusError::ChannelClosed) => {
                         return Err(GlobalError::new_sys_error(
                             "数据已释放，通道关闭",
-                            |msg| error!("{msg}"),
+                            |msg| error!("ssrc: {}; {msg}",self.ssrc),
                         ));
                     }
                     Err(_) => {}
@@ -362,7 +344,7 @@ impl MediaContext {
         normalizer: &mut TimelineNormalizer,
         pkt: &mut AVPacket,
     ) -> GlobalResult<()> {
-        if let (Some(master_clock_us), res) = normalizer.process(pkt) {
+        if let (Some(master_clock_us), res) = normalizer.process(pkt,self.ssrc) {
             // 暂不实现处理codec
             // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
             // 暂不实现处理filter

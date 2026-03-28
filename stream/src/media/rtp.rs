@@ -87,18 +87,6 @@ impl RtpPacketBuffer {
         buf: *mut u8,
         rtp_state: *mut RtpState,
     ) -> Option<usize> {
-        unsafe {
-            if (*rtp_state).can_consume_probe {
-                let copy_len = std::cmp::min((*rtp_state).probe_buffer.len(), max_consume_len);
-                ptr::copy_nonoverlapping((*rtp_state).probe_buffer.as_ptr(), buf, copy_len);
-                (*rtp_state).probe_buffer.advance(copy_len);
-                if (*rtp_state).probe_buffer.is_empty() {
-                    (*rtp_state).can_consume_probe = false;
-                }
-                return Some(copy_len);
-            }
-        }
-
         // 优先返回缓存的剩余数据
         if !self.remaining.is_empty() {
             let data = std::mem::take(&mut self.remaining);
@@ -128,11 +116,6 @@ impl RtpPacketBuffer {
                 let mut pkt = std::mem::take(item).unwrap();
                 self.queue_count -= 1;
                 self.first_read_rtp_sn = pkt.seq + 1;
-                unsafe {
-                    if (*rtp_state).cache_to_probe {
-                        (*rtp_state).probe_buffer.extend_from_slice(&pkt.payload);
-                    }
-                }
                 if pkt.payload.len() <= max_consume_len {
                     unsafe {
                         ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, pkt.payload.len());

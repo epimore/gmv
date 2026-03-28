@@ -1,3 +1,4 @@
+use log::info;
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
     AV_NOPTS_VALUE, AV_TIME_BASE_Q, AVMediaType, AVMediaType_AVMEDIA_TYPE_AUDIO, AVPacket,
@@ -20,8 +21,9 @@ pub enum ProcessResult {
 // ============================
 
 pub struct StreamTimeline {
-    last_dts: i64,
-    last_pts: i64,
+    last_dts: i64,        //修正后
+    last_pts: i64,        //修正后
+    last_origin_dts: i64, //原pkt值，
     normal_delta: i64,
     initialized: bool,
     stream_type: AVMediaType,
@@ -33,6 +35,7 @@ impl StreamTimeline {
         Self {
             last_dts: 0,
             last_pts: 0,
+            last_origin_dts: 0,
             normal_delta: 0,
             initialized: false,
             stream_type,
@@ -57,28 +60,35 @@ impl StreamTimeline {
         }
     }
 
-    pub fn process(&mut self, pkt: &mut AVPacket) -> ProcessResult {
+    pub fn process(&mut self, pkt: &mut AVPacket, ssrc: u32) -> ProcessResult {
         // ===== 初始化 =====
         if !self.initialized {
             self.last_dts = pkt.dts;
             self.last_pts = pkt.pts;
+            self.last_origin_dts = pkt.dts;
             self.initialized = true;
             return ProcessResult::Ok;
         }
 
-        let mut result = ProcessResult::Ok;
-
-        let dts_diff = pkt.dts - self.last_dts;
-
         // ===== discontinuity 检测 =====
-        if dts_diff <= 0 || dts_diff > MAX_DELTA_TICKS {
+        // 1. 首次跳变检测
+        let mut result = ProcessResult::Ok;
+        let dis_dts_diff = pkt.dts - self.last_origin_dts;
+        if dis_dts_diff <= 0 || dis_dts_diff > MAX_DELTA_TICKS {
+            info!(
+                "ssrc: {} ,Discontinuity: current dts: {}, last dts: {}",
+                ssrc, pkt.dts, self.last_origin_dts
+            );
             result = ProcessResult::Discontinuity;
-            println!("-----Discontinuity: current dts: {}, last dts: {}",pkt.dts,self.last_dts);
+        }
+        self.last_origin_dts = pkt.dts;
+        // 2. 修正数据
+        let fix_dts_diff = pkt.dts - self.last_dts;
+        if fix_dts_diff <= 0 || fix_dts_diff > MAX_DELTA_TICKS {
             // 强制单调递增
             let delta = self.get_delta();
             pkt.dts = self.last_dts + delta;
             pkt.pts = pkt.dts;
-            println!("-----Discontinuity new: current dts: {}, last dts: {}",pkt.dts,self.last_dts);
             self.normal_delta = 0;
         }
 
@@ -131,7 +141,7 @@ impl TimelineNormalizer {
         }
     }
 
-    pub fn process(&mut self, pkt: &mut AVPacket) -> (Option<i64>, ProcessResult) {
+    pub fn process(&mut self, pkt: &mut AVPacket, ssrc: u32) -> (Option<i64>, ProcessResult) {
         let idx = pkt.stream_index as usize;
 
         let stream = match &mut self.streams[idx] {
@@ -154,7 +164,7 @@ impl TimelineNormalizer {
         //     "pts: {}, global_base_us: {}, before diff: {}, scale_global diff: {}, tb: {:?}",
         //     pts, self.global_base_us, global, scale_global, stream.time_base
         // );
-        let res = stream.process(pkt);
+        let res = stream.process(pkt, ssrc);
 
         (Some(scale_global), res)
     }

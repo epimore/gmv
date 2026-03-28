@@ -394,7 +394,6 @@ impl Stream for Fmp4Stream {
         loop {
             match Pin::new(&mut self.inner).poll_next(cx) {
                 Poll::Ready(Some(Ok(pkt))) => {
-                    println!("--- timestamp: {}",pkt.timestamp);
                     //当dts回退重新构建muxer时，两种方式。
                     if pkt.epoch != self.current_epoch {
                         //单选1.断开连接，让客户端重新连接

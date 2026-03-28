@@ -211,7 +211,7 @@ unsafe fn find_stream_info_with_retry(
                 "avformat_find_stream_info failed (attempt {}), retrying...",
                 retry_count + 1
             );
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(200));
             ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
             if ret >= 0 {
                 not_the_codec = !check_codec(fmt_ctx, media_ext);
@@ -371,7 +371,7 @@ impl DemuxerContext {
         unsafe {
             // 0) pre-checks
             // allocate fmt_ctx
-            let probe_fmt_ctx = alloc_fmt_ctx_with_custom_io()?;
+            let in_fmt_ctx = alloc_fmt_ctx_with_custom_io()?;
 
             // 1) pick input format
             let fmt_name = pick_input_format(media_ext);
@@ -379,7 +379,7 @@ impl DemuxerContext {
             let ifmt_name = CString::new(fmt_name).unwrap();
             let input_fmt = av_find_input_format(ifmt_name.as_ptr());
             if input_fmt.is_null() {
-                avformat_free_context(probe_fmt_ctx);
+                avformat_free_context(in_fmt_ctx);
                 return Err(GlobalError::new_sys_error(
                     &format!("demuxer not found: {}", fmt_name),
                     |msg| error!("{msg}"),
@@ -387,50 +387,49 @@ impl DemuxerContext {
             }
 
             // 2) alloc avio + boxed opaque
-            let (probe_pb, probe_opaque, probe_io_buf) =
-                match alloc_avio_for_rtp(rtp_buffer, rtp_state) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        avformat_free_context(probe_fmt_ctx);
-                        return Err(e);
-                    }
-                };
+            let (in_pb, in_opaque, in_io_buf) = match alloc_avio_for_rtp(rtp_buffer, rtp_state) {
+                Ok(t) => t,
+                Err(e) => {
+                    avformat_free_context(in_fmt_ctx);
+                    return Err(e);
+                }
+            };
 
             // attach pb to fmt_ctx
-            (*probe_fmt_ctx).pb = probe_pb;
+            (*in_fmt_ctx).pb = in_pb;
 
             // 3) set codec hints if provided in media_ext
             if let Some(v_id) = &media_ext.video_params.codec_id {
                 let id = map_video_codec_id(v_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
-                    (*probe_fmt_ctx).video_codec_id = id;
+                    (*in_fmt_ctx).video_codec_id = id;
                     let codec = avcodec_find_decoder(id);
                     if codec.is_null() {
                         // cleanup: free resources we just allocated
-                        cleanup_early(probe_pb, probe_opaque, probe_io_buf);
-                        avformat_free_context(probe_fmt_ctx);
+                        cleanup_early(in_pb, in_opaque, in_io_buf);
+                        avformat_free_context(in_fmt_ctx);
                         return Err(GlobalError::new_sys_error(
                             &format!("Video codec not found: {}", v_id),
                             |msg| error!("{msg}"),
                         ));
                     }
-                    (*probe_fmt_ctx).video_codec = codec;
+                    (*in_fmt_ctx).video_codec = codec;
                 }
             }
             if let Some(a_id) = &media_ext.audio_params.codec_id {
                 let id = map_audio_codec_id(a_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
-                    (*probe_fmt_ctx).audio_codec_id = id;
+                    (*in_fmt_ctx).audio_codec_id = id;
                     let codec = avcodec_find_decoder(id);
                     if codec.is_null() {
-                        cleanup_early(probe_pb, probe_opaque, probe_io_buf);
-                        avformat_free_context(probe_fmt_ctx);
+                        cleanup_early(in_pb, in_opaque, in_io_buf);
+                        avformat_free_context(in_fmt_ctx);
                         return Err(GlobalError::new_sys_error(
                             &format!("Audio codec not found: {}", a_id),
                             |msg| error!("{msg}"),
                         ));
                     }
-                    (*probe_fmt_ctx).audio_codec = codec;
+                    (*in_fmt_ctx).audio_codec = codec;
                 }
             }
 
@@ -443,15 +442,18 @@ impl DemuxerContext {
                     rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
                 }};
             }
-            set_dict!("fflags", "discardcorrupt+ignidx+nobuffer+genpts+igndts");
-            set_dict!("analyzeduration", "500000"); //软限制 0.5秒
-            set_dict!("max_analyze_duration", "1000000"); // 硬限制 1S
-            set_dict!("probesize", "65536"); //64kb
-            // set_dict!("fpsprobesize", "30"); //30帧
+            //分离探测与修复
+            //不设置 fflags=nobuffer+igndts+genpts，启用默认缓存机制,用来后继修复及归一化时间
+            //avformat_find_stream_info 仅完成最小化探测（识别流数量和类型）
+            //后续通过自己的 read pkt 逻辑来补充和完善流信息
+            set_dict!("fflags", "discardcorrupt+ignidx");
+            set_dict!("analyzeduration", "200000"); //200ms探测
+            set_dict!("probesize", "8192"); //2|4? 8kb [8192,16384,32768,65536] 64kb
+            set_dict!("max_probe_packets", "5"); //最多探测5个包
 
             // 5) open input
             let open_ret = avformat_open_input(
-                &mut (probe_fmt_ctx as *mut _),
+                &mut (in_fmt_ctx as *mut _),
                 ptr::null(),
                 input_fmt,
                 &mut dict_opts,
@@ -460,363 +462,34 @@ impl DemuxerContext {
                 // cleanup: free dict, avio, boxed opaque, io_buf, fmt_ctx
                 rsmpeg::ffi::av_dict_free(&mut dict_opts);
                 // avio_context_free and drop opaque handled by cleanup_early
-                cleanup_early(probe_pb, probe_opaque, probe_io_buf);
-                avformat_free_context(probe_fmt_ctx);
+                cleanup_early(in_pb, in_opaque, in_io_buf);
+                avformat_free_context(in_fmt_ctx);
                 let ffmpeg_error = show_ffmpeg_error_msg(open_ret);
                 return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| {
                     error!("{msg}")
                 }));
             }
             // 6) find stream info (with retry)
-            if let Err(e) = find_stream_info_with_retry(probe_fmt_ctx, dict_opts, media_ext) {
+            if let Err(e) = find_stream_info_with_retry(in_fmt_ctx, dict_opts, media_ext) {
                 // close input and cleanup early: after avformat_close_input, pb is detached, but
-                avformat_close_input(&mut (probe_fmt_ctx as *mut _));
+                avformat_close_input(&mut (in_fmt_ctx as *mut _));
                 return Err(e);
             }
 
             // 8) update probe cache & collect codecpar_list & stream mapping & reset_timestamp_state
-            let saved_opaque = probe_opaque; // 保存 opaque 指针
-            (*rtp_state).can_consume_probe = true;
-            (*rtp_state).cache_to_probe = false;
-            let nb_streams = (*probe_fmt_ctx).nb_streams as usize;
-            let mut params: Vec<ParamRepairState> =
+            let nb_streams = (*in_fmt_ctx).nb_streams as usize;
+            let params: Vec<ParamRepairState> =
                 (0..nb_streams).map(|_| Default::default()).collect();
-            println!(
-                "find stream info cache size: {}",
-                (*rtp_state).probe_buffer.len()
-            );
-
-            let (io_buf, play_pb, play_fmt_ctx) =
-                Self::build_play_fmt_ctx(fmt_name, saved_opaque, probe_fmt_ctx)?;
-            println!("000000000");
-            // free dict
-            println!("1111111111111");
-            if !dict_opts.is_null() {
-                rsmpeg::ffi::av_dict_free(&mut dict_opts);
-            }
-            (*probe_fmt_ctx).pb = ptr::null_mut();
-            (*probe_fmt_ctx).opaque = ptr::null_mut();
-            println!("22222222222");
-            avformat_close_input(&mut (probe_fmt_ctx as *mut _));
-            println!("333333333");
+            rsmpeg::ffi::av_dict_free(&mut dict_opts);
             // 9) Build AvioResource and return DemuxerContext
             let avio = AvioResource {
-                fmt_ctx: play_fmt_ctx,
-                io_buf,
-                avio_ctx: play_pb,
+                fmt_ctx: in_fmt_ctx,
+                io_buf: in_io_buf,
+                avio_ctx: in_pb,
             };
-            println!("------------");
             Ok(DemuxerContext { avio, params })
         }
     }
-
-    unsafe fn build_play_fmt_ctx(
-        fmt_name: &str,
-        opaque: *mut c_void,
-        probe_fmt_ctx: *mut AVFormatContext,
-    ) -> GlobalResult<(*mut u8, *mut AVIOContext, *mut AVFormatContext)> {
-        // 1. 分配 IO 缓冲区
-        let io_buf = av_malloc(DEFAULT_IO_BUF_SIZE) as *mut u8;
-        if io_buf.is_null() {
-            return Err(GlobalError::new_sys_error(
-                "Failed to allocate IO buffer",
-                |msg| error!("{msg}"),
-            ));
-        }
-
-        // 2. 创建播放上下文
-        let play_fmt_ctx = alloc_fmt_ctx_with_custom_io()?;
-
-        // 3. 设置输入格式
-        let ifmt_name = CString::new(fmt_name).unwrap();
-        let input_fmt = av_find_input_format(ifmt_name.as_ptr());
-        if input_fmt.is_null() {
-            av_free(io_buf as *mut c_void);
-            avformat_free_context(play_fmt_ctx);
-
-            return Err(GlobalError::new_sys_error(
-                "Failed to allocate IO buffer",
-                |msg| error!("{msg}"),
-            ));
-        }
-        (*play_fmt_ctx).iformat = input_fmt;
-
-        // 4. 设置标志
-        (*play_fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
-        (*play_fmt_ctx).flags |= AVFMT_FLAG_DISCARD_CORRUPT as c_int;
-        (*play_fmt_ctx).flags |= AVFMT_FLAG_IGNIDX as c_int;
-        (*play_fmt_ctx).flags |= AVFMT_FLAG_NOBUFFER as c_int;
-        (*play_fmt_ctx).flags |= AVFMT_FLAG_GENPTS as c_int;
-        (*play_fmt_ctx).flags |= AVFMT_FLAG_IGNDTS as c_int;
-
-        // 5. 创建 AVIO 上下文
-        let pb = avio_alloc_context(
-            io_buf,
-            DEFAULT_IO_BUF_SIZE as c_int,
-            0,
-            opaque,
-            Some(rw::read_rtp_payload),
-            None,
-            None,
-        );
-        if pb.is_null() {
-            let tup = opaque as OpaquePtr;
-            drop(Box::from_raw(tup));
-            av_free(io_buf as *mut c_void);
-            avformat_free_context(play_fmt_ctx);
-
-            return Err(GlobalError::new_sys_error(
-                "Failed to allocate IO buffer",
-                |msg| error!("{msg}"),
-            ));
-        }
-        (*pb).seekable = 0;
-        (*play_fmt_ctx).pb = pb;
-        println!("111111111");
-        // 6. 手动创建流（深拷贝 extradata）
-        let nb_streams = (*probe_fmt_ctx).nb_streams;
-        for i in 0..nb_streams {
-            let in_st = *(*probe_fmt_ctx).streams.offset(i as isize);
-            if in_st.is_null() {
-                continue;
-            }
-            let codecpar = (*in_st).codecpar;
-            if codecpar.is_null() {
-                continue;
-            }
-
-            // 只处理音视频流
-            let ct = (*codecpar).codec_type;
-            if ct != AVMediaType_AVMEDIA_TYPE_VIDEO && ct != AVMediaType_AVMEDIA_TYPE_AUDIO {
-                continue;
-            }
-
-            // 创建新流
-            let out_st = avformat_new_stream(play_fmt_ctx, ptr::null_mut());
-            if out_st.is_null() {
-                return Err(GlobalError::new_sys_error(
-                    "Failed to allocate IO buffer",
-                    |msg| error!("{msg}"),
-                ));
-            }
-
-            // 深拷贝 codecpar
-            let new_par = avcodec_parameters_alloc();
-            if new_par.is_null() {
-                return Err(GlobalError::new_sys_error(
-                    "Failed to allocate IO buffer",
-                    |msg| error!("{msg}"),
-                ));
-            }
-
-            // 复制基本字段
-            (*new_par).codec_type = ct;
-            (*new_par).codec_id = (*codecpar).codec_id;
-            (*new_par).codec_tag = (*codecpar).codec_tag;
-            (*new_par).bit_rate = (*codecpar).bit_rate;
-            (*new_par).profile = (*codecpar).profile;
-            (*new_par).level = (*codecpar).level;
-
-            // 深拷贝 extradata
-            if (*codecpar).extradata_size > 0 && !(*codecpar).extradata.is_null() {
-                let size = (*codecpar).extradata_size as usize;
-                let extradata = av_malloc(size) as *mut u8;
-                if extradata.is_null() {
-                    avcodec_parameters_free(&mut (new_par as *mut _));
-
-                    return Err(GlobalError::new_sys_error(
-                        "Failed to allocate IO buffer",
-                        |msg| error!("{msg}"),
-                    ));
-                }
-                ptr::copy_nonoverlapping((*codecpar).extradata, extradata, size);
-                (*new_par).extradata = extradata;
-                (*new_par).extradata_size = (*codecpar).extradata_size;
-            }
-
-            // 视频特有
-            if ct == AVMediaType_AVMEDIA_TYPE_VIDEO {
-                (*new_par).width = (*codecpar).width;
-                (*new_par).height = (*codecpar).height;
-                (*new_par).format = (*codecpar).format;
-            }
-            // 音频特有
-            else if ct == AVMediaType_AVMEDIA_TYPE_AUDIO {
-                (*new_par).sample_rate = (*codecpar).sample_rate;
-                (*new_par).channels = (*codecpar).channels;
-                (*new_par).channel_layout = (*codecpar).channel_layout;
-                (*new_par).format = (*codecpar).format;
-            }
-
-            (*out_st).codecpar = new_par;
-            (*out_st).time_base = (*in_st).time_base;
-            (*out_st).avg_frame_rate = (*in_st).avg_frame_rate;
-            (*out_st).r_frame_rate = (*in_st).r_frame_rate;
-            (*out_st).index = (*in_st).index;
-            (*out_st).id = (*in_st).id;
-
-        }
-
-        // println!("2222222222");
-        // let mut dict_opts: *mut AVDictionary = ptr::null_mut();
-        // macro_rules! set_dict {
-        //     ($k:expr, $v:expr) => {{
-        //         let key = CString::new($k).unwrap();
-        //         let val = CString::new($v).unwrap();
-        //         rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
-        //     }};
-        // }
-        // set_dict!("fflags", "discardcorrupt+ignidx+nobuffer+genpts+igndts");
-        // // set_dict!("analyzeduration", "0"); //不分析
-        // set_dict!("probesize", "32"); //64kb
-        // let find_ret = avformat_find_stream_info(play_fmt_ctx, &mut (dict_opts as *mut _));
-        println!("333333333");
-        // av_dict_free(&mut dict_opts);
-        // if find_ret < 0 {
-        //     warn!(
-        //         "avformat_find_stream_info failed: {}, but continuing",
-        //         find_ret
-        //     );
-        // }
-
-        println!(
-            "Play context built with {} streams",
-            (*play_fmt_ctx).nb_streams
-        );
-        Ok((io_buf, pb, play_fmt_ctx))
-    }
-    // unsafe fn build_play_fmt_ctx(
-    //     fmt_name: &str,
-    //     opaque: *mut c_void,
-    //     probe_fmt_ctx: *mut AVFormatContext,
-    // ) -> GlobalResult<(*mut u8, *mut AVIOContext, *mut AVFormatContext)> {
-    //     // allocate IO buffer
-    //     let io_buf = rsmpeg::ffi::av_malloc(DEFAULT_IO_BUF_SIZE) as *mut u8;
-    //     if io_buf.is_null() {
-    //         return Err(GlobalError::new_sys_error(
-    //             "Failed to allocate IO buffer",
-    //             |msg| error!("{msg}"),
-    //         ));
-    //     }
-    //     let play_fmt_ctx = alloc_fmt_ctx_with_custom_io()?;
-    //
-    //     let ifmt_name = CString::new(fmt_name).unwrap();
-    //     let input_fmt = av_find_input_format(ifmt_name.as_ptr());
-    //     if input_fmt.is_null() {
-    //         avformat_free_context(play_fmt_ctx);
-    //         return Err(GlobalError::new_sys_error(
-    //             &format!("demuxer not found: {}", fmt_name),
-    //             |msg| error!("{msg}"),
-    //         ));
-    //     }
-    //     // 设置 format context 的 iformat
-    //     // (*play_fmt_ctx).iformat = input_fmt;
-    //     (*play_fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
-    //     // (*play_fmt_ctx).flags |= AVFMT_FLAG_DISCARD_CORRUPT as c_int;
-    //     // (*play_fmt_ctx).flags |= AVFMT_FLAG_IGNIDX as c_int;
-    //     // (*play_fmt_ctx).flags |= AVFMT_FLAG_NOBUFFER as c_int;
-    //     // (*play_fmt_ctx).flags |= AVFMT_FLAG_GENPTS as c_int;
-    //     // (*play_fmt_ctx).flags |= AVFMT_FLAG_IGNDTS as c_int;
-    //     let pb = avio_alloc_context(
-    //         io_buf,
-    //         DEFAULT_IO_BUF_SIZE as c_int,
-    //         0,
-    //         opaque,
-    //         Some(rw::read_rtp_payload), // your read callback
-    //         None,
-    //         None,
-    //     );
-    //     if pb.is_null() {
-    //         let tup = opaque as OpaquePtr;
-    //         drop(Box::from_raw(tup));
-    //         av_free(io_buf as *mut c_void);
-    //         return Err(GlobalError::new_sys_error(
-    //             "Failed to allocate AVIO context",
-    //             |msg| error!("{msg}"),
-    //         ));
-    //     }
-    //
-    //     (*pb).seekable = 0;
-    //     (*play_fmt_ctx).pb = pb;
-    //     let mut dict_opts: *mut AVDictionary = ptr::null_mut();
-    //     macro_rules! set_dict {
-    //         ($k:expr, $v:expr) => {{
-    //             let key = CString::new($k).unwrap();
-    //             let val = CString::new($v).unwrap();
-    //             rsmpeg::ffi::av_dict_set(&mut dict_opts, key.as_ptr(), val.as_ptr(), 0);
-    //         }};
-    //     }
-    //     set_dict!("fflags", "discardcorrupt+ignidx+nobuffer+genpts+igndts");
-    //     set_dict!("analyzeduration", "0"); //不分析
-    //     // set_dict!("probesize", "65536"); //64kb
-    //     let open_ret = avformat_open_input(
-    //         &mut (play_fmt_ctx as *mut _),
-    //         ptr::null(),
-    //         input_fmt,
-    //         &mut (dict_opts as *mut _),
-    //     );
-    //     if open_ret < 0 {
-    //         // avio_context_free and drop opaque handled by cleanup_early
-    //         avformat_free_context(play_fmt_ctx);
-    //         let ffmpeg_error = show_ffmpeg_error_msg(open_ret);
-    //         return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| {
-    //             error!("{msg}")
-    //         }));
-    //     }
-    //     // avformat_find_stream_info(play_fmt_ctx,&mut (dict_opts as *mut _));
-    //     let nb_streams = (*probe_fmt_ctx).nb_streams;
-    //     println!("aaaaaaaaaa");
-    //     println!("1 nb size probe = {},play = {}",nb_streams,(*play_fmt_ctx).nb_streams);
-    //     for i in 0..nb_streams {
-    //         let in_st = *(*probe_fmt_ctx).streams.offset(i as isize);
-    //         let codecpar = (*in_st).codecpar;
-    //         let out_st = avformat_new_stream(play_fmt_ctx, ptr::null_mut());
-    //         // let out_st = if (i as u32) < (*play_fmt_ctx).nb_streams {
-    //         //     // 使用已存在的流
-    //         //     println!("使用已存在的流");
-    //         //     *(*play_fmt_ctx).streams.offset(i as isize)
-    //         //
-    //         // } else {
-    //         //     // 创建新流
-    //         //     println!(" 创建新流");
-    //         //     avformat_new_stream(play_fmt_ctx, ptr::null_mut())
-    //         // };
-    //         //
-    //         // if out_st.is_null() {
-    //         //     continue;
-    //         // }
-    //         // 更新 codecpar
-    //         avcodec_parameters_copy((*out_st).codecpar, codecpar);
-    //         (*out_st).time_base = (*in_st).time_base;
-    //         (*out_st).index = i as c_int;
-    //         (*out_st).id = (*in_st).id;
-    //
-    //     }
-    //     println!("nb size probe = {},play = {}",nb_streams,(*play_fmt_ctx).nb_streams);
-    //     // for i in 0..nb_streams {
-    //     //     let in_st = *(*probe_fmt_ctx).streams.offset(i as isize);
-    //     //     let codecpar = (*in_st).codecpar;
-    //     //
-    //     //     let out_st = avformat_new_stream(play_fmt_ctx, ptr::null_mut());
-    //     //     if out_st.is_null() {
-    //     //         return Err(GlobalError::new_sys_error(
-    //     //             "avformat_new_stream failed",
-    //     //             |msg| error!("msg"),
-    //     //         ));
-    //     //     }
-    //     //     println!("bbbbbbbbbb");
-    //     //     avcodec_parameters_copy((*out_st).codecpar, codecpar);
-    //     //
-    //     //     // // 只处理视频和音频流 复制编解码器参数
-    //     //     // if matches!(
-    //     //     //     (*codecpar).codec_type,
-    //     //     //     AVMediaType_AVMEDIA_TYPE_VIDEO | AVMediaType_AVMEDIA_TYPE_AUDIO
-    //     //     // ) {
-    //     //     //     avcodec_parameters_copy((*out_st).codecpar, codecpar);
-    //     //     // }
-    //     // }
-    //     Ok((io_buf, pb, play_fmt_ctx))
-    // }
 }
 
 #[cfg(test)]

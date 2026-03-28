@@ -5,7 +5,7 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio;
 use base::tokio::sync::mpsc::Receiver;
-use rsmpeg::ffi::{av_log_set_level, av_strerror, AVPacket, AV_LOG_INFO, AV_LOG_QUIET};
+use rsmpeg::ffi::{av_log_set_level, av_strerror, AVPacket, AV_LOG_ERROR, AV_LOG_INFO, AV_LOG_QUIET};
 use std::ffi::c_int;
 use std::sync::Arc;
 use base::bytes::Bytes;
@@ -21,8 +21,7 @@ pub const DEFAULT_IO_BUF_SIZE: usize = 1024*1024;
 //todo! 转发媒体流，不进入MediaContext
 pub async fn handle_process(mut rx: Receiver<u32>) {
     unsafe {
-        av_log_set_level(AV_LOG_INFO as c_int);
-        // av_log_set_level(AV_LOG_QUIET);
+        av_log_set_level(AV_LOG_ERROR as c_int); //AV_LOG_INFO
     }
     while let Some(ssrc) = rx.recv().await {
         if let Ok(mut sc_rx) = cache::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {

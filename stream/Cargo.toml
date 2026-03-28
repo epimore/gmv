@@ -3,6 +3,13 @@ name = "gmv-stream"
 version.workspace = true
 edition.workspace = true
 
+[profile.release]
+opt-level = 3
+lto = "fat" # 跨 Crate 全局内联
+codegen-units = 1 # 放弃并行编译，换取更完美的指令重排
+panic = "abort" # 去掉堆栈展开逻辑，编译器优化更激进
+debug = 1   # 保留行号信息，火焰图调优
+
 [dependencies]
 base = { git = "https://github.com/epimore/pigs.git",rev = "b83ba9f7094f4f2e0655620b717eff6ed477a56d",features = ["net"] }
 #base = { package = "base", path = "../../pigs/base", features = ["net"] }

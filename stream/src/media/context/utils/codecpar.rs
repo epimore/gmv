@@ -2,17 +2,7 @@ use crate::media::context::format::demuxer::{
     DemuxerContext, H264ParameterSets, H265ParameterSets, ParamRepairState,
 };
 use log::{debug, error, info, warn};
-use rsmpeg::ffi::{
-    AV_PKT_FLAG_KEY, AVCodec, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264,
-    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_ALAW,
-    AVCodecID_AV_CODEC_ID_PCM_MULAW, AVMediaType_AVMEDIA_TYPE_AUDIO,
-    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NV12,
-    AVPixelFormat_AV_PIX_FMT_YUV420P, AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational,
-    AVSampleFormat, AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream,
-    av_free, av_malloc, av_rescale_q, avcodec_alloc_context3, avcodec_close, avcodec_find_decoder,
-    avcodec_free_context, avcodec_open2, avcodec_parameters_from_context,
-    avcodec_parameters_to_context,
-};
+use rsmpeg::ffi::{AV_PKT_FLAG_KEY, AVCodec, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NV12, AVPixelFormat_AV_PIX_FMT_YUV420P, AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational, AVSampleFormat, AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream, av_free, av_malloc, av_rescale_q, avcodec_alloc_context3, avcodec_close, avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_from_context, avcodec_parameters_to_context, AV_NOPTS_VALUE};
 use shared::info::media_info_ext::MediaExt;
 use std::ptr;
 
@@ -157,7 +147,24 @@ pub unsafe fn repair_basic_stream_info(
         }
     }
 
-    // === 4. 打印修复后的状态 ===
+    // === 4. 修复起始时间 ===
+    if codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO ||
+        codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
+
+        // 如果 start_time 未设置，设置为 0
+        if (*stream).start_time == AV_NOPTS_VALUE as i64 {
+            (*stream).start_time = 0;
+            debug!("Set start_time to 0 for real-time stream");
+        }
+
+        // 如果 duration 未设置，设置为 AV_NOPTS_VALUE（实时流没有固定时长）
+        if (*stream).duration == AV_NOPTS_VALUE as i64 {
+            // 保持 AV_NOPTS_VALUE，表示实时流
+            debug!("Keep duration as AV_NOPTS_VALUE for real-time stream");
+        }
+    }
+
+    // === 5. 打印修复后的状态 ===
     debug!(
         "repair_basic_stream_info result for stream {}: time_base={}/{}, all_ready={}",
         (*stream).id,
