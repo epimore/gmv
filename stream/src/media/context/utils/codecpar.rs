@@ -2,7 +2,7 @@ use crate::media::context::format::demuxer::{
     DemuxerContext, H264ParameterSets, H265ParameterSets, ParamRepairState,
 };
 use log::{debug, error, info, warn};
-use rsmpeg::ffi::{AV_PKT_FLAG_KEY, AVCodec, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NV12, AVPixelFormat_AV_PIX_FMT_YUV420P, AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational, AVSampleFormat, AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream, av_free, av_malloc, av_rescale_q, avcodec_alloc_context3, avcodec_close, avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_from_context, avcodec_parameters_to_context, AV_NOPTS_VALUE};
+use rsmpeg::ffi::{AV_PKT_FLAG_KEY, AVCodec, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NV12, AVPixelFormat_AV_PIX_FMT_YUV420P, AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational, AVSampleFormat, AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream, av_free, av_malloc, av_rescale_q, avcodec_alloc_context3, avcodec_close, avcodec_find_decoder, avcodec_free_context, avcodec_open2, avcodec_parameters_from_context, avcodec_parameters_to_context, AV_NOPTS_VALUE, AVCodecID};
 use shared::info::media_info_ext::MediaExt;
 use std::ptr;
 
@@ -540,3 +540,76 @@ unsafe fn repair_audio_stream_info(stream: *mut AVStream, media_ext: &MediaExt) 
     }
 }
 
+//判断是否为无效的数据包
+pub fn is_invalid_pkt(pkt: &AVPacket, codec_id: AVCodecID) -> bool {
+    unsafe {
+        if pkt.data.is_null() || pkt.size <= 4 {
+            return true;
+        }
+
+        let data = std::slice::from_raw_parts(pkt.data, pkt.size as usize);
+
+        let mut has_valid_slice_ps = false;
+        let mut invalid_found = false;
+
+        for_each_nalu_annexb(data, |nalu| {
+            if invalid_found {
+                return;
+            }
+
+            if nalu.is_empty() {
+                invalid_found = true;
+                return;
+            }
+
+            match codec_id {
+                AVCodecID_AV_CODEC_ID_H264 => {
+                    let nal_type = nalu[0] & 0x1F;
+
+                    // 非法类型
+                    if nal_type == 0 || nal_type > 31 {
+                        invalid_found = true;
+                        return;
+                    }
+
+                    // 有效内容类型：
+                    // 1: non-IDR slice, 5: IDR slice, 6: SEI, 7: SPS, 8: PPS
+                    // 9: AUD, 10: 扩展等
+                    if matches!(nal_type, 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 12) {
+                        has_valid_slice_ps = true;
+                    }
+                }
+
+                AVCodecID_AV_CODEC_ID_HEVC => {
+                    let nal_type = (nalu[0] >> 1) & 0x3F;
+
+                    // HEVC 合法范围 0–63
+                    if nal_type > 63 {
+                        invalid_found = true;
+                        return;
+                    }
+
+                    // HEVC 有效内容类型：
+                    // 0-31: VCL slices
+                    // 32: VPS, 33: SPS, 34: PPS, 35: AUD, 39: SEI
+                    if nal_type <= 35 || nal_type == 39 {
+                        has_valid_slice_ps = true;
+                    }
+                }
+
+                _ => {}
+            }
+        });
+
+        if invalid_found {
+            return true;
+        }
+
+        // 必须包含至少一个有效的 NAL 单元内容
+        if !has_valid_slice_ps {
+            return true;
+        }
+
+        false
+    }
+}

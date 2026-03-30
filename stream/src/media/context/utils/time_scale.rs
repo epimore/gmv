@@ -1,8 +1,9 @@
-use log::info;
+use crate::media::context::utils::codecpar::is_invalid_pkt;
+use log::{info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_NOPTS_VALUE, AV_TIME_BASE_Q, AVMediaType, AVMediaType_AVMEDIA_TYPE_AUDIO, AVPacket,
-    av_rescale_q,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AV_TIME_BASE_Q, AVCodecID, AVMediaType,
+    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, av_rescale_q,
 };
 
 const MAX_JUMP_US: i64 = 5_000_000; // 5s
@@ -28,10 +29,11 @@ pub struct StreamTimeline {
     initialized: bool,
     stream_type: AVMediaType,
     time_base: AVRational,
+    codec_id: AVCodecID,
 }
 
 impl StreamTimeline {
-    pub fn new(stream_type: AVMediaType, time_base: AVRational) -> Self {
+    pub fn new(stream_type: AVMediaType, time_base: AVRational, codec_id: AVCodecID) -> Self {
         Self {
             last_dts: 0,
             last_pts: 0,
@@ -40,6 +42,7 @@ impl StreamTimeline {
             initialized: false,
             stream_type,
             time_base,
+            codec_id,
         }
     }
 
@@ -131,8 +134,14 @@ impl TimelineNormalizer {
         }
     }
 
-    pub fn init_stream(&mut self, idx: usize, m_tp: AVMediaType, time_base: AVRational) {
-        self.streams[idx] = Some(StreamTimeline::new(m_tp, time_base));
+    pub fn init_stream(
+        &mut self,
+        idx: usize,
+        m_tp: AVMediaType,
+        time_base: AVRational,
+        codec_id: AVCodecID,
+    ) {
+        self.streams[idx] = Some(StreamTimeline::new(m_tp, time_base, codec_id));
     }
 
     pub fn rescale_global_base_us(&mut self, pts: i64) {
@@ -143,9 +152,22 @@ impl TimelineNormalizer {
 
     pub fn process(&mut self, pkt: &mut AVPacket, ssrc: u32) -> (Option<i64>, ProcessResult) {
         let idx = pkt.stream_index as usize;
-
         let stream = match &mut self.streams[idx] {
-            Some(s) => s,
+            Some(s) => {
+                if s.stream_type == AVMediaType_AVMEDIA_TYPE_VIDEO
+                    && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0
+                {
+                    //对关键帧进行NAL校验
+                    if is_invalid_pkt(&pkt, s.codec_id) {
+                        warn!(
+                            "Discard invalid packet; ssrc: {}, pts: {}, dts: {}",
+                            ssrc, pkt.pts, pkt.dts,
+                        );
+                        return (None, ProcessResult::Ok);
+                    }
+                }
+                s
+            }
             None => return (None, ProcessResult::Ok),
         };
 

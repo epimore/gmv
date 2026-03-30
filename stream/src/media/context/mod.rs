@@ -7,20 +7,22 @@ use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::MuxerContext;
-use crate::media::context::utils::codecpar::repair_basic_stream_info;
+use crate::media::context::utils::codecpar::{is_invalid_pkt, repair_basic_stream_info};
 use crate::media::context::utils::extradata::dump_stream_info;
 use crate::media::context::utils::time_scale::{ProcessResult, TimelineNormalizer};
 use crate::media::rtp::RtpPacketBuffer;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::msg::StreamConfig;
 use base::bus::mpsc::TypedReceiver;
+use base::bytes::BytesMut;
 use base::chrono::Local;
 use base::exception::typed::common::MessageBusError;
 use base::exception::{BizError, GlobalError, GlobalResult};
 use log::{error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
+    AV_PKT_FLAG_CORRUPT, AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
 };
 use rsmpeg::ffi::{AVMediaType, AVPacket};
 use shared::info::media_info_ext::MediaExt;
@@ -28,7 +30,6 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::Arc;
 use std::time::Instant;
-use base::bytes::BytesMut;
 
 mod codec;
 pub mod event;
@@ -210,9 +211,12 @@ impl MediaContext {
             if media_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
                 has_video = true;
             }
-            cache_info
-                .timeline_normalizer
-                .init_stream(i, media_type, (*stream).time_base);
+            cache_info.timeline_normalizer.init_stream(
+                i,
+                media_type,
+                (*stream).time_base,
+                (*(*stream).codecpar).codec_id,
+            );
         }
         let mut video_keyframe_found = false;
         let mut audio_ready = false;
@@ -231,6 +235,18 @@ impl MediaContext {
             }
             let st = *(*fmt_ctx).streams.add(idx);
             let codecpar = (*st).codecpar;
+            if is_invalid_pkt(&pkt, (*codecpar).codec_id) {
+                warn!(
+                    "Discard invalid packet; ssrc: {}, pts: {}, dts: {} key frame: {}",
+                    self.ssrc,
+                    pkt.pts,
+                    pkt.dts,
+                    (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO
+                        && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0
+                );
+                rsmpeg::ffi::av_packet_unref(&mut pkt);
+                continue;
+            }
             // 统一修复流信息
             if !params[idx].ready {
                 params[idx].ready = repair_basic_stream_info(st, &pkt, ext, &mut params[idx]);
@@ -297,7 +313,7 @@ impl MediaContext {
                     Err(MessageBusError::ChannelClosed) => {
                         return Err(GlobalError::new_sys_error(
                             "数据已释放，通道关闭",
-                            |msg| error!("ssrc: {}; {msg}",self.ssrc),
+                            |msg| error!("ssrc: {}; {msg}", self.ssrc),
                         ));
                     }
                     Err(_) => {}
@@ -344,7 +360,7 @@ impl MediaContext {
         normalizer: &mut TimelineNormalizer,
         pkt: &mut AVPacket,
     ) -> GlobalResult<()> {
-        if let (Some(master_clock_us), res) = normalizer.process(pkt,self.ssrc) {
+        if let (Some(master_clock_us), res) = normalizer.process(pkt, self.ssrc) {
             // 暂不实现处理codec
             // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
             // 暂不实现处理filter
