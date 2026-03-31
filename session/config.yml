@@ -30,7 +30,7 @@ db:
     attrs:
       log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
       log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
-      timezone: "Asia/Shanghai"
+      timezone: "+8:00"
       charset: utf8mb4
       ssl_level: 0 #加密等级,默认1,取值[0,1],0-不加密,1-可选加密：服务端支持则加密、否则不加密,2-必选加密,服务端不支持则不建立连接,3-满足2外还需验证主机名,4-满足2外还需验证CA证书
       ssl_ca_crt_file: path/to/ca.crt #CA 证书 ssl_level:3 生效
@@ -78,7 +78,7 @@ server:
 #        pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
 #        pub_port: 19568 #流媒体服务接收rtp流的端口
 #        local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
-#        local_port: 18570 #节点局域网端口,用于流媒体服务之间通信
+#        local_port: 19570 #节点局域网端口,用于流媒体服务之间通信
 
 
 

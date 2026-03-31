@@ -27,3 +27,4 @@ url.workspace = true
 uuid.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
+openssl.workspace = true

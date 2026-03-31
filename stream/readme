@@ -1,5 +1,8 @@
 cargo fix --allow-dirty --allow-staged
 cargo build --release --target x86_64-unknown-linux-gnu
+./build-ffmpeg-images.sh
+ cross build --target x86_64-unknown-linux-gnu --release
+./compress.sh
 cat logs/gb_2025-11-25.log |grep 'REGISTER sip:34020000001117000219' | sed 's/\\n/\n/g'
 run --package gmv-session --bin gmv-session -- start -c ./session/config.yml
 1.文档、视频

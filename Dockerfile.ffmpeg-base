@@ -1,0 +1,91 @@
+ARG TARGET
+FROM ghcr.io/cross-rs/${TARGET}:main
+
+ARG TARGET
+
+# 安装构建依赖
+RUN apt-get update && apt-get install -y -q --no-install-recommends \
+    curl \
+    g++ \
+    make \
+    yasm \
+    nasm \
+    pkg-config \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# 根据 TARGET 动态设置库路径
+RUN case "$TARGET" in \
+        x86_64-unknown-linux-gnu) \
+            LIB_DIR="/usr/lib/x86_64-linux-gnu" \
+            INC_DIR="/usr/include/x86_64-linux-gnu" \
+            ;; \
+        aarch64-unknown-linux-gnu) \
+            LIB_DIR="/usr/lib/aarch64-linux-gnu" \
+            INC_DIR="/usr/include/aarch64-linux-gnu" \
+            ;; \
+        armv7-unknown-linux-gnueabihf) \
+            LIB_DIR="/usr/lib/arm-linux-gnueabihf" \
+            INC_DIR="/usr/include/arm-linux-gnueabihf" \
+            ;; \
+        *) \
+            echo "Unsupported target: $TARGET" && exit 1 \
+            ;; \
+    esac && \
+    echo "LIB_DIR=$LIB_DIR" >> /etc/environment && \
+    echo "INC_DIR=$INC_DIR" >> /etc/environment
+
+# 下载并编译 FFmpeg
+RUN . /etc/environment && \
+    curl -LO https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
+    tar -xf ffmpeg-6.1.tar.xz && \
+    cd ffmpeg-6.1 && \
+    ./configure \
+        --prefix=/usr \
+        --libdir=${LIB_DIR} \
+        --incdir=${INC_DIR} \
+        --enable-static \
+        --disable-shared \
+        --enable-pic \
+        --enable-gpl \
+        --enable-version3 \
+        --disable-debug \
+        --disable-doc \
+        --disable-programs \
+        --extra-cflags='-fPIC' \
+        --extra-ldflags="-L${LIB_DIR}" \
+        --enable-avdevice \
+        --enable-avcodec \
+        --enable-avformat \
+        --disable-postproc \
+        --enable-swscale \
+        --enable-swresample \
+        --disable-network \
+        --disable-everything \
+        --enable-protocol=file \
+        --enable-demuxer=mov,flv,mpegts,mpegps,h264,hevc,aac \
+        --enable-muxer=mov,mp4,flv,mpegts,hls,dash \
+        --enable-decoder=h264,hevc,aac,pcm_alaw,pcm_mulaw \
+        --enable-encoder=aac,pcm_alaw,pcm_mulaw \
+        --enable-parser=h264,hevc,aac \
+        --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
+        --disable-filters \
+        --disable-devices \
+        --disable-hwaccels \
+        --disable-indevs \
+        --disable-outdevs \
+        --disable-iconv \
+        --disable-zlib \
+        --disable-lzma \
+        --disable-bzlib \
+        --disable-openssl \
+        --disable-gnutls && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && \
+    rm -rf ffmpeg-6.1*
+
+# 验证安装
+RUN . /etc/environment && \
+    pkg-config --modversion libavcodec && \
+    ls -la ${LIB_DIR}/libavcodec.a

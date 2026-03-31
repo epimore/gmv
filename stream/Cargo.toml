@@ -9,6 +9,7 @@ lto = "fat" # 跨 Crate 全局内联
 codegen-units = 1 # 放弃并行编译，换取更完美的指令重排
 panic = "abort" # 去掉堆栈展开逻辑，编译器优化更激进
 debug = 1   # 保留行号信息，火焰图调优
+strip = true         # 移除调试信息
 
 [dependencies]
 base = { git = "https://github.com/epimore/pigs.git",rev = "b83ba9f7094f4f2e0655620b717eff6ed477a56d",features = ["net"] }
@@ -30,3 +31,4 @@ crossbeam-channel.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
 log = "0.4.28"
+openssl.workspace = true
