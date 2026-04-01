@@ -5,6 +5,7 @@ use log::info;
 use crate::media::context::format::FmtMuxer;
 use crate::media::context::MediaContext;
 use crate::general::mp::MediaParam;
+use crate::media::context::format::flv::FlvSupperCtx;
 use crate::media::context::utils::extradata;
 
 pub enum InnerEvent {
@@ -24,7 +25,11 @@ impl InnerEvent {
                         error!("no flv context");
                     }
                     Some(context) => {
-                        if let Err(_) = sender.send(context.get_header()) {
+                        let header = match context {
+                            FlvSupperCtx::FlvCtx(context) => { context.get_header() }
+                            FlvSupperCtx::H265FlvCtx(context) => { context.get_header() }
+                        };
+                        if let Err(_) = sender.send(header) {
                             error!("flv_header send to the receiver dropped");
                         }
                     }

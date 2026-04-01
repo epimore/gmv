@@ -30,6 +30,7 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::Arc;
 use std::time::Instant;
+use crate::media::context::format::flv::FlvSupperCtx;
 
 mod codec;
 pub mod event;
@@ -381,7 +382,10 @@ impl MediaContext {
     fn handle_pkt_muxer(&mut self, epoch: ProcessResult, pkt: &AVPacket, ts: u64) {
         let muxer = &mut self.muxer_context;
         if let Some(context) = &mut muxer.flv {
-            let _ = context.write_packet(pkt, ts);
+            match context {
+                FlvSupperCtx::FlvCtx(context) => {let _ = context.write_packet(pkt, ts);}
+                FlvSupperCtx::H265FlvCtx(context) => {let _ = context.write_packet(pkt, ts);}
+            }
         }
         if let Some(context) = &mut muxer.mp4 {
             let _ = context.write_packet(pkt, ts);
@@ -422,7 +426,10 @@ impl MediaContext {
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
         if let Some(context) = &mut muxer.flv {
-            context.flush();
+           match context {
+               FlvSupperCtx::FlvCtx(context) => { context.flush();}
+               FlvSupperCtx::H265FlvCtx(context) => { context.flush();}
+           }
         }
         if let Some(context) = &mut muxer.mp4 {
             context.flush();

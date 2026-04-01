@@ -18,6 +18,7 @@ pub mod rtp;
 pub mod ts;
 pub mod dashmp4;
 pub mod hlsfmp4;
+pub mod h265flv;
 
 pub struct MuxPacket {
     pub data: Bytes,

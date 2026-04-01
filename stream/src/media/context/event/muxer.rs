@@ -1,13 +1,15 @@
 use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::dashmp4::DashCmafMp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
-use crate::media::context::format::flv::FlvContext;
+use crate::media::context::format::flv::{FlvContext, FlvSupperCtx};
 use crate::media::context::format::fmp4::CmafFmp4Context;
+use crate::media::context::format::h265flv::H265FlvContext;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::{MuxerContext, MuxerEnum};
 use crate::state::layer::muxer_layer::{
     CMafLayer, FlvLayer, HlsTsLayer, Mp4Layer, RtpEncLayer, RtpFrameLayer, RtpPsLayer, TsLayer,
 };
+use rsmpeg::ffi::AVCodecID_AV_CODEC_ID_HEVC;
 
 pub enum MuxerEvent {
     Open(MuxerKind),
@@ -17,11 +19,19 @@ impl MuxerEvent {
     pub fn handle_event(self, muxer_context: &mut MuxerContext, demuxer_context: &DemuxerContext) {
         match self {
             MuxerEvent::Open(open) => match open {
-                MuxerKind::Flv(flv) => {
-                    let _ = FlvContext::init_context(demuxer_context, flv.tx).map(|flv_context| {
-                        muxer_context.flv = Some(flv_context);
-                    });
-                }
+                MuxerKind::Flv(flv) => unsafe {
+                    let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
+                    if (*in_fmt_ctx).video_codec_id == AVCodecID_AV_CODEC_ID_HEVC {
+                        let _ = H265FlvContext::init_context(demuxer_context, flv.tx).map(|flv_context| {
+                                muxer_context.flv = Some(FlvSupperCtx::H265FlvCtx(flv_context));
+                            });
+                    } else {
+                        let _ =
+                            FlvContext::init_context(demuxer_context, flv.tx).map(|flv_context| {
+                                muxer_context.flv = Some(FlvSupperCtx::FlvCtx(flv_context));
+                            });
+                    }
+                },
                 MuxerKind::Ts(ts) => {
                     unimplemented!()
                 }
@@ -46,7 +56,8 @@ impl MuxerEvent {
                     unimplemented!()
                 }
                 MuxerKind::DashMp4(dash_mp4) => {
-                    let _ = DashCmafMp4Context::init_context(demuxer_context, dash_mp4.tx).map(|ctx| {
+                    let _ =
+                        DashCmafMp4Context::init_context(demuxer_context, dash_mp4.tx).map(|ctx| {
                             muxer_context.dash_mp4 = Some(ctx);
                         });
                 }

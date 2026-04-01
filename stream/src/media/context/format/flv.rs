@@ -11,9 +11,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use crate::media::{show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
 use crate::media::context::format::{write_callback, MuxPacket, FmtMuxer};
+use crate::media::context::format::h265flv::H265FlvContext;
 
 static FLV: Lazy<CString> = Lazy::new(|| CString::new("flv").unwrap());
-
+pub enum FlvSupperCtx{
+    FlvCtx(FlvContext),
+    H265FlvCtx(H265FlvContext),
+}
 pub struct FlvContext {
     pub header: Bytes,
     pub pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
