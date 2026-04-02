@@ -5,7 +5,7 @@ use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
 use crate::media::context::format::MuxPacket;
 use crate::media::context::format::muxer::MuxerEnum;
-use crate::state::{TIME_OUT, cache};
+use crate::state::{TIME_OUT, cache, mode};
 use axum::body::Body;
 use axum::response::Response;
 use base::bytes::Bytes;
@@ -22,33 +22,56 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use base::cache::{CachedValue, CommonCache};
 use tokio_stream::wrappers::BroadcastStream;
 
 pub async fn handler(stream_id: String, token: &String, addr: SocketAddr) -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, user_count)) => {
-            let ssrc = bsi.rtp_info.ssrc;
             let token = token.to_string();
+            let ssrc = bsi.rtp_info.ssrc;
             let remote_addr = addr.to_string();
-            let info = StreamPlayInfo::new(
-                bsi,
-                remote_addr.clone(),
-                token.clone(),
-                OutputEnum::HttpFlv,
-                user_count,
-            );
-            let (tx, rx) = oneshot::channel();
-            let event_tx = cache::get_event_tx();
-            let _ = event_tx
-                .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
-                .await
-                .hand_log(|msg| error!("{msg}"));
-            match rx.await.hand_log(|msg| error!("{msg}")) {
-                Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
-                    match cache::get_muxer_rx(&ssrc, MuxerEnum::Flv) {
-                        Ok(rx) => {
-                            //插入用户
+            let stream_user_cache_key = format!("STREAM_USER_CACHE:flv:{}@{}", stream_id, token);
+            let can_play = match CommonCache::contains_key(&stream_user_cache_key) {
+                true => {
+                    cache::update_token(
+                        &stream_id,
+                        OutputEnum::HttpFlv,
+                        token.clone(),
+                        true,
+                        addr,
+                        None,
+                    );
+                    let cache_stream_user = mode::CacheStreamUser {
+                        expires_ttl: None,
+                        stream_id:stream_id.clone(),
+                        remote_addr:remote_addr.clone(),
+                        token:token.clone(),
+                        output: OutputEnum::HttpFlv,
+                    };
+                    CommonCache::insert(
+                        stream_user_cache_key.clone(),
+                        CachedValue::from_any(Arc::new(cache_stream_user)),
+                    );
+                    true
+                },
+                false => {
+                    let info = StreamPlayInfo::new(
+                        bsi,
+                        remote_addr.clone(),
+                        token.clone(),
+                        OutputEnum::HttpFlv,
+                        user_count,
+                    );
+                    let (tx, rx) = oneshot::channel();
+                    let event_tx = cache::get_event_tx();
+
+                    let _ = event_tx
+                        .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
+                        .await;
+                    match rx.await {
+                        Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
                             cache::update_token(
                                 &stream_id,
                                 OutputEnum::HttpFlv,
@@ -57,41 +80,45 @@ pub async fn handler(stream_id: String, token: &String, addr: SocketAddr) -> Res
                                 addr,
                                 None,
                             );
-                            let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync + 'static>> =
-                                Some(Box::new(move || {
-                                    cache::update_token(
-                                        &stream_id,
-                                        OutputEnum::HttpFlv,
-                                        token.clone(),
-                                        false,
-                                        addr,
-                                        None,
-                                    );
-                                    if let Some((bsi, user_count)) =
-                                        cache::get_base_stream_info_by_stream_id(&stream_id)
-                                    {
-                                        let info = StreamPlayInfo::new(
-                                            bsi,
-                                            remote_addr,
-                                            token,
-                                            OutputEnum::HttpFlv,
-                                            user_count,
-                                        );
-                                        let _ = event_tx
-                                            .try_send((Event::Out(OutEvent::OffPlay(info)), None))
-                                            .hand_log(|msg| error!("{msg}"));
-                                    }
-                                }));
-                            send_frame(ssrc, rx, on_disconnect).await
-                        }
-                        Err(_) => res_404(),
+                            true
+                        },
+                        Ok(_) => return res_401(),
+                        Err(_) => false,
                     }
                 }
-                Ok(_) => res_401(),
-                Err(_) => {
-                    //对端关闭,表示流已释放
-                    res_404()
+            };
+            if can_play {
+                match cache::get_muxer_rx(&ssrc, MuxerEnum::Flv) {
+                    Ok(rx) => {
+                        let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
+                            Some(Box::new(move || {
+                                cache::update_token(
+                                    &stream_id,
+                                    OutputEnum::HttpFlv,
+                                    token.clone(),
+                                    false,
+                                    addr,
+                                    None,
+                                );
+                                
+                                let cache_stream_user = mode::CacheStreamUser {
+                                    expires_ttl: Some(Duration::from_secs(6)),
+                                    stream_id,
+                                    remote_addr,
+                                    token,
+                                    output: OutputEnum::HttpFlv,
+                                };
+                                CommonCache::insert(
+                                    stream_user_cache_key,
+                                    CachedValue::from_any(Arc::new(cache_stream_user)),
+                                );
+                            }));
+                        send_frame(ssrc, rx, on_disconnect).await
+                    }
+                    Err(_) => res_404(),
                 }
+            } else {
+                res_404()
             }
         }
     }

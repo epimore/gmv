@@ -11,15 +11,25 @@ use crate::io::event_handler::{Event, OutEvent};
 use crate::state::cache;
 
 #[derive(Clone)]
-pub struct CacheStreamUser {
+pub struct CacheStreamUser1 {
     pub expires_ttl: Option<Duration>,
     pub stream_id: String,
     pub remote_addr: String,
     pub token: String,
+    pub output:OutputEnum,
 }
-impl Cacheable for CacheStreamUser {
+impl Cacheable for CacheStreamUser1 {
     fn expire_call(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {
+            //移除用户信息
+            cache::update_token(
+                &self.stream_id,
+                self.output,
+                self.token.clone(),
+                false,
+                SocketAddr::from_str(&self.remote_addr).unwrap(),
+                None,
+            );
             if let Some((bsi, user_count)) =
                 cache::get_base_stream_info_by_stream_id(&self.stream_id)
             {
@@ -27,7 +37,7 @@ impl Cacheable for CacheStreamUser {
                     bsi,
                     self.remote_addr.clone(),
                     self.token.clone(),
-                    OutputEnum::DashFmp4,
+                    self.output,
                     user_count,
                 );
                 let _ = cache::get_event_tx()
@@ -43,33 +53,24 @@ impl Cacheable for CacheStreamUser {
     }
 }
 #[derive(Clone)]
-pub struct CacheStreamUser1 {
+pub struct CacheStreamUser {
     pub expires_ttl: Option<Duration>,
     pub stream_id: String,
     pub remote_addr: String,
     pub token: String,
+    pub output:OutputEnum,
 }
-impl Cacheable for CacheStreamUser1 {
+impl Cacheable for CacheStreamUser {
     fn expire_call(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {
             if let Some((bsi, user_count)) =
                 cache::get_base_stream_info_by_stream_id(&self.stream_id)
             {
-                //移除用户信息
-                cache::update_token(
-                    &self.stream_id,
-                    OutputEnum::DashFmp4,
-                    self.token.clone(),
-                    false,
-                    SocketAddr::from_str(&self.remote_addr).unwrap(),
-                    None,
-                );
-
                 let info = StreamPlayInfo::new(
                     bsi,
                     self.remote_addr.clone(),
                     self.token.clone(),
-                    OutputEnum::DashFmp4,
+                    self.output,
                     user_count,
                 );
                 let _ = cache::get_event_tx()

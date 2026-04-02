@@ -34,7 +34,7 @@ pub async fn segment(stream_id: String, token: &String) -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, _user_count)) => {
-            let stream_user_cache_key = format!("STREAM_USER_CACHE:{}@{}", stream_id, token);
+            let stream_user_cache_key = format!("SEGMENT_DASH_MP4_STREAM_USER_CACHE:{}@{}", stream_id, token);
             CommonCache::refresh(&stream_user_cache_key);
             let ssrc = bsi.rtp_info.ssrc;
             match cache::get_muxer_rx(&ssrc, MuxerEnum::DashMp4) {
@@ -63,9 +63,30 @@ pub async fn chunk(stream_id: String, token: &String, addr: SocketAddr) -> Respo
             let token = token.to_string();
             let ssrc = bsi.rtp_info.ssrc;
             let remote_addr = addr.to_string();
-            let stream_user_cache_key = format!("STREAM_USER_CACHE:{}@{}", stream_id, token);
+            let stream_user_cache_key = format!("STREAM_USER_CACHE:fmp4:{}@{}", stream_id, token);
             let can_play = match CommonCache::contains_key(&stream_user_cache_key) {
-                true => true,
+                true => {
+                    cache::update_token(
+                        &stream_id,
+                        OutputEnum::DashFmp4,
+                        token.clone(),
+                        true,
+                        addr,
+                        None,
+                    );
+                    let cache_stream_user = mode::CacheStreamUser {
+                        expires_ttl: None,
+                        stream_id:stream_id.clone(),
+                        remote_addr:remote_addr.clone(),
+                        token:token.clone(),
+                        output: OutputEnum::DashFmp4,
+                    };
+                    CommonCache::insert(
+                        stream_user_cache_key.clone(),
+                        CachedValue::from_any(Arc::new(cache_stream_user)),
+                    );
+                    true
+                },
                 false => {
                     let info = StreamPlayInfo::new(
                         bsi,
@@ -81,7 +102,17 @@ pub async fn chunk(stream_id: String, token: &String, addr: SocketAddr) -> Respo
                         .send((Event::Out(OutEvent::OnPlay(info)), Some(tx)))
                         .await;
                     match rx.await {
-                        Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => true,
+                        Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
+                            cache::update_token(
+                                &stream_id,
+                                OutputEnum::DashFmp4,
+                                token.clone(),
+                                true,
+                                addr,
+                                None,
+                            );
+                            true
+                        },
                         Ok(_) => return res_401(),
                         Err(_) => false,
                     }
@@ -90,16 +121,7 @@ pub async fn chunk(stream_id: String, token: &String, addr: SocketAddr) -> Respo
             if can_play {
                 match cache::get_muxer_rx(&ssrc, MuxerEnum::FMp4) {
                     Ok(rx) => {
-                        cache::update_token(
-                            &stream_id,
-                            OutputEnum::DashFmp4,
-                            token.clone(),
-                            true,
-                            addr,
-                            None,
-                        );
                         let event_tx = cache::get_event_tx();
-                        let token1 = token.clone();
                         let token2 = token.clone();
                         let remote_addr1 = remote_addr.clone();
                         let stream_id1 = stream_id.clone();
@@ -108,17 +130,17 @@ pub async fn chunk(stream_id: String, token: &String, addr: SocketAddr) -> Respo
                                 cache::update_token(
                                     &stream_id,
                                     OutputEnum::DashFmp4,
-                                    token1,
+                                    token.clone(),
                                     false,
                                     addr,
                                     None,
                                 );
-
                                 let cache_stream_user = mode::CacheStreamUser {
                                     expires_ttl: Some(Duration::from_secs(6)),
                                     stream_id,
                                     remote_addr,
                                     token,
+                                    output: OutputEnum::DashFmp4,
                                 };
                                 CommonCache::insert(
                                     stream_user_cache_key,
@@ -159,7 +181,7 @@ pub async fn init_segment(stream_id: String, token: &String) -> Response<Body> {
     match cache::get_base_stream_info_by_stream_id(&stream_id) {
         None => res_404(),
         Some((bsi, _)) => {
-            let stream_user_cache_key = format!("STREAM_USER_CACHE:{}@{}", stream_id, token);
+            let stream_user_cache_key = format!("SEGMENT_DASH_MP4_STREAM_USER_CACHE:{}@{}", stream_id, token);
             CommonCache::refresh(&stream_user_cache_key);
             let ssrc = bsi.rtp_info.ssrc;
             match get_dash_mp4_init(ssrc).await {
@@ -184,13 +206,16 @@ pub async fn mpd_handler(stream_id: String, token: &String, addr: SocketAddr) ->
             let stream_user_cache_key =
                 format!("SEGMENT_DASH_MP4_STREAM_USER_CACHE:{}@{}", stream_id, token);
             let can_play = match CommonCache::contains_key(&stream_user_cache_key) {
-                true => true,
+                true => {
+                    CommonCache::refresh(&stream_user_cache_key);
+                    true
+                },
                 false => {
                     let info = StreamPlayInfo::new(
                         bsi,
                         remote_addr.clone(),
                         token.clone(),
-                        OutputEnum::DashFmp4,
+                        OutputEnum::DashMp4,
                         user_count,
                     );
                     let (tx, rx) = oneshot::channel();
@@ -203,7 +228,7 @@ pub async fn mpd_handler(stream_id: String, token: &String, addr: SocketAddr) ->
                         Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
                             cache::update_token(
                                 &stream_id,
-                                OutputEnum::DashFmp4,
+                                OutputEnum::DashMp4,
                                 token.clone(),
                                 true,
                                 addr,
@@ -214,6 +239,7 @@ pub async fn mpd_handler(stream_id: String, token: &String, addr: SocketAddr) ->
                                 stream_id: stream_id.clone(),
                                 remote_addr,
                                 token,
+                                output: OutputEnum::DashMp4,
                             };
                             CommonCache::insert(
                                 stream_user_cache_key.clone(),
@@ -227,8 +253,6 @@ pub async fn mpd_handler(stream_id: String, token: &String, addr: SocketAddr) ->
                 }
             };
             if can_play {
-                CommonCache::refresh(&stream_user_cache_key);
-
                 match get_video_param(ssrc).await {
                     Ok(mp) => {
                         let mpd = generate_mpd(&stream_id, mp);
