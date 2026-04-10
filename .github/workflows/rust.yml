@@ -16,24 +16,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y nasm pkg-config
+    - name: Install cross
+      run: cargo install cross --git https://github.com/cross-rs/cross
 
-    - name: Build and install FFmpeg 6.1
-      run: |
-        git clone --depth=1 https://github.com/FFmpeg/FFmpeg -b release/6.1
-        cd FFmpeg
-        ./configure --enable-shared --prefix=/usr/local
-        make -j$(nproc)
-        sudo make install
-        sudo ldconfig
+    - name: Build cross image
+      run: ./build-images.sh x86_64-unknown-linux-gnu
 
-    - name: Build Rust
-      env:
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
-      run: cargo build --release
+    - name: Cross build
+      run: cross build --release --target x86_64-unknown-linux-gnu
 
     - name: Run tests
       run: cargo test --verbose

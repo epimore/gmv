@@ -1,31 +1,158 @@
-# 全局 build-std 只对交叉编译 target 有效，x86_64 不需要
+# ============================================================
+# Cross.toml (Full Platform Edition)
+#
+# Targets:
+#   Linux (GNU / MUSL)
+#   Android
+#   Apple (macOS / iOS)
+#   BSD
+#   Windows (GNU / MSVC)
+#
+# Strategy:
+#   - Prefer static linking where possible
+#   - Ensure cross-compilation reproducibility
+# ============================================================
+
 [build]
-# 不设置全局 build-std
+# Do NOT set global build-std unless needed
+# default-target = "x86_64-unknown-linux-gnu"
+
+
+# ============================================================
+# Linux GNU (dynamic system, optional static CRT)
+# ============================================================
 
 [target.x86_64-unknown-linux-gnu]
 image = "ffmpeg-cross-x86_64-unknown-linux-gnu:latest"
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.x86_64-unknown-linux-gnu.env]
 FFMPEG_STATIC = "1"
 PKG_CONFIG_ALLOW_CROSS = "1"
 PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig"
 
-# aarch64 配置
+
 [target.aarch64-unknown-linux-gnu]
 image = "ffmpeg-cross-aarch64-unknown-linux-gnu:latest"
-build-std = true
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-unknown-linux-gnu.env]
 FFMPEG_STATIC = "1"
 PKG_CONFIG_ALLOW_CROSS = "1"
 PKG_CONFIG_PATH = "/usr/lib/aarch64-linux-gnu/pkgconfig"
 
-# armv7 配置
+
 [target.armv7-unknown-linux-gnueabihf]
 image = "ffmpeg-cross-armv7-unknown-linux-gnueabihf:latest"
-build-std = true
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.armv7-unknown-linux-gnueabihf.env]
 FFMPEG_STATIC = "1"
 PKG_CONFIG_ALLOW_CROSS = "1"
 PKG_CONFIG_PATH = "/usr/lib/arm-linux-gnueabihf/pkgconfig"
+
+
+[target.i686-unknown-linux-gnu]
+image = "ffmpeg-cross-i686-unknown-linux-gnu:latest"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+
+# ============================================================
+# Linux MUSL (FULL STATIC)
+# ============================================================
+
+[target.x86_64-unknown-linux-musl]
+image = "ffmpeg-cross-x86_64-unknown-linux-musl:latest"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+image = "ffmpeg-cross-aarch64-unknown-linux-musl:latest"
+
+[target.armv7-unknown-linux-musleabihf]
+image = "ffmpeg-cross-armv7-unknown-linux-musleabihf:latest"
+
+
+# ============================================================
+# Android (NDK required in image)
+# ============================================================
+
+[target.aarch64-linux-android]
+image = "ffmpeg-cross-aarch64-linux-android:latest"
+
+[target.armv7-linux-androideabi]
+image = "ffmpeg-cross-armv7-linux-androideabi:latest"
+
+[target.x86_64-linux-android]
+image = "ffmpeg-cross-x86_64-linux-android:latest"
+
+[target.i686-linux-android]
+image = "ffmpeg-cross-i686-linux-android:latest"
+
+
+# ============================================================
+# Apple macOS
+# ============================================================
+
+[target.x86_64-apple-darwin]
+image = "ffmpeg-cross-x86_64-apple-darwin:latest"
+
+[target.aarch64-apple-darwin]
+image = "ffmpeg-cross-aarch64-apple-darwin:latest"
+
+
+# ============================================================
+# iOS
+# ============================================================
+
+[target.aarch64-apple-ios]
+image = "ffmpeg-cross-aarch64-apple-ios:latest"
+
+[target.aarch64-apple-ios-sim]
+image = "ffmpeg-cross-aarch64-apple-ios-sim:latest"
+
+[target.x86_64-apple-ios]
+image = "ffmpeg-cross-x86_64-apple-ios:latest"
+
+
+# ============================================================
+# BSD
+# ============================================================
+
+[target.x86_64-unknown-freebsd]
+image = "ffmpeg-cross-x86_64-unknown-freebsd:latest"
+
+[target.aarch64-unknown-freebsd]
+image = "ffmpeg-cross-aarch64-unknown-freebsd:latest"
+
+[target.x86_64-unknown-netbsd]
+image = "ffmpeg-cross-x86_64-unknown-netbsd:latest"
+
+[target.x86_64-unknown-openbsd]
+image = "ffmpeg-cross-x86_64-unknown-openbsd:latest"
+
+[target.x86_64-unknown-dragonfly]
+image = "ffmpeg-cross-x86_64-unknown-dragonfly:latest"
+
+
+# ============================================================
+# Windows GNU (MinGW, best cross support)
+# ============================================================
+
+[target.x86_64-pc-windows-gnu]
+image = "ffmpeg-cross-x86_64-pc-windows-gnu:latest"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-gnu.env]
+FFMPEG_STATIC = "1"
+PKG_CONFIG_ALLOW_CROSS = "1"
+
+
+[target.i686-pc-windows-gnu]
+image = "ffmpeg-cross-i686-pc-windows-gnu:latest"
+
+[target.i686-pc-windows-gnu.env]
+FFMPEG_STATIC = "1"
+
+
+[target.aarch64-pc-windows-gnullvm]
+image = "ffmpeg-cross-aarch64-pc-windows-gnullvm:latest"
