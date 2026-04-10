@@ -1,0 +1,172 @@
+# ============================================================
+# FFmpeg / Native Dependency Cross Build Base Image
+# Supports:
+# Linux / MUSL / Android / Apple / BSD / Windows GNU
+# ============================================================
+
+ARG TARGET=x86_64-unknown-linux-gnu
+FROM ghcr.io/cross-rs/${TARGET}:main
+
+ARG TARGET
+ARG FFMPEG_VERSION=6.1
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ============================================================
+# Common dependencies
+# ============================================================
+
+RUN apt-get update && apt-get install -y -q --no-install-recommends \
+    curl wget git cmake make g++ pkg-config \
+    yasm nasm xz-utils python3 ca-certificates \
+    mingw-w64 \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# ============================================================
+# Resolve target paths
+# ============================================================
+
+RUN case "$TARGET" in \
+\
+x86_64-unknown-linux-gnu) \
+LIB_DIR="/usr/lib/x86_64-linux-gnu"; \
+INC_DIR="/usr/include/x86_64-linux-gnu"; \
+CROSS_PREFIX=""; \
+FF_TARGET_OS="linux"; \
+;; \
+\
+aarch64-unknown-linux-gnu) \
+LIB_DIR="/usr/lib/aarch64-linux-gnu"; \
+INC_DIR="/usr/include/aarch64-linux-gnu"; \
+CROSS_PREFIX="aarch64-linux-gnu-"; \
+FF_TARGET_OS="linux"; \
+;; \
+\
+armv7-unknown-linux-gnueabihf) \
+LIB_DIR="/usr/lib/arm-linux-gnueabihf"; \
+INC_DIR="/usr/include/arm-linux-gnueabihf"; \
+CROSS_PREFIX="arm-linux-gnueabihf-"; \
+FF_TARGET_OS="linux"; \
+;; \
+\
+x86_64-unknown-linux-musl) \
+LIB_DIR="/usr/x86_64-linux-musl/lib"; \
+INC_DIR="/usr/x86_64-linux-musl/include"; \
+CROSS_PREFIX="x86_64-linux-musl-"; \
+FF_TARGET_OS="linux"; \
+;; \
+\
+aarch64-linux-android) \
+LIB_DIR="/opt/android/lib"; \
+INC_DIR="/opt/android/include"; \
+CROSS_PREFIX="aarch64-linux-android-"; \
+FF_TARGET_OS="android"; \
+;; \
+\
+x86_64-apple-darwin|aarch64-apple-darwin) \
+LIB_DIR="/opt/apple/lib"; \
+INC_DIR="/opt/apple/include"; \
+CROSS_PREFIX=""; \
+FF_TARGET_OS="darwin"; \
+;; \
+\
+x86_64-pc-windows-gnu) \
+LIB_DIR="/usr/x86_64-w64-mingw32/lib"; \
+INC_DIR="/usr/x86_64-w64-mingw32/include"; \
+CROSS_PREFIX="x86_64-w64-mingw32-"; \
+FF_TARGET_OS="mingw32"; \
+;; \
+\
+i686-pc-windows-gnu) \
+LIB_DIR="/usr/i686-w64-mingw32/lib"; \
+INC_DIR="/usr/i686-w64-mingw32/include"; \
+CROSS_PREFIX="i686-w64-mingw32-"; \
+FF_TARGET_OS="mingw32"; \
+;; \
+\
+aarch64-pc-windows-gnullvm) \
+LIB_DIR="/usr/aarch64-w64-mingw32/lib"; \
+INC_DIR="/usr/aarch64-w64-mingw32/include"; \
+CROSS_PREFIX="aarch64-w64-mingw32-"; \
+FF_TARGET_OS="mingw32"; \
+;; \
+\
+*) \
+echo "Unsupported target: $TARGET"; \
+exit 1; \
+;; \
+esac && \
+echo "LIB_DIR=$LIB_DIR" > /etc/profile.d/cross-env.sh && \
+echo "INC_DIR=$INC_DIR" >> /etc/profile.d/cross-env.sh && \
+echo "CROSS_PREFIX=$CROSS_PREFIX" >> /etc/profile.d/cross-env.sh && \
+echo "FF_TARGET_OS=$FF_TARGET_OS" >> /etc/profile.d/cross-env.sh && \
+chmod +x /etc/profile.d/cross-env.sh
+
+
+# ============================================================
+# Global env
+# ============================================================
+
+RUN . /etc/profile.d/cross-env.sh && \
+echo "FFMPEG_STATIC=1" >> /etc/environment && \
+echo "PKG_CONFIG_ALLOW_CROSS=1" >> /etc/environment && \
+echo "PKG_CONFIG_PATH=${LIB_DIR}/pkgconfig" >> /etc/environment
+
+
+# ============================================================
+# Build FFmpeg
+# ============================================================
+
+RUN . /etc/profile.d/cross-env.sh && \
+curl -L -o ffmpeg-${FFMPEG_VERSION}.tar.gz https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VERSION}.tar.gz && \
+mkdir -p ffmpeg-${FFMPEG_VERSION} && \
+tar -xf ffmpeg-${FFMPEG_VERSION}.tar.gz --strip-components=1 -C ffmpeg-${FFMPEG_VERSION} && \
+cd ffmpeg-${FFMPEG_VERSION} && \
+./configure \
+--prefix=/usr \
+--target-os=${FF_TARGET_OS} \
+--cross-prefix=${CROSS_PREFIX} \
+--arch=$(echo ${TARGET} | cut -d- -f1) \
+--libdir=${LIB_DIR} \
+--incdir=${INC_DIR} \
+--enable-static \
+--disable-shared \
+--enable-pic \
+--enable-gpl \
+--enable-version3 \
+--disable-debug \
+--disable-doc \
+--disable-programs \
+--extra-cflags="-fPIC" \
+--extra-ldflags="-L${LIB_DIR}" \
+--enable-avdevice \
+--enable-avcodec \
+--enable-avformat \
+--enable-swscale \
+--enable-swresample \
+--disable-network \
+--disable-everything \
+--enable-protocol=file \
+--enable-demuxer=mov,flv,mpegts,mpegps,h264,hevc,aac \
+--enable-muxer=mov,mp4,flv,mpegts,hls,dash \
+--enable-decoder=h264,hevc,aac \
+--enable-encoder=aac \
+--enable-parser=h264,hevc,aac \
+--enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
+&& make -j$(nproc) \
+&& make install \
+&& cd .. \
+&& rm -rf ffmpeg-${FFMPEG_VERSION}*
+
+
+# ============================================================
+# Verify
+# ============================================================
+
+RUN . /etc/profile.d/cross-env.sh && \
+pkg_cfg="${LIB_DIR}/pkgconfig" && \
+export PKG_CONFIG_PATH="${pkg_cfg}:${PKG_CONFIG_PATH}" && \
+test -f "${pkg_cfg}/libavcodec.pc" && \
+pkg-config --modversion libavcodec && \
+ls -la "${LIB_DIR}/libavcodec.a"

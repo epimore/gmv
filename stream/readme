@@ -2,6 +2,7 @@ cargo fix --allow-dirty --allow-staged
 cargo build --release --target x86_64-unknown-linux-gnu
 ./build-ffmpeg-images.sh
  cross build --target x86_64-unknown-linux-gnu --release
+  cross clean --target x86_64-unknown-linux-gnu
 ./compress.sh
 cat logs/gb_2025-11-25.log |grep 'REGISTER sip:34020000001117000219' | sed 's/\\n/\n/g'
 run --package gmv-session --bin gmv-session -- start -c ./session/config.yml
@@ -11,7 +12,9 @@ run --package gmv-session --bin gmv-session -- start -c ./session/config.yml
 流播放地址：
 2. 支持H265,FMP4...  -- STREAM sed
 3. 统一响应码
-
+rsmpeg:
+src/avcodec/parser.rs
+unsafe { ffi::av_parser_init(codec_id as ::std::os::raw::c_int) }
 ffmpeg -re -i E:\book\mv\st\yddz.mp4 -vcodec copy -f rtp rtp://172.18.38.186:18568
 ffmpeg -re -i E:\code\rust\study\media\rsmpeg\tests\assets\vids\big_buck_bunny_1080p_24fps_h264.h264 -vcodec copy -f rtp rtp://172.18.38.186:18568
 ffmpeg -protocol_whitelist file,udp,rtp -i ./123.sdp -c:v copy -f flv 1.flv

@@ -1,158 +1,91 @@
 # ============================================================
-# Cross.toml (Full Platform Edition)
-#
-# Targets:
-#   Linux (GNU / MUSL)
-#   Android
-#   Apple (macOS / iOS)
-#   BSD
-#   Windows (GNU / MSVC)
-#
-# Strategy:
-#   - Prefer static linking where possible
-#   - Ensure cross-compilation reproducibility
+# Cross.toml (cross-only keys)
 # ============================================================
 
 [build]
-# Do NOT set global build-std unless needed
-# default-target = "x86_64-unknown-linux-gnu"
-
-
-# ============================================================
-# Linux GNU (dynamic system, optional static CRT)
-# ============================================================
 
 [target.x86_64-unknown-linux-gnu]
-image = "ffmpeg-cross-x86_64-unknown-linux-gnu:latest"
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.x86_64-unknown-linux-gnu.env]
-FFMPEG_STATIC = "1"
-PKG_CONFIG_ALLOW_CROSS = "1"
-PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig"
-
+image = "static-cross-x86_64-unknown-linux-gnu:latest"
 
 [target.aarch64-unknown-linux-gnu]
-image = "ffmpeg-cross-aarch64-unknown-linux-gnu:latest"
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.aarch64-unknown-linux-gnu.env]
-FFMPEG_STATIC = "1"
-PKG_CONFIG_ALLOW_CROSS = "1"
-PKG_CONFIG_PATH = "/usr/lib/aarch64-linux-gnu/pkgconfig"
-
+image = "static-cross-aarch64-unknown-linux-gnu:latest"
 
 [target.armv7-unknown-linux-gnueabihf]
-image = "ffmpeg-cross-armv7-unknown-linux-gnueabihf:latest"
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.armv7-unknown-linux-gnueabihf.env]
-FFMPEG_STATIC = "1"
-PKG_CONFIG_ALLOW_CROSS = "1"
-PKG_CONFIG_PATH = "/usr/lib/arm-linux-gnueabihf/pkgconfig"
-
+image = "static-cross-armv7-unknown-linux-gnueabihf:latest"
 
 [target.i686-unknown-linux-gnu]
-image = "ffmpeg-cross-i686-unknown-linux-gnu:latest"
-rustflags = ["-C", "target-feature=+crt-static"]
-
-
-# ============================================================
-# Linux MUSL (FULL STATIC)
-# ============================================================
+image = "static-cross-i686-unknown-linux-gnu:latest"
 
 [target.x86_64-unknown-linux-musl]
-image = "ffmpeg-cross-x86_64-unknown-linux-musl:latest"
-rustflags = ["-C", "target-feature=+crt-static"]
+image = "static-cross-x86_64-unknown-linux-musl:latest"
 
 [target.aarch64-unknown-linux-musl]
-image = "ffmpeg-cross-aarch64-unknown-linux-musl:latest"
+image = "static-cross-aarch64-unknown-linux-musl:latest"
 
 [target.armv7-unknown-linux-musleabihf]
-image = "ffmpeg-cross-armv7-unknown-linux-musleabihf:latest"
-
-
-# ============================================================
-# Android (NDK required in image)
-# ============================================================
+image = "static-cross-armv7-unknown-linux-musleabihf:latest"
 
 [target.aarch64-linux-android]
-image = "ffmpeg-cross-aarch64-linux-android:latest"
+image = "static-cross-aarch64-linux-android:latest"
 
 [target.armv7-linux-androideabi]
-image = "ffmpeg-cross-armv7-linux-androideabi:latest"
+image = "static-cross-armv7-linux-androideabi:latest"
 
 [target.x86_64-linux-android]
-image = "ffmpeg-cross-x86_64-linux-android:latest"
+image = "static-cross-x86_64-linux-android:latest"
 
 [target.i686-linux-android]
-image = "ffmpeg-cross-i686-linux-android:latest"
-
-
-# ============================================================
-# Apple macOS
-# ============================================================
+image = "static-cross-i686-linux-android:latest"
 
 [target.x86_64-apple-darwin]
-image = "ffmpeg-cross-x86_64-apple-darwin:latest"
+image = "static-cross-x86_64-apple-darwin:latest"
 
 [target.aarch64-apple-darwin]
-image = "ffmpeg-cross-aarch64-apple-darwin:latest"
-
-
-# ============================================================
-# iOS
-# ============================================================
+image = "static-cross-aarch64-apple-darwin:latest"
 
 [target.aarch64-apple-ios]
-image = "ffmpeg-cross-aarch64-apple-ios:latest"
+image = "static-cross-aarch64-apple-ios:latest"
 
 [target.aarch64-apple-ios-sim]
-image = "ffmpeg-cross-aarch64-apple-ios-sim:latest"
+image = "static-cross-aarch64-apple-ios-sim:latest"
 
 [target.x86_64-apple-ios]
-image = "ffmpeg-cross-x86_64-apple-ios:latest"
-
-
-# ============================================================
-# BSD
-# ============================================================
+image = "static-cross-x86_64-apple-ios:latest"
 
 [target.x86_64-unknown-freebsd]
-image = "ffmpeg-cross-x86_64-unknown-freebsd:latest"
+image = "static-cross-x86_64-unknown-freebsd:latest"
 
 [target.aarch64-unknown-freebsd]
-image = "ffmpeg-cross-aarch64-unknown-freebsd:latest"
+image = "static-cross-aarch64-unknown-freebsd:latest"
 
 [target.x86_64-unknown-netbsd]
-image = "ffmpeg-cross-x86_64-unknown-netbsd:latest"
+image = "static-cross-x86_64-unknown-netbsd:latest"
 
 [target.x86_64-unknown-openbsd]
-image = "ffmpeg-cross-x86_64-unknown-openbsd:latest"
+image = "static-cross-x86_64-unknown-openbsd:latest"
 
 [target.x86_64-unknown-dragonfly]
-image = "ffmpeg-cross-x86_64-unknown-dragonfly:latest"
-
-
-# ============================================================
-# Windows GNU (MinGW, best cross support)
-# ============================================================
+image = "static-cross-x86_64-unknown-dragonfly:latest"
 
 [target.x86_64-pc-windows-gnu]
-image = "ffmpeg-cross-x86_64-pc-windows-gnu:latest"
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.x86_64-pc-windows-gnu.env]
-FFMPEG_STATIC = "1"
-PKG_CONFIG_ALLOW_CROSS = "1"
-
+image = "static-cross-x86_64-pc-windows-gnu:latest"
 
 [target.i686-pc-windows-gnu]
-image = "ffmpeg-cross-i686-pc-windows-gnu:latest"
-
-[target.i686-pc-windows-gnu.env]
-FFMPEG_STATIC = "1"
-
+image = "static-cross-i686-pc-windows-gnu:latest"
 
 [target.aarch64-pc-windows-gnullvm]
-image = "ffmpeg-cross-aarch64-pc-windows-gnullvm:latest"
+image = "static-cross-aarch64-pc-windows-gnullvm:latest"
+
+[target.x86_64-pc-windows-gnu.env]
+passthrough = [
+  "PKG_CONFIG_ALLOW_CROSS=1",
+  "PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/lib/pkgconfig",
+  "PKG_CONFIG_LIBDIR=/usr/x86_64-w64-mingw32/lib/pkgconfig",
+  "PKG_CONFIG_PATH_x86_64_pc_windows_gnu=/usr/x86_64-w64-mingw32/lib/pkgconfig",
+  "PKG_CONFIG_LIBDIR_x86_64_pc_windows_gnu=/usr/x86_64-w64-mingw32/lib/pkgconfig",
+  "FFMPEG_PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/lib/pkgconfig",
+  "FFMPEG_LIBS_DIR=/usr/x86_64-w64-mingw32/lib",
+  "FFMPEG_INCLUDE_DIR=/usr/x86_64-w64-mingw32/include",
+  "CFLAGS_x86_64_pc_windows_gnu=-DSIO_UDP_NETRESET=SIO_UDP_CONNRESET",
+  "CXXFLAGS_x86_64_pc_windows_gnu=-DSIO_UDP_NETRESET=SIO_UDP_CONNRESET"
+]

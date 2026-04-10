@@ -211,7 +211,7 @@ fi
 # Build image
 # ==========================================================
 
-IMAGE_NAME="ffmpeg-cross-$TARGET:$VERSION"
+IMAGE_NAME="static-cross-$TARGET:$VERSION"
 
 echo "=========================================================="
 echo "Building Cross Native Image"
@@ -224,7 +224,7 @@ echo "=========================================================="
 docker build \
     --build-arg TARGET="$TARGET" \
     -t "$IMAGE_NAME" \
-    -f Dockerfile.ffmpeg-base \
+    -f Dockerfile.base \
     .
 
 echo ""

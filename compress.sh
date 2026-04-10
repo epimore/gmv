@@ -8,7 +8,7 @@ set -e
 #   Linux / Android / iOS / macOS / BSD / Windows GNU
 #
 # IMPORTANT:
-#   鉁?GNU toolchains only
+#   GNU toolchains only
 #
 # Compatible with:
 #   build-images.sh
@@ -332,7 +332,7 @@ show_sizes() {
 main() {
     compress_all
     show_sizes
-    echo -e "${GREEN}鉁?Done! GNU-only compression completed.${NC}"
+    echo -e "${GREEN}?Done! GNU-only compression completed.${NC}"
 }
 
 main
