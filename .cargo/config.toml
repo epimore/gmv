@@ -1,0 +1,4 @@
+[env]
+FFMPEG_DIR = { value = "third_party/ffmpeg-6.1/dist", relative = true }
+FFMPEG_INCLUDE_DIR = { value = "third_party/ffmpeg-6.1/dist/include", relative = true }
+FFMPEG_LIBS_DIR    = { value = "third_party/ffmpeg-6.1/dist/lib", relative = true }
