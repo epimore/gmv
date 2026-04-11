@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  FFMPEG_VERSION: 6.1
 
 jobs:
   build:
@@ -16,24 +17,76 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # =========================
+      # 依赖
+      # =========================
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y nasm pkg-config
+          sudo apt install -y \
+            nasm yasm pkg-config build-essential
 
-      - name: Build and install FFmpeg 6.1
+      # =========================
+      # Cache FFmpeg build
+      # =========================
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/ffmpeg-${{ env.FFMPEG_VERSION }}/dist
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ runner.os }}
+
+      # =========================
+      # Build FFmpeg（仅在 cache miss 时）
+      # =========================
+      - name: Build FFmpeg (third_party)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 https://github.com/FFmpeg/FFmpeg -b release/6.1
-          cd FFmpeg
-          ./configure --enable-shared --prefix=/usr/local
+          set -e
+
+          ROOT=$(pwd)
+
+          mkdir -p third_party/ffmpeg-${FFMPEG_VERSION}
+
+          git clone --depth=1 https://github.com/FFmpeg/FFmpeg \
+            -b release/${FFMPEG_VERSION} \
+            third_party/ffmpeg-${FFMPEG_VERSION}/src
+
+          cd third_party/ffmpeg-${FFMPEG_VERSION}/src
+
+          ./configure \
+            --prefix=$ROOT/third_party/ffmpeg-${FFMPEG_VERSION}/dist \
+            --enable-static \
+            --disable-shared \
+            --disable-debug \
+            --disable-doc \
+            --disable-programs \
+            --enable-pic
+
           make -j$(nproc)
-          sudo make install
-          sudo ldconfig
+          make install
 
+      # =========================
+      # Cache Cargo（依赖 + target）
+      # =========================
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # =========================
+      # Build Rust
+      # =========================
       - name: Build Rust
-        env:
-          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
-        run: cargo build
+        run: cargo build --verbose
 
+      # =========================
+      # Test
+      # =========================
       - name: Run tests
         run: cargo test --verbose
