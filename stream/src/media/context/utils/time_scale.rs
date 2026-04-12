@@ -27,6 +27,7 @@ pub struct StreamTimeline {
     last_origin_dts: i64, //原pkt值，
     normal_delta: i64,
     initialized: bool,
+    nopts_streak: usize,
     stream_type: AVMediaType,
     time_base: AVRational,
     codec_id: AVCodecID,
@@ -40,6 +41,7 @@ impl StreamTimeline {
             last_origin_dts: 0,
             normal_delta: 0,
             initialized: false,
+            nopts_streak: 0,
             stream_type,
             time_base,
             codec_id,
@@ -66,6 +68,15 @@ impl StreamTimeline {
     pub fn process(&mut self, pkt: &mut AVPacket, ssrc: u32) -> ProcessResult {
         // ===== 初始化 =====
         if !self.initialized {
+            if pkt.dts == AV_NOPTS_VALUE && pkt.pts == AV_NOPTS_VALUE {
+                return ProcessResult::Ok; // 等有效帧
+            }
+
+            if pkt.dts == AV_NOPTS_VALUE {
+                pkt.dts = pkt.pts;
+            } else if pkt.pts == AV_NOPTS_VALUE {
+                pkt.pts = pkt.dts;
+            };
             self.last_dts = pkt.dts;
             self.last_pts = pkt.pts;
             self.last_origin_dts = pkt.dts;
@@ -77,7 +88,7 @@ impl StreamTimeline {
         // 1. 首次跳变检测
         let mut result = ProcessResult::Ok;
         let dis_dts_diff = pkt.dts - self.last_origin_dts;
-        if dis_dts_diff <= 0 || dis_dts_diff > MAX_DELTA_TICKS {
+        if dis_dts_diff < 0 || dis_dts_diff > MAX_DELTA_TICKS {
             info!(
                 "ssrc: {} ,Discontinuity: current dts: {}, last dts: {}",
                 ssrc, pkt.dts, self.last_origin_dts
@@ -87,7 +98,7 @@ impl StreamTimeline {
         self.last_origin_dts = pkt.dts;
         // 2. 修正数据
         let fix_dts_diff = pkt.dts - self.last_dts;
-        if fix_dts_diff <= 0 || fix_dts_diff > MAX_DELTA_TICKS {
+        if fix_dts_diff < 0 || fix_dts_diff > MAX_DELTA_TICKS {
             // 强制单调递增
             let delta = self.get_delta();
             pkt.dts = self.last_dts + delta;
@@ -101,13 +112,15 @@ impl StreamTimeline {
         }
 
         // ===== 学习 delta =====
-        let delta = pkt.dts - self.last_dts;
-        if delta > 0 && delta < MAX_DELTA_TICKS {
-            self.normal_delta = if self.normal_delta == 0 {
-                delta
-            } else {
-                (self.normal_delta * 7 + delta * 3) / 10
-            };
+        if self.nopts_streak == 0 {
+            let delta = pkt.dts - self.last_dts;
+            if delta > 0 && delta < MAX_DELTA_TICKS {
+                self.normal_delta = if self.normal_delta == 0 {
+                    delta
+                } else {
+                    (self.normal_delta * 7 + delta * 3) / 10
+                };
+            }
         }
 
         self.last_dts = pkt.dts;
@@ -154,28 +167,52 @@ impl TimelineNormalizer {
         let idx = pkt.stream_index as usize;
         let stream = match &mut self.streams[idx] {
             Some(s) => {
-                if s.stream_type == AVMediaType_AVMEDIA_TYPE_VIDEO
-                    && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0
-                {
-                    //对关键帧进行NAL校验
-                    if is_invalid_pkt(&pkt, s.codec_id) {
-                        warn!(
-                            "Discard invalid packet; ssrc: {}, pts: {}, dts: {}",
-                            ssrc, pkt.pts, pkt.dts,
-                        );
-                        return (None, ProcessResult::Ok);
+                match s.stream_type {
+                    AVMediaType_AVMEDIA_TYPE_VIDEO => {
+                        //对关键帧进行NAL校验
+                        if pkt.flags & AV_PKT_FLAG_KEY as i32 != 0 {
+                            if is_invalid_pkt(&pkt, s.codec_id) || pkt.pts == AV_NOPTS_VALUE && pkt.dts == AV_NOPTS_VALUE{
+                                warn!(
+                                    "Discard invalid packet; ssrc: {}, pts: {}, dts: {}",
+                                    ssrc, pkt.pts, pkt.dts,
+                                );
+                                return (None, ProcessResult::Ok);
+                            }
+                        } else {
+                            if pkt.pts == AV_NOPTS_VALUE && pkt.dts == AV_NOPTS_VALUE {
+                                if s.initialized&&s.normal_delta>0&&s.nopts_streak<3 {
+                                    let delta = s.get_delta();
+                                    pkt.dts = s.last_dts + delta;
+                                    pkt.pts = pkt.dts;
+                                    s.nopts_streak += 1;
+                                    warn!("SSRC {}: reconstruct timestamp", ssrc);
+                                }else {
+                                    warn!("SSRC {}: drop packet (no pts/dts)", ssrc);
+                                    return (None, ProcessResult::Ok);
+                                }
+                            }else {
+                                s.nopts_streak = 0;
+                            }
+                        }
                     }
+                    AVMediaType_AVMEDIA_TYPE_AUDIO => {
+                        //音频是主时钟丢弃 NOPTS
+                        if pkt.pts == AV_NOPTS_VALUE {
+                            return (None, ProcessResult::Ok);
+                        }
+                    }
+                    _ => {}
                 }
                 s
             }
             None => return (None, ProcessResult::Ok),
         };
-
-        let pts = if pkt.pts != AV_NOPTS_VALUE {
-            pkt.pts
-        } else {
-            pkt.dts
-        };
+       if pkt.pts == AV_NOPTS_VALUE {
+            pkt.pts = pkt.dts;
+        } else if pkt.dts == AV_NOPTS_VALUE {
+            pkt.dts = pkt.pts;
+        }
+        let pts = pkt.pts;
 
         let global = pts - self.global_base_us;
         let mut scale_global = 0;
