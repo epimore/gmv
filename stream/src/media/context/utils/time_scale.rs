@@ -27,7 +27,6 @@ pub struct StreamTimeline {
     last_origin_dts: i64, //原pkt值，
     normal_delta: i64,
     initialized: bool,
-    nopts_streak: usize,
     stream_type: AVMediaType,
     time_base: AVRational,
     codec_id: AVCodecID,
@@ -41,7 +40,6 @@ impl StreamTimeline {
             last_origin_dts: 0,
             normal_delta: 0,
             initialized: false,
-            nopts_streak: 0,
             stream_type,
             time_base,
             codec_id,
@@ -68,10 +66,6 @@ impl StreamTimeline {
     pub fn process(&mut self, pkt: &mut AVPacket, ssrc: u32) -> ProcessResult {
         // ===== 初始化 =====
         if !self.initialized {
-            if pkt.dts == AV_NOPTS_VALUE && pkt.pts == AV_NOPTS_VALUE {
-                return ProcessResult::Ok; // 等有效帧
-            }
-
             if pkt.dts == AV_NOPTS_VALUE {
                 pkt.dts = pkt.pts;
             } else if pkt.pts == AV_NOPTS_VALUE {
@@ -112,15 +106,13 @@ impl StreamTimeline {
         }
 
         // ===== 学习 delta =====
-        if self.nopts_streak == 0 {
-            let delta = pkt.dts - self.last_dts;
-            if delta > 0 && delta < MAX_DELTA_TICKS {
-                self.normal_delta = if self.normal_delta == 0 {
-                    delta
-                } else {
-                    (self.normal_delta * 7 + delta * 3) / 10
-                };
-            }
+        let delta = pkt.dts - self.last_dts;
+        if delta > 0 && delta < MAX_DELTA_TICKS {
+            self.normal_delta = if self.normal_delta == 0 {
+                delta
+            } else {
+                (self.normal_delta * 7 + delta * 3) / 10
+            };
         }
 
         self.last_dts = pkt.dts;
@@ -169,30 +161,20 @@ impl TimelineNormalizer {
             Some(s) => {
                 match s.stream_type {
                     AVMediaType_AVMEDIA_TYPE_VIDEO => {
+                        if pkt.pts == AV_NOPTS_VALUE && pkt.dts == AV_NOPTS_VALUE {
+                            warn!("Discard invalid packet; ssrc: {}, pts &&dts unknown", ssrc);
+                            return (None, ProcessResult::Ok);
+                        }
+
                         //对关键帧进行NAL校验
-                        if pkt.flags & AV_PKT_FLAG_KEY as i32 != 0 {
-                            if is_invalid_pkt(&pkt, s.codec_id) || pkt.pts == AV_NOPTS_VALUE && pkt.dts == AV_NOPTS_VALUE{
-                                warn!(
-                                    "Discard invalid packet; ssrc: {}, pts: {}, dts: {}",
-                                    ssrc, pkt.pts, pkt.dts,
-                                );
-                                return (None, ProcessResult::Ok);
-                            }
-                        } else {
-                            if pkt.pts == AV_NOPTS_VALUE && pkt.dts == AV_NOPTS_VALUE {
-                                if s.initialized&&s.normal_delta>0&&s.nopts_streak<3 {
-                                    let delta = s.get_delta();
-                                    pkt.dts = s.last_dts + delta;
-                                    pkt.pts = pkt.dts;
-                                    s.nopts_streak += 1;
-                                    warn!("SSRC {}: reconstruct timestamp", ssrc);
-                                }else {
-                                    warn!("SSRC {}: drop packet (no pts/dts)", ssrc);
-                                    return (None, ProcessResult::Ok);
-                                }
-                            }else {
-                                s.nopts_streak = 0;
-                            }
+                        if (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0)
+                            && is_invalid_pkt(&pkt, s.codec_id)
+                        {
+                            warn!(
+                                "Discard invalid packet; ssrc: {}, pts: {}, dts: {}",
+                                ssrc, pkt.pts, pkt.dts,
+                            );
+                            return (None, ProcessResult::Ok);
                         }
                     }
                     AVMediaType_AVMEDIA_TYPE_AUDIO => {
@@ -207,7 +189,7 @@ impl TimelineNormalizer {
             }
             None => return (None, ProcessResult::Ok),
         };
-       if pkt.pts == AV_NOPTS_VALUE {
+        if pkt.pts == AV_NOPTS_VALUE {
             pkt.pts = pkt.dts;
         } else if pkt.dts == AV_NOPTS_VALUE {
             pkt.dts = pkt.pts;

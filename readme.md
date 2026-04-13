@@ -3,7 +3,7 @@
 
 ## 🌟 TCP/UDP端口复用、单机/集群部署、SWAGGER接口文档、不做破坏性更新【接口稳定】、开箱即用【无需编译链接各种依赖】
 ## 文档地址：
-[2.0-release](https://github.com/epimore/gmv/wiki/%E6%96%87%E6%A1%A3%E7%89%88%E6%9C%AC:-2.0.0%E2%80%90release)
+[调试打包部署](https://github.com/epimore/gmv/wiki/%E6%BA%90%E7%A0%81%E8%B0%83%E8%AF%95%E5%8F%8A%E4%BA%8C%E8%BF%9B%E5%88%B6%E9%9D%99%E6%80%81%E6%89%93%E5%8C%85)
 
 ### 🔗 1. 前端场景界面 demo（VUE 项目）：[gmv-vision](https://github.com/epimore/gmv-vision)
 - 注意：此为微前端构建，可参考接口调用
@@ -22,9 +22,8 @@
 
 ## GMV:STREAM 流媒体服务已实现
 ```text
-RTP -> PS -> H264 -> HTTP-FLV（直/点播）、MP4（录像）
-    -> H264 -> HTTP-FLV（直/点播）、MP4（录像）
-    ...
+IN: RTP -> PS | H264 | H265 | ...
+OUT: HTTP-FLV | HTTP-FMP4 | DASH-MP4 | MP4（云端录像） | ...
 ```
 
 ### v1/V2版本：完成。

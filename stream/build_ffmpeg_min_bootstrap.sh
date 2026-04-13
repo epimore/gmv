@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Minimal FFmpeg static build bootstrap for gmv developers.
 # - Downloads FFmpeg source into gmv/third_party
-# - Builds static libs with the same feature set as build_ffmpeg_min.sh
+# - Builds static libs
 # - Installs into <source>/dist
 
 FFMPEG_VERSION="${FFMPEG_VERSION:-6.1}"
