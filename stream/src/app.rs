@@ -39,9 +39,9 @@ impl
             conf: cache::get_server_conf().clone(),
         };
         logger::Logger::init()?;
-        let http_port = *app.conf.get_http_port();
+        let http_port = app.conf.http_port;
         let http_listener = http::listen_http_server(http_port)?;
-        let rtp_port = *app.conf.get_rtp_port();
+        let rtp_port = app.conf.rtp_port;
         let tu = rtp_handler::listen_media_server(rtp_port)?;
         banner(Self::cli_basic().version, http_port, rtp_port, |msg| {
             info!("{msg}")

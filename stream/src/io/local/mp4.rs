@@ -1,5 +1,5 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use crate::io::event_handler::{Event, EventRes, OutEvent};
+use crate::state::event_handler::{Event, EventRes, OutEvent};
 use crate::media::context::format::MuxPacket;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
@@ -30,7 +30,7 @@ pub struct LocalStoreMp4Context {
     pub path: String,
     pub ssrc: u32,
     
-    pub file_name: String, //stream_id
+    pub file_name: Arc<str>, //stream_id
     pub pkt_rx: broadcast::Receiver<Arc<MuxPacket>>, //数据接收端，当发送端drop，即录制完成
     pub record_event_tx: mpsc::Sender<(Event, Option<oneshot::Sender<EventRes>>)>, //用于主动发送录制报错、录制结束
     pub inner_event_rx: TypedReceiver<Mp4OutputInnerEvent>, //获取当前录制信息

@@ -1,31 +1,42 @@
 use base::cfg_lib::conf;
+use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::constructor::Get;
 use base::serde::Deserialize;
 use base::serde_default;
 
-#[derive(Debug, Get, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
-#[conf(prefix = "stream")]
+#[conf(prefix = "stream",check)]
 pub struct StreamConf {
-    expires: i32,
+    pub in_wait_timeout: u8,
+    pub out_idle_timeout: u8,
 }
-serde_default!(default_expires, i32, 6);
+serde_default!(default_in_wait_timeout, i32, 4);
+serde_default!(default_out_idle_timeout, i32, 6);
 impl StreamConf {
     pub fn init_by_conf() -> Self {
         StreamConf::conf()
     }
 }
+impl CheckFromConf for StreamConf {
+    fn _field_check(&self) -> Result<(), FieldCheckError> {
+        if self.in_wait_timeout<1 {
+            return Err(FieldCheckError::BizError("The in_wait_timeout must be greater than or equal to 1".to_string()));
+        }
+        Ok(())
+    }
+}
 
-#[derive(Debug, Get, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server")]
 pub struct ServerConf {
-    name: String,
-    rtp_port: u16,
-    rtcp_port: u16,
-    http_port: u16,
-    hook_uri: String,
-    proxy_addr: String,
+    pub name: String,
+    pub rtp_port: u16,
+    pub rtcp_port: u16,
+    pub http_port: u16,
+    pub hook_uri: String,
+    pub proxy_addr: String,
 }
 serde_default!(default_name, String, "stream-node-1".to_string());
 serde_default!(default_rtp_port, u16, 18568);

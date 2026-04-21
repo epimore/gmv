@@ -72,24 +72,40 @@ pub struct StreamRecordInfo {
 #[serde(crate = "base::serde")]
 pub struct StreamPlayInfo {
     pub base_stream_info: BaseStreamInfo,
-    pub remote_addr: String,
+    pub remote_addr: Option<String>,
     pub token: String,
+    pub play_type: OutputEnum,
+    // //当前观看人数
+    // pub user_count: u32,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub enum OutputEventRes {
+    KeepMuxer,//保留ssrc当前输出格式资源;
+    CloseMuxer,//关闭释放ssrc当前输出格式资源;
+    CloseAll//关闭释放ssrc所有资源;
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct OutputStreamInfo {
+    pub base_stream_info: BaseStreamInfo,
     pub play_type: OutputEnum,
     //当前观看人数
     pub user_count: u32,
 }
-
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct BaseStreamInfo {
     pub rtp_info: RtpInfo,
     pub stream_id: String,
-    pub in_time: u32,
+    pub in_time: u64,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct NetSource {
     pub remote_addr: String,
@@ -97,7 +113,7 @@ pub struct NetSource {
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
-#[derive(New, Serialize, Deserialize, Debug)]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct RtpInfo {
     pub ssrc: u32,

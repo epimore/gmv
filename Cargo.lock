@@ -21,6 +21,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahash"
+version = "0.8.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+dependencies = [
+ "cfg-if",
+ "getrandom 0.3.4",
+ "once_cell",
+ "version_check",
+ "zerocopy",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -284,6 +297,42 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.2.0"
+dependencies = [
+ "aes",
+ "ahash",
+ "base64 0.22.1",
+ "block-modes",
+ "bytebuffer",
+ "bytes",
+ "cfg_lib 0.1.0",
+ "chrono",
+ "constructor 0.2.0",
+ "ctor",
+ "daemonize",
+ "dashmap",
+ "exception 0.1.0",
+ "fern",
+ "futures",
+ "hex",
+ "inventory",
+ "libc",
+ "log",
+ "once_cell",
+ "paste",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "smallvec",
+ "tokio",
+ "tokio-util",
+ "users",
+]
+
+[[package]]
+name = "base"
+version = "0.2.0"
 source = "git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d#b83ba9f7094f4f2e0655620b717eff6ed477a56d"
 dependencies = [
  "aes",
@@ -291,13 +340,13 @@ dependencies = [
  "block-modes",
  "bytebuffer",
  "bytes",
- "cfg_lib",
+ "cfg_lib 0.1.0 (git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d)",
  "chrono",
- "constructor",
+ "constructor 0.2.0 (git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d)",
  "ctor",
  "daemonize",
  "dashmap",
- "exception",
+ "exception 0.1.0 (git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d)",
  "fern",
  "futures",
  "hex",
@@ -337,7 +386,7 @@ name = "base_db"
 version = "0.1.0"
 source = "git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d#b83ba9f7094f4f2e0655620b717eff6ed477a56d"
 dependencies = [
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d)",
  "sqlx",
 ]
 
@@ -535,11 +584,29 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d#b83ba9f7094f4f2e0655620b717eff6ed477a56d"
 dependencies = [
- "cfg_macro",
+ "cfg_macro 0.1.0",
  "clap",
  "once_cell",
+]
+
+[[package]]
+name = "cfg_lib"
+version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d#b83ba9f7094f4f2e0655620b717eff6ed477a56d"
+dependencies = [
+ "cfg_macro 0.1.0 (git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d)",
+ "clap",
+ "once_cell",
+]
+
+[[package]]
+name = "cfg_macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -650,6 +717,15 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "constructor"
+version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "constructor"
@@ -977,7 +1053,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1000,6 +1076,15 @@ dependencies = [
  "concurrent-queue",
  "parking",
  "pin-project-lite",
+]
+
+[[package]]
+name = "exception"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1335,7 +1420,7 @@ name = "gmv-stream"
 version = "2.0.2-release"
 dependencies = [
  "axum",
- "base",
+ "base 0.2.0",
  "crossbeam-channel",
  "futures-core",
  "futures-util",
@@ -1801,6 +1886,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1814,7 +1908,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2940,7 +3034,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3193,7 +3287,7 @@ dependencies = [
 name = "shared"
 version = "2.0.2-release"
 dependencies = [
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=b83ba9f7094f4f2e0655620b717eff6ed477a56d)",
  "paste",
  "utoipa",
 ]
@@ -3598,7 +3692,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4218,7 +4312,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

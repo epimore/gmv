@@ -1,6 +1,7 @@
 #![allow(warnings)]
 pub mod info;
 pub mod io;
+mod enums;
 
 pub use paste;
 

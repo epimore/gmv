@@ -9,10 +9,13 @@ use base::serde::{Deserialize, Serialize};
 pub struct MediaConfig {
     pub ssrc: u32,
     pub stream_id: String,
-    /// 输入流,超时自动释放不受此配置影响
-    /// 输出流, None:默认配置,负数:立即关闭,0:不关闭
-    /// 如仅输出http-flv时, -1 表示立即释放该SSRC媒体流，不监听该SSRC,并发起回调事件通知信令，媒体流已关闭
-    pub expires: Option<i32>,
+    /// None:默认配置
+    /// 如超时立即发起回调事件通知信令，是否立即释放该SSRC媒体流资源，不监听该SSRC,根据返回信息进行下一步操作，释放或等待流保活
+    /// 执行优先级：回调>监听配置>默认配置
+    ///   in_wait_timeout: 4 #u8 单位秒；输入流等待超时,需大于等于1,建议：2-8;
+    ///   out_idle_timeout: 6 #i8 单位秒；输出流闲置超时,负：永不关闭,0：立即关闭,建议：2-8；
+    pub in_wait_timeout: Option<u8>,
+    pub out_idle_timeout: Option<u8>,
     pub codec: Option<Codec>,
     pub filter: Filter,
     pub output: OutputKind,

@@ -2,7 +2,7 @@ use crate::info::format::{CMaf, Flv, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
 use base::serde::{Deserialize, Serialize};
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[serde(crate = "base::serde")]
 pub enum OutputEnum {
     HttpFlv,

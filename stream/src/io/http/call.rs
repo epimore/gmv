@@ -9,7 +9,8 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::Duration;
 use base::log::info;
-use shared::info::obj::{BaseStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, OutputEventRes, OutputStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use crate::state::register::Register;
 
 pub struct HttpClient;
 static HTTP: OnceLock<GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>>> = OnceLock::new();
@@ -23,7 +24,7 @@ impl HttpClient {
     }
     pub fn template() -> &'static GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>> {
         let pretend = HTTP.get_or_init(|| {
-            HttpClient::init(cache::get_server_conf().get_hook_uri())
+            HttpClient::init(&Register::get_server_conf().hook_uri)
         });
         pretend
     }
@@ -33,12 +34,14 @@ impl HttpClient {
 pub trait HttpSession {
     #[request(method = "POST", path = "/hook/stream/register")]
     async fn stream_register(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
+    #[request(method = "POST", path = "/hook/stream/invalid")]
+    async fn stream_invalid(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/hook/stream/input/timeout")]
     async fn stream_input_timeout(&self, json: &StreamState) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/hook/on/play")]
     async fn on_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/hook/stream/idle")]
-    async fn stream_idle(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
+    async fn stream_idle(&self, json: &OutputStreamInfo) -> Result<Json<Resp<OutputEventRes>>>;
     #[request(method = "POST", path = "/hook/off/play")]
     async fn off_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/hook/end/record")]
