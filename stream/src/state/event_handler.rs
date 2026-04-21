@@ -14,7 +14,7 @@ use base::tokio_util::sync::CancellationToken;
 use pretend::Pretend;
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
-use shared::info::obj::{BaseStreamInfo, OutputEventRes, OutputStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use base::net::state::Protocol;
@@ -71,7 +71,7 @@ pub enum OutEventRes {
     //收到国标媒体流事件：响应内容不敏感;some-成功接收;None-未成功接收
     StreamRegister(Option<()>),
     //接收国标媒体流超时事件：取消监听该SSRC,响应内容不敏感;
-    StreamInTimeout(Option<()>),
+    StreamInTimeout(Option<InTimeoutEventRes>),
     //流闲置或无人观看时:
     StreamIdle(Option<OutputEventRes>),
     //未知ssrc流事件；响应内容不敏感,some-成功接收;None-未成功接收
@@ -157,7 +157,15 @@ impl Event {
                 info!("Calling stream_input_timeout with: {:?}", ss);
                 let res = pretend.stream_input_timeout(&ss).await;
                 info!("stream_input_timeout returned: {:?}", res);
-                let _ = res.hand_log(|msg| error!("{msg}"));
+                let mut oe = InTimeoutEventRes::CloseAll;
+                if let Ok(oer) = res {
+                    let resp = oer.value();
+                    if let Some(oer) = resp.data && resp.code==200 {
+                        oe = oer;
+                    }
+                }
+                Register::close_stream_by_input(ss, oe);
+                // let _ = res.hand_log(|msg| error!("{msg}"));
             }
             OutEvent::OnPlay(spi) => {
                 info!("Calling on_play with: {:?}", spi);
@@ -173,12 +181,18 @@ impl Event {
                 info!("Calling stream_idle with: {:?}", os);
                 let res = pretend.stream_idle(&os).await;
                 info!("stream_idle returned: {:?}", res);
+                let mut oe = if os.user_count ==0 {
+                    OutputEventRes::CloseAll
+                }else {
+                    OutputEventRes::CloseMuxer
+                };
                 if let Ok(oer) = res {
                     let resp = oer.value();
-                    if let Some(oe) = resp.data && resp.code==200 {
-                        Register::close_stream(os, oe);
+                    if let Some(oer) = resp.data && resp.code==200 {
+                        oe = oer;
                     }
                 }
+                Register::close_stream_by_output(os, oe);
                 // let _ = res.hand_log(|msg| error!("{msg}"));
             }
             OutEvent::StreamUnknown(_) => {}
@@ -210,7 +224,7 @@ pub async fn schedule_event(inner: Arc<Inner>, mut event_rx:mpsc::Receiver<(Even
     loop {
         select! {
            biased; // 按编写顺序检查分支
-            _ = on_time_schedule(&inner,&pretend)=>{},
+            _ = on_time_schedule(&inner)=>{},
             _ = Event::hand_event(&mut event_rx,&pretend) => {}
             _ = cancel_token.cancelled() => {break;}
         }
@@ -220,59 +234,12 @@ pub async fn schedule_event(inner: Arc<Inner>, mut event_rx:mpsc::Receiver<(Even
 
 //let s = String::from("abc");
 // let arc: Arc<str> = Arc::from(s);
-async fn on_time_schedule(inner: &Inner,pretend:&Pretend<Client, UrlResolver, NoopRequestInterceptor>) {
+async fn on_time_schedule(inner: &Inner) {
     if let Some(batch) = inner.time_schedule.next_batch().await {
         for CacheEvent { key, version, .. } in batch {
             match key {
                 TimeScheduleKey::RtpGateway(ssrc) => {
-                    if let Some(rc) = inner.rtp_gateway_map.get(&ssrc) {
-                        if let Some(meta) = inner.stream_metadata_map.get(&rc.stream_id) {
-                            if rc.in_has_timeout.load(Ordering::Relaxed) < meta.in_wait_timeout {
-                                rc.in_has_timeout.fetch_add(1, Ordering::Relaxed);
-                            } else {
-                                match meta.close_has_call.load(Ordering::Relaxed) {
-                                    0 => {
-                                        //todo call close
-                                        inner.time_schedule.insert(
-                                            TimeScheduleKey::RtpGateway(ssrc),
-                                            Duration::from_secs(1),
-                                        );
-                                    }
-                                    1 => {
-                                        inner.time_schedule.insert(
-                                            TimeScheduleKey::RtpGateway(ssrc),
-                                            Duration::from_secs(1),
-                                        );
-                                    }
-                                    2 => {
-                                        inner.time_schedule.insert(
-                                            TimeScheduleKey::RtpGateway(ssrc),
-                                            Duration::from_secs(meta.in_wait_timeout as u64),
-                                        );
-                                    }
-                                    3 | 6 => {
-                                        inner.stream_metadata_map.remove(&rc.stream_id);
-                                        inner.rtp_gateway_map.remove(&ssrc);
-                                    }
-                                    4 => {
-                                        //todo call close
-                                        inner.time_schedule.insert(
-                                            TimeScheduleKey::RtpGateway(ssrc),
-                                            Duration::from_secs(2),
-                                        );
-                                    }
-                                    5 => {
-                                        //todo call close
-                                        inner.time_schedule.insert(
-                                            TimeScheduleKey::RtpGateway(ssrc),
-                                            Duration::from_secs(4),
-                                        );
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
+                    Register::handle_rtp_in_timeout(ssrc,inner);
                 }
                 TimeScheduleKey::OutSession(expire_id) => {
                     Register::clean_play_token(expire_id);

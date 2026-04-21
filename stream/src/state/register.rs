@@ -30,18 +30,17 @@ use log::{error, info};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
 use shared::info::obj::{
-    BaseStreamInfo, NetSource, OutputEventRes, OutputStreamInfo, RtpInfo, StreamKey, StreamPlayInfo,
+    BaseStreamInfo, InTimeoutEventRes, NetSource, OutputEventRes, OutputStreamInfo, RtpInfo,
+    StreamKey, StreamPlayInfo, StreamState,
 };
 use shared::info::output::{OutputEnum, OutputKind};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static REGISTER: Lazy<Register> = Lazy::new(|| Register::init());
-//流输入超时：INPUT_PKT_TIMEOUT
-const INPUT_PKT_TIMEOUT: Duration = Duration::from_secs(8);
-const DEFAULT_SCAN_OUT_IDLE_TIME: Duration = Duration::from_secs(4);
+const DEFAULT_SCAN_EXPIRES: Duration = Duration::from_secs(8);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[inline]
@@ -244,11 +243,60 @@ pub struct Inner {
     pub event_tx: mpsc::Sender<(Event, Option<Sender<EventRes>>)>,
 }
 impl Register {
-    pub fn close_stream(info: OutputStreamInfo, res: OutputEventRes) {
+    pub fn handle_rtp_in_timeout(ssrc: u32, inner: &Inner) {
+        if let Some(rc) = inner.rtp_gateway_map.get(&ssrc) {
+            if let Some(meta) = inner.stream_metadata_map.get(&rc.stream_id) {
+                if rc.in_has_timeout.load(Ordering::Relaxed) < meta.in_wait_timeout {
+                    rc.in_has_timeout.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    let stream_info = Self::build_base_stream_info(
+                        &meta,
+                        inner.server_conf.name.clone(),
+                        inner.server_conf.proxy_addr.clone(),
+                        rc.stream_id.clone().to_string(),
+                    );
+                    let state = StreamState::new(stream_info, meta.output_count.get_out_count());
+                    let _ = inner
+                        .event_tx
+                        .try_send((Event::Out(OutEvent::StreamInTimeout(state)), None))
+                        .hand_log(|msg| error!("{msg}"));
+                }
+            }
+        }
+    }
+    pub fn close_stream_by_input(state: StreamState, res: InTimeoutEventRes) {
+        let arc = REGISTER.inner.clone();
         match res {
-            OutputEventRes::KeepMuxer => {}
+            InTimeoutEventRes::KeepAlive => {
+                arc.time_schedule.insert(
+                    TimeScheduleKey::RtpGateway(state.base_stream_info.rtp_info.ssrc),
+                    DEFAULT_SCAN_EXPIRES,
+                );
+            }
+            InTimeoutEventRes::CloseAll => {
+                let stream_id = Arc::from(state.base_stream_info.stream_id);
+                arc.stream_metadata_map.remove(&stream_id);
+                arc.rtp_gateway_map
+                    .remove(&state.base_stream_info.rtp_info.ssrc);
+            }
+        }
+    }
+    pub fn close_stream_by_output(info: OutputStreamInfo, res: OutputEventRes) {
+        let arc = REGISTER.inner.clone();
+        match res {
+            OutputEventRes::KeepMuxer => {
+                let expire_id = next_id();
+                arc.time_schedule
+                    .insert(TimeScheduleKey::OutSession(expire_id), DEFAULT_SCAN_EXPIRES);
+                let out_session = OutSession {
+                    addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                    token: Default::default(),
+                    output_enum: info.play_type,
+                    stream_id: Arc::from(info.base_stream_info.stream_id),
+                };
+                arc.out_session_map.insert(expire_id, out_session);
+            }
             OutputEventRes::CloseMuxer => {
-                let arc = REGISTER.inner.clone();
                 let muxer_enum = MuxerEnum::from_output_enum(info.play_type);
                 let stream_id = Arc::from(info.base_stream_info.stream_id);
                 arc.stream_metadata_map.get_mut(&stream_id).map(|mut meta| {
@@ -267,7 +315,6 @@ impl Register {
                 });
             }
             OutputEventRes::CloseAll => {
-                let arc = REGISTER.inner.clone();
                 let stream_id = Arc::from(info.base_stream_info.stream_id);
                 info!(
                     "ssrc = {},stream id = {} close",
@@ -360,15 +407,10 @@ impl Register {
         }
     }
     fn build_rtp_info(meta: &StreamMetadata, server_name: String, proxy_addr: String) -> RtpInfo {
-        RtpInfo::new(
-            meta.ssrc,
-            Some(NetSource::new(
-                meta.origin_trans.unwrap().0.to_string(),
-                meta.origin_trans.unwrap().1.get_value().to_string(),
-            )),
-            server_name,
-            proxy_addr,
-        )
+        let net_source = meta
+            .origin_trans
+            .map(|(addr, prot)| NetSource::new(addr.to_string(), prot.get_value().to_string()));
+        RtpInfo::new(meta.ssrc, net_source, server_name, proxy_addr)
     }
     fn build_base_stream_info(
         meta: &StreamMetadata,
@@ -442,10 +484,8 @@ impl Register {
                     );
                 } else {
                     //此处用于统计输出,不作为 OUT_TIMEOUT 对外输出事件
-                    arc.time_schedule.insert(
-                        TimeScheduleKey::OutSession(expire_id),
-                        DEFAULT_SCAN_OUT_IDLE_TIME,
-                    );
+                    arc.time_schedule
+                        .insert(TimeScheduleKey::OutSession(expire_id), DEFAULT_SCAN_EXPIRES);
                 }
             }
         }

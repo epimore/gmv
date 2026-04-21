@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::Duration;
 use base::log::info;
-use shared::info::obj::{BaseStreamInfo, OutputEventRes, OutputStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
 use crate::state::register::Register;
 
 pub struct HttpClient;
@@ -37,7 +37,7 @@ pub trait HttpSession {
     #[request(method = "POST", path = "/hook/stream/invalid")]
     async fn stream_invalid(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/hook/stream/input/timeout")]
-    async fn stream_input_timeout(&self, json: &StreamState) -> Result<Json<Resp<()>>>;
+    async fn stream_input_timeout(&self, json: &StreamState) -> Result<Json<Resp<InTimeoutEventRes>>>;
     #[request(method = "POST", path = "/hook/on/play")]
     async fn on_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/hook/stream/idle")]
