@@ -1,2 +1,4 @@
-use base::exception::GlobalError;
-
+pub enum OptAction {
+    Insert,
+    Remove,
+}

@@ -1,7 +1,6 @@
 use crate::general::cfg::ServerConf;
 use crate::io::{http, rtp_handler};
 use crate::media;
-use crate::state::cache;
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
@@ -10,6 +9,7 @@ use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use base::logger;
 use std::net::UdpSocket;
+use crate::state::register::Register;
 
 pub struct App {
     conf: ServerConf,
@@ -36,7 +36,7 @@ impl
         Self: Sized,
     {
         let app = App {
-            conf: cache::get_server_conf().clone(),
+            conf: Register::get_server_conf().clone(),
         };
         logger::Logger::init()?;
         let http_port = app.conf.http_port;

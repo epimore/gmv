@@ -1,6 +1,5 @@
 use crate::media::context::MediaContext;
 use crate::state::msg::StreamConfig;
-use crate::state::cache;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio;
@@ -12,6 +11,7 @@ use base::bytes::Bytes;
 use base::tokio::sync::broadcast;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::MuxPacket;
+use crate::state::register::Register;
 
 mod rw;
 pub mod rtp;
@@ -24,7 +24,7 @@ pub async fn handle_process(mut rx: Receiver<u32>) {
         av_log_set_level(AV_LOG_ERROR as c_int); //AV_LOG_INFO
     }
     while let Some(ssrc) = rx.recv().await {
-        if let Ok(mut sc_rx) = cache::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
+        if let Ok(mut sc_rx) = Register::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
             //此处可以不使用超时等待，统一流输入超时处理即可；输入超时-清理该ssrc所有信息，包含此处的发送句柄，完成资源释放
             if let Ok(stream_config) = sc_rx.recv().await.hand_log(|msg| error!("{}",msg)) {
                 let _ = tokio::task::spawn_blocking(move || {

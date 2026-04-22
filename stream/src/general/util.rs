@@ -2,6 +2,7 @@ use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
@@ -49,5 +50,14 @@ where
             }
             other => other,
         }
+    }
+}
+
+pub trait Placeholder {
+    fn placeholder() -> Self;
+}
+impl Placeholder for SocketAddr {
+    fn placeholder() -> Self {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
     }
 }

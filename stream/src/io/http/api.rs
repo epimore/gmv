@@ -1,5 +1,4 @@
 use crate::io::local::mp4::Mp4OutputInnerEvent;
-use crate::state::cache;
 use axum::{Extension, Json, Router};
 use base::exception::GlobalResultExt;
 use base::log::{error, info};
@@ -11,6 +10,7 @@ use shared::info::media_info_ext::MediaMap;
 use shared::info::obj::{LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE, StreamInfoQo, StreamKey, StreamRecordInfo, CLOSE_OUTPUT};
 use shared::info::output::OutputEnum;
 use shared::info::res::{EmptyResponse, Resp};
+use crate::state::register::Register;
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
@@ -41,7 +41,7 @@ async fn listen_media(
     Json(config): Json<MediaConfig>,
 ) -> Json<Resp<()>> {
     info!("listen_media: {:?}", &config);
-    let json = match cache::init_media(config) {
+    let json = match Register::init_media(config) {
         Ok(ssrc) => match tx.try_send(ssrc).hand_log(|msg| error!("{msg}")) {
             Ok(_) => Resp::<()>::build_success(),
             Err(err) => Resp::<()>::build_failed_by_msg(err.to_string()),
@@ -66,7 +66,7 @@ async fn listen_media(
 /// 2.媒体流SDP信息
 async fn sdp_media(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
     info!("sdp_media: {:?}", &sdp);
-    let json = match cache::init_media_ext(sdp.ssrc, sdp.ext) {
+    let json = match Register::init_media_ext(sdp.ssrc, sdp.ext) {
         Ok(_) => Resp::<()>::build_success(),
         Err(err) => Resp::<()>::build_failed_by_msg(err.to_string()),
     };
@@ -88,7 +88,7 @@ async fn sdp_media(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
 /// 查看媒体流是否在线
 async fn stream_online(Json(stream_key): Json<StreamKey>) -> Json<Resp<bool>> {
     info!("stream_online: {:?}", &stream_key);
-    let json = Json(Resp::<bool>::build_success_data(cache::is_exist(
+    let json = Json(Resp::<bool>::build_success_data(Register::is_exist(
         stream_key,
     )));
     info!("stream_online response: {:?}", &json);
@@ -112,8 +112,8 @@ async fn record_info(Json(info): Json<StreamInfoQo>) -> Json<Resp<StreamRecordIn
     match info.output_enum {
         OutputEnum::LocalMp4 => {
             let (tx, rx) = oneshot::channel();
-            if let Ok(_) = cache::try_publish_mpsc::<Mp4OutputInnerEvent>(
-                &info.ssrc,
+            if let Ok(_) = Register::try_publish_mpsc::<Mp4OutputInnerEvent>(
+                info.ssrc,
                 Mp4OutputInnerEvent::StoreInfo(tx),
             ) {
                 if let Ok(record) = rx.await {
@@ -148,8 +148,8 @@ async fn close_output(Json(output): Json<StreamInfoQo>) -> Json<Resp<()>> {
     info!("close_output: {:?}", &output);
     match output.output_enum {
         OutputEnum::LocalMp4 => {
-            let _ = cache::try_publish_mpsc::<Mp4OutputInnerEvent>(
-                &output.ssrc,
+            let _ = Register::try_publish_mpsc::<Mp4OutputInnerEvent>(
+                output.ssrc,
                 Mp4OutputInnerEvent::Close,
             );
         }

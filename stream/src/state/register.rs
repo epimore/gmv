@@ -1,12 +1,12 @@
 use crate::general::cfg;
 use crate::general::cfg::{ServerConf, StreamConf};
+use crate::general::util::Placeholder;
 use crate::io::local::mp4::{LocalStoreMp4Context, Mp4OutputInnerEvent};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::format::MuxPacket;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
-use crate::state::cache::get_event_tx;
 use crate::state::event_handler::{ActiveEvent, Event, EventRes, InnerEvent, OutEvent};
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
@@ -27,6 +27,7 @@ use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::{broadcast, mpsc};
 use base::utils::rt::GlobalRuntime;
 use log::{error, info};
+use shared::enums::OptAction;
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
 use shared::info::obj::{
@@ -40,7 +41,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize,
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static REGISTER: Lazy<Register> = Lazy::new(|| Register::init());
-const DEFAULT_SCAN_EXPIRES: Duration = Duration::from_secs(8);
+pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(6);
+//时间偏移：用于如mpd、playlist一次加载多个媒体片段，导致提前超时
+pub const DEFAULT_OFFSET_SECOND: u8 = 4;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[inline]
@@ -243,6 +246,27 @@ pub struct Inner {
     pub event_tx: mpsc::Sender<(Event, Option<Sender<EventRes>>)>,
 }
 impl Register {
+    pub fn check_token(user_token_stream_id: &(Arc<str>, Arc<str>)) -> bool {
+        REGISTER
+            .inner
+            .user_token_map
+            .contains_key(user_token_stream_id)
+    }
+
+    //插入/移除muxer使用量
+    pub fn handle_stream_metadata_map_output(
+        act: OptAction,
+        stream_id: &Arc<str>,
+        output_enum: OutputEnum,
+    ) {
+        let arc = REGISTER.inner.clone();
+        arc.stream_metadata_map
+            .get(stream_id)
+            .map(|meta| match act {
+                OptAction::Insert => meta.output_count.add(output_enum),
+                OptAction::Remove => meta.output_count.subtract(output_enum),
+            });
+    }
     pub fn handle_rtp_in_timeout(ssrc: u32, inner: &Inner) {
         if let Some(rc) = inner.rtp_gateway_map.get(&ssrc) {
             if let Some(meta) = inner.stream_metadata_map.get(&rc.stream_id) {
@@ -270,7 +294,7 @@ impl Register {
             InTimeoutEventRes::KeepAlive => {
                 arc.time_schedule.insert(
                     TimeScheduleKey::RtpGateway(state.base_stream_info.rtp_info.ssrc),
-                    DEFAULT_SCAN_EXPIRES,
+                    DEFAULT_EXPIRES,
                 );
             }
             InTimeoutEventRes::CloseAll => {
@@ -287,9 +311,9 @@ impl Register {
             OutputEventRes::KeepMuxer => {
                 let expire_id = next_id();
                 arc.time_schedule
-                    .insert(TimeScheduleKey::OutSession(expire_id), DEFAULT_SCAN_EXPIRES);
+                    .insert(TimeScheduleKey::OutSession(expire_id), DEFAULT_EXPIRES);
                 let out_session = OutSession {
-                    addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                    addr: SocketAddr::placeholder(),
                     token: Default::default(),
                     output_enum: info.play_type,
                     stream_id: Arc::from(info.base_stream_info.stream_id),
@@ -354,7 +378,9 @@ impl Register {
                         if to_del && occ.get().len() == 0 {
                             let ((token, _), _) = occ.remove_entry();
                             // event user off play
-                            user_token = Some(token.to_string());
+                            if !token.is_empty() {
+                                user_token = Some(token.to_string());
+                            }
                         }
                     }
                     Entry::Vacant(_) => {}
@@ -369,15 +395,10 @@ impl Register {
                             arc.server_conf.proxy_addr.clone(),
                             os.1.stream_id.to_string(),
                         );
-                        let mux_play_count = meta.output_count.subtract(os.1.output_enum);
-                        let mut stream_info = None;
                         // event user off play
                         if let Some(token) = user_token {
-                            if mux_play_count == 0 {
-                                stream_info = Some(base_stream_info.clone());
-                            }
                             let play_info = StreamPlayInfo::new(
-                                base_stream_info,
+                                base_stream_info.clone(),
                                 None,
                                 token,
                                 os.1.output_enum,
@@ -387,9 +408,9 @@ impl Register {
                                 .try_send((Event::Out(OutEvent::OffPlay(play_info)), None))
                                 .hand_log(|msg| error!("{msg}"));
                         }
-                        if let Some(stream_info) = stream_info {
+                        if meta.output_count.subtract(os.1.output_enum) == 0 {
                             let output_stream_info = OutputStreamInfo::new(
-                                stream_info,
+                                base_stream_info,
                                 os.1.output_enum,
                                 meta.output_count.get_out_count(),
                             );
@@ -406,43 +427,39 @@ impl Register {
             }
         }
     }
-    fn build_rtp_info(meta: &StreamMetadata, server_name: String, proxy_addr: String) -> RtpInfo {
-        let net_source = meta
-            .origin_trans
-            .map(|(addr, prot)| NetSource::new(addr.to_string(), prot.get_value().to_string()));
-        RtpInfo::new(meta.ssrc, net_source, server_name, proxy_addr)
-    }
-    fn build_base_stream_info(
-        meta: &StreamMetadata,
-        server_name: String,
-        proxy_addr: String,
-        stream_id: String,
-    ) -> BaseStreamInfo {
-        let rtp_info = Self::build_rtp_info(meta, server_name, proxy_addr);
-        BaseStreamInfo::new(rtp_info, stream_id, meta.register_ts)
-    }
-
-    //返回BaseStreamInfo,user_count
-    pub fn get_base_stream_info_by_stream_id(stream_id: Arc<str>) -> Option<(BaseStreamInfo, u32)> {
+    pub fn listen_output_timeout(
+        stream_id: Arc<str>,
+        output_enum: OutputEnum,
+        user_token: Arc<str>,
+        remote_addr: SocketAddr,
+        time_offset_sec: u8
+    ) {
         let arc = REGISTER.inner.clone();
-        arc.stream_metadata_map.get(&stream_id).map(|meta| {
-            let stream_info = Self::build_base_stream_info(
-                &meta,
-                arc.server_conf.name.clone(),
-                arc.server_conf.proxy_addr.clone(),
-                stream_id.to_string(),
+        if let Some(meta) = arc.stream_metadata_map.get(&stream_id) {
+            let expire_id = next_id();
+            arc.out_session_map.insert(
+                expire_id,
+                OutSession {
+                    addr: remote_addr,
+                    token: user_token,
+                    output_enum,
+                    stream_id,
+                },
             );
-            (stream_info, meta.output_count.get_out_count())
-        })
-    }
-    pub fn is_exist(stream_key: StreamKey) -> bool {
-        let StreamKey { stream_id, ssrc } = stream_key;
-        let arc = REGISTER.inner.clone();
-        match stream_id {
-            None => arc.rtp_gateway_map.contains_key(&ssrc),
-            Some(stream_id) => {
-                arc.stream_metadata_map.contains_key(&Arc::from(stream_id))
-                    && arc.rtp_gateway_map.contains_key(&ssrc)
+            if meta.out_idle_timeout > 0 {
+                arc.time_schedule.insert(
+                    TimeScheduleKey::OutSession(expire_id),
+                    Duration::from_secs((time_offset_sec+meta.out_idle_timeout) as u64),
+                );
+            } else if meta.out_idle_timeout == 0 {
+                arc.time_schedule.insert(
+                    TimeScheduleKey::OutSession(expire_id),
+                    Duration::from_secs((time_offset_sec+1) as u64),
+                );
+            } else {
+                //此处用于统计输出,不作为 OUT_TIMEOUT 对外输出事件
+                arc.time_schedule
+                    .insert(TimeScheduleKey::OutSession(expire_id), DEFAULT_EXPIRES);
             }
         }
     }
@@ -451,7 +468,6 @@ impl Register {
         stream_id: Arc<str>,
         output_enum: OutputEnum,
         user_token: Arc<str>,
-        remote_addr: SocketAddr,
     ) -> GlobalResult<()> {
         let arc = REGISTER.inner.clone();
         match arc.stream_metadata_map.get(&stream_id) {
@@ -462,31 +478,6 @@ impl Register {
             ))?,
             Some(meta) => {
                 meta.output_count.add(output_enum);
-                let expire_id = next_id();
-                arc.out_session_map.insert(
-                    expire_id,
-                    OutSession {
-                        addr: remote_addr,
-                        token: user_token.clone(),
-                        output_enum,
-                        stream_id: stream_id.clone(),
-                    },
-                );
-                if meta.out_idle_timeout > 0 {
-                    arc.time_schedule.insert(
-                        TimeScheduleKey::OutSession(expire_id),
-                        Duration::from_secs(meta.out_idle_timeout as u64),
-                    );
-                } else if meta.out_idle_timeout == 0 {
-                    arc.time_schedule.insert(
-                        TimeScheduleKey::OutSession(expire_id),
-                        Duration::from_secs(1),
-                    );
-                } else {
-                    //此处用于统计输出,不作为 OUT_TIMEOUT 对外输出事件
-                    arc.time_schedule
-                        .insert(TimeScheduleKey::OutSession(expire_id), DEFAULT_SCAN_EXPIRES);
-                }
             }
         }
         match arc.user_token_map.entry((user_token, stream_id)) {
@@ -505,6 +496,46 @@ impl Register {
             }
         }
         Ok(())
+    }
+    fn build_rtp_info(meta: &StreamMetadata, server_name: String, proxy_addr: String) -> RtpInfo {
+        let net_source = meta
+            .origin_trans
+            .map(|(addr, prot)| NetSource::new(addr.to_string(), prot.get_value().to_string()));
+        RtpInfo::new(meta.ssrc, net_source, server_name, proxy_addr)
+    }
+    fn build_base_stream_info(
+        meta: &StreamMetadata,
+        server_name: String,
+        proxy_addr: String,
+        stream_id: String,
+    ) -> BaseStreamInfo {
+        let rtp_info = Self::build_rtp_info(meta, server_name, proxy_addr);
+        BaseStreamInfo::new(rtp_info, stream_id, meta.register_ts)
+    }
+
+    //返回BaseStreamInfo,user_count
+    pub fn get_base_stream_info_by_stream_id(stream_id: Arc<str>) -> Option<BaseStreamInfo> {
+        let arc = REGISTER.inner.clone();
+        arc.stream_metadata_map.get(&stream_id).map(|meta| {
+            let stream_info = Self::build_base_stream_info(
+                &meta,
+                arc.server_conf.name.clone(),
+                arc.server_conf.proxy_addr.clone(),
+                stream_id.to_string(),
+            );
+            stream_info
+        })
+    }
+    pub fn is_exist(stream_key: StreamKey) -> bool {
+        let StreamKey { stream_id, ssrc } = stream_key;
+        let arc = REGISTER.inner.clone();
+        match stream_id {
+            None => arc.rtp_gateway_map.contains_key(&ssrc),
+            Some(stream_id) => {
+                arc.stream_metadata_map.contains_key(&Arc::from(stream_id))
+                    && arc.rtp_gateway_map.contains_key(&ssrc)
+            }
+        }
     }
 
     pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
@@ -728,7 +759,7 @@ impl Register {
         );
         arc.rtp_gateway_map.insert(ssrc, rtp_channel);
         arc.stream_metadata_map.insert(stream_id.clone(), metadata);
-        //发送事件模拟触发消费输出流：如mp4录制
+        //发送事件模拟触发消费输出流：如mp4录制;不监听output token,仅记录muxer资源;由rtp input超时清理资源
         if let Some(active_event) = event {
             let _ = arc
                 .event_tx
@@ -739,7 +770,7 @@ impl Register {
     }
     fn init() -> Register {
         let server_conf = ServerConf::init_by_conf();
-        let stream_conf = cfg::StreamConf::init_by_conf();
+        let stream_conf = StreamConf::init_by_conf();
         let (event_tx, event_rx) = mpsc::channel(10000);
         let time_schedule = c100k::Cache::default();
         let inner = Inner {
