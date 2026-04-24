@@ -41,7 +41,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize,
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static REGISTER: Lazy<Register> = Lazy::new(|| Register::init());
-pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(6);
+pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
 //时间偏移：用于如mpd、playlist一次加载多个媒体片段，导致提前超时
 pub const DEFAULT_OFFSET_SECOND: u8 = 4;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);

@@ -5,27 +5,35 @@ use pretend::{Json, Url};
 use pretend::{pretend, Pretend, Result};
 use shared::info::res::Resp;
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use base::log::info;
 use shared::info::obj::{BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
 use crate::state::register::{Register, DEFAULT_EXPIRES};
 
 pub struct HttpClient;
-static HTTP: OnceLock<GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>>> = OnceLock::new();
+pub type HttpTemplate = Arc<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>>;
+static HTTP: OnceLock<HttpTemplate> = OnceLock::new();
 impl HttpClient {
-    fn init(url: &str) -> GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>> {
-        let url = Url::from_str(url).hand_log(|msg| info!("{}", msg))?;
-        let client = pretend_reqwest::reqwest::Client::builder().timeout(DEFAULT_EXPIRES).build().unwrap();
-        let pretend = pretend::Pretend::for_client(pretend_reqwest::Client::new(client))
-            .with_url(url);
-        Ok(pretend)
+    fn init(url: &str) -> GlobalResult<HttpTemplate> {
+        let url = Url::from_str(url)
+            .hand_log(|msg| info!("{msg}"))?;
+        let client = pretend_reqwest::reqwest::Client::builder()
+            .timeout(DEFAULT_EXPIRES)
+            .build()
+            .hand_log(|msg| info!("{msg}"))?;
+        let pretend = pretend::Pretend::for_client(
+            pretend_reqwest::Client::new(client)
+        ).with_url(url);
+        Ok(Arc::new(pretend))
     }
-    pub fn template() -> &'static GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>> {
-        let pretend = HTTP.get_or_init(|| {
-            HttpClient::init(&Register::get_server_conf().hook_uri)
-        });
-        pretend
+    pub fn template() -> GlobalResult<HttpTemplate> {
+        if let Some(c) = HTTP.get() {
+            return Ok(c.clone());
+        }
+        let client = Self::init(&Register::get_server_conf().hook_uri)?;
+        let _ = HTTP.set(client.clone());
+        Ok(client)
     }
 }
 

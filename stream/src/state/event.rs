@@ -1,37 +1,41 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use crate::io::http::call::{HttpClient, HttpSession};
+use crate::io::http::call::{HttpClient, HttpSession, HttpTemplate};
 use crate::io::local::mp4::LocalStoreMp4Context;
 use crate::state::layer::output_layer::OutputLayer;
 use crate::state::register::{Inner, Register, TimeScheduleKey};
 use base::cache::c100k::CacheEvent;
 use base::exception::GlobalResultExt;
 use base::log::{error, info};
+use base::net::state::Protocol;
+use base::tokio;
 use base::tokio::select;
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio::sync::oneshot::Sender;
+use base::tokio::sync::{Semaphore, mpsc};
 use base::tokio_util::sync::CancellationToken;
 use pretend::Pretend;
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
-use shared::info::obj::{BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use pretend_reqwest::Client;
+use shared::info::obj::{
+    BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
+    RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState,
+};
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use base::net::state::Protocol;
-use base::tokio::sync::mpsc;
-use pretend_reqwest::Client;
 
+const MAX_WORKER_POOL: usize = 128;
 pub enum Event {
     Out(OutEvent),
     Active(ActiveEvent),
     Inner(InnerEvent),
-
 }
 
 pub enum InnerEvent {
     RecordInfo(StreamRecordInfo),
     //rtp_type,stream_id
-    StreamRegister(u8,Arc<str>,(SocketAddr, Protocol)),
+    StreamRegister(u8, Arc<str>, (SocketAddr, Protocol)),
 }
 pub enum ActiveEvent {
     RtmpPush(u32),
@@ -86,32 +90,44 @@ pub enum OutEventRes {
 impl Event {
     async fn hand_event(
         rx: &mut Receiver<(Event, Option<Sender<EventRes>>)>,
-        pretend:&Pretend<Client, UrlResolver, NoopRequestInterceptor>
+        pretend: HttpTemplate,
+        semaphore: Arc<Semaphore>,
     ) {
         if let Some((event, tx)) = rx.recv().await {
             match event {
                 Event::Out(out) => {
-                    Self::hand_out(out, tx, pretend).await;
+                    if let Ok(permit) = semaphore
+                        .acquire_owned()
+                        .await
+                        .hand_log(|msg| error!("{msg}"))
+                    {
+                        tokio::spawn(async move{
+                            Self::hand_out(out, tx, pretend.clone()).await;
+                        });
+                        drop(permit);
+                    }
                 }
                 Event::Active(active) => {
-                    Self::hand_active(active,tx);
-                },
+                    Self::hand_active(active, tx);
+                }
                 Event::Inner(inner) => {
-                    Self::hand_inner(inner,tx);
+                    Self::hand_inner(inner, tx);
                 }
             }
         }
     }
 
-    fn hand_inner(inner_event: InnerEvent, tx: Option<Sender<EventRes>>){
+    fn hand_inner(inner_event: InnerEvent, tx: Option<Sender<EventRes>>) {
         match inner_event {
-            InnerEvent::RecordInfo(_) => {unimplemented!()}
-            InnerEvent::StreamRegister(rtp_type, stream_id,origin_trans) => {
+            InnerEvent::RecordInfo(_) => {
+                unimplemented!()
+            }
+            InnerEvent::StreamRegister(rtp_type, stream_id, origin_trans) => {
                 //当不存在则表示数据被释放；统一由时间调度触发OutEvent::StreamInTimeout
                 //1.insert remote addr + protocol
                 if Register::insert_origin_trans(stream_id.clone(), origin_trans) {
                     //2.send stream_config to muxer and call session register
-                    let _ = Register::send_stream_config(rtp_type,stream_id.clone());
+                    let _ = Register::send_stream_config(rtp_type, stream_id.clone());
                 }
             }
         }
@@ -133,7 +149,7 @@ impl Event {
     async fn hand_out(
         out_event: OutEvent,
         tx: Option<Sender<EventRes>>,
-        pretend: &Pretend<Client, UrlResolver, NoopRequestInterceptor>,
+        pretend: HttpTemplate,
     ) {
         match out_event {
             OutEvent::StreamRegister(rsi) => {
@@ -149,7 +165,9 @@ impl Event {
                 let mut oe = InTimeoutEventRes::CloseAll;
                 if let Ok(oer) = res {
                     let resp = oer.value();
-                    if let Some(oer) = resp.data && resp.code==200 {
+                    if let Some(oer) = resp.data
+                        && resp.code == 200
+                    {
                         oe = oer;
                     }
                 }
@@ -170,14 +188,16 @@ impl Event {
                 info!("Calling stream_idle with: {:?}", os);
                 let res = pretend.stream_idle(&os).await;
                 info!("stream_idle returned: {:?}", res);
-                let mut oe = if os.user_count ==0 {
+                let mut oe = if os.user_count == 0 {
                     OutputEventRes::CloseAll
-                }else {
+                } else {
                     OutputEventRes::CloseMuxer
                 };
                 if let Ok(oer) = res {
                     let resp = oer.value();
-                    if let Some(oer) = resp.data && resp.code==200 {
+                    if let Some(oer) = resp.data
+                        && resp.code == 200
+                    {
                         oe = oer;
                     }
                 }
@@ -200,18 +220,21 @@ impl Event {
         }
     }
 }
-pub async fn schedule_event(inner: Arc<Inner>, mut event_rx:Receiver<(Event, Option<Sender<EventRes>>)>, cancel_token: CancellationToken) {
+pub async fn schedule_event(
+    inner: Arc<Inner>,
+    mut event_rx: Receiver<(Event, Option<Sender<EventRes>>)>,
+    cancel_token: CancellationToken,
+) {
     let pretend = HttpClient::template()
-        .as_ref()
         .expect("Http client template init failed");
+    let semaphore = Arc::new(Semaphore::new(MAX_WORKER_POOL));
     loop {
         select! {
            biased; // 按编写顺序检查分支
             _ = on_time_schedule(&inner)=>{},
-            _ = Event::hand_event(&mut event_rx,&pretend) => {}
+            _ = Event::hand_event(&mut event_rx,pretend.clone(),semaphore.clone()) => {}
             _ = cancel_token.cancelled() => {break;}
         }
-
     }
 }
 
@@ -222,7 +245,7 @@ async fn on_time_schedule(inner: &Inner) {
         for CacheEvent { key, version, .. } in batch {
             match key {
                 TimeScheduleKey::RtpGateway(ssrc) => {
-                    Register::handle_rtp_in_timeout(ssrc,inner);
+                    Register::handle_rtp_in_timeout(ssrc, inner);
                 }
                 TimeScheduleKey::OutSession(expire_id) => {
                     Register::clean_play_token(expire_id);
