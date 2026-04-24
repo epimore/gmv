@@ -8,6 +8,7 @@ mod service;
 pub mod utils;
 mod app;
 mod http;
+mod register;
 
 fn main() {
     daemon::run::<AppInfo, _>();

@@ -110,6 +110,14 @@ pub struct BaseStreamInfo {
     pub stream_id: String,
     pub in_time: u64,
 }
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct RegisterStreamInfo {
+    pub base_stream_info: BaseStreamInfo,
+    pub code: u16,
+    pub msg: Option<String>,
+}
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(New, Serialize, Deserialize, Debug, Clone)]

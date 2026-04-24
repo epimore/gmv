@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::Duration;
 use base::log::info;
-use shared::info::obj::{BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
 use crate::state::register::{Register, DEFAULT_EXPIRES};
 
 pub struct HttpClient;
@@ -32,9 +32,7 @@ impl HttpClient {
 #[pretend]
 pub trait HttpSession {
     #[request(method = "POST", path = "/hook/stream/register")]
-    async fn stream_register(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
-    #[request(method = "POST", path = "/hook/stream/invalid")]
-    async fn stream_invalid(&self, json: &BaseStreamInfo) -> Result<Json<Resp<()>>>;
+    async fn stream_register(&self, json: &RegisterStreamInfo) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/hook/stream/input/timeout")]
     async fn stream_input_timeout(&self, json: &StreamState) -> Result<Json<Resp<InTimeoutEventRes>>>;
     #[request(method = "POST", path = "/hook/on/play")]

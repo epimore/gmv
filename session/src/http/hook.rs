@@ -1,7 +1,7 @@
 use crate::service::{hook_serv};
 use axum::{Json, Router};
 use base::log::info;
-use shared::info::obj::{BaseStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState, END_RECORD, INPUT_TIMEOUT, OFF_PLAY, ON_PLAY, STREAM_IDLE, STREAM_REGISTER};
+use shared::info::obj::{BaseStreamInfo, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState, END_RECORD, INPUT_TIMEOUT, OFF_PLAY, ON_PLAY, STREAM_IDLE, STREAM_REGISTER};
 use shared::info::res::{EmptyResponse, Resp};
 
 pub fn routes() -> Router {
@@ -26,7 +26,7 @@ pub fn routes() -> Router {
     tag = "流媒体服务回调接口"
 ))]
 /// 媒体流注册回调接口
-async fn stream_register(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
+async fn stream_register(Json(info): Json<RegisterStreamInfo>) -> Json<Resp<()>> {
     info!("stream_register = {:?}", &info);
     hook_serv::stream_register(info).await;
     Json(Resp::build_success())
@@ -93,7 +93,7 @@ async fn off_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<()>> {
     tag = "流媒体服务回调接口"
 ))]
 /// 媒体流空闲回调接口
-async fn stream_idle(Json(info): Json<BaseStreamInfo>) -> Json<Resp<()>> {
+async fn stream_idle(Json(info): Json<OutputStreamInfo>) -> Json<Resp<()>> {
     info!("stream_idle = {:?}", &info);
     hook_serv::stream_idle(info).await;
     Json(Resp::build_success())

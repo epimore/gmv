@@ -20,7 +20,7 @@ pub mod rw {
     
     use base::exception::{GlobalResult, GlobalResultExt};
     use base::log::{error, warn};
-    use base::net::state::{Association, Event, Protocol, Zip};
+    use base::net::state::{Association, Event, IoEventType, Protocol, Zip};
     
     use base::tokio;
     use base::tokio::sync::mpsc::{Receiver, Sender};
@@ -156,7 +156,7 @@ pub mod rw {
                         .remove(&(ds.timeout_instant, device_id.clone()));
                     state.bill_map.remove(&ds.association);
                     //通知网络出口关闭TCP连接
-                    if &Protocol::TCP == ds.association.get_protocol() {
+                    if matches!(ds.association.protocol,Protocol::TCP) {
                         Some(ds.association)
                     } else {
                         None
@@ -169,7 +169,7 @@ pub mod rw {
             if let Some(association) = res {
                 let _ = Self::get_ctx()
                     .io_tx
-                    .try_send(Zip::build_event(Event::new(association, 0)))
+                    .try_send(Zip::build_event(Event::new(association, IoEventType::Close)))
                     .hand_log(|msg| warn!("{msg}"));
             }
         }
@@ -282,7 +282,7 @@ pub mod rw {
                     if Protocol::TCP == ds.association.protocol {
                         let _ = RWContext::get_ctx()
                             .io_tx
-                            .try_send(Zip::build_event(Event::new(ds.association, 0)))
+                            .try_send(Zip::build_event(Event::new(ds.association, IoEventType::Close)))
                             .hand_log(|msg| warn!("{msg}"));
                     }
                 }

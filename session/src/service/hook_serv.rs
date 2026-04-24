@@ -9,14 +9,14 @@ use base::chrono::Local;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde_json;
-use shared::info::obj::{BaseStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
+use shared::info::obj::{BaseStreamInfo, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
 use std::ops::Sub;
 use std::path::Path;
 
-pub async fn stream_register(base_stream_info: BaseStreamInfo) {
-    let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, base_stream_info.stream_id);
+pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
+    let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, register_stream_info.base_stream_info.stream_id);
     if let Some((_, Some(tx))) = state::session::Cache::state_get(&key_stream_in_id) {
-        let vec = serde_json::to_vec(&base_stream_info).unwrap();
+        let vec = serde_json::to_vec(&register_stream_info).unwrap();
         let bytes = Bytes::from(vec);
         let _ = tx.try_send(Some(bytes)).hand_log(|msg| error!("{msg}"));
     }
@@ -52,8 +52,8 @@ pub async fn off_play(stream_play_info: StreamPlayInfo) {
 }
 
 //无人观看则关闭流
-pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
-    let stream_id = base_stream_info.stream_id;
+pub async fn stream_idle(out_stream_info: OutputStreamInfo) {
+    let stream_id = out_stream_info.base_stream_info.stream_id;
     let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
         if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
@@ -67,7 +67,7 @@ pub async fn stream_idle(base_stream_info: BaseStreamInfo) {
             );
             state::session::Cache::stream_map_remove(&stream_id, None);
         }
-        let ssrc = base_stream_info.rtp_info.ssrc;
+        let ssrc = out_stream_info.base_stream_info.rtp_info.ssrc;
         let ssrc_num = (ssrc % 10000) as u16;
         state::session::Cache::ssrc_sn_set(ssrc_num);
     }

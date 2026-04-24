@@ -1,7 +1,7 @@
 pub mod msg;
 pub mod layer;
 pub mod register;
-pub(crate) mod event_handler;
+pub(crate) mod event;
 
 //格式化通道大小
 pub const FORMAT_BROADCAST_BUFFER: usize = 16;

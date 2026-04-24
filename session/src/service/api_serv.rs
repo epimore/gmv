@@ -349,7 +349,7 @@ async fn start_invite_stream(
             MediaConfig {
                 ssrc: u32ssrc,
                 stream_id: stream_id.clone(),
-                expires: None,
+                in_wait_timeout: None,
                 codec: None,
                 filter: Default::default(),
                 //默认使用dash，以兼容H.265
@@ -357,15 +357,17 @@ async fn start_invite_stream(
                     fmt: CMaf::default(),
                 }),
                 // output:OutputKind::HttpFlv(HttpFlvOutput{fmt:Flv::default()}),
+                out_idle_timeout: None,
             }
         }
         Some(cmc) => MediaConfig {
             ssrc: u32ssrc,
             stream_id: stream_id.clone(),
-            expires: None,
+            in_wait_timeout: None,
             codec: cmc.codec,
             output: cmc.output,
             filter: cmc.filter,
+            out_idle_timeout: None,
         },
     };
 

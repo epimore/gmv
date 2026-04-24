@@ -11,7 +11,7 @@ use crate::gb::handler;
 use crate::gb::sip_tcp_splitter::complete_pkt;
 use base::exception::GlobalResultExt;
 use base::log::{debug, error, info, warn};
-use base::net::state::{Association, Package, Protocol, Zip};
+use base::net::state::{Association, IoEventType, Package, Protocol, Zip};
 use base::tokio;
 use base::tokio_util::sync::CancellationToken;
 
@@ -87,11 +87,11 @@ pub async fn read(
             }
             Zip::Event(event) => {
                 info!(
-                    "接收: event code={}, from={:?}",
+                    "接收: event code={:?}, from={:?}",
                     event.type_code, event.association
                 );
-                if event.get_type_code() == &0u8 {
-                    RWContext::clean_rw_session_by_bill(event.get_association());
+                if matches!(event.type_code,IoEventType::Close) {
+                    RWContext::clean_rw_session_by_bill(&event.association);
                 }
             }
         }

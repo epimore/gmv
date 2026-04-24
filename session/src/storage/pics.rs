@@ -5,12 +5,11 @@ use url::Url;
 
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
-use base::constructor::{Get};
 use base::once_cell::sync::Lazy;
 use base::serde::Deserialize;
 use base::serde_default;
 
-#[derive(Debug, Get, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.pics", check)]
 pub struct Pics {

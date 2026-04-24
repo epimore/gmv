@@ -5,8 +5,8 @@ edition.workspace = true
 
 [dependencies]
 shared = { path = "../shared" }
-base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "b83ba9f7094f4f2e0655620b717eff6ed477a56d", features = ["net"] }
-#base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
+#base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "b83ba9f7094f4f2e0655620b717eff6ed477a56d", features = ["net"] }
+base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
 
 rsip = "0.4"
 sqlx = { version = "0.8", default-features = false }

@@ -45,7 +45,7 @@ Daemon<(
         banner(
             Self::cli_basic().version,
             app_info.http.port,
-            *app_info.session_conf.get_wan_port(),
+            app_info.session_conf.wan_port,
             |msg| info!("{msg}"),
         );
         Ok((app_info, (http_listener, tu)))

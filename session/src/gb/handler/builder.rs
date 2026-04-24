@@ -188,8 +188,8 @@ impl ResponseBuilder {
         headers.push(Header::ContentLength(Default::default()));
         headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
         let conf = SessionInfo::get_session_by_conf();
-        let server_ip = &conf.get_wan_ip().to_string();
-        let server_port = conf.get_wan_port();
+        let server_ip = &conf.wan_ip.to_string();
+        let server_port = conf.wan_port;
         let domain_id = parser::header::get_device_id_by_request(req)?;
         headers.push(
             rsip::headers::Contact::new(format!(
@@ -374,8 +374,8 @@ impl RequestBuilder {
             }
         }
         let conf = SessionInfo::get_session_by_conf();
-        let server_ip = &conf.get_wan_ip().to_string();
-        let server_port = conf.get_wan_port();
+        let server_ip = &conf.wan_ip.to_string();
+        let server_port = conf.wan_port;
         //domain宜采用ID统一编码的前十位编码,扩展支持十位编码加“.spvmn.cn”后缀格式,或采用IP:port格式,port宜采用5060;这里统一使用device_id的前十位,不再调用DB进行判断原设备的使用方式
         let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
             .await?
@@ -387,7 +387,7 @@ impl RequestBuilder {
         let domain_id = oauth.domain_id;
         let domain = &format!("{}:{}", server_ip, server_port);
 
-        let transport = association.get_protocol().get_value();
+        let transport = association.protocol.get_value();
 
         let mut headers: rsip::Headers = Default::default();
         if lr {
@@ -536,8 +536,8 @@ impl RequestBuilder {
             .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
             .hand_log(|msg| warn!("{msg}"))?;
         let conf = SessionInfo::get_session_by_conf();
-        let server_ip = &conf.get_wan_ip().to_string();
-        let server_port = conf.get_wan_port();
+        let server_ip = &conf.wan_ip.to_string();
+        let server_port = conf.wan_port;
         let mut headers: rsip::Headers = Default::default();
         headers.push(
             res.to_header()
@@ -981,7 +981,7 @@ impl SdpBuilder {
         download_speed: Option<u8>,
     ) -> GlobalResult<String> {
         let conf = SessionInfo::get_session_by_conf();
-        let session_ip = &conf.get_wan_ip().to_string();
+        let session_ip = &conf.wan_ip.to_string();
         let mut sdp = String::with_capacity(300);
         sdp.push_str("v=0\r\n");
         sdp.push_str(&format!("o={} 0 0 IN IP4 {}\r\n", channel_id, session_ip));

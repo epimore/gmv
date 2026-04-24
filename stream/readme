@@ -1,7 +1,7 @@
 1.异常信息反馈
-2.时间调度
-3.net-channel 优化
-4.sip lib select
+2.时间调度 |ok
+3.net-channel 优化 |ok
+4.sip lib select |remaining
 
 cargo fix --allow-dirty --allow-staged
 cargo build --release --target x86_64-unknown-linux-gnu

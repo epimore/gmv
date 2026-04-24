@@ -63,7 +63,7 @@ pub async fn hand_request(
             },
             State::Expired => {
                 let unregister_response =
-                    ResponseBuilder::build_401_response(&req, bill.get_remote_addr())?;
+                    ResponseBuilder::build_401_response(&req, &bill.remote_addr)?;
                 let sip_package = SipPackage::build_response(unregister_response, bill);
                 let _ = tx
                     .clone()
@@ -229,7 +229,7 @@ impl Register {
         RWContext::insert(device_id, device_session);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register().await?;
-        let ok_response = ResponseBuilder::build_register_ok_response(&req, bill.get_remote_addr())?;
+        let ok_response = ResponseBuilder::build_register_ok_response(&req, &bill.remote_addr)?;
         let sip_package = SipPackage::build_response(ok_response, bill.clone());
         let _ = tx
             .clone()
@@ -250,7 +250,7 @@ impl Register {
         tx: Sender<SipPackage>,
         bill: &Association,
     ) -> GlobalResult<()> {
-        let ok_response = ResponseBuilder::build_logout_ok_response(&req, bill.get_remote_addr())?;
+        let ok_response = ResponseBuilder::build_logout_ok_response(&req, &bill.remote_addr)?;
         let sip_package = SipPackage::build_response(ok_response, bill.clone());
         let _ = tx
             .clone()
@@ -268,7 +268,7 @@ impl Register {
         bill: &Association,
     ) -> GlobalResult<()> {
         let unauthorized_register_response =
-            ResponseBuilder::unauthorized_register_response(&req, bill.get_remote_addr())?;
+            ResponseBuilder::unauthorized_register_response(&req, &bill.remote_addr)?;
         let sip_package = SipPackage::build_response(unauthorized_register_response, bill.clone());
         let _ = tx
             .clone()
@@ -291,7 +291,7 @@ impl Message {
         use parser::xml::*;
         match parse_xlm_to_vec(&req.body) {
             Ok(vs) => {
-                let response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
+                let response = ResponseBuilder::build_ok_response(&req, &bill.remote_addr)?;
                 for (k, v) in &vs {
                     if MESSAGE_TYPE.contains(&&k[..]) {
                         match &v[..] {
@@ -420,7 +420,7 @@ impl Notify {
         use parser::xml::*;
         match parse_xlm_to_vec(&req.body) {
             Ok(vs) => {
-                let response = ResponseBuilder::build_ok_response(&req, bill.get_remote_addr())?;
+                let response = ResponseBuilder::build_ok_response(&req, &bill.remote_addr)?;
                 for (k, v) in &vs {
                     if MESSAGE_TYPE.contains(&&**k) {
                         match &v[..] {

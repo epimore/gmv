@@ -5,7 +5,6 @@ use crate::state::schedule::ScheduleTask;
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::chrono::Local;
-use base::constructor::Get;
 use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
@@ -30,17 +29,17 @@ pub mod handler;
 mod io;
 mod sip_tcp_splitter;
 
-#[derive(Debug, Get, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.session", check)]
 pub struct SessionInfo {
-    domain: String,
-    domain_id: String,
-    http_source: String,
-    lan_ip: Ipv4Addr,
-    wan_ip: Ipv4Addr,
-    lan_port: u16,
-    wan_port: u16,
+    pub domain: String,
+    pub domain_id: String,
+    pub http_source: String,
+    pub lan_ip: Ipv4Addr,
+    pub wan_ip: Ipv4Addr,
+    pub lan_port: u16,
+    pub wan_port: u16,
 }
 impl CheckFromConf for SessionInfo {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
@@ -114,7 +113,7 @@ impl SessionInfo {
     }
 
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
-        let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.get_wan_port()))
+        let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.wan_port))
             .hand_log(|msg| error! {"{msg}"})?;
         let res = net::sdx::listen(net::state::Protocol::ALL, socket_addr);
         res

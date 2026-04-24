@@ -7,11 +7,11 @@ use crate::media::context::event::muxer::MuxerEvent;
 use crate::media::context::format::MuxPacket;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
-use crate::state::event_handler::{ActiveEvent, Event, EventRes, InnerEvent, OutEvent};
+use crate::state::event::{ActiveEvent, Event, EventRes, InnerEvent, OutEvent};
 use crate::state::layer::converter_layer::ConverterLayer;
 use crate::state::layer::output_layer::OutputLayer;
 use crate::state::msg::StreamConfig;
-use crate::state::{RTP_BUFFER_SIZE, event_handler};
+use crate::state::{RTP_BUFFER_SIZE, event};
 use base::bus;
 use base::cache::c100k;
 use base::cache::c100k::CacheEvent;
@@ -31,8 +31,8 @@ use shared::enums::OptAction;
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
 use shared::info::obj::{
-    BaseStreamInfo, InTimeoutEventRes, NetSource, OutputEventRes, OutputStreamInfo, RtpInfo,
-    StreamKey, StreamPlayInfo, StreamState,
+    BaseStreamInfo, InTimeoutEventRes, NetSource, OutputEventRes, OutputStreamInfo,
+    RegisterStreamInfo, RtpInfo, StreamKey, StreamPlayInfo, StreamState,
 };
 use shared::info::output::{OutputEnum, OutputKind};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -432,7 +432,7 @@ impl Register {
         output_enum: OutputEnum,
         user_token: Arc<str>,
         remote_addr: SocketAddr,
-        time_offset_sec: u8
+        time_offset_sec: u8,
     ) {
         let arc = REGISTER.inner.clone();
         if let Some(meta) = arc.stream_metadata_map.get(&stream_id) {
@@ -449,12 +449,12 @@ impl Register {
             if meta.out_idle_timeout > 0 {
                 arc.time_schedule.insert(
                     TimeScheduleKey::OutSession(expire_id),
-                    Duration::from_secs((time_offset_sec+meta.out_idle_timeout) as u64),
+                    Duration::from_secs((time_offset_sec + meta.out_idle_timeout) as u64),
                 );
             } else if meta.out_idle_timeout == 0 {
                 arc.time_schedule.insert(
                     TimeScheduleKey::OutSession(expire_id),
-                    Duration::from_secs((time_offset_sec+1) as u64),
+                    Duration::from_secs((time_offset_sec + 1) as u64),
                 );
             } else {
                 //此处用于统计输出,不作为 OUT_TIMEOUT 对外输出事件
@@ -671,6 +671,21 @@ impl Register {
                                 .mpsc_bus
                                 .try_publish(stream_config)
                                 .hand_log(|msg| error!("{msg}"));
+                            let stream_info = Self::build_base_stream_info(
+                                &meta,
+                                arc.server_conf.name.clone(),
+                                arc.server_conf.proxy_addr.clone(),
+                                stream_id.to_string(),
+                            );
+                            let info = RegisterStreamInfo {
+                                base_stream_info: stream_info,
+                                code: 200,
+                                msg: None,
+                            };
+                            let _ = arc
+                                .event_tx
+                                .try_send((Event::Out(OutEvent::StreamRegister(info)), None))
+                                .hand_log(|msg| error!("{msg}"));
                         }
                     }
                 } else {
@@ -680,9 +695,17 @@ impl Register {
                         arc.server_conf.proxy_addr.clone(),
                         stream_id.to_string(),
                     );
+                    let info = RegisterStreamInfo {
+                        base_stream_info: stream_info,
+                        code: BaseErrorCode::InvalidState.code(),
+                        msg: Some(format!(
+                            "Play type is not identical;sdp={},rtp={}",
+                            media_ext.type_code, rtp_type
+                        )),
+                    };
                     let _ = arc
                         .event_tx
-                        .try_send((Event::Out(OutEvent::StreamInvalid(stream_info)), None))
+                        .try_send((Event::Out(OutEvent::StreamRegister(info)), None))
                         .hand_log(|msg| error!("{msg}"));
                     //释放媒体资源
                     let ssrc = meta.ssrc;
@@ -788,11 +811,8 @@ impl Register {
         };
         let arc = register.inner.clone();
         let rt = GlobalRuntime::get_main_runtime();
-        rt.rt_handle.spawn(event_handler::schedule_event(
-            arc,
-            event_rx,
-            rt.cancel.clone(),
-        ));
+        rt.rt_handle
+            .spawn(event::schedule_event(arc, event_rx, rt.cancel.clone()));
         register
     }
 }

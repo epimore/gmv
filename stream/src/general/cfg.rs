@@ -1,6 +1,5 @@
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
-use base::constructor::Get;
 use base::serde::Deserialize;
 use base::serde_default;
 
@@ -11,8 +10,8 @@ pub struct StreamConf {
     pub in_wait_timeout: u8,
     pub out_idle_timeout: u8,
 }
-serde_default!(default_in_wait_timeout, i32, 4);
-serde_default!(default_out_idle_timeout, i32, 6);
+serde_default!(default_in_wait_timeout, u8, 4);
+serde_default!(default_out_idle_timeout, u8, 6);
 impl StreamConf {
     pub fn init_by_conf() -> Self {
         StreamConf::conf()
