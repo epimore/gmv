@@ -1,4 +1,4 @@
-use crate::gb::SessionInfo;
+use crate::gb::SessionConf;
 use crate::http::Http;
 use crate::state::runner::{PicsRunner, Runner};
 use base::cfg_lib::{CliBasic, default_cli_basic};
@@ -11,7 +11,7 @@ use std::net::UdpSocket;
 
 #[derive(Debug)]
 pub struct AppInfo {
-    session_conf: SessionInfo,
+    session_conf: SessionConf,
     http: Http,
 }
 
@@ -36,7 +36,7 @@ Daemon<(
         Self: Sized,
     {
         let app_info = AppInfo {
-            session_conf: SessionInfo::get_session_by_conf(),
+            session_conf: SessionConf::get_session_by_conf(),
             http: Http::get_http_by_conf(),
         };
         logger::Logger::init()?;
@@ -64,7 +64,7 @@ Daemon<(
         network_rt
             .rt_handle
             .spawn(async move {
-                let _ = SessionInfo::run(tu, network_rt.cancel.clone()).await;
+                let _ = SessionConf::run(tu, network_rt.cancel.clone()).await;
                 GlobalRuntime::get_main_runtime()
                     .rt_handle
                     .spawn(PicsRunner::next());

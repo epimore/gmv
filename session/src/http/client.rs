@@ -10,39 +10,56 @@ use shared::info::res::Resp;
 use std::str::FromStr;
 use std::time::Duration;
 use crate::state::model::{AlarmInfo};
+use std::sync::{Arc, OnceLock};
+use base::dashmap;
+use base::dashmap::DashMap;
+use base::log::info;
+use crate::register::core::DEFAULT_EXPIRES;
 
-const TIME_OUT: u64 = 8000;
+type HttpTemplate = Arc<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>>;
+static CLIENT_POOL: OnceLock<DashMap<String, HttpTemplate>> = OnceLock::new();
 pub struct HttpClient;
 impl HttpClient {
-    pub fn template(url: &str) -> GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>> {
-        let url = Url::from_str(url).hand_log(|msg| println!("{}", msg))?;
-        let client = pretend_reqwest::reqwest::Client::builder().timeout(Duration::from_millis(TIME_OUT)).build().unwrap();
-        let pretend = pretend::Pretend::for_client(pretend_reqwest::Client::new(client))
-            .with_url(url);
-        Ok(pretend)
+    fn pool() -> &'static DashMap<String, HttpTemplate> {
+        CLIENT_POOL.get_or_init(|| DashMap::new())
     }
-    pub fn template_ip_port(local_ip: &String, local_port: u16) -> GlobalResult<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>> {
-        let uri = format!("http://{}:{}", local_ip, local_port);
-        Self::template(&uri)
+    fn init(url: &str) -> GlobalResult<HttpTemplate> {
+        let url_parsed = Url::parse(url)
+            .hand_log(|msg| info!("{msg}"))?;
+
+        let client = pretend_reqwest::reqwest::Client::builder()
+            .timeout(DEFAULT_EXPIRES)
+            .build()
+            .hand_log(|msg| info!("{msg}"))?;
+
+        let pretend = pretend::Pretend::for_client(
+            pretend_reqwest::Client::new(client)
+        ).with_url(url_parsed);
+
+        Ok(Arc::new(pretend))
+    }
+
+    pub fn template(url: &str) -> GlobalResult<HttpTemplate> {
+        let pool = Self::pool();
+        if let Some(c) = pool.get(url) {
+            return Ok(c.clone());
+        }
+        let client = Self::init(url)?;
+        // 双检 + 并发安全
+        match pool.entry(url.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(e) => Ok(e.get().clone()),
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                e.insert(client.clone());
+                Ok(client)
+            }
+        }
+    }
+    pub fn template_ip_port(local_ip: &String, local_port: u16) -> GlobalResult<HttpTemplate> {
+        let url = format!("http://{}:{}", local_ip, local_port);
+        Self::template(&url)
     }
 }
 
-// struct TokenInterceptor {
-//     app_id: String,
-//     token: String,
-// }
-// 
-// impl InterceptRequest for TokenInterceptor {
-//     fn intercept(&self, mut request: Request) -> Result<Request> {
-//         let value = HeaderValue::from_str(&self.token)
-//             .map_err(|e| {
-//                 warn!("{}", e);
-//                 Error::client(e)
-//             })?;
-//         request.headers.append("Gmv-Token", value);
-//         Ok(request)
-//     }
-// }
 
 #[pretend]
 pub trait HttpStream {

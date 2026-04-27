@@ -22,6 +22,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use crate::register::core::SERVER_HEART_SECOND;
 
 mod core;
 pub mod depot;
@@ -32,7 +33,7 @@ mod sip_tcp_splitter;
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.session", check)]
-pub struct SessionInfo {
+pub struct SessionConf {
     pub domain: String,
     pub domain_id: String,
     pub http_source: String,
@@ -41,7 +42,7 @@ pub struct SessionInfo {
     pub lan_port: u16,
     pub wan_port: u16,
 }
-impl CheckFromConf for SessionInfo {
+impl CheckFromConf for SessionConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         let re = Regex::new(r"^\d{20}$").unwrap();
         if re.is_match(&self.domain_id) {
@@ -53,34 +54,34 @@ impl CheckFromConf for SessionInfo {
         )))
     }
 }
-
-impl ScheduleTask for SessionInfo{
-    fn do_something(&self) -> Pin<Box<dyn Future<Output=()> + Send + '_>> {
-        Box::pin(async move {
-            let _ = self.heart_to_db().await;
-        })
-    }
-}
-impl Runner for SessionInfo {
-    fn next() -> impl Future<Output=()> + Send {
-        async {
-            let conf = SessionInfo::get_session_by_conf();
-            let _ = conf.init_to_db().await;
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            let schedule = Schedule::from_str("0 */1 * * * *").expect("heart_to_db cron invalid");
-            let tx = schedule::get_schedule_tx();
-            let _ = tx.send((schedule, Arc::new(conf))).await.hand_log(|msg| error!("{msg}"));
-        }
-
-    }
-}
-impl SessionInfo {
+//
+// impl ScheduleTask for SessionConf {
+//     fn do_something(&self) -> Pin<Box<dyn Future<Output=()> + Send + '_>> {
+//         Box::pin(async move {
+//             let _ = self.heart_to_db().await;
+//         })
+//     }
+// }
+// impl Runner for SessionConf {
+//     fn next() -> impl Future<Output=()> + Send {
+//         async {
+//             let conf = SessionConf::get_session_by_conf();
+//             let _ = conf.init_to_db().await;
+//             tokio::time::sleep(Duration::from_secs(60)).await;
+//             let schedule = Schedule::from_str("0 */1 * * * *").expect("heart_to_db cron invalid");
+//             let tx = schedule::get_schedule_tx();
+//             let _ = tx.send((schedule, Arc::new(conf))).await.hand_log(|msg| error!("{msg}"));
+//         }
+//
+//     }
+// }
+impl SessionConf {
     async fn heart_server(){
-        let conf = SessionInfo::get_session_by_conf();
+        let conf = SessionConf::get_session_by_conf();
         let _ = conf.init_to_db().await;
 
     }
-    async fn heart_to_db(&self)->GlobalResult<()>{
+    pub async fn heart_to_db(&self)->GlobalResult<()>{
         let pool = get_conn_by_pool();
         let _ = sqlx::query(r#"update GB_SERVER set heart_time=? where domain_id=?"#)
             .bind(Local::now().naive_local())
@@ -102,14 +103,14 @@ impl SessionInfo {
             .bind(&self.http_source)
             .bind(1)
             .bind(Local::now().naive_local())
-            .bind(60)
+            .bind(SERVER_HEART_SECOND)
             .execute(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 
     pub fn get_session_by_conf() -> Self {
-        SessionInfo::conf()
+        SessionConf::conf()
     }
 
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
@@ -127,7 +128,7 @@ impl SessionInfo {
         let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
         RWContext::init(output.clone(), sip_pkg_tx.clone());
         let handle = Handle::current();
-        handle.spawn(SessionInfo::next());
+        handle.spawn(SessionConf::heart_server());
         let ctx = Arc::new(depot::DepotContext::init(
             handle.clone(),
             cancel_token.clone(),

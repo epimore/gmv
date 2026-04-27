@@ -1,5 +1,5 @@
 pub mod core;
-mod network;
+mod io;
 mod session;
 mod protocol;
 mod event;

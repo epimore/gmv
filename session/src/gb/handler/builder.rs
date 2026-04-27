@@ -14,7 +14,7 @@ use std::ops::Add;
 use std::sync::atomic::{AtomicU16, Ordering};
 use uuid::Uuid;
 
-use crate::gb::SessionInfo;
+use crate::gb::SessionConf;
 use crate::gb::core::rw::RWContext;
 use crate::gb::handler::parser;
 use crate::state::model::{PtzControlModel, TransMode};
@@ -187,7 +187,7 @@ impl ResponseBuilder {
         );
         headers.push(Header::ContentLength(Default::default()));
         headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
-        let conf = SessionInfo::get_session_by_conf();
+        let conf = SessionConf::get_session_by_conf();
         let server_ip = &conf.wan_ip.to_string();
         let server_port = conf.wan_port;
         let domain_id = parser::header::get_device_id_by_request(req)?;
@@ -373,7 +373,7 @@ impl RequestBuilder {
                 )))?,
             }
         }
-        let conf = SessionInfo::get_session_by_conf();
+        let conf = SessionConf::get_session_by_conf();
         let server_ip = &conf.wan_ip.to_string();
         let server_port = conf.wan_port;
         //domain宜采用ID统一编码的前十位编码,扩展支持十位编码加“.spvmn.cn”后缀格式,或采用IP:port格式,port宜采用5060;这里统一使用device_id的前十位,不再调用DB进行判断原设备的使用方式
@@ -535,7 +535,7 @@ impl RequestBuilder {
         let (uri_str, _association, _lr) = RWContext::get_ds_by_device_id(device_id)
             .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
             .hand_log(|msg| warn!("{msg}"))?;
-        let conf = SessionInfo::get_session_by_conf();
+        let conf = SessionConf::get_session_by_conf();
         let server_ip = &conf.wan_ip.to_string();
         let server_port = conf.wan_port;
         let mut headers: rsip::Headers = Default::default();
@@ -980,7 +980,7 @@ impl SdpBuilder {
         u: bool,
         download_speed: Option<u8>,
     ) -> GlobalResult<String> {
-        let conf = SessionInfo::get_session_by_conf();
+        let conf = SessionConf::get_session_by_conf();
         let session_ip = &conf.wan_ip.to_string();
         let mut sdp = String::with_capacity(300);
         sdp.push_str("v=0\r\n");
