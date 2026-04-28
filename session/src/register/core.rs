@@ -12,6 +12,7 @@ use base::tokio::time::Instant;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use crate::register::session::Session;
 
 static REGISTER: Lazy<Register> = Lazy::new(|| Register::init());
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
@@ -20,8 +21,8 @@ const SERVER_HEART_EXPIRE: Duration = Duration::from_secs(SERVER_HEART_SECOND);
 
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub enum TimeScheduleKey {
-    Device3Heart(Arc<str>),
-    DeviceRegistration(Arc<str>),
+    Device3HeartTimeout(Arc<str>),
+    DeviceRegistrationTimeout(Arc<str>),
     OutSession(u64),
     ServerHeart(Arc<str>),
 }
@@ -37,6 +38,7 @@ pub struct Inner {
     pub sip_tx: Sender<SipPackage>,
     pub event_tx: Sender<Event>,
     pub io_map: Network,
+    pub session_map:Session,
 }
 impl Register {
     fn init() -> Register {
@@ -57,7 +59,7 @@ impl Register {
         // 2. 若 association 未变化，仅刷新心跳
         if session.association == association {
             arc.time_schedule
-                .refresh(TimeScheduleKey::Device3Heart(device_id.clone()))?;
+                .refresh(TimeScheduleKey::Device3HeartTimeout(device_id.clone()))?;
             return Ok(());
         }
 
@@ -83,7 +85,7 @@ impl Register {
 
         // 7. 刷新心跳定时器
         arc.time_schedule
-            .refresh(TimeScheduleKey::Device3Heart(device_id))?;
+            .refresh(TimeScheduleKey::Device3HeartTimeout(device_id))?;
 
         Ok(())
     }
@@ -94,13 +96,13 @@ impl Register {
         // 设置心跳超时（3 倍心跳间隔）
         let expires = Duration::from_secs((ds.heartbeat_sec * 3) as u64);
         arc.time_schedule
-            .insert(TimeScheduleKey::Device3Heart(device_id.clone()), expires)
+            .insert(TimeScheduleKey::Device3HeartTimeout(device_id.clone()), expires)
             .hand_log(|e| error!("插入心跳定时器失败: {e}"))?;
 
         // 设置注册有效期
         arc.time_schedule
             .insert(
-                TimeScheduleKey::DeviceRegistration(device_id.clone()),
+                TimeScheduleKey::DeviceRegistrationTimeout(device_id.clone()),
                 ds.registration_duration,
             )
             .hand_log(|e| error!("插入注册定时器失败: {e}"))?;
@@ -111,7 +113,7 @@ impl Register {
     }
 
     /// 统一设备移除逻辑
-    pub fn remove_device(&self, device_id: &Arc<str>) {
+    pub fn remove_device(device_id: &Arc<str>) {
         let arc = REGISTER.inner.clone();
 
         // 先获取 session 信息，获取关联的 association
@@ -120,10 +122,6 @@ impl Register {
             arc.io_map
                 .net_device_map
                 .remove(&session.association);
-
-            // 可选：清理该设备的所有定时器
-            // arc.time_schedule.delete(TimeScheduleKey::Device3Heart(device_id.clone()));
-            // arc.time_schedule.delete(TimeScheduleKey::DeviceRegistration(device_id.clone()));
         }
     }
 

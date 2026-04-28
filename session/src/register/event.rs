@@ -56,7 +56,7 @@ async fn hand_event(event:Event){
     match event {
         Event::DeviceOffline(_) => {}
         Event::ServerHeart(domain_id) => {
-            Register::server_keep_heart_update_db(domain_id).await;
+           let _ = Register::server_keep_heart_update_db(domain_id).await;
         }
         Event::OutSession(_) => {}
     }
@@ -66,15 +66,17 @@ async fn on_time_schedule(inner: &Inner) {
     if let Some(batch) = inner.time_schedule.next_batch().await {
         for CacheEvent { key, version, .. } in batch {
             match key {
-                TimeScheduleKey::Device3Heart(device_id) => {
+                TimeScheduleKey::Device3HeartTimeout(device_id) => {
                     warn!("设备 {} 心跳超时，移除设备", device_id);
+                    Register::remove_device(&device_id);
                 }
                 TimeScheduleKey::OutSession(_) => {}
                 TimeScheduleKey::ServerHeart(domain_id) => {
-                    Register::server_keep_heart(domain_id);
+                    let _ = Register::server_keep_heart(domain_id);
                 }
-                TimeScheduleKey::DeviceRegistration(device_id) => {
+                TimeScheduleKey::DeviceRegistrationTimeout(device_id) => {
                     warn!("设备 {} 注册过期，移除设备", device_id);
+                    Register::remove_device(&device_id);
                 }
             }
         }
