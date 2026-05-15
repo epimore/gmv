@@ -5,28 +5,30 @@ use rsip::headers::ToTypedHeader;
 use rsip::message::HeadersExt;
 use rsip::services::DigestGenerator;
 use rsip::{Method, Request};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use base::bytes::Bytes;
-use base::chrono::{Duration, Local};
+use base::chrono::{Duration as TimeDelta, Local};
+use base::err::BaseErrorCode;
 use base::exception::GlobalError::SysErr;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::net::state::Association;
-use base::tokio::sync::mpsc::Sender;
 use base::tokio;
+use base::tokio::sync::mpsc::Sender;
 
-use crate::gb::core::rw::{DeviceSession, RWContext};
+use crate::gb::core::rw::RWContext;
 use crate::gb::depot::SipPackage;
 use crate::gb::handler::builder::ResponseBuilder;
 use crate::gb::handler::parser::xml::{KV2Model, MESSAGE_UPLOAD_SNAPSHOT_SESSION_ID};
 use crate::gb::handler::{cmd, parser};
 use crate::http::client::{HttpBiz, HttpClient};
 use crate::service::KEY_SNAPSHOT_IMAGE;
-use crate::state;
 use crate::state::AlarmConf;
 use crate::state::model::AlarmInfo;
 use crate::storage::entity::{DeviceStatus, GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
+use crate::{register, state};
 
 pub async fn hand_request(
     req: Request,
@@ -34,14 +36,15 @@ pub async fn hand_request(
     bill: Association,
 ) -> GlobalResult<()> {
     let device_id = parser::header::get_device_id_by_request(&req)?;
+    let device_id: Arc<str> = Arc::from(device_id);
     //校验设备是否注册
     if req.method == Method::Register {
-        let _ = Register::process(&device_id, req, tx, &bill)
+        let _ = Register::process(device_id.clone(), req, tx, &bill)
             .await
             .hand_log(|msg| error!("设备 = [{}],注册失败;err={}", &device_id, msg));
         Ok(())
     } else {
-        match State::check_session(&bill, &device_id).await? {
+        match State::check_session(&bill, device_id.clone()).await? {
             State::Enable | State::ReCache => match req.method {
                 Method::Ack => Ok(()),
                 Method::Bye => Ok(()),
@@ -97,14 +100,15 @@ impl State {
     /// 2)设备未在注册有效期内，重新注册
     /// 3）其他日志记录
     /// 目的->服务端重启后，不需要设备重新注册
-    async fn check_session(bill: &Association, device_id: &String) -> GlobalResult<State> {
+    async fn check_session(bill: &Association, device_id: Arc<str>) -> GlobalResult<State> {
+        let device_key = device_id.to_string();
         if RWContext::get_device_id_by_association(bill).is_some()
-            || RWContext::has_session_by_device_id(device_id)
+            || RWContext::has_session_by_device_id(&device_key)
         {
-            RWContext::keep_alive(device_id, bill.clone());
+            RWContext::keep_alive(&device_key, bill.clone());
             Ok(State::Enable)
         } else {
-            match DeviceStatus::get_device_status(device_id).await? {
+            match DeviceStatus::get_device_status(&device_key).await? {
                 None => {
                     warn!("未知设备：{device_id}");
                     Ok(State::Invalid)
@@ -124,19 +128,28 @@ impl State {
                         Ok(State::Invalid)
                     } else {
                         //判断是否在注册有效期内
-                        if register_time + Duration::seconds(expires as i64)
+                        if register_time + TimeDelta::seconds(expires as i64)
                             > Local::now().naive_local()
                         {
                             let mut device_session =
-                                DeviceSession::build(contact_uri, bill.clone(), heartbeat);
+                                register::core::DeviceSession::build(
+                                    contact_uri,
+                                    bill.clone(),
+                                    heartbeat,
+                                    std::time::Duration::from_secs(expires as u64),
+                                );
                             if lr == 1 {
                                 device_session.enable_lr();
                             }
                             //刷新缓存
-                            RWContext::insert(device_id, device_session);
+                            let _ = register::core::Register::register_device(
+                                device_id.clone(),
+                                device_session,
+                            );
+                            // RWContext::insert(device_id, device_session);
                             //如果设备是离线状态，则更新为在线
                             if online == 0 {
-                                GmvDevice::update_gmv_device_status_by_device_id(device_id, 1)
+                                GmvDevice::update_gmv_device_status_by_device_id(device_id.as_ref(), 1)
                                     .await?;
                             }
                             Ok(State::ReCache)
@@ -155,12 +168,12 @@ struct Register;
 
 impl Register {
     async fn process(
-        device_id: &String,
+        device_id: Arc<str>,
         req: Request,
         tx: Sender<SipPackage>,
         bill: &Association,
     ) -> GlobalResult<()> {
-        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
+        let oauth = GmvOauth::read_gmv_oauth_by_device_id(&device_id.to_string())
             .await?
             .ok_or(SysErr(anyhow!(
                 "device id = [{}] 未知设备，拒绝接入",
@@ -176,10 +189,25 @@ impl Register {
             0u8 => {
                 let expires = parser::header::get_expires(&req)?;
                 if expires > 0 {
-                    Self::login_ok(device_id, &req, tx, bill, oauth).await
+                    if expires > 60 * 60 * 24 {
+                        Err(GlobalError::new_biz_error(
+                            BaseErrorCode::InvalidState.code(),
+                            "注册有效期超过一天：86400秒",
+                            |msg| error!("device_id = {}; {msg}", &device_id),
+                        ))?;
+                    }
+                    Self::login_ok(
+                        device_id,
+                        &req,
+                        tx,
+                        bill,
+                        oauth,
+                        std::time::Duration::from_secs(expires as u64),
+                    )
+                        .await
                 } else {
                     //设备下线
-                    Self::logout_ok(device_id, &req, tx, bill).await
+                    Self::logout_ok(&device_id, &req, tx, bill).await
                 }
             }
             _ => {
@@ -194,10 +222,17 @@ impl Register {
                                     let expires = parser::header::get_expires(&req)?;
                                     //注册与注销判断
                                     if expires > 0 {
-                                        Self::login_ok(device_id, &req, tx, bill, oauth).await
+                                        Self::login_ok(
+                                            device_id,
+                                            &req,
+                                            tx,
+                                            bill,
+                                            oauth,
+                                            std::time::Duration::from_secs(expires as u64),
+                                        ).await
                                     } else {
                                         //注销  设备下线
-                                        Self::logout_ok(device_id, &req, tx, bill).await
+                                        Self::logout_ok(&device_id, &req, tx, bill).await
                                     }
                                 } else {
                                     Self::unauthorized(&req, tx, bill).await
@@ -214,19 +249,25 @@ impl Register {
         }
     }
     async fn login_ok(
-        device_id: &String,
+        device_id: Arc<str>,
         req: &Request,
         tx: Sender<SipPackage>,
         bill: &Association,
         oauth: GmvOauth,
+        registration_duration: std::time::Duration,
     ) -> GlobalResult<()> {
         let contact_uri = parser::header::get_contact_uri(req)?;
-        let mut device_session =
-            DeviceSession::build(contact_uri, bill.clone(), oauth.heartbeat_sec);
+        let mut device_session = register::core::DeviceSession::build(
+            contact_uri,
+            bill.clone(),
+            oauth.heartbeat_sec,
+            registration_duration,
+        );
         if parser::header::enable_lr(req)? == 1 {
             device_session.enable_lr();
         }
-        RWContext::insert(device_id, device_session);
+        register::core::Register::register_device(device_id.clone(), device_session)?;
+        // RWContext::insert(device_id, device_session);
         let gmv_device = GmvDevice::build_gmv_device(&req)?;
         gmv_device.insert_single_gmv_device_by_register().await?;
         let ok_response = ResponseBuilder::build_register_ok_response(&req, &bill.remote_addr)?;
@@ -237,15 +278,16 @@ impl Register {
             .await
             .hand_log(|msg| warn!("{msg}"));
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-        cmd::CmdQuery::query_device_info(device_id).await?;
+        let device_key = device_id.to_string();
+        cmd::CmdQuery::query_device_info(&device_key).await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        cmd::CmdQuery::query_device_catalog(device_id).await?;
+        cmd::CmdQuery::query_device_catalog(&device_key).await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        cmd::CmdQuery::subscribe_device_catalog(device_id, gmv_device.register_expires).await
+        cmd::CmdQuery::subscribe_device_catalog(&device_key, gmv_device.register_expires).await
     }
 
     async fn logout_ok(
-        device_id: &String,
+        device_id: &Arc<str>,
         req: &Request,
         tx: Sender<SipPackage>,
         bill: &Association,
@@ -257,8 +299,9 @@ impl Register {
             .send(sip_package)
             .await
             .hand_log(|msg| warn!("{msg}"));
+        register::core::Register::remove_device(device_id);
         GmvDevice::update_gmv_device_status_by_device_id(device_id, 0).await?;
-        RWContext::clean_rw_session_and_net(device_id);
+        // RWContext::clean_rw_session_and_net(device_id);
         Ok(())
     }
 
@@ -283,7 +326,7 @@ struct Message;
 
 impl Message {
     async fn process(
-        device_id: &String,
+        device_id: &Arc<str>,
         req: Request,
         tx: Sender<SipPackage>,
         bill: &Association,
@@ -351,7 +394,7 @@ impl Message {
             }
         }
     }
-    async fn keep_alive(device_id: &String, vs: Vec<(String, String)>, bill: &Association) {
+    async fn keep_alive(device_id: &Arc<str>, vs: Vec<(String, String)>, bill: &Association) {
         use parser::xml::{NOTIFY_DEVICE_ID, NOTIFY_STATUS};
         if base::log::max_level() <= LevelFilter::Info {
             let (mut device_id, mut status) = (String::new(), String::new());
@@ -371,7 +414,8 @@ impl Message {
                 &device_id, &status
             );
         }
-        RWContext::keep_alive(device_id, bill.clone());
+        let _ = register::core::Register::device_heart(device_id, bill.clone());
+        // RWContext::keep_alive(device_id, bill.clone());
     }
 
     async fn device_info(vs: Vec<(String, String)>) {
@@ -380,7 +424,7 @@ impl Message {
             .hand_log(|msg| error!("{msg}"));
     }
 
-    async fn device_catalog(device_id: &String, vs: Vec<(String, String)>) {
+    async fn device_catalog(device_id: &Arc<str>, vs: Vec<(String, String)>) {
         if let Ok(_arr) = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs)
             .await
             .hand_log(|msg| error!("{msg}"))
@@ -393,11 +437,11 @@ impl Message {
     }
 
     async fn message_notify_alarm(
-        device_id: &String,
+        device_id: &Arc<str>,
         vs: Vec<(String, String)>,
     ) -> GlobalResult<()> {
         let mut info = AlarmInfo::kv_to_model(vs)?;
-        info.deviceId = device_id.clone();
+        info.deviceId = device_id.to_string();
         let conf = AlarmConf::get_alarm_conf();
         let pretend = HttpClient::template(conf.push_url.as_ref().unwrap())?;
         let _ = pretend
@@ -412,7 +456,7 @@ struct Notify;
 
 impl Notify {
     async fn process(
-        device_id: &String,
+        device_id: &Arc<str>,
         req: Request,
         tx: Sender<SipPackage>,
         bill: &Association,

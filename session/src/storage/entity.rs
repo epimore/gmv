@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::gb::handler::parser;
 use rsip::Request;
 
@@ -169,7 +170,7 @@ impl GmvDevice {
         Ok(())
     }
     pub async fn update_gmv_device_status_by_device_id(
-        device_id: &String,
+        device_id: &str,
         status: u8,
     ) -> GlobalResult<()> {
         let pool = get_conn_by_pool();
@@ -281,7 +282,7 @@ pub struct GmvDeviceChannel {
 
 impl GmvDeviceChannel {
     pub async fn insert_gmv_device_channel(
-        device_id: &String,
+        device_id: &str,
         vs: Vec<(String, String)>,
     ) -> GlobalResult<Vec<GmvDeviceChannel>> {
         let dc_ls = Self::build(device_id, vs);
@@ -323,7 +324,7 @@ impl GmvDeviceChannel {
             .hand_log(|msg| error!("{msg}"))?;
         Ok(dc_ls)
     }
-    fn build(device_id: &String, vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
+    fn build(device_id: &str, vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
         use crate::gb::handler::parser::xml::*;
         let mut dc = GmvDeviceChannel::default();
         dc.device_id = device_id.to_string();

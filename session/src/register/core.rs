@@ -1,7 +1,7 @@
 use crate::gb::SessionConf;
 use crate::gb::depot::SipPackage;
 use crate::register::event::Event;
-use crate::register::io::{DeviceSession, Network};
+pub(crate) use crate::register::io::{DeviceSession, Network};
 use base::cache::c100k;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
@@ -17,12 +17,12 @@ use crate::register::session::Session;
 static REGISTER: Lazy<Register> = Lazy::new(|| Register::init());
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
 pub const SERVER_HEART_SECOND: u64 = 60;
-const SERVER_HEART_EXPIRE: Duration = Duration::from_secs(SERVER_HEART_SECOND);
+pub const SERVER_HEART_EXPIRE: Duration = Duration::from_secs(SERVER_HEART_SECOND);
 
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub enum TimeScheduleKey {
-    Device3HeartTimeout(Arc<str>),
-    DeviceRegistrationTimeout(Arc<str>),
+    Device3Heart(Arc<str>),
+    DeviceRegistration(Arc<str>),
     OutSession(u64),
     ServerHeart(Arc<str>),
 }
@@ -45,11 +45,11 @@ impl Register {
         unimplemented!()
     }
 
-    pub fn device_heart(device_id: Arc<str>, association: Association) -> GlobalResult<()> {
+    pub fn device_heart(device_id: &Arc<str>, association: Association) -> GlobalResult<()> {
         let arc = REGISTER.inner.clone();
 
         // 1. 仅通过 session 判断设备是否已注册
-        let Some(mut session) = arc.io_map.session.get_mut(&device_id) else {
+        let Some(mut session) = arc.io_map.session.get_mut(device_id) else {
             return Err(GlobalError::new_sys_error(
                 "未注册设备，拒绝心跳响应",
                 |msg| warn!("device_id={}; {msg}", device_id),
@@ -59,7 +59,7 @@ impl Register {
         // 2. 若 association 未变化，仅刷新心跳
         if session.association == association {
             arc.time_schedule
-                .refresh(TimeScheduleKey::Device3HeartTimeout(device_id.clone()))?;
+                .refresh(TimeScheduleKey::Device3Heart(device_id.clone()))?;
             return Ok(());
         }
 
@@ -75,7 +75,7 @@ impl Register {
 
         // 4. 建立新三元组映射（自动处理旧设备顶替）
         arc.io_map
-            .update_net_device_mapping(&association, &device_id);
+            .update_net_device_mapping(&association, device_id);
 
         // 5. 更新本设备关联的三元组
         session.association = association;
@@ -85,7 +85,7 @@ impl Register {
 
         // 7. 刷新心跳定时器
         arc.time_schedule
-            .refresh(TimeScheduleKey::Device3HeartTimeout(device_id))?;
+            .refresh(TimeScheduleKey::Device3Heart(device_id.clone()))?;
 
         Ok(())
     }
@@ -96,13 +96,13 @@ impl Register {
         // 设置心跳超时（3 倍心跳间隔）
         let expires = Duration::from_secs((ds.heartbeat_sec * 3) as u64);
         arc.time_schedule
-            .insert(TimeScheduleKey::Device3HeartTimeout(device_id.clone()), expires)
+            .insert(TimeScheduleKey::Device3Heart(device_id.clone()), expires)
             .hand_log(|e| error!("插入心跳定时器失败: {e}"))?;
 
         // 设置注册有效期
         arc.time_schedule
             .insert(
-                TimeScheduleKey::DeviceRegistrationTimeout(device_id.clone()),
+                TimeScheduleKey::DeviceRegistration(device_id.clone()),
                 ds.registration_duration,
             )
             .hand_log(|e| error!("插入注册定时器失败: {e}"))?;
@@ -113,16 +113,21 @@ impl Register {
     }
 
     /// 统一设备移除逻辑
-    pub fn remove_device(device_id: &Arc<str>) {
-        let arc = REGISTER.inner.clone();
+    pub fn remove_device_by_inner(device_id: &Arc<str>, inner: &Inner) {
 
         // 先获取 session 信息，获取关联的 association
-        if let Some((_, session)) = arc.io_map.session.remove(device_id) {
+        if let Some((_, session)) = inner.io_map.session.remove(device_id) {
             // 清理网络三元组映射
-            arc.io_map
-                .net_device_map
-                .remove(&session.association);
+            if !session.association_expire.load(Ordering::Relaxed) {
+                inner.io_map
+                    .net_device_map
+                    .remove(&session.association);
+            }
         }
+    }
+    pub fn remove_device(device_id: &Arc<str>) {
+        let inner = &REGISTER.inner;
+        Self::remove_device_by_inner(device_id,inner);
     }
 
     pub async fn server_keep_heart_update_db(domain_id: Arc<str>) -> GlobalResult<()> {
@@ -131,13 +136,13 @@ impl Register {
         arc.time_schedule
             .insert(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)
     }
-    pub fn server_keep_heart(domain_id: Arc<str>) -> GlobalResult<()> {
-        let arc = REGISTER.inner.clone();
-        let _ = arc
-            .event_tx
-            .try_send(Event::ServerHeart(domain_id.clone()))
-            .hand_log(|msg| error!("{msg}"));
-        arc.time_schedule
-            .insert(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)
-    }
+    // pub fn server_keep_heart(domain_id: Arc<str>) -> GlobalResult<()> {
+    //     let arc = REGISTER.inner.clone();
+    //     let _ = arc
+    //         .event_tx
+    //         .try_send(Event::ServerHeart(domain_id.clone()))
+    //         .hand_log(|msg| error!("{msg}"));
+    //     arc.time_schedule
+    //         .insert(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)
+    // }
 }

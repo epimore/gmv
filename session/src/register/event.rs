@@ -8,7 +8,9 @@ use base::tokio::sync::mpsc::Receiver;
 use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::Semaphore;
 use base::tokio_util::sync::CancellationToken;
-use crate::register::core::{Inner, Register, TimeScheduleKey};
+use crate::register::core::{Inner, Register, TimeScheduleKey, SERVER_HEART_EXPIRE};
+use crate::storage::entity::GmvDevice;
+
 const MAX_WORKER_POOL: usize = 128;
 #[derive(Clone, Eq, PartialEq)]
 pub enum Event {
@@ -54,7 +56,9 @@ async fn handle_rx_event(rx: &mut Receiver<(Event, Option<Sender<EventRes>>)>,se
 
 async fn hand_event(event:Event){
     match event {
-        Event::DeviceOffline(_) => {}
+        Event::DeviceOffline(device_id) => {
+            let _ = GmvDevice::update_gmv_device_status_by_device_id(device_id.as_ref(), 0).await;
+        }
         Event::ServerHeart(domain_id) => {
            let _ = Register::server_keep_heart_update_db(domain_id).await;
         }
@@ -66,17 +70,30 @@ async fn on_time_schedule(inner: &Inner) {
     if let Some(batch) = inner.time_schedule.next_batch().await {
         for CacheEvent { key, version, .. } in batch {
             match key {
-                TimeScheduleKey::Device3HeartTimeout(device_id) => {
+                TimeScheduleKey::Device3Heart(device_id) => {
                     warn!("设备 {} 心跳超时，移除设备", device_id);
-                    Register::remove_device(&device_id);
+                    Register::remove_device_by_inner(&device_id, inner);
+                    let _ = inner
+                        .event_tx
+                        .try_send(Event::DeviceOffline(device_id))
+                        .hand_log(|msg| error!("{msg}"));
                 }
                 TimeScheduleKey::OutSession(_) => {}
                 TimeScheduleKey::ServerHeart(domain_id) => {
-                    let _ = Register::server_keep_heart(domain_id);
+                    let _ = inner
+                        .event_tx
+                        .try_send(Event::ServerHeart(domain_id.clone()))
+                        .hand_log(|msg| error!("{msg}"));
+                    let _ = inner.time_schedule
+                        .insert(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE);
                 }
-                TimeScheduleKey::DeviceRegistrationTimeout(device_id) => {
+                TimeScheduleKey::DeviceRegistration(device_id) => {
                     warn!("设备 {} 注册过期，移除设备", device_id);
-                    Register::remove_device(&device_id);
+                    Register::remove_device_by_inner(&device_id, inner);
+                    let _ = inner
+                        .event_tx
+                        .try_send(Event::DeviceOffline(device_id))
+                        .hand_log(|msg| error!("{msg}"));
                 }
             }
         }

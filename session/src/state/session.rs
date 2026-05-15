@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
+use crate::register::schedule::{ScheduleEvent, TimeScheduler};
 use crate::state;
 use base::bytes::Bytes;
 use base::dashmap::mapref::entry::Entry;
@@ -15,19 +16,18 @@ use base::once_cell::sync::Lazy;
 use base::rand::seq::IteratorRandom;
 use base::serde::de::DeserializeOwned;
 use base::serde::{Deserialize, Serialize};
-use base::tokio::sync::Notify;
 use base::tokio::sync::mpsc::Sender;
-use base::tokio::time;
 use base::tokio::time::Instant;
 use base::tokio_util::sync::CancellationToken;
 use base::utils::rt::GlobalRuntime;
-use base::{rand, serde_json, tokio};
+use base::{rand, serde_json};
 use shared::info::media_info::MediaConfig;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 
 pub struct Cache {
     shared: Arc<Shared>,
+    time_schedule: TimeScheduler<String>,
 }
 
 impl Cache {
@@ -287,24 +287,25 @@ impl Cache {
         expire: Option<Instant>,
         call_tx: Option<Sender<Option<Bytes>>>,
     ) {
-        let mut should_notify = false;
         let mut guard = GENERAL_CACHE.shared.state.lock();
         match expire {
             None => {
-                guard.entities.insert(key, (data, None, call_tx));
+                guard.entities.insert(key.clone(), (data, None, call_tx));
             }
             Some(ins) => {
-                should_notify = guard.next_expiration().map(|ts| ts > ins).unwrap_or(true);
-
                 guard
                     .entities
                     .insert(key.clone(), (data, Some(ins), call_tx));
-                guard.expirations.insert((ins, key));
             }
         }
         drop(guard);
-        if should_notify {
-            GENERAL_CACHE.shared.background_task.notify_one();
+        if let Some(when) = expire {
+            let ttl = when
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            let _ = GENERAL_CACHE.time_schedule.insert(key, ttl);
+        } else {
+            let _ = GENERAL_CACHE.time_schedule.remove(&key);
         }
     }
 
@@ -343,14 +344,10 @@ impl Cache {
 
     pub fn state_remove(key: &String) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
         let mut guard = GENERAL_CACHE.shared.state.lock();
-
-        if let Some((data, Some(when), opt_tx)) = guard.entities.remove(key) {
-            guard.expirations.remove(&(when, key.to_string()));
-
-            return Some((data, opt_tx));
-        }
-
-        None
+        let removed = guard.entities.remove(key);
+        drop(guard);
+        let _ = GENERAL_CACHE.time_schedule.remove(key);
+        removed.map(|(data, _when, opt_tx)| (data, opt_tx))
     }
 
     pub fn state_get_obj<T: Serialize + DeserializeOwned>(
@@ -390,37 +387,30 @@ impl Cache {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
                     entities: HashMap::new(),
-                    expirations: BTreeSet::new(),
                 }),
-                background_task: Notify::new(),
                 ssrc_sn: Self::init_ssrc_sn(),
                 stream_map: Default::default(),
                 device_map: Default::default(),
             }),
+            time_schedule: TimeScheduler::new(),
         };
         let shared = cache.shared.clone();
+        let time_schedule = cache.time_schedule.clone();
         let rt = GlobalRuntime::get_main_runtime();
         rt.rt_handle
-            .spawn(Self::purge_expired_task(shared, rt.cancel));
+            .spawn(Self::purge_expired_task(shared, time_schedule, rt.cancel));
         cache
     }
 
-    async fn purge_expired_task(shared: Arc<Shared>, cancel_token: CancellationToken) {
-        loop {
-            if cancel_token.is_cancelled() {
-                break;
-            }
-            if let Some(when) = shared.purge_expired_keys().await {
-                tokio::select! {
-                    _ = time::sleep_until(when) =>{},
-                    _ = shared.background_task.notified()=>{}
-                }
-            } else {
-                shared.background_task.notified().await;
-            }
+    async fn purge_expired_task(
+        shared: Arc<Shared>,
+        time_schedule: TimeScheduler<String>,
+        cancel_token: CancellationToken,
+    ) {
+        while let Some(batch) = time_schedule.next_batch(&cancel_token).await {
+            shared.purge_expired_keys(batch).await;
         }
         let mut state = shared.state.lock();
-        state.expirations.clear();
         state.entities.clear();
     }
 }
@@ -428,7 +418,6 @@ impl Cache {
 struct State {
     //key,(obj,是否启用时间轮,是否回调:超时回调None)
     entities: HashMap<String, (Bytes, Option<Instant>, Option<Sender<Option<Bytes>>>)>,
-    expirations: BTreeSet<(Instant, String)>,
 }
 
 impl State {
@@ -450,9 +439,7 @@ impl State {
                 let should_remove = f(bytes, when, sender);
 
                 if should_remove {
-                    if let (k,(_,Some(when),_)) = occ.remove_entry() {
-                        self.expirations.remove(&(when,k));
-                    }
+                    let _ = occ.remove_entry();
                 }
                 true
             }
@@ -482,9 +469,6 @@ impl State {
     //         Vacant(_) => {false}
     //     }
     // }
-    fn next_expiration(&self) -> Option<Instant> {
-        self.expirations.first().map(|expiration| expiration.0)
-    }
 }
 
 struct StreamTable {
@@ -509,7 +493,6 @@ struct DeviceTable {
 
 struct Shared {
     state: Mutex<State>,
-    background_task: Notify,
     //存放原始可用的ssrc序号
     ssrc_sn: DashSet<u16>,
     //key:stream_id
@@ -519,23 +502,13 @@ struct Shared {
 }
 
 impl Shared {
-    async fn purge_expired_keys(&self) -> Option<Instant> {
-        let now = Instant::now();
-
+    async fn purge_expired_keys(&self, batch: Vec<ScheduleEvent<String>>) {
         let mut state = self.state.lock();
-
-        let state = &mut *state;
-        while let Some((when, key)) = state.expirations.iter().next() {
-            if *when > now {
-                return Some(*when);
-            }
-            if let Some((_, _, Some(tx))) = state.entities.remove(key) {
+        for event in batch {
+            if let Some((_, _, Some(tx))) = state.entities.remove(&event.key) {
                 let _ = tx.try_send(None).hand_log(|msg| warn!("{msg}"));
             }
-            state.expirations.remove(&(*when, key.clone()));
         }
-
-        None
     }
 }
 
