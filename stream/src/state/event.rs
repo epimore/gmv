@@ -103,8 +103,8 @@ impl Event {
                     {
                         tokio::spawn(async move{
                             Self::hand_out(out, tx, pretend.clone()).await;
+                            drop(permit);
                         });
-                        drop(permit);
                     }
                 }
                 Event::Active(active) => {
