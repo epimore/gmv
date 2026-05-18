@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use crate::register::schedule::{ScheduleEvent, TimeScheduler};
+use crate::register::core::Register;
 use crate::state;
 use base::bytes::Bytes;
 use base::dashmap::mapref::entry::Entry;
@@ -16,10 +16,9 @@ use base::once_cell::sync::Lazy;
 use base::rand::seq::IteratorRandom;
 use base::serde::de::DeserializeOwned;
 use base::serde::{Deserialize, Serialize};
+use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio::time::Instant;
-use base::tokio_util::sync::CancellationToken;
-use base::utils::rt::GlobalRuntime;
 use base::{rand, serde_json};
 use shared::info::media_info::MediaConfig;
 
@@ -27,7 +26,17 @@ static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
 
 pub struct Cache {
     shared: Arc<Shared>,
-    time_schedule: TimeScheduler<String>,
+}
+
+#[derive(Clone)]
+pub struct DeviceStreamState {
+    pub channel_id: String,
+    pub stream_id: String,
+    pub ssrc: String,
+    pub call_id: String,
+    pub seq: u32,
+    pub from_tag: String,
+    pub to_tag: String,
 }
 
 impl Cache {
@@ -244,9 +253,9 @@ impl Cache {
                         s_vec.retain(|device_table| match channel_ssrc {
                             None => !device_table.channel_id.eq(channel_id),
                             Some((am, ssrc)) => {
-                                !device_table.channel_id.eq(channel_id)
-                                    && !device_table.am.eq(&am)
-                                    && !device_table.ssrc.eq(ssrc)
+                                device_table.channel_id != *channel_id
+                                    || device_table.am != am
+                                    || device_table.ssrc != *ssrc
                             }
                         });
                         // 如果vec empty，则删除device_id
@@ -281,6 +290,44 @@ impl Cache {
         }
     }
 
+    pub fn stream_setup_lock(
+        device_id: &str,
+        channel_id: &str,
+        am: AccessMode,
+    ) -> Arc<AsyncMutex<()>> {
+        let key = format!("{}:{}:{}", device_id, channel_id, am.as_str());
+        match GENERAL_CACHE.shared.stream_setup_locks.entry(key) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let lock = Arc::new(AsyncMutex::new(()));
+                entry.insert(lock.clone());
+                lock
+            }
+        }
+    }
+
+    pub fn reset_device_state(device_id: &str) -> Vec<DeviceStreamState> {
+        let mut streams = Vec::new();
+        if let Some((_, entries)) = GENERAL_CACHE.shared.device_map.remove(device_id) {
+            for entry in entries {
+                if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(&entry.stream_id) {
+                    let ssrc_num = (stream.ssrc % 10000) as u16;
+                    GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
+                    streams.push(DeviceStreamState {
+                        channel_id: entry.channel_id,
+                        stream_id: entry.stream_id,
+                        ssrc: entry.ssrc,
+                        call_id: stream.call_id,
+                        seq: stream.seq.saturating_add(1),
+                        from_tag: stream.from_tag,
+                        to_tag: stream.to_tag,
+                    });
+                }
+            }
+        }
+        streams
+    }
+
     pub fn state_insert(
         key: String,
         data: Bytes,
@@ -303,9 +350,9 @@ impl Cache {
             let ttl = when
                 .checked_duration_since(Instant::now())
                 .unwrap_or_default();
-            let _ = GENERAL_CACHE.time_schedule.insert(key, ttl);
+            let _ = Register::scheduler().insert_general_cache(key, ttl);
         } else {
-            let _ = GENERAL_CACHE.time_schedule.remove(&key);
+            let _ = Register::scheduler().remove_general_cache(&key);
         }
     }
 
@@ -346,7 +393,7 @@ impl Cache {
         let mut guard = GENERAL_CACHE.shared.state.lock();
         let removed = guard.entities.remove(key);
         drop(guard);
-        let _ = GENERAL_CACHE.time_schedule.remove(key);
+        let _ = Register::scheduler().remove_general_cache(key);
         removed.map(|(data, _when, opt_tx)| (data, opt_tx))
     }
 
@@ -372,7 +419,12 @@ impl Cache {
     {
         let mut guard = GENERAL_CACHE.shared.state.lock();
         let state = &mut *guard;
-        state.opt_state(key,f)
+        let handled = state.opt_state(key.clone(),f);
+        drop(guard);
+        if handled == Some(true) {
+            let _ = Register::scheduler().remove_general_cache(&key);
+        }
+        handled.is_some()
     }
     fn init_ssrc_sn() -> DashSet<u16> {
         let sets = DashSet::new();
@@ -383,7 +435,7 @@ impl Cache {
     }
 
     fn init() -> Self {
-        let cache = Self {
+        Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
                     entities: HashMap::new(),
@@ -391,27 +443,13 @@ impl Cache {
                 ssrc_sn: Self::init_ssrc_sn(),
                 stream_map: Default::default(),
                 device_map: Default::default(),
+                stream_setup_locks: Default::default(),
             }),
-            time_schedule: TimeScheduler::new(),
-        };
-        let shared = cache.shared.clone();
-        let time_schedule = cache.time_schedule.clone();
-        let rt = GlobalRuntime::get_main_runtime();
-        rt.rt_handle
-            .spawn(Self::purge_expired_task(shared, time_schedule, rt.cancel));
-        cache
+        }
     }
 
-    async fn purge_expired_task(
-        shared: Arc<Shared>,
-        time_schedule: TimeScheduler<String>,
-        cancel_token: CancellationToken,
-    ) {
-        while let Some(batch) = time_schedule.next_batch(&cancel_token).await {
-            shared.purge_expired_keys(batch).await;
-        }
-        let mut state = shared.state.lock();
-        state.entities.clear();
+    pub fn purge_expired_keys(keys: Vec<String>) {
+        GENERAL_CACHE.shared.purge_expired_keys(keys);
     }
 }
 
@@ -429,7 +467,7 @@ impl State {
     /// - 若删除，会自动从 `expirations` 中移除对应的 (Instant, key)。
     ///
     /// 返回：是否成功找到并处理了该 key（无论是否删除）。
-    pub fn opt_state<F>(&mut self, key: String, f: F) -> bool
+    pub fn opt_state<F>(&mut self, key: String, f: F) -> Option<bool>
     where
         F: FnOnce(&mut Bytes, &mut Option<Instant>, &mut Option<Sender<Option<Bytes>>>) -> bool,
     {
@@ -441,9 +479,9 @@ impl State {
                 if should_remove {
                     let _ = occ.remove_entry();
                 }
-                true
+                Some(should_remove)
             }
-            Vacant(_) => false,
+            Vacant(_) => None,
         }
     }
     // fn opt_state(&mut self,key:String)->bool{
@@ -499,13 +537,14 @@ struct Shared {
     stream_map: DashMap<String, StreamTable>,
     //key:device_id
     device_map: DashMap<String, Vec<DeviceTable>>,
+    stream_setup_locks: DashMap<String, Arc<AsyncMutex<()>>>,
 }
 
 impl Shared {
-    async fn purge_expired_keys(&self, batch: Vec<ScheduleEvent<String>>) {
+    fn purge_expired_keys(&self, keys: Vec<String>) {
         let mut state = self.state.lock();
-        for event in batch {
-            if let Some((_, _, Some(tx))) = state.entities.remove(&event.key) {
+        for key in keys {
+            if let Some((_, _, Some(tx))) = state.entities.remove(&key) {
                 let _ = tx.try_send(None).hand_log(|msg| warn!("{msg}"));
             }
         }
@@ -519,7 +558,15 @@ pub enum AccessMode {
     Down,
 }
 
-impl AccessMode {}
+impl AccessMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccessMode::Live => "live",
+            AccessMode::Back => "back",
+            AccessMode::Down => "down",
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -71,7 +71,7 @@ pub mod trans;
 
 pub struct DepotContext {
     pub anti_ctx: AntiReplayContext,
-    pub trans_ctx: TransactionContext,
+    pub trans_ctx: std::sync::Arc<TransactionContext>,
 }
 impl DepotContext {
     pub fn init(rt: Handle, cancel_token: CancellationToken, output: Sender<Zip>) -> Self {

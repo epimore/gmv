@@ -23,6 +23,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use crate::register::core::SERVER_HEART_SECOND;
+use crate::register::core::Register;
 
 mod core;
 pub mod depot;
@@ -126,6 +127,12 @@ impl SessionConf {
     ) -> GlobalResult<()> {
         let (output, input) = net::sdx::run_by_tokio(tu).await?;
         let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
+        Register::init(
+            SessionConf::get_session_by_conf(),
+            output.clone(),
+            sip_pkg_tx.clone(),
+            cancel_token.child_token(),
+        )?;
         RWContext::init(output.clone(), sip_pkg_tx.clone());
         let handle = Handle::current();
         handle.spawn(SessionConf::heart_server());

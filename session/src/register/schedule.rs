@@ -1,10 +1,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::cache::c100k::{Cache, CacheEvent, CacheKey};
+use base::cache::c100k::{Cache, CacheEvent};
 use base::exception::GlobalResult;
 use base::tokio;
 use base::tokio_util::sync::CancellationToken;
+
+use crate::register::core::TimeScheduleKey;
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+pub enum ScheduleKey {
+    Register(TimeScheduleKey),
+    Transaction(String),
+    GeneralCache(String),
+}
 
 #[derive(Clone)]
 pub struct ScheduleEvent<K> {
@@ -13,53 +22,63 @@ pub struct ScheduleEvent<K> {
     pub version: u32,
 }
 
-pub struct TimeScheduler<K: CacheKey> {
-    inner: Arc<Cache<K>>,
+#[derive(Clone)]
+pub struct TimeScheduler {
+    inner: Arc<Cache<ScheduleKey>>,
 }
 
-impl<K: CacheKey> Clone for TimeScheduler<K> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<K: CacheKey> Default for TimeScheduler<K> {
+impl Default for TimeScheduler {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<K: CacheKey> TimeScheduler<K> {
-    pub fn new() -> Self {
         Self {
             inner: Arc::new(Cache::default()),
         }
     }
+}
 
-    pub fn insert(&self, key: K, ttl: Duration) -> GlobalResult<()> {
-        self.inner.insert(key, ttl)
+impl TimeScheduler {
+    pub fn insert_register(&self, key: TimeScheduleKey, ttl: Duration) -> GlobalResult<()> {
+        self.inner.insert(ScheduleKey::Register(key), ttl)
     }
 
-    pub fn refresh(&self, key: &K) -> GlobalResult<()> {
-        self.inner.refresh(key.clone())
+    pub fn refresh_register(&self, key: &TimeScheduleKey) -> GlobalResult<()> {
+        self.inner.refresh(ScheduleKey::Register(key.clone()))
     }
 
-    pub fn remove(&self, key: &K) -> GlobalResult<()> {
-        self.inner.delete(key.clone())
+    pub fn remove_register(&self, key: &TimeScheduleKey) -> GlobalResult<()> {
+        self.inner.delete(ScheduleKey::Register(key.clone()))
+    }
+
+    pub fn insert_transaction(&self, key: String, ttl: Duration) -> GlobalResult<()> {
+        self.inner.insert(ScheduleKey::Transaction(key), ttl)
+    }
+
+    pub fn refresh_transaction(&self, key: &str) -> GlobalResult<()> {
+        self.inner
+            .refresh(ScheduleKey::Transaction(key.to_string()))
+    }
+
+    pub fn remove_transaction(&self, key: &str) -> GlobalResult<()> {
+        self.inner.delete(ScheduleKey::Transaction(key.to_string()))
+    }
+
+    pub fn insert_general_cache(&self, key: String, ttl: Duration) -> GlobalResult<()> {
+        self.inner.insert(ScheduleKey::GeneralCache(key), ttl)
+    }
+
+    pub fn remove_general_cache(&self, key: &str) -> GlobalResult<()> {
+        self.inner.delete(ScheduleKey::GeneralCache(key.to_string()))
     }
 
     pub async fn next_batch(
         &self,
         cancel_token: &CancellationToken,
-    ) -> Option<Vec<ScheduleEvent<K>>> {
+    ) -> Option<Vec<ScheduleEvent<ScheduleKey>>> {
         tokio::select! {
             batch = self.inner.next_batch() => {
                 batch.map(|items| {
-                    items.into_iter().map(|CacheEvent { key, hash, version }| {
-                        ScheduleEvent { key, hash, version }
-                    }).collect()
+                    items.into_iter()
+                        .map(|CacheEvent { key, hash, version }| ScheduleEvent { key, hash, version })
+                        .collect()
                 })
             }
             _ = cancel_token.cancelled() => None,

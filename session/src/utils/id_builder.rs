@@ -12,8 +12,9 @@ use crate::storage::mapper;
 pub fn en_stream_id(device_id: &str, channel_id: &str, ssrc: &str) -> GlobalResult<String> {
     //使用纳秒的后两位生成填充字符串,并取7个字符
     let now = SystemTime::now();
-    let since_the_epoch = now.duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
+    let since_the_epoch = now
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}")))?;
     let secs = since_the_epoch.as_millis();
     let ori_key = format!("{device_id}{channel_id}{ssrc}{secs}");
     dig62::en(&ori_key)
@@ -22,6 +23,13 @@ pub fn en_stream_id(device_id: &str, channel_id: &str, ssrc: &str) -> GlobalResu
 //返回(device_id,channel_id,ssrc)
 pub fn de_stream_id(stream_id: &str) -> GlobalResult<(String, String, String)> {
     let ori_str = dig62::de(stream_id)?;
+    if ori_str.len() < 50 {
+        return Err(GlobalError::new_biz_error(
+            1100,
+            "Invalid stream id",
+            |msg| error!("{msg}: decoded stream_id too short"),
+        ));
+    }
     Ok((ori_str[0..20].to_string(), ori_str[20..40].to_string(), ori_str[40..50].to_string()))
 }
 

@@ -7,8 +7,9 @@ const KEY: &str = "GMV:SESSION v1.0";
 
 pub fn build_file_name(device_id: &str, channel_id: &str) -> GlobalResult<String> {
     let now = SystemTime::now();
-    let since_the_epoch = now.duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
+    let since_the_epoch = now
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}")))?;
     let mils = since_the_epoch.as_millis();
     let text = format!("{}{}{}", device_id, channel_id, mils);
     dig62::en(&text)
@@ -23,8 +24,9 @@ pub fn build_token_session_id(device_id: &str, channel_id: &str) -> GlobalResult
 
 pub fn build_session_id(device_id: &str, channel_id: &str)->GlobalResult<String>{
     let now = SystemTime::now();
-    let since_the_epoch = now.duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
+    let since_the_epoch = now
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}")))?;
     let mils = since_the_epoch.as_millis();
     let text = format!("{}{}{}", device_id, channel_id, mils);
     dig62::en(&text)
@@ -33,6 +35,13 @@ pub fn build_session_id(device_id: &str, channel_id: &str)->GlobalResult<String>
 //返回(device_id, channel_id)
 pub fn split_dc(session_id: &str) -> GlobalResult<(String, String)> {
     let dcs = dig62::de(session_id)?;
+    if dcs.len() < 40 {
+        return Err(GlobalError::new_biz_error(
+            1100,
+            "Invalid session id",
+            |msg| error!("{msg}: decoded session_id too short"),
+        ));
+    }
     Ok((dcs[0..20].to_string(), dcs[20..40].to_string()))
 }
 
