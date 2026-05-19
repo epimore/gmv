@@ -7,22 +7,19 @@ use parking_lot::Mutex;
 
 use crate::register::core::Register;
 use crate::state;
-use base::bytes::Bytes;
 use base::dashmap::mapref::entry::Entry;
 use base::dashmap::{DashMap, DashSet};
-use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::{error, warn};
+use base::log::warn;
 use base::once_cell::sync::Lazy;
+use base::rand;
 use base::rand::seq::IteratorRandom;
-use base::serde::de::DeserializeOwned;
-use base::serde::{Deserialize, Serialize};
 use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio::time::Instant;
-use base::{rand, serde_json};
 use shared::info::media_info::MediaConfig;
+use shared::info::obj::BaseStreamInfo;
 
-static GENERAL_CACHE: Lazy<Cache> = Lazy::new(|| Cache::init());
+static GENERAL_CACHE: Lazy<Cache> = Lazy::new(Cache::init);
 
 pub struct Cache {
     shared: Arc<Shared>,
@@ -65,8 +62,7 @@ impl Cache {
             let node_name = item.value().stream_node_name.clone();
             match map.entry(node_name) {
                 Occupied(mut occ) => {
-                    let count = occ.get_mut();
-                    *count += 1;
+                    *occ.get_mut() += 1;
                 }
                 Vacant(vac) => {
                     vac.insert(1);
@@ -82,22 +78,16 @@ impl Cache {
         set
     }
 
-    //添加流与用户关系：
-    //当不存在流时:直接插入stream_id与新建的set<gmv_token>
-    //当存在流时:在流对应的set<gmv_token>中添加数据
     pub fn stream_map_insert_token(stream_id: String, gmv_token: String) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(mut occ) => {
-                let stream_table = occ.get_mut();
-                let opt_sets = &mut stream_table.gmv_token_sets;
-                opt_sets.insert(gmv_token);
+                occ.get_mut().gmv_token_sets.insert(gmv_token);
                 true
             }
-            Entry::Vacant(_vac) => false,
+            Entry::Vacant(_) => false,
         }
     }
 
-    //当媒体流注册时，需插入建立关系,成功插入：true
     pub fn stream_map_insert_info(
         stream_id: String,
         ssrc: u32,
@@ -112,7 +102,7 @@ impl Cache {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => false,
             Entry::Vacant(vac) => {
-                let stream_table = StreamTable {
+                vac.insert(StreamTable {
                     gmv_token_sets: HashSet::new(),
                     proxy_addr,
                     stream_node_name,
@@ -122,12 +112,12 @@ impl Cache {
                     from_tag,
                     to_tag,
                     ssrc,
-                };
-                vac.insert(stream_table);
+                });
                 true
             }
         }
     }
+
     pub fn stream_map_query_node_ssrc(stream_id: &String) -> Option<(String, u32)> {
         GENERAL_CACHE.shared.stream_map.get(stream_id).map(|item| {
             let node_name = item.stream_node_name.clone();
@@ -137,15 +127,13 @@ impl Cache {
 
     pub fn stream_map_query_node(stream_id: &String) -> Option<(String, String)> {
         GENERAL_CACHE.shared.stream_map.get(stream_id).map(|item| {
-            let node_name = item.value().stream_node_name.clone();
-            let proxy_addr = item.value().proxy_addr.clone();
-            (node_name,proxy_addr)
+            (
+                item.value().stream_node_name.clone(),
+                item.value().proxy_addr.clone(),
+            )
         })
     }
 
-    //移除流与用户关系
-    //1.当gmv_token为None时-直接删除
-    //2.当gmv_token为Some时-删除set<gmv_token>中的gmv_token：
     pub fn stream_map_remove(stream_id: &String, gmv_token: Option<&String>) {
         match gmv_token {
             None => {
@@ -153,55 +141,43 @@ impl Cache {
             }
             Some(token) => match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
                 Entry::Occupied(mut occ) => {
-                    let sets = &mut occ.get_mut().gmv_token_sets;
-                    sets.remove(token);
+                    occ.get_mut().gmv_token_sets.remove(token);
                 }
-                Entry::Vacant(_vac) => {}
+                Entry::Vacant(_) => {}
             },
         }
     }
 
-    //确认流与用户是否建立了关系
     pub fn stream_map_contains_token(stream_id: &String, gmv_token: &String) -> bool {
         match GENERAL_CACHE.shared.stream_map.get(stream_id) {
             None => false,
-            Some(inner_ref) => {
-                let sets = &inner_ref.value().gmv_token_sets;
-                sets.contains(gmv_token)
-            }
+            Some(inner_ref) => inner_ref.value().gmv_token_sets.contains(gmv_token),
         }
     }
 
     pub fn stream_map_build_call_id_seq_from_to_tag(
         stream_id: &String,
     ) -> Option<(String, u32, String, String)> {
-        GENERAL_CACHE
-            .shared
-            .stream_map
-            .get_mut(stream_id)
-            .map(|mut ref_mut| {
-                // let (_tokens, _node_name, call_id, seq, _play_type, from_tag, to_tag) = ref_mut.value_mut();
-                let stream_table = ref_mut.value_mut();
-                let seq = &mut stream_table.seq;
-                *seq += 1;
-                (
-                    stream_table.call_id.clone(),
-                    *seq,
-                    stream_table.from_tag.clone(),
-                    stream_table.to_tag.clone(),
-                )
-            })
-    }
-
-    pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<AccessMode> {
-        GENERAL_CACHE.shared.stream_map.get(stream_id).map(|res| {
-            let am = res.value().am;
-            am.clone()
+        GENERAL_CACHE.shared.stream_map.get_mut(stream_id).map(|mut ref_mut| {
+            let stream_table = ref_mut.value_mut();
+            stream_table.seq += 1;
+            (
+                stream_table.call_id.clone(),
+                stream_table.seq,
+                stream_table.from_tag.clone(),
+                stream_table.to_tag.clone(),
+            )
         })
     }
 
-    //device_id:HashMap<channel_id,HashMap<playType,Vec<(stream_id,ssrc)>>
-    //层层插入
+    pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<AccessMode> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get(stream_id)
+            .map(|res| res.value().am)
+    }
+
     pub fn device_map_insert(
         device_id: String,
         channel_id: String,
@@ -219,25 +195,14 @@ impl Cache {
         };
         match GENERAL_CACHE.shared.device_map.entry(device_id) {
             Entry::Occupied(mut occ) => {
-                let vec = occ.get_mut();
-                vec.push(device_table);
+                occ.get_mut().push(device_table);
             }
-            //不存在device_id则全新插入
             Entry::Vacant(vac) => {
-                let vec = vec![device_table];
-                vac.insert(vec);
+                vac.insert(vec![device_table]);
             }
         }
     }
 
-    //层层删除：若最终device_id对应的都无数据，则整体删除
-    //device_id: String, channel_id: String, ssrc: String
-    /*
-    1.opt_channel_ssrc = none => remove(device_id)
-    2.opt_channel_ssrc = some
-      2.1 (PlayType,ssrc)= none => remove(device_id下channel_id)
-      2.2 (PlayType,ssrc)= some => remove(device_id下channel_id下(PlayType,ssrc))
-    */
     pub fn device_map_remove(
         device_id: &String,
         opt_channel_ssrc: Option<(&String, Option<(AccessMode, &String)>)>,
@@ -258,19 +223,16 @@ impl Cache {
                                     || device_table.ssrc != *ssrc
                             }
                         });
-                        // 如果vec empty，则删除device_id
-                        if s_vec.len() == 0 {
+                        if s_vec.is_empty() {
                             m_occ.remove();
                         }
                     }
-                    //与device_id不匹配，不做处理
-                    Entry::Vacant(_m_vac) => {}
+                    Entry::Vacant(_) => {}
                 }
             }
         }
     }
 
-    //返回stream_id,ssrc
     pub fn device_map_get_invite_info(
         device_id: &String,
         channel_id: &String,
@@ -278,15 +240,13 @@ impl Cache {
     ) -> Option<(String, String)> {
         match GENERAL_CACHE.shared.device_map.get(device_id) {
             None => None,
-            Some(m_map) => {
-                let mut iter = m_map.value().iter();
-                iter.find_map(|device_table| {
-                    if device_table.channel_id.eq(channel_id) && device_table.am.eq(am) {
-                        return Some((device_table.stream_id.clone(), device_table.ssrc.clone()));
-                    }
+            Some(m_map) => m_map.value().iter().find_map(|device_table| {
+                if device_table.channel_id.eq(channel_id) && device_table.am.eq(am) {
+                    Some((device_table.stream_id.clone(), device_table.ssrc.clone()))
+                } else {
                     None
-                })
-            }
+                }
+            }),
         }
     }
 
@@ -328,23 +288,21 @@ impl Cache {
         streams
     }
 
-    pub fn state_insert(
+    fn upsert_state(
         key: String,
-        data: Bytes,
+        value: StateValue,
         expire: Option<Instant>,
-        call_tx: Option<Sender<Option<Bytes>>>,
+        waiter: Option<StateWaiter>,
     ) {
         let mut guard = GENERAL_CACHE.shared.state.lock();
-        match expire {
-            None => {
-                guard.entities.insert(key.clone(), (data, None, call_tx));
-            }
-            Some(ins) => {
-                guard
-                    .entities
-                    .insert(key.clone(), (data, Some(ins), call_tx));
-            }
-        }
+        guard.entities.insert(
+            key.clone(),
+            StateEntry {
+                value,
+                expire,
+                waiter,
+            },
+        );
         drop(guard);
         if let Some(when) = expire {
             let ttl = when
@@ -356,76 +314,83 @@ impl Cache {
         }
     }
 
-    pub fn state_get(key: &str) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
-        let guard = GENERAL_CACHE.shared.state.lock();
+    pub fn insert_stream_wait(key: String, expire: Instant, tx: Sender<Option<BaseStreamInfo>>) {
+        Self::upsert_state(
+            key,
+            StateValue::Empty,
+            Some(expire),
+            Some(StateWaiter::Stream(tx)),
+        );
+    }
 
-        match guard.entities.get(key) {
-            None => None,
-            Some((val, _, opt_tx)) => Some((val.clone(), opt_tx.clone())),
+    pub fn notify_stream_wait(key: &str, info: Option<BaseStreamInfo>) -> bool {
+        let guard = GENERAL_CACHE.shared.state.lock();
+        let sender = guard.entities.get(key).and_then(|entry| match &entry.waiter {
+            Some(StateWaiter::Stream(tx)) => Some(tx.clone()),
+            _ => None,
+        });
+        drop(guard);
+        match sender {
+            Some(tx) => {
+                let _ = tx.try_send(info);
+                true
+            }
+            None => false,
         }
     }
 
-    pub fn state_insert_obj<'a, T: Serialize + Deserialize<'a>>(
-        key: String,
-        obj: &T,
-        call_tx: Option<Sender<Option<Bytes>>>,
-    ) {
-        //此处不会panic，obj满足序列化与反序列化
-        let vec = serde_json::to_vec(obj).unwrap();
-        let bytes = Bytes::from(vec);
-        Self::state_insert(key, bytes, None, call_tx);
+    pub fn insert_snapshot_wait(key: String, expire: Instant, tx: Sender<bool>) {
+        Self::upsert_state(
+            key,
+            StateValue::Empty,
+            Some(expire),
+            Some(StateWaiter::Snapshot(tx)),
+        );
     }
 
-    pub fn state_insert_obj_by_timer<'a, T: Serialize + Deserialize<'a>>(
-        key: String,
-        obj: &T,
-        expire: Duration,
-        call_tx: Option<Sender<Option<Bytes>>>,
-    ) {
-        //此处不会panic，obj满足序列化与反序列化
-        let vec = serde_json::to_vec(obj).unwrap();
-        let bytes = Bytes::from(vec);
-        let when = Instant::now() + expire;
-        Self::state_insert(key, bytes, Some(when), call_tx);
+    pub fn notify_snapshot_wait(key: &str) -> bool {
+        let guard = GENERAL_CACHE.shared.state.lock();
+        let sender = guard.entities.get(key).and_then(|entry| match &entry.waiter {
+            Some(StateWaiter::Snapshot(tx)) => Some(tx.clone()),
+            _ => None,
+        });
+        drop(guard);
+        match sender {
+            Some(tx) => {
+                let _ = tx.try_send(true);
+                true
+            }
+            None => false,
+        }
     }
 
-    pub fn state_remove(key: &String) -> Option<(Bytes, Option<Sender<Option<Bytes>>>)> {
+    pub fn insert_counter(key: String, count: u8, expire: Duration) {
+        Self::upsert_state(
+            key,
+            StateValue::Counter(count),
+            Some(Instant::now() + expire),
+            None,
+        );
+    }
+
+    pub fn remove_state(key: &str) -> bool {
         let mut guard = GENERAL_CACHE.shared.state.lock();
         let removed = guard.entities.remove(key);
         drop(guard);
         let _ = Register::scheduler().remove_general_cache(key);
-        removed.map(|(data, _when, opt_tx)| (data, opt_tx))
+        removed.is_some()
     }
 
-    pub fn state_get_obj<T: Serialize + DeserializeOwned>(
-        key: &str,
-    ) -> GlobalResult<Option<(T, Option<Sender<Option<Bytes>>>)>> {
-        let guard = GENERAL_CACHE.shared.state.lock();
-
-        match guard.entities.get(key) {
-            None => Ok(None),
-            Some((val, _, opt_tx)) => {
-                let data: T =
-                    serde_json::from_slice(&val.clone()).hand_log(|msg| error!("{msg}"))?;
-
-                Ok(Some((data, opt_tx.clone())))
-            }
-        }
-    }
-
-    pub fn opt_state<F>(key:String,f:F)->bool
-    where
-        F: FnOnce(&mut Bytes, &mut Option<Instant>, &mut Option<Sender<Option<Bytes>>>) -> bool,
-    {
+    pub fn decrement_counter(key: String) -> bool {
         let mut guard = GENERAL_CACHE.shared.state.lock();
-        let state = &mut *guard;
-        let handled = state.opt_state(key.clone(),f);
+        let handled = guard.decrement_counter(key.clone());
         drop(guard);
         if handled == Some(true) {
             let _ = Register::scheduler().remove_general_cache(&key);
         }
         handled.is_some()
     }
+
     fn init_ssrc_sn() -> DashSet<u16> {
         let sets = DashSet::new();
         for i in 1..10000 {
@@ -454,28 +419,25 @@ impl Cache {
 }
 
 struct State {
-    //key,(obj,是否启用时间轮,是否回调:超时回调None)
-    entities: HashMap<String, (Bytes, Option<Instant>, Option<Sender<Option<Bytes>>>)>,
+    entities: HashMap<String, StateEntry>,
 }
 
 impl State {
-    /// 对指定 key 的状态执行闭包操作。
-    ///
-    /// - 如果 key 不存在，返回 false。
-    /// - 如果 key 存在，调用 `f(bytes, instant, sender)`。
-    ///   闭包应返回 `true` 表示需要删除该条目，`false` 表示保留。
-    /// - 若删除，会自动从 `expirations` 中移除对应的 (Instant, key)。
-    ///
-    /// 返回：是否成功找到并处理了该 key（无论是否删除）。
-    pub fn opt_state<F>(&mut self, key: String, f: F) -> Option<bool>
-    where
-        F: FnOnce(&mut Bytes, &mut Option<Instant>, &mut Option<Sender<Option<Bytes>>>) -> bool,
-    {
+    fn decrement_counter(&mut self, key: String) -> Option<bool> {
         match self.entities.entry(key) {
             Occupied(mut occ) => {
-                let (bytes, when, sender) = occ.get_mut();
-                let should_remove = f(bytes, when, sender);
-
+                let entry = occ.get_mut();
+                let should_remove = match &mut entry.value {
+                    StateValue::Counter(val) => {
+                        if *val <= 1 {
+                            true
+                        } else {
+                            *val -= 1;
+                            false
+                        }
+                    }
+                    _ => true,
+                };
                 if should_remove {
                     let _ = occ.remove_entry();
                 }
@@ -484,29 +446,22 @@ impl State {
             Vacant(_) => None,
         }
     }
-    // fn opt_state(&mut self,key:String)->bool{
-    //     match self.entities.entry(key) {
-    //         Occupied(mut occ) => {
-    //             let (bytes,_,_) = occ.get_mut();
-    //             let mut rm = false;
-    //             if bytes.len() == 1 {
-    //                 let i = bytes[0];
-    //                 if i==1 {
-    //                     rm =true;
-    //                 }else {
-    //                     *bytes = Bytes::copy_from_slice(&[i-1]);
-    //                 }
-    //             }else { rm=true; }
-    //             if rm {
-    //                 if let (k,(_,Some(when),_)) = occ.remove_entry() {
-    //                     self.expirations.remove(&(when,k));
-    //                 }
-    //             }
-    //             true
-    //         }
-    //         Vacant(_) => {false}
-    //     }
-    // }
+}
+
+enum StateValue {
+    Empty,
+    Counter(u8),
+}
+
+enum StateWaiter {
+    Stream(Sender<Option<BaseStreamInfo>>),
+    Snapshot(Sender<bool>),
+}
+
+struct StateEntry {
+    value: StateValue,
+    expire: Option<Instant>,
+    waiter: Option<StateWaiter>,
 }
 
 struct StreamTable {
@@ -531,11 +486,8 @@ struct DeviceTable {
 
 struct Shared {
     state: Mutex<State>,
-    //存放原始可用的ssrc序号
     ssrc_sn: DashSet<u16>,
-    //key:stream_id
     stream_map: DashMap<String, StreamTable>,
-    //key:device_id
     device_map: DashMap<String, Vec<DeviceTable>>,
     stream_setup_locks: DashMap<String, Arc<AsyncMutex<()>>>,
 }
@@ -544,8 +496,18 @@ impl Shared {
     fn purge_expired_keys(&self, keys: Vec<String>) {
         let mut state = self.state.lock();
         for key in keys {
-            if let Some((_, _, Some(tx))) = state.entities.remove(&key) {
-                let _ = tx.try_send(None).hand_log(|msg| warn!("{msg}"));
+            if let Some(entry) = state.entities.remove(&key) {
+                let _ = entry.expire;
+                if let Some(waiter) = entry.waiter {
+                    match waiter {
+                        StateWaiter::Stream(tx) => {
+                            let _ = tx.try_send(None);
+                        }
+                        StateWaiter::Snapshot(tx) => {
+                            let _ = tx.try_send(false);
+                        }
+                    }
+                }
             }
         }
     }
@@ -592,8 +554,7 @@ mod tests {
         map.insert(1, table);
         map.get_mut(&1).map(|mut ref_mut| {
             let stream_table = ref_mut.value_mut();
-            let seq = &mut stream_table.seq;
-            *seq += 1;
+            stream_table.seq += 1;
         });
         println!("{:?}", map.get_mut(&1).map(|item| item.value().seq));
     }
@@ -603,7 +564,7 @@ mod tests {
         let ssrc_sn = Cache::ssrc_sn_get().unwrap();
         println!("ssrc_sn = {ssrc_sn}");
         assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9998);
-        assert_eq!(GENERAL_CACHE.shared.ssrc_sn.contains(&ssrc_sn), false);
+        assert!(!GENERAL_CACHE.shared.ssrc_sn.contains(&ssrc_sn));
         Cache::ssrc_sn_set(ssrc_sn);
         assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9999);
     }

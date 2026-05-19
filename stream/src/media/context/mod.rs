@@ -4,6 +4,7 @@ use crate::media::context::filter::FilterContext;
 use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::dashmp4::DashCmafMp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::flv::FlvSupperCtx;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::MuxerContext;
@@ -21,7 +22,7 @@ use base::exception::{BizError, GlobalError, GlobalResult};
 use log::{error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_PKT_FLAG_CORRUPT, AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_CORRUPT, AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO,
     AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
 };
 use rsmpeg::ffi::{AVMediaType, AVPacket};
@@ -30,7 +31,6 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::Arc;
 use std::time::Instant;
-use crate::media::context::format::flv::FlvSupperCtx;
 
 mod codec;
 pub mod event;
@@ -49,6 +49,7 @@ pub struct RtpState {
 
     pub last_32: u32,        // 上一次 RTP timestamp（32-bit）
     pub last_unwrapped: i64, // 上一次展开 timestamp，用于累积 diff
+    pub initialized: bool,
 }
 impl RtpState {
     pub fn new() -> Self {
@@ -58,12 +59,22 @@ impl RtpState {
             marker: false,
             last_32: 0,
             last_unwrapped: 0,
+            initialized: false,
         }
     }
 
     /// 更新 RTP 状态，返回当前展开 timestamp 和帧间差值
     /// `clock_rate` 用于最大 diff 限制
     pub fn update(&mut self, cur_ts: u32, clock_rate: u32) -> (i64, i64) {
+        if !self.initialized {
+            let cur_unwrapped = cur_ts as i64;
+            self.first_unwrapped = cur_unwrapped;
+            self.last_unwrapped = cur_unwrapped;
+            self.last_32 = cur_ts;
+            self.initialized = true;
+            return (cur_unwrapped, 0);
+        }
+
         let cur_unwrapped = if self.last_unwrapped == 0 {
             // 第一帧
             cur_ts as i64
@@ -252,6 +263,12 @@ impl MediaContext {
             if !params[idx].ready {
                 params[idx].ready = repair_basic_stream_info(st, &pkt, ext, &mut params[idx]);
             }
+            Self::fill_missing_packet_ts_from_rtp(
+                &self.media_ext,
+                fmt_ctx,
+                self.rtp_state,
+                &mut pkt,
+            );
             // 标记状态
             match (*codecpar).codec_type {
                 AVMediaType_AVMEDIA_TYPE_VIDEO => {
@@ -361,6 +378,12 @@ impl MediaContext {
         normalizer: &mut TimelineNormalizer,
         pkt: &mut AVPacket,
     ) -> GlobalResult<()> {
+        Self::fill_missing_packet_ts_from_rtp(
+            &self.media_ext,
+            self.demuxer_context.avio.fmt_ctx,
+            self.rtp_state,
+            pkt,
+        );
         if let (Some(master_clock_us), res) = normalizer.process(pkt, self.ssrc) {
             // 暂不实现处理codec
             // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
@@ -371,6 +394,81 @@ impl MediaContext {
         }
         Ok(())
     }
+
+    unsafe fn fill_missing_packet_ts_from_rtp(
+        media_ext: &MediaExt,
+        fmt_ctx: *mut rsmpeg::ffi::AVFormatContext,
+        rtp_state: *mut RtpState,
+        pkt: &mut AVPacket,
+    ) {
+        if pkt.pts != AV_NOPTS_VALUE && pkt.dts != AV_NOPTS_VALUE {
+            return;
+        }
+        if pkt.pts == AV_NOPTS_VALUE && pkt.dts != AV_NOPTS_VALUE {
+            pkt.pts = pkt.dts;
+            return;
+        }
+        if pkt.dts == AV_NOPTS_VALUE && pkt.pts != AV_NOPTS_VALUE {
+            pkt.dts = pkt.pts;
+            return;
+        }
+        if rtp_state.is_null() || fmt_ctx.is_null() {
+            return;
+        }
+
+        let idx = pkt.stream_index as usize;
+        if idx >= (*fmt_ctx).nb_streams as usize {
+            return;
+        }
+
+        let stream = *(*fmt_ctx).streams.add(idx);
+        if stream.is_null() || (*stream).codecpar.is_null() {
+            return;
+        }
+
+        let time_base = (*stream).time_base;
+        if time_base.num <= 0 || time_base.den <= 0 {
+            return;
+        }
+
+        let clock_rate = Self::rtp_clock_rate(media_ext, (*(*stream).codecpar).codec_type);
+        if clock_rate <= 0 {
+            return;
+        }
+
+        let rtp_state = &mut *rtp_state;
+        let (rtp_ts, _) = rtp_state.update(rtp_state.timestamp, clock_rate as u32);
+        let pkt_ts = av_rescale_q(
+            rtp_ts,
+            AVRational {
+                num: 1,
+                den: clock_rate,
+            },
+            time_base,
+        );
+
+        if pkt.pts == AV_NOPTS_VALUE {
+            pkt.pts = pkt_ts;
+        }
+        if pkt.dts == AV_NOPTS_VALUE {
+            pkt.dts = pkt_ts;
+        }
+    }
+
+    fn rtp_clock_rate(media_ext: &MediaExt, media_type: AVMediaType) -> i32 {
+        if media_ext.clock_rate > 0 {
+            return media_ext.clock_rate;
+        }
+        if media_type == AVMediaType_AVMEDIA_TYPE_AUDIO && media_ext.audio_params.clock_rate > 0 {
+            return media_ext.audio_params.clock_rate;
+        }
+        if media_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+            90_000
+        } else {
+            8_000
+        }
+    }
+
     fn handle_codec(codec: &mut CodecContext) {}
     fn handle_filter(filter: &mut FilterContext) {}
 
@@ -383,8 +481,12 @@ impl MediaContext {
         let muxer = &mut self.muxer_context;
         if let Some(context) = &mut muxer.flv {
             match context {
-                FlvSupperCtx::FlvCtx(context) => {let _ = context.write_packet(pkt, ts);}
-                FlvSupperCtx::H265FlvCtx(context) => {let _ = context.write_packet(pkt, ts);}
+                FlvSupperCtx::FlvCtx(context) => {
+                    let _ = context.write_packet(pkt, ts);
+                }
+                FlvSupperCtx::H265FlvCtx(context) => {
+                    let _ = context.write_packet(pkt, ts);
+                }
             }
         }
         if let Some(context) = &mut muxer.mp4 {
@@ -426,10 +528,14 @@ impl MediaContext {
     }
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
         if let Some(context) = &mut muxer.flv {
-           match context {
-               FlvSupperCtx::FlvCtx(context) => { context.flush();}
-               FlvSupperCtx::H265FlvCtx(context) => { context.flush();}
-           }
+            match context {
+                FlvSupperCtx::FlvCtx(context) => {
+                    context.flush();
+                }
+                FlvSupperCtx::H265FlvCtx(context) => {
+                    context.flush();
+                }
+            }
         }
         if let Some(context) = &mut muxer.mp4 {
             context.flush();

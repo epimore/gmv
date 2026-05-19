@@ -1,8 +1,13 @@
-use crate::service::{hook_serv};
 use axum::{Json, Router};
 use base::log::info;
-use shared::info::obj::{BaseStreamInfo, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState, END_RECORD, INPUT_TIMEOUT, OFF_PLAY, ON_PLAY, STREAM_IDLE, STREAM_REGISTER};
+use shared::info::obj::{
+    END_RECORD, INPUT_TIMEOUT, InTimeoutEventRes, OFF_PLAY, ON_PLAY, OutputEventRes,
+    OutputStreamInfo, RegisterStreamInfo, STREAM_IDLE, STREAM_REGISTER, StreamPlayInfo,
+    StreamRecordInfo, StreamState,
+};
 use shared::info::res::{EmptyResponse, Resp};
+
+use crate::service::hook_serv;
 
 pub fn routes() -> Router {
     Router::new()
@@ -17,99 +22,96 @@ pub fn routes() -> Router {
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/hook/stream/register",
-    request_body = BaseStreamInfo,
+    request_body = RegisterStreamInfo,
     responses(
-        (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
+        (status = 200, description = "回调处理成功", body = Resp<EmptyResponse>),
         (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
 ))]
-/// 媒体流注册回调接口
 async fn stream_register(Json(info): Json<RegisterStreamInfo>) -> Json<Resp<()>> {
     info!("stream_register = {:?}", &info);
     hook_serv::stream_register(info).await;
     Json(Resp::build_success())
 }
+
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/hook/stream/input/timeout",
     request_body = StreamState,
     responses(
-        (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
-        (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
-        (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
+        (status = 200, description = "回调处理成功", body = Resp<InTimeoutEventRes>),
+        (status = 401, description = "Token无效", body = Resp<InTimeoutEventRes>),
+        (status = 500, description = "服务器内部错误", body = Resp<InTimeoutEventRes>)
     ),
     tag = "流媒体服务回调接口"
 ))]
-/// 媒体流输入超时回调接口
-async fn stream_input_timeout(Json(info): Json<StreamState>) -> Json<Resp<()>> {
+async fn stream_input_timeout(Json(info): Json<StreamState>) -> Json<Resp<InTimeoutEventRes>> {
     info!("stream_input_timeout = {:?}", &info);
-    hook_serv::stream_input_timeout(info);
-    Json(Resp::build_success())
+    Json(Resp::build_success_data(hook_serv::stream_input_timeout(info)))
 }
+
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/hook/on/play",
     request_body = StreamPlayInfo,
     responses(
-        (status = 200, description = "文件删除成功", body = Resp<bool>),
+        (status = 200, description = "回调处理成功", body = Resp<bool>),
         (status = 401, description = "Token无效", body = Resp<bool>),
         (status = 500, description = "服务器内部错误", body = Resp<bool>)
     ),
     tag = "流媒体服务回调接口"
 ))]
-/// 媒体流播放回调接口
 async fn on_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<bool>> {
     info!("on_play = {:?}", &info);
     Json(Resp::<bool>::build_success_data(hook_serv::on_play(info)))
 }
+
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/hook/off/play",
     request_body = StreamPlayInfo,
     responses(
-        (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
+        (status = 200, description = "回调处理成功", body = Resp<EmptyResponse>),
         (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
 ))]
-/// 媒体流关闭播放回调接口
 async fn off_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<()>> {
     info!("off_play = {:?}", &info);
     hook_serv::off_play(info).await;
     Json(Resp::build_success())
 }
+
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/hook/stream/idle",
-    request_body = BaseStreamInfo,
+    request_body = OutputStreamInfo,
     responses(
-        (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
-        (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
-        (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
+        (status = 200, description = "回调处理成功", body = Resp<OutputEventRes>),
+        (status = 401, description = "Token无效", body = Resp<OutputEventRes>),
+        (status = 500, description = "服务器内部错误", body = Resp<OutputEventRes>)
     ),
     tag = "流媒体服务回调接口"
 ))]
-/// 媒体流空闲回调接口
-async fn stream_idle(Json(info): Json<OutputStreamInfo>) -> Json<Resp<()>> {
+async fn stream_idle(Json(info): Json<OutputStreamInfo>) -> Json<Resp<OutputEventRes>> {
     info!("stream_idle = {:?}", &info);
-    hook_serv::stream_idle(info).await;
-    Json(Resp::build_success())
+    Json(Resp::build_success_data(hook_serv::stream_idle(info).await))
 }
+
 #[cfg_attr(debug_assertions, utoipa::path(
     post,
     path = "/hook/end/record",
     request_body = StreamRecordInfo,
     responses(
-        (status = 200, description = "文件删除成功", body = Resp<EmptyResponse>),
+        (status = 200, description = "回调处理成功", body = Resp<EmptyResponse>),
         (status = 401, description = "Token无效", body = Resp<EmptyResponse>),
         (status = 500, description = "服务器内部错误", body = Resp<EmptyResponse>)
     ),
     tag = "流媒体服务回调接口"
 ))]
-/// 媒体流录制完成回调接口
 async fn end_record(Json(info): Json<StreamRecordInfo>) -> Json<Resp<()>> {
     info!("end_record = {:?}", &info);
     hook_serv::end_record(info).await;

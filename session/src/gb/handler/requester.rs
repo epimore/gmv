@@ -387,11 +387,7 @@ impl Message {
             .find(|(k, _)| k == MESSAGE_UPLOAD_SNAPSHOT_SESSION_ID)
         {
             let key = format!("{}{}", KEY_SNAPSHOT_IMAGE, v);
-            if let Some((_, Some(tx))) = state::session::Cache::state_get(&key) {
-                let _ = tx
-                    .try_send(Some(Bytes::new()))
-                    .hand_log(|msg| error!("{msg}"));
-            }
+            let _ = state::session::Cache::notify_snapshot_wait(&key);
         }
     }
     async fn keep_alive(device_id: &Arc<str>, vs: Vec<(String, String)>, bill: &Association) {

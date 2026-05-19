@@ -1,29 +1,39 @@
+use std::ops::Sub;
+use std::path::Path;
+
+use base::bytes::Bytes;
+use base::chrono::Local;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::log::error;
+use base::serde_json;
+use shared::info::obj::{
+    InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo,
+    StreamRecordInfo, StreamState,
+};
+
 use crate::gb::handler::cmd::CmdStream;
 use crate::service::KEY_STREAM_IN;
 use crate::state;
 use crate::state::DownloadConf;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 use crate::utils::id_builder;
-use base::bytes::Bytes;
-use base::chrono::Local;
-use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::error;
-use base::serde_json;
-use shared::info::obj::{BaseStreamInfo, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState};
-use std::ops::Sub;
-use std::path::Path;
 
 pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
-    let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, register_stream_info.base_stream_info.stream_id);
-    if let Some((_, Some(tx))) = state::session::Cache::state_get(&key_stream_in_id) {
-        let vec = serde_json::to_vec(&register_stream_info).unwrap();
-        let bytes = Bytes::from(vec);
-        let _ = tx.try_send(Some(bytes)).hand_log(|msg| error!("{msg}"));
+    let key_stream_in_id = format!(
+        "{}{}",
+        KEY_STREAM_IN, register_stream_info.base_stream_info.stream_id
+    );
+    if register_stream_info.code == 200 {
+        let _ = state::session::Cache::notify_stream_wait(
+            &key_stream_in_id,
+            Some(register_stream_info.base_stream_info),
+        );
+    } else {
+        let _ = state::session::Cache::notify_stream_wait(&key_stream_in_id, None);
     }
 }
 
-//gmv-stream接收流超时:还ssrc_sn,清理stream_map/device_map
-pub fn stream_input_timeout(stream_state: StreamState) {
+pub fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRes {
     let ssrc = stream_state.base_stream_info.rtp_info.ssrc;
     let ssrc_num = (ssrc % 10000) as u16;
     state::session::Cache::ssrc_sn_set(ssrc_num);
@@ -37,6 +47,7 @@ pub fn stream_input_timeout(stream_state: StreamState) {
             );
         }
     }
+    InTimeoutEventRes::CloseAll
 }
 
 pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
@@ -51,8 +62,11 @@ pub async fn off_play(stream_play_info: StreamPlayInfo) {
     state::session::Cache::stream_map_remove(&stream_id, Some(&gmv_token));
 }
 
-//无人观看则关闭流
-pub async fn stream_idle(out_stream_info: OutputStreamInfo) {
+pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
+    if out_stream_info.user_count > 0 {
+        return OutputEventRes::CloseMuxer;
+    }
+
     let stream_id = out_stream_info.base_stream_info.stream_id;
     let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
     if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
@@ -60,7 +74,8 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) {
             let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag)
                 .await;
         }
-        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id) {
+        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id)
+        {
             state::session::Cache::device_map_remove(
                 &device_id,
                 Some((&channel_id, Some((am, &ssrc_str)))),
@@ -71,6 +86,8 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) {
         let ssrc_num = (ssrc % 10000) as u16;
         state::session::Cache::ssrc_sn_set(ssrc_num);
     }
+
+    OutputEventRes::CloseAll
 }
 
 pub async fn end_record(stream_record_info: StreamRecordInfo) {
@@ -81,12 +98,15 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) {
                     record.state = 3;
                 } else {
                     let total_secs = record.et.sub(record.st).num_seconds();
-                    let per = (stream_record_info.timestamp as i64) * 1000 / total_secs;
-
-                    if per > 98 {
-                        record.state = 1;
+                    if total_secs <= 0 {
+                        record.state = 3;
                     } else {
-                        record.state = 2;
+                        let per = (stream_record_info.timestamp as i64) * 1000 / total_secs;
+                        if per > 98 {
+                            record.state = 1;
+                        } else {
+                            record.state = 2;
+                        }
                     }
                 }
                 record.lt = Local::now().naive_local();
@@ -115,7 +135,7 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) {
 }
 
 fn get_path(path_file_name: &str) -> GlobalResult<(String, String, String, String)> {
-    let path = Path::new(&path_file_name);
+    let path = Path::new(path_file_name);
     let biz_id = path
         .file_stem()
         .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?

@@ -21,7 +21,7 @@ use base::dashmap::mapref::one::Ref;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::net::state::Protocol;
-use base::once_cell::sync::Lazy;
+use base::once_cell::sync::OnceCell;
 use base::tokio::select;
 use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::{broadcast, mpsc};
@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-static REGISTER: Lazy<Register> = Lazy::new(|| Register::init());
+static REGISTER: OnceCell<Register> = OnceCell::new();
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
 //时间偏移：用于如mpd、playlist一次加载多个媒体片段，导致提前超时
 pub const DEFAULT_OFFSET_SECOND: u8 = 4;
@@ -84,7 +84,7 @@ impl RtpChannel {
         origin_trans: (SocketAddr, Protocol),
     ) -> GlobalResult<crossbeam_channel::Sender<RtpPacket>> {
         if self.wait_sign_in.load(Ordering::Relaxed) {
-            REGISTER
+            Register::get()
                 .inner
                 .event_tx
                 .try_send((
@@ -246,8 +246,12 @@ pub struct Inner {
     pub event_tx: mpsc::Sender<(Event, Option<Sender<EventRes>>)>,
 }
 impl Register {
+    fn get() -> &'static Register {
+        REGISTER.get().expect("Register not initialized")
+    }
+
     pub fn check_token(user_token_stream_id: &(Arc<str>, Arc<str>)) -> bool {
-        REGISTER
+        Self::get()
             .inner
             .user_token_map
             .contains_key(user_token_stream_id)
@@ -259,7 +263,7 @@ impl Register {
         stream_id: &Arc<str>,
         output_enum: OutputEnum,
     ) {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         arc.stream_metadata_map
             .get(stream_id)
             .map(|meta| match act {
@@ -289,7 +293,7 @@ impl Register {
         }
     }
     pub fn close_stream_by_input(state: StreamState, res: InTimeoutEventRes) {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match res {
             InTimeoutEventRes::KeepAlive => {
                 arc.time_schedule.insert(
@@ -306,7 +310,7 @@ impl Register {
         }
     }
     pub fn close_stream_by_output(info: OutputStreamInfo, res: OutputEventRes) {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match res {
             OutputEventRes::KeepMuxer => {
                 let expire_id = next_id();
@@ -351,7 +355,7 @@ impl Register {
         }
     }
     pub fn clean_play_token(expire_id: u64) {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
 
         match arc.out_session_map.remove(&expire_id) {
             None => {}
@@ -434,7 +438,7 @@ impl Register {
         remote_addr: SocketAddr,
         time_offset_sec: u8,
     ) {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         if let Some(meta) = arc.stream_metadata_map.get(&stream_id) {
             let expire_id = next_id();
             arc.out_session_map.insert(
@@ -469,7 +473,7 @@ impl Register {
         output_enum: OutputEnum,
         user_token: Arc<str>,
     ) -> GlobalResult<()> {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match arc.stream_metadata_map.get(&stream_id) {
             None => Err(GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
@@ -515,7 +519,7 @@ impl Register {
 
     //返回BaseStreamInfo,user_count
     pub fn get_base_stream_info_by_stream_id(stream_id: Arc<str>) -> Option<BaseStreamInfo> {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         arc.stream_metadata_map.get(&stream_id).map(|meta| {
             let stream_info = Self::build_base_stream_info(
                 &meta,
@@ -528,7 +532,7 @@ impl Register {
     }
     pub fn is_exist(stream_key: StreamKey) -> bool {
         let StreamKey { stream_id, ssrc } = stream_key;
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match stream_id {
             None => arc.rtp_gateway_map.contains_key(&ssrc),
             Some(stream_id) => {
@@ -539,16 +543,16 @@ impl Register {
     }
 
     pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
-        REGISTER.inner.event_tx.clone()
+        Self::get().inner.event_tx.clone()
     }
     pub fn get_server_conf() -> &'static ServerConf {
-        &REGISTER.inner.server_conf
+        &Self::get().inner.server_conf
     }
     pub fn get_muxer_rx(
         ssrc: &u32,
         muxer_enum: MuxerEnum,
     ) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match arc.rtp_gateway_map.get(&ssrc) {
             None => Err(GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
@@ -569,7 +573,7 @@ impl Register {
     where
         T: Send + Sync + 'static,
     {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match arc.rtp_gateway_map.get(&ssrc) {
             None => Err(GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
@@ -596,7 +600,7 @@ impl Register {
     where
         T: Send + Sync + 'static,
     {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match arc.rtp_gateway_map.get(&ssrc) {
             None => Err(GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
@@ -614,7 +618,7 @@ impl Register {
         }
     }
     pub fn init_media_ext(ssrc: u32, media_ext: MediaExt) -> GlobalResult<()> {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         match arc.rtp_gateway_map.get(&ssrc) {
             None => Err(GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
@@ -640,14 +644,14 @@ impl Register {
         rtp_type: u8,
         origin_trans: (SocketAddr, Protocol),
     ) -> Option<crossbeam_channel::Sender<RtpPacket>> {
-        match REGISTER.inner.clone().rtp_gateway_map.get(&ssrc) {
+        match Self::get().inner.clone().rtp_gateway_map.get(&ssrc) {
             None => None,
             Some(rc) => rc.refresh(ssrc, rtp_type, origin_trans).ok(),
         }
     }
 
     pub fn send_stream_config(rtp_type: u8, stream_id: Arc<str>) -> GlobalResult<()> {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         if let Some(meta) = arc.stream_metadata_map.get(&stream_id) {
             if let Some(media_ext) = meta.media_ext.as_ref() {
                 if media_ext.type_code == rtp_type {
@@ -719,7 +723,7 @@ impl Register {
     }
 
     pub fn build_stream_info(stream_id: Arc<str>) -> Option<BaseStreamInfo> {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         arc.stream_metadata_map.get(&stream_id).map(|meta| {
             Self::build_base_stream_info(
                 &meta,
@@ -730,7 +734,7 @@ impl Register {
         })
     }
     pub fn insert_origin_trans(stream_id: Arc<str>, origin_trans: (SocketAddr, Protocol)) -> bool {
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
@@ -761,7 +765,7 @@ impl Register {
             &media_config.output,
         );
         let output = OutputLayer::new(media_config.output.clone());
-        let arc = REGISTER.inner.clone();
+        let arc = Self::get().inner.clone();
         let in_wait_timeout = media_config
             .in_wait_timeout
             .unwrap_or_else(|| arc.stream_conf.in_wait_timeout);
@@ -791,10 +795,15 @@ impl Register {
         }
         Ok(ssrc)
     }
-    fn init() -> Register {
+    pub fn init() -> GlobalResult<()> {
+        if REGISTER.get().is_some() {
+            return Ok(());
+        }
         let server_conf = ServerConf::init_by_conf();
         let stream_conf = StreamConf::init_by_conf();
         let (event_tx, event_rx) = mpsc::channel(10000);
+        let rt = GlobalRuntime::get_main_runtime();
+        let _enter = rt.rt_handle.enter();
         let time_schedule = c100k::Cache::default();
         let inner = Inner {
             time_schedule,
@@ -810,10 +819,12 @@ impl Register {
             inner: Arc::new(inner),
         };
         let arc = register.inner.clone();
-        let rt = GlobalRuntime::get_main_runtime();
+        REGISTER
+            .set(register)
+            .map_err(|_| GlobalError::new_sys_error("Register already initialized", |_| {}))?;
         rt.rt_handle
             .spawn(event::schedule_event(arc, event_rx, rt.cancel.clone()));
-        register
+        Ok(())
     }
 }
 //输出超时关闭：- 0 +

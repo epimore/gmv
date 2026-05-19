@@ -1,15 +1,15 @@
 use crate::general::cfg::ServerConf;
 use crate::io::{http, rtp_handler};
 use crate::media;
+use crate::state::register::Register;
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
 use base::log::info;
+use base::logger;
 use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
-use base::logger;
 use std::net::UdpSocket;
-use crate::state::register::Register;
 
 pub struct App {
     conf: ServerConf,
@@ -36,7 +36,7 @@ impl
         Self: Sized,
     {
         let app = App {
-            conf: Register::get_server_conf().clone(),
+            conf: ServerConf::init_by_conf(),
         };
         logger::Logger::init()?;
         let http_port = app.conf.http_port;
@@ -58,16 +58,15 @@ impl
     ) -> GlobalResult<()> {
         let (http_listener, tu) = t;
         let (tx, rx) = mpsc::channel(100);
+        Register::init()?;
 
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
         network_rt
             .rt_handle
             .spawn(rtp_handler::run(tu, network_rt.cancel.clone()));
-        network_rt.rt_handle.spawn(http::run(
-            http_listener,
-            tx,
-            network_rt.cancel.clone(),
-        ));
+        network_rt
+            .rt_handle
+            .spawn(http::run(http_listener, tx, network_rt.cancel.clone()));
 
         let compute_rt = GlobalRuntime::register_default(RuntimeType::CommonCompute)?;
         compute_rt.rt_handle.spawn(media::handle_process(rx));
@@ -96,7 +95,7 @@ fn banner<F: FnOnce(String)>(version: &str, http_port: u16, rtp_port: u16, f: F)
 │ HTTP Server      │ 0.0.0.0:{:<5}    │ HTTP         │ 🟢 Ready     │
 │ RTP Media Stream │ 0.0.0.0:{:<5}    │ TCP, UDP     │ 🟢 Listening │
 └──────────────────┴──────────────────┴──────────────┴──────────────┘"#,
-        "Version",version, http_port, rtp_port
+        "Version", version, http_port, rtp_port
     );
     f(msg);
 }

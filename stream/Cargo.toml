@@ -12,8 +12,8 @@ debug = 1   # 保留行号信息，火焰图调优
 strip = true         # 移除调试信息
 
 [dependencies]
-#base = { git = "https://github.com/epimore/pigs.git",rev = "34b15abc",features = ["net"] }
-base = { package = "base", path = "../../pigs/base", features = ["net"] }
+base = { git = "https://github.com/epimore/pigs.git",rev = "3cc33820",features = ["net"] }
+#base = { package = "base", path = "../../pigs/base", features = ["net"] }
 shared = { path = "../shared" }
 
 futures-core = "0.3"

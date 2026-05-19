@@ -1,16 +1,7 @@
-/*
-存储：
-1.原始图片存储
-2.生成缩略图存储
-3.持久化2/3地址索引到数据库建立设备时间关系
-*/
-use crate::gb::handler::cmd;
-use crate::service::{EXPIRES, KEY_SNAPSHOT_IMAGE};
-use crate::state;
-use crate::state::model::SnapshotImage;
-use crate::storage::entity::{GmvFileInfo, GmvRecord};
-use crate::storage::pics::Pics;
-use crate::utils::edge_token;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use base::bytes::Bytes;
 use base::chrono::Local;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
@@ -18,9 +9,14 @@ use base::log::error;
 use base::tokio::sync::mpsc;
 use base::tokio::time::Instant;
 use rsip::StatusCodeKind;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+
+use crate::gb::handler::cmd;
+use crate::service::{EXPIRES, KEY_SNAPSHOT_IMAGE};
+use crate::state;
+use crate::state::model::SnapshotImage;
+use crate::storage::entity::{GmvFileInfo, GmvRecord};
+use crate::storage::pics::Pics;
+use crate::utils::edge_token;
 
 pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     let pics_conf = Pics::get_pics_by_conf();
@@ -44,15 +40,18 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
             error!("{msg}")
         }))?
     };
+
     let (tx, mut rx) = mpsc::channel(8);
     let when = Instant::now() + Duration::from_secs(EXPIRES);
     let key = format!("{}{}", KEY_SNAPSHOT_IMAGE, session_id);
-    state::session::Cache::state_insert(key.clone(), Bytes::new(), Some(when), Some(tx));
+    state::session::Cache::insert_snapshot_wait(key.clone(), when, tx);
     cache_pic_token(token, count);
-    if let Some(Some(_)) = rx.recv().await {
-        state::session::Cache::state_remove(&key);
+
+    if let Some(true) = rx.recv().await {
+        state::session::Cache::remove_state(&key);
         return Ok(session_id);
     }
+
     Err(GlobalError::new_biz_error(
         1100,
         "快照失败:设备不支持或响应超时",
@@ -77,13 +76,12 @@ pub async fn upload(
     info.create_time = Some(now);
     info.file_type = Some(0);
     info.is_del = Some(0);
-
     info.device_id = device_id;
     info.channel_id = channel_id;
     info.biz_id = session_id.to_string();
+
     let pics_conf = Pics::get_pics_by_conf();
-    let storage_path_str = &pics_conf.storage_path;
-    let relative_path = Path::new(storage_path_str);
+    let relative_path = Path::new(&pics_conf.storage_path);
     let date_str = Local::now().format("%Y%m%d").to_string();
     let final_dir = relative_path.join(date_str);
     fs::create_dir_all(&final_dir).hand_log(|msg| error!("create pics dir failed: {msg}"))?;
@@ -91,13 +89,11 @@ pub async fn upload(
         fs::canonicalize(&final_dir).hand_log(|msg| error!("create pics dir failed: {msg}"))?;
     info.abs_path = abs_final_dir
         .to_str()
-        .ok_or_else(|| {
-            GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}"))
-        })?
+        .ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}")))?
         .to_string();
-    let dir_path = final_dir.to_str().ok_or_else(|| {
-        GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}"))
-    })?;
+    let dir_path = final_dir
+        .to_str()
+        .ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}")))?;
     info.dir_path = dir_path.to_string();
 
     let file_name = Path::new(&file_name)
@@ -113,14 +109,9 @@ pub async fn upload(
     info.file_name = file_name;
     info.file_format = Some(pics_conf.storage_format.to_ascii_lowercase());
 
-    // let mut reader = data.0.into_async_read();
-    // let mut bytes = Vec::new();
-    // reader.read_to_end(&mut bytes).await.hand_log(|msg| error!("read pics bytes failed: {msg}"))?;
     let img = image::load_from_memory(&bytes).hand_log(|msg| error!("{msg}"))?;
     img.save(&save_path).hand_log(|msg| error!("{msg}"))?;
-    let size = fs::metadata(save_path)
-        .hand_log(|msg| error!("{msg}"))?
-        .len();
+    let size = fs::metadata(save_path).hand_log(|msg| error!("{msg}"))?.len();
     info.file_size = size;
     GmvFileInfo::insert_gmv_file_info(vec![info]).await?;
     Ok(())
@@ -143,57 +134,18 @@ pub async fn rm_file(file_id: i64) -> GlobalResult<()> {
 }
 
 pub fn cache_pic_token(token: String, num: u8) {
-    let when = Instant::now() + Duration::from_secs(300);
-    state::session::Cache::state_insert(
-        rebuild_pic_token(token),
-        Bytes::copy_from_slice(&[num]),
-        Some(when),
-        None,
-    );
+    state::session::Cache::insert_counter(rebuild_pic_token(token), num, Duration::from_secs(300));
 }
 
-pub fn check_pic_token(token: String) ->bool{
-    state::session::Cache::opt_state(rebuild_pic_token(token), |bytes, _when, _sender| {
-        if bytes.len() == 1 {
-            let val = bytes[0];
-            if val == 1 {
-                true // 删除
-            } else {
-                *bytes = Bytes::copy_from_slice(&[val - 1]);
-                false // 保留
-            }
-        } else {
-            true // 非单字节，删除
-        }
-    })
+pub fn check_pic_token(token: String) -> bool {
+    state::session::Cache::decrement_counter(rebuild_pic_token(token))
 }
 
 fn rebuild_pic_token(token: String) -> String {
     format!("SNAPSHOT:{}", token)
 }
+
 mod test {
     #[test]
-    fn test_path() {
-        //    use base::exception::{GlobalError, GlobalResult};
-        //     use base::log::error;
-        //     use crate::general::DownloadConf;
-        // use std::{env, fs};
-        // use std::path::{Path, PathBuf};
-        // let relative_path = Path::new("./storage/pics/");
-        // let final_dir = relative_path.join("2025");
-        // let abs_final_dir = env::current_dir().unwrap().join(&final_dir);
-        // println!("{:?}", abs_final_dir);
-        // fs::create_dir_all(&final_dir).unwrap();
-        // let abs_final_dir = std::fs::canonicalize(&final_dir).unwrap();
-        // println!("{}", abs_final_dir.to_str().unwrap());
-
-        // fn get_path(path_file_name: &String) -> GlobalResult<(String, String, String, String)> {
-        //     let path = Path::new(&path_file_name);
-        //     let dir_path = DownloadConf::get_download_conf().storage_path;
-        //     let biz_id = path.file_stem().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
-        //     let extension = path.extension().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
-        //     let abs_path = path.parent().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_str().ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?.to_string();
-        //     Ok((abs_path, dir_path, biz_id, extension))
-        // }
-    }
+    fn test_path() {}
 }

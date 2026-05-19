@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use base::cache::c100k::{Cache, CacheEvent};
 use base::exception::GlobalResult;
+use base::once_cell::sync::OnceCell;
 use base::tokio;
+use base::tokio::runtime::Handle;
 use base::tokio_util::sync::CancellationToken;
 
 use crate::register::core::TimeScheduleKey;
@@ -27,15 +29,23 @@ pub struct TimeScheduler {
     inner: Arc<Cache<ScheduleKey>>,
 }
 
-impl Default for TimeScheduler {
-    fn default() -> Self {
-        Self {
-            inner: Arc::new(Cache::default()),
-        }
-    }
-}
+static TIME_SCHEDULER: OnceCell<TimeScheduler> = OnceCell::new();
 
 impl TimeScheduler {
+    pub fn init() -> &'static Self {
+        TIME_SCHEDULER.get_or_init(|| {
+            let handle = Handle::current();
+            let _enter = handle.enter();
+            Self {
+                inner: Arc::new(Cache::default()),
+            }
+        })
+    }
+
+    pub fn global() -> &'static Self {
+        TIME_SCHEDULER.get().expect("TimeScheduler not initialized")
+    }
+
     pub fn insert_register(&self, key: TimeScheduleKey, ttl: Duration) -> GlobalResult<()> {
         self.inner.insert(ScheduleKey::Register(key), ttl)
     }

@@ -32,7 +32,7 @@ pub async fn schedule_event(
     loop {
         select! {
             biased;
-            batch = inner.time_schedule.next_batch(&cancel_token) => {
+            batch = Register::scheduler().next_batch(&cancel_token) => {
                 match batch {
                     Some(items) => on_time_schedule(&inner, items).await,
                     None => break,

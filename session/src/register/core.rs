@@ -37,7 +37,6 @@ pub struct Register {
 }
 
 pub struct Inner {
-    pub time_schedule: TimeScheduler,
     pub server_conf: SessionConf,
     pub io_tx: Sender<Zip>,
     pub sip_tx: Sender<SipPackage>,
@@ -62,8 +61,8 @@ impl Register {
         }
 
         let (event_tx, event_rx) = mpsc::channel(256);
+        TimeScheduler::init();
         let inner = Arc::new(Inner {
-            time_schedule: TimeScheduler::default(),
             server_conf,
             io_tx,
             sip_tx,
@@ -88,7 +87,7 @@ impl Register {
     }
 
     pub fn scheduler() -> &'static TimeScheduler {
-        &Self::get().inner.time_schedule
+        TimeScheduler::global()
     }
 
     pub fn device_heart(device_id: &Arc<str>, association: Association) -> GlobalResult<()> {
@@ -101,8 +100,7 @@ impl Register {
         };
 
         if session.association == association {
-            arc.time_schedule
-                .refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
+            Self::scheduler().refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
             return Ok(());
         }
 
@@ -118,8 +116,7 @@ impl Register {
         session.association = association;
         drop(session);
 
-        arc.time_schedule
-            .refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
+        Self::scheduler().refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
         Ok(())
     }
 
@@ -145,11 +142,11 @@ impl Register {
         }
 
         let expires = Duration::from_secs((ds.heartbeat_sec * 3) as u64);
-        arc.time_schedule
+        Self::scheduler()
             .insert_register(TimeScheduleKey::Device3Heart(device_id.clone()), expires)
             .hand_log(|e| error!("insert device heartbeat timer failed: {e}"))?;
 
-        arc.time_schedule
+        Self::scheduler()
             .insert_register(
                 TimeScheduleKey::DeviceRegistration(device_id.clone()),
                 ds.registration_duration,
@@ -161,12 +158,8 @@ impl Register {
     }
 
     pub fn remove_device_by_inner(device_id: &Arc<str>, inner: &Inner) -> Option<DeviceSession> {
-        let _ = inner
-            .time_schedule
-            .remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
-        let _ = inner
-            .time_schedule
-            .remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
+        let _ = Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
+        let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
 
         if let Some((_, session)) = inner.io_map.session.remove(device_id) {
             if !session.association_expire.load(Ordering::Relaxed) {
@@ -185,12 +178,8 @@ impl Register {
     pub fn remove_device_by_association(association: &Association) -> Option<DeviceSession> {
         let inner = &Self::get().inner;
         let (_, device_id) = inner.io_map.net_device_map.remove(association)?;
-        let _ = inner
-            .time_schedule
-            .remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
-        let _ = inner
-            .time_schedule
-            .remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
+        let _ = Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
+        let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
         inner.io_map.session.remove(&device_id).map(|(_, session)| session)
     }
 
@@ -234,9 +223,7 @@ impl Register {
 
     pub async fn server_keep_heart_update_db(domain_id: Arc<str>) -> GlobalResult<()> {
         Self::get().inner.server_conf.heart_to_db().await?;
-        Self::get()
-            .inner
-            .time_schedule
+        Self::scheduler()
             .insert_register(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)
     }
 }
