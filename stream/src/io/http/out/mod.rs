@@ -100,18 +100,18 @@ async fn handler(
 }
 
 struct DisconnectAwareStream<S> {
-    inner: S,
+    inner: Pin<Box<S>>,
     on_drop: Option<Box<dyn FnOnce() + Send + Sync>>,
 }
 
 impl<S> Stream for DisconnectAwareStream<S>
 where
-    S: Stream<Item = Result<Bytes, std::convert::Infallible>> + Unpin,
+    S: Stream<Item = Result<Bytes, std::convert::Infallible>>,
 {
     type Item = Result<Bytes, std::convert::Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.inner).poll_next(cx)
+        self.inner.as_mut().poll_next(cx)
     }
 }
 
@@ -137,20 +137,11 @@ pub async fn stream_user_token_check(
 ) -> OutPlayKind {
     if Register::check_token(&(token.clone(), stream_id.clone())) {
         match Register::insert_out_token(stream_id, out, token) {
-            Ok(_) => {
-                OutPlayKind::Play
-            }
-            Err(_) => {
-                OutPlayKind::Notfound
-            }
+            Ok(_) => OutPlayKind::Play,
+            Err(_) => OutPlayKind::Notfound,
         }
     } else {
-        let play_info = StreamPlayInfo::new(
-            bsi,
-            Some(addr.to_string()),
-            token.to_string(),
-            out,
-        );
+        let play_info = StreamPlayInfo::new(bsi, Some(addr.to_string()), token.to_string(), out);
         let (tx, rx) = oneshot::channel();
         let event_tx = Register::get_event_tx();
         let _ = event_tx
@@ -159,12 +150,8 @@ pub async fn stream_user_token_check(
         match rx.await {
             Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
                 match Register::insert_out_token(stream_id, out, token) {
-                    Ok(_) => {
-                        OutPlayKind::Play
-                    }
-                    Err(_) => {
-                        OutPlayKind::Notfound
-                    }
+                    Ok(_) => OutPlayKind::Play,
+                    Err(_) => OutPlayKind::Notfound,
                 }
             }
             Ok(_) => OutPlayKind::Forbid,

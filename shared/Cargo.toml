@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-base = { git = "https://github.com/epimore/pigs.git",rev = "3cc33820", features = ["net"] }
+base = { git = "https://github.com/epimore/pigs.git",rev = "b3e6f3cc", features = ["net"] }
 #base = { package = "base", path = "../../pigs/base", features = ["net"] }
 paste = "1.0"
 
