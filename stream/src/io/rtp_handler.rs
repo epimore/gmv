@@ -53,7 +53,6 @@ impl PacketDispatcher for RtpReader {
                         ));
                     }
                     Some(rtp_tx) => {
-                        println!("rtp in ------------------ sn = {}",pkt.sequence_number());
                         let packet = media::rtp::RtpPacket {
                             ssrc,
                             timestamp: pkt.timestamp(),

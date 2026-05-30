@@ -133,7 +133,6 @@ impl RtpPacketBuffer {
                 }
                 Some(_) => {
                     let mut pkt = std::mem::take(item).unwrap();
-                    println!("consume------------------------ sn={}", pkt.seq);
                     self.queue_count -= 1;
                     self.first_read_rtp_sn = pkt.seq + 1;
                     if pkt.payload.len() <= max_consume_len {
