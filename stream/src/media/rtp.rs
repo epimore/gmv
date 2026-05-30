@@ -26,6 +26,9 @@ const DEFAULT_QUEUE_WINDOW: usize = 8;
 const MAX_QUEUE_WINDOW: usize = BUFFER_SIZE / 2;
 const LAST_MAX_QUEUE_WINDOW: usize = MAX_QUEUE_WINDOW - 2;
 const MIN_QUEUE_WINDOW: usize = 4;
+const EMPTY_PS: [u8; 20] = [
+    0x00, 00, 01, 0xBA, 44, 00, 04, 00, 04, 01, 01, 89, 0xC3, 0xF8, 00, 00, 01, 0xBE, 00, 00,
+];
 
 pub struct RtpPacketBuffer {
     pub ssrc: u32,
@@ -112,40 +115,58 @@ impl RtpPacketBuffer {
             }
             let item = unsafe { self.queue.get_unchecked_mut(index) };
             index += 1;
-            if item.is_some() {
-                let mut pkt = std::mem::take(item).unwrap();
-                self.queue_count -= 1;
-                self.first_read_rtp_sn = pkt.seq + 1;
-                if pkt.payload.len() <= max_consume_len {
+            return match item {
+                None => {
+                    self.first_read_rtp_sn = self.first_read_rtp_sn.wrapping_add(1);
+
+                    let fill_data = Bytes::from_static(&EMPTY_PS); // 或者 &EMPTY_PS[..]
+                    let copy_len = std::cmp::min(fill_data.len(), max_consume_len);
+
                     unsafe {
-                        ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, pkt.payload.len());
+                        ptr::copy_nonoverlapping(fill_data.as_ptr(), buf, copy_len);
                     }
-                    size = pkt.payload.len();
-                } else {
+
+                    if copy_len < fill_data.len() {
+                        self.remaining = fill_data.slice(copy_len..);
+                    }
+                    Some(copy_len)
+                }
+                Some(_) => {
+                    let mut pkt = std::mem::take(item).unwrap();
+                    println!("consume------------------------ sn={}", pkt.seq);
+                    self.queue_count -= 1;
+                    self.first_read_rtp_sn = pkt.seq + 1;
+                    if pkt.payload.len() <= max_consume_len {
+                        unsafe {
+                            ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, pkt.payload.len());
+                        }
+                        size = pkt.payload.len();
+                    } else {
+                        unsafe {
+                            ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, max_consume_len);
+                        }
+                        self.remaining = pkt.payload.split_off(max_consume_len);
+                        size = max_consume_len;
+                    }
+                    if !is_end {
+                        //一个读写周期内，丢包大于缓冲区 && 缓冲区未满
+                        if i > self.queue_window {
+                            if self.queue_window < MAX_QUEUE_WINDOW {
+                                self.queue_window += 1;
+                            }
+                        } else if i == 0 {
+                            //一个读写周期内，未丢包 && 大于最小缓冲区
+                            if self.queue_window > MIN_QUEUE_WINDOW {
+                                self.queue_window -= 1;
+                            }
+                        }
+                    }
                     unsafe {
-                        ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, max_consume_len);
+                        (*rtp_state).timestamp = pkt.timestamp;
+                        (*rtp_state).marker = pkt.marker;
                     }
-                    self.remaining = pkt.payload.split_off(max_consume_len);
-                    size = max_consume_len;
+                    Some(size)
                 }
-                if !is_end {
-                    //一个读写周期内，丢包大于缓冲区 && 缓冲区未满
-                    if i > self.queue_window {
-                        if self.queue_window < MAX_QUEUE_WINDOW {
-                            self.queue_window += 1;
-                        }
-                    } else if i == 0 {
-                        //一个读写周期内，未丢包 && 大于最小缓冲区
-                        if self.queue_window > MIN_QUEUE_WINDOW {
-                            self.queue_window -= 1;
-                        }
-                    }
-                }
-                unsafe {
-                    (*rtp_state).timestamp = pkt.timestamp;
-                    (*rtp_state).marker = pkt.marker;
-                }
-                return Some(size);
             }
         }
         None

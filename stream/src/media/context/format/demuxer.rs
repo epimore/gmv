@@ -446,7 +446,7 @@ impl DemuxerContext {
             //不设置 fflags=nobuffer+igndts+genpts，启用默认缓存机制,用来后继修复及归一化时间
             //avformat_find_stream_info 仅完成最小化探测（识别流数量和类型）
             //后续通过自己的 read pkt 逻辑来补充和完善流信息
-            set_dict!("fflags", "discardcorrupt+ignidx");
+            set_dict!("fflags", "discardcorrupt+ignidx+igndts+genpts");
             set_dict!("analyzeduration", "200000"); //200ms探测
             set_dict!("probesize", "8192"); //2|4? 8kb [8192,16384,32768,65536] 64kb
             set_dict!("max_probe_packets", "5"); //最多探测5个包
