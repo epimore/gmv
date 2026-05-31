@@ -104,7 +104,12 @@ impl RtpChannel {
 
         if self.rtp_tx.is_full() {
             let count = self.miss_pkt.fetch_add(1, Ordering::Relaxed);
-            if count % 50 == 0 {
+            let call_io_busy = if count < 50 {
+                count % 25 == 0
+            } else {
+                count % 50 == 0
+            };
+            if call_io_busy {
                 //todo 回调信令
                 Err(GlobalError::new_biz_error(
                     BaseErrorCode::IoBusy.code(),

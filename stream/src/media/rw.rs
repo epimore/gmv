@@ -1,19 +1,20 @@
-use crate::media::rtp;
-use base::log::info;
-use rsmpeg::ffi::{AVERROR_EOF};
-use std::ffi::{c_int, c_void};
 use crate::media::context::RtpState;
+use crate::media::rtp;
+use rsmpeg::ffi::AVERROR_EOF;
+use std::ffi::{c_int, c_void};
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn read_rtp_payload(opaque: *mut c_void, buf: *mut u8, buf_size: c_int) -> c_int { unsafe {
-    let (rtp_buff, rtp_state_ptr) = &mut *(opaque as *mut (rtp::RtpPacketBuffer, *mut RtpState));
-    match rtp_buff.consume_packet(buf_size as usize, buf, *rtp_state_ptr) {
-        Some(copy_len) => {
-            copy_len as c_int
-        }
-        None => {
-            info!("rtp input stream close; ssrc: {:?}", rtp_buff.ssrc);
-            AVERROR_EOF
+pub unsafe extern "C" fn read_rtp_payload(
+    opaque: *mut c_void,
+    buf: *mut u8,
+    buf_size: c_int,
+) -> c_int {
+    unsafe {
+        let (rtp_buff, rtp_state_ptr) =
+            &mut *(opaque as *mut (rtp::RtpPacketBuffer, *mut RtpState));
+        match rtp_buff.consume_packet(buf_size as usize, buf, *rtp_state_ptr) {
+            Some(copy_len) => copy_len as c_int,
+            None => AVERROR_EOF,
         }
     }
-}}
+}

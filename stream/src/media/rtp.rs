@@ -1,7 +1,7 @@
 use crate::media::context::RtpState;
 use base::bytes::{Bytes, BytesMut};
-use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::{debug, info, warn};
+use base::exception::{GlobalError, GlobalResult};
+use base::log::{debug, warn};
 use crossbeam_channel::Receiver;
 use shared::info::media_info_ext::MediaExt;
 use std::ptr;
@@ -16,6 +16,8 @@ pub struct RtpPacket {
 
 const BUFFER_SIZE: usize = 64;
 const DEFAULT_QUEUE_WINDOW: usize = 8;
+const MAX_QUEUE_WINDOW: usize = BUFFER_SIZE / 2;
+const MIN_QUEUE_WINDOW: usize = 4;
 const SEQ_HALF_RANGE: u16 = 32768;
 const START_CODE: &[u8; 4] = &[0, 0, 0, 1];
 
@@ -117,9 +119,13 @@ fn parse_sample_rate(s: &str) -> Option<usize> {
     }
 }
 
+fn seq_before(seq: u16, base: u16) -> bool {
+    seq != base && base.wrapping_sub(seq) < SEQ_HALF_RANGE
+}
+
 pub struct RtpPacketBuffer {
     pub ssrc: u32,
-    expected_seq: Option<u16>,
+    first_read_rtp_sn: u16,
     queue: [Option<RtpPacket>; BUFFER_SIZE],
     queue_count: usize,
     queue_window: usize,
@@ -139,7 +145,7 @@ impl RtpPacketBuffer {
     ) -> GlobalResult<Self> {
         let mut buffer = Self {
             ssrc,
-            expected_seq: None,
+            first_read_rtp_sn: u16::MAX,
             queue: std::array::from_fn(|_| None),
             queue_count: 0,
             queue_window: DEFAULT_QUEUE_WINDOW,
@@ -150,8 +156,16 @@ impl RtpPacketBuffer {
             h265_fu: None,
             aac_adts: AacAdtsConfig::from_media_ext(media_ext),
         };
-        buffer.fill_queue(1)?;
+        buffer.calculate_index()?;
         Ok(buffer)
+    }
+
+    fn calculate_index(&mut self) -> GlobalResult<()> {
+        while self.queue_count < DEFAULT_QUEUE_WINDOW {
+            let pkt = self.recv_packet()?;
+            self.enqueue_initial(pkt);
+        }
+        Ok(())
     }
 
     pub fn consume_packet(
@@ -169,35 +183,131 @@ impl RtpPacketBuffer {
         }
 
         loop {
-            if self.queue_count == 0 && self.fill_queue(1).is_err() {
+            let input_closed = !self.reduce_packet();
+            let Some(pkt) = self.take_next_packet(input_closed) else {
+                return None;
+            };
+            unsafe {
+                (*rtp_state).timestamp = pkt.timestamp;
+                (*rtp_state).marker = pkt.marker;
+            }
+
+            if let Some(data) = self.depacketize(pkt) {
+                self.remaining = data;
+                return self.consume_remaining(max_consume_len, buf);
+            }
+
+            if input_closed && self.queue_count == 0 {
                 return None;
             }
+        }
+    }
 
-            let expected_seq = self.expected_seq?;
-            if let Some(pkt) = self.take_packet(expected_seq) {
-                self.expected_seq = Some(expected_seq.wrapping_add(1));
-                unsafe {
-                    (*rtp_state).timestamp = pkt.timestamp;
-                    (*rtp_state).marker = pkt.marker;
-                }
+    fn reduce_packet(&mut self) -> bool {
+        while self.queue_count < self.queue_window {
+            let Ok(pkt) = self.recv_packet() else {
+                return false;
+            };
+            self.enqueue(pkt);
+        }
+        true
+    }
 
-                if let Some(data) = self.depacketize(pkt) {
-                    self.remaining = data;
-                    return self.consume_remaining(max_consume_len, buf);
-                }
-                continue;
-            }
+    fn recv_packet(&self) -> GlobalResult<RtpPacket> {
+        self.packet_rx
+            .recv()
+            .map_err(|_| GlobalError::new_sys_error("rtp input channel closed", |_| {}))
+    }
 
-            if self.queue_count < self.queue_window && self.fill_queue(self.queue_window).is_ok() {
-                continue;
-            }
+    fn enqueue_initial(&mut self, pkt: RtpPacket) {
+        let seq = pkt.seq;
+        let index = seq as usize % BUFFER_SIZE;
+        let item = unsafe { self.queue.get_unchecked_mut(index) };
+        if item.as_ref().map(|pkt| pkt.seq == seq).unwrap_or(false) {
+            return;
+        }
 
+        if self.queue_count == 0 || seq_before(seq, self.first_read_rtp_sn) {
+            self.first_read_rtp_sn = seq;
+        }
+
+        if item.is_none() {
+            self.queue_count += 1;
+        }
+        *item = Some(pkt);
+    }
+
+    fn enqueue(&mut self, pkt: RtpPacket) {
+        let seq = pkt.seq;
+        if self.is_old_packet(seq) {
             debug!(
-                "rtp packet lost; ssrc: {}, expected seq: {}",
-                self.ssrc, expected_seq
+                "drop old rtp packet; ssrc: {}, seq: {}, first read seq: {}",
+                self.ssrc, seq, self.first_read_rtp_sn
             );
-            self.reset_fragment_state();
-            self.expected_seq = Some(expected_seq.wrapping_add(1));
+            return;
+        }
+
+        let index = seq as usize % BUFFER_SIZE;
+        let item = unsafe { self.queue.get_unchecked_mut(index) };
+        if item.as_ref().map(|pkt| pkt.seq == seq).unwrap_or(false) {
+            return;
+        }
+        if item.is_none() {
+            self.queue_count += 1;
+        } else if let Some(existing) = item.as_ref() {
+            debug!(
+                "replace rtp queue slot; ssrc: {}, old seq: {}, new seq: {}",
+                self.ssrc, existing.seq, seq
+            );
+        }
+        *item = Some(pkt);
+    }
+
+    fn is_old_packet(&self, seq: u16) -> bool {
+        seq != self.first_read_rtp_sn && self.first_read_rtp_sn.wrapping_sub(seq) < SEQ_HALF_RANGE
+    }
+
+    fn take_next_packet(&mut self, input_closed: bool) -> Option<RtpPacket> {
+        if self.queue_count == 0 {
+            return None;
+        }
+
+        let mut index = self.first_read_rtp_sn as usize % BUFFER_SIZE;
+        for offset in 0..BUFFER_SIZE {
+            if index == BUFFER_SIZE {
+                index = 0;
+            }
+            let item = unsafe { self.queue.get_unchecked_mut(index) };
+            index += 1;
+
+            let Some(pkt) = item.take() else {
+                continue;
+            };
+
+            self.queue_count -= 1;
+            if offset > 0 {
+                debug!(
+                    "rtp packet lost; ssrc: {}, expected seq: {}, next seq: {}, missed: {}",
+                    self.ssrc, self.first_read_rtp_sn, pkt.seq, offset
+                );
+                self.reset_fragment_state();
+            }
+
+            self.first_read_rtp_sn = pkt.seq.wrapping_add(1);
+            if !input_closed {
+                self.adjust_queue_window(offset);
+            }
+
+            return Some(pkt);
+        }
+        None
+    }
+
+    fn adjust_queue_window(&mut self, offset: usize) {
+        if offset > self.queue_window && self.queue_window < MAX_QUEUE_WINDOW {
+            self.queue_window += 1;
+        } else if offset == 0 && self.queue_window > MIN_QUEUE_WINDOW {
+            self.queue_window -= 1;
         }
     }
 
@@ -213,60 +323,6 @@ impl RtpPacketBuffer {
         }
         self.remaining = data.slice(copy_len..);
         Some(copy_len)
-    }
-
-    fn fill_queue(&mut self, target: usize) -> GlobalResult<()> {
-        while self.queue_count < target {
-            let pkt = self
-                .packet_rx
-                .recv()
-                .hand_log(|_| info!("ssrc:{}, close rtp input channel", self.ssrc))?;
-            self.enqueue(pkt);
-        }
-        Ok(())
-    }
-
-    fn enqueue(&mut self, pkt: RtpPacket) {
-        if self.expected_seq.is_none() {
-            self.expected_seq = Some(pkt.seq);
-        } else if self.is_old_packet(pkt.seq) {
-            debug!(
-                "drop old rtp packet; ssrc: {}, seq: {}, expected: {:?}",
-                self.ssrc, pkt.seq, self.expected_seq
-            );
-            return;
-        }
-
-        let index = pkt.seq as usize % BUFFER_SIZE;
-        match &self.queue[index] {
-            Some(existing) if existing.seq == pkt.seq => return,
-            Some(existing) => {
-                debug!(
-                    "replace rtp queue slot; ssrc: {}, old seq: {}, new seq: {}",
-                    self.ssrc, existing.seq, pkt.seq
-                );
-            }
-            None => self.queue_count += 1,
-        }
-        self.queue[index] = Some(pkt);
-    }
-
-    fn is_old_packet(&self, seq: u16) -> bool {
-        let Some(expected) = self.expected_seq else {
-            return false;
-        };
-        seq != expected && expected.wrapping_sub(seq) < SEQ_HALF_RANGE
-    }
-
-    fn take_packet(&mut self, seq: u16) -> Option<RtpPacket> {
-        let index = seq as usize % BUFFER_SIZE;
-        match self.queue[index].as_ref() {
-            Some(pkt) if pkt.seq == seq => {
-                self.queue_count -= 1;
-                self.queue[index].take()
-            }
-            _ => None,
-        }
     }
 
     fn depacketize(&mut self, pkt: RtpPacket) -> Option<Bytes> {
