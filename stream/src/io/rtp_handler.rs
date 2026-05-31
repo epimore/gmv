@@ -37,11 +37,11 @@ struct RtpReader;
 impl PacketDispatcher for RtpReader {
     fn dispatch(
         &self,
-        data: Bytes,
+        data: &[u8],
         remote_addr: SocketAddr,
         protocol: Protocol,
     ) -> GlobalResult<()> {
-        match RtpPacket::parse(data.as_ref()) {
+        match RtpPacket::parse(data) {
             Ok(pkt) => {
                 let ssrc = pkt.ssrc();
                 match Register::refresh_rtp(ssrc, pkt.payload_type(), (remote_addr, protocol)) {
@@ -92,7 +92,7 @@ const MAX_LIMIT_RTP_PACKET_SIZE: usize = 1024 * 16;
 impl PacketSplitter for RtpReader {
     fn feed<F>(&mut self, buffer: &mut BytesMut, mut f: F) -> GlobalResult<()>
     where
-        F: FnMut(Bytes) -> GlobalResult<()>,
+        F: FnMut(&[u8]) -> GlobalResult<()>,
     {
         loop {
             if buffer.len() < TCP_DATA_BASE_LEN {
@@ -115,9 +115,8 @@ impl PacketSplitter for RtpReader {
             if buffer.len() < split_len {
                 break;
             }
-            let mut split_data = buffer.split_to(split_len);
-            let rtp_data = split_data.split_off(TCP_RTP_HEADER_LEN).freeze();
-            f(rtp_data)?
+            f(&buffer[TCP_RTP_HEADER_LEN..split_len])?;
+            buffer.advance(split_len);
         }
         Ok(())
     }

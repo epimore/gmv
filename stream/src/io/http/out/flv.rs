@@ -100,7 +100,6 @@ fn flv_stream(
                 FlvStreamState::Header => {
                     let header = get_header_rx(ctx.ssrc).await.ok()?;
                     ctx.state = FlvStreamState::FirstKey;
-                    error!("flv header ----------");
                     Some((Ok(header), ctx))
                 }
                 FlvStreamState::FirstKey => {
@@ -116,14 +115,12 @@ fn flv_stream(
                     .await
                     .ok()
                     .flatten()?;
-                    error!("flv FirstKey ----------");
                     ctx.state = FlvStreamState::Live;
                     Some((Ok(first_key), ctx))
                 }
                 FlvStreamState::Live => loop {
                     match ctx.rx.recv().await {
                         Ok(pkt) => {
-                            error!("flv body ----------");
                             return Some((Ok(pkt.data.clone()), ctx));
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => continue,
