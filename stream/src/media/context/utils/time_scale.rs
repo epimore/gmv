@@ -204,15 +204,14 @@ impl TimelineNormalizer {
             return (None, ProcessResult::Ok);
         }
 
-        if !repair_missing_timestamps(pkt) {
-            warn!("Discard packet without pts/dts; ssrc: {}", ssrc);
-            return (None, ProcessResult::Ok);
-        }
-
         let stream = match &mut self.streams[idx] {
             Some(s) => s,
             None => return (None, ProcessResult::Ok),
         };
+        if !repair_missing_timestamps(pkt, stream.reorder_delay) {
+            warn!("Discard packet without pts/dts; ssrc: {}", ssrc);
+            return (None, ProcessResult::Ok);
+        }
         let pts = pkt.pts;
 
         let global = if self.global_base_us == i64::MAX {

@@ -219,6 +219,7 @@ impl MediaContext {
                 media_type,
                 (*stream).time_base,
                 (*(*stream).codecpar).codec_id,
+                (*(*stream).codecpar).video_delay,
             );
         }
         let mut video_keyframe_found = false;
@@ -251,7 +252,7 @@ impl MediaContext {
                 continue;
             }
             // 统一修复流信息
-            if !repair_missing_timestamps(&mut pkt) {
+            if !repair_missing_timestamps(&mut pkt, (*codecpar).video_delay) {
                 warn!("Discard packet without pts/dts; ssrc: {}", self.ssrc);
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 continue;
