@@ -314,8 +314,8 @@ unsafe fn cleanup_early(io_ctx: *mut AVIOContext, opaque_ptr: *mut c_void, io_bu
 /// Map helper functions (you provided earlier, included here for completeness)
 unsafe fn map_video_codec_id(s: &str) -> AVCodecID {
     match s.to_lowercase().as_str() {
-        "h264" => AVCodecID_AV_CODEC_ID_H264,
-        "h265" | "hevc" => AVCodecID_AV_CODEC_ID_HEVC,
+        "h264" | "h.264" | "avc" => AVCodecID_AV_CODEC_ID_H264,
+        "h265" | "h.265" | "hevc" => AVCodecID_AV_CODEC_ID_HEVC,
         "mpeg4" => AVCodecID_AV_CODEC_ID_MPEG4,
         // "svac" => AVCodecID_AV_CODEC_ID_SVAC,//avcodec_find_decoder_by_name("svac")
         "3gp" => AVCodecID_AV_CODEC_ID_H263, // 视来源定义
@@ -330,6 +330,7 @@ pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
             AVCodecID_AV_CODEC_ID_PCM_ALAW
         }
         // G.711 μ-law
+        "g711 u-law" | "g.711 u-law" | "u-law" | "ulaw" => AVCodecID_AV_CODEC_ID_PCM_MULAW,
         "g711u" | "g.711u" | "g.711 μ-law" | "mu-law" | "mulaw" | "pcmu" | "pcm_mulaw" => {
             AVCodecID_AV_CODEC_ID_PCM_MULAW
         }
@@ -350,14 +351,96 @@ pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
 
 /// pick input format (reuse your logic)
 fn pick_input_format(media_ext: &MediaExt) -> &'static str {
-    match media_ext.type_name.as_str() {
-        "PS" => "mpeg", // mpeg-ps
-        "H264" => "h264",
-        "H265" => "hevc",
+    let type_name = media_ext.type_name.to_ascii_uppercase();
+    match type_name.as_str() {
+        "PS" | "MP2P" | "MP2PS" => "mpeg", // mpeg-ps
+        "H264" | "H.264" | "AVC" => "h264",
+        "H265" | "H.265" | "HEVC" => "hevc",
         "AAC" => "aac",
-        "G711" => "alaw",
-        _ => "mpeg",
+        "G711U" | "PCMU" | "MULAW" => "mulaw",
+        "G711" | "G711A" | "PCMA" | "ALAW" => "alaw",
+        _ => {
+            if media_ext
+                .video_params
+                .codec_id
+                .as_deref()
+                .map(|s| {
+                    s.eq_ignore_ascii_case("h264")
+                        || s.eq_ignore_ascii_case("h.264")
+                        || s.eq_ignore_ascii_case("avc")
+                })
+                .unwrap_or(false)
+            {
+                "h264"
+            } else if media_ext
+                .video_params
+                .codec_id
+                .as_deref()
+                .map(|s| {
+                    s.eq_ignore_ascii_case("h265")
+                        || s.eq_ignore_ascii_case("h.265")
+                        || s.eq_ignore_ascii_case("hevc")
+                })
+                .unwrap_or(false)
+            {
+                "hevc"
+            } else if media_ext
+                .audio_params
+                .codec_id
+                .as_deref()
+                .map(is_mulaw_codec)
+                .unwrap_or(false)
+            {
+                "mulaw"
+            } else if media_ext
+                .audio_params
+                .codec_id
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case("aac"))
+                .unwrap_or(false)
+            {
+                "aac"
+            } else if media_ext.audio_params.codec_id.is_some() {
+                "alaw"
+            } else {
+                "mpeg"
+            }
+        }
     }
+}
+
+fn is_mulaw_codec(codec: &str) -> bool {
+    matches!(
+        codec.to_ascii_lowercase().as_str(),
+        "g711u" | "g.711u" | "g711 u-law" | "g.711 u-law" | "u-law" | "ulaw" | "mu-law"
+            | "mulaw" | "pcmu" | "pcm_mulaw"
+    )
+}
+
+fn input_sample_rate(media_ext: &MediaExt) -> i32 {
+    media_ext
+        .audio_params
+        .sample_rate
+        .as_deref()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|rate| {
+            if rate > 0.0 && rate < 1000.0 {
+                (rate * 1000.0).round() as i32
+            } else {
+                rate.round() as i32
+            }
+        })
+        .filter(|rate| *rate > 0)
+        .or_else(|| {
+            if media_ext.audio_params.clock_rate > 0 {
+                Some(media_ext.audio_params.clock_rate)
+            } else if media_ext.clock_rate > 0 {
+                Some(media_ext.clock_rate)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(8000)
 }
 
 /// The refactored start_demuxer broken into steps; returns DemuxerContext on success.
@@ -446,10 +529,24 @@ impl DemuxerContext {
             //不设置 fflags=nobuffer+igndts+genpts，启用默认缓存机制,用来后继修复及归一化时间
             //avformat_find_stream_info 仅完成最小化探测（识别流数量和类型）
             //后续通过自己的 read pkt 逻辑来补充和完善流信息
-            set_dict!("fflags", "discardcorrupt+ignidx+igndts+genpts");
-            set_dict!("analyzeduration", "200000"); //200ms探测
-            set_dict!("probesize", "8192"); //2|4? 8kb [8192,16384,32768,65536] 64kb
-            set_dict!("max_probe_packets", "5"); //最多探测5个包
+            set_dict!("fflags", "discardcorrupt+genpts");
+            set_dict!("analyzeduration", "1000000");
+            set_dict!("probesize", "65536");
+            set_dict!("max_probe_packets", "64");
+            if matches!(fmt_name, "alaw" | "mulaw") {
+                let sample_rate = input_sample_rate(media_ext).to_string();
+                let channels = media_ext.audio_params.channel_count.max(1).to_string();
+                set_dict!("sample_rate", sample_rate.as_str());
+                set_dict!("channels", channels.as_str());
+                set_dict!(
+                    "ch_layout",
+                    if media_ext.audio_params.channel_count == 2 {
+                        "stereo"
+                    } else {
+                        "mono"
+                    }
+                );
+            }
 
             // 5) open input
             let open_ret = avformat_open_input(

@@ -1,8 +1,9 @@
 use crate::media::context::RtpState;
-use base::bytes::{Buf, Bytes};
+use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::{debug, info};
+use base::log::{debug, info, warn};
 use crossbeam_channel::Receiver;
+use shared::info::media_info_ext::MediaExt;
 use std::ptr;
 
 pub struct RtpPacket {
@@ -12,191 +13,551 @@ pub struct RtpPacket {
     pub seq: u16,
     pub payload: Bytes,
 }
-// 暂不考虑数据重传
-/*
-视频帧率是25(FPS)，采样率是90KHZ(每秒钟抽取图像样本的次数)。
- 两视频帧的间隔为：1 秒/ 25帧 = 0.04(秒/帧) = 40(毫秒/帧)
- 时间戳增量单位：1/90000(秒/个) ，特别注意RTP时间戳是有单位的 每帧对应的采样： 90000 / 25 = 3600 (个/帧)
-*/
-//缓冲区大小
+
 const BUFFER_SIZE: usize = 64;
-//检查sn是否回绕；sn变小，且差值的绝对值大于u16的一半。65535/2=32767
-const ROUND_SIZE: u16 = 32767;
 const DEFAULT_QUEUE_WINDOW: usize = 8;
-const MAX_QUEUE_WINDOW: usize = BUFFER_SIZE / 2;
-const LAST_MAX_QUEUE_WINDOW: usize = MAX_QUEUE_WINDOW - 2;
-const MIN_QUEUE_WINDOW: usize = 4;
-const EMPTY_PS: [u8; 20] = [
-    0x00, 00, 01, 0xBA, 44, 00, 04, 00, 04, 01, 01, 89, 0xC3, 0xF8, 00, 00, 01, 0xBE, 00, 00,
-];
+const SEQ_HALF_RANGE: u16 = 32768;
+const START_CODE: &[u8; 4] = &[0, 0, 0, 1];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayloadKind {
+    Ps,
+    H264,
+    H265,
+    Aac,
+    G711,
+    Passthrough,
+}
+
+impl PayloadKind {
+    fn from_media_ext(media_ext: &MediaExt) -> Self {
+        let type_name = media_ext.type_name.to_ascii_uppercase();
+        match type_name.as_str() {
+            "PS" | "MP2P" | "MP2PS" => Self::Ps,
+            "H264" | "H.264" | "AVC" => Self::H264,
+            "H265" | "H.265" | "HEVC" => Self::H265,
+            "AAC" | "MPEG4-GENERIC" => Self::Aac,
+            "G711" | "G711A" | "G711U" | "PCMA" | "PCMU" => Self::G711,
+            _ => {
+                if matches_codec(&media_ext.video_params.codec_id, &["h264", "h.264", "avc"]) {
+                    Self::H264
+                } else if matches_codec(
+                    &media_ext.video_params.codec_id,
+                    &["h265", "h.265", "hevc"],
+                ) {
+                    Self::H265
+                } else if matches_codec(&media_ext.audio_params.codec_id, &["aac"]) {
+                    Self::Aac
+                } else if matches_codec(
+                    &media_ext.audio_params.codec_id,
+                    &[
+                        "g711", "g.711", "g711a", "g.711a", "g711u", "g.711u", "pcma", "pcmu",
+                        "alaw", "mulaw", "ulaw",
+                    ],
+                ) {
+                    Self::G711
+                } else {
+                    Self::Passthrough
+                }
+            }
+        }
+    }
+}
+
+fn matches_codec(codec: &Option<String>, candidates: &[&str]) -> bool {
+    codec
+        .as_deref()
+        .map(|s| {
+            let lower = s.to_ascii_lowercase();
+            candidates.iter().any(|candidate| lower == *candidate)
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Copy)]
+struct AacAdtsConfig {
+    sample_rate: usize,
+    channels: usize,
+}
+
+impl AacAdtsConfig {
+    fn from_media_ext(media_ext: &MediaExt) -> Self {
+        let sample_rate = media_ext
+            .audio_params
+            .sample_rate
+            .as_deref()
+            .and_then(parse_sample_rate)
+            .or_else(|| {
+                if media_ext.audio_params.clock_rate > 0 {
+                    Some(media_ext.audio_params.clock_rate as usize)
+                } else if media_ext.clock_rate > 0 {
+                    Some(media_ext.clock_rate as usize)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(8000);
+        let channels = media_ext.audio_params.channel_count.max(1) as usize;
+        Self {
+            sample_rate,
+            channels,
+        }
+    }
+}
+
+fn parse_sample_rate(s: &str) -> Option<usize> {
+    let rate = s.parse::<f64>().ok()?;
+    if rate <= 0.0 {
+        return None;
+    }
+    if rate < 1000.0 {
+        Some((rate * 1000.0).round() as usize)
+    } else {
+        Some(rate.round() as usize)
+    }
+}
 
 pub struct RtpPacketBuffer {
     pub ssrc: u32,
-    first_read_rtp_sn: u16, // 第一个读取的 RTP 包的序列号
+    expected_seq: Option<u16>,
     queue: [Option<RtpPacket>; BUFFER_SIZE],
-    queue_count: usize,             // 缓冲区有效的包数量
-    queue_window: usize,            //缓冲区窗口大小:4/8/16
-    packet_rx: Receiver<RtpPacket>, //数据接收句柄
+    queue_count: usize,
+    queue_window: usize,
+    packet_rx: Receiver<RtpPacket>,
     remaining: Bytes,
+    payload_kind: PayloadKind,
+    h264_fu: Option<BytesMut>,
+    h265_fu: Option<BytesMut>,
+    aac_adts: AacAdtsConfig,
 }
 
 impl RtpPacketBuffer {
-    pub fn init(ssrc: u32, packet_rx: Receiver<RtpPacket>) -> GlobalResult<Self> {
+    pub fn init(
+        ssrc: u32,
+        packet_rx: Receiver<RtpPacket>,
+        media_ext: &MediaExt,
+    ) -> GlobalResult<Self> {
         let mut buffer = Self {
             ssrc,
-            first_read_rtp_sn: u16::MAX,
+            expected_seq: None,
             queue: std::array::from_fn(|_| None),
             queue_count: 0,
             queue_window: DEFAULT_QUEUE_WINDOW,
             packet_rx,
             remaining: Default::default(),
+            payload_kind: PayloadKind::from_media_ext(media_ext),
+            h264_fu: None,
+            h265_fu: None,
+            aac_adts: AacAdtsConfig::from_media_ext(media_ext),
         };
-        buffer.calculate_index()?;
+        buffer.fill_queue(1)?;
         Ok(buffer)
     }
 
-    // 计算起始序列号
-    fn calculate_index(&mut self) -> GlobalResult<()> {
-        loop {
-            let pkt = self
-                .packet_rx
-                .recv()
-                .hand_log(|_| info!("ssrc:{}, 关闭RTP传输通道", self.ssrc))?;
-            let seq_num = pkt.seq;
-            let index = seq_num as usize % BUFFER_SIZE;
-            let item = unsafe { self.queue.get_unchecked_mut(index) };
-            if item.is_some() && item.as_ref().unwrap().seq == seq_num {
-                continue;
-            }
-            if seq_num < self.first_read_rtp_sn {
-                self.first_read_rtp_sn = seq_num;
-            }
-            *item = Some(pkt);
-            self.queue_count += 1;
-
-            if self.queue_count == DEFAULT_QUEUE_WINDOW {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    //1 判断缓冲区数据数量：[queue_count <  queue_window]? 1.1 : 1.2
-    //1.1阻塞线程等待数据+超时
-    //1.2直接取数据
     pub fn consume_packet(
         &mut self,
         max_consume_len: usize,
         buf: *mut u8,
         rtp_state: *mut RtpState,
     ) -> Option<usize> {
-        // 优先返回缓存的剩余数据
-        if !self.remaining.is_empty() {
-            let data = std::mem::take(&mut self.remaining);
-            let copy_len = std::cmp::min(data.len(), max_consume_len);
-            unsafe {
-                ptr::copy_nonoverlapping(data.as_ptr(), buf, copy_len);
-            }
+        if max_consume_len == 0 {
+            return Some(0);
+        }
 
-            // util::dump("ps", &data, false)?;
-
-            self.remaining = data.slice(copy_len..);
+        if let Some(copy_len) = self.consume_remaining(max_consume_len, buf) {
             return Some(copy_len);
         }
-        let is_end = self.reduce_packet().is_err();
-        if self.queue_count == 0 {
+
+        loop {
+            if self.queue_count == 0 && self.fill_queue(1).is_err() {
+                return None;
+            }
+
+            let expected_seq = self.expected_seq?;
+            if let Some(pkt) = self.take_packet(expected_seq) {
+                self.expected_seq = Some(expected_seq.wrapping_add(1));
+                unsafe {
+                    (*rtp_state).timestamp = pkt.timestamp;
+                    (*rtp_state).marker = pkt.marker;
+                }
+
+                if let Some(data) = self.depacketize(pkt) {
+                    self.remaining = data;
+                    return self.consume_remaining(max_consume_len, buf);
+                }
+                continue;
+            }
+
+            if self.queue_count < self.queue_window && self.fill_queue(self.queue_window).is_ok() {
+                continue;
+            }
+
+            debug!(
+                "rtp packet lost; ssrc: {}, expected seq: {}",
+                self.ssrc, expected_seq
+            );
+            self.reset_fragment_state();
+            self.expected_seq = Some(expected_seq.wrapping_add(1));
+        }
+    }
+
+    fn consume_remaining(&mut self, max_consume_len: usize, buf: *mut u8) -> Option<usize> {
+        if self.remaining.is_empty() {
             return None;
         }
-        let mut index = self.first_read_rtp_sn as usize % BUFFER_SIZE;
-        let mut size = 0;
-        for i in 0..BUFFER_SIZE {
-            if index == BUFFER_SIZE {
-                index = 0;
+
+        let data = std::mem::take(&mut self.remaining);
+        let copy_len = data.len().min(max_consume_len);
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), buf, copy_len);
+        }
+        self.remaining = data.slice(copy_len..);
+        Some(copy_len)
+    }
+
+    fn fill_queue(&mut self, target: usize) -> GlobalResult<()> {
+        while self.queue_count < target {
+            let pkt = self
+                .packet_rx
+                .recv()
+                .hand_log(|_| info!("ssrc:{}, close rtp input channel", self.ssrc))?;
+            self.enqueue(pkt);
+        }
+        Ok(())
+    }
+
+    fn enqueue(&mut self, pkt: RtpPacket) {
+        if self.expected_seq.is_none() {
+            self.expected_seq = Some(pkt.seq);
+        } else if self.is_old_packet(pkt.seq) {
+            debug!(
+                "drop old rtp packet; ssrc: {}, seq: {}, expected: {:?}",
+                self.ssrc, pkt.seq, self.expected_seq
+            );
+            return;
+        }
+
+        let index = pkt.seq as usize % BUFFER_SIZE;
+        match &self.queue[index] {
+            Some(existing) if existing.seq == pkt.seq => return,
+            Some(existing) => {
+                debug!(
+                    "replace rtp queue slot; ssrc: {}, old seq: {}, new seq: {}",
+                    self.ssrc, existing.seq, pkt.seq
+                );
             }
-            let item = unsafe { self.queue.get_unchecked_mut(index) };
-            index += 1;
-            return match item {
-                None => {
-                    self.first_read_rtp_sn = self.first_read_rtp_sn.wrapping_add(1);
+            None => self.queue_count += 1,
+        }
+        self.queue[index] = Some(pkt);
+    }
 
-                    let fill_data = Bytes::from_static(&EMPTY_PS); // 或者 &EMPTY_PS[..]
-                    let copy_len = std::cmp::min(fill_data.len(), max_consume_len);
+    fn is_old_packet(&self, seq: u16) -> bool {
+        let Some(expected) = self.expected_seq else {
+            return false;
+        };
+        seq != expected && expected.wrapping_sub(seq) < SEQ_HALF_RANGE
+    }
 
-                    unsafe {
-                        ptr::copy_nonoverlapping(fill_data.as_ptr(), buf, copy_len);
-                    }
-
-                    if copy_len < fill_data.len() {
-                        self.remaining = fill_data.slice(copy_len..);
-                    }
-                    Some(copy_len)
-                }
-                Some(_) => {
-                    let mut pkt = std::mem::take(item).unwrap();
-                    self.queue_count -= 1;
-                    self.first_read_rtp_sn = pkt.seq + 1;
-                    if pkt.payload.len() <= max_consume_len {
-                        unsafe {
-                            ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, pkt.payload.len());
-                        }
-                        size = pkt.payload.len();
-                    } else {
-                        unsafe {
-                            ptr::copy_nonoverlapping(pkt.payload.as_ptr(), buf, max_consume_len);
-                        }
-                        self.remaining = pkt.payload.split_off(max_consume_len);
-                        size = max_consume_len;
-                    }
-                    if !is_end {
-                        //一个读写周期内，丢包大于缓冲区 && 缓冲区未满
-                        if i > self.queue_window {
-                            if self.queue_window < MAX_QUEUE_WINDOW {
-                                self.queue_window += 1;
-                            }
-                        } else if i == 0 {
-                            //一个读写周期内，未丢包 && 大于最小缓冲区
-                            if self.queue_window > MIN_QUEUE_WINDOW {
-                                self.queue_window -= 1;
-                            }
-                        }
-                    }
-                    unsafe {
-                        (*rtp_state).timestamp = pkt.timestamp;
-                        (*rtp_state).marker = pkt.marker;
-                    }
-                    Some(size)
-                }
+    fn take_packet(&mut self, seq: u16) -> Option<RtpPacket> {
+        let index = seq as usize % BUFFER_SIZE;
+        match self.queue[index].as_ref() {
+            Some(pkt) if pkt.seq == seq => {
+                self.queue_count -= 1;
+                self.queue[index].take()
             }
+            _ => None,
+        }
+    }
+
+    fn depacketize(&mut self, pkt: RtpPacket) -> Option<Bytes> {
+        match self.payload_kind {
+            PayloadKind::Ps | PayloadKind::G711 | PayloadKind::Passthrough => Some(pkt.payload),
+            PayloadKind::Aac => self.depacketize_aac(pkt.payload),
+            PayloadKind::H264 => self.depacketize_h264(pkt.payload.as_ref()),
+            PayloadKind::H265 => self.depacketize_h265(pkt.payload.as_ref()),
+        }
+    }
+
+    fn reset_fragment_state(&mut self) {
+        self.h264_fu = None;
+        self.h265_fu = None;
+    }
+
+    fn depacketize_h264(&mut self, payload: &[u8]) -> Option<Bytes> {
+        let nal = *payload.first()?;
+        let nal_type = nal & 0x1f;
+        match nal_type {
+            0..=23 => Some(with_start_code(payload)),
+            24 => depacketize_h264_stap_a(payload),
+            28 => self.depacketize_h264_fu_a(payload),
+            _ => {
+                warn!("unsupported h264 rtp nal type: {}", nal_type);
+                None
+            }
+        }
+    }
+
+    fn depacketize_h264_fu_a(&mut self, payload: &[u8]) -> Option<Bytes> {
+        if payload.len() < 3 {
+            warn!("short h264 fu-a packet");
+            self.h264_fu = None;
+            return None;
+        }
+
+        let fu_indicator = payload[0];
+        let fu_header = payload[1];
+        let start = fu_header & 0x80 != 0;
+        let end = fu_header & 0x40 != 0;
+        if start && end {
+            warn!("invalid h264 fu-a packet with both start and end bits");
+            self.h264_fu = None;
+            return None;
+        }
+
+        if start {
+            let reconstructed_nal = (fu_indicator & 0xe0) | (fu_header & 0x1f);
+            let mut out = BytesMut::with_capacity(payload.len() + START_CODE.len());
+            out.extend_from_slice(START_CODE);
+            out.extend_from_slice(&[reconstructed_nal]);
+            out.extend_from_slice(&payload[2..]);
+            self.h264_fu = Some(out);
+            return None;
+        }
+
+        let Some(out) = self.h264_fu.as_mut() else {
+            warn!("drop h264 fu-a fragment without start");
+            return None;
+        };
+        out.extend_from_slice(&payload[2..]);
+        if end {
+            return self.h264_fu.take().map(BytesMut::freeze);
         }
         None
     }
 
-    fn reduce_packet(&mut self) -> GlobalResult<()> {
-        loop {
-            //检查是否已充满缓冲窗口
-            if self.queue_count == self.queue_window {
-                break;
-            }
-            let pkt = self
-                .packet_rx
-                .recv()
-                .hand_log(|_| debug!("ssrc:{}, 关闭RTP传输通道", self.ssrc))?;
-            let seq_num = pkt.seq;
+    fn depacketize_h265(&mut self, payload: &[u8]) -> Option<Bytes> {
+        if payload.len() < 3 {
+            warn!("short h265 rtp packet");
+            return None;
+        }
 
-            //检查是否为有效的数据包
-            if seq_num >= self.first_read_rtp_sn
-                || self.first_read_rtp_sn.wrapping_sub(seq_num) > ROUND_SIZE
-            {
-                let index = seq_num as usize % BUFFER_SIZE;
-                let item = unsafe { self.queue.get_unchecked_mut(index) };
-                //检查是否有重复数据,避免相同数据导致queue_count虚假增加
-                if item.is_some() && item.as_ref().unwrap().seq == seq_num {
-                    continue;
-                }
-                *item = Some(pkt);
-                self.queue_count += 1;
+        let nal_type = (payload[0] >> 1) & 0x3f;
+        let layer_id = ((payload[0] << 5) & 0x20) | ((payload[1] >> 3) & 0x1f);
+        let tid = payload[1] & 0x07;
+        if layer_id != 0 {
+            warn!("unsupported multi-layer h265 rtp packet");
+            return None;
+        }
+        if tid == 0 {
+            warn!("invalid h265 rtp temporal id");
+            return None;
+        }
+        if nal_type > 50 {
+            warn!("unsupported h265 rtp nal type: {}", nal_type);
+            return None;
+        }
+        match nal_type {
+            0..=47 => Some(with_start_code(payload)),
+            48 => depacketize_h265_ap(payload),
+            49 => self.depacketize_h265_fu(payload),
+            _ => {
+                warn!("unsupported h265 rtp nal type: {}", nal_type);
+                None
             }
         }
-        Ok(())
+    }
+
+    fn depacketize_h265_fu(&mut self, payload: &[u8]) -> Option<Bytes> {
+        if payload.len() < 4 {
+            warn!("short h265 fu packet");
+            self.h265_fu = None;
+            return None;
+        }
+
+        let fu_header = payload[2];
+        let start = fu_header & 0x80 != 0;
+        let end = fu_header & 0x40 != 0;
+        let fu_type = fu_header & 0x3f;
+        if start && end {
+            warn!("invalid h265 fu packet with both start and end bits");
+            self.h265_fu = None;
+            return None;
+        }
+
+        if start {
+            let new_header = [(payload[0] & 0x81) | (fu_type << 1), payload[1]];
+            let mut out = BytesMut::with_capacity(payload.len() + START_CODE.len());
+            out.extend_from_slice(START_CODE);
+            out.extend_from_slice(&new_header);
+            out.extend_from_slice(&payload[3..]);
+            self.h265_fu = Some(out);
+            return None;
+        }
+
+        let Some(out) = self.h265_fu.as_mut() else {
+            warn!("drop h265 fu fragment without start");
+            return None;
+        };
+        out.extend_from_slice(&payload[3..]);
+        if end {
+            return self.h265_fu.take().map(BytesMut::freeze);
+        }
+        None
+    }
+
+    fn depacketize_aac(&self, payload: Bytes) -> Option<Bytes> {
+        if is_adts(payload.as_ref()) {
+            return Some(payload);
+        }
+
+        let payload = payload.as_ref();
+        if payload.len() < 4 {
+            return None;
+        }
+
+        let au_header_bits = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+        let au_header_bytes = au_header_bits.div_ceil(8);
+        let header_size_bits = 16;
+        if au_header_bits == 0
+            || au_header_bits % header_size_bits != 0
+            || payload.len() < 2 + au_header_bytes
+        {
+            warn!("unsupported aac rtp payload without ADTS");
+            return None;
+        }
+
+        let au_count = au_header_bits / header_size_bits;
+        let mut data_offset = 2 + au_header_bytes;
+        let mut out = BytesMut::with_capacity(payload.len() + au_count * 7);
+        for i in 0..au_count {
+            let bit_offset = i * header_size_bits;
+            let byte_offset = 2 + bit_offset / 8;
+            if byte_offset + 2 > payload.len() {
+                return None;
+            }
+            let au_header = u16::from_be_bytes([payload[byte_offset], payload[byte_offset + 1]]);
+            let au_size = (au_header >> 3) as usize;
+            if data_offset + au_size > payload.len() {
+                warn!("aac rtp AU size exceeds payload");
+                return None;
+            }
+
+            append_adts_frame(
+                &mut out,
+                &payload[data_offset..data_offset + au_size],
+                self.aac_adts,
+            );
+            data_offset += au_size;
+        }
+
+        if out.is_empty() {
+            None
+        } else {
+            Some(out.freeze())
+        }
+    }
+}
+
+fn with_start_code(payload: &[u8]) -> Bytes {
+    let mut out = BytesMut::with_capacity(START_CODE.len() + payload.len());
+    out.extend_from_slice(START_CODE);
+    out.extend_from_slice(payload);
+    out.freeze()
+}
+
+fn depacketize_h264_stap_a(payload: &[u8]) -> Option<Bytes> {
+    if payload.len() <= 1 {
+        return None;
+    }
+
+    let mut pos = 1;
+    let mut out = BytesMut::with_capacity(payload.len() + START_CODE.len());
+    while pos + 2 <= payload.len() {
+        let nalu_len = u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize;
+        pos += 2;
+        if nalu_len == 0 || pos + nalu_len > payload.len() {
+            warn!("invalid h264 stap-a nalu size");
+            return None;
+        }
+        out.extend_from_slice(START_CODE);
+        out.extend_from_slice(&payload[pos..pos + nalu_len]);
+        pos += nalu_len;
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.freeze())
+    }
+}
+
+fn depacketize_h265_ap(payload: &[u8]) -> Option<Bytes> {
+    if payload.len() <= 2 {
+        return None;
+    }
+
+    let mut pos = 2;
+    let mut out = BytesMut::with_capacity(payload.len() + START_CODE.len());
+    while pos + 2 <= payload.len() {
+        let nalu_len = u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize;
+        pos += 2;
+        if nalu_len == 0 || pos + nalu_len > payload.len() {
+            warn!("invalid h265 aggregation nalu size");
+            return None;
+        }
+        out.extend_from_slice(START_CODE);
+        out.extend_from_slice(&payload[pos..pos + nalu_len]);
+        pos += nalu_len;
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.freeze())
+    }
+}
+
+fn is_adts(data: &[u8]) -> bool {
+    data.len() >= 2 && data[0] == 0xff && (data[1] & 0xf0) == 0xf0
+}
+
+fn append_adts_frame(out: &mut BytesMut, frame: &[u8], cfg: AacAdtsConfig) {
+    let Some(sample_rate_index) = aac_sample_rate_index(cfg.sample_rate) else {
+        warn!("unsupported aac sample rate for ADTS: {}", cfg.sample_rate);
+        return;
+    };
+
+    let channels = cfg.channels.min(7);
+    let frame_len = frame.len() + 7;
+    let profile = 1usize; // AAC LC in ADTS profile field.
+
+    out.extend_from_slice(&[
+        0xff,
+        0xf1,
+        ((profile & 0x03) << 6 | (sample_rate_index & 0x0f) << 2 | (channels >> 2)) as u8,
+        (((channels & 0x03) << 6) | ((frame_len >> 11) & 0x03)) as u8,
+        ((frame_len >> 3) & 0xff) as u8,
+        (((frame_len & 0x07) << 5) | 0x1f) as u8,
+        0xfc,
+    ]);
+    out.extend_from_slice(frame);
+}
+
+fn aac_sample_rate_index(sample_rate: usize) -> Option<usize> {
+    match sample_rate {
+        96000 => Some(0),
+        88200 => Some(1),
+        64000 => Some(2),
+        48000 => Some(3),
+        44100 => Some(4),
+        32000 => Some(5),
+        24000 => Some(6),
+        22050 => Some(7),
+        16000 => Some(8),
+        12000 => Some(9),
+        11025 => Some(10),
+        8000 => Some(11),
+        7350 => Some(12),
+        _ => None,
     }
 }

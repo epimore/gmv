@@ -175,7 +175,8 @@ impl MediaContext {
         ssrc: u32,
         stream_config: StreamConfig,
     ) -> GlobalResult<(MediaContext, MuxerLayer)> {
-        let rtp_buffer = RtpPacketBuffer::init(ssrc, stream_config.rtp_rx)?;
+        let rtp_buffer =
+            RtpPacketBuffer::init(ssrc, stream_config.rtp_rx, &stream_config.media_ext)?;
         // Box → raw pointer
         let rtp_state_ptr = Box::into_raw(Box::new(RtpState::new()));
         let demuxer_context = DemuxerContext::start_demuxer(

@@ -11,7 +11,7 @@ use crate::media::context::format::rtp::{RtpEncContext, RtpFrameContext, RtpPsCo
 use crate::media::context::format::ts::TsContext;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use base::serde::{Deserialize, Serialize};
-use rsmpeg::ffi::AVCodecID_AV_CODEC_ID_HEVC;
+use rsmpeg::ffi::{AVCodecID_AV_CODEC_ID_HEVC, AVMediaType_AVMEDIA_TYPE_VIDEO};
 use shared::info::output::OutputEnum;
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
@@ -66,7 +66,7 @@ impl MuxerContext {
         if let Some(flv_layer) = muxer.flv {
             let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
             unsafe {
-                if (*in_fmt_ctx).video_codec_id == AVCodecID_AV_CODEC_ID_HEVC {
+                if input_has_hevc_video(in_fmt_ctx) {
                     let _ = H265FlvContext::init_context(demuxer_context, flv_layer.tx).map(
                         |flv_context| {
                             context.flv = Some(FlvSupperCtx::H265FlvCtx(flv_context));
@@ -120,4 +120,24 @@ impl MuxerContext {
 
         context
     }
+}
+
+unsafe fn input_has_hevc_video(in_fmt_ctx: *mut rsmpeg::ffi::AVFormatContext) -> bool {
+    if in_fmt_ctx.is_null() {
+        return false;
+    }
+
+    for i in 0..(*in_fmt_ctx).nb_streams as usize {
+        let st = *(*in_fmt_ctx).streams.add(i);
+        if st.is_null() || (*st).codecpar.is_null() {
+            continue;
+        }
+        let codecpar = (*st).codecpar;
+        if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO
+            && (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_HEVC
+        {
+            return true;
+        }
+    }
+    false
 }
