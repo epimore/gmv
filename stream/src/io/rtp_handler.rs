@@ -46,11 +46,8 @@ impl PacketDispatcher for RtpReader {
                 let ssrc = pkt.ssrc();
                 match Register::refresh_rtp(ssrc, pkt.payload_type(), (remote_addr, protocol)) {
                     None => {
-                        return Err(GlobalError::new_biz_error(
-                            BaseErrorCode::NotFound.code(),
-                            "rtp channel has closed",
-                            |msg| error!("{msg}"),
-                        ));
+                        debug!("drop rtp packet for closed channel; ssrc: {ssrc}");
+                        return Ok(());
                     }
                     Some(rtp_tx) => {
                         let packet = media::rtp::RtpPacket {
@@ -67,11 +64,7 @@ impl PacketDispatcher for RtpReader {
                                 warn!("Err Full:丢弃ssrc={ssrc}");
                             }
                             Err(TrySendError::Disconnected(_)) => {
-                                return Err(GlobalError::new_biz_error(
-                                    BaseErrorCode::NotFound.code(),
-                                    "rtp channel has closed",
-                                    |msg| error!("{msg}"),
-                                ));
+                                debug!("drop rtp packet for disconnected channel; ssrc: {ssrc}");
                             }
                         }
                     }

@@ -199,6 +199,42 @@ impl H265FlvContext {
         (nalu[0] >> 1) & 0x3F
     }
 
+    fn annexb_start_code_len(data: &[u8], pos: usize) -> Option<usize> {
+        if pos + 4 <= data.len() && data[pos..].starts_with(&[0, 0, 0, 1]) {
+            Some(4)
+        } else if pos + 3 <= data.len() && data[pos..].starts_with(&[0, 0, 1]) {
+            Some(3)
+        } else {
+            None
+        }
+    }
+
+    fn find_annexb_start_code(data: &[u8], from: usize) -> Option<(usize, usize)> {
+        let mut pos = from;
+        while pos + 3 <= data.len() {
+            if let Some(len) = Self::annexb_start_code_len(data, pos) {
+                return Some((pos, len));
+            }
+            pos += 1;
+        }
+        None
+    }
+
+    fn append_filtered_nalu<F>(out: &mut BytesMut, nal: &[u8], filter: &mut F)
+    where
+        F: FnMut(u8) -> bool,
+    {
+        if nal.is_empty() {
+            return;
+        }
+
+        let nal_type = Self::get_nal_type(nal);
+        if filter(nal_type) {
+            out.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+            out.extend_from_slice(nal);
+        }
+    }
+
     /// Annex B 转 AVCC (长度前缀格式)
     fn annexb_to_avcc_fast<F>(data: &[u8], mut filter: F) -> BytesMut
     where
@@ -207,50 +243,29 @@ impl H265FlvContext {
         let len = data.len();
         let mut out = BytesMut::with_capacity(len + 64); // 预留一点避免扩容
 
-        let mut i = 0;
-        let mut nal_start = 0;
-        let mut found_start = false;
-
-        while i + 3 < len {
-            if data[i] == 0 && data[i + 1] == 0 {
-                let sc_len = if data[i + 2] == 1 {
-                    3
-                } else if i + 3 < len && data[i + 2] == 0 && data[i + 3] == 1 {
-                    4
-                } else {
-                    i += 1;
-                    continue;
-                };
-
-                if found_start {
-                    let nal = &data[nal_start..i];
-                    if !nal.is_empty() {
-                        let nal_type = (nal[0] >> 1) & 0x3F;
-
-                        if filter(nal_type) {
-                            out.extend_from_slice(&(nal.len() as u32).to_be_bytes());
-                            out.extend_from_slice(nal);
-                        }
-                    }
-                }
-
-                nal_start = i + sc_len;
-                found_start = true;
-                i += sc_len;
-            } else {
-                i += 1;
+        let Some((start_pos, start_len)) = Self::find_annexb_start_code(data, 0) else {
+            for nal in Self::parse_avcc(data) {
+                Self::append_filtered_nalu(&mut out, nal, &mut filter);
             }
-        }
+            return out;
+        };
 
-        // flush last NAL
-        if found_start && nal_start < len {
-            let nal = &data[nal_start..len];
-            if !nal.is_empty() {
-                let nal_type = (nal[0] >> 1) & 0x3F;
-
-                if filter(nal_type) {
-                    out.extend_from_slice(&(nal.len() as u32).to_be_bytes());
-                    out.extend_from_slice(nal);
+        let mut nal_start = start_pos + start_len;
+        while nal_start < len {
+            match Self::find_annexb_start_code(data, nal_start) {
+                Some((next_pos, next_len)) => {
+                    if next_pos > nal_start {
+                        Self::append_filtered_nalu(
+                            &mut out,
+                            &data[nal_start..next_pos],
+                            &mut filter,
+                        );
+                    }
+                    nal_start = next_pos + next_len;
+                }
+                None => {
+                    Self::append_filtered_nalu(&mut out, &data[nal_start..], &mut filter);
+                    break;
                 }
             }
         }

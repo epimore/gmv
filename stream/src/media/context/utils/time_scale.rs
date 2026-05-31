@@ -1,14 +1,29 @@
-use crate::media::context::utils::codecpar::is_invalid_pkt;
 use log::{info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AV_TIME_BASE_Q, AVCodecID, AVMediaType,
-    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, av_rescale_q,
+    AV_NOPTS_VALUE, AV_TIME_BASE_Q, AVCodecID, AVMediaType, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AVPacket, av_rescale_q,
 };
 
 const MAX_JUMP_US: i64 = 5_000_000; // 5s
 const DEFAULT_AUDIO_DELTA: i64 = 1024;
 const DEFAULT_VIDEO_DELTA: i64 = 1;
+const MAX_REORDER_DELAY: i32 = 16;
+
+pub fn repair_missing_timestamps(pkt: &mut AVPacket, reorder_delay: i32) -> bool {
+    if pkt.pts == AV_NOPTS_VALUE && pkt.dts == AV_NOPTS_VALUE {
+        return false;
+    }
+
+    let no_reorder = reorder_delay <= 0;
+    if no_reorder && pkt.pts == AV_NOPTS_VALUE {
+        pkt.pts = pkt.dts;
+    } else if no_reorder && pkt.dts == AV_NOPTS_VALUE {
+        pkt.dts = pkt.pts;
+    }
+
+    pkt.pts != AV_NOPTS_VALUE && pkt.dts != AV_NOPTS_VALUE
+}
 const MAX_DELTA_TICKS: i64 = 500_000; // 最大允许的 delta
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +45,16 @@ pub struct StreamTimeline {
     stream_type: AVMediaType,
     time_base: AVRational,
     codec_id: AVCodecID,
+    reorder_delay: i32,
 }
 
 impl StreamTimeline {
-    pub fn new(stream_type: AVMediaType, time_base: AVRational, codec_id: AVCodecID) -> Self {
+    pub fn new(
+        stream_type: AVMediaType,
+        time_base: AVRational,
+        codec_id: AVCodecID,
+        reorder_delay: i32,
+    ) -> Self {
         Self {
             last_dts: 0,
             last_pts: 0,
@@ -43,6 +64,7 @@ impl StreamTimeline {
             stream_type,
             time_base,
             codec_id,
+            reorder_delay: reorder_delay.clamp(0, MAX_REORDER_DELAY),
         }
     }
 
@@ -64,13 +86,13 @@ impl StreamTimeline {
     }
 
     pub fn process(&mut self, pkt: &mut AVPacket, ssrc: u32) -> ProcessResult {
+        if !repair_missing_timestamps(pkt, self.reorder_delay) {
+            warn!("Discard packet without pts/dts; ssrc: {}", ssrc);
+            return ProcessResult::Ok;
+        }
+
         // ===== 初始化 =====
         if !self.initialized {
-            if pkt.dts == AV_NOPTS_VALUE {
-                pkt.dts = pkt.pts;
-            } else if pkt.pts == AV_NOPTS_VALUE {
-                pkt.pts = pkt.dts;
-            };
             self.last_dts = pkt.dts;
             self.last_pts = pkt.pts;
             self.last_origin_dts = pkt.dts;
@@ -145,8 +167,9 @@ impl TimelineNormalizer {
         m_tp: AVMediaType,
         time_base: AVRational,
         codec_id: AVCodecID,
+        reorder_delay: i32,
     ) {
-        self.streams[idx] = Some(StreamTimeline::new(m_tp, time_base, codec_id));
+        self.streams[idx] = Some(StreamTimeline::new(m_tp, time_base, codec_id, reorder_delay));
     }
 
     pub fn rescale_global_base_us(&mut self, pts: i64) {
@@ -156,47 +179,47 @@ impl TimelineNormalizer {
     }
 
     pub fn process(&mut self, pkt: &mut AVPacket, ssrc: u32) -> (Option<i64>, ProcessResult) {
-        let idx = pkt.stream_index as usize;
-        let stream = match &mut self.streams[idx] {
-            Some(s) => {
-                match s.stream_type {
-                    AVMediaType_AVMEDIA_TYPE_VIDEO => {
-                        if pkt.pts == AV_NOPTS_VALUE && pkt.dts == AV_NOPTS_VALUE {
-                            warn!("Discard invalid packet; ssrc: {}, pts &&dts unknown", ssrc);
-                            return (None, ProcessResult::Ok);
-                        }
+        if pkt.stream_index < 0 {
+            warn!(
+                "Discard packet with invalid stream index; ssrc: {}, stream_index: {}",
+                ssrc, pkt.stream_index
+            );
+            return (None, ProcessResult::Ok);
+        }
 
-                        //对关键帧进行NAL校验
-                        if (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0)
-                            && is_invalid_pkt(&pkt, s.codec_id)
-                        {
-                            warn!(
-                                "Discard invalid packet; ssrc: {}, pts: {}, dts: {}",
-                                ssrc, pkt.pts, pkt.dts,
-                            );
-                            return (None, ProcessResult::Ok);
-                        }
-                    }
-                    AVMediaType_AVMEDIA_TYPE_AUDIO => {
-                        //音频是主时钟丢弃 NOPTS
-                        if pkt.pts == AV_NOPTS_VALUE {
-                            return (None, ProcessResult::Ok);
-                        }
-                    }
-                    _ => {}
-                }
-                s
-            }
+        let idx = pkt.stream_index as usize;
+        if idx >= self.streams.len() {
+            warn!(
+                "Discard packet with out-of-range stream index; ssrc: {}, stream_index: {}",
+                ssrc, pkt.stream_index
+            );
+            return (None, ProcessResult::Ok);
+        }
+
+        if pkt.data.is_null() || pkt.size <= 0 {
+            warn!(
+                "Discard empty packet; ssrc: {}, pts: {}, dts: {}",
+                ssrc, pkt.pts, pkt.dts,
+            );
+            return (None, ProcessResult::Ok);
+        }
+
+        if !repair_missing_timestamps(pkt) {
+            warn!("Discard packet without pts/dts; ssrc: {}", ssrc);
+            return (None, ProcessResult::Ok);
+        }
+
+        let stream = match &mut self.streams[idx] {
+            Some(s) => s,
             None => return (None, ProcessResult::Ok),
         };
-        if pkt.pts == AV_NOPTS_VALUE {
-            pkt.pts = pkt.dts;
-        } else if pkt.dts == AV_NOPTS_VALUE {
-            pkt.dts = pkt.pts;
-        }
         let pts = pkt.pts;
 
-        let global = pts - self.global_base_us;
+        let global = if self.global_base_us == i64::MAX {
+            0
+        } else {
+            pts.saturating_sub(self.global_base_us)
+        };
         let mut scale_global = 0;
         if global > 0 {
             scale_global = unsafe { av_rescale_q(global, stream.time_base, AV_TIME_BASE_Q) };

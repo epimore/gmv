@@ -209,28 +209,46 @@ unsafe fn rebuild_par_from_extradata(stream: *mut AVStream) -> bool {
     true
 }
 
-fn for_each_nalu_annexb(data: &[u8], mut f: impl FnMut(&[u8])) {
-    let mut i = 0;
-    while i + 4 <= data.len() {
-        let start = if data[i..].starts_with(&[0, 0, 0, 1]) {
-            i + 4
-        } else if data[i..].starts_with(&[0, 0, 1]) {
-            i + 3
-        } else {
-            i += 1;
-            continue;
-        };
+fn annexb_start_code_len(data: &[u8], pos: usize) -> Option<usize> {
+    if pos + 4 <= data.len() && data[pos..].starts_with(&[0, 0, 0, 1]) {
+        Some(4)
+    } else if pos + 3 <= data.len() && data[pos..].starts_with(&[0, 0, 1]) {
+        Some(3)
+    } else {
+        None
+    }
+}
 
-        let mut end = start;
-        while end + 3 < data.len()
-            && !data[end..].starts_with(&[0, 0, 0, 1])
-            && !data[end..].starts_with(&[0, 0, 1])
-        {
-            end += 1;
+fn find_annexb_start_code(data: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut pos = from;
+    while pos + 3 <= data.len() {
+        if let Some(len) = annexb_start_code_len(data, pos) {
+            return Some((pos, len));
         }
+        pos += 1;
+    }
+    None
+}
 
-        f(&data[start..end]);
-        i = end;
+fn for_each_nalu_annexb(data: &[u8], mut f: impl FnMut(&[u8])) {
+    let Some((start_pos, start_len)) = find_annexb_start_code(data, 0) else {
+        return;
+    };
+
+    let mut nalu_start = start_pos + start_len;
+    while nalu_start < data.len() {
+        match find_annexb_start_code(data, nalu_start) {
+            Some((next_pos, next_len)) => {
+                if next_pos > nalu_start {
+                    f(&data[nalu_start..next_pos]);
+                }
+                nalu_start = next_pos + next_len;
+            }
+            None => {
+                f(&data[nalu_start..]);
+                break;
+            }
+        }
     }
 }
 fn extract_h264_ps(pkt: &AVPacket, ps: &mut H264ParameterSets) {
@@ -548,6 +566,9 @@ pub fn is_invalid_pkt(pkt: &AVPacket, codec_id: AVCodecID) -> bool {
         }
 
         let data = std::slice::from_raw_parts(pkt.data, pkt.size as usize);
+        if find_annexb_start_code(data, 0).is_none() {
+            return false;
+        }
 
         let mut has_valid_slice_ps = false;
         let mut invalid_found = false;

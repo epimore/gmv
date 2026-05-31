@@ -7,9 +7,11 @@ use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::MuxerContext;
-use crate::media::context::utils::codecpar::{is_invalid_pkt, repair_basic_stream_info};
+use crate::media::context::utils::codecpar::repair_basic_stream_info;
 use crate::media::context::utils::extradata::dump_stream_info;
-use crate::media::context::utils::time_scale::{ProcessResult, TimelineNormalizer};
+use crate::media::context::utils::time_scale::{
+    repair_missing_timestamps, ProcessResult, TimelineNormalizer,
+};
 use crate::media::rtp::RtpPacketBuffer;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::msg::StreamConfig;
@@ -21,7 +23,7 @@ use base::exception::{BizError, GlobalError, GlobalResult};
 use log::{error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_PKT_FLAG_CORRUPT, AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO,
     AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
 };
 use rsmpeg::ffi::{AVMediaType, AVPacket};
@@ -236,9 +238,9 @@ impl MediaContext {
             }
             let st = *(*fmt_ctx).streams.add(idx);
             let codecpar = (*st).codecpar;
-            if is_invalid_pkt(&pkt, (*codecpar).codec_id) {
+            if pkt.data.is_null() || pkt.size <= 0 {
                 warn!(
-                    "Discard invalid packet; ssrc: {}, pts: {}, dts: {} key frame: {}",
+                    "Discard empty packet; ssrc: {}, pts: {}, dts: {} key frame: {}",
                     self.ssrc,
                     pkt.pts,
                     pkt.dts,
@@ -249,6 +251,11 @@ impl MediaContext {
                 continue;
             }
             // 统一修复流信息
+            if !repair_missing_timestamps(&mut pkt) {
+                warn!("Discard packet without pts/dts; ssrc: {}", self.ssrc);
+                rsmpeg::ffi::av_packet_unref(&mut pkt);
+                continue;
+            }
             if !params[idx].ready {
                 params[idx].ready = repair_basic_stream_info(st, &pkt, ext, &mut params[idx]);
             }
