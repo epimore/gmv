@@ -96,7 +96,7 @@ async fn upload_picture_inner(
 ) -> GlobalResult<&'static str> {
     let session_id = get_param(&params, "SessionID")?;
     edge_token::check(session_id, &token)?;
-    if !edge_serv::check_pic_token(token) {
+    if !edge_serv::check_pic_token(&token) {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Unauthorized.code(),
             "Invalid token",
@@ -126,7 +126,7 @@ async fn upload_picture_inner(
             })
         })?;
 
-    match content_type {
+    let result = match content_type {
         ct if ct.starts_with("multipart/form-data") => {
             handle_multipart_upload(req, session_id, file_id_opt).await
         }
@@ -139,7 +139,9 @@ async fn upload_picture_inner(
             ),
             |msg| error!("{msg}"),
         )),
-    }
+    }?;
+    edge_serv::refresh_pic_upload(&token, session_id);
+    Ok(result)
 }
 
 /// 提取参数字段

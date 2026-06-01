@@ -12,7 +12,7 @@ use base::tokio::time::Instant;
 use rsip::StatusCodeKind;
 
 use crate::gb::handler::cmd;
-use crate::service::{EXPIRES, KEY_SNAPSHOT_IMAGE};
+use crate::service::{KEY_SNAPSHOT_IMAGE, SNAPSHOT_IDLE_EXPIRES};
 use crate::state;
 use crate::state::model::SnapshotImage;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
@@ -28,11 +28,12 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     let url = format!("{}/{}", pics_conf.push_url.clone().unwrap(), token);
     let count = info.count.unwrap_or_else(|| pics_conf.num);
     let (tx, mut rx) = mpsc::channel(8);
-    let when = Instant::now() + Duration::from_secs(EXPIRES);
-    let key = format!("{}{}", KEY_SNAPSHOT_IMAGE, session_id);
-    let token_key = rebuild_pic_token(token.clone());
+    let timeout = snapshot_idle_timeout();
+    let when = Instant::now() + timeout;
+    let key = rebuild_snapshot_wait_key(&session_id);
+    let token_key = rebuild_pic_token(&token);
     state::session::Cache::insert_snapshot_wait(key.clone(), when, tx);
-    state::session::Cache::insert_counter(token_key.clone(), count, Duration::from_secs(300));
+    state::session::Cache::insert_counter(token_key.clone(), count, timeout);
 
     let response = match cmd::CmdControl::snapshot_image_call(
         &info.device_channel_ident.device_id,
@@ -66,6 +67,7 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
         return Ok(session_id);
     }
 
+    state::session::Cache::remove_state(&token_key);
     Err(GlobalError::new_biz_error(
         BaseErrorCode::Timeout.code(),
         "快照失败:设备不支持或响应超时",
@@ -152,15 +154,29 @@ pub async fn rm_file(file_id: i64) -> GlobalResult<()> {
 }
 
 pub fn cache_pic_token(token: String, num: u8) {
-    state::session::Cache::insert_counter(rebuild_pic_token(token), num, Duration::from_secs(300));
+    state::session::Cache::insert_counter(rebuild_pic_token(&token), num, Duration::from_secs(300));
 }
 
-pub fn check_pic_token(token: String) -> bool {
+pub fn check_pic_token(token: &str) -> bool {
     state::session::Cache::decrement_counter(rebuild_pic_token(token))
 }
 
-fn rebuild_pic_token(token: String) -> String {
+pub fn refresh_pic_upload(token: &str, session_id: &str) {
+    let timeout = snapshot_idle_timeout();
+    let _ = state::session::Cache::refresh_state(&rebuild_snapshot_wait_key(session_id), timeout);
+    let _ = state::session::Cache::refresh_state(&rebuild_pic_token(token), timeout);
+}
+
+fn rebuild_pic_token(token: &str) -> String {
     format!("SNAPSHOT:{}", token)
+}
+
+fn rebuild_snapshot_wait_key(session_id: &str) -> String {
+    format!("{}{}", KEY_SNAPSHOT_IMAGE, session_id)
+}
+
+fn snapshot_idle_timeout() -> Duration {
+    Duration::from_secs(SNAPSHOT_IDLE_EXPIRES)
 }
 
 mod test {

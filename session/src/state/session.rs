@@ -392,6 +392,22 @@ impl Cache {
         removed.is_some()
     }
 
+    pub fn refresh_state(key: &str, expire: Duration) -> bool {
+        let mut guard = GENERAL_CACHE.shared.state.lock();
+        let refreshed = match guard.entities.get_mut(key) {
+            Some(entry) => {
+                entry.expire = Some(Instant::now() + expire);
+                true
+            }
+            None => false,
+        };
+        drop(guard);
+        if refreshed {
+            let _ = Register::scheduler().insert_general_cache(key.to_string(), expire);
+        }
+        refreshed
+    }
+
     pub fn decrement_counter(key: String) -> bool {
         let mut guard = GENERAL_CACHE.shared.state.lock();
         let handled = guard.decrement_counter(key.clone());
@@ -506,7 +522,15 @@ struct Shared {
 impl Shared {
     fn purge_expired_keys(&self, keys: Vec<String>) {
         let mut state = self.state.lock();
+        let now = Instant::now();
         for key in keys {
+            let expired = match state.entities.get(&key).and_then(|entry| entry.expire) {
+                Some(expire) => expire <= now,
+                None => false,
+            };
+            if !expired {
+                continue;
+            }
             if let Some(entry) = state.entities.remove(&key) {
                 let _ = entry.expire;
                 if let Some(waiter) = entry.waiter {
