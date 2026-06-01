@@ -250,7 +250,7 @@ impl CmdStream {
         let res = rx.await.hand_log(|msg|error!("{msg}"))??;
         let code = res.status_code.code();
         let code_msg = res.status_code.to_string();
-        if code >= 200 || code <= 299 {
+        if code >= 200 && code <= 299 {
             if let Ok(ext) = Self::parse_sdp(res.body()) {
                 let from_tag = res.header_from_tag()?.to_string();
                 let to_tag = res

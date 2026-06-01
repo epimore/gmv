@@ -104,7 +104,7 @@ impl RtpChannel {
 
         if self.rtp_tx.is_full() {
             let count = self.miss_pkt.fetch_add(1, Ordering::Relaxed);
-            let call_io_busy = if count < 50 {
+            let call_io_busy = if count < 50 && count > 5 {
                 count % 25 == 0
             } else {
                 count % 50 == 0
@@ -722,6 +722,8 @@ impl Register {
                     arc.stream_metadata_map.remove(&stream_id);
                     arc.rtp_gateway_map.remove(&ssrc);
                 }
+            }else {
+                error!("RTP 首包早于 SDP 扩展信息;ssrc = {}",meta.ssrc)
             }
         }
         Ok(())
