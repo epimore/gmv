@@ -117,11 +117,6 @@ impl RtpChannel {
                     |msg| error!("ssrc: {ssrc},{msg}"),
                 ))?;
             }
-            Err(GlobalError::new_biz_error(
-                BaseErrorCode::IoBusy.code(),
-                "rtp channel is full",
-                |_| (),
-            ))?;
         } else {
             self.miss_pkt.store(0, Ordering::Relaxed);
         }
