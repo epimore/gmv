@@ -42,6 +42,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
+const RTP_INPUT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 //时间偏移：用于如mpd、playlist一次加载多个媒体片段，导致提前超时
 pub const DEFAULT_OFFSET_SECOND: u8 = 4;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -274,8 +275,15 @@ impl Register {
     pub fn handle_rtp_in_timeout(ssrc: u32, inner: &Inner) {
         if let Some(rc) = inner.rtp_gateway_map.get(&ssrc) {
             if let Some(meta) = inner.stream_metadata_map.get(&rc.stream_id) {
-                if rc.in_has_timeout.load(Ordering::Relaxed) < meta.in_wait_timeout {
-                    rc.in_has_timeout.fetch_add(1, Ordering::Relaxed);
+                let timeout_count = rc
+                    .in_has_timeout
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                if timeout_count < meta.in_wait_timeout {
+                    let _ = inner
+                        .time_schedule
+                        .insert(TimeScheduleKey::RtpGateway(ssrc), RTP_INPUT_CHECK_INTERVAL)
+                        .hand_log(|msg| error!("{msg}"));
                 } else {
                     let stream_info = Self::build_base_stream_info(
                         &meta,
@@ -450,21 +458,11 @@ impl Register {
                     stream_id,
                 },
             );
-            if meta.out_idle_timeout > 0 {
-                arc.time_schedule.insert(
-                    TimeScheduleKey::OutSession(expire_id),
-                    Duration::from_secs((time_offset_sec + meta.out_idle_timeout) as u64),
-                );
-            } else if meta.out_idle_timeout == 0 {
-                arc.time_schedule.insert(
-                    TimeScheduleKey::OutSession(expire_id),
-                    Duration::from_secs((time_offset_sec + 1) as u64),
-                );
-            } else {
-                //此处用于统计输出,不作为 OUT_TIMEOUT 对外输出事件
-                arc.time_schedule
-                    .insert(TimeScheduleKey::OutSession(expire_id), DEFAULT_EXPIRES);
-            }
+            let timeout_sec = time_offset_sec.saturating_add(meta.out_idle_timeout);
+            arc.time_schedule.insert(
+                TimeScheduleKey::OutSession(expire_id),
+                Duration::from_secs(timeout_sec as u64),
+            );
         }
     }
 
@@ -782,10 +780,8 @@ impl Register {
             stream_id.clone(),
             arc.event_tx.clone(),
         );
-        arc.time_schedule.insert(
-            time_schedule_key,
-            Duration::from_secs(in_wait_timeout as u64),
-        );
+        arc.time_schedule
+            .insert(time_schedule_key, RTP_INPUT_CHECK_INTERVAL);
         arc.rtp_gateway_map.insert(ssrc, rtp_channel);
         arc.stream_metadata_map.insert(stream_id.clone(), metadata);
         //发送事件模拟触发消费输出流：如mp4录制;不监听output token,仅记录muxer资源;由rtp input超时清理资源

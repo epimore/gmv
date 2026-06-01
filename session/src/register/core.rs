@@ -238,8 +238,9 @@ impl Register {
     }
 
     pub async fn server_keep_heart_update_db(domain_id: Arc<str>) -> GlobalResult<()> {
-        Self::get().inner.server_conf.heart_to_db().await?;
+        let update_res = Self::get().inner.server_conf.heart_to_db().await;
         Self::scheduler()
-            .insert_register(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)
+            .insert_register(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)?;
+        update_res
     }
 }

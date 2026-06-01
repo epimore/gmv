@@ -242,6 +242,7 @@ impl AntiReplayContext {
         request: &Request,
         from_network: &str,
     ) -> GlobalResult<AntiReplayKind> {
+        self.clean();
         let key = request.generate_anti_key(from_network)?;
         let mut shard = self.shard.write();
         match shard.anti_map.entry(key) {

@@ -31,6 +31,8 @@ pub struct Mp4Context {
     in_time_bases: Vec<AVRational>,
     out_time_bases: Vec<AVRational>,
     epoch: Instant,
+    last_timestamp: u64,
+    flushed: bool,
 }
 
 impl Drop for Mp4Context {
@@ -258,6 +260,8 @@ impl FmtMuxer for Mp4Context {
                 in_time_bases: in_tbs,
                 out_time_bases: out_tbs,
                 epoch: Instant::now(),
+                last_timestamp: 0,
+                flushed: false,
             })
         }
     }
@@ -326,6 +330,7 @@ impl FmtMuxer for Mp4Context {
 
             // pull produced data
             let out_vec = &mut *self.out_buf_ptr;
+            self.last_timestamp = timestamp;
             if out_vec.is_empty() {
                 return Ok(());
             }
@@ -350,9 +355,30 @@ impl FmtMuxer for Mp4Context {
 
     fn flush(&mut self) {
         unsafe {
-            if !self.fmt_ctx.is_null() {
+            if !self.fmt_ctx.is_null() && !self.flushed {
                 av_write_trailer(self.fmt_ctx);
+                self.flushed = true;
             }
+
+            if self.out_buf_ptr.is_null() {
+                return;
+            }
+
+            let out_vec = &mut *self.out_buf_ptr;
+            if out_vec.is_empty() {
+                return;
+            }
+
+            let data_base = Bytes::from(out_vec.clone());
+            out_vec.clear();
+            let mux_packet = MuxPacket {
+                data: data_base,
+                is_key: false,
+                timestamp: self.last_timestamp,
+                epoch: self.epoch,
+                seq: 0,
+            };
+            let _ = self.pkt_tx.send(Arc::new(mux_packet));
         }
     }
 }

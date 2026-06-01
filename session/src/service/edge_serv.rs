@@ -27,7 +27,14 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     )?;
     let url = format!("{}/{}", pics_conf.push_url.clone().unwrap(), token);
     let count = info.count.unwrap_or_else(|| pics_conf.num);
-    let response = cmd::CmdControl::snapshot_image_call(
+    let (tx, mut rx) = mpsc::channel(8);
+    let when = Instant::now() + Duration::from_secs(EXPIRES);
+    let key = format!("{}{}", KEY_SNAPSHOT_IMAGE, session_id);
+    let token_key = rebuild_pic_token(token.clone());
+    state::session::Cache::insert_snapshot_wait(key.clone(), when, tx);
+    state::session::Cache::insert_counter(token_key.clone(), count, Duration::from_secs(300));
+
+    let response = match cmd::CmdControl::snapshot_image_call(
         &info.device_channel_ident.device_id,
         &info.device_channel_ident.channel_id,
         count,
@@ -35,20 +42,24 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
         &url,
         &session_id,
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            state::session::Cache::remove_state(&key);
+            state::session::Cache::remove_state(&token_key);
+            return Err(err);
+        }
+    };
     if !matches!(response.status_code.kind(), StatusCodeKind::Successful) {
+        state::session::Cache::remove_state(&key);
+        state::session::Cache::remove_state(&token_key);
         Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
             "snapshot image failed",
             |msg| error!("{msg}"),
         ))?
     };
-
-    let (tx, mut rx) = mpsc::channel(8);
-    let when = Instant::now() + Duration::from_secs(EXPIRES);
-    let key = format!("{}{}", KEY_SNAPSHOT_IMAGE, session_id);
-    state::session::Cache::insert_snapshot_wait(key.clone(), when, tx);
-    cache_pic_token(token, count);
 
     if let Some(true) = rx.recv().await {
         state::session::Cache::remove_state(&key);

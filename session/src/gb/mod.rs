@@ -80,6 +80,7 @@ impl SessionConf {
     async fn heart_server() {
         let conf = SessionConf::get_session_by_conf();
         let _ = conf.init_to_db().await;
+        let _ = Register::server_keep_heart_update_db(Arc::from(conf.domain_id)).await;
     }
     pub async fn heart_to_db(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool();
