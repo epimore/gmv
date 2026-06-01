@@ -346,6 +346,7 @@ pub mod muxer_layer {
     use crate::media::context::format::MuxPacket;
     use crate::media::context::format::muxer::MuxerEnum;
     use crate::state::FORMAT_BROADCAST_BUFFER;
+    use base::err::BaseErrorCode;
     use base::exception::{GlobalError, GlobalResult};
     use base::log::error;
     use base::tokio::sync::broadcast;
@@ -375,7 +376,7 @@ pub mod muxer_layer {
                 MuxerEnum::Flv => {
                     if self.flv.is_none() {
                         Err(GlobalError::new_biz_error(
-                            1100,
+                            BaseErrorCode::InvalidState.code(),
                             &format!("muxer: {:?}未开启", muxer_enum),
                             |msg| error!("{msg}"),
                         ))?;
@@ -385,7 +386,7 @@ pub mod muxer_layer {
                 MuxerEnum::Mp4 => {
                     if self.mp4.is_none() {
                         Err(GlobalError::new_biz_error(
-                            1100,
+                            BaseErrorCode::InvalidState.code(),
                             &format!("muxer: {:?}未开启", muxer_enum),
                             |msg| error!("{msg}"),
                         ))?;
@@ -398,7 +399,7 @@ pub mod muxer_layer {
                 MuxerEnum::FMp4 => {
                     if self.fmp4.is_none() {
                         Err(GlobalError::new_biz_error(
-                            1100,
+                            BaseErrorCode::InvalidState.code(),
                             &format!("muxer: {:?}未开启", muxer_enum),
                             |msg| error!("{msg}"),
                         ))?;
@@ -420,7 +421,7 @@ pub mod muxer_layer {
                 MuxerEnum::DashMp4 => {
                     if self.dash_mp4.is_none() {
                         Err(GlobalError::new_biz_error(
-                            1100,
+                            BaseErrorCode::InvalidState.code(),
                             &format!("muxer: {:?}未开启", muxer_enum),
                             |msg| error!("{msg}"),
                         ))?;
@@ -430,7 +431,7 @@ pub mod muxer_layer {
                 MuxerEnum::HlsMp4 => {
                     if self.hls_mp4.is_none() {
                         Err(GlobalError::new_biz_error(
-                            1100,
+                            BaseErrorCode::InvalidState.code(),
                             &format!("muxer: {:?}未开启", muxer_enum),
                             |msg| error!("{msg}"),
                         ))?;

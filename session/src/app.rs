@@ -16,10 +16,10 @@ pub struct AppInfo {
 }
 
 impl
-Daemon<(
-    std::net::TcpListener,
-    (Option<std::net::TcpListener>, Option<UdpSocket>),
-)> for AppInfo
+    Daemon<(
+        std::net::TcpListener,
+        (Option<std::net::TcpListener>, Option<UdpSocket>),
+    )> for AppInfo
 {
     fn cli_basic() -> CliBasic {
         default_cli_basic!()
@@ -61,15 +61,13 @@ Daemon<(
         let http = self.http;
         let (http_listener, tu) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
-        network_rt
-            .rt_handle
-            .spawn(async move {
-                let _ = SessionConf::run(tu, network_rt.cancel.clone()).await;
-                GlobalRuntime::get_main_runtime()
-                    .rt_handle
-                    .spawn(PicsRunner::next());
-                let _ = http.run(http_listener, network_rt.cancel.clone()).await;
-            });
+        network_rt.rt_handle.spawn(async move {
+            let _ = SessionConf::run(tu, network_rt.cancel.clone()).await;
+            GlobalRuntime::get_main_runtime()
+                .rt_handle
+                .spawn(PicsRunner::next());
+            let _ = http.run(http_listener, network_rt.cancel.clone()).await;
+        });
         GlobalRuntime::order_shutdown(&[RuntimeType::CommonNetwork], |msg| info!("{msg}"));
         Ok(())
     }

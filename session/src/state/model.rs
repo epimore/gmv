@@ -2,6 +2,7 @@ use base::serde::{Deserialize, Serialize};
 
 use crate::gb::handler::parser::xml::KV2Model;
 use base::constructor::New;
+use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde_json;
@@ -143,7 +144,11 @@ impl StreamInfo {
             Some(OutputKind::DashMp4(_)) => {
                 url = format!("{}.mpd", url);
             }
-            _ => { Err(GlobalError::new_biz_error(1200, "unsupported output", |msg| error!("{msg}: {:?}",out_kind)))? }
+            _ => Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "unsupported output",
+                |msg| error!("{msg}: {:?}", out_kind),
+            ))?,
         }
         let info = Self {
             url,

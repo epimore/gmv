@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use base::bytes::{Buf, Bytes, BytesMut};
+use std::collections::VecDeque;
 use std::str;
 
 /// SIP over TCP 拆包器：
@@ -88,8 +88,15 @@ fn maybe_sip_start(buf: &BytesMut) -> bool {
     // Request 行：METHOD SP URI
     // METHOD：REGISTER / INVITE / MESSAGE / OPTIONS / BYE / ACK / CANCEL / INFO 等
     const METHODS: [&[u8]; 9] = [
-        b"REGISTER", b"INVITE", b"MESSAGE", b"OPTIONS",
-        b"BYE", b"ACK", b"CANCEL", b"INFO", b"UPDATE",
+        b"REGISTER",
+        b"INVITE",
+        b"MESSAGE",
+        b"OPTIONS",
+        b"BYE",
+        b"ACK",
+        b"CANCEL",
+        b"INFO",
+        b"UPDATE",
     ];
 
     for m in METHODS {

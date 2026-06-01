@@ -717,8 +717,8 @@ impl Register {
                     arc.stream_metadata_map.remove(&stream_id);
                     arc.rtp_gateway_map.remove(&ssrc);
                 }
-            }else {
-                error!("RTP 首包早于 SDP 扩展信息;ssrc = {}",meta.ssrc)
+            } else {
+                error!("RTP 首包早于 SDP 扩展信息;ssrc = {}", meta.ssrc)
             }
         }
         Ok(())

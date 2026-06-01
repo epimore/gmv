@@ -1,5 +1,8 @@
+use crate::io::http::{res_by_code, res_by_error};
 use crate::io::local::mp4::Mp4OutputInnerEvent;
+use crate::state::register::Register;
 use axum::{Extension, Json, Router};
+use base::err::BaseErrorCode;
 use base::exception::GlobalResultExt;
 use base::log::{error, info};
 use base::serde_json::json;
@@ -7,10 +10,12 @@ use base::tokio::sync::mpsc::Sender;
 use base::tokio::sync::oneshot;
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE, StreamInfoQo, StreamKey, StreamRecordInfo, CLOSE_OUTPUT};
+use shared::info::obj::{
+    CLOSE_OUTPUT, LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE, StreamInfoQo, StreamKey,
+    StreamRecordInfo,
+};
 use shared::info::output::OutputEnum;
 use shared::info::res::{EmptyResponse, Resp};
-use crate::state::register::Register;
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
@@ -44,9 +49,9 @@ async fn listen_media(
     let json = match Register::init_media(config) {
         Ok(ssrc) => match tx.try_send(ssrc).hand_log(|msg| error!("{msg}")) {
             Ok(_) => Resp::<()>::build_success(),
-            Err(err) => Resp::<()>::build_failed_by_msg(err.to_string()),
+            Err(err) => res_by_error(err),
         },
-        Err(err) => Resp::<()>::build_failed_by_msg(err.to_string()),
+        Err(err) => res_by_error(err),
     };
     info!("listen_media response: {:?}", &json);
     Json(json)
@@ -68,7 +73,7 @@ async fn sdp_media(Json(sdp): Json<MediaMap>) -> Json<Resp<()>> {
     info!("sdp_media: {:?}", &sdp);
     let json = match Register::init_media_ext(sdp.ssrc, sdp.ext) {
         Ok(_) => Resp::<()>::build_success(),
-        Err(err) => Resp::<()>::build_failed_by_msg(err.to_string()),
+        Err(err) => res_by_error(err),
     };
     info!("sdp_media response: {:?}", &json);
     Json(json)
@@ -126,9 +131,7 @@ async fn record_info(Json(info): Json<StreamInfoQo>) -> Json<Resp<StreamRecordIn
         OutputEnum::LocalTs => {}
         _ => {}
     }
-    let json = Json(Resp::<StreamRecordInfo>::build_failed_by_msg(
-        "Failed to query record info",
-    ));
+    let json = Json(res_by_code::<StreamRecordInfo>(BaseErrorCode::NotFound));
     info!("record_info response: {:?}", &json);
     json
 }

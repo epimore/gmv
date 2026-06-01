@@ -67,4 +67,3 @@ pub trait HeaderItemExt: HeadersExt {
 impl HeaderItemExt for rsip::Request {}
 impl HeaderItemExt for rsip::Response {}
 impl HeaderItemExt for rsip::SipMessage {}
-

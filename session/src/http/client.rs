@@ -1,20 +1,20 @@
-use base::exception::{GlobalResult, GlobalResultExt};
-use pretend::interceptor::NoopRequestInterceptor;
-use pretend::resolver::UrlResolver;
-use pretend::{pretend, Pretend, Result};
-use pretend::{Json, Url};
-use shared::info::media_info::MediaConfig;
-use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{StreamKey, StreamInfoQo, StreamRecordInfo};
-use shared::info::res::Resp;
-use std::str::FromStr;
-use std::time::Duration;
-use crate::state::model::{AlarmInfo};
-use std::sync::{Arc, OnceLock};
+use crate::register::core::DEFAULT_EXPIRES;
+use crate::state::model::AlarmInfo;
 use base::dashmap;
 use base::dashmap::DashMap;
+use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::info;
-use crate::register::core::DEFAULT_EXPIRES;
+use pretend::interceptor::NoopRequestInterceptor;
+use pretend::resolver::UrlResolver;
+use pretend::{Json, Url};
+use pretend::{Pretend, Result, pretend};
+use shared::info::media_info::MediaConfig;
+use shared::info::media_info_ext::MediaMap;
+use shared::info::obj::{StreamInfoQo, StreamKey, StreamRecordInfo};
+use shared::info::res::Resp;
+use std::str::FromStr;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 type HttpTemplate = Arc<Pretend<pretend_reqwest::Client, UrlResolver, NoopRequestInterceptor>>;
 static CLIENT_POOL: OnceLock<DashMap<String, HttpTemplate>> = OnceLock::new();
@@ -24,17 +24,15 @@ impl HttpClient {
         CLIENT_POOL.get_or_init(|| DashMap::new())
     }
     fn init(url: &str) -> GlobalResult<HttpTemplate> {
-        let url_parsed = Url::parse(url)
-            .hand_log(|msg| info!("{msg}"))?;
+        let url_parsed = Url::parse(url).hand_log(|msg| info!("{msg}"))?;
 
         let client = pretend_reqwest::reqwest::Client::builder()
             .timeout(DEFAULT_EXPIRES)
             .build()
             .hand_log(|msg| info!("{msg}"))?;
 
-        let pretend = pretend::Pretend::for_client(
-            pretend_reqwest::Client::new(client)
-        ).with_url(url_parsed);
+        let pretend =
+            pretend::Pretend::for_client(pretend_reqwest::Client::new(client)).with_url(url_parsed);
 
         Ok(Arc::new(pretend))
     }
@@ -59,7 +57,6 @@ impl HttpClient {
         Self::template(&url)
     }
 }
-
 
 #[pretend]
 pub trait HttpStream {

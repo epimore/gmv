@@ -158,16 +158,20 @@ impl Cache {
     pub fn stream_map_build_call_id_seq_from_to_tag(
         stream_id: &String,
     ) -> Option<(String, u32, String, String)> {
-        GENERAL_CACHE.shared.stream_map.get_mut(stream_id).map(|mut ref_mut| {
-            let stream_table = ref_mut.value_mut();
-            stream_table.seq += 1;
-            (
-                stream_table.call_id.clone(),
-                stream_table.seq,
-                stream_table.from_tag.clone(),
-                stream_table.to_tag.clone(),
-            )
-        })
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
+            .map(|mut ref_mut| {
+                let stream_table = ref_mut.value_mut();
+                stream_table.seq += 1;
+                (
+                    stream_table.call_id.clone(),
+                    stream_table.seq,
+                    stream_table.from_tag.clone(),
+                    stream_table.to_tag.clone(),
+                )
+            })
     }
 
     pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<AccessMode> {
@@ -270,7 +274,8 @@ impl Cache {
         let mut streams = Vec::new();
         if let Some((_, entries)) = GENERAL_CACHE.shared.device_map.remove(device_id) {
             for entry in entries {
-                if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(&entry.stream_id) {
+                if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(&entry.stream_id)
+                {
                     let ssrc_num = (stream.ssrc % 10000) as u16;
                     GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
                     streams.push(DeviceStreamState {
@@ -325,10 +330,13 @@ impl Cache {
 
     pub fn notify_stream_wait(key: &str, info: Option<BaseStreamInfo>) -> bool {
         let guard = GENERAL_CACHE.shared.state.lock();
-        let sender = guard.entities.get(key).and_then(|entry| match &entry.waiter {
-            Some(StateWaiter::Stream(tx)) => Some(tx.clone()),
-            _ => None,
-        });
+        let sender = guard
+            .entities
+            .get(key)
+            .and_then(|entry| match &entry.waiter {
+                Some(StateWaiter::Stream(tx)) => Some(tx.clone()),
+                _ => None,
+            });
         drop(guard);
         match sender {
             Some(tx) => {
@@ -350,10 +358,13 @@ impl Cache {
 
     pub fn notify_snapshot_wait(key: &str) -> bool {
         let guard = GENERAL_CACHE.shared.state.lock();
-        let sender = guard.entities.get(key).and_then(|entry| match &entry.waiter {
-            Some(StateWaiter::Snapshot(tx)) => Some(tx.clone()),
-            _ => None,
-        });
+        let sender = guard
+            .entities
+            .get(key)
+            .and_then(|entry| match &entry.waiter {
+                Some(StateWaiter::Snapshot(tx)) => Some(tx.clone()),
+                _ => None,
+            });
         drop(guard);
         match sender {
             Some(tx) => {

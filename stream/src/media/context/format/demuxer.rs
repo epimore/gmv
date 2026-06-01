@@ -1,5 +1,6 @@
 use crate::media::context::RtpState;
 use crate::media::{DEFAULT_IO_BUF_SIZE, rtp, rw, show_ffmpeg_error_msg};
+use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
 use rsmpeg::ffi::{
@@ -184,9 +185,11 @@ unsafe fn open_input_with_format(
         );
         if ret < 0 {
             let ffmpeg_error = show_ffmpeg_error_msg(ret);
-            return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| {
-                error!("{msg}")
-            }));
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                &ffmpeg_error,
+                |msg| error!("{msg}"),
+            ));
         }
         Ok(())
     }
@@ -412,8 +415,16 @@ fn pick_input_format(media_ext: &MediaExt) -> &'static str {
 fn is_mulaw_codec(codec: &str) -> bool {
     matches!(
         codec.to_ascii_lowercase().as_str(),
-        "g711u" | "g.711u" | "g711 u-law" | "g.711 u-law" | "u-law" | "ulaw" | "mu-law"
-            | "mulaw" | "pcmu" | "pcm_mulaw"
+        "g711u"
+            | "g.711u"
+            | "g711 u-law"
+            | "g.711 u-law"
+            | "u-law"
+            | "ulaw"
+            | "mu-law"
+            | "mulaw"
+            | "pcmu"
+            | "pcm_mulaw"
     )
 }
 
@@ -562,9 +573,11 @@ impl DemuxerContext {
                 cleanup_early(in_pb, in_opaque, in_io_buf);
                 avformat_free_context(in_fmt_ctx);
                 let ffmpeg_error = show_ffmpeg_error_msg(open_ret);
-                return Err(GlobalError::new_biz_error(1100, &ffmpeg_error, |msg| {
-                    error!("{msg}")
-                }));
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    &ffmpeg_error,
+                    |msg| error!("{msg}"),
+                ));
             }
             // 6) find stream info (with retry)
             if let Err(e) = find_stream_info_with_retry(in_fmt_ctx, dict_opts, media_ext) {

@@ -1,9 +1,9 @@
-use utoipa::OpenApi;
-use shared::info::obj::*;
-use shared::info::media_info_ext::MediaMap;
-use shared::info::media_info::MediaConfig;
-use crate::io::http::out;
 use crate::io::http::api;
+use crate::io::http::out;
+use shared::info::media_info::MediaConfig;
+use shared::info::media_info_ext::MediaMap;
+use shared::info::obj::*;
+use utoipa::OpenApi;
 
 // 定义 OpenAPI 文档
 #[derive(OpenApi)]

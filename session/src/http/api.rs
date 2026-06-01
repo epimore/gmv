@@ -1,11 +1,17 @@
-use crate::state::model::{PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo};
-use crate::service::{edge_serv, api_serv};
+use crate::http::{get_gmv_token, res_by_error};
+use crate::service::{api_serv, edge_serv};
+use crate::state::model::{
+    PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel, PtzControlModel, StreamInfo,
+    StreamQo,
+};
 use axum::http::HeaderMap;
 use axum::{Json, Router};
 use base::log::info;
-use shared::info::obj::{SingleParam, StreamRecordInfo, CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK, PLAY_SPEED, RM_FILE};
+use shared::info::obj::{
+    CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK,
+    PLAY_SPEED, RM_FILE, SingleParam, StreamRecordInfo,
+};
 use shared::info::res::{EmptyResponse, Resp};
-use crate::http::get_gmv_token;
 
 pub fn routes() -> Router {
     Router::new()
@@ -35,18 +41,17 @@ pub fn routes() -> Router {
     tag = "设备媒体流操作API"
 ))]
 /// 点播实时视频
-async fn play_living(headers: HeaderMap, Json(info): Json<PlayLiveModel>) -> Json<Resp<StreamInfo>> {
+async fn play_living(
+    headers: HeaderMap,
+    Json(info): Json<PlayLiveModel>,
+) -> Json<Resp<StreamInfo>> {
     info!("play_live: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::play_live(info, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::play_live(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -67,15 +72,11 @@ async fn play_living(headers: HeaderMap, Json(info): Json<PlayLiveModel>) -> Jso
 async fn play_back(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<Resp<StreamInfo>> {
     info!("play_back: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::play_back(info, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::play_back(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -96,15 +97,11 @@ async fn play_back(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<
 async fn play_seek(headers: HeaderMap, Json(info): Json<PlaySeekModel>) -> Json<Resp<bool>> {
     info!("play_seek: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::seek(info, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::seek(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -125,15 +122,11 @@ async fn play_seek(headers: HeaderMap, Json(info): Json<PlaySeekModel>) -> Json<
 async fn play_speed(headers: HeaderMap, Json(info): Json<PlaySpeedModel>) -> Json<Resp<bool>> {
     info!("play_speed: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::speed(info, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::speed(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -154,15 +147,11 @@ async fn play_speed(headers: HeaderMap, Json(info): Json<PlaySpeedModel>) -> Jso
 async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> Json<Resp<bool>> {
     info!("control_ptz: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::ptz(info, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::ptz(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 //let recommendations = [
@@ -190,15 +179,11 @@ async fn control_ptz(headers: HeaderMap, Json(info): Json<PtzControlModel>) -> J
 async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Json<Resp<String>> {
     info!("download_mp4: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::download(info, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::download(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -216,18 +201,17 @@ async fn download_mp4(headers: HeaderMap, Json(info): Json<PlayBackModel>) -> Js
     tag = "设备媒体流操作API"
 ))]
 /// 停止视频录制
-async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>) -> Json<Resp<bool>> {
+async fn download_stop(
+    headers: HeaderMap,
+    Json(info): Json<SingleParam<String>>,
+) -> Json<Resp<bool>> {
     info!("download_stop: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::download_stop(info.param, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::download_stop(info.param, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -245,18 +229,17 @@ async fn download_stop(headers: HeaderMap, Json(info): Json<SingleParam<String>>
     tag = "设备媒体流操作API"
 ))]
 /// 查看录制中的视频进度信息
-async fn downing_info(headers: HeaderMap, Json(info): Json<StreamQo>) -> Json<Resp<StreamRecordInfo>> {
+async fn downing_info(
+    headers: HeaderMap,
+    Json(info): Json<StreamQo>,
+) -> Json<Resp<StreamRecordInfo>> {
     info!("downing_info: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(token) => {
-            match api_serv::download_info_by_stream_id(info, token).await {
-                Ok(data) => { Json(Resp::build_success_data(data)) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(token) => match api_serv::download_info_by_stream_id(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -277,14 +260,10 @@ async fn downing_info(headers: HeaderMap, Json(info): Json<StreamQo>) -> Json<Re
 async fn rm_file(headers: HeaderMap, Json(info): Json<SingleParam<i64>>) -> Json<Resp<()>> {
     info!("rm_file: body = {:?}", &info);
     match get_gmv_token(headers) {
-        Ok(_token) => {
-            match edge_serv::rm_file(info.param).await {
-                Ok(_) => { Json(Resp::build_success()) }
-                Err(err) => { Json(Resp::build_failed_by_msg(err.to_string())) }
-            }
-        }
-        Err(_) => {
-            Json(Resp::build_failed_by_msg("Gmv-Token is invalid"))
-        }
+        Ok(_token) => match edge_serv::rm_file(info.param).await {
+            Ok(_) => Json(Resp::build_success()),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
     }
 }

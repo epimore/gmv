@@ -1,6 +1,6 @@
-use std::{fs};
-use std::str::FromStr;
 use cron::Schedule;
+use std::fs;
+use std::str::FromStr;
 use url::Url;
 
 use base::cfg_lib::conf;
@@ -38,17 +38,26 @@ impl CheckFromConf for Pics {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         let pics: Pics = Pics::conf();
         if pics.enable {
-            let uri = self.push_url.as_ref().ok_or(FieldCheckError::BizError("push_url is required".to_string()))?;
-            Url::parse(uri).map_err(|e| FieldCheckError::BizError(format!("Invalid push_url: {}", e.to_string())))?;
+            let uri = self.push_url.as_ref().ok_or(FieldCheckError::BizError(
+                "push_url is required".to_string(),
+            ))?;
+            Url::parse(uri).map_err(|e| {
+                FieldCheckError::BizError(format!("Invalid push_url: {}", e.to_string()))
+            })?;
         }
         match &*pics.storage_format.to_ascii_lowercase() {
-            "avif" | "bmp" | "farbfeld" | "gif" | "hdr" | "ico" | "jpeg" | "exr" | "png" | "pnm" | "qoi" | "tga" | "tiff" | "webp" => {}
+            "avif" | "bmp" | "farbfeld" | "gif" | "hdr" | "ico" | "jpeg" | "exr" | "png"
+            | "pnm" | "qoi" | "tga" | "tiff" | "webp" => {}
             _ => {
                 return Err(FieldCheckError::BizError("storage_format must be in [avif,bmp,farbfeld,gif,hdr,ico,jpeg,exr,png,pnm,qoi,tga,tiff,webp]".to_string()));
             }
         }
-        Schedule::from_str(&pics.cron_cycle).map_err(|e| FieldCheckError::BizError(format!("Invalid cron expression: {}", e.to_string())))?;
-        fs::create_dir_all(&pics.storage_path).map_err(|e| FieldCheckError::BizError(format!("create raw_path dir failed: {}", e.to_string())))?;
+        Schedule::from_str(&pics.cron_cycle).map_err(|e| {
+            FieldCheckError::BizError(format!("Invalid cron expression: {}", e.to_string()))
+        })?;
+        fs::create_dir_all(&pics.storage_path).map_err(|e| {
+            FieldCheckError::BizError(format!("create raw_path dir failed: {}", e.to_string()))
+        })?;
         Ok(())
     }
 }
@@ -136,19 +145,21 @@ impl Pics {
 //     current
 // }
 
-
 #[cfg(test)]
 mod test {
+    use crate::storage::pics::Pics;
+    use base::cfg_lib::conf::init_cfg;
     use base::chrono::Local;
     use image::ImageFormat;
     use image::ImageFormat::Jpeg;
-    use base::cfg_lib::conf::init_cfg;
-    use crate::storage::pics::Pics;
 
     #[test]
     fn test() {
         let content_type = "image/jpeg";
-        let format = content_type.split_once('/').map(|(_, fmt)| fmt).unwrap_or("");
+        let format = content_type
+            .split_once('/')
+            .map(|(_, fmt)| fmt)
+            .unwrap_or("");
         println!("格式: {}", format);
         assert_eq!("jpeg", format);
         let option = ImageFormat::from_extension(format);

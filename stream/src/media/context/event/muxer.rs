@@ -22,9 +22,11 @@ impl MuxerEvent {
                 MuxerKind::Flv(flv) => unsafe {
                     let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
                     if (*in_fmt_ctx).video_codec_id == AVCodecID_AV_CODEC_ID_HEVC {
-                        let _ = H265FlvContext::init_context(demuxer_context, flv.tx).map(|flv_context| {
+                        let _ = H265FlvContext::init_context(demuxer_context, flv.tx).map(
+                            |flv_context| {
                                 muxer_context.flv = Some(FlvSupperCtx::H265FlvCtx(flv_context));
-                            });
+                            },
+                        );
                     } else {
                         let _ =
                             FlvContext::init_context(demuxer_context, flv.tx).map(|flv_context| {

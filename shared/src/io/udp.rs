@@ -1,5 +1,5 @@
-use std::net::IpAddr;
 use base::serde::Deserialize;
+use std::net::IpAddr;
 
 #[derive(Deserialize, Debug)]
 #[serde(crate = "base::serde")]

@@ -1,15 +1,16 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::error;
-use base::utils::{dig62, crypto};
+use base::utils::{crypto, dig62};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY: &str = "GMV:SESSION v1.0";
 
 pub fn build_file_name(device_id: &str, channel_id: &str) -> GlobalResult<String> {
     let now = SystemTime::now();
-    let since_the_epoch = now
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}")))?;
+    let since_the_epoch = now.duration_since(UNIX_EPOCH).map_err(|_| {
+        GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}"))
+    })?;
     let mils = since_the_epoch.as_millis();
     let text = format!("{}{}{}", device_id, channel_id, mils);
     dig62::en(&text)
@@ -22,11 +23,11 @@ pub fn build_token_session_id(device_id: &str, channel_id: &str) -> GlobalResult
     Ok((token, session_id))
 }
 
-pub fn build_session_id(device_id: &str, channel_id: &str)->GlobalResult<String>{
+pub fn build_session_id(device_id: &str, channel_id: &str) -> GlobalResult<String> {
     let now = SystemTime::now();
-    let since_the_epoch = now
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}")))?;
+    let since_the_epoch = now.duration_since(UNIX_EPOCH).map_err(|_| {
+        GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}"))
+    })?;
     let mils = since_the_epoch.as_millis();
     let text = format!("{}{}{}", device_id, channel_id, mils);
     dig62::en(&text)
@@ -37,7 +38,7 @@ pub fn split_dc(session_id: &str) -> GlobalResult<(String, String)> {
     let dcs = dig62::de(session_id)?;
     if dcs.len() < 40 {
         return Err(GlobalError::new_biz_error(
-            1100,
+            BaseErrorCode::InvalidRequest.code(),
             "Invalid session id",
             |msg| error!("{msg}: decoded session_id too short"),
         ));
@@ -51,7 +52,11 @@ pub fn check(session_id: &str, token: &str) -> GlobalResult<()> {
     if r_token.eq(token) {
         return Ok(());
     }
-    Err(GlobalError::new_sys_error("Invalid token", |msg| error!("{msg}")))
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::Unauthorized.code(),
+        "Invalid token",
+        |msg| error!("{msg}"),
+    ))
 }
 
 #[cfg(test)]

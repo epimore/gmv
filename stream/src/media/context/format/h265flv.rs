@@ -91,7 +91,6 @@ pub struct H265FlvContext {
 }
 
 impl H265FlvContext {
-
     fn ensure_hvcc(extradata: &[u8], vps: &[u8], sps: &[u8], pps: &[u8]) -> Vec<u8> {
         if Self::is_hvcc(extradata) {
             extradata.to_vec()
@@ -100,7 +99,8 @@ impl H265FlvContext {
         }
     }
     fn is_hvcc(data: &[u8]) -> bool {
-        if data.len() < 23 {  // HVCC 至少需要 23 字节
+        if data.len() < 23 {
+            // HVCC 至少需要 23 字节
             return false;
         }
         // 检查 configurationVersion 为 1
@@ -152,9 +152,15 @@ impl H265FlvContext {
         // ===== NALU arrays =====
 
         let mut num_arrays = 0;
-        if !vps.is_empty() { num_arrays += 1; }
-        if !sps.is_empty() { num_arrays += 1; }
-        if !pps.is_empty() { num_arrays += 1; }
+        if !vps.is_empty() {
+            num_arrays += 1;
+        }
+        if !sps.is_empty() {
+            num_arrays += 1;
+        }
+        if !pps.is_empty() {
+            num_arrays += 1;
+        }
 
         hvcc.push(num_arrays);
 
@@ -616,14 +622,16 @@ impl FmtMuxer for H265FlvContext {
                                         &ctx.sps,
                                         &ctx.pps,
                                     );
-                                    info!("Video extradata size: {} bytes", ctx.video_extradata.len());
+                                    info!(
+                                        "Video extradata size: {} bytes",
+                                        ctx.video_extradata.len()
+                                    );
                                 } else {
                                     return Err(GlobalError::new_sys_error(
                                         "Video stream missing extradata",
                                         |msg| warn!("{}", msg),
                                     ));
                                 }
-
 
                                 info!(
                                     "Found H265 video stream {} with VPS/SPS/PPS, time_base: {}/{}",

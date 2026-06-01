@@ -1,18 +1,18 @@
-use std::collections::{HashMap};
-use std::fs;
-use std::net::Ipv4Addr;
-use std::sync::OnceLock;
-use base::{serde_default};
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::once_cell::sync::OnceCell;
-use base::serde::{Deserialize};
+use base::serde::Deserialize;
+use base::serde_default;
+use std::collections::HashMap;
+use std::fs;
+use std::net::Ipv4Addr;
+use std::sync::OnceLock;
 use url::Url;
 
 pub mod model;
-pub mod session;
-pub mod schedule;
 pub mod runner;
+pub mod schedule;
+pub mod session;
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
@@ -28,9 +28,7 @@ static ALARM_CONF: OnceLock<AlarmConf> = OnceLock::new();
 
 impl AlarmConf {
     pub fn get_alarm_conf() -> &'static Self {
-        ALARM_CONF.get_or_init(|| {
-            AlarmConf::conf()
-        })
+        ALARM_CONF.get_or_init(|| AlarmConf::conf())
     }
 }
 
@@ -38,16 +36,22 @@ impl CheckFromConf for AlarmConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         if self.enable {
             if self.push_url.is_none() || self.push_url.as_ref().unwrap().is_empty() {
-                return Err(FieldCheckError::BizError("server.alarm.push_url不能为空".to_string()));
+                return Err(FieldCheckError::BizError(
+                    "server.alarm.push_url不能为空".to_string(),
+                ));
             }
 
             if Url::parse(self.push_url.as_ref().unwrap()).is_err() {
-                return Err(FieldCheckError::BizError("server.alarm.push_url非有效的url地址".to_string()));
+                return Err(FieldCheckError::BizError(
+                    "server.alarm.push_url非有效的url地址".to_string(),
+                ));
             }
         }
 
         if self.priority == 0 || self.priority > 4 {
-            return Err(FieldCheckError::BizError("server.alarm.priority必须为1|2|3|4".to_string()));
+            return Err(FieldCheckError::BizError(
+                "server.alarm.priority必须为1|2|3|4".to_string(),
+            ));
         }
         Ok(())
     }
@@ -80,7 +84,10 @@ impl StreamConf {
             let mut conf: Self = StreamConf::conf();
             for node in &conf.nodes {
                 if let Some(old) = conf.node_map.insert(node.name.clone(), node.clone()) {
-                    panic!("配置server.stream.nodes.name重复:{}:，建议使用s1,s2,s3等连续编号", old.name);
+                    panic!(
+                        "配置server.stream.nodes.name重复:{}:，建议使用s1,s2,s3等连续编号",
+                        old.name
+                    );
                 }
             }
             if conf.node_map.is_empty() {
@@ -100,7 +107,9 @@ pub struct DownloadConf {
 impl CheckFromConf for DownloadConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         let dc = DownloadConf::conf();
-        fs::create_dir_all(&dc.storage_path).map_err(|e| FieldCheckError::BizError(format!("create download dir failed: {}", e.to_string())))?;
+        fs::create_dir_all(&dc.storage_path).map_err(|e| {
+            FieldCheckError::BizError(format!("create download dir failed: {}", e.to_string()))
+        })?;
         Ok(())
     }
 }
@@ -121,27 +130,9 @@ mod tests {
 
     fn print_banner(c: char) {
         let binary = match c {
-            'G' => [
-                0b11111,
-                0b10000,
-                0b10011,
-                0b10001,
-                0b11111,
-            ],
-            'M' => [
-                0b10001,
-                0b11011,
-                0b10101,
-                0b10001,
-                0b10001,
-            ],
-            'V' => [
-                0b10001,
-                0b10001,
-                0b01010,
-                0b00100,
-                0b00100,
-            ],
+            'G' => [0b11111, 0b10000, 0b10011, 0b10001, 0b11111],
+            'M' => [0b10001, 0b11011, 0b10101, 0b10001, 0b10001],
+            'V' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100],
             _ => [0; 5],
         };
 

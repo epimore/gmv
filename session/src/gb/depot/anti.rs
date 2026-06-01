@@ -301,7 +301,7 @@ impl AntiReplayContext {
         let cutoff = (Instant::now(), String::new());
         let mut shard = self.shard.write();
         let shard = &mut *shard;
-        let unexpired  = shard.expire_set.split_off(&(cutoff));
+        let unexpired = shard.expire_set.split_off(&(cutoff));
         for (_, key) in shard.expire_set.iter() {
             shard.anti_map.remove(key);
         }

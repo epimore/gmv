@@ -1,8 +1,8 @@
 pub mod codec;
 pub mod filter;
+pub mod inner;
 pub mod muxer;
 pub mod output;
-pub mod inner;
 
 pub enum ContextEvent {
     Codec(codec::CodecEvent),

@@ -1,19 +1,19 @@
-use rsmpeg::ffi::*;
-use log::{debug, info, warn};
-use std::ptr;
-use base::chrono;
-use base::chrono::SecondsFormat;
 use crate::general::mp::{Audio, MediaParam, Video};
 use crate::media::context::format::demuxer::DemuxerContext;
+use base::chrono;
+use base::chrono::SecondsFormat;
+use log::{debug, info, warn};
+use rsmpeg::ffi::*;
+use std::ptr;
 
 /// 常见兼容的 H.264 codec 映射表
 const H264_CODEC_MAP: &[(u32, &str)] = &[
-    (66, "avc1.42E01E"),   // Baseline Profile, level 3.0
-    (77, "avc1.4D0029"),   // Main Profile, level 4.1 (最常用)
-    (100, "avc1.640028"),  // High Profile, level 4.0
-    (110, "avc1.6E0028"),  // High 10 Profile
-    (122, "avc1.7A0028"),  // High 4:2:2 Profile
-    (144, "avc1.900028"),  // High 4:4:4 Profile
+    (66, "avc1.42E01E"),  // Baseline Profile, level 3.0
+    (77, "avc1.4D0029"),  // Main Profile, level 4.1 (最常用)
+    (100, "avc1.640028"), // High Profile, level 4.0
+    (110, "avc1.6E0028"), // High 10 Profile
+    (122, "avc1.7A0028"), // High 4:2:2 Profile
+    (144, "avc1.900028"), // High 4:4:4 Profile
 ];
 
 /// 默认的 H.264 codec (Main Profile level 4.1)
@@ -94,7 +94,7 @@ unsafe fn parse_video(
         width,
         height,
         frame_rate,
-        timescale: 90000,  // 视频推荐使用 90000
+        timescale: 90000, // 视频推荐使用 90000
         bandwidth,
     })
 }
@@ -129,7 +129,7 @@ unsafe fn parse_audio(codecpar: *mut AVCodecParameters) -> Result<Audio, String>
         codec,
         sample_rate,
         channels,
-        timescale: sample_rate,  // 音频 timescale 使用采样率
+        timescale: sample_rate, // 音频 timescale 使用采样率
         bandwidth,
     })
 }
@@ -158,17 +158,23 @@ unsafe fn get_video_frame_rate(st: *mut AVStream, codecpar: *mut AVCodecParamete
 
     // 方法3: 从 codecpar 的 framerate 获取（某些格式会设置）
     if (*codecpar).framerate.num > 0 && (*codecpar).framerate.den > 0 {
-        let fps = ((*codecpar).framerate.num as f64 / (*codecpar).framerate.den as f64).round() as u32;
+        let fps =
+            ((*codecpar).framerate.num as f64 / (*codecpar).framerate.den as f64).round() as u32;
         if fps > 0 && fps <= 120 {
-            debug!("Using codecpar framerate: {}/{} = {} fps",
-                (*codecpar).framerate.num, (*codecpar).framerate.den, fps);
+            debug!(
+                "Using codecpar framerate: {}/{} = {} fps",
+                (*codecpar).framerate.num,
+                (*codecpar).framerate.den,
+                fps
+            );
             return Some(fps);
         }
     }
 
     // 方法4: 对于 H.264/H.265，使用默认监控设备帧率
     if (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_H264
-        || (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_HEVC {
+        || (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_HEVC
+    {
         debug!("Using default surveillance fps: 25");
         return Some(25);
     }
@@ -195,7 +201,10 @@ unsafe fn get_h264_codec_string(codecpar: *mut AVCodecParameters) -> Result<Stri
         // 根据 profile 选择对应的标准 codec 字符串
         for &(p, codec) in H264_CODEC_MAP {
             if p == profile as u32 {
-                debug!("H.264 codec from profile map: profile={}, codec={}", profile, codec);
+                debug!(
+                    "H.264 codec from profile map: profile={}, codec={}",
+                    profile, codec
+                );
                 return Ok(codec.to_string());
             }
         }
@@ -207,7 +216,10 @@ unsafe fn get_h264_codec_string(codecpar: *mut AVCodecParameters) -> Result<Stri
             100..=109 => "avc1.640028", // High 范围
             _ => DEFAULT_H264_CODEC,
         };
-        debug!("H.264 codec from profile range: profile={}, codec={}", profile, codec);
+        debug!(
+            "H.264 codec from profile range: profile={}, codec={}",
+            profile, codec
+        );
         return Ok(codec.to_string());
     }
 
@@ -217,10 +229,8 @@ unsafe fn get_h264_codec_string(codecpar: *mut AVCodecParameters) -> Result<Stri
         return Ok(DEFAULT_H264_CODEC.to_string());
     }
 
-    let data = std::slice::from_raw_parts(
-        (*codecpar).extradata,
-        (*codecpar).extradata_size as usize,
-    );
+    let data =
+        std::slice::from_raw_parts((*codecpar).extradata, (*codecpar).extradata_size as usize);
 
     // 判断 extradata 格式
     if data.len() >= 8 && data[0] == 1 {
@@ -260,7 +270,11 @@ unsafe fn parse_h264_from_annexb(data: &[u8]) -> Result<String, String> {
     while i + 4 < data.len() {
         // 查找 start code
         if data[i..].starts_with(&[0, 0, 0, 1]) || data[i..].starts_with(&[0, 0, 1]) {
-            let start_len = if data[i..].starts_with(&[0, 0, 0, 1]) { 4 } else { 3 };
+            let start_len = if data[i..].starts_with(&[0, 0, 0, 1]) {
+                4
+            } else {
+                3
+            };
             let nalu_start = i + start_len;
 
             // 找到 NALU 类型
@@ -336,9 +350,9 @@ unsafe fn get_hevc_codec_string(codecpar: *mut AVCodecParameters) -> Result<Stri
 
     if profile > 0 && level > 0 {
         let profile_space = match profile {
-            1 => "1",   // Main
-            2 => "2",   // Main 10
-            3 => "3",   // Main Still Picture
+            1 => "1", // Main
+            2 => "2", // Main 10
+            3 => "3", // Main Still Picture
             _ => "1",
         };
 
@@ -359,12 +373,12 @@ unsafe fn get_audio_codec_string(codecpar: *mut AVCodecParameters) -> Result<Str
             // AAC 有多种 profile
             let profile = (*codecpar).profile;
             let aac_profile = match profile {
-                1 => "2",   // AAC LC
-                2 => "5",   // AAC HE (SBR)
-                3 => "5",   // AAC HE v2
-                4 => "29",  // AAC LD
-                5 => "39",  // AAC ELD
-                _ => "2",   // 默认 AAC LC
+                1 => "2",  // AAC LC
+                2 => "5",  // AAC HE (SBR)
+                3 => "5",  // AAC HE v2
+                4 => "29", // AAC LD
+                5 => "39", // AAC ELD
+                _ => "2",  // 默认 AAC LC
             };
 
             Ok(format!("mp4a.40.{}", aac_profile))
@@ -381,27 +395,31 @@ unsafe fn get_audio_codec_string(codecpar: *mut AVCodecParameters) -> Result<Str
 fn estimate_video_bandwidth(width: u32, height: u32, fps: u32) -> u32 {
     let pixels = width * height;
     let bitrate = match pixels {
-        p if p >= 1920 * 1080 => { // 1080p
+        p if p >= 1920 * 1080 => {
+            // 1080p
             match fps {
-                f if f >= 50 => 8_000_000,  // 8 Mbps for 50fps+
-                f if f >= 25 => 4_000_000,  // 4 Mbps for 25-30fps
+                f if f >= 50 => 8_000_000, // 8 Mbps for 50fps+
+                f if f >= 25 => 4_000_000, // 4 Mbps for 25-30fps
                 _ => 2_000_000,
             }
         }
-        p if p >= 1280 * 720 => { // 720p
+        p if p >= 1280 * 720 => {
+            // 720p
             match fps {
                 f if f >= 50 => 4_000_000,
                 f if f >= 25 => 2_500_000,
                 _ => 1_500_000,
             }
         }
-        p if p >= 720 * 576 => { // D1
+        p if p >= 720 * 576 => {
+            // D1
             match fps {
                 f if f >= 25 => 1_500_000,
                 _ => 1_000_000,
             }
         }
-        p if p >= 352 * 288 => { // CIF
+        p if p >= 352 * 288 => {
+            // CIF
             512_000
         }
         _ => 384_000,
@@ -415,21 +433,22 @@ fn estimate_audio_bandwidth(sample_rate: u32, channels: u32) -> u32 {
     match sample_rate {
         sr if sr >= 48000 => {
             if channels >= 2 {
-                192_000  // 48kHz stereo
+                192_000 // 48kHz stereo
             } else {
-                96_000   // 48kHz mono
+                96_000 // 48kHz mono
             }
         }
         sr if sr >= 44100 => {
             if channels >= 2 {
-                128_000  // 44.1kHz stereo
+                128_000 // 44.1kHz stereo
             } else {
-                64_000   // 44.1kHz mono
+                64_000 // 44.1kHz mono
             }
         }
         sr if sr >= 16000 => 32_000,
         _ => 24_000,
-    }.min(256_000)
+    }
+    .min(256_000)
 }
 
 /// 调试辅助：打印 codec 信息
@@ -473,9 +492,21 @@ pub unsafe fn dump_stream_info(ctx: &DemuxerContext) {
                 info!("  Profile: {}", (*codecpar).profile);
                 info!("  Level: {}", (*codecpar).level);
                 info!("  format: {}", (*codecpar).format);
-                info!("  avg_frame_rate: {}/{}", (*st).avg_frame_rate.num, (*st).avg_frame_rate.den);
-                info!("  r_frame_rate: {}/{}", (*st).r_frame_rate.num, (*st).r_frame_rate.den);
-                info!("  time_base: {}/{}", (*st).time_base.num, (*st).time_base.den);
+                info!(
+                    "  avg_frame_rate: {}/{}",
+                    (*st).avg_frame_rate.num,
+                    (*st).avg_frame_rate.den
+                );
+                info!(
+                    "  r_frame_rate: {}/{}",
+                    (*st).r_frame_rate.num,
+                    (*st).r_frame_rate.den
+                );
+                info!(
+                    "  time_base: {}/{}",
+                    (*st).time_base.num,
+                    (*st).time_base.den
+                );
                 info!("  duration: {}", (*st).duration);
                 info!("  start time: {}", (*st).start_time);
                 info!("  Extradata size: {}", (*codecpar).extradata_size);
@@ -486,7 +517,11 @@ pub unsafe fn dump_stream_info(ctx: &DemuxerContext) {
                 info!("  Sample Rate: {} Hz", (*codecpar).sample_rate);
                 info!("  Channels: {}", (*codecpar).channels);
                 info!("  Profile: {}", (*codecpar).profile);
-                info!("  time_base: {}/{}", (*st).time_base.num, (*st).time_base.den);
+                info!(
+                    "  time_base: {}/{}",
+                    (*st).time_base.num,
+                    (*st).time_base.den
+                );
             }
             _ => {}
         }

@@ -82,16 +82,16 @@ pub struct StreamPlayInfo {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub enum InTimeoutEventRes {
-    KeepAlive,//保活ssrc所有资源，进入下次超时扫码;
-    CloseAll//关闭释放ssrc所有资源;
+    KeepAlive, //保活ssrc所有资源，进入下次超时扫码;
+    CloseAll,  //关闭释放ssrc所有资源;
 }
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub enum OutputEventRes {
-    KeepMuxer,//保留ssrc当前输出格式资源;
-    CloseMuxer,//关闭释放ssrc当前输出格式资源;
-    CloseAll//关闭释放ssrc所有资源;
+    KeepMuxer,  //保留ssrc当前输出格式资源;
+    CloseMuxer, //关闭释放ssrc当前输出格式资源;
+    CloseAll,   //关闭释放ssrc所有资源;
 }
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(New, Serialize, Deserialize, Debug)]

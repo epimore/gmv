@@ -11,7 +11,6 @@ pub struct Network {
     pub net_device_map: DashMap<Association, Arc<str>>,
 }
 impl Network {
-
     /// 核心方法：更新网络三元组 → 设备映射，处理设备顶替逻辑
     /// 返回被顶替的旧设备 ID（若有）
     pub(crate) fn update_net_device_mapping(
@@ -38,7 +37,11 @@ impl Network {
     }
 
     /// 清理指定设备的旧网络映射（如果存在）
-    pub(crate) fn remove_device_mapping(&self, device_id: &Arc<str>, old_association: &Association) {
+    pub(crate) fn remove_device_mapping(
+        &self,
+        device_id: &Arc<str>,
+        old_association: &Association,
+    ) {
         // 仅当旧三元组仍指向本设备时才清理
         if let Some(mapped_id) = self.net_device_map.get(old_association) {
             if *mapped_id == *device_id {

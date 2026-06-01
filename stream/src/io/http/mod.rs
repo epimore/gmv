@@ -2,18 +2,21 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::err::{BaseErrorCode, CodeOutErr};
+use base::exception::{BizError, GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
+use base::serde::Serialize;
 use base::tokio::net::TcpListener;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio_util::sync::CancellationToken;
+use shared::info::res::Resp;
 use std::net::SocketAddr;
 
 mod api;
 pub mod call;
-mod out;
 #[cfg(debug_assertions)]
 mod doc;
+mod out;
 
 pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
     let listener =
@@ -39,7 +42,7 @@ pub async fn run(
         use utoipa_swagger_ui::SwaggerUi;
         app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
     }
-    
+
     let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -78,4 +81,16 @@ pub fn res_500() -> Response<Body> {
         .status(StatusCode::INTERNAL_SERVER_ERROR)
         .body(Body::from("500 Internal Server Error"))
         .unwrap()
+}
+
+pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {
+    let code = match &err {
+        GlobalError::BizErr(BizError { code, .. }) => *code,
+        GlobalError::SysErr(_) => BaseErrorCode::Internal.code(),
+    };
+    Resp::build_failed_code(code, err.out_err().into_owned())
+}
+
+pub fn res_by_code<T: Serialize>(code: BaseErrorCode) -> Resp<T> {
+    Resp::build_failed_code(code.code(), code.out_msg())
 }

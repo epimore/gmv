@@ -1,5 +1,7 @@
+use base::bytes::Bytes;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
+use futures_core::Stream;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -8,8 +10,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::thread::sleep;
 use std::time::Duration;
-use base::bytes::Bytes;
-use futures_core::Stream;
 
 static INDEX: AtomicUsize = AtomicUsize::new(0);
 
@@ -18,10 +18,16 @@ pub fn dump(file_name: &str, data: &[u8], seq: bool) -> GlobalResult<()> {
     std::fs::create_dir_all(path).hand_log(|msg| error!("{msg}"))?;
     if seq {
         let i = INDEX.fetch_add(1, Ordering::SeqCst);
-        let mut f = File::create(format!("{path}/{file_name}-{i}.bin")).hand_log(|msg| error!("{msg}"))?;
+        let mut f =
+            File::create(format!("{path}/{file_name}-{i}.bin")).hand_log(|msg| error!("{msg}"))?;
         f.write_all(data).hand_log(|msg| error!("{msg}"))?;
     } else {
-        let mut f = OpenOptions::new().create(true).write(true).append(true).open(format!("{path}/{file_name}.bin")).hand_log(|msg| error!("{msg}"))?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open(format!("{path}/{file_name}.bin"))
+            .hand_log(|msg| error!("{msg}"))?;
         f.write_all(data).hand_log(|msg| error!("{msg}"))?;
     }
     Ok(())
@@ -38,10 +44,7 @@ where
 {
     type Item = Result<Bytes, std::convert::Infallible>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(bytes))) => {
                 // dump(self.name, &bytes, false).ok();

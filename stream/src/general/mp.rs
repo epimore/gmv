@@ -1,7 +1,7 @@
 use base::chrono::{DateTime, Local};
 
 pub struct MediaParam {
-    pub start_time:  DateTime<Local>,
+    pub start_time: DateTime<Local>,
     pub video: Option<Video>,
     pub audio: Option<Audio>,
 }

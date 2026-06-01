@@ -1,14 +1,14 @@
 #![allow(warnings)]
-use base::daemon;
 use crate::app::AppInfo;
-pub mod storage;
-pub mod gb;
-pub mod state;
-mod service;
-pub mod utils;
+use base::daemon;
 mod app;
+pub mod gb;
 mod http;
 pub mod register;
+mod service;
+pub mod state;
+pub mod storage;
+pub mod utils;
 
 fn main() {
     daemon::run::<AppInfo, _>();

@@ -1,1 +1,1 @@
-pub struct CodecEvent{}
+pub struct CodecEvent {}

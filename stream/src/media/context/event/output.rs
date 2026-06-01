@@ -1,6 +1,2 @@
-pub struct ConnectedEvent{
-    
-}
-pub struct DisconnectedEvent{
-    
-}
+pub struct ConnectedEvent {}
+pub struct DisconnectedEvent {}

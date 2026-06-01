@@ -1,9 +1,9 @@
+pub mod codec;
+pub mod filter;
+pub mod format;
+mod generator;
 pub mod media_info;
 pub mod media_info_ext;
-pub mod res;
-pub mod format;
-pub mod filter;
-pub mod codec;
 pub mod obj;
-mod generator;
 pub mod output;
+pub mod res;

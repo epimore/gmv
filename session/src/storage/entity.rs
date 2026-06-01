@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use crate::gb::handler::parser;
 use rsip::Request;
+use std::sync::Arc;
 
 use base::chrono::{Local, NaiveDateTime};
 use base::constructor::New;
@@ -133,7 +133,7 @@ pub struct GmvDevice {
     pub register_expires: u32,
     pub register_time: NaiveDateTime,
     pub local_addr: String,
-    pub contact_uri:String,
+    pub contact_uri: String,
     pub enable_lr: u8,
     pub status: u8,
     pub gb_version: Option<String>,

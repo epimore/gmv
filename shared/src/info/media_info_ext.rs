@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use crate::impl_check_empty;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{info, warn};
 use base::serde::{Deserialize, Serialize};
-use crate::impl_check_empty;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 static BITRATE_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
@@ -80,9 +80,10 @@ impl MediaType {
         match s {
             "video" => Ok(MediaType::Video),
             "audio" => Ok(MediaType::Audio),
-            _ => {
-                Err(GlobalError::new_sys_error("unsupported media type", |msg| warn!("{msg}:{}",s)))
-            }
+            _ => Err(GlobalError::new_sys_error(
+                "unsupported media type",
+                |msg| warn!("{msg}:{}", s),
+            )),
         }
     }
 }
@@ -104,28 +105,29 @@ pub struct RtpEncrypt {}
 #[serde(crate = "base::serde")]
 pub struct MediaExt {
     pub rtp_encrypt: Option<RtpEncrypt>,
-    pub type_code: u8, //rtp payload type
-    pub type_name: String, //rtp payload name
-    pub clock_rate: i32, //时钟频率
+    pub type_code: u8,             //rtp payload type
+    pub type_name: String,         //rtp payload name
+    pub clock_rate: i32,           //时钟频率
     pub stream_number: Option<u8>, //gb28181自定义属性，流编号:0-主码流（高清流）1-子码率（标清流）
     pub video_params: VideoParams,
     pub audio_params: AudioParams,
-}impl MediaExt{
-    pub fn codec_from_psm(&self,codec_id:i32){
+}
+impl MediaExt {
+    pub fn codec_from_psm(&self, codec_id: i32) {
         if self.type_code == 96 {
             let codec = match codec_id {
-                0x10 => { "mpeg4" }
-                0x1B => {"h264"}
-                0x80 => {"v.svac"}
-                0x24 => {"h265"}
-                0x90 => {"g711a"}
-                0x91 => {"g711u"}
-                0x92 => {"g7221"}
-                0x93 => {"g7231"}
-                0x99 => {"g729"}
-                0x9B => {"a.svac"}
-                0x0F => {"aac"}
-                _ => {""}
+                0x10 => "mpeg4",
+                0x1B => "h264",
+                0x80 => "v.svac",
+                0x24 => "h265",
+                0x90 => "g711a",
+                0x91 => "g711u",
+                0x92 => "g7221",
+                0x93 => "g7231",
+                0x99 => "g729",
+                0x9B => "a.svac",
+                0x0F => "aac",
+                _ => "",
             };
             info!("codec: {}", codec);
         }
@@ -136,13 +138,16 @@ pub struct MediaExt {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(crate = "base::serde")]
 pub struct VideoParams {
-    pub codec_id: Option<String>,   // AVCodecID (ffi::AVCodecID)
+    pub codec_id: Option<String>,       // AVCodecID (ffi::AVCodecID)
     pub resolution: Option<(i32, i32)>, //(W,H)
-    pub fps: Option<i32>, //帧率
-    pub bitrate_type: Option<String>, //1-固定码率(CBR);2-可变码率(VBR)
-    pub bitrate: Option<i32>, //码率 kbps
+    pub fps: Option<i32>,               //帧率
+    pub bitrate_type: Option<String>,   //1-固定码率(CBR);2-可变码率(VBR)
+    pub bitrate: Option<i32>,           //码率 kbps
 }
-impl_check_empty!(VideoParams,[codec_id,resolution,fps,bitrate_type,bitrate]);
+impl_check_empty!(
+    VideoParams,
+    [codec_id, resolution, fps, bitrate_type, bitrate]
+);
 impl VideoParams {
     pub fn map_video_codec(&mut self, item: &str) {
         match item {
@@ -165,7 +170,9 @@ impl VideoParams {
             "6" => self.resolution = Some((1920, 1080)),
             _ => {
                 if let Some((w, h)) = item.split_once('x') {
-                    if let (Some(width), Some(height)) = (w.parse::<i32>().ok(), h.parse::<i32>().ok()) {
+                    if let (Some(width), Some(height)) =
+                        (w.parse::<i32>().ok(), h.parse::<i32>().ok())
+                    {
                         self.resolution = Some((width, height));
                         return;
                     }
@@ -186,7 +193,9 @@ impl VideoParams {
         match item {
             "1" => self.bitrate_type = Some("CBR".to_string()),
             "2" => self.bitrate_type = Some("VBR".to_string()),
-            _ => { warn!("Unknown bitrate type: {}", item); }
+            _ => {
+                warn!("Unknown bitrate type: {}", item);
+            }
         }
     }
 
@@ -202,13 +211,13 @@ impl VideoParams {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(crate = "base::serde")]
 pub struct AudioParams {
-    pub codec_id: Option<String>,   // AVCodecID (ffi::AVCodecID)
-    pub bitrate: Option<String>, //码率 kbps
+    pub codec_id: Option<String>,    // AVCodecID (ffi::AVCodecID)
+    pub bitrate: Option<String>,     //码率 kbps
     pub sample_rate: Option<String>, //采样率 kHz
     pub channel_count: i32,
     pub clock_rate: i32,
 }
-impl_check_empty!(AudioParams,[codec_id,bitrate,sample_rate]);
+impl_check_empty!(AudioParams, [codec_id, bitrate, sample_rate]);
 impl Default for AudioParams {
     fn default() -> Self {
         Self {

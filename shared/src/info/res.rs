@@ -53,6 +53,14 @@ impl<T: Serialize> Resp<T> {
         }
     }
 
+    pub fn build_failed_code(code: u16, msg: impl Into<String>) -> Self {
+        Self {
+            code,
+            msg: msg.into(),
+            data: None,
+        }
+    }
+
     pub fn build_success_data(data: T) -> Self {
         Self {
             code: 200,

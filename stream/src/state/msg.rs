@@ -4,7 +4,6 @@ use crate::state::layer::converter_layer::ConverterLayer;
 use base::bus::mpsc::TypedReceiver;
 use shared::info::media_info_ext::MediaExt;
 
-
 pub struct StreamConfig {
     pub converter: ConverterLayer,
     pub context_event_rx: TypedReceiver<ContextEvent>,

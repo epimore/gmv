@@ -1,4 +1,2 @@
 //transaction
-pub struct TransactionCtx{
-
-}
+pub struct TransactionCtx {}

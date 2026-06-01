@@ -4,13 +4,14 @@ use crate::media::context::filter::FilterContext;
 use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::dashmp4::DashCmafMp4Context;
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::flv::FlvSupperCtx;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::MuxerContext;
 use crate::media::context::utils::codecpar::repair_basic_stream_info;
 use crate::media::context::utils::extradata::dump_stream_info;
 use crate::media::context::utils::time_scale::{
-    repair_missing_timestamps, ProcessResult, TimelineNormalizer,
+    ProcessResult, TimelineNormalizer, repair_missing_timestamps,
 };
 use crate::media::rtp::RtpPacketBuffer;
 use crate::state::layer::muxer_layer::MuxerLayer;
@@ -23,8 +24,7 @@ use base::exception::{BizError, GlobalError, GlobalResult};
 use log::{error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO,
-    AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
+    AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
 };
 use rsmpeg::ffi::{AVMediaType, AVPacket};
 use shared::info::media_info_ext::MediaExt;
@@ -32,7 +32,6 @@ use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::Arc;
 use std::time::Instant;
-use crate::media::context::format::flv::FlvSupperCtx;
 
 mod codec;
 pub mod event;
@@ -392,8 +391,12 @@ impl MediaContext {
         let muxer = &mut self.muxer_context;
         if let Some(context) = &mut muxer.flv {
             match context {
-                FlvSupperCtx::FlvCtx(context) => {let _ = context.write_packet(pkt, ts);}
-                FlvSupperCtx::H265FlvCtx(context) => {let _ = context.write_packet(pkt, ts);}
+                FlvSupperCtx::FlvCtx(context) => {
+                    let _ = context.write_packet(pkt, ts);
+                }
+                FlvSupperCtx::H265FlvCtx(context) => {
+                    let _ = context.write_packet(pkt, ts);
+                }
             }
         }
         if let Some(context) = &mut muxer.mp4 {
@@ -436,8 +439,12 @@ impl MediaContext {
     fn handle_pkt_muxer_end(muxer: &mut MuxerContext) {
         if let Some(context) = &mut muxer.flv {
             match context {
-                FlvSupperCtx::FlvCtx(context) => { context.flush();}
-                FlvSupperCtx::H265FlvCtx(context) => { context.flush();}
+                FlvSupperCtx::FlvCtx(context) => {
+                    context.flush();
+                }
+                FlvSupperCtx::H265FlvCtx(context) => {
+                    context.flush();
+                }
             }
         }
         if let Some(context) = &mut muxer.mp4 {

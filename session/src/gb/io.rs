@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
 use base::bytes::{Bytes, BytesMut};
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use encoding_rs::GB18030;
 use rsip::SipMessage;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 pub use crate::gb::core::rw::RWContext;
@@ -90,7 +90,7 @@ pub async fn read(
                     "接收: event code={:?}, from={:?}",
                     event.type_code, event.association
                 );
-                if matches!(event.type_code,IoEventType::Close) {
+                if matches!(event.type_code, IoEventType::Close) {
                     RWContext::clean_rw_session_by_bill(&event.association);
                 }
             }

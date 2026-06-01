@@ -1,4 +1,4 @@
-use crate::http::get_gmv_token;
+use crate::http::{get_gmv_token, res_by_error};
 use crate::state::model::SnapshotImage;
 use crate::{service::edge_serv, utils::edge_token};
 use axum::extract::Path;
@@ -9,7 +9,8 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
-use base::exception::GlobalError;
+use base::err::{BaseErrorCode, CodeOutErr};
+use base::exception::{GlobalError, GlobalResult};
 use base::log::info;
 use base::{bytes::Bytes, log::error};
 use shared::info::res::Resp;
@@ -43,9 +44,9 @@ async fn snapshot_image(headers: HeaderMap, Json(info): Json<SnapshotImage>) -> 
     match get_gmv_token(headers) {
         Ok(_token) => match edge_serv::snapshot_image(info).await {
             Ok(data) => Json(Resp::build_success_data(data)),
-            Err(err) => Json(Resp::build_failed_by_msg(err.to_string())),
+            Err(err) => Json(res_by_error(err)),
         },
-        Err(_) => Json(Resp::build_failed_by_msg("Gmv-Token is invalid")),
+        Err(err) => Json(res_by_error(err)),
     }
 }
 
@@ -82,13 +83,25 @@ async fn upload_picture(
     req: Request,
 ) -> Result<impl IntoResponse, String> {
     info!("upload_picture: token = {:?}", &token);
+    upload_picture_inner(token, headers, params, req)
+        .await
+        .map_err(|err| err.out_err().into_owned())
+}
+
+async fn upload_picture_inner(
+    token: String,
+    headers: HeaderMap,
+    params: HashMap<String, String>,
+    req: Request,
+) -> GlobalResult<&'static str> {
     let session_id = get_param(&params, "SessionID")?;
-    edge_token::check(session_id, &token).map_err(|_| "Invalid token".to_string())?;
+    edge_token::check(session_id, &token)?;
     if !edge_serv::check_pic_token(token) {
-        Err(GlobalError::new_biz_error(1100, "Invalid token", |msg| {
-            error!("{msg}")
-        }))
-        .map_err(|_| "Invalid token".to_string())?;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::Unauthorized.code(),
+            "Invalid token",
+            |msg| error!("{msg}"),
+        ));
     }
     let file_id_opt = params
         .iter()
@@ -96,11 +109,21 @@ async fn upload_picture(
         .map(|(_, value)| value);
     let content_type = headers
         .get("Content-Type")
-        .ok_or_else(|| "Missing Content-Type header".to_string())
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "Missing Content-Type header",
+                |msg| error!("{msg}"),
+            )
+        })
         .and_then(|value| {
-            value
-                .to_str()
-                .map_err(|_| "Invalid Content-Type header".to_string())
+            value.to_str().map_err(|_| {
+                GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidRequest.code(),
+                    "Invalid Content-Type header",
+                    |msg| error!("{msg}"),
+                )
+            })
         })?;
 
     match content_type {
@@ -108,23 +131,26 @@ async fn upload_picture(
             handle_multipart_upload(req, session_id, file_id_opt).await
         }
         ct if ct.starts_with("image/") => handle_binary_upload(req, session_id, file_id_opt).await,
-        _ => {
-            let err = format!(
+        _ => Err(GlobalError::new_biz_error(
+            BaseErrorCode::Unsupported.code(),
+            &format!(
                 "Unsupported Content-Type: {}. Use multipart/form-data or image/*",
                 content_type
-            );
-            error!("{}", err);
-            Err(err)
-        }
+            ),
+            |msg| error!("{msg}"),
+        )),
     }
 }
 
 /// 提取参数字段
-fn get_param<'a>(params: &'a HashMap<String, String>, key: &str) -> Result<&'a str, String> {
-    params
-        .get(key)
-        .map(|s| s.as_str())
-        .ok_or_else(|| format!("Missing `{}`", key))
+fn get_param<'a>(params: &'a HashMap<String, String>, key: &str) -> GlobalResult<&'a str> {
+    params.get(key).map(|s| s.as_str()).ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            &format!("Missing `{}`", key),
+            |msg| error!("{msg}"),
+        )
+    })
 }
 
 /// 处理 multipart/form-data 上传
@@ -132,15 +158,21 @@ async fn handle_multipart_upload(
     req: Request,
     session_id: &str,
     file_id_opt: Option<&String>,
-) -> Result<&'static str, String> {
+) -> GlobalResult<&'static str> {
     let mut multipart = Multipart::from_request(req, &()).await.map_err(|e| {
-        error!("Failed to parse multipart: {}", e);
-        format!("Failed to parse multipart: {}", e)
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            &format!("Failed to parse multipart: {}", e),
+            |msg| error!("{msg}"),
+        )
     })?;
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
-        error!("Failed to get next field: {}", e);
-        format!("Failed to get next field: {}", e)
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            &format!("Failed to get next field: {}", e),
+            |msg| error!("{msg}"),
+        )
     })? {
         let is_image = field
             .content_type()
@@ -150,17 +182,22 @@ async fn handle_multipart_upload(
 
         if is_image && has_filename {
             let data = field.bytes().await.map_err(|e| {
-                error!("Failed to get field bytes: {}", e);
-                format!("Failed to get field bytes: {}", e)
+                GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidRequest.code(),
+                    &format!("Failed to get field bytes: {}", e),
+                    |msg| error!("{msg}"),
+                )
             })?;
-            edge_serv::upload(data, session_id, file_id_opt)
-                .await
-                .map_err(|e| format!("Failed to upload file: {}", e))?;
+            edge_serv::upload(data, session_id, file_id_opt).await?;
             return Ok("File uploaded successfully as form-data");
         }
     }
 
-    Err("No valid image file found in multipart form".to_string())
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::InvalidRequest.code(),
+        "No valid image file found in multipart form",
+        |msg| error!("{msg}"),
+    ))
 }
 
 /// 处理 image/* 二进制上传
@@ -168,15 +205,16 @@ async fn handle_binary_upload(
     req: Request,
     session_id: &str,
     file_id_opt: Option<&String>,
-) -> Result<&'static str, String> {
+) -> GlobalResult<&'static str> {
     let data = Bytes::from_request(req, &()).await.map_err(|e| {
-        error!("Failed to get request body: {}", e);
-        format!("Failed to get request body: {}", e)
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            &format!("Failed to get request body: {}", e),
+            |msg| error!("{msg}"),
+        )
     })?;
 
-    edge_serv::upload(data, session_id, file_id_opt)
-        .await
-        .map_err(|e| format!("Failed to upload file: {}", e))?;
+    edge_serv::upload(data, session_id, file_id_opt).await?;
 
     Ok("File uploaded successfully as binary")
 }

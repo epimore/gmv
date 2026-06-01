@@ -94,13 +94,15 @@ impl Register {
         let arc = Self::get().inner.clone();
 
         let Some(mut session) = arc.io_map.session.get_mut(device_id) else {
-            return Err(GlobalError::new_sys_error("unregistered device keepalive", |msg| {
-                warn!("device_id={device_id}; {msg}")
-            }));
+            return Err(GlobalError::new_sys_error(
+                "unregistered device keepalive",
+                |msg| warn!("device_id={device_id}; {msg}"),
+            ));
         };
 
         if session.association == association {
-            Self::scheduler().refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
+            Self::scheduler()
+                .refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
             return Ok(());
         }
 
@@ -158,8 +160,10 @@ impl Register {
     }
 
     pub fn remove_device_by_inner(device_id: &Arc<str>, inner: &Inner) -> Option<DeviceSession> {
-        let _ = Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
-        let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
+        let _ =
+            Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
+        let _ = Self::scheduler()
+            .remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
 
         if let Some((_, session)) = inner.io_map.session.remove(device_id) {
             if !session.association_expire.load(Ordering::Relaxed) {
@@ -178,9 +182,15 @@ impl Register {
     pub fn remove_device_by_association(association: &Association) -> Option<DeviceSession> {
         let inner = &Self::get().inner;
         let (_, device_id) = inner.io_map.net_device_map.remove(association)?;
-        let _ = Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
-        let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
-        inner.io_map.session.remove(&device_id).map(|(_, session)| session)
+        let _ =
+            Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
+        let _ = Self::scheduler()
+            .remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
+        inner
+            .io_map
+            .session
+            .remove(&device_id)
+            .map(|(_, session)| session)
     }
 
     pub fn get_device_id_by_association(association: &Association) -> Option<Arc<str>> {
@@ -193,8 +203,12 @@ impl Register {
     }
 
     pub fn get_device_session(device_id: &str) -> Option<DeviceSession> {
-        Self::get().inner.io_map.session.get(device_id).map(|item| {
-            DeviceSession {
+        Self::get()
+            .inner
+            .io_map
+            .session
+            .get(device_id)
+            .map(|item| DeviceSession {
                 contact_uri: item.contact_uri.clone(),
                 association: item.association.clone(),
                 association_expire: AtomicBool::new(
@@ -204,8 +218,7 @@ impl Register {
                 heartbeat_sec: item.heartbeat_sec,
                 last_seen: item.last_seen,
                 registration_duration: item.registration_duration,
-            }
-        })
+            })
     }
 
     pub fn has_session(device_id: &str) -> bool {
@@ -214,10 +227,13 @@ impl Register {
 
     pub fn close_tcp_if_needed(session: &DeviceSession) {
         if matches!(session.association.protocol, Protocol::TCP) {
-            let _ = Self::get().inner.io_tx.try_send(Zip::build_event(IoEvent::new(
-                session.association.clone(),
-                IoEventType::Close,
-            )));
+            let _ = Self::get()
+                .inner
+                .io_tx
+                .try_send(Zip::build_event(IoEvent::new(
+                    session.association.clone(),
+                    IoEventType::Close,
+                )));
         }
     }
 

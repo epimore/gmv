@@ -1,4 +1,6 @@
 use crate::gb::depot::SipPackage;
+use crate::register::core::Register;
+use crate::register::core::SERVER_HEART_SECOND;
 use crate::state::runner::Runner;
 use crate::state::schedule;
 use crate::state::schedule::ScheduleTask;
@@ -8,7 +10,7 @@ use base::chrono::Local;
 use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
-use base::net::state::{Zip, CHANNEL_BUFFER_SIZE};
+use base::net::state::{CHANNEL_BUFFER_SIZE, Zip};
 use base::serde::Deserialize;
 use base::tokio::runtime::Handle;
 use base::tokio::sync::{mpsc, oneshot};
@@ -22,8 +24,6 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use crate::register::core::SERVER_HEART_SECOND;
-use crate::register::core::Register;
 
 mod core;
 pub mod depot;
@@ -77,21 +77,21 @@ impl CheckFromConf for SessionConf {
 //     }
 // }
 impl SessionConf {
-    async fn heart_server(){
+    async fn heart_server() {
         let conf = SessionConf::get_session_by_conf();
         let _ = conf.init_to_db().await;
-
     }
-    pub async fn heart_to_db(&self)->GlobalResult<()>{
+    pub async fn heart_to_db(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool();
         let _ = sqlx::query(r#"update GB_SERVER set heart_time=? where domain_id=?"#)
             .bind(Local::now().naive_local())
             .bind(&self.domain_id)
             .execute(pool)
-            .await.hand_log(|msg| error!("{msg}"))?;
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
-    async fn init_to_db(&self)->GlobalResult<()>{
+    async fn init_to_db(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool();
         sqlx::query(r#"insert into GB_SERVER (domain_id,domain,sip_ip,
         sip_port,http_source,status,heart_time,heart_cycle) values (?,?,?,?,?,?,?,?)

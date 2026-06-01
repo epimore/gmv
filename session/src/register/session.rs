@@ -2,10 +2,8 @@
 
 use base::dashmap::DashMap;
 
-pub struct Session{
-    pub call_map:DashMap<u64,Call>
+pub struct Session {
+    pub call_map: DashMap<u64, Call>,
 }
 
-pub enum Call{
-    
-}
+pub enum Call {}

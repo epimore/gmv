@@ -1,8 +1,8 @@
-pub mod rtp{
-    use std::collections::hash_map::Entry;
-    use std::collections::HashMap;
-    use std::net::SocketAddr;
+pub mod rtp {
     use base::bytes::{Buf, BufMut, Bytes, BytesMut};
+    use std::collections::HashMap;
+    use std::collections::hash_map::Entry;
+    use std::net::SocketAddr;
 
     pub struct TcpRtpBuffer {
         //AHashMap ?
@@ -11,10 +11,17 @@ pub mod rtp{
 
     impl TcpRtpBuffer {
         pub fn register_buffer() -> Self {
-            Self { inner: Default::default() }
+            Self {
+                inner: Default::default(),
+            }
         }
 
-        pub fn fresh_data(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr, data: Bytes) -> Vec<Bytes> {
+        pub fn fresh_data(
+            &mut self,
+            local_addr: SocketAddr,
+            remote_addr: SocketAddr,
+            data: Bytes,
+        ) -> Vec<Bytes> {
             match self.inner.entry((local_addr, remote_addr)) {
                 Entry::Occupied(mut occ) => {
                     let buffer = occ.get_mut();
@@ -58,9 +65,9 @@ pub mod rtp{
 
     #[cfg(test)]
     mod test {
+        use base::bytes::{Buf, BytesMut};
         use std::collections::VecDeque;
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-        use base::bytes::{Buf, BytesMut};
 
         #[test]
         fn test_deque_vec() {
@@ -94,11 +101,18 @@ pub mod rtp{
         fn test_tcp_rtp_buffer() {
             let mut buffer = BytesMut::with_capacity(2048);
             buffer.extend_from_slice(&[0x00, 0x10]); // 长度字段：16
-            buffer.extend_from_slice(&[0x90, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00]); // RTP 数据示例
+            buffer.extend_from_slice(&[
+                0x90, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x20, 0x00,
+            ]); // RTP 数据示例
             let data_len = buffer.get_u16() as usize;
             let rtp_data = buffer.split_to(data_len).freeze();
             println!("{:02x?}", rtp_data.to_vec());
-            println!("buffer len: {}, data: {:02x?}", buffer.len(), buffer.to_vec());
+            println!(
+                "buffer len: {}, data: {:02x?}",
+                buffer.len(),
+                buffer.to_vec()
+            );
         }
     }
 }

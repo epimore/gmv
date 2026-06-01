@@ -1,13 +1,20 @@
 use crate::media::context::format::demuxer::DemuxerContext;
-use crate::media::context::format::{write_callback, FmtMuxer, MuxPacket};
-use crate::media::{show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
+use crate::media::context::format::{FmtMuxer, MuxPacket, write_callback};
+use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
-use rsmpeg::ffi::{av_free, av_guess_format, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context, avformat_free_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, av_interleaved_write_frame, AVFormatContext, AVIOContext, AVPacket, AVRational, AVFMT_FLAG_FLUSH_PACKETS, AV_PKT_FLAG_KEY, AVDictionary, av_dict_set, av_dict_free};
-use std::ffi::{c_int, c_void, CString};
+use rsmpeg::ffi::{
+    AV_PKT_FLAG_KEY, AVDictionary, AVFMT_FLAG_FLUSH_PACKETS, AVFormatContext, AVIOContext,
+    AVPacket, AVRational, av_dict_free, av_dict_set, av_free, av_guess_format,
+    av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref,
+    av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context,
+    avformat_free_context, avformat_new_stream, avformat_write_header, avio_alloc_context,
+    avio_context_free,
+};
+use std::ffi::{CString, c_int, c_void};
 use std::ptr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,7 +30,7 @@ pub struct Mp4Context {
     out_buf_ptr: *mut Vec<u8>,
     in_time_bases: Vec<AVRational>,
     out_time_bases: Vec<AVRational>,
-    epoch:Instant
+    epoch: Instant,
 }
 
 impl Drop for Mp4Context {
@@ -259,7 +266,7 @@ impl FmtMuxer for Mp4Context {
         self.header.clone()
     }
 
-    fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) ->GlobalResult<()>{
+    fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) -> GlobalResult<()> {
         unsafe {
             if pkt.size == 0 || pkt.data.is_null() {
                 warn!("Skipping empty or invalid packet");

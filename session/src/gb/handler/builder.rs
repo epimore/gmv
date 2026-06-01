@@ -5,9 +5,7 @@ use rsip::headers::typed;
 use rsip::message::HeadersExt;
 use rsip::param::{OtherParam, OtherParamValue};
 use rsip::prelude::*;
-use rsip::{
-    Error, Header, Method, Param, Request, Response, Uri, header, headers, param, uri,
-};
+use rsip::{Error, Header, Method, Param, Request, Response, Uri, header, headers, param, uri};
 use std::fmt::Write;
 use std::net::SocketAddr;
 use std::ops::Add;
@@ -93,7 +91,10 @@ impl ResponseBuilder {
         })
     }
 
-    pub fn build_register_ok_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<Response> {
+    pub fn build_register_ok_response(
+        req: &Request,
+        socket_addr: &SocketAddr,
+    ) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
         response_header.push(other_header);

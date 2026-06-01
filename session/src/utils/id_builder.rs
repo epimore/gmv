@@ -1,9 +1,10 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-use base::log::error;
-use base::exception::{GlobalError, GlobalResult};
-use base::utils::dig62;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult};
+use base::log::error;
+use base::utils::dig62;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 //生成stream_id,参数由调用方校验,简单对称加密算法
 // device_id 20位十进制纯数字
@@ -12,9 +13,9 @@ use crate::storage::mapper;
 pub fn en_stream_id(device_id: &str, channel_id: &str, ssrc: &str) -> GlobalResult<String> {
     //使用纳秒的后两位生成填充字符串,并取7个字符
     let now = SystemTime::now();
-    let since_the_epoch = now
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}")))?;
+    let since_the_epoch = now.duration_since(UNIX_EPOCH).map_err(|_| {
+        GlobalError::new_sys_error("System time went backwards", |msg| error!("{msg}"))
+    })?;
     let secs = since_the_epoch.as_millis();
     let ori_key = format!("{device_id}{channel_id}{ssrc}{secs}");
     dig62::en(&ori_key)
@@ -25,12 +26,16 @@ pub fn de_stream_id(stream_id: &str) -> GlobalResult<(String, String, String)> {
     let ori_str = dig62::de(stream_id)?;
     if ori_str.len() < 50 {
         return Err(GlobalError::new_biz_error(
-            1100,
+            BaseErrorCode::InvalidRequest.code(),
             "Invalid stream id",
             |msg| error!("{msg}: decoded stream_id too short"),
         ));
     }
-    Ok((ori_str[0..20].to_string(), ori_str[20..40].to_string(), ori_str[40..50].to_string()))
+    Ok((
+        ori_str[0..20].to_string(),
+        ori_str[20..40].to_string(),
+        ori_str[40..50].to_string(),
+    ))
 }
 
 //为十进制整数字符串,表示SSRC值。格式如下:dddddddddd。其中,第1位为历史或实时
@@ -38,18 +43,37 @@ pub fn de_stream_id(stream_id: &str) -> GlobalResult<(String, String, String)> {
 // 识,例如“13010000002000000001”中取数字“10000”;第7位至第10位作为域内媒体流标识,是一个与
 // 当前域内产生的媒体流SSRC值后4位不重复的四位十进制整数
 // 返回(ssrc,stream_id)
-pub async fn build_ssrc_stream_id(device_id: &String, channel_id: &String, num_ssrc: u16, live: bool) -> GlobalResult<(String, String)> {
-    let gmv_oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
-        .ok_or_else(|| GlobalError::new_biz_error(1100, "设备不存在", |msg| error!("{msg}")))?;
+pub async fn build_ssrc_stream_id(
+    device_id: &String,
+    channel_id: &String,
+    num_ssrc: u16,
+    live: bool,
+) -> GlobalResult<(String, String)> {
+    let gmv_oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
+        .await?
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "设备不存在", |msg| {
+                error!("{msg}")
+            })
+        })?;
     //直播：需校验摄像头是否在线；回放：录像机在线即可
     let mut front_live_or_back = 1;
     if live {
-        let channel_status = mapper::get_device_channel_status(device_id, channel_id).await?
-            .ok_or_else(|| GlobalError::new_biz_error(1100, "未知设备", |msg| error!("{msg}")))?;
+        let channel_status = mapper::get_device_channel_status(device_id, channel_id)
+            .await?
+            .ok_or_else(|| {
+                GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "未知设备", |msg| {
+                    error!("{msg}")
+                })
+            })?;
         match &channel_status.to_ascii_uppercase()[..] {
             "OK" | "ON" | "ONLINE" | "ONLY" | "" => {}
             _ => {
-                return Err(GlobalError::new_biz_error(1000, "设备已离线", |msg| error!("{msg}")));
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::Network.code(),
+                    "设备已离线",
+                    |msg| error!("{msg}"),
+                ));
             }
         }
         front_live_or_back = 0;

@@ -101,7 +101,7 @@ impl Event {
                         .await
                         .hand_log(|msg| error!("{msg}"))
                     {
-                        tokio::spawn(async move{
+                        tokio::spawn(async move {
                             Self::hand_out(out, tx, pretend.clone()).await;
                             drop(permit);
                         });
@@ -146,11 +146,7 @@ impl Event {
         }
     }
 
-    async fn hand_out(
-        out_event: OutEvent,
-        tx: Option<Sender<EventRes>>,
-        pretend: HttpTemplate,
-    ) {
+    async fn hand_out(out_event: OutEvent, tx: Option<Sender<EventRes>>, pretend: HttpTemplate) {
         match out_event {
             OutEvent::StreamRegister(rsi) => {
                 info!("Calling stream_register with: {:?}", rsi);
@@ -225,8 +221,7 @@ pub async fn schedule_event(
     mut event_rx: Receiver<(Event, Option<Sender<EventRes>>)>,
     cancel_token: CancellationToken,
 ) {
-    let pretend = HttpClient::template()
-        .expect("Http client template init failed");
+    let pretend = HttpClient::template().expect("Http client template init failed");
     let semaphore = Arc::new(Semaphore::new(MAX_WORKER_POOL));
     loop {
         select! {

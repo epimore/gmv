@@ -13,6 +13,7 @@ use crate::gb::io::send_sip_pkt_out;
 use crate::register::core::Register;
 
 use base::bytes::Bytes;
+use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, warn};
 use base::net::state::{Association, Zip};
@@ -85,9 +86,11 @@ impl Shared {
                         let _ = Register::scheduler().insert_transaction(key, EXPIRE_TTL);
                     } else {
                         let entity = occ.remove();
-                        (entity.cb)(Err(GlobalError::new_biz_error(1000, "response timeout", |msg| {
-                            error!("{msg}")
-                        })));
+                        (entity.cb)(Err(GlobalError::new_biz_error(
+                            BaseErrorCode::Timeout.code(),
+                            "response timeout",
+                            |msg| error!("{msg}"),
+                        )));
                     }
                 }
                 Entry::Vacant(_) => {}

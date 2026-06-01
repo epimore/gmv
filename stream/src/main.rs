@@ -1,11 +1,11 @@
 #![allow(warnings)]
-use base::{daemon};
+use base::daemon;
 
-pub mod io;
-pub mod general;
-pub mod state;
 mod app;
+pub mod general;
+pub mod io;
 mod media;
+pub mod state;
 
 fn main() {
     daemon::run::<app::App, _>();

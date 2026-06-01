@@ -169,7 +169,12 @@ impl TimelineNormalizer {
         codec_id: AVCodecID,
         reorder_delay: i32,
     ) {
-        self.streams[idx] = Some(StreamTimeline::new(m_tp, time_base, codec_id, reorder_delay));
+        self.streams[idx] = Some(StreamTimeline::new(
+            m_tp,
+            time_base,
+            codec_id,
+            reorder_delay,
+        ));
     }
 
     pub fn rescale_global_base_us(&mut self, pts: i64) {

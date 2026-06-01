@@ -49,7 +49,9 @@ async fn stream_register(Json(info): Json<RegisterStreamInfo>) -> Json<Resp<()>>
 ))]
 async fn stream_input_timeout(Json(info): Json<StreamState>) -> Json<Resp<InTimeoutEventRes>> {
     info!("stream_input_timeout = {:?}", &info);
-    Json(Resp::build_success_data(hook_serv::stream_input_timeout(info)))
+    Json(Resp::build_success_data(hook_serv::stream_input_timeout(
+        info,
+    )))
 }
 
 #[cfg_attr(debug_assertions, utoipa::path(

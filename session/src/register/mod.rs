@@ -1,6 +1,6 @@
 pub mod core;
-pub mod schedule;
-mod io;
-mod session;
-mod protocol;
 mod event;
+mod io;
+mod protocol;
+pub mod schedule;
+mod session;

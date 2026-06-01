@@ -131,13 +131,12 @@ impl State {
                         if register_time + TimeDelta::seconds(expires as i64)
                             > Local::now().naive_local()
                         {
-                            let mut device_session =
-                                register::core::DeviceSession::build(
-                                    contact_uri,
-                                    bill.clone(),
-                                    heartbeat,
-                                    std::time::Duration::from_secs(expires as u64),
-                                );
+                            let mut device_session = register::core::DeviceSession::build(
+                                contact_uri,
+                                bill.clone(),
+                                heartbeat,
+                                std::time::Duration::from_secs(expires as u64),
+                            );
                             if lr == 1 {
                                 device_session.enable_lr();
                             }
@@ -149,8 +148,11 @@ impl State {
                             // RWContext::insert(device_id, device_session);
                             //如果设备是离线状态，则更新为在线
                             if online == 0 {
-                                GmvDevice::update_gmv_device_status_by_device_id(device_id.as_ref(), 1)
-                                    .await?;
+                                GmvDevice::update_gmv_device_status_by_device_id(
+                                    device_id.as_ref(),
+                                    1,
+                                )
+                                .await?;
                             }
                             Ok(State::ReCache)
                         } else {
@@ -204,7 +206,7 @@ impl Register {
                         oauth,
                         std::time::Duration::from_secs(expires as u64),
                     )
-                        .await
+                    .await
                 } else {
                     //设备下线
                     Self::logout_ok(&device_id, &req, tx, bill).await
@@ -229,7 +231,8 @@ impl Register {
                                             bill,
                                             oauth,
                                             std::time::Duration::from_secs(expires as u64),
-                                        ).await
+                                        )
+                                        .await
                                     } else {
                                         //注销  设备下线
                                         Self::logout_ok(&device_id, &req, tx, bill).await

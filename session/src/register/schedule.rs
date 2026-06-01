@@ -76,7 +76,8 @@ impl TimeScheduler {
     }
 
     pub fn remove_general_cache(&self, key: &str) -> GlobalResult<()> {
-        self.inner.delete(ScheduleKey::GeneralCache(key.to_string()))
+        self.inner
+            .delete(ScheduleKey::GeneralCache(key.to_string()))
     }
 
     pub async fn next_batch(

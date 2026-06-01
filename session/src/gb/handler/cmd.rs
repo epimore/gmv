@@ -1,9 +1,10 @@
 use crate::gb::core::rw::SipRequestOutput;
-use crate::gb::depot::extract::HeaderItemExt;
 use crate::gb::depot::default_response_callback;
+use crate::gb::depot::extract::HeaderItemExt;
 use crate::gb::handler::builder::RequestBuilder;
 use crate::state::model::{PtzControlModel, TransMode};
 use anyhow::anyhow;
+use base::err::BaseErrorCode;
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
@@ -85,12 +86,12 @@ impl CmdControl {
             device_id, channel_id, num, interval, uri, session_id,
         )
         .await?;
-        let (tx,rx) = oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         let cb = default_response_callback(tx);
         SipRequestOutput::new(device_id, association, request)
             .send(cb)
             .await?;
-        rx.await.hand_log(|msg|error!("{msg}"))?
+        rx.await.hand_log(|msg| error!("{msg}"))?
     }
 }
 
@@ -176,7 +177,7 @@ impl CmdStream {
         response: &Response,
         association: Association,
     ) -> GlobalResult<(String, u32)> {
-        let ack_request = RequestBuilder::build_ack_request_by_response(response,device_id)?;
+        let ack_request = RequestBuilder::build_ack_request_by_response(response, device_id)?;
         let call_id = ack_request.call_id()?.value().to_string();
         let seq = ack_request.seq()?;
         SipRequestOutput::new(device_id, association, ack_request)
@@ -247,7 +248,7 @@ impl CmdStream {
         SipRequestOutput::new(device_id, association.clone(), request)
             .send(cb)
             .await?;
-        let res = rx.await.hand_log(|msg|error!("{msg}"))??;
+        let res = rx.await.hand_log(|msg| error!("{msg}"))??;
         let code = res.status_code.code();
         let code_msg = res.status_code.to_string();
         if code >= 200 && code <= 299 {
@@ -260,9 +261,11 @@ impl CmdStream {
                 return Ok((res, ext, from_tag, to_tag, association));
             }
         }
-        Err(GlobalError::new_biz_error(3000, &code_msg, |msg| {
-            error!("{msg}")
-        }))
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            &code_msg,
+            |msg| error!("{msg}"),
+        ))
     }
 
     fn parse_sdp(sdp: &Vec<u8>) -> GlobalResult<MediaExt> {

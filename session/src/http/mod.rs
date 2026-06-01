@@ -3,20 +3,22 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::Response;
 use base::cfg_lib::conf;
-use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::err::{BaseErrorCode, CodeOutErr};
+use base::exception::{BizError, GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
-use base::serde::Deserialize;
+use base::serde::{Deserialize, Serialize};
 use base::serde_default;
 use base::tokio::net::TcpListener;
 use base::tokio_util::sync::CancellationToken;
+use shared::info::res::Resp;
 use std::net::SocketAddr;
 
 mod api;
 pub mod client;
-mod edge;
-mod hook;
 #[cfg(debug_assertions)]
 mod doc;
+mod edge;
+mod hook;
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
@@ -33,8 +35,16 @@ pub struct Http {
 }
 serde_default!(default_port, u16, 8080);
 serde_default!(default_timeout, u16, 30);
-serde_default!(default_server_name, String, env!("CARGO_PKG_NAME").to_string());
-serde_default!(default_version, String, env!("CARGO_PKG_VERSION").to_string());
+serde_default!(
+    default_server_name,
+    String,
+    env!("CARGO_PKG_NAME").to_string()
+);
+serde_default!(
+    default_version,
+    String,
+    env!("CARGO_PKG_VERSION").to_string()
+);
 impl Http {
     pub fn get_http_by_conf() -> Self {
         Http::conf()
@@ -57,9 +67,9 @@ impl Http {
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         // 创建包含所有路由的统一Router
         let mut app = Router::new()
-            .nest("/edge",edge::routes())
+            .nest("/edge", edge::routes())
             .nest("/hook", hook::routes())
-            .nest("/api",api::routes());
+            .nest("/api", api::routes());
         #[cfg(debug_assertions)]
         {
             use utoipa_swagger_ui::SwaggerUi;
@@ -106,18 +116,34 @@ impl Http {
     }
 }
 
+pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {
+    let code = match &err {
+        GlobalError::BizErr(BizError { code, .. }) => *code,
+        GlobalError::SysErr(_) => BaseErrorCode::Internal.code(),
+    };
+    Resp::build_failed_code(code, err.out_err().into_owned())
+}
+
+pub fn res_by_code<T: Serialize>(code: BaseErrorCode) -> Resp<T> {
+    Resp::build_failed_code(code.code(), code.out_msg())
+}
+
 pub fn get_gmv_token(headers: HeaderMap) -> GlobalResult<String> {
     let header_name = HeaderName::from_static("gmv-token");
     if let Some(value) = headers.get(&header_name) {
         match value.to_str() {
-            Ok(token) => {
-                Ok(token.to_string())
-            }
-            Err(_) => {
-                Err(GlobalError::new_biz_error(1100, "Gmv-Token is invalid", |msg| error!("{}", msg)))
-            }
+            Ok(token) => Ok(token.to_string()),
+            Err(_) => Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unauthorized.code(),
+                "Gmv-Token is invalid",
+                |msg| error!("{}", msg),
+            )),
         }
     } else {
-        Err(GlobalError::new_biz_error(1100, "Gmv-Token not found", |msg| error!("{}", msg)))
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::Unauthorized.code(),
+            "Gmv-Token not found",
+            |msg| error!("{}", msg),
+        ))
     }
 }

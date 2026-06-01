@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base::bytes::Bytes;
 use base::chrono::Local;
+use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio::sync::mpsc;
@@ -36,9 +37,11 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     )
     .await?;
     if !matches!(response.status_code.kind(), StatusCodeKind::Successful) {
-        Err(GlobalError::new_sys_error("snapshot image failed", |msg| {
-            error!("{msg}")
-        }))?
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "snapshot image failed",
+            |msg| error!("{msg}"),
+        ))?
     };
 
     let (tx, mut rx) = mpsc::channel(8);
@@ -53,7 +56,7 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     }
 
     Err(GlobalError::new_biz_error(
-        1100,
+        BaseErrorCode::Timeout.code(),
         "快照失败:设备不支持或响应超时",
         |msg| error!("{msg}"),
     ))?
@@ -89,11 +92,13 @@ pub async fn upload(
         fs::canonicalize(&final_dir).hand_log(|msg| error!("create pics dir failed: {msg}"))?;
     info.abs_path = abs_final_dir
         .to_str()
-        .ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}")))?
+        .ok_or_else(|| {
+            GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}"))
+        })?
         .to_string();
-    let dir_path = final_dir
-        .to_str()
-        .ok_or_else(|| GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}")))?;
+    let dir_path = final_dir.to_str().ok_or_else(|| {
+        GlobalError::new_sys_error("文件存储路径错误", |msg| error!("{msg}"))
+    })?;
     info.dir_path = dir_path.to_string();
 
     let file_name = Path::new(&file_name)
@@ -111,7 +116,9 @@ pub async fn upload(
 
     let img = image::load_from_memory(&bytes).hand_log(|msg| error!("{msg}"))?;
     img.save(&save_path).hand_log(|msg| error!("{msg}"))?;
-    let size = fs::metadata(save_path).hand_log(|msg| error!("{msg}"))?.len();
+    let size = fs::metadata(save_path)
+        .hand_log(|msg| error!("{msg}"))?
+        .len();
     info.file_size = size;
     GmvFileInfo::insert_gmv_file_info(vec![info]).await?;
     Ok(())

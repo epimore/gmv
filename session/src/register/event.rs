@@ -4,8 +4,8 @@ use base::exception::GlobalResultExt;
 use base::log::{error, warn};
 use base::tokio;
 use base::tokio::select;
-use base::tokio::sync::mpsc::Receiver;
 use base::tokio::sync::Semaphore;
+use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
 
 use crate::gb::depot::trans::TransactionContext;

@@ -1,20 +1,26 @@
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::h265flv::H265FlvContext;
+use crate::media::context::format::{FmtMuxer, MuxPacket, write_callback};
+use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::broadcast;
-use rsmpeg::ffi::{av_guess_format, av_malloc, av_packet_ref, av_packet_unref, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free, AVFormatContext, AVIOContext, AVPacket, AVFMT_FLAG_FLUSH_PACKETS, AVRational, AVMediaType_AVMEDIA_TYPE_VIDEO,AVMediaType_AVMEDIA_TYPE_AUDIO, AV_PKT_FLAG_KEY, av_free, av_packet_rescale_ts, av_rescale_q};
-use std::ffi::{c_int, c_void, CString};
+use rsmpeg::ffi::{
+    AV_PKT_FLAG_KEY, AVFMT_FLAG_FLUSH_PACKETS, AVFormatContext, AVIOContext,
+    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational, av_free,
+    av_guess_format, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref, av_rescale_q,
+    avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header,
+    avio_alloc_context, avio_context_free,
+};
+use std::ffi::{CString, c_int, c_void};
 use std::ptr;
 use std::sync::Arc;
 use std::time::Instant;
-use crate::media::{show_ffmpeg_error_msg, DEFAULT_IO_BUF_SIZE};
-use crate::media::context::format::{write_callback, MuxPacket, FmtMuxer};
-use crate::media::context::format::h265flv::H265FlvContext;
 
 static FLV: Lazy<CString> = Lazy::new(|| CString::new("flv").unwrap());
-pub enum FlvSupperCtx{
+pub enum FlvSupperCtx {
     FlvCtx(FlvContext),
     H265FlvCtx(H265FlvContext),
 }
@@ -31,7 +37,7 @@ pub struct FlvContext {
     out_time_bases: Vec<AVRational>,
     video_stream_index: i32,
     started: bool,
-    epoch:Instant
+    epoch: Instant,
 }
 
 impl Drop for FlvContext {
@@ -65,7 +71,10 @@ impl FmtMuxer for FlvContext {
             let io_buf_size = DEFAULT_IO_BUF_SIZE;
             let io_buf = av_malloc(io_buf_size) as *mut u8;
             if io_buf.is_null() {
-                return Err(GlobalError::new_sys_error("Failed to allocate IO buffer", |msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(
+                    "Failed to allocate IO buffer",
+                    |msg| warn!("{msg}"),
+                ));
             }
 
             let out_box: Box<Vec<u8>> = Box::new(Vec::new());
@@ -85,14 +94,20 @@ impl FmtMuxer for FlvContext {
                 av_free(io_buf as *mut c_void);
                 // 回收 out_buf_ptr
                 drop(Box::from_raw(out_buf_ptr));
-                return Err(GlobalError::new_sys_error("Failed to allocate AVIO context", |msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(
+                    "Failed to allocate AVIO context",
+                    |msg| warn!("{msg}"),
+                ));
             }
 
             let out_fmt_ctx = avformat_alloc_context();
             if out_fmt_ctx.is_null() {
                 avio_context_free(&mut (avio_ctx.clone()));
                 drop(Box::from_raw(out_buf_ptr));
-                return Err(GlobalError::new_sys_error("Failed to alloc format context", |msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(
+                    "Failed to alloc format context",
+                    |msg| warn!("{msg}"),
+                ));
             }
             (*out_fmt_ctx).pb = avio_ctx;
             (*out_fmt_ctx).oformat = av_guess_format(FLV.as_ptr(), ptr::null(), ptr::null());
@@ -101,14 +116,20 @@ impl FmtMuxer for FlvContext {
                 avio_context_free(&mut (avio_ctx.clone()));
                 rsmpeg::ffi::avformat_free_context(out_fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
-                return Err(GlobalError::new_sys_error("FLV format not supported", |msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(
+                    "FLV format not supported",
+                    |msg| warn!("{msg}"),
+                ));
             }
 
             if demuxer_context.params.is_empty() {
                 avio_context_free(&mut (avio_ctx.clone()));
                 rsmpeg::ffi::avformat_free_context(out_fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
-                return Err(GlobalError::new_sys_error("No codec parameters available", |msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(
+                    "No codec parameters available",
+                    |msg| warn!("{msg}"),
+                ));
             }
 
             let in_fmt = demuxer_context.avio.fmt_ctx;
@@ -127,7 +148,10 @@ impl FmtMuxer for FlvContext {
                     avio_context_free(&mut (avio_ctx.clone()));
                     rsmpeg::ffi::avformat_free_context(out_fmt_ctx);
                     drop(Box::from_raw(out_buf_ptr));
-                    return Err(GlobalError::new_sys_error("Failed to create stream", |msg| warn!("{msg}")));
+                    return Err(GlobalError::new_sys_error(
+                        "Failed to create stream",
+                        |msg| warn!("{msg}"),
+                    ));
                 }
 
                 let ret = avcodec_parameters_copy((*out_st).codecpar, codecpar);
@@ -135,7 +159,10 @@ impl FmtMuxer for FlvContext {
                     avio_context_free(&mut (avio_ctx.clone()));
                     rsmpeg::ffi::avformat_free_context(out_fmt_ctx);
                     drop(Box::from_raw(out_buf_ptr));
-                    return Err(GlobalError::new_sys_error(&format!("Codecpar copy failed: {}", ret), |msg| warn!("{msg}")));
+                    return Err(GlobalError::new_sys_error(
+                        &format!("Codecpar copy failed: {}", ret),
+                        |msg| warn!("{msg}"),
+                    ));
                 }
 
                 // 根据流类型设置FLV适当的时间基
@@ -147,14 +174,19 @@ impl FmtMuxer for FlvContext {
                     AVMediaType_AVMEDIA_TYPE_AUDIO => {
                         // FLV音频时间基：1/采样率
                         let sample_rate = (*(*out_st).codecpar).sample_rate.max(1);
-                        AVRational { num: 1, den: sample_rate }
+                        AVRational {
+                            num: 1,
+                            den: sample_rate,
+                        }
                     }
-                    _ => (*in_st).time_base // 其他流保持原样
+                    _ => (*in_st).time_base, // 其他流保持原样
                 };
 
                 (*out_st).time_base = out_time_base;
 
-                if (*(*out_st).codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO && video_si < 0 {
+                if (*(*out_st).codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO
+                    && video_si < 0
+                {
                     video_si = i as i32;
                 }
 
@@ -167,7 +199,10 @@ impl FmtMuxer for FlvContext {
                 avio_context_free(&mut (avio_ctx.clone()));
                 rsmpeg::ffi::avformat_free_context(out_fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
-                return Err(GlobalError::new_sys_error("No streams added to muxer", |msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(
+                    "No streams added to muxer",
+                    |msg| warn!("{msg}"),
+                ));
             }
 
             // av_dump_format(fmt_ctx, 0, FLV.as_ptr(), 1);
@@ -177,7 +212,10 @@ impl FmtMuxer for FlvContext {
                 avio_context_free(&mut (avio_ctx.clone()));
                 rsmpeg::ffi::avformat_free_context(out_fmt_ctx);
                 drop(Box::from_raw(out_buf_ptr));
-                return Err(GlobalError::new_sys_error(&format!("FLV header write failed: {}", show_ffmpeg_error_msg(ret)), |msg| warn!("{msg}")));
+                return Err(GlobalError::new_sys_error(
+                    &format!("FLV header write failed: {}", show_ffmpeg_error_msg(ret)),
+                    |msg| warn!("{msg}"),
+                ));
             }
             // for (i, tb) in in_tbs.iter().enumerate() {
             //     info!("FLV init: in_time_base[{}] = {}/{}", i, tb.num, tb.den);
@@ -210,7 +248,7 @@ impl FmtMuxer for FlvContext {
         self.header.clone()
     }
 
-    fn write_packet(&mut self, pkt: &AVPacket,timestamp: u64) ->GlobalResult<()>{
+    fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) -> GlobalResult<()> {
         unsafe {
             if pkt.size == 0 || pkt.data.is_null() {
                 warn!("Skipping empty or invalid packet");
@@ -244,22 +282,21 @@ impl FmtMuxer for FlvContext {
                 }
             }
 
-            debug!("FLV write_packet before rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={} in_tb={}/{} out_tb={}/{}",
-    si,
-    cloned.pts,
-    cloned.dts,
-    cloned.duration,
-    self.in_time_bases[si].num, self.in_time_bases[si].den,
-    self.out_time_bases[si].num, self.out_time_bases[si].den,
-);
+            debug!(
+                "FLV write_packet before rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={} in_tb={}/{} out_tb={}/{}",
+                si,
+                cloned.pts,
+                cloned.dts,
+                cloned.duration,
+                self.in_time_bases[si].num,
+                self.in_time_bases[si].den,
+                self.out_time_bases[si].num,
+                self.out_time_bases[si].den,
+            );
 
             // 时间戳重采样
             let orig_duration = pkt.duration;
-            av_packet_rescale_ts(
-                &mut cloned,
-                self.in_time_bases[si],
-                self.out_time_bases[si],
-            );
+            av_packet_rescale_ts(&mut cloned, self.in_time_bases[si], self.out_time_bases[si]);
             if orig_duration > 0 {
                 cloned.duration = av_rescale_q(
                     orig_duration,
@@ -267,12 +304,10 @@ impl FmtMuxer for FlvContext {
                     self.out_time_bases[si],
                 );
             }
-            debug!("FLV write_packet after rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={}",
-    si,
-    cloned.pts,
-    cloned.dts,
-    cloned.duration,
-);
+            debug!(
+                "FLV write_packet after rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={}",
+                si, cloned.pts, cloned.dts, cloned.duration,
+            );
 
             let ret = rsmpeg::ffi::av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
             av_packet_unref(&mut cloned);
@@ -297,11 +332,16 @@ impl FmtMuxer for FlvContext {
                 && pkt.stream_index == self.video_stream_index
                 && (pkt.flags & AV_PKT_FLAG_KEY as i32 != 0);
 
-            let _ = self.pkt_tx.send(Arc::new(MuxPacket { data, is_key: is_key_out, timestamp, epoch: self.epoch, seq: 0 }));
+            let _ = self.pkt_tx.send(Arc::new(MuxPacket {
+                data,
+                is_key: is_key_out,
+                timestamp,
+                epoch: self.epoch,
+                seq: 0,
+            }));
             Ok(())
         }
     }
 
-    fn flush(&mut self) {
-    }
+    fn flush(&mut self) {}
 }
