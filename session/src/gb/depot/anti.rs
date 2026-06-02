@@ -81,8 +81,8 @@ impl AntiReplayPolicy {
             }
             Method::Bye => {
                 // 结束会话：防止重复结束
-                AntiReplayPolicy::Strict {
-                    cache_ttl: STRICT_POLICY_TTL,
+                AntiReplayPolicy::Loose {
+                    cache_ttl: LOOSE_POLICY_TTL,
                 }
             }
             Method::Cancel => {
@@ -245,6 +245,7 @@ impl AntiReplayContext {
         self.clean();
         let key = request.generate_anti_key(from_network)?;
         let mut shard = self.shard.write();
+        Self::enforce_capacity(&mut shard);
         match shard.anti_map.entry(key) {
             Entry::Occupied(mut occ) => {
                 let (pol, count, res) = occ.get_mut();
@@ -307,6 +308,14 @@ impl AntiReplayContext {
             shard.anti_map.remove(key);
         }
         shard.expire_set = unexpired;
+    }
+    fn enforce_capacity(shard: &mut Shard) {
+        while shard.anti_map.len() >= MAX_ANTI_REPLAY_SIZE {
+            let Some((_, key)) = shard.expire_set.pop_first() else {
+                break;
+            };
+            shard.anti_map.remove(&key);
+        }
     }
     pub fn init() -> Self {
         let shard = Shard {

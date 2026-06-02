@@ -52,8 +52,7 @@ pub struct ResponseBuilder;
 impl ResponseBuilder {
     pub fn build_401_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
-        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
-        response_header.push(other_header);
+        Self::push_gb_version_header(&mut response_header, req);
         Ok(rsip::Response {
             status_code: 401.into(),
             headers: response_header,
@@ -65,10 +64,10 @@ impl ResponseBuilder {
     pub fn unauthorized_register_response(
         req: &Request,
         socket_addr: &SocketAddr,
+        nonce: String,
     ) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
-        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
-        response_header.push(other_header);
+        Self::push_gb_version_header(&mut response_header, req);
         response_header.push(
             typed::WwwAuthenticate {
                 realm: format!(
@@ -78,7 +77,7 @@ impl ResponseBuilder {
                 ),
                 algorithm: Some(headers::auth::Algorithm::Md5),
                 qop: Some(headers::auth::Qop::Auth),
-                nonce: Uuid::new_v4().as_simple().to_string(),
+                nonce,
                 ..Default::default()
             }
             .into(),
@@ -94,10 +93,13 @@ impl ResponseBuilder {
     pub fn build_register_ok_response(
         req: &Request,
         socket_addr: &SocketAddr,
+        expires: u32,
     ) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
-        let other_header = Header::Other(String::from("X-GB-Ver"), String::from("3.0"));
-        response_header.push(other_header);
+        response_header.retain(|header| !matches!(header, Header::Contact(_)));
+        response_header.push(Self::build_contact_with_expires(req, expires)?.into());
+        response_header.push(rsip::headers::Expires::new(expires.to_string()).into());
+        Self::push_gb_version_header(&mut response_header, req);
         Ok(rsip::Response {
             status_code: 200.into(),
             headers: response_header,
@@ -115,15 +117,36 @@ impl ResponseBuilder {
         })
     }
 
+    pub fn build_status_response(
+        req: &Request,
+        socket_addr: &SocketAddr,
+        status_code: u16,
+    ) -> GlobalResult<Response> {
+        let response_header = Self::build_response_header(req, socket_addr)?;
+        Ok(rsip::Response {
+            status_code: status_code.into(),
+            headers: response_header,
+            version: rsip::Version::V2,
+            body: Default::default(),
+        })
+    }
+
     pub fn build_logout_ok_response(
         req: &Request,
         socket_addr: &SocketAddr,
     ) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
+        response_header.retain(|header| !matches!(header, Header::Contact(_)));
+        match Self::build_contact_with_expires(req, 0) {
+            Ok(contact) => response_header.push(contact.into()),
+            Err(err) => warn!("build logout contact failed: {err}"),
+        }
+        response_header.push(rsip::headers::Expires::new("0".to_string()).into());
         let now = Local::now();
         let date = now.format("%Y-%m-%dT%H:%M:%S").to_string();
         let date_header = rsip::headers::date::Date::new(date);
         response_header.push(date_header.into());
+        Self::push_gb_version_header(&mut response_header, req);
         Ok(rsip::Response {
             status_code: 200.into(),
             headers: response_header,
@@ -163,16 +186,15 @@ impl ResponseBuilder {
                 .into(),
         );
 
-        let to = req
-            .to_header()
-            .hand_log(|msg| warn!("{msg}"))?
-            .typed()
-            .hand_log(|msg| warn!("{msg}"))?;
-        let to = to.with_tag(
-            Alphanumeric
-                .sample_string(&mut rand::thread_rng(), 16)
-                .into(),
-        );
+        let to_header = req.to_header().hand_log(|msg| warn!("{msg}"))?;
+        let mut to = to_header.typed().hand_log(|msg| warn!("{msg}"))?;
+        if to_header.tag().hand_log(|msg| warn!("{msg}"))?.is_none() {
+            to = to.with_tag(
+                Alphanumeric
+                    .sample_string(&mut rand::thread_rng(), 16)
+                    .into(),
+            );
+        }
         headers.push(to.into());
         headers.push(
             req.call_id_header()
@@ -188,18 +210,25 @@ impl ResponseBuilder {
         );
         headers.push(Header::ContentLength(Default::default()));
         headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
-        let conf = SessionConf::get_session_by_conf();
-        let server_ip = &conf.wan_ip.to_string();
-        let server_port = conf.wan_port;
-        let domain_id = parser::header::get_device_id_by_request(req)?;
-        headers.push(
-            rsip::headers::Contact::new(format!(
-                "<sip:{}@{}:{}>",
-                domain_id, server_ip, server_port
-            ))
-            .into(),
-        );
         Ok(headers)
+    }
+
+    fn build_contact_with_expires(
+        req: &Request,
+        expires: u32,
+    ) -> GlobalResult<rsip::headers::Contact> {
+        let mut contact = req.contact_header().hand_log(|msg| warn!("{msg}"))?.clone();
+        let mut params = contact.params().hand_log(|msg| warn!("{msg}"))?;
+        params.retain(|param| !matches!(param, Param::Expires(_)));
+        params.push(Param::Expires(param::Expires::from(expires.to_string())));
+        contact = contact.with_params(params).hand_log(|msg| warn!("{msg}"))?;
+        Ok(contact)
+    }
+
+    fn push_gb_version_header(headers: &mut rsip::Headers, req: &Request) {
+        if let Some(gb_version) = parser::header::get_gb_version(req) {
+            headers.push(Header::Other(String::from("X-GB-Ver"), gb_version));
+        }
     }
 }
 
@@ -533,7 +562,7 @@ impl RequestBuilder {
         res: &Response,
         device_id: &String,
     ) -> GlobalResult<Request> {
-        let (uri_str, _association, _lr) = RWContext::get_ds_by_device_id(device_id)
+        let (uri_str, association, _lr) = RWContext::get_ds_by_device_id(device_id)
             .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
             .hand_log(|msg| warn!("{msg}"))?;
         let conf = SessionConf::get_session_by_conf();
@@ -554,16 +583,12 @@ impl RequestBuilder {
                 .clone()
                 .into(),
         );
-        let via: typed::Via = res
-            .via_header()
-            .hand_log(|msg| warn!("{msg}"))?
-            .typed()
-            .hand_log(|msg| warn!("{msg}"))?;
+        let transport = association.protocol.get_value();
         headers.push(
             rsip::headers::Via::new(format!(
                 "SIP/2.0/{} {};rport;branch=z9hG4bK{}",
-                via.transport.to_string(),
-                via.uri.to_string(),
+                transport,
+                format!("{}:{}", server_ip, server_port),
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
             ))
             .into(),
@@ -574,7 +599,7 @@ impl RequestBuilder {
             .seq()
             .hand_log(|msg| warn!("{msg}"))?;
         headers.push(rsip::headers::CSeq::new(format!("{seq} ACK")).into());
-        let domain_id = parser::header::get_device_id_by_response(res)?;
+        let domain_id = conf.domain_id;
 
         let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
         headers.push(

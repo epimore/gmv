@@ -125,22 +125,30 @@ impl Register {
     pub fn register_device(device_id: Arc<str>, ds: DeviceSession) -> GlobalResult<()> {
         let arc = Self::get().inner.clone();
 
-        if let Some(previous_session) = Self::remove_device_by_inner(&device_id, &arc) {
-            Self::close_tcp_if_needed(&previous_session);
+        let previous_session = Self::remove_device_by_inner(&device_id, &arc);
+        let association_changed = previous_session
+            .as_ref()
+            .is_some_and(|previous_session| previous_session.association != ds.association);
+        if let Some(previous_session) = previous_session {
+            if association_changed {
+                Self::close_tcp_if_needed(&previous_session);
+            }
         }
-        for stream in GeneralCache::reset_device_state(device_id.as_ref()) {
-            let device_id = device_id.to_string();
-            base::tokio::spawn(async move {
-                let _ = CmdStream::play_bye(
-                    stream.seq,
-                    stream.call_id,
-                    &device_id,
-                    &stream.channel_id,
-                    &stream.from_tag,
-                    &stream.to_tag,
-                )
-                .await;
-            });
+        if association_changed {
+            for stream in GeneralCache::reset_device_state(device_id.as_ref()) {
+                let device_id = device_id.to_string();
+                base::tokio::spawn(async move {
+                    let _ = CmdStream::play_bye(
+                        stream.seq,
+                        stream.call_id,
+                        &device_id,
+                        &stream.channel_id,
+                        &stream.from_tag,
+                        &stream.to_tag,
+                    )
+                    .await;
+                });
+            }
         }
 
         let expires = Duration::from_secs((ds.heartbeat_sec * 3) as u64);

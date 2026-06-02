@@ -28,3 +28,6 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
 [profile.dev]
 debug = true
 opt-level = 0
+
+[patch."https://github.com/epimore/pigs.git"]
+base = { path = "../pigs/base" }

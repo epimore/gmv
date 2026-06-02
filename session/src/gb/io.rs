@@ -1,7 +1,10 @@
 use base::bytes::{Bytes, BytesMut};
+use base::dashmap::DashMap;
+use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use encoding_rs::GB18030;
 use rsip::SipMessage;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -46,8 +49,8 @@ pub async fn read(
     cancel_token: CancellationToken,
     ctx: Arc<DepotContext>,
 ) {
-    let mut buffer = BytesMut::new();
-    let mut pks = VecDeque::new();
+    let mut tcp_buffers: HashMap<Association, BytesMut> = HashMap::new();
+    let request_locks: Arc<DashMap<Association, Arc<AsyncMutex<()>>>> = Arc::new(DashMap::new());
     while let Some(zip) = input.recv().await {
         if cancel_token.is_cancelled() {
             break;
@@ -62,8 +65,16 @@ pub async fn read(
                     continue;
                 }
                 if let Protocol::TCP = association.protocol {
-                    buffer.extend_from_slice(&data);
-                    complete_pkt(&mut buffer, &mut pks);
+                    let mut pks = VecDeque::new();
+                    let buffer_empty = {
+                        let buffer = tcp_buffers.entry(association.clone()).or_default();
+                        buffer.extend_from_slice(&data);
+                        complete_pkt(buffer, &mut pks);
+                        buffer.is_empty()
+                    };
+                    if buffer_empty {
+                        tcp_buffers.remove(&association);
+                    }
                     while let Some(data) = pks.pop_front() {
                         hand_pkt(
                             data,
@@ -71,6 +82,7 @@ pub async fn read(
                             &association,
                             sip_pkg_tx.clone(),
                             ctx.clone(),
+                            request_locks.clone(),
                         )
                         .await;
                     }
@@ -81,6 +93,7 @@ pub async fn read(
                         &association,
                         sip_pkg_tx.clone(),
                         ctx.clone(),
+                        request_locks.clone(),
                     )
                     .await;
                 }
@@ -91,6 +104,8 @@ pub async fn read(
                     event.type_code, event.association
                 );
                 if matches!(event.type_code, IoEventType::Close) {
+                    tcp_buffers.remove(&event.association);
+                    request_locks.remove(&event.association);
                     RWContext::clean_rw_session_by_bill(&event.association);
                 }
             }
@@ -103,6 +118,7 @@ async fn hand_pkt(
     association: &Association,
     sip_pkg_tx: Sender<SipPackage>,
     ctx: Arc<DepotContext>,
+    request_locks: Arc<DashMap<Association, Arc<AsyncMutex<()>>>>,
 ) {
     match SipMessage::try_from(data) {
         Ok(msg) => {
@@ -121,7 +137,12 @@ async fn hand_pkt(
                             .process_request(&output, &req, association.clone())
                     {
                         let association = association.clone();
+                        let request_lock = request_locks
+                            .entry(association.clone())
+                            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                            .clone();
                         tokio::spawn(async move {
+                            let _guard = request_lock.lock().await;
                             let _ = handler::requester::hand_request(req, sip_pkg_tx, association)
                                 .await;
                         });

@@ -79,6 +79,13 @@ pub mod header {
     // }
 
     pub fn get_expires(req: &Request) -> GlobalResult<u32> {
+        if let Ok(contact) = req.contact_header() {
+            match contact.expires() {
+                Ok(Some(expires)) => return expires.seconds().hand_log(|msg| warn!("{msg}")),
+                Ok(None) => {}
+                Err(err) => warn!("parse contact expires failed: {err}"),
+            }
+        }
         let expires = req
             .expires_header()
             .ok_or(SysErr(anyhow!("无参数expires")))
@@ -101,7 +108,7 @@ pub mod header {
         for header in req.headers().iter() {
             match header {
                 Header::Other(key, val) => {
-                    if key.eq("X-GB-Ver") {
+                    if key.eq_ignore_ascii_case("X-GB-Ver") {
                         return Some(val.to_string());
                         // return match &val[..] {
                         //     "1.0" => Some("GB/T 28181—2011".to_string()),

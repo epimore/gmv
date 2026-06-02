@@ -3,7 +3,7 @@ use crate::media::context::format::{FmtMuxer, MuxPacket};
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
 use base::tokio::sync::broadcast::Sender;
-use log::{info, warn};
+use log::{debug, info, warn};
 use rsmpeg::ffi::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -522,7 +522,7 @@ impl H265FlvContext {
 
         tx.send(Arc::new(mux_packet)).map_err(|e| {
             GlobalError::new_sys_error(&format!("Failed to send packet: {}", e), |msg| {
-                warn!("{}", msg)
+                debug!("{}", msg)
             })
         })?;
         Ok(())
