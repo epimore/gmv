@@ -4,6 +4,7 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use crossbeam_channel::Receiver;
 use shared::info::media_info_ext::MediaExt;
+use std::collections::VecDeque;
 use std::ptr;
 
 pub struct RtpPacket {
@@ -131,6 +132,11 @@ pub struct RtpPacketBuffer {
     queue_window: usize,
     packet_rx: Receiver<RtpPacket>,
     remaining: Bytes,
+    ready_aus: VecDeque<Bytes>,
+    au_buffer: BytesMut,
+    au_timestamp: Option<u32>,
+    au_damaged: bool,
+    wait_keyframe: bool,
     payload_kind: PayloadKind,
     h264_fu: Option<BytesMut>,
     h265_fu: Option<BytesMut>,
@@ -143,6 +149,7 @@ impl RtpPacketBuffer {
         packet_rx: Receiver<RtpPacket>,
         media_ext: &MediaExt,
     ) -> GlobalResult<Self> {
+        let payload_kind = PayloadKind::from_media_ext(media_ext);
         let mut buffer = Self {
             ssrc,
             first_read_rtp_sn: u16::MAX,
@@ -151,7 +158,12 @@ impl RtpPacketBuffer {
             queue_window: DEFAULT_QUEUE_WINDOW,
             packet_rx,
             remaining: Default::default(),
-            payload_kind: PayloadKind::from_media_ext(media_ext),
+            ready_aus: VecDeque::new(),
+            au_buffer: BytesMut::new(),
+            au_timestamp: None,
+            au_damaged: false,
+            wait_keyframe: matches!(payload_kind, PayloadKind::H264 | PayloadKind::H265),
+            payload_kind,
             h264_fu: None,
             h265_fu: None,
             aac_adts: AacAdtsConfig::from_media_ext(media_ext),
@@ -181,10 +193,17 @@ impl RtpPacketBuffer {
         if let Some(copy_len) = self.consume_remaining(max_consume_len, buf) {
             return Some(copy_len);
         }
+        if let Some(copy_len) = self.consume_ready_au(max_consume_len, buf) {
+            return Some(copy_len);
+        }
 
         loop {
             let input_closed = !self.reduce_packet();
-            let Some(pkt) = self.take_next_packet(input_closed) else {
+            let Some((pkt, lost_before)) = self.take_next_packet(input_closed) else {
+                if input_closed && self.queue_count == 0 {
+                    self.finish_access_unit(false);
+                    return self.consume_ready_au(max_consume_len, buf);
+                }
                 return None;
             };
             unsafe {
@@ -192,15 +211,185 @@ impl RtpPacketBuffer {
                 (*rtp_state).marker = pkt.marker;
             }
 
-            if let Some(data) = self.depacketize(pkt) {
-                self.remaining = data;
-                return self.consume_remaining(max_consume_len, buf);
+            self.process_packet(pkt, lost_before);
+            if let Some(copy_len) = self.consume_ready_au(max_consume_len, buf) {
+                return Some(copy_len);
             }
 
             if input_closed && self.queue_count == 0 {
+                self.finish_access_unit(false);
+                if let Some(copy_len) = self.consume_ready_au(max_consume_len, buf) {
+                    return Some(copy_len);
+                }
                 return None;
             }
         }
+    }
+
+    fn consume_ready_au(&mut self, max_consume_len: usize, buf: *mut u8) -> Option<usize> {
+        let data = self.ready_aus.pop_front()?;
+        self.remaining = data;
+        self.consume_remaining(max_consume_len, buf)
+    }
+
+    fn process_packet(&mut self, pkt: RtpPacket, lost_before: bool) {
+        match self.payload_kind {
+            PayloadKind::Ps | PayloadKind::Passthrough => {
+                let timestamp = pkt.timestamp;
+                let marker = pkt.marker;
+                if lost_before {
+                    self.mark_packet_loss(timestamp);
+                }
+                self.append_access_unit(timestamp, marker, pkt.payload);
+            }
+            PayloadKind::H264 => {
+                let timestamp = pkt.timestamp;
+                let marker = pkt.marker;
+                if lost_before {
+                    self.mark_packet_loss(timestamp);
+                }
+                if let Some(data) = self.depacketize_h264(pkt.payload.as_ref()) {
+                    self.append_access_unit(timestamp, marker, data);
+                } else if marker {
+                    self.finish_access_unit(true);
+                }
+            }
+            PayloadKind::H265 => {
+                let timestamp = pkt.timestamp;
+                let marker = pkt.marker;
+                if lost_before {
+                    self.mark_packet_loss(timestamp);
+                }
+                if let Some(data) = self.depacketize_h265(pkt.payload.as_ref()) {
+                    self.append_access_unit(timestamp, marker, data);
+                } else if marker {
+                    self.finish_access_unit(true);
+                }
+            }
+            PayloadKind::Aac => {
+                if lost_before {
+                    warn!(
+                        "aac rtp sequence loss; keep next intact packet; ssrc: {}, timestamp: {}",
+                        self.ssrc, pkt.timestamp
+                    );
+                }
+                if let Some(data) = self.depacketize_aac(pkt.payload) {
+                    self.ready_aus.push_back(data);
+                }
+            }
+            PayloadKind::G711 => {
+                if lost_before {
+                    warn!(
+                        "g711 rtp sequence loss; keep next intact packet; ssrc: {}, timestamp: {}",
+                        self.ssrc, pkt.timestamp
+                    );
+                }
+                self.ready_aus.push_back(pkt.payload);
+            }
+        }
+    }
+
+    fn append_access_unit(&mut self, timestamp: u32, marker: bool, data: Bytes) {
+        if self
+            .au_timestamp
+            .is_some_and(|current| current != timestamp)
+        {
+            self.finish_access_unit(false);
+        }
+
+        if self.au_timestamp.is_none() {
+            self.au_timestamp = Some(timestamp);
+        }
+        self.au_buffer.extend_from_slice(data.as_ref());
+
+        if marker {
+            self.finish_access_unit(true);
+        }
+    }
+
+    fn finish_access_unit(&mut self, marker: bool) {
+        if self.au_buffer.is_empty() {
+            self.au_timestamp = None;
+            self.au_damaged = false;
+            return;
+        }
+
+        if self.au_damaged {
+            warn!(
+                "drop damaged rtp access unit; ssrc: {}, timestamp: {:?}, bytes: {}",
+                self.ssrc,
+                self.au_timestamp,
+                self.au_buffer.len()
+            );
+            self.au_buffer.clear();
+            if self.is_raw_video() {
+                self.wait_keyframe = true;
+            }
+        } else {
+            let data = self.au_buffer.split().freeze();
+            if self.should_output_access_unit(data.as_ref()) {
+                self.ready_aus.push_back(data);
+            }
+        }
+
+        self.au_timestamp = None;
+        self.au_damaged = false;
+    }
+
+    fn should_output_access_unit(&mut self, data: &[u8]) -> bool {
+        if !self.is_raw_video() {
+            return true;
+        }
+
+        let keyframe = match self.payload_kind {
+            PayloadKind::H264 => h264_access_unit_has_keyframe(data),
+            PayloadKind::H265 => h265_access_unit_has_keyframe(data),
+            _ => false,
+        };
+
+        if self.wait_keyframe {
+            if keyframe {
+                self.wait_keyframe = false;
+                true
+            } else {
+                debug!(
+                    "drop video access unit while waiting keyframe; ssrc: {}",
+                    self.ssrc
+                );
+                false
+            }
+        } else {
+            true
+        }
+    }
+
+    fn mark_packet_loss(&mut self, next_timestamp: u32) {
+        self.reset_fragment_state();
+
+        if self
+            .au_timestamp
+            .is_some_and(|current| current != next_timestamp)
+            && !self.au_buffer.is_empty()
+        {
+            warn!(
+                "drop rtp access unit before sequence loss; ssrc: {}, timestamp: {:?}, bytes: {}",
+                self.ssrc,
+                self.au_timestamp,
+                self.au_buffer.len()
+            );
+            self.au_buffer.clear();
+            self.au_timestamp = Some(next_timestamp);
+            self.au_damaged = false;
+            return;
+        }
+
+        self.au_buffer.clear();
+        self.au_timestamp = Some(next_timestamp);
+        self.au_damaged = true;
+    }
+
+    fn is_raw_video(&self) -> bool {
+        matches!(self.payload_kind, PayloadKind::H264 | PayloadKind::H265)
     }
 
     fn reduce_packet(&mut self) -> bool {
@@ -267,7 +456,7 @@ impl RtpPacketBuffer {
         seq != self.first_read_rtp_sn && self.first_read_rtp_sn.wrapping_sub(seq) < SEQ_HALF_RANGE
     }
 
-    fn take_next_packet(&mut self, input_closed: bool) -> Option<RtpPacket> {
+    fn take_next_packet(&mut self, input_closed: bool) -> Option<(RtpPacket, bool)> {
         if self.queue_count == 0 {
             return None;
         }
@@ -285,12 +474,12 @@ impl RtpPacketBuffer {
             };
 
             self.queue_count -= 1;
-            if offset > 0 {
+            let lost_before = offset > 0;
+            if lost_before {
                 debug!(
                     "rtp packet lost; ssrc: {}, expected seq: {}, next seq: {}, missed: {}",
                     self.ssrc, self.first_read_rtp_sn, pkt.seq, offset
                 );
-                self.reset_fragment_state();
             }
 
             self.first_read_rtp_sn = pkt.seq.wrapping_add(1);
@@ -298,7 +487,7 @@ impl RtpPacketBuffer {
                 self.adjust_queue_window(offset);
             }
 
-            return Some(pkt);
+            return Some((pkt, lost_before));
         }
         None
     }
@@ -323,15 +512,6 @@ impl RtpPacketBuffer {
         }
         self.remaining = data.slice(copy_len..);
         Some(copy_len)
-    }
-
-    fn depacketize(&mut self, pkt: RtpPacket) -> Option<Bytes> {
-        match self.payload_kind {
-            PayloadKind::Ps | PayloadKind::G711 | PayloadKind::Passthrough => Some(pkt.payload),
-            PayloadKind::Aac => self.depacketize_aac(pkt.payload),
-            PayloadKind::H264 => self.depacketize_h264(pkt.payload.as_ref()),
-            PayloadKind::H265 => self.depacketize_h265(pkt.payload.as_ref()),
-        }
     }
 
     fn reset_fragment_state(&mut self) {
@@ -571,6 +751,56 @@ fn depacketize_h265_ap(payload: &[u8]) -> Option<Bytes> {
     } else {
         Some(out.freeze())
     }
+}
+
+fn h264_access_unit_has_keyframe(data: &[u8]) -> bool {
+    access_unit_has_nal(data, |nal| (nal[0] & 0x1f) == 5)
+}
+
+fn h265_access_unit_has_keyframe(data: &[u8]) -> bool {
+    access_unit_has_nal(data, |nal| {
+        if nal.len() < 2 {
+            return false;
+        }
+        matches!((nal[0] >> 1) & 0x3f, 19 | 20 | 21)
+    })
+}
+
+fn access_unit_has_nal<F>(data: &[u8], mut predicate: F) -> bool
+where
+    F: FnMut(&[u8]) -> bool,
+{
+    let Some((first_start, first_start_len)) = find_start_code(data, 0) else {
+        return !data.is_empty() && predicate(data);
+    };
+
+    let mut nal_start = first_start + first_start_len;
+    while nal_start < data.len() {
+        match find_start_code(data, nal_start) {
+            Some((next_start, next_start_len)) => {
+                if next_start > nal_start && predicate(&data[nal_start..next_start]) {
+                    return true;
+                }
+                nal_start = next_start + next_start_len;
+            }
+            None => return predicate(&data[nal_start..]),
+        }
+    }
+    false
+}
+
+fn find_start_code(data: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut pos = from;
+    while pos + 3 <= data.len() {
+        if pos + 4 <= data.len() && data[pos..pos + 4] == [0, 0, 0, 1] {
+            return Some((pos, 4));
+        }
+        if data[pos..pos + 3] == [0, 0, 1] {
+            return Some((pos, 3));
+        }
+        pos += 1;
+    }
+    None
 }
 
 fn is_adts(data: &[u8]) -> bool {

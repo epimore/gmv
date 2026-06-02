@@ -121,6 +121,7 @@ pub unsafe fn repair_basic_stream_info(
                     warn!("unsupported codec_id = {}", OTHER)
                 }
             }
+            repair_video_stream_info(stream, media_ext);
         }
         AVMediaType_AVMEDIA_TYPE_AUDIO => {
             if matches!((*par).codec_id, AVCodecID_AV_CODEC_ID_AAC)
@@ -187,6 +188,22 @@ pub unsafe fn repair_basic_stream_info(
 }
 
 //将已成功修复的extradata再次解析到codecpar
+unsafe fn repair_video_stream_info(stream: *mut AVStream, media_ext: &MediaExt) {
+    let par = (*stream).codecpar;
+    if let Some((width, height)) = media_ext.video_params.resolution {
+        if width > 0 && height > 0 && ((*par).width <= 0 || (*par).height <= 0) {
+            (*par).width = width;
+            (*par).height = height;
+            debug!("Set video resolution from media_ext: {}x{}", width, height);
+        }
+    }
+
+    if (*par).format < 0 {
+        (*par).format = AVPixelFormat_AV_PIX_FMT_YUV420P;
+        debug!("Set default video pixel format: yuv420p");
+    }
+}
+
 unsafe fn rebuild_par_from_extradata(stream: *mut AVStream) -> bool {
     let par = (*stream).codecpar;
     let codec = avcodec_find_decoder((*par).codec_id);
