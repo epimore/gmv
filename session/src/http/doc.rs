@@ -41,6 +41,7 @@ impl Modify for SecurityAddon {
         hook::off_play,
         hook::stream_idle,
         hook::end_record,
+        hook::talk_closed,
         edge::upload_picture,
         edge::snapshot_image
     ),
@@ -57,6 +58,7 @@ impl Modify for SecurityAddon {
             BaseStreamInfo,
             StreamPlayInfo,
             StreamState,
+            TalkClosedEvent,
             SnapshotImage
         ),
     ),

@@ -8,11 +8,11 @@ use base::log::error;
 use base::serde_json;
 use shared::info::obj::{
     InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo,
-    StreamRecordInfo, StreamState,
+    StreamRecordInfo, StreamState, TalkClosedEvent, TalkStopModel,
 };
 
 use crate::gb::handler::cmd::CmdStream;
-use crate::service::KEY_STREAM_IN;
+use crate::service::{KEY_STREAM_IN, api_serv};
 use crate::state;
 use crate::state::DownloadConf;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
@@ -132,6 +132,26 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) {
             }
         }
     };
+}
+
+pub async fn talk_closed(event: TalkClosedEvent) -> bool {
+    match api_serv::talk_stop(
+        TalkStopModel {
+            talk_id: event.talk_id.clone(),
+        },
+        String::new(),
+    )
+    .await
+    {
+        Ok(closed) => closed,
+        Err(err) => {
+            error!(
+                "talk_closed cleanup failed: talk_id={}, reason={}, err={:?}",
+                event.talk_id, event.reason, err
+            );
+            false
+        }
+    }
 }
 
 fn get_path(path_file_name: &str) -> GlobalResult<(String, String, String, String)> {

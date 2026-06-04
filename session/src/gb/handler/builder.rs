@@ -488,6 +488,30 @@ impl RequestBuilder {
     }
 
     // 点播历史视频
+    pub async fn talk(
+        device_id: &String,
+        channel_id: &String,
+        dst_ip: &String,
+        dst_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        payload_type: u8,
+        codec: &str,
+        sample_rate: u32,
+    ) -> GlobalResult<(Request, Association)> {
+        let sdp = SdpBuilder::talk(
+            channel_id,
+            dst_ip,
+            dst_port,
+            stream_mode,
+            ssrc,
+            payload_type,
+            codec,
+            sample_rate,
+        )?;
+        Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
+    }
+
     pub async fn playback(
         device_id: &String,
         channel_id: &String,
@@ -995,6 +1019,56 @@ impl SdpBuilder {
     }
 
     ///缺s:Play/Playback/Download; t:开始时间戳 结束时间戳; u:回放与下载时的取流地址
+    pub fn talk(
+        channel_id: &String,
+        media_ip: &String,
+        media_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        payload_type: u8,
+        codec: &str,
+        sample_rate: u32,
+    ) -> GlobalResult<String> {
+        let conf = SessionConf::get_session_by_conf();
+        let session_ip = &conf.wan_ip.to_string();
+        let codec = codec.trim().to_uppercase();
+        let mut sdp = String::with_capacity(200);
+        sdp.push_str("v=0\r\n");
+        sdp.push_str(&format!("o={} 0 0 IN IP4 {}\r\n", channel_id, session_ip));
+        sdp.push_str("s=Talk\r\n");
+        sdp.push_str(&format!("c=IN IP4 {}\r\n", media_ip));
+        sdp.push_str("t=0 0\r\n");
+        match stream_mode {
+            TransMode::Udp => sdp.push_str(&format!(
+                "m=audio {} RTP/AVP {}\r\n",
+                media_port, payload_type
+            )),
+            TransMode::TcpActive => {
+                sdp.push_str(&format!(
+                    "m=audio {} TCP/RTP/AVP {}\r\n",
+                    media_port, payload_type
+                ));
+                sdp.push_str("a=setup:active\r\n");
+                sdp.push_str("a=connection:new\r\n");
+            }
+            TransMode::TcpPassive => {
+                sdp.push_str(&format!(
+                    "m=audio {} TCP/RTP/AVP {}\r\n",
+                    media_port, payload_type
+                ));
+                sdp.push_str("a=setup:passive\r\n");
+                sdp.push_str("a=connection:new\r\n");
+            }
+        }
+        sdp.push_str("a=sendonly\r\n");
+        sdp.push_str(&format!(
+            "a=rtpmap:{} {}/{}\r\n",
+            payload_type, codec, sample_rate
+        ));
+        sdp.push_str(&format!("y={}\r\n", ssrc));
+        Ok(sdp)
+    }
+
     fn build_common_play(
         channel_id: &String,
         media_ip: &String,

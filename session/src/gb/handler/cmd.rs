@@ -8,7 +8,7 @@ use base::err::BaseErrorCode;
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
-use base::net::state::Association;
+use base::net::state::{Association, Protocol};
 use base::tokio::sync::oneshot;
 use regex::Regex;
 use rsip::prelude::UntypedHeader;
@@ -97,6 +97,15 @@ impl CmdControl {
 
 pub struct CmdNotify;
 
+pub struct TalkSdpAnswer {
+    pub device_ip: String,
+    pub device_port: u16,
+    pub protocol: Protocol,
+    pub payload_type: u8,
+    pub codec: String,
+    pub sample_rate: u32,
+}
+
 pub struct CmdStream;
 
 impl CmdStream {
@@ -170,6 +179,33 @@ impl CmdStream {
         .await
         .hand_log(|msg| warn!("{msg}"))?;
         Self::invite_stream(device_id, association, request).await
+    }
+
+    pub async fn talk_invite(
+        device_id: &String,
+        channel_id: &String,
+        dst_ip: &String,
+        dst_port: u16,
+        stream_mode: TransMode,
+        ssrc: &String,
+        payload_type: u8,
+        codec: &str,
+        sample_rate: u32,
+    ) -> GlobalResult<(Response, TalkSdpAnswer, String, String, Association)> {
+        let (request, association) = RequestBuilder::talk(
+            device_id,
+            channel_id,
+            dst_ip,
+            dst_port,
+            stream_mode,
+            ssrc,
+            payload_type,
+            codec,
+            sample_rate,
+        )
+        .await
+        .hand_log(|msg| warn!("{msg}"))?;
+        Self::invite_talk(device_id, association, request).await
     }
 
     pub async fn invite_ack(
@@ -268,6 +304,35 @@ impl CmdStream {
         ))
     }
 
+    async fn invite_talk(
+        device_id: &String,
+        association: Association,
+        request: Request,
+    ) -> GlobalResult<(Response, TalkSdpAnswer, String, String, Association)> {
+        let (tx, rx) = oneshot::channel();
+        let cb = default_response_callback(tx);
+        SipRequestOutput::new(device_id, association.clone(), request)
+            .send(cb)
+            .await?;
+        let res = rx.await.hand_log(|msg| error!("{msg}"))??;
+        let code = res.status_code.code();
+        let code_msg = res.status_code.to_string();
+        if code >= 200 && code <= 299 {
+            let answer = Self::parse_talk_sdp(res.body())?;
+            let from_tag = res.header_from_tag()?.to_string();
+            let to_tag = res
+                .header_to_tag()?
+                .ok_or(SysErr(anyhow!("to tag is none")))?
+                .to_string();
+            return Ok((res, answer, from_tag, to_tag, association));
+        }
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            &code_msg,
+            |msg| error!("{msg}"),
+        ))
+    }
+
     fn parse_sdp(sdp: &Vec<u8>) -> GlobalResult<MediaExt> {
         let session = sdp_types::Session::parse(sdp).hand_log(|msg| error!("{msg}"))?;
         let re = Regex::new(r"\s+").hand_log(|msg| error!("{msg}"))?;
@@ -298,6 +363,105 @@ impl CmdStream {
         }
         Self::extract_f_field(&mut ext, sdp);
         Ok(ext)
+    }
+
+    fn parse_talk_sdp(sdp: &Vec<u8>) -> GlobalResult<TalkSdpAnswer> {
+        let session = sdp_types::Session::parse(sdp).hand_log(|msg| error!("{msg}"))?;
+        let re = Regex::new(r"\s+").hand_log(|msg| error!("{msg}"))?;
+        let protocol = Self::parse_talk_sdp_protocol(sdp);
+        let session_ip = session
+            .connection
+            .as_ref()
+            .map(|conn| conn.connection_address.clone());
+
+        for media in session.medias {
+            if !media.media.trim().eq_ignore_ascii_case("audio") {
+                continue;
+            }
+
+            let device_ip = media
+                .connections
+                .first()
+                .map(|conn| conn.connection_address.clone())
+                .or_else(|| session_ip.clone())
+                .ok_or_else(|| {
+                    GlobalError::new_biz_error(
+                        BaseErrorCode::InvalidState.code(),
+                        "talk sdp missing audio connection address",
+                        |msg| error!("{msg}"),
+                    )
+                })?;
+            let mut payload_type = media
+                .fmt
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u8>().ok())
+                .unwrap_or(8);
+            let mut codec = match payload_type {
+                0 => "PCMU".to_string(),
+                8 => "PCMA".to_string(),
+                _ => String::new(),
+            };
+            let mut sample_rate = 8000u32;
+
+            if let Ok(Some(info)) = media.get_first_attribute_value("rtpmap") {
+                let trimmed = re.replace_all(info, " ").trim().to_string();
+                if let Some((play_code, payload)) = trimmed.split_once(' ') {
+                    payload_type = play_code.trim().parse().hand_log(|msg| error!("{msg}"))?;
+                    let parts = payload.trim().split('/').collect::<Vec<_>>();
+                    if parts.len() >= 2 {
+                        codec = parts[0].trim().to_uppercase();
+                        sample_rate = parts[1].trim().parse().hand_log(|msg| error!("{msg}"))?;
+                    }
+                }
+            }
+
+            if codec.is_empty() {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::Unsupported.code(),
+                    "unsupported talk payload type",
+                    |msg| error!("{msg}: pt={payload_type}"),
+                ));
+            }
+
+            return Ok(TalkSdpAnswer {
+                device_ip,
+                device_port: media.port,
+                protocol,
+                payload_type,
+                codec,
+                sample_rate,
+            });
+        }
+
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "talk sdp missing audio media",
+            |msg| error!("{msg}"),
+        ))
+    }
+
+    fn parse_talk_sdp_protocol(sdp: &[u8]) -> Protocol {
+        let text = String::from_utf8_lossy(sdp);
+        for line in text.lines() {
+            let line = line.trim();
+            if !line
+                .get(..7)
+                .map(|prefix| prefix.eq_ignore_ascii_case("m=audio"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let _media = parts.next();
+            let _port = parts.next();
+            let transport = parts.next().unwrap_or_default();
+            if transport.to_ascii_uppercase().contains("TCP") {
+                return Protocol::TCP;
+            }
+            return Protocol::UDP;
+        }
+        Protocol::UDP
     }
 
     fn extract_f_field(me: &mut MediaExt, sdp: &Vec<u8>) {

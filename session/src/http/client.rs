@@ -10,7 +10,10 @@ use pretend::{Json, Url};
 use pretend::{Pretend, Result, pretend};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{StreamInfoQo, StreamKey, StreamRecordInfo};
+use shared::info::obj::{
+    StreamInfoQo, StreamKey, StreamRecordInfo, TalkAnswerReq, TalkCloseReq, TalkOpenReq,
+    TalkOpenResp,
+};
 use shared::info::res::Resp;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
@@ -70,6 +73,12 @@ pub trait HttpStream {
     async fn record_info(&self, json: &StreamInfoQo) -> Result<Json<Resp<StreamRecordInfo>>>;
     #[request(method = "POST", path = "/close/output")]
     async fn close_output(&self, json: &StreamInfoQo) -> Result<Json<Resp<()>>>;
+    #[request(method = "POST", path = "/talk/open")]
+    async fn talk_open(&self, json: &TalkOpenReq) -> Result<Json<Resp<TalkOpenResp>>>;
+    #[request(method = "POST", path = "/talk/answer")]
+    async fn talk_answer(&self, json: &TalkAnswerReq) -> Result<Json<Resp<()>>>;
+    #[request(method = "POST", path = "/talk/close")]
+    async fn talk_close(&self, json: &TalkCloseReq) -> Result<Json<Resp<()>>>;
 }
 
 #[pretend]

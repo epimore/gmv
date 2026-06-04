@@ -7,7 +7,7 @@ use pretend::{Json, Url};
 use pretend::{Pretend, Result, pretend};
 use shared::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
-    StreamPlayInfo, StreamRecordInfo, StreamState,
+    StreamPlayInfo, StreamRecordInfo, StreamState, TalkClosedEvent,
 };
 use shared::info::res::Resp;
 use std::str::FromStr;
@@ -55,4 +55,6 @@ pub trait HttpSession {
     async fn off_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/hook/end/record")]
     async fn end_record(&self, json: &StreamRecordInfo) -> Result<Json<Resp<()>>>;
+    #[request(method = "POST", path = "/hook/talk/closed")]
+    async fn talk_closed(&self, json: &TalkClosedEvent) -> Result<Json<Resp<bool>>>;
 }

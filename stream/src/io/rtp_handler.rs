@@ -1,12 +1,14 @@
 use crate::media;
 use crate::state::register::Register;
+use crate::state::talk::TalkManager;
 use base::bytes::{Bytes, BytesMut};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::net;
-use base::net::reader::{PacketDispatcher, PacketSplitter};
-use base::net::state::Protocol;
+use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, U16BeLengthPrefixEncoder};
+use base::net::state::{CHANNEL_BUFFER_SIZE, IoEventType, Protocol, Zip};
+use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
 use crossbeam_channel::TrySendError;
 use rtp_types::RtpPacket;
@@ -17,14 +19,82 @@ use std::sync::Arc;
 pub fn listen_media_server(port: u16) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
     let socket_addr =
         SocketAddr::from_str(&format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
-    net::sdx::listen(Protocol::ALL, socket_addr)
+    net::listen(Protocol::ALL, socket_addr)
 }
 
-pub async fn run(
+pub fn run(
     tu: (Option<TcpListener>, Option<UdpSocket>),
     cancel: CancellationToken,
 ) -> GlobalResult<()> {
-    net::reader::owned_reader::<RtpReader, RtpReader>(tu, cancel, Arc::new(RtpReader))
+    let rtp_port = listener_port(&tu)?;
+    let (output_tx, output_rx) = base::tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+    let writer: PacketWriter<U16BeLengthPrefixEncoder> =
+        net::rw::direct_rw::<RtpReader, RtpReader, U16BeLengthPrefixEncoder>(
+            tu,
+            cancel.clone(),
+            Arc::new(RtpReader),
+            Arc::new(U16BeLengthPrefixEncoder),
+        )?;
+    base::tokio::spawn(write_net(output_rx, writer.clone(), cancel));
+    TalkManager::init_rtp_writer(writer, output_tx, rtp_port)
+}
+
+async fn write_net(
+    mut output_rx: Receiver<Zip>,
+    writer: PacketWriter<U16BeLengthPrefixEncoder>,
+    cancel: CancellationToken,
+) {
+    loop {
+        base::tokio::select! {
+            item = output_rx.recv() => {
+                let Some(zip) = item else {
+                    break;
+                };
+                match zip {
+                    Zip::Data(package) => {
+                        let association = package.association;
+                        if let Err(err) = writer
+                            .write_to(package.data, association.remote_addr, association.protocol)
+                            .await
+                        {
+                            error!("rtp socket write failed: association={association:?}, err={err}");
+                        }
+                    }
+                    Zip::Event(event) => {
+                        if matches!(event.type_code, IoEventType::Close) {
+                            if matches!(event.association.protocol, Protocol::ALL) {
+                                break;
+                            }
+                            if matches!(event.association.protocol, Protocol::TCP) {
+                                writer.remove_tcp_writer(&event.association.remote_addr);
+                            }
+                        }
+                    }
+                }
+            }
+            _ = cancel.cancelled() => break,
+        }
+    }
+}
+
+fn listener_port(tu: &(Option<TcpListener>, Option<UdpSocket>)) -> GlobalResult<u16> {
+    if let Some(udp) = &tu.1 {
+        return udp
+            .local_addr()
+            .map(|addr| addr.port())
+            .hand_log(|msg| error!("{msg}"));
+    }
+    if let Some(tcp) = &tu.0 {
+        return tcp
+            .local_addr()
+            .map(|addr| addr.port())
+            .hand_log(|msg| error!("{msg}"));
+    }
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::InvalidState.code(),
+        "rtp listener is empty",
+        |msg| error!("{msg}"),
+    ))
 }
 
 #[derive(Default)]
@@ -68,15 +138,6 @@ impl RtpReader {
 }
 
 impl PacketDispatcher for RtpReader {
-    fn dispatch(
-        &self,
-        data: &[u8],
-        remote_addr: SocketAddr,
-        protocol: Protocol,
-    ) -> GlobalResult<()> {
-        self.dispatch_owned(Bytes::copy_from_slice(data), remote_addr, protocol)
-    }
-
     fn dispatch_owned(
         &self,
         data: Bytes,
@@ -136,13 +197,6 @@ where
 }
 
 impl PacketSplitter for RtpReader {
-    fn feed<F>(&mut self, buffer: &mut BytesMut, mut f: F) -> GlobalResult<()>
-    where
-        F: FnMut(&[u8]) -> GlobalResult<()>,
-    {
-        feed_tcp_packets(buffer, |pkt| f(pkt.as_ref()))
-    }
-
     fn feed_owned<F>(&mut self, buffer: &mut BytesMut, f: F) -> GlobalResult<()>
     where
         F: FnMut(Bytes) -> GlobalResult<()>,

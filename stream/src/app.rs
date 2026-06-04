@@ -61,9 +61,10 @@ impl
         Register::init()?;
 
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
-        network_rt
-            .rt_handle
-            .spawn(rtp_handler::run(tu, network_rt.cancel.clone()));
+        {
+            let _enter = network_rt.rt_handle.enter();
+            rtp_handler::run(tu, network_rt.cancel.clone())?;
+        }
         network_rt
             .rt_handle
             .spawn(http::run(http_listener, tx, network_rt.cancel.clone()));

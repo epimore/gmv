@@ -9,7 +9,8 @@ use axum::{Json, Router};
 use base::log::info;
 use shared::info::obj::{
     CONTROL_PTZ, DOWNING_INFO, DOWNLOAD_MP4, DOWNLOAD_STOP, PLAY_BACK, PLAY_LIVING, PLAY_SEEK,
-    PLAY_SPEED, RM_FILE, SingleParam, StreamRecordInfo,
+    PLAY_SPEED, RM_FILE, SingleParam, StreamRecordInfo, TALK_START, TALK_STOP, TalkInfo,
+    TalkStartModel, TalkStopModel,
 };
 use shared::info::res::{EmptyResponse, Resp};
 
@@ -24,6 +25,8 @@ pub fn routes() -> Router {
         .route(DOWNLOAD_STOP, axum::routing::post(download_stop))
         .route(DOWNING_INFO, axum::routing::post(downing_info))
         .route(RM_FILE, axum::routing::post(rm_file))
+        .route(TALK_START, axum::routing::post(talk_start))
+        .route(TALK_STOP, axum::routing::post(talk_stop))
 }
 
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -262,6 +265,28 @@ async fn rm_file(headers: HeaderMap, Json(info): Json<SingleParam<i64>>) -> Json
     match get_gmv_token(headers) {
         Ok(_token) => match edge_serv::rm_file(info.param).await {
             Ok(_) => Json(Resp::build_success()),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
+    }
+}
+
+async fn talk_start(headers: HeaderMap, Json(info): Json<TalkStartModel>) -> Json<Resp<TalkInfo>> {
+    info!("talk_start: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => match api_serv::talk_start(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
+            Err(err) => Json(res_by_error(err)),
+        },
+        Err(err) => Json(res_by_error(err)),
+    }
+}
+
+async fn talk_stop(headers: HeaderMap, Json(info): Json<TalkStopModel>) -> Json<Resp<bool>> {
+    info!("talk_stop: body = {:?}", &info);
+    match get_gmv_token(headers) {
+        Ok(token) => match api_serv::talk_stop(info, token).await {
+            Ok(data) => Json(Resp::build_success_data(data)),
             Err(err) => Json(res_by_error(err)),
         },
         Err(err) => Json(res_by_error(err)),

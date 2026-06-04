@@ -118,7 +118,7 @@ impl SessionConf {
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
         let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.wan_port))
             .hand_log(|msg| error! {"{msg}"})?;
-        let res = net::sdx::listen(net::state::Protocol::ALL, socket_addr);
+        let res = net::listen(net::state::Protocol::ALL, socket_addr);
         res
     }
 
@@ -126,7 +126,7 @@ impl SessionConf {
         tu: (Option<std::net::TcpListener>, Option<UdpSocket>),
         cancel_token: CancellationToken,
     ) -> GlobalResult<()> {
-        let (output, input) = net::sdx::run_by_tokio(tu).await?;
+        let (output, input) = io::rw_by_tokio(tu, cancel_token.child_token())?;
         let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
         Register::init(
             SessionConf::get_session_by_conf(),

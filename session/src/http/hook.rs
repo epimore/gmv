@@ -3,7 +3,7 @@ use base::log::info;
 use shared::info::obj::{
     END_RECORD, INPUT_TIMEOUT, InTimeoutEventRes, OFF_PLAY, ON_PLAY, OutputEventRes,
     OutputStreamInfo, RegisterStreamInfo, STREAM_IDLE, STREAM_REGISTER, StreamPlayInfo,
-    StreamRecordInfo, StreamState,
+    StreamRecordInfo, StreamState, TALK_CLOSED, TalkClosedEvent,
 };
 use shared::info::res::{EmptyResponse, Resp};
 
@@ -17,6 +17,7 @@ pub fn routes() -> Router {
         .route(STREAM_IDLE, axum::routing::post(stream_idle))
         .route(OFF_PLAY, axum::routing::post(off_play))
         .route(END_RECORD, axum::routing::post(end_record))
+        .route(TALK_CLOSED, axum::routing::post(talk_closed))
 }
 
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -118,4 +119,19 @@ async fn end_record(Json(info): Json<StreamRecordInfo>) -> Json<Resp<()>> {
     info!("end_record = {:?}", &info);
     hook_serv::end_record(info).await;
     Json(Resp::build_success())
+}
+
+#[cfg_attr(debug_assertions, utoipa::path(
+    post,
+    path = "/hook/talk/closed",
+    request_body = TalkClosedEvent,
+    responses(
+        (status = 200, description = "å›žè°ƒå¤„ç†æˆåŠŸ", body = Resp<bool>),
+        (status = 500, description = "æœåŠ¡å™¨å†…éƒ¨é”™è¯¯", body = Resp<bool>)
+    ),
+    tag = "æµåª’ä½“æœåŠ¡å›žè°ƒæŽ¥å£"
+))]
+async fn talk_closed(Json(info): Json<TalkClosedEvent>) -> Json<Resp<bool>> {
+    info!("talk_closed = {:?}", &info);
+    Json(Resp::build_success_data(hook_serv::talk_closed(info).await))
 }

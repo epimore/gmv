@@ -4,19 +4,162 @@ use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use encoding_rs::GB18030;
 use rsip::SipMessage;
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::Arc;
 
 pub use crate::gb::core::rw::RWContext;
 use crate::gb::depot::{DepotContext, SipMsg, SipPackage};
 use crate::gb::handler;
 use crate::gb::sip_tcp_splitter::complete_pkt;
+use base::err::BaseErrorCode;
 use base::exception::GlobalResultExt;
+use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
-use base::net::state::{Association, IoEventType, Package, Protocol, Zip};
+use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, RawPacketEncoder};
+use base::net::state::{
+    Association, CHANNEL_BUFFER_SIZE, Event, IoEventType, Package, Protocol, Zip,
+};
 use base::tokio;
 use base::tokio_util::sync::CancellationToken;
+
+pub fn rw_by_tokio(
+    tu: (Option<TcpListener>, Option<UdpSocket>),
+    cancel_token: CancellationToken,
+) -> GlobalResult<(Sender<Zip>, Receiver<Zip>)> {
+    let local_addr = listener_local_addr(&tu)?;
+    let (input_tx, input_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+    let (output_tx, output_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+    let writer = base::net::rw::rw::<SipPacketDispatcher, SipPacketSplitter, RawPacketEncoder>(
+        tu,
+        cancel_token.clone(),
+        Arc::new(SipPacketDispatcher {
+            local_addr,
+            input_tx,
+        }),
+        Arc::new(RawPacketEncoder),
+    )?;
+    tokio::spawn(write_net(output_rx, writer, cancel_token));
+    Ok((output_tx, input_rx))
+}
+
+fn listener_local_addr(tu: &(Option<TcpListener>, Option<UdpSocket>)) -> GlobalResult<SocketAddr> {
+    if let Some(udp) = &tu.1 {
+        return udp
+            .local_addr()
+            .hand_log(|msg| error!("session udp local addr failed: {msg}"));
+    }
+    if let Some(tcp) = &tu.0 {
+        return tcp
+            .local_addr()
+            .hand_log(|msg| error!("session tcp local addr failed: {msg}"));
+    }
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::InvalidState.code(),
+        "session listener is empty",
+        |msg| error!("{msg}"),
+    ))
+}
+
+struct SipPacketDispatcher {
+    local_addr: SocketAddr,
+    input_tx: Sender<Zip>,
+}
+
+impl PacketDispatcher for SipPacketDispatcher {
+    fn dispatch_owned(
+        &self,
+        data: Bytes,
+        remote_addr: SocketAddr,
+        protocol: Protocol,
+    ) -> GlobalResult<()> {
+        let association = Association::new(self.local_addr, remote_addr, protocol);
+        let zip = Zip::build_data(Package::new(association, data));
+        self.input_tx
+            .try_send(zip)
+            .hand_log(|msg| error!("session socket input channel is full: {msg}"))?;
+        Ok(())
+    }
+
+    fn close(&self, remote_addr: SocketAddr, protocol: Protocol) -> GlobalResult<()> {
+        let association = Association::new(self.local_addr, remote_addr, protocol);
+        let event = Event {
+            association,
+            type_code: IoEventType::Close,
+        };
+        self.input_tx
+            .try_send(Zip::build_event(event))
+            .hand_log(|msg| error!("session socket event channel is full: {msg}"))?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct SipPacketSplitter {
+    packets: VecDeque<Bytes>,
+}
+
+impl PacketSplitter for SipPacketSplitter {
+    fn feed_owned<F>(&mut self, chunk: &mut BytesMut, mut f: F) -> GlobalResult<()>
+    where
+        F: FnMut(Bytes) -> GlobalResult<()>,
+    {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        if is_sip_keepalive_or_empty(chunk.as_ref()) {
+            let packet = chunk.split_to(chunk.len()).freeze();
+            f(packet)?;
+            return Ok(());
+        }
+
+        self.packets.clear();
+        complete_pkt(chunk, &mut self.packets);
+        while let Some(packet) = self.packets.pop_front() {
+            f(packet)?;
+        }
+
+        Ok(())
+    }
+}
+
+async fn write_net(
+    mut output_rx: Receiver<Zip>,
+    writer: PacketWriter<RawPacketEncoder>,
+    cancel_token: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            item = output_rx.recv() => {
+                let Some(zip) = item else {
+                    break;
+                };
+                match zip {
+                    Zip::Data(package) => {
+                        let association = package.association;
+                        if let Err(err) = writer
+                            .write_to(package.data, association.remote_addr, association.protocol)
+                            .await
+                        {
+                            error!("session socket write failed: association={association:?}, err={err}");
+                        }
+                    }
+                    Zip::Event(event) => {
+                        if matches!(event.type_code, IoEventType::Close) {
+                            if matches!(event.association.protocol, Protocol::ALL) {
+                                break;
+                            }
+                            if matches!(event.association.protocol, Protocol::TCP) {
+                                writer.remove_tcp_writer(&event.association.remote_addr);
+                            }
+                        }
+                    }
+                }
+            }
+            _ = cancel_token.cancelled() => break,
+        }
+    }
+}
 
 /// 将日志内容压缩为单行，保留可还原换行信息
 pub fn compact_for_log(raw: &str) -> String {
@@ -30,9 +173,7 @@ pub fn compact_for_log(raw: &str) -> String {
     }
     result
 }
-fn is_sip_keepalive_or_empty(bytes: &Bytes) -> bool {
-    let data = bytes.as_ref();
-
+fn is_sip_keepalive_or_empty(data: &[u8]) -> bool {
     // 空数据
     if data.is_empty() {
         return true;
@@ -49,7 +190,6 @@ pub async fn read(
     cancel_token: CancellationToken,
     ctx: Arc<DepotContext>,
 ) {
-    let mut tcp_buffers: HashMap<Association, BytesMut> = HashMap::new();
     let request_locks: Arc<DashMap<Association, Arc<AsyncMutex<()>>>> = Arc::new(DashMap::new());
     while let Some(zip) = input.recv().await {
         if cancel_token.is_cancelled() {
@@ -57,46 +197,22 @@ pub async fn read(
         }
         match zip {
             Zip::Data(Package { association, data }) => {
-                if is_sip_keepalive_or_empty(&data) {
+                if is_sip_keepalive_or_empty(data.as_ref()) {
                     let _ = output
                         .send(Zip::Data(Package { association, data }))
                         .await
                         .hand_log(|msg| error!("数据发送失败:{msg}"));
                     continue;
                 }
-                if let Protocol::TCP = association.protocol {
-                    let mut pks = VecDeque::new();
-                    let buffer_empty = {
-                        let buffer = tcp_buffers.entry(association.clone()).or_default();
-                        buffer.extend_from_slice(&data);
-                        complete_pkt(buffer, &mut pks);
-                        buffer.is_empty()
-                    };
-                    if buffer_empty {
-                        tcp_buffers.remove(&association);
-                    }
-                    while let Some(data) = pks.pop_front() {
-                        hand_pkt(
-                            data,
-                            output.clone(),
-                            &association,
-                            sip_pkg_tx.clone(),
-                            ctx.clone(),
-                            request_locks.clone(),
-                        )
-                        .await;
-                    }
-                } else {
-                    hand_pkt(
-                        data,
-                        output.clone(),
-                        &association,
-                        sip_pkg_tx.clone(),
-                        ctx.clone(),
-                        request_locks.clone(),
-                    )
-                    .await;
-                }
+                hand_pkt(
+                    data,
+                    output.clone(),
+                    &association,
+                    sip_pkg_tx.clone(),
+                    ctx.clone(),
+                    request_locks.clone(),
+                )
+                .await;
             }
             Zip::Event(event) => {
                 info!(
@@ -104,7 +220,6 @@ pub async fn read(
                     event.type_code, event.association
                 );
                 if matches!(event.type_code, IoEventType::Close) {
-                    tcp_buffers.remove(&event.association);
                     request_locks.remove(&event.association);
                     RWContext::clean_rw_session_by_bill(&event.association);
                 }
@@ -151,7 +266,7 @@ async fn hand_pkt(
                 SipMessage::Response(res) => {
                     let headers = compact_for_log(&format!("{}", &res.headers));
                     let body = compact_for_log(&GB18030.decode(&res.body).0);
-                    debug!(
+                    info!(
                         "接收:{:?} \\nResponse: {} {} \\n{} \\n{}\\n",
                         &association, &res.version, &res.status_code, headers, body
                     );
@@ -211,10 +326,10 @@ pub fn send_sip_pkt_out(
     let log = compact_for_log(&GB18030.decode(&data).0);
     match ext_log {
         None => {
-            debug!("发送:{:?} \\n负载: {}\\n", association, log);
+            info!("发送:{:?} \\n负载: {}\\n", association, log);
         }
         Some(p_log) => {
-            debug!("[{}] 发送:{:?} \\n负载: {}\\n", p_log, association, log);
+            info!("[{}] 发送:{:?} \\n负载: {}\\n", p_log, association, log);
         }
     }
     let zip = Zip::build_data(Package::new(association, data));

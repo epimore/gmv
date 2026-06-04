@@ -36,6 +36,22 @@ pub struct DeviceStreamState {
     pub to_tag: String,
 }
 
+#[derive(Clone)]
+pub struct TalkSessionState {
+    pub talk_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: u32,
+    pub stream_node_name: String,
+    pub call_id: String,
+    pub seq: u32,
+    pub from_tag: String,
+    pub to_tag: String,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+}
+
 impl Cache {
     pub fn ssrc_sn_get() -> Option<u16> {
         let mut rng = rand::thread_rng();
@@ -270,6 +286,38 @@ impl Cache {
         }
     }
 
+    pub fn talk_map_insert(state: TalkSessionState) -> bool {
+        match GENERAL_CACHE.shared.talk_map.entry(state.talk_id.clone()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(vac) => {
+                vac.insert(state);
+                true
+            }
+        }
+    }
+
+    pub fn talk_map_remove(talk_id: &str) -> Option<TalkSessionState> {
+        GENERAL_CACHE
+            .shared
+            .talk_map
+            .remove(talk_id)
+            .map(|(_, state)| state)
+    }
+
+    pub fn talk_map_get_by_device_channel(
+        device_id: &str,
+        channel_id: &str,
+    ) -> Option<TalkSessionState> {
+        GENERAL_CACHE.shared.talk_map.iter().find_map(|item| {
+            let value = item.value();
+            if value.device_id == device_id && value.channel_id == channel_id {
+                Some(value.clone())
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn reset_device_state(device_id: &str) -> Vec<DeviceStreamState> {
         let mut streams = Vec::new();
         if let Some((_, entries)) = GENERAL_CACHE.shared.device_map.remove(device_id) {
@@ -288,6 +336,33 @@ impl Cache {
                         to_tag: stream.to_tag,
                     });
                 }
+            }
+        }
+        let talk_ids = GENERAL_CACHE
+            .shared
+            .talk_map
+            .iter()
+            .filter_map(|item| {
+                if item.device_id == device_id {
+                    Some(item.talk_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for talk_id in talk_ids {
+            if let Some((_, talk)) = GENERAL_CACHE.shared.talk_map.remove(&talk_id) {
+                let ssrc_num = (talk.ssrc % 10000) as u16;
+                GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
+                streams.push(DeviceStreamState {
+                    channel_id: talk.channel_id,
+                    stream_id: talk.talk_id,
+                    ssrc: talk.ssrc.to_string(),
+                    call_id: talk.call_id,
+                    seq: talk.seq.saturating_add(1),
+                    from_tag: talk.from_tag,
+                    to_tag: talk.to_tag,
+                });
             }
         }
         streams
@@ -434,6 +509,7 @@ impl Cache {
                 }),
                 ssrc_sn: Self::init_ssrc_sn(),
                 stream_map: Default::default(),
+                talk_map: Default::default(),
                 device_map: Default::default(),
                 stream_setup_locks: Default::default(),
             }),
@@ -515,6 +591,7 @@ struct Shared {
     state: Mutex<State>,
     ssrc_sn: DashSet<u16>,
     stream_map: DashMap<String, StreamTable>,
+    talk_map: DashMap<String, TalkSessionState>,
     device_map: DashMap<String, Vec<DeviceTable>>,
     stream_setup_locks: DashMap<String, Arc<AsyncMutex<()>>>,
 }
@@ -553,6 +630,7 @@ pub enum AccessMode {
     Live,
     Back,
     Down,
+    Talk,
 }
 
 impl AccessMode {
@@ -561,6 +639,7 @@ impl AccessMode {
             AccessMode::Live => "live",
             AccessMode::Back => "back",
             AccessMode::Down => "down",
+            AccessMode::Talk => "talk",
         }
     }
 }

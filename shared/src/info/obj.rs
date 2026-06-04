@@ -12,6 +12,8 @@ pub const DOWNLOAD_MP4: &str = "/download/mp4";
 pub const DOWNLOAD_STOP: &str = "/download/stop";
 pub const DOWNING_INFO: &str = "/downing/info";
 pub const RM_FILE: &str = "/rm/file";
+pub const TALK_START: &str = "/talk/start";
+pub const TALK_STOP: &str = "/talk/stop";
 
 pub const STREAM_REGISTER: &str = "/stream/register";
 pub const INPUT_TIMEOUT: &str = "/stream/input/timeout";
@@ -19,6 +21,7 @@ pub const ON_PLAY: &str = "/on/play";
 pub const OFF_PLAY: &str = "/off/play";
 pub const STREAM_IDLE: &str = "/stream/idle";
 pub const END_RECORD: &str = "/end/record";
+pub const TALK_CLOSED: &str = "/talk/closed";
 
 //stream
 pub const LISTEN_MEDIA: &str = "/listen/media";
@@ -27,6 +30,11 @@ pub const STREAM_ONLINE: &str = "/stream/online";
 pub const PLAY_PATH: &str = "/play/{stream_id}";
 pub const RECORD_INFO: &str = "/record/info";
 pub const CLOSE_OUTPUT: &str = "/close/output";
+pub const TALK_OPEN: &str = "/talk/open";
+pub const TALK_ANSWER: &str = "/talk/answer";
+pub const TALK_CLOSE: &str = "/talk/close";
+pub const TALK_INPUT_PREFIX: &str = "/talk/input";
+pub const TALK_INPUT_PATH: &str = "/talk/input/{talk_id}";
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
@@ -143,4 +151,91 @@ pub struct RtpInfo {
 pub struct StreamKey {
     pub ssrc: u32,
     pub stream_id: Option<String>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct TalkStartModel {
+    pub device_id: String,
+    pub channel_id: Option<String>,
+    pub transport: Option<String>,
+    pub codec: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channel_count: Option<u8>,
+    pub frame_duration_ms: Option<u16>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct TalkInfo {
+    pub talk_id: String,
+    pub input_url: String,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+    pub frame_duration_ms: u16,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct TalkStopModel {
+    pub talk_id: String,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct TalkClosedEvent {
+    pub talk_id: String,
+    pub reason: String,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct TalkOpenReq {
+    pub talk_id: String,
+    pub ssrc: u32,
+    pub token: String,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+    pub payload_type: u8,
+    pub frame_duration_ms: u16,
+    pub input_timeout_secs: u16,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct TalkOpenResp {
+    pub talk_id: String,
+    pub input_url: String,
+    pub rtp_port: u16,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+    pub payload_type: u8,
+    pub frame_duration_ms: u16,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct TalkAnswerReq {
+    pub talk_id: String,
+    pub device_ip: String,
+    pub device_port: u16,
+    pub protocol: String,
+    pub payload_type: u8,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct TalkCloseReq {
+    pub talk_id: String,
 }

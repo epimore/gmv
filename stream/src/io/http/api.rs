@@ -1,21 +1,28 @@
 use crate::io::http::{res_by_code, res_by_error};
 use crate::io::local::mp4::Mp4OutputInnerEvent;
 use crate::state::register::Register;
+use crate::state::talk::TalkManager;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, Query};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json, Router};
 use base::err::BaseErrorCode;
 use base::exception::GlobalResultExt;
-use base::log::{error, info};
+use base::log::{debug, error, info, warn};
 use base::serde_json::json;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio::sync::oneshot;
+use futures_util::StreamExt;
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
 use shared::info::obj::{
     CLOSE_OUTPUT, LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE, StreamInfoQo, StreamKey,
-    StreamRecordInfo,
+    StreamRecordInfo, TALK_ANSWER, TALK_CLOSE, TALK_INPUT_PATH, TALK_OPEN, TalkAnswerReq,
+    TalkCloseReq, TalkOpenReq, TalkOpenResp,
 };
 use shared::info::output::OutputEnum;
 use shared::info::res::{EmptyResponse, Resp};
+use std::collections::HashMap;
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
@@ -27,6 +34,10 @@ pub fn routes(tx: Sender<u32>) -> Router {
         .route(STREAM_ONLINE, axum::routing::post(stream_online))
         .route(RECORD_INFO, axum::routing::post(record_info))
         .route(CLOSE_OUTPUT, axum::routing::post(close_output))
+        .route(TALK_OPEN, axum::routing::post(talk_open))
+        .route(TALK_ANSWER, axum::routing::post(talk_answer))
+        .route(TALK_CLOSE, axum::routing::post(talk_close))
+        .route(TALK_INPUT_PATH, axum::routing::get(talk_input_ws))
 }
 
 #[cfg_attr(debug_assertions, utoipa::path(
@@ -162,6 +173,80 @@ async fn close_output(Json(output): Json<StreamInfoQo>) -> Json<Resp<()>> {
     let json = Json(Resp::<()>::build_success());
     info!("close_output response: {:?}", &json);
     json
+}
+
+async fn talk_open(Json(req): Json<TalkOpenReq>) -> Json<Resp<TalkOpenResp>> {
+    info!("talk_open: {:?}", &req);
+    let json = match TalkManager::open(req).await {
+        Ok(data) => Resp::build_success_data(data),
+        Err(err) => res_by_error(err),
+    };
+    info!("talk_open response: {:?}", &json);
+    Json(json)
+}
+
+async fn talk_answer(Json(req): Json<TalkAnswerReq>) -> Json<Resp<()>> {
+    info!("talk_answer: {:?}", &req);
+    let json = match TalkManager::answer(req) {
+        Ok(_) => Resp::<()>::build_success(),
+        Err(err) => res_by_error(err),
+    };
+    info!("talk_answer response: {:?}", &json);
+    Json(json)
+}
+
+async fn talk_close(Json(req): Json<TalkCloseReq>) -> Json<Resp<()>> {
+    info!("talk_close: {:?}", &req);
+    TalkManager::close(&req.talk_id);
+    let json = Resp::<()>::build_success();
+    info!("talk_close response: {:?}", &json);
+    Json(json)
+}
+
+async fn talk_input_ws(
+    Path(talk_id): Path<String>,
+    Query(mut query): Query<HashMap<String, String>>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(token) = query.remove("gmv-token") else {
+        return super::res_401();
+    };
+    if !TalkManager::check_token(&talk_id, &token) {
+        return super::res_401();
+    }
+    ws.on_upgrade(move |socket| handle_talk_socket(talk_id, socket))
+        .into_response()
+}
+
+async fn handle_talk_socket(talk_id: String, mut socket: WebSocket) {
+    info!("talk websocket opened: talk_id={}", talk_id);
+    while let Some(msg) = socket.next().await {
+        match msg {
+            Ok(Message::Binary(frame)) => {
+                if let Err(err) = TalkManager::push_frame(&talk_id, frame.to_vec()) {
+                    warn!(
+                        "talk input frame dropped: talk_id={}, err={:?}",
+                        talk_id, err
+                    );
+                }
+            }
+            Ok(Message::Text(text)) => {
+                debug!(
+                    "talk input metadata ignored: talk_id={}, text={}",
+                    talk_id, text
+                );
+            }
+            Ok(Message::Close(_)) => {
+                break;
+            }
+            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
+            Err(err) => {
+                warn!("talk websocket error: talk_id={}, err={}", talk_id, err);
+                break;
+            }
+        }
+    }
+    info!("talk websocket closed: talk_id={}", talk_id);
 }
 
 async fn open_output_stream(
