@@ -298,7 +298,6 @@ pub struct GmvDeviceChannel {
     pub latitude: Option<f32>,
     pub ptz_type: Option<u8>,
     pub supply_light_type: Option<u8>,
-    pub alias_name: Option<String>,
 }
 
 impl GmvDeviceChannel {
@@ -310,7 +309,7 @@ impl GmvDeviceChannel {
         let pool = get_conn_by_pool();
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
          model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
-         longitude,latitude,ptz_type,supply_light_type,alias_name) ");
+         longitude,latitude,ptz_type,supply_light_type) ");
         builder.push_values(&dc_ls, |mut b, dc| {
             b.push_bind(&dc.device_id)
                 .push_bind(&dc.channel_id)
@@ -330,21 +329,41 @@ impl GmvDeviceChannel {
                 .push_bind(&dc.longitude)
                 .push_bind(&dc.latitude)
                 .push_bind(&dc.ptz_type)
-                .push_bind(&dc.supply_light_type)
-                .push_bind(&dc.alias_name);
+                .push_bind(&dc.supply_light_type);
         });
         builder.push(" ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),channel_id=VALUES(channel_id),name=VALUES(name),
         manufacturer=VALUES(manufacturer),model=VALUES(model),owner=VALUES(owner),status=VALUES(status),civil_code=VALUES(civil_code),
         address=VALUES(address),parental=VALUES(parental),block=VALUES(block),parent_id=VALUES(parent_id),ip_address=VALUES(ip_address),
         port=VALUES(port),password=VALUES(password),longitude=VALUES(longitude),latitude=VALUES(latitude),ptz_type=VALUES(ptz_type),
-        supply_light_type=VALUES(supply_light_type),alias_name=VALUES(alias_name)");
+        supply_light_type=VALUES(supply_light_type)");
         builder
             .build()
             .execute(pool)
             .await
             .hand_log(|msg| error!("{msg}"))?;
+        Self::insert_gmv_device_channel_conf(&dc_ls).await?;
         Ok(dc_ls)
     }
+
+    async fn insert_gmv_device_channel_conf(dc_ls: &[GmvDeviceChannel]) -> GlobalResult<()> {
+        if dc_ls.is_empty() {
+            return Ok(());
+        }
+        let pool = get_conn_by_pool();
+        let mut builder = sqlx::query_builder::QueryBuilder::new(
+            "INSERT IGNORE INTO GMV_DEVICE_CHANNEL_CONF (device_id, channel_id) ",
+        );
+        builder.push_values(dc_ls, |mut b, dc| {
+            b.push_bind(&dc.device_id).push_bind(&dc.channel_id);
+        });
+        builder
+            .build()
+            .execute(pool)
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        Ok(())
+    }
+
     fn build(device_id: &str, vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
         use crate::gb::handler::parser::xml::*;
         let mut dc = GmvDeviceChannel::default();
@@ -670,7 +689,7 @@ mod tests {
         let pool = get_conn_by_pool();
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
          model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
-         longitude,latitude,ptz_type,supply_light_type,alias_name) ");
+         longitude,latitude,ptz_type,supply_light_type) ");
         builder.push_values(dc_ls, |mut b, dc| {
             b.push_bind(dc.device_id)
                 .push_bind(dc.channel_id)
@@ -690,14 +709,13 @@ mod tests {
                 .push_bind(dc.longitude)
                 .push_bind(dc.latitude)
                 .push_bind(dc.ptz_type)
-                .push_bind(dc.supply_light_type)
-                .push_bind(dc.alias_name);
+                .push_bind(dc.supply_light_type);
         });
         builder.push(" ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),channel_id=VALUES(channel_id),name=VALUES(name),
         manufacturer=VALUES(manufacturer),model=VALUES(model),owner=VALUES(owner),status=VALUES(status),civil_code=VALUES(civil_code),
         address=VALUES(address),parental=VALUES(parental),block=VALUES(block),parent_id=VALUES(parent_id),ip_address=VALUES(ip_address),
         port=VALUES(port),password=VALUES(password),longitude=VALUES(longitude),latitude=VALUES(latitude),ptz_type=VALUES(ptz_type),
-        supply_light_type=VALUES(supply_light_type),alias_name=VALUES(alias_name)");
+        supply_light_type=VALUES(supply_light_type)");
         let res = builder.build().execute(pool).await;
         println!("{:?}", res);
     }

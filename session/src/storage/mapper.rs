@@ -26,12 +26,14 @@ pub async fn get_snapshot_dc_by_limit(
     SELECT c.DEVICE_ID,c.CHANNEL_ID FROM GMV_OAUTH a
     INNER JOIN GMV_DEVICE b ON a.DEVICE_ID = b.DEVICE_ID
     INNER JOIN GMV_DEVICE_CHANNEL c ON a.DEVICE_ID=c.DEVICE_ID
+    LEFT JOIN GMV_DEVICE_CHANNEL_CONF cc ON c.DEVICE_ID=cc.DEVICE_ID AND c.CHANNEL_ID=cc.CHANNEL_ID
     WHERE
     a.DEL = 0
-    AND b.`status` = 1
-    AND DATE_ADD(b.register_time,INTERVAL b.register_expires SECOND)>NOW()
+    AND b.ONLINE_EXPIRE_TIME IS NOT NULL
+    AND b.ONLINE_EXPIRE_TIME > NOW()
     AND LEFT(b.GB_VERSION, 1) >= '3'
-    and c.SNAPSHOT = 1
+    AND COALESCE(cc.BIZ_ENABLE, 1) = 1
+    AND COALESCE(cc.SNAPSHOT_ENABLE, 2) = 1
     AND !(c.`status` = 'OFF' OR c.`status` = 'OFFLINE' )
     ORDER BY c.DEVICE_ID,c.CHANNEL_ID limit ?,?";
     let dcs: Vec<(String, String)> = sqlx::query_as(script)
