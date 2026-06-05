@@ -4,6 +4,7 @@ use crate::register::core::SERVER_HEART_SECOND;
 use crate::state::runner::Runner;
 use crate::state::schedule;
 use crate::state::schedule::ScheduleTask;
+use crate::storage::db_task;
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::chrono::Local;
@@ -128,6 +129,7 @@ impl SessionConf {
     ) -> GlobalResult<()> {
         let (output, input) = io::rw_by_tokio(tu, cancel_token.child_token())?;
         let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
+        db_task::init(cancel_token.child_token());
         Register::init(
             SessionConf::get_session_by_conf(),
             output.clone(),

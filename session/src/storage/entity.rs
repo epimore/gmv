@@ -2,7 +2,7 @@ use crate::gb::handler::parser;
 use rsip::Request;
 use std::sync::Arc;
 
-use base::chrono::{Local, NaiveDateTime};
+use base::chrono::{Duration as TimeDelta, Local, NaiveDateTime};
 use base::constructor::New;
 use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
@@ -132,10 +132,10 @@ pub struct GmvDevice {
     pub transport: String,
     pub register_expires: u32,
     pub register_time: NaiveDateTime,
+    pub online_expire_time: Option<NaiveDateTime>,
     pub local_addr: String,
     pub contact_uri: String,
     pub enable_lr: u8,
-    pub status: u8,
     pub gb_version: Option<String>,
 }
 
@@ -144,38 +144,43 @@ impl GmvDevice {
         device_id: &String,
     ) -> GlobalResult<Option<GmvDevice>> {
         let pool = get_conn_by_pool();
-        let res = sqlx::query_as::<_, Self>(r#"select device_id,transport,register_expires,
-        register_time,local_addr,contact_uri,enable_lr,status,gb_version from GMV_DEVICE where device_id=?"#)
-            .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
+        let res = sqlx::query_as::<_, Self>(
+            r#"select device_id,transport,register_expires,
+        register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version
+        from GMV_DEVICE where device_id=?"#,
+        )
+        .bind(device_id)
+        .fetch_optional(pool)
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
 
     pub async fn insert_single_gmv_device_by_register(&self) -> GlobalResult<()> {
         let pool = get_conn_by_pool();
         sqlx::query(r#"insert into GMV_DEVICE (device_id,transport,register_expires,
-        register_time,local_addr,contact_uri,enable_lr,status,gb_version) values (?,?,?,?,?,?,?,?,?)
+        register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE device_id=VALUES(device_id),transport=VALUES(transport),register_expires=VALUES(register_expires),
-        register_time=VALUES(register_time),local_addr=VALUES(local_addr),contact_uri=VALUES(contact_uri),enable_lr=VALUES(enable_lr),status=VALUES(status),gb_version=VALUES(gb_version)"#)
+        register_time=VALUES(register_time),online_expire_time=VALUES(online_expire_time),local_addr=VALUES(local_addr),
+        contact_uri=VALUES(contact_uri),enable_lr=VALUES(enable_lr),gb_version=VALUES(gb_version)"#)
             .bind(&self.device_id)
             .bind(&self.transport)
             .bind(&self.register_expires)
             .bind(&self.register_time)
+            .bind(&self.online_expire_time)
             .bind(&self.local_addr)
             .bind(&self.contact_uri)
             .bind(&self.enable_lr)
-            .bind(&self.status)
             .bind(&self.gb_version)
             .execute(pool)
             .await.hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
-    pub async fn update_gmv_device_status_by_device_id(
-        device_id: &str,
-        status: u8,
-    ) -> GlobalResult<()> {
+
+    pub async fn expire_online_by_device_id(device_id: &str) -> GlobalResult<()> {
         let pool = get_conn_by_pool();
-        sqlx::query("update GMV_DEVICE set status=? where device_id=?")
-            .bind(status)
+        sqlx::query("update GMV_DEVICE set online_expire_time=? where device_id=?")
+            .bind(Local::now().naive_local())
             .bind(device_id)
             .execute(pool)
             .await
@@ -183,16 +188,32 @@ impl GmvDevice {
         Ok(())
     }
 
-    pub fn build_gmv_device(req: &Request) -> GlobalResult<Self> {
+    pub async fn refresh_online_expire_time_by_device_id(device_id: &str) -> GlobalResult<()> {
+        let pool = get_conn_by_pool();
+        sqlx::query(
+            r#"update GMV_DEVICE d
+            inner join GMV_OAUTH o on o.DEVICE_ID=d.DEVICE_ID
+            set d.online_expire_time=timestampadd(second,o.heartbeat_sec * 3,now())
+            where d.device_id=?"#,
+        )
+        .bind(device_id)
+        .execute(pool)
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+        Ok(())
+    }
+
+    pub fn build_gmv_device(req: &Request, heartbeat_sec: u8) -> GlobalResult<Self> {
+        let now = Local::now().naive_local();
         let device = Self {
             device_id: parser::header::get_device_id_by_request(req)?,
             transport: parser::header::get_transport(req)?,
             register_expires: parser::header::get_expires(req)?,
-            register_time: Local::now().naive_local(),
+            register_time: now,
+            online_expire_time: Some(now + TimeDelta::seconds((heartbeat_sec as i64) * 3)),
             local_addr: parser::header::get_local_addr(req)?,
             contact_uri: parser::header::get_contact_uri(req)?,
             enable_lr: parser::header::enable_lr(req)?,
-            status: 1,
             gb_version: parser::header::get_gb_version(req),
         };
         Ok(device)
@@ -476,8 +497,7 @@ pub struct DeviceStatus {
     pub heartbeat: u8,
     pub enable: u8,
     pub expires: u32,
-    pub register_time: NaiveDateTime,
-    pub online: u8,
+    pub online_expire_time: Option<NaiveDateTime>,
     pub contact_uri: String,
     pub lr: u8,
 }
@@ -485,7 +505,9 @@ impl DeviceStatus {
     pub async fn get_device_status(device_id: &String) -> GlobalResult<Option<DeviceStatus>> {
         let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, DeviceStatus>(
-            "SELECT o.HEARTBEAT_SEC heartbeat,o.`STATUS` enable,d.REGISTER_EXPIRES expires, d.REGISTER_TIME register_time,d.`STATUS` online,d.CONTACT_URI contact_uri,d.ENABLE_LR lr FROM GMV_OAUTH o INNER JOIN GMV_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
+            "SELECT o.HEARTBEAT_SEC heartbeat,o.`STATUS` enable,d.REGISTER_EXPIRES expires,
+            d.ONLINE_EXPIRE_TIME online_expire_time,d.CONTACT_URI contact_uri,d.ENABLE_LR lr
+            FROM GMV_OAUTH o INNER JOIN GMV_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
         ).bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
@@ -606,13 +628,9 @@ mod tests {
     }
 
     // #[tokio::test]
-    async fn test_update_gmv_device_status_by_device_id() {
+    async fn test_expire_online_by_device_id() {
         init();
-        let res = GmvDevice::update_gmv_device_status_by_device_id(
-            &"34020000001320000003".to_string(),
-            1,
-        )
-        .await;
+        let res = GmvDevice::expire_online_by_device_id(&"34020000001320000003".to_string()).await;
         println!("{:?}", res);
     }
 

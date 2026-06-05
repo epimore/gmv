@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use base::chrono::{Duration as TimeDelta, Local};
+use base::chrono::Local;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::net::state::Association;
@@ -26,7 +26,8 @@ use crate::http::client::{HttpBiz, HttpClient};
 use crate::service::KEY_SNAPSHOT_IMAGE;
 use crate::state::AlarmConf;
 use crate::state::model::AlarmInfo;
-use crate::storage::entity::{DeviceStatus, GmvDevice, GmvDeviceChannel, GmvDeviceExt, GmvOauth};
+use crate::storage::db_task::{self, DbTask};
+use crate::storage::entity::{DeviceStatus, GmvDevice, GmvOauth};
 use crate::{register, state};
 
 const REGISTER_NONCE_TTL: Duration = Duration::from_secs(300);
@@ -274,8 +275,7 @@ impl State {
                         heartbeat,
                         enable,
                         expires,
-                        register_time,
-                        online,
+                        online_expire_time,
                         contact_uri,
                         lr,
                     } = ds;
@@ -283,10 +283,11 @@ impl State {
                         warn!("未启用设备: {device_id}");
                         Ok(State::Forbidden)
                     } else {
-                        //判断是否在注册有效期内
-                        if register_time + TimeDelta::seconds(expires as i64)
-                            > Local::now().naive_local()
-                        {
+                        //判断是否在在线有效期内
+                        let now = Local::now().naive_local();
+                        let online_alive =
+                            online_expire_time.map_or(false, |expire_time| expire_time > now);
+                        if online_alive {
                             let mut device_session = register::core::DeviceSession::build(
                                 contact_uri,
                                 bill.clone(),
@@ -302,14 +303,6 @@ impl State {
                                 device_session,
                             );
                             // RWContext::insert(device_id, device_session);
-                            //如果设备是离线状态，则更新为在线
-                            if online == 0 {
-                                GmvDevice::update_gmv_device_status_by_device_id(
-                                    device_id.as_ref(),
-                                    1,
-                                )
-                                .await?;
-                            }
                             Ok(State::ReCache)
                         } else {
                             //401告知对端重新注册
@@ -433,8 +426,9 @@ impl Register {
         }
         register::core::Register::register_device(device_id.clone(), device_session)?;
         // RWContext::insert(device_id, device_session);
-        let gmv_device = GmvDevice::build_gmv_device(&req)?;
-        gmv_device.insert_single_gmv_device_by_register().await?;
+        let gmv_device = GmvDevice::build_gmv_device(&req, oauth.heartbeat_sec)?;
+        let register_expires = gmv_device.register_expires;
+        db_task::submit(DbTask::UpsertDevice(gmv_device));
         let ok_response = ResponseBuilder::build_register_ok_response(
             &req,
             &bill.remote_addr,
@@ -456,7 +450,7 @@ impl Register {
             .await
             .hand_log(|msg| warn!("query device catalog after register failed: {msg}"));
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        let _ = cmd::CmdQuery::subscribe_device_catalog(&device_key, gmv_device.register_expires)
+        let _ = cmd::CmdQuery::subscribe_device_catalog(&device_key, register_expires)
             .await
             .hand_log(|msg| warn!("subscribe device catalog after register failed: {msg}"));
         Ok(())
@@ -476,7 +470,9 @@ impl Register {
             .await
             .hand_log(|msg| warn!("{msg}"));
         register::core::Register::remove_device(device_id);
-        GmvDevice::update_gmv_device_status_by_device_id(device_id, 0).await?;
+        db_task::submit(DbTask::ExpireDeviceOnline {
+            device_id: device_id.to_string(),
+        });
         // RWContext::clean_rw_session_and_net(device_id);
         Ok(())
     }
@@ -588,26 +584,27 @@ impl Message {
                 &device_id, &status
             );
         }
-        let _ = register::core::Register::device_heart(device_id, bill.clone());
+        if register::core::Register::device_heart(device_id, bill.clone()).is_ok() {
+            db_task::submit(DbTask::TouchDeviceHeartbeat {
+                device_id: device_id.to_string(),
+            });
+        }
         // RWContext::keep_alive(device_id, bill.clone());
     }
 
     async fn device_info(vs: Vec<(String, String)>) {
-        let _ = GmvDeviceExt::update_gmv_device_ext_info(vs)
-            .await
-            .hand_log(|msg| error!("{msg}"));
+        db_task::submit(DbTask::UpdateDeviceExtInfo(vs));
     }
 
     async fn device_catalog(device_id: &Arc<str>, vs: Vec<(String, String)>) {
-        if let Ok(_arr) = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs)
-            .await
-            .hand_log(|msg| error!("{msg}"))
-        {
-            //通过预置位探测是否有云台可用
-            // for dc in arr {
-            //     let _ = CmdQuery::query_preset(&dc.device_id, Some(&dc.channel_id)).await.hand_log(|msg| error!("{msg}"));
-            // }
-        }
+        db_task::submit(DbTask::InsertDeviceCatalog {
+            device_id: device_id.to_string(),
+            items: vs,
+        });
+        //通过预置位探测是否有云台可用
+        // for dc in arr {
+        //     let _ = CmdQuery::query_preset(&dc.device_id, Some(&dc.channel_id)).await.hand_log(|msg| error!("{msg}"));
+        // }
     }
 
     async fn message_notify_alarm(
@@ -643,9 +640,10 @@ impl Notify {
                     if MESSAGE_TYPE.contains(&&**k) {
                         match &v[..] {
                             MESSAGE_NOTIFY_CATALOG => {
-                                let _ = GmvDeviceChannel::insert_gmv_device_channel(device_id, vs)
-                                    .await
-                                    .hand_log(|msg| error!("{msg}"));
+                                db_task::submit(DbTask::InsertDeviceCatalog {
+                                    device_id: device_id.to_string(),
+                                    items: vs,
+                                });
                             }
                             _ => {
                                 debug!("cmdType暂不支持;{k} : {v}");

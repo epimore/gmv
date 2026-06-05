@@ -101,6 +101,7 @@ impl Register {
         };
 
         if session.association == association {
+            session.last_seen = base::tokio::time::Instant::now();
             Self::scheduler()
                 .refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
             return Ok(());
@@ -116,6 +117,7 @@ impl Register {
         arc.io_map
             .update_net_device_mapping(&association, device_id);
         session.association = association;
+        session.last_seen = base::tokio::time::Instant::now();
         drop(session);
 
         Self::scheduler().refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;

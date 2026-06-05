@@ -12,7 +12,7 @@ use crate::gb::depot::trans::TransactionContext;
 use crate::register::core::{Inner, Register, TimeScheduleKey};
 use crate::register::schedule::ScheduleKey;
 use crate::state::session::Cache as GeneralCache;
-use crate::storage::entity::GmvDevice;
+use crate::storage::db_task::{self, DbTask};
 
 const MAX_WORKER_POOL: usize = 128;
 
@@ -62,7 +62,9 @@ async fn handle_rx_event(rx: &mut Receiver<Event>, semaphore: Arc<Semaphore>) {
 async fn hand_event(event: Event) {
     match event {
         Event::DeviceOffline(device_id) => {
-            let _ = GmvDevice::update_gmv_device_status_by_device_id(device_id.as_ref(), 0).await;
+            db_task::submit(DbTask::ExpireDeviceOnline {
+                device_id: device_id.to_string(),
+            });
         }
         Event::ServerHeart(domain_id) => {
             let _ = Register::server_keep_heart_update_db(domain_id).await;

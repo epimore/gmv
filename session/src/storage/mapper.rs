@@ -17,14 +17,6 @@ pub async fn get_device_channel_status(
     Ok(res.map(|(v,)| v))
 }
 
-// pub async fn get_device_status_info(device_id: &String) -> GlobalResult<Option<(u8, u8, u32, NaiveDateTime, u8)>> {
-//     let pool = get_conn_by_pool();
-//     let res = sqlx::query_as::<_, (u8, u8, u32, NaiveDateTime, u8)>(
-//         "SELECT o.HEARTBEAT_SEC,o.`STATUS`,d.REGISTER_EXPIRES,d.REGISTER_TIME,d.`STATUS` FROM GMV_OAUTH o INNER JOIN GMV_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
-//     ).bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
-//     Ok(res)
-// }
-
 pub async fn get_snapshot_dc_by_limit(
     start: u32,
     count: u32,

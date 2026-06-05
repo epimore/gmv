@@ -15,10 +15,13 @@ pub struct RtpPacket {
     pub payload: Bytes,
 }
 
-const BUFFER_SIZE: usize = 64;
-const DEFAULT_QUEUE_WINDOW: usize = 8;
+const BUFFER_SIZE: usize = 128;
+const DEFAULT_VIDEO_QUEUE_WINDOW: usize = 32;
+const DEFAULT_AUDIO_QUEUE_WINDOW: usize = 8;
 const MAX_QUEUE_WINDOW: usize = BUFFER_SIZE / 2;
-const MIN_QUEUE_WINDOW: usize = 4;
+const MIN_VIDEO_QUEUE_WINDOW: usize = 16;
+const MIN_AUDIO_QUEUE_WINDOW: usize = 4;
+const QUEUE_SHRINK_AFTER_IN_ORDER: usize = 256;
 const SEQ_HALF_RANGE: u16 = 32768;
 const START_CODE: &[u8; 4] = &[0, 0, 0, 1];
 
@@ -63,6 +66,17 @@ impl PayloadKind {
                     Self::Passthrough
                 }
             }
+        }
+    }
+}
+
+fn reorder_window(payload_kind: PayloadKind) -> (usize, usize) {
+    match payload_kind {
+        PayloadKind::Ps | PayloadKind::H264 | PayloadKind::H265 | PayloadKind::Passthrough => {
+            (DEFAULT_VIDEO_QUEUE_WINDOW, MIN_VIDEO_QUEUE_WINDOW)
+        }
+        PayloadKind::Aac | PayloadKind::G711 => {
+            (DEFAULT_AUDIO_QUEUE_WINDOW, MIN_AUDIO_QUEUE_WINDOW)
         }
     }
 }
@@ -130,6 +144,8 @@ pub struct RtpPacketBuffer {
     queue: [Option<RtpPacket>; BUFFER_SIZE],
     queue_count: usize,
     queue_window: usize,
+    min_queue_window: usize,
+    in_order_packets: usize,
     packet_rx: Receiver<RtpPacket>,
     remaining: Bytes,
     ready_aus: VecDeque<Bytes>,
@@ -150,12 +166,15 @@ impl RtpPacketBuffer {
         media_ext: &MediaExt,
     ) -> GlobalResult<Self> {
         let payload_kind = PayloadKind::from_media_ext(media_ext);
+        let (queue_window, min_queue_window) = reorder_window(payload_kind);
         let mut buffer = Self {
             ssrc,
             first_read_rtp_sn: u16::MAX,
             queue: std::array::from_fn(|_| None),
             queue_count: 0,
-            queue_window: DEFAULT_QUEUE_WINDOW,
+            queue_window,
+            min_queue_window,
+            in_order_packets: 0,
             packet_rx,
             remaining: Default::default(),
             ready_aus: VecDeque::new(),
@@ -173,7 +192,7 @@ impl RtpPacketBuffer {
     }
 
     fn calculate_index(&mut self) -> GlobalResult<()> {
-        while self.queue_count < DEFAULT_QUEUE_WINDOW {
+        while self.queue_count < self.queue_window {
             let pkt = self.recv_packet()?;
             self.enqueue_initial(pkt);
         }
@@ -364,12 +383,21 @@ impl RtpPacketBuffer {
     }
 
     fn mark_packet_loss(&mut self, next_timestamp: u32) {
+        let had_fragment = self.h264_fu.is_some() || self.h265_fu.is_some();
         self.reset_fragment_state();
+
+        if self.au_buffer.is_empty() {
+            self.au_timestamp = None;
+            self.au_damaged = false;
+            if had_fragment && self.is_raw_video() {
+                self.wait_keyframe = true;
+            }
+            return;
+        }
 
         if self
             .au_timestamp
             .is_some_and(|current| current != next_timestamp)
-            && !self.au_buffer.is_empty()
         {
             warn!(
                 "drop rtp access unit before sequence loss; ssrc: {}, timestamp: {:?}, bytes: {}",
@@ -378,7 +406,7 @@ impl RtpPacketBuffer {
                 self.au_buffer.len()
             );
             self.au_buffer.clear();
-            self.au_timestamp = Some(next_timestamp);
+            self.au_timestamp = None;
             self.au_damaged = false;
             return;
         }
@@ -493,10 +521,23 @@ impl RtpPacketBuffer {
     }
 
     fn adjust_queue_window(&mut self, offset: usize) {
-        if offset > self.queue_window && self.queue_window < MAX_QUEUE_WINDOW {
-            self.queue_window += 1;
-        } else if offset == 0 && self.queue_window > MIN_QUEUE_WINDOW {
-            self.queue_window -= 1;
+        if offset > 0 {
+            self.in_order_packets = 0;
+            let target = (offset + self.min_queue_window).min(MAX_QUEUE_WINDOW);
+            if target > self.queue_window {
+                self.queue_window = target;
+            } else if offset + 2 >= self.queue_window && self.queue_window < MAX_QUEUE_WINDOW {
+                self.queue_window += 1;
+            }
+            return;
+        }
+
+        if self.queue_window > self.min_queue_window {
+            self.in_order_packets += 1;
+            if self.in_order_packets >= QUEUE_SHRINK_AFTER_IN_ORDER {
+                self.queue_window -= 1;
+                self.in_order_packets = 0;
+            }
         }
     }
 
