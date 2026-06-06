@@ -19,18 +19,12 @@ pub struct RtpPacket {
 const BUFFER_SIZE: usize = 1024;
 const DEFAULT_VIDEO_QUEUE_WINDOW: usize = 32;
 const DEFAULT_AUDIO_QUEUE_WINDOW: usize = 8;
-const MAX_QUEUE_WINDOW: usize = 128;
-const MIN_VIDEO_QUEUE_WINDOW: usize = 16;
-const MIN_AUDIO_QUEUE_WINDOW: usize = 4;
-const QUEUE_SHRINK_AFTER_IN_ORDER: usize = 256;
 const REORDER_BUFFER_HIGH_WATERMARK: usize = BUFFER_SIZE * 4 / 5;
-const MIN_GAP_WAIT_MS: u64 = 5;
-const DEFAULT_GAP_WAIT_MS: u64 = 20;
-const MAX_GAP_WAIT_MS: u64 = 60;
-const GAP_WAIT_PHASE1_MS: u64 = 5;
-const GAP_WAIT_PHASE2_MS: u64 = 10;
-const GAP_WAIT_SAFETY_MARGIN_MS: u64 = 8;
-const GAP_WAIT_SHRINK_AFTER_IN_ORDER: usize = 512;
+const VIDEO_GAP_WAIT_MS: u64 = 80;
+const AUDIO_GAP_WAIT_MS: u64 = 5;
+const GAP_WAIT_FIRST_MS: u64 = 5;
+const GAP_WAIT_SECOND_MS: u64 = 15;
+const GAP_WAIT_STEP_MS: u64 = 10;
 const SEQ_HALF_RANGE: u16 = 32768;
 const START_CODE: &[u8; 4] = &[0, 0, 0, 1];
 
@@ -79,23 +73,21 @@ impl PayloadKind {
     }
 }
 
-fn reorder_window(payload_kind: PayloadKind) -> (usize, usize) {
+fn reorder_window(payload_kind: PayloadKind) -> usize {
     match payload_kind {
         PayloadKind::Ps | PayloadKind::H264 | PayloadKind::H265 | PayloadKind::Passthrough => {
-            (DEFAULT_VIDEO_QUEUE_WINDOW, MIN_VIDEO_QUEUE_WINDOW)
+            DEFAULT_VIDEO_QUEUE_WINDOW
         }
-        PayloadKind::Aac | PayloadKind::G711 => {
-            (DEFAULT_AUDIO_QUEUE_WINDOW, MIN_AUDIO_QUEUE_WINDOW)
-        }
+        PayloadKind::Aac | PayloadKind::G711 => DEFAULT_AUDIO_QUEUE_WINDOW,
     }
 }
 
-fn default_gap_wait_ms(payload_kind: PayloadKind) -> u64 {
+fn max_gap_wait_ms(payload_kind: PayloadKind) -> u64 {
     match payload_kind {
         PayloadKind::Ps | PayloadKind::H264 | PayloadKind::H265 | PayloadKind::Passthrough => {
-            DEFAULT_GAP_WAIT_MS
+            VIDEO_GAP_WAIT_MS
         }
-        PayloadKind::Aac | PayloadKind::G711 => MIN_GAP_WAIT_MS,
+        PayloadKind::Aac | PayloadKind::G711 => AUDIO_GAP_WAIT_MS,
     }
 }
 
@@ -156,36 +148,12 @@ fn seq_before(seq: u16, base: u16) -> bool {
     seq != base && base.wrapping_sub(seq) < SEQ_HALF_RANGE
 }
 
-fn seq_in_range(seq: u16, start: u16, end: u16) -> bool {
-    if start <= end {
-        seq >= start && seq <= end
-    } else {
-        seq >= start || seq <= end
-    }
-}
-
-fn elapsed_ms(start: Instant) -> u64 {
-    start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-}
-
-#[derive(Clone, Copy)]
-struct LateGap {
-    start_seq: u16,
-    end_seq: u16,
-    started_at: Instant,
-}
-
 pub struct RtpPacketBuffer {
     pub ssrc: u32,
     first_read_rtp_sn: u16,
     queue: [Option<RtpPacket>; BUFFER_SIZE],
     queue_count: usize,
     queue_window: usize,
-    min_queue_window: usize,
-    in_order_packets: usize,
-    gap_wait_ms: u64,
-    gap_in_order_packets: usize,
-    late_gap: Option<LateGap>,
     packet_rx: Receiver<RtpPacket>,
     remaining: Bytes,
     ready_aus: VecDeque<Bytes>,
@@ -206,18 +174,13 @@ impl RtpPacketBuffer {
         media_ext: &MediaExt,
     ) -> GlobalResult<Self> {
         let payload_kind = PayloadKind::from_media_ext(media_ext);
-        let (queue_window, min_queue_window) = reorder_window(payload_kind);
+        let queue_window = reorder_window(payload_kind);
         let mut buffer = Self {
             ssrc,
             first_read_rtp_sn: u16::MAX,
             queue: std::array::from_fn(|_| None),
             queue_count: 0,
             queue_window,
-            min_queue_window,
-            in_order_packets: 0,
-            gap_wait_ms: default_gap_wait_ms(payload_kind),
-            gap_in_order_packets: 0,
-            late_gap: None,
             packet_rx,
             remaining: Default::default(),
             ready_aus: VecDeque::new(),
@@ -500,7 +463,6 @@ impl RtpPacketBuffer {
     fn enqueue(&mut self, pkt: RtpPacket) {
         let seq = pkt.seq;
         if self.is_old_packet(seq) {
-            self.record_old_packet(seq);
             debug!(
                 "drop old rtp packet; ssrc: {}, seq: {}, first read seq: {}",
                 self.ssrc, seq, self.first_read_rtp_sn
@@ -535,18 +497,12 @@ impl RtpPacketBuffer {
 
         if let Some(pkt) = self.take_expected_packet() {
             self.first_read_rtp_sn = pkt.seq.wrapping_add(1);
-            if !input_closed {
-                self.adjust_queue_window(0);
-                self.adjust_gap_wait_after_in_order();
-            }
             return Some((pkt, false));
         }
 
         let gap_started_at = Instant::now();
         if !input_closed && self.wait_for_gap_packet(self.first_read_rtp_sn, gap_started_at) {
             if let Some(pkt) = self.take_expected_packet() {
-                self.record_late_packet(elapsed_ms(gap_started_at));
-                self.in_order_packets = 0;
                 self.first_read_rtp_sn = pkt.seq.wrapping_add(1);
                 return Some((pkt, false));
             }
@@ -559,28 +515,17 @@ impl RtpPacketBuffer {
         let lost_before = offset > 0;
         if lost_before {
             debug!(
-                "rtp packet lost; ssrc: {}, expected seq: {}, next seq: {}, missed: {}, wait_ms: {}, queue_count: {}",
+                "rtp packet lost; ssrc: {}, expected seq: {}, next seq: {}, missed: {}, max_wait_ms: {}, queue_count: {}",
                 self.ssrc,
                 self.first_read_rtp_sn,
                 pkt.seq,
                 offset,
-                self.gap_wait_ms,
+                self.max_gap_wait_ms(),
                 self.queue_count
             );
-            if !input_closed {
-                self.remember_late_gap(
-                    self.first_read_rtp_sn,
-                    pkt.seq.wrapping_sub(1),
-                    gap_started_at,
-                );
-            }
-            self.gap_in_order_packets = 0;
         }
 
         self.first_read_rtp_sn = pkt.seq.wrapping_add(1);
-        if !input_closed {
-            self.adjust_queue_window(offset);
-        }
 
         Some((pkt, lost_before))
     }
@@ -625,27 +570,24 @@ impl RtpPacketBuffer {
     }
 
     fn wait_for_gap_packet(&mut self, expected_seq: u16, gap_started_at: Instant) -> bool {
-        let max_wait_ms = self
-            .gap_wait_ms
-            .clamp(self.min_gap_wait_ms(), MAX_GAP_WAIT_MS);
-        let phase2_ms = GAP_WAIT_PHASE1_MS + GAP_WAIT_PHASE2_MS;
-        let phases = [
-            GAP_WAIT_PHASE1_MS.min(max_wait_ms),
-            phase2_ms.min(max_wait_ms),
-            max_wait_ms,
-        ];
-
-        let mut last_phase_ms = 0;
-        for phase_ms in phases {
-            if phase_ms <= last_phase_ms {
-                continue;
-            }
+        let max_wait_ms = self.max_gap_wait_ms();
+        let mut phase_ms = GAP_WAIT_FIRST_MS.min(max_wait_ms);
+        let mut use_second_gap = true;
+        loop {
             if self.wait_until_gap_deadline(expected_seq, gap_started_at, phase_ms) {
                 return true;
             }
-            last_phase_ms = phase_ms;
+            if phase_ms >= max_wait_ms {
+                return false;
+            }
+            let step_ms = if use_second_gap {
+                use_second_gap = false;
+                GAP_WAIT_SECOND_MS
+            } else {
+                GAP_WAIT_STEP_MS
+            };
+            phase_ms = phase_ms.saturating_add(step_ms).min(max_wait_ms);
         }
-        false
     }
 
     fn wait_until_gap_deadline(
@@ -661,8 +603,11 @@ impl RtpPacketBuffer {
             }
             if self.queue_count >= REORDER_BUFFER_HIGH_WATERMARK {
                 debug!(
-                    "rtp reorder buffer high watermark; ssrc: {}, expected seq: {}, queue_count: {}, wait_ms: {}",
-                    self.ssrc, expected_seq, self.queue_count, self.gap_wait_ms
+                    "rtp reorder buffer high watermark; ssrc: {}, expected seq: {}, queue_count: {}, max_wait_ms: {}",
+                    self.ssrc,
+                    expected_seq,
+                    self.queue_count,
+                    self.max_gap_wait_ms()
                 );
                 return false;
             }
@@ -680,86 +625,8 @@ impl RtpPacketBuffer {
         }
     }
 
-    fn remember_late_gap(&mut self, start_seq: u16, end_seq: u16, started_at: Instant) {
-        self.late_gap = Some(LateGap {
-            start_seq,
-            end_seq,
-            started_at,
-        });
-    }
-
-    fn record_old_packet(&mut self, seq: u16) {
-        let Some(gap) = self.late_gap else {
-            return;
-        };
-        if !seq_in_range(seq, gap.start_seq, gap.end_seq) {
-            return;
-        }
-
-        self.record_late_packet(elapsed_ms(gap.started_at));
-        if seq == gap.end_seq {
-            self.late_gap = None;
-        }
-    }
-
-    fn record_late_packet(&mut self, late_ms: u64) {
-        self.gap_in_order_packets = 0;
-        let target = late_ms
-            .saturating_add(GAP_WAIT_SAFETY_MARGIN_MS)
-            .clamp(self.min_gap_wait_ms(), MAX_GAP_WAIT_MS);
-        if target <= self.gap_wait_ms {
-            return;
-        }
-
-        self.gap_wait_ms = target;
-        debug!(
-            "increase rtp gap wait; ssrc: {}, late_ms: {}, wait_ms: {}",
-            self.ssrc, late_ms, self.gap_wait_ms
-        );
-    }
-
-    fn adjust_gap_wait_after_in_order(&mut self) {
-        let min_gap_wait_ms = self.min_gap_wait_ms();
-        if self.gap_wait_ms <= min_gap_wait_ms {
-            return;
-        }
-
-        self.gap_in_order_packets += 1;
-        if self.gap_in_order_packets < GAP_WAIT_SHRINK_AFTER_IN_ORDER {
-            return;
-        }
-
-        self.gap_wait_ms = self.gap_wait_ms.saturating_sub(1).max(min_gap_wait_ms);
-        self.gap_in_order_packets = 0;
-        debug!(
-            "decrease rtp gap wait; ssrc: {}, wait_ms: {}",
-            self.ssrc, self.gap_wait_ms
-        );
-    }
-
-    fn min_gap_wait_ms(&self) -> u64 {
-        default_gap_wait_ms(self.payload_kind)
-    }
-
-    fn adjust_queue_window(&mut self, offset: usize) {
-        if offset > 0 {
-            self.in_order_packets = 0;
-            let target = (offset + self.min_queue_window).min(MAX_QUEUE_WINDOW);
-            if target > self.queue_window {
-                self.queue_window = target;
-            } else if offset + 2 >= self.queue_window && self.queue_window < MAX_QUEUE_WINDOW {
-                self.queue_window += 1;
-            }
-            return;
-        }
-
-        if self.queue_window > self.min_queue_window {
-            self.in_order_packets += 1;
-            if self.in_order_packets >= QUEUE_SHRINK_AFTER_IN_ORDER {
-                self.queue_window -= 1;
-                self.in_order_packets = 0;
-            }
-        }
+    fn max_gap_wait_ms(&self) -> u64 {
+        max_gap_wait_ms(self.payload_kind)
     }
 
     fn consume_remaining(&mut self, max_consume_len: usize, buf: *mut u8) -> Option<usize> {
