@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
@@ -11,11 +11,11 @@ use base::tokio_util::sync::CancellationToken;
 
 use crate::gb::SessionConf;
 use crate::gb::depot::SipPackage;
-use crate::gb::handler::cmd::CmdStream;
 use crate::register::event::{self, Event};
 pub(crate) use crate::register::io::{DeviceSession, Network};
 use crate::register::schedule::TimeScheduler;
 use crate::register::session::Session;
+use crate::service::stream_close;
 use crate::state::session::Cache as GeneralCache;
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
@@ -28,6 +28,8 @@ pub const SERVER_HEART_EXPIRE: Duration = Duration::from_secs(SERVER_HEART_SECON
 pub enum TimeScheduleKey {
     Device3Heart(Arc<str>),
     DeviceRegistration(Arc<str>),
+    DeviceReconnect(Arc<str>, u64),
+    StreamClosing(Arc<str>, u64),
     OutSession(u64),
     ServerHeart(Arc<str>),
 }
@@ -93,39 +95,90 @@ impl Register {
     pub fn device_heart(device_id: &Arc<str>, association: Association) -> GlobalResult<()> {
         let arc = Self::get().inner.clone();
 
-        let Some(mut session) = arc.io_map.session.get_mut(device_id) else {
+        let Some(previous_session) = arc
+            .io_map
+            .session
+            .get(device_id)
+            .map(|item| item.snapshot())
+        else {
             return Err(GlobalError::new_sys_error(
                 "unregistered device keepalive",
                 |msg| warn!("device_id={device_id}; {msg}"),
             ));
         };
 
-        if session.association == association {
-            session.last_seen = base::tokio::time::Instant::now();
-            Self::scheduler()
-                .refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
-            return Ok(());
+        if previous_session.association != association {
+            info!(
+                "device {device_id} association changed: {} -> {}",
+                previous_session.association, association
+            );
+        }
+        let Some(rebind_result) = arc.io_map.rebind(device_id, association.clone()) else {
+            return Err(GlobalError::new_sys_error(
+                "device session disappeared during keepalive",
+                |msg| warn!("device_id={device_id}; {msg}"),
+            ));
+        };
+        if previous_session.association != association {
+            Self::close_tcp_if_needed(&previous_session);
         }
 
-        info!(
-            "device {device_id} association changed: {} -> {}",
-            session.association, association
-        );
-
-        arc.io_map
-            .remove_device_mapping(device_id, &session.association);
-        arc.io_map
-            .update_net_device_mapping(&association, device_id);
-        session.association = association;
-        session.last_seen = base::tokio::time::Instant::now();
-        drop(session);
-
-        Self::scheduler().refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
+        let reconnected = rebind_result.reconnect_generation.is_some();
+        if let Some(generation) = rebind_result.reconnect_generation {
+            let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceReconnect(
+                device_id.clone(),
+                generation,
+            ));
+            Self::scheduler().insert_register(
+                TimeScheduleKey::Device3Heart(device_id.clone()),
+                heartbeat_timeout(previous_session.heartbeat_sec),
+            )?;
+        } else {
+            Self::scheduler()
+                .refresh_register(&TimeScheduleKey::Device3Heart(device_id.clone()))?;
+        }
+        if reconnected || previous_session.association != association {
+            stream_close::retry_device(device_id);
+        }
         Ok(())
     }
 
     pub fn register_device(device_id: Arc<str>, ds: DeviceSession) -> GlobalResult<()> {
         let arc = Self::get().inner.clone();
+
+        let heartbeat_sec = ds.heartbeat_sec;
+        let registration_duration = ds.registration_duration;
+        let new_generation = arc
+            .io_map
+            .session
+            .get(&device_id)
+            .is_some_and(|current| current.registration_generation_changed(&ds));
+        let ds = if new_generation {
+            ds
+        } else {
+            match arc.io_map.rebind_registration(&device_id, ds) {
+                Ok(generation) => {
+                    let _ = Self::scheduler().remove_register(
+                        &TimeScheduleKey::DeviceReconnect(device_id.clone(), generation),
+                    );
+                    Self::scheduler()
+                        .insert_register(
+                            TimeScheduleKey::Device3Heart(device_id.clone()),
+                            heartbeat_timeout(heartbeat_sec),
+                        )
+                        .hand_log(|e| error!("insert device heartbeat timer failed: {e}"))?;
+                    Self::scheduler()
+                        .insert_register(
+                            TimeScheduleKey::DeviceRegistration(device_id.clone()),
+                            registration_duration,
+                        )
+                        .hand_log(|e| error!("insert device registration timer failed: {e}"))?;
+                    stream_close::retry_device(device_id.as_ref());
+                    return Ok(());
+                }
+                Err(ds) => ds,
+            }
+        };
 
         let previous_session = Self::remove_device_by_inner(&device_id, &arc);
         let association_changed = previous_session
@@ -136,24 +189,15 @@ impl Register {
                 Self::close_tcp_if_needed(&previous_session);
             }
         }
-        if association_changed {
-            for stream in GeneralCache::reset_device_state(device_id.as_ref()) {
-                let device_id = device_id.to_string();
-                base::tokio::spawn(async move {
-                    let _ = CmdStream::play_bye(
-                        stream.seq,
-                        stream.call_id,
-                        &device_id,
-                        &stream.channel_id,
-                        &stream.from_tag,
-                        &stream.to_tag,
-                    )
-                    .await;
-                });
-            }
+        if new_generation {
+            warn!(
+                "new registration generation, cleanup old device state: device_id={}",
+                device_id
+            );
+            GeneralCache::reset_device_state(device_id.as_ref());
         }
 
-        let expires = Duration::from_secs((ds.heartbeat_sec * 3) as u64);
+        let expires = heartbeat_timeout(ds.heartbeat_sec);
         Self::scheduler()
             .insert_register(TimeScheduleKey::Device3Heart(device_id.clone()), expires)
             .hand_log(|e| error!("insert device heartbeat timer failed: {e}"))?;
@@ -165,7 +209,10 @@ impl Register {
             )
             .hand_log(|e| error!("insert device registration timer failed: {e}"))?;
 
-        arc.io_map.insert(device_id, ds);
+        arc.io_map.insert(device_id.clone(), ds);
+        if !new_generation {
+            stream_close::retry_device(device_id.as_ref());
+        }
         Ok(())
     }
 
@@ -176,6 +223,11 @@ impl Register {
             .remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
 
         if let Some((_, session)) = inner.io_map.session.remove(device_id) {
+            let generation = session.connection_generation.load(Ordering::Acquire);
+            let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceReconnect(
+                device_id.clone(),
+                generation,
+            ));
             if !session.association_expire.load(Ordering::Relaxed) {
                 inner.io_map.net_device_map.remove(&session.association);
             }
@@ -187,20 +239,48 @@ impl Register {
     pub fn remove_device(device_id: &Arc<str>) {
         let inner = &Self::get().inner;
         Self::remove_device_by_inner(device_id, inner);
+        GeneralCache::reset_device_state(device_id.as_ref());
     }
 
-    pub fn remove_device_by_association(association: &Association) -> Option<DeviceSession> {
+    pub fn detach_device_association(association: &Association) -> bool {
         let inner = &Self::get().inner;
-        let (_, device_id) = inner.io_map.net_device_map.remove(association)?;
+        let Some(detached) = inner.io_map.detach_association(association) else {
+            return false;
+        };
+
+        let _ = Self::scheduler()
+            .remove_register(&TimeScheduleKey::Device3Heart(detached.device_id.clone()));
+        let key = TimeScheduleKey::DeviceReconnect(detached.device_id.clone(), detached.generation);
+        if let Err(err) = Self::scheduler().insert_register(key, detached.timeout) {
+            error!(
+                "schedule device reconnect cleanup failed: device_id={}, generation={}, err={err}",
+                detached.device_id, detached.generation
+            );
+            Self::expire_disconnected_by_inner(&detached.device_id, detached.generation, inner);
+        }
+        true
+    }
+
+    pub fn expire_disconnected_by_inner(
+        device_id: &Arc<str>,
+        generation: u64,
+        inner: &Inner,
+    ) -> Option<DeviceSession> {
+        let session = inner.io_map.remove_disconnected(device_id, generation)?;
         let _ =
             Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
         let _ = Self::scheduler()
             .remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
-        inner
-            .io_map
-            .session
-            .remove(&device_id)
-            .map(|(_, session)| session)
+        let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceReconnect(
+            device_id.clone(),
+            generation,
+        ));
+        GeneralCache::reset_device_state(device_id.as_ref());
+        let _ = inner
+            .event_tx
+            .try_send(Event::DeviceOffline(device_id.clone()))
+            .hand_log(|msg| error!("{msg}"));
+        Some(session)
     }
 
     pub fn get_device_id_by_association(association: &Association) -> Option<Arc<str>> {
@@ -218,17 +298,11 @@ impl Register {
             .io_map
             .session
             .get(device_id)
-            .map(|item| DeviceSession {
-                contact_uri: item.contact_uri.clone(),
-                association: item.association.clone(),
-                association_expire: AtomicBool::new(
-                    item.association_expire.load(Ordering::Relaxed),
-                ),
-                support_lr: AtomicBool::new(item.support_lr.load(Ordering::Relaxed)),
-                heartbeat_sec: item.heartbeat_sec,
-                last_seen: item.last_seen,
-                registration_duration: item.registration_duration,
-            })
+            .map(|item| item.snapshot())
+    }
+
+    pub fn get_connected_device_session(device_id: &str) -> Option<DeviceSession> {
+        Self::get().inner.io_map.connected_session(device_id)
     }
 
     pub fn has_session(device_id: &str) -> bool {
@@ -253,4 +327,8 @@ impl Register {
             .insert_register(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)?;
         update_res
     }
+}
+
+fn heartbeat_timeout(heartbeat_sec: u8) -> Duration {
+    Duration::from_secs(u64::from(heartbeat_sec).saturating_mul(3))
 }

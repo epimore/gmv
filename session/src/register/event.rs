@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use base::exception::GlobalResultExt;
-use base::log::{error, warn};
+use base::log::{debug, error, warn};
 use base::tokio;
 use base::tokio::select;
 use base::tokio::sync::Semaphore;
@@ -86,11 +86,47 @@ async fn on_time_schedule(
             | ScheduleKey::Register(TimeScheduleKey::DeviceRegistration(device_id)) => {
                 warn!("device {} expired, removing session", device_id);
                 if let Some(session) = Register::remove_device_by_inner(&device_id, inner) {
+                    GeneralCache::reset_device_state(device_id.as_ref());
                     Register::close_tcp_if_needed(&session);
                     let _ = inner
                         .event_tx
                         .try_send(Event::DeviceOffline(device_id))
                         .hand_log(|msg| error!("{msg}"));
+                }
+            }
+            ScheduleKey::Register(TimeScheduleKey::DeviceReconnect(device_id, generation)) => {
+                if Register::expire_disconnected_by_inner(&device_id, generation, inner).is_some() {
+                    warn!(
+                        "device reconnect expired, session removed: device_id={}, generation={}",
+                        device_id, generation
+                    );
+                } else {
+                    debug!(
+                        "ignore stale device reconnect event: device_id={}, generation={}",
+                        device_id, generation
+                    );
+                }
+            }
+            ScheduleKey::Register(TimeScheduleKey::StreamClosing(stream_id, generation)) => {
+                if let Some(info) =
+                    GeneralCache::stream_close_force(stream_id.as_ref(), generation)
+                {
+                    warn!(
+                        "force cleanup closing stream: device_id={}, channel_id={}, \
+                         stream_id={}, ssrc={}, call_id={}, generation={}, reason={}",
+                        info.device_id,
+                        info.channel_id,
+                        info.stream_id,
+                        info.ssrc,
+                        info.call_id,
+                        info.generation,
+                        info.last_error.as_deref().unwrap_or("close deadline expired")
+                    );
+                } else {
+                    debug!(
+                        "ignore stale stream closing event: stream_id={}, generation={}",
+                        stream_id, generation
+                    );
                 }
             }
             ScheduleKey::Register(TimeScheduleKey::ServerHeart(domain_id)) => {

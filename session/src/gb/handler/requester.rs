@@ -1,6 +1,7 @@
 use base::log::{LevelFilter, debug, info};
 use rsip::headers::ToTypedHeader;
 use rsip::message::HeadersExt;
+use rsip::prelude::UntypedHeader;
 use rsip::services::DigestGenerator;
 use rsip::{Method, Request};
 use std::collections::HashMap;
@@ -262,8 +263,16 @@ impl State {
             return Ok(State::Forbidden);
         }
         if RWContext::has_session_by_device_id(&device_key) {
-            RWContext::keep_alive(&device_key, bill.clone());
-            Ok(State::Enable)
+            if is_keepalive_request(req) {
+                RWContext::keep_alive(&device_key, bill.clone());
+                Ok(State::Enable)
+            } else {
+                warn!(
+                    "device signaling connection is unavailable: device_id={}, request={}",
+                    device_key, bill
+                );
+                Ok(State::Forbidden)
+            }
         } else {
             match DeviceStatus::get_device_status(&device_key).await? {
                 None => {
@@ -287,7 +296,7 @@ impl State {
                         let now = Local::now().naive_local();
                         let online_alive =
                             online_expire_time.map_or(false, |expire_time| expire_time > now);
-                        if online_alive {
+                        if online_alive && is_keepalive_request(req) {
                             let mut device_session = register::core::DeviceSession::build(
                                 contact_uri,
                                 bill.clone(),
@@ -304,6 +313,8 @@ impl State {
                             );
                             // RWContext::insert(device_id, device_session);
                             Ok(State::ReCache)
+                        } else if online_alive {
+                            Ok(State::Forbidden)
                         } else {
                             //401告知对端重新注册
                             Ok(State::Expired)
@@ -421,6 +432,17 @@ impl Register {
             oauth.heartbeat_sec,
             registration_duration,
         );
+        let registration_call_id = req
+            .call_id_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .value()
+            .to_string();
+        let registration_cseq = req
+            .cseq_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .seq()
+            .hand_log(|msg| warn!("{msg}"))?;
+        device_session.set_registration_identity(registration_call_id, registration_cseq);
         if parser::header::enable_lr(req)? == 1 {
             device_session.enable_lr();
         }

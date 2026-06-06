@@ -232,6 +232,14 @@ impl ResponseBuilder {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct DialogTarget {
+    pub remote_target: String,
+    pub route_set: Vec<String>,
+    pub from_header: String,
+    pub to_header: String,
+}
+
 pub struct RequestBuilder;
 
 #[allow(unused)]
@@ -568,24 +576,166 @@ impl RequestBuilder {
             Some(to_tag),
         )
         .await?;
-        headers.push(rsip::headers::CallId::new(&call_id).into());
-        let cs_eq_str = format!("{} BYE", seq);
-        let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
-        headers.push(cs_eq);
-        let request = Request {
+        let request =
+            Self::finish_bye_request(headers, &uri.to_string(), &[], seq, call_id)?;
+        Ok((request, association))
+    }
+
+    pub fn build_dialog_bye_request(
+        seq: u32,
+        call_id: String,
+        device_id: &String,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
+    ) -> GlobalResult<(Request, Association)> {
+        let (headers, association) =
+            Self::build_dialog_request_headers(device_id, from_header, to_header)?;
+        let request =
+            Self::finish_bye_request(headers, remote_target, route_set, seq, call_id)?;
+        Ok((request, association))
+    }
+
+    fn build_dialog_request_headers(
+        device_id: &String,
+        from_header: &str,
+        to_header: &str,
+    ) -> GlobalResult<(rsip::Headers, Association)> {
+        let (_, association, _) = RWContext::get_ds_by_device_id(device_id)
+            .ok_or(SysErr(anyhow!("device {device_id} is not connected")))
+            .hand_log(|msg| warn!("{msg}"))?;
+        let conf = SessionConf::get_session_by_conf();
+        let server_ip = conf.wan_ip;
+        let server_port = conf.wan_port;
+        let transport = association.protocol.get_value();
+        let mut headers: rsip::Headers = Default::default();
+        headers.push(
+            rsip::headers::Via::new(format!(
+                "SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}",
+                transport,
+                server_ip,
+                server_port,
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
+            ))
+            .into(),
+        );
+        headers.push(rsip::headers::From::new(from_header).into());
+        headers.push(rsip::headers::To::new(to_header).into());
+        headers.push(
+            rsip::headers::Contact::new(format!(
+                "<sip:{}@{}:{}>",
+                conf.domain_id, server_ip, server_port
+            ))
+            .into(),
+        );
+        headers.push(rsip::headers::MaxForwards::new("70").into());
+        headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
+        Ok((headers, association))
+    }
+
+    fn finish_bye_request(
+        mut headers: rsip::Headers,
+        remote_target: &str,
+        route_set: &[String],
+        seq: u32,
+        call_id: String,
+    ) -> GlobalResult<Request> {
+        let (uri, routes) = Self::dialog_request_parts(remote_target, route_set)?;
+        for route in routes {
+            headers.push(rsip::headers::Route::new(route).into());
+        }
+        headers.push(rsip::headers::CallId::new(call_id).into());
+        headers.push(rsip::headers::CSeq::new(format!("{seq} BYE")).into());
+        headers.push(rsip::headers::ContentLength::default().into());
+        Ok(Request {
             method: Method::Bye,
             uri,
             headers,
             version: rsip::common::version::Version::V2,
             body: Default::default(),
+        })
+    }
+
+    pub fn dialog_target_by_response(
+        res: &Response,
+        fallback_remote_target: &str,
+    ) -> DialogTarget {
+        let remote_target = res
+            .contact_header()
+            .and_then(|contact| contact.uri())
+            .map(|uri| uri.to_string())
+            .unwrap_or_else(|_| fallback_remote_target.to_string());
+        let mut route_set = Vec::new();
+        let record_routes = res
+            .headers
+            .iter()
+            .filter_map(|header| match header {
+                Header::RecordRoute(record_route) => Some(record_route),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for record_route in record_routes.into_iter().rev() {
+            match record_route.typed() {
+                Ok(typed) => route_set.extend(
+                    typed
+                        .uris()
+                        .iter()
+                        .rev()
+                        .map(ToString::to_string),
+                ),
+                Err(_) => route_set.push(record_route.value().to_string()),
+            }
+        }
+        DialogTarget {
+            remote_target,
+            route_set,
+            from_header: res
+                .from_header()
+                .map(|header| header.value().to_string())
+                .unwrap_or_default(),
+            to_header: res
+                .to_header()
+                .map(|header| header.value().to_string())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn dialog_request_parts(
+        remote_target: &str,
+        route_set: &[String],
+    ) -> GlobalResult<(Uri, Vec<String>)> {
+        let remote_uri = Uri::try_from(remote_target).hand_log(|msg| warn!("{msg}"))?;
+        let Some(first_route) = route_set.first() else {
+            return Ok((remote_uri, Vec::new()));
         };
-        Ok((request, association))
+        let typed_route = rsip::headers::Route::new(first_route)
+            .typed()
+            .hand_log(|msg| warn!("{msg}"))?;
+        let Some(first_uri) = typed_route.uris().first() else {
+            return Ok((remote_uri, route_set.to_vec()));
+        };
+        if first_uri.params.iter().any(|param| matches!(param, Param::Lr)) {
+            return Ok((remote_uri, route_set.to_vec()));
+        }
+
+        let mut routes = route_set[1..].to_vec();
+        routes.push(format!("<{remote_uri}>"));
+        Ok((first_uri.uri.clone(), routes))
     }
 
     pub fn build_ack_request_by_response(
         res: &Response,
         device_id: &String,
     ) -> GlobalResult<Request> {
+        Self::build_ack_request_and_dialog_by_response(res, device_id)
+            .map(|(request, _)| request)
+    }
+
+    pub fn build_ack_request_and_dialog_by_response(
+        res: &Response,
+        device_id: &String,
+    ) -> GlobalResult<(Request, DialogTarget)> {
         let (uri_str, association, _lr) = RWContext::get_ds_by_device_id(device_id)
             .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
             .hand_log(|msg| warn!("{msg}"))?;
@@ -625,7 +775,12 @@ impl RequestBuilder {
         headers.push(rsip::headers::CSeq::new(format!("{seq} ACK")).into());
         let domain_id = conf.domain_id;
 
-        let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
+        let dialog_target = Self::dialog_target_by_response(res, &uri_str);
+        let (uri, routes) =
+            Self::dialog_request_parts(&dialog_target.remote_target, &dialog_target.route_set)?;
+        for route in routes {
+            headers.push(rsip::headers::Route::new(route).into());
+        }
         headers.push(
             rsip::headers::Contact::new(format!(
                 "<sip:{}@{}:{}>",
@@ -636,13 +791,16 @@ impl RequestBuilder {
         headers.push(rsip::headers::MaxForwards::new("70").into());
         headers.push(rsip::headers::UserAgent::new(format!("Gmv {}", cli_basic().version)).into());
         headers.push(rsip::headers::ContentLength::default().into());
-        Ok(rsip::Request {
-            method: Method::Ack,
-            uri,
-            headers,
-            version: rsip::common::version::Version::V2,
-            body: Default::default(),
-        })
+        Ok((
+            rsip::Request {
+                method: Method::Ack,
+                uri,
+                headers,
+                version: rsip::common::version::Version::V2,
+                body: Default::default(),
+            },
+            dialog_target,
+        ))
     }
     // 拍照
     // 云台控制
@@ -1127,8 +1285,81 @@ impl SdpBuilder {
 
 #[cfg(test)]
 mod tests {
+    use super::RequestBuilder;
     use crate::state::model::PtzControlModel;
     use base::chrono::Local;
+    use rsip::message::HeadersExt;
+    use rsip::prelude::UntypedHeader;
+    use rsip::{Header, Response, StatusCode, Version};
+
+    #[test]
+    fn dialog_target_prefers_invite_response_contact_and_reverses_route_set() {
+        let response = Response {
+            status_code: StatusCode::OK,
+            headers: vec![
+                rsip::headers::From::new(
+                    "<sip:34020000002000000001@3402000000>;tag=platform-tag",
+                )
+                .into(),
+                rsip::headers::To::new(
+                    "<sip:34020000001320000001@3402000000>;tag=device-tag",
+                )
+                .into(),
+                rsip::headers::Contact::new("<sip:device@171.217.40.25:50267>").into(),
+                rsip::headers::RecordRoute::new("<sip:proxy-1.example.com;lr>").into(),
+                rsip::headers::RecordRoute::new("<sip:proxy-2.example.com;lr>").into(),
+            ]
+            .into(),
+            version: Version::V2,
+            body: Default::default(),
+        };
+
+        let target = RequestBuilder::dialog_target_by_response(
+            &response,
+            "sip:device@171.217.40.25:49596",
+        );
+
+        assert_eq!(
+            target.remote_target,
+            "sip:device@171.217.40.25:50267"
+        );
+        assert_eq!(
+            target.from_header,
+            "<sip:34020000002000000001@3402000000>;tag=platform-tag"
+        );
+        assert_eq!(
+            target.to_header,
+            "<sip:34020000001320000001@3402000000>;tag=device-tag"
+        );
+        assert_eq!(
+            target.route_set,
+            vec![
+                "<sip:proxy-2.example.com;lr>".to_string(),
+                "<sip:proxy-1.example.com;lr>".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn dialog_bye_uses_saved_target_and_zero_content_length() {
+        let request = RequestBuilder::finish_bye_request(
+            Default::default(),
+            "sip:device@171.217.40.25:50267",
+            &[],
+            28,
+            "call-id".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.uri.to_string(),
+            "sip:device@171.217.40.25:50267"
+        );
+        assert_eq!(request.cseq_header().unwrap().value(), "28 BYE");
+        assert!(request.headers.iter().any(
+            |header| matches!(header, Header::ContentLength(value) if value.value() == "0")
+        ));
+    }
 
     #[test]
     fn test_date_format() {

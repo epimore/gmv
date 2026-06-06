@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -20,6 +21,7 @@ use shared::info::media_info::MediaConfig;
 use shared::info::obj::BaseStreamInfo;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(Cache::init);
+static STREAM_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub struct Cache {
     shared: Arc<Shared>,
@@ -34,6 +36,37 @@ pub struct DeviceStreamState {
     pub seq: u32,
     pub from_tag: String,
     pub to_tag: String,
+}
+
+#[derive(Clone)]
+pub struct StreamByeCommand {
+    pub stream_id: String,
+    pub generation: u64,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: u32,
+    pub call_id: String,
+    pub seq: u32,
+    pub remote_target: String,
+    pub route_set: Vec<String>,
+    pub from_header: String,
+    pub to_header: String,
+}
+
+pub struct StreamCloseStart {
+    pub generation: u64,
+    pub device_id: String,
+    pub newly_started: bool,
+}
+
+pub struct StreamCloseInfo {
+    pub stream_id: String,
+    pub generation: u64,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: u32,
+    pub call_id: String,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -106,6 +139,8 @@ impl Cache {
 
     pub fn stream_map_insert_info(
         stream_id: String,
+        device_id: String,
+        channel_id: String,
         ssrc: u32,
         proxy_addr: String,
         stream_node_name: String,
@@ -114,12 +149,18 @@ impl Cache {
         am: AccessMode,
         from_tag: String,
         to_tag: String,
+        remote_target: String,
+        route_set: Vec<String>,
+        from_header: String,
+        to_header: String,
     ) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => false,
             Entry::Vacant(vac) => {
                 vac.insert(StreamTable {
                     gmv_token_sets: HashSet::new(),
+                    device_id,
+                    channel_id,
                     proxy_addr,
                     stream_node_name,
                     call_id,
@@ -127,7 +168,12 @@ impl Cache {
                     am,
                     from_tag,
                     to_tag,
+                    remote_target,
+                    route_set,
+                    from_header,
+                    to_header,
                     ssrc,
+                    lifecycle: StreamLifecycle::Playing,
                 });
                 true
             }
@@ -196,6 +242,128 @@ impl Cache {
             .stream_map
             .get(stream_id)
             .map(|res| res.value().am)
+    }
+
+    pub fn stream_is_closing(stream_id: &str) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get(stream_id)
+            .is_some_and(|stream| stream.is_closing())
+    }
+
+    pub fn stream_close_begin(stream_id: &str) -> Option<StreamCloseStart> {
+        let mut stream = GENERAL_CACHE.shared.stream_map.get_mut(stream_id)?;
+        let generation = STREAM_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let newly_started = stream.begin_close(generation);
+        Some(StreamCloseStart {
+            generation: stream.closing_generation()?,
+            device_id: stream.device_id.clone(),
+            newly_started,
+        })
+    }
+
+    pub fn stream_close_take_bye(stream_id: &str) -> Option<StreamByeCommand> {
+        let mut stream = GENERAL_CACHE.shared.stream_map.get_mut(stream_id)?;
+        let (generation, seq) = stream.take_bye()?;
+        Some(StreamByeCommand {
+            stream_id: stream_id.to_string(),
+            generation,
+            device_id: stream.device_id.clone(),
+            channel_id: stream.channel_id.clone(),
+            ssrc: stream.ssrc,
+            call_id: stream.call_id.clone(),
+            seq,
+            remote_target: stream.remote_target.clone(),
+            route_set: stream.route_set.clone(),
+            from_header: stream.from_header.clone(),
+            to_header: stream.to_header.clone(),
+        })
+    }
+
+    pub fn stream_close_mark_failed(
+        stream_id: &str,
+        generation: u64,
+        seq: u32,
+        reason: String,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
+            .is_some_and(|mut stream| stream.mark_bye_failed(generation, seq, reason))
+    }
+
+    pub fn stream_close_ids_by_device(device_id: &str) -> Vec<String> {
+        GENERAL_CACHE
+            .shared
+            .device_map
+            .get(device_id)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Self::stream_is_closing(&entry.stream_id)
+                            .then(|| entry.stream_id.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn stream_close_complete(
+        stream_id: &str,
+        generation: u64,
+    ) -> Option<StreamCloseInfo> {
+        Self::stream_close_remove(stream_id, generation)
+    }
+
+    pub fn stream_close_force(stream_id: &str, generation: u64) -> Option<StreamCloseInfo> {
+        Self::stream_close_remove(stream_id, generation)
+    }
+
+    fn stream_close_remove(stream_id: &str, generation: u64) -> Option<StreamCloseInfo> {
+        let (_, stream) = GENERAL_CACHE
+            .shared
+            .stream_map
+            .remove_if(stream_id, |_, stream| {
+                stream.is_closing_generation(generation)
+            })?;
+        Self::device_map_remove_stream(&stream.device_id, stream_id);
+        GENERAL_CACHE
+            .shared
+            .ssrc_sn
+            .insert((stream.ssrc % 10000) as u16);
+        let _ = Register::scheduler().remove_register(
+            &crate::register::core::TimeScheduleKey::StreamClosing(
+                Arc::from(stream_id),
+                generation,
+            ),
+        );
+        let last_error = stream.last_error();
+        Some(StreamCloseInfo {
+            stream_id: stream_id.to_string(),
+            generation,
+            device_id: stream.device_id,
+            channel_id: stream.channel_id,
+            ssrc: stream.ssrc,
+            call_id: stream.call_id,
+            last_error,
+        })
+    }
+
+    fn device_map_remove_stream(device_id: &str, stream_id: &str) {
+        match GENERAL_CACHE.shared.device_map.entry(device_id.to_string()) {
+            Entry::Occupied(mut entry) => {
+                entry
+                    .get_mut()
+                    .retain(|device_stream| device_stream.stream_id != stream_id);
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+            Entry::Vacant(_) => {}
+        }
     }
 
     pub fn device_map_insert(
@@ -324,6 +492,14 @@ impl Cache {
             for entry in entries {
                 if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(&entry.stream_id)
                 {
+                    if let Some(generation) = stream.closing_generation() {
+                        let _ = Register::scheduler().remove_register(
+                            &crate::register::core::TimeScheduleKey::StreamClosing(
+                                Arc::from(entry.stream_id.as_str()),
+                                generation,
+                            ),
+                        );
+                    }
                     let ssrc_num = (stream.ssrc % 10000) as u16;
                     GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
                     streams.push(DeviceStreamState {
@@ -365,6 +541,11 @@ impl Cache {
                 });
             }
         }
+        let setup_lock_prefix = format!("{device_id}:");
+        GENERAL_CACHE
+            .shared
+            .stream_setup_locks
+            .retain(|key, _| !key.starts_with(&setup_lock_prefix));
         streams
     }
 
@@ -569,6 +750,8 @@ struct StateEntry {
 
 struct StreamTable {
     gmv_token_sets: HashSet<String>,
+    device_id: String,
+    channel_id: String,
     proxy_addr: String,
     stream_node_name: String,
     call_id: String,
@@ -576,7 +759,100 @@ struct StreamTable {
     am: AccessMode,
     from_tag: String,
     to_tag: String,
+    remote_target: String,
+    route_set: Vec<String>,
+    from_header: String,
+    to_header: String,
     ssrc: u32,
+    lifecycle: StreamLifecycle,
+}
+
+enum StreamLifecycle {
+    Playing,
+    Closing {
+        generation: u64,
+        inflight_seq: Option<u32>,
+        last_error: Option<String>,
+    },
+}
+
+impl StreamTable {
+    fn begin_close(&mut self, generation: u64) -> bool {
+        if matches!(self.lifecycle, StreamLifecycle::Closing { .. }) {
+            return false;
+        }
+        self.lifecycle = StreamLifecycle::Closing {
+            generation,
+            inflight_seq: None,
+            last_error: None,
+        };
+        true
+    }
+
+    fn take_bye(&mut self) -> Option<(u64, u32)> {
+        let StreamLifecycle::Closing {
+            generation,
+            inflight_seq,
+            ..
+        } = &mut self.lifecycle
+        else {
+            return None;
+        };
+        if inflight_seq.is_some() {
+            return None;
+        }
+        self.seq = self.seq.saturating_add(1);
+        *inflight_seq = Some(self.seq);
+        Some((*generation, self.seq))
+    }
+
+    fn mark_bye_failed(
+        &mut self,
+        expected_generation: u64,
+        expected_seq: u32,
+        reason: String,
+    ) -> bool {
+        let StreamLifecycle::Closing {
+            generation,
+            inflight_seq,
+            last_error,
+        } = &mut self.lifecycle
+        else {
+            return false;
+        };
+        if *generation != expected_generation || *inflight_seq != Some(expected_seq) {
+            return false;
+        }
+        *inflight_seq = None;
+        *last_error = Some(reason);
+        true
+    }
+
+    fn is_closing(&self) -> bool {
+        matches!(self.lifecycle, StreamLifecycle::Closing { .. })
+    }
+
+    fn is_closing_generation(&self, expected_generation: u64) -> bool {
+        matches!(
+            self.lifecycle,
+            StreamLifecycle::Closing { generation, .. }
+                if generation == expected_generation
+        )
+    }
+
+    fn closing_generation(&self) -> Option<u64> {
+        match self.lifecycle {
+            StreamLifecycle::Playing => None,
+            StreamLifecycle::Closing { generation, .. } => Some(generation),
+        }
+    }
+
+    fn last_error(&self) -> Option<String> {
+        match &self.lifecycle {
+            StreamLifecycle::Playing => None,
+            StreamLifecycle::Closing { last_error, .. } => last_error.clone(),
+        }
+    }
 }
 
 struct DeviceTable {
@@ -646,24 +922,37 @@ impl AccessMode {
 
 #[cfg(test)]
 mod tests {
-    use crate::state::session::{AccessMode, Cache, GENERAL_CACHE, StreamTable};
+    use crate::state::session::{
+        AccessMode, Cache, GENERAL_CACHE, StreamLifecycle, StreamTable,
+    };
     use base::dashmap::{DashMap, DashSet};
     use base::rand;
     use base::rand::prelude::IteratorRandom;
 
-    #[test]
-    fn test_ref_mut() {
-        let table = StreamTable {
+    fn stream_table() -> StreamTable {
+        StreamTable {
             gmv_token_sets: Default::default(),
+            device_id: "device-id".to_string(),
+            channel_id: "channel-id".to_string(),
             proxy_addr: "".to_string(),
             stream_node_name: "".to_string(),
-            call_id: "".to_string(),
-            seq: 0,
+            call_id: "call-id".to_string(),
+            seq: 7,
             am: AccessMode::Live,
-            from_tag: "".to_string(),
-            to_tag: "".to_string(),
-            ssrc: 0,
-        };
+            from_tag: "from-tag".to_string(),
+            to_tag: "to-tag".to_string(),
+            remote_target: "sip:device@127.0.0.1:5060".to_string(),
+            route_set: Vec::new(),
+            from_header: "<sip:platform@127.0.0.1>;tag=from-tag".to_string(),
+            to_header: "<sip:device@127.0.0.1>;tag=to-tag".to_string(),
+            ssrc: 1001,
+            lifecycle: StreamLifecycle::Playing,
+        }
+    }
+
+    #[test]
+    fn test_ref_mut() {
+        let table = stream_table();
         let map = DashMap::new();
         map.insert(1, table);
         map.get_mut(&1).map(|mut ref_mut| {
@@ -671,6 +960,47 @@ mod tests {
             stream_table.seq += 1;
         });
         println!("{:?}", map.get_mut(&1).map(|item| item.value().seq));
+    }
+
+    #[test]
+    fn closing_stream_allows_only_one_bye_in_flight() {
+        let mut table = stream_table();
+
+        assert!(table.begin_close(11));
+        assert_eq!(table.take_bye(), Some((11, 8)));
+        assert_eq!(table.take_bye(), None);
+    }
+
+    #[test]
+    fn failed_bye_can_retry_with_next_cseq() {
+        let mut table = stream_table();
+
+        assert!(table.begin_close(11));
+        assert_eq!(table.take_bye(), Some((11, 8)));
+        assert!(table.mark_bye_failed(11, 8, "tcp closed".to_string()));
+        assert_eq!(table.take_bye(), Some((11, 9)));
+    }
+
+    #[test]
+    fn stale_bye_failure_does_not_clear_new_inflight_bye() {
+        let mut table = stream_table();
+
+        assert!(table.begin_close(11));
+        assert_eq!(table.take_bye(), Some((11, 8)));
+        assert!(table.mark_bye_failed(11, 8, "old tcp closed".to_string()));
+        assert_eq!(table.take_bye(), Some((11, 9)));
+        assert!(!table.mark_bye_failed(11, 8, "old tcp closed".to_string()));
+        assert_eq!(table.take_bye(), None);
+    }
+
+    #[test]
+    fn repeated_close_keeps_original_generation() {
+        let mut table = stream_table();
+
+        assert!(table.begin_close(11));
+        assert!(!table.begin_close(12));
+        assert!(table.is_closing_generation(11));
+        assert!(!table.is_closing_generation(12));
     }
 
     #[test]
@@ -704,5 +1034,35 @@ mod tests {
                 }
             };
         }
+    }
+
+    #[test]
+    fn reset_device_state_removes_only_matching_setup_locks() {
+        let device_id = "34020000001320009991";
+        let other_device_id = "34020000001320009992";
+        Cache::stream_setup_lock(device_id, "channel-1", AccessMode::Live);
+        Cache::stream_setup_lock(device_id, "channel-2", AccessMode::Talk);
+        Cache::stream_setup_lock(other_device_id, "channel-1", AccessMode::Live);
+
+        Cache::reset_device_state(device_id);
+
+        let prefix = format!("{device_id}:");
+        assert!(
+            GENERAL_CACHE
+                .shared
+                .stream_setup_locks
+                .iter()
+                .all(|entry| !entry.key().starts_with(&prefix))
+        );
+        assert!(
+            GENERAL_CACHE
+                .shared
+                .stream_setup_locks
+                .contains_key(&format!("{other_device_id}:channel-1:live"))
+        );
+        GENERAL_CACHE
+            .shared
+            .stream_setup_locks
+            .remove(&format!("{other_device_id}:channel-1:live"));
     }
 }

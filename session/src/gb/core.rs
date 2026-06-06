@@ -31,9 +31,7 @@ pub mod rw {
         pub fn insert(_device_id: &String, _device_session: DeviceSession) {}
 
         pub fn clean_rw_session_by_bill(bill: &Association) {
-            if let Some(session) = Register::remove_device_by_association(bill) {
-                Register::close_tcp_if_needed(&session);
-            }
+            Register::detach_device_association(bill);
         }
 
         pub fn get_device_id_by_association(bill: &Association) -> Option<String> {
@@ -58,7 +56,7 @@ pub mod rw {
         }
 
         pub fn get_ds_by_device_id(device_id: &String) -> Option<(String, Association, bool)> {
-            Register::get_device_session(device_id.as_str()).map(|ds| {
+            Register::get_connected_device_session(device_id.as_str()).map(|ds| {
                 (
                     ds.contact_uri,
                     ds.association,

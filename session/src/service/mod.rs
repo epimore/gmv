@@ -1,6 +1,7 @@
 pub mod api_serv;
 pub mod edge_serv;
 pub mod hook_serv;
+pub mod stream_close;
 
 pub const EXPIRES: u64 = 8;
 pub const SNAPSHOT_IDLE_EXPIRES: u64 = 20;

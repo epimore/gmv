@@ -1,5 +1,5 @@
 use base::bytes::{Bytes, BytesMut};
-use base::dashmap::DashMap;
+use base::dashmap::{DashMap, DashSet};
 use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use encoding_rs::GB18030;
@@ -9,6 +9,7 @@ use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::Arc;
 
 pub use crate::gb::core::rw::RWContext;
+use crate::gb::depot::trans::TransactionContext;
 use crate::gb::depot::{DepotContext, SipMsg, SipPackage};
 use crate::gb::handler;
 use crate::gb::sip_tcp_splitter::complete_pkt;
@@ -23,6 +24,42 @@ use base::net::state::{
 use base::tokio;
 use base::tokio_util::sync::CancellationToken;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TcpCloseSource {
+    SessionActive,
+    SessionShutdown,
+    PeerOrNetwork,
+}
+
+impl TcpCloseSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionActive => "session_active",
+            Self::SessionShutdown => "session_shutdown",
+            Self::PeerOrNetwork => "device_or_network",
+        }
+    }
+}
+
+#[derive(Default)]
+struct TcpCloseTracker {
+    session_closes: DashSet<Association>,
+}
+
+impl TcpCloseTracker {
+    fn mark_session_close(&self, association: Association) {
+        self.session_closes.insert(association);
+    }
+
+    fn take_source(&self, association: &Association) -> TcpCloseSource {
+        if self.session_closes.remove(association).is_some() {
+            TcpCloseSource::SessionActive
+        } else {
+            TcpCloseSource::PeerOrNetwork
+        }
+    }
+}
+
 pub fn rw_by_tokio(
     tu: (Option<TcpListener>, Option<UdpSocket>),
     cancel_token: CancellationToken,
@@ -30,16 +67,24 @@ pub fn rw_by_tokio(
     let local_addr = listener_local_addr(&tu)?;
     let (input_tx, input_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
     let (output_tx, output_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+    let close_tracker = Arc::new(TcpCloseTracker::default());
     let writer = base::net::rw::rw::<SipPacketDispatcher, SipPacketSplitter, RawPacketEncoder>(
         tu,
         cancel_token.clone(),
         Arc::new(SipPacketDispatcher {
             local_addr,
             input_tx,
+            close_tracker: close_tracker.clone(),
+            cancel_token: cancel_token.clone(),
         }),
         Arc::new(RawPacketEncoder),
     )?;
-    tokio::spawn(write_net(output_rx, writer, cancel_token));
+    tokio::spawn(write_net(
+        output_rx,
+        writer,
+        close_tracker,
+        cancel_token,
+    ));
     Ok((output_tx, input_rx))
 }
 
@@ -64,6 +109,8 @@ fn listener_local_addr(tu: &(Option<TcpListener>, Option<UdpSocket>)) -> GlobalR
 struct SipPacketDispatcher {
     local_addr: SocketAddr,
     input_tx: Sender<Zip>,
+    close_tracker: Arc<TcpCloseTracker>,
+    cancel_token: CancellationToken,
 }
 
 impl PacketDispatcher for SipPacketDispatcher {
@@ -83,6 +130,16 @@ impl PacketDispatcher for SipPacketDispatcher {
 
     fn close(&self, remote_addr: SocketAddr, protocol: Protocol) -> GlobalResult<()> {
         let association = Association::new(self.local_addr, remote_addr, protocol);
+        if matches!(protocol, Protocol::TCP) {
+            let mut source = self.close_tracker.take_source(&association);
+            if source == TcpCloseSource::PeerOrNetwork && self.cancel_token.is_cancelled() {
+                source = TcpCloseSource::SessionShutdown;
+            }
+            debug!(
+                "tcp disconnected: source={}, association={association:?}",
+                source.as_str()
+            );
+        }
         let event = Event {
             association,
             type_code: IoEventType::Close,
@@ -126,6 +183,7 @@ impl PacketSplitter for SipPacketSplitter {
 async fn write_net(
     mut output_rx: Receiver<Zip>,
     writer: PacketWriter<RawPacketEncoder>,
+    close_tracker: Arc<TcpCloseTracker>,
     cancel_token: CancellationToken,
 ) {
     loop {
@@ -142,6 +200,14 @@ async fn write_net(
                             .await
                         {
                             error!("session socket write failed: association={association:?}, err={err}");
+                            if matches!(association.protocol, Protocol::TCP) {
+                                debug!(
+                                    "tcp disconnected: source=write_failure, \
+                                     association={association:?}, err={err}"
+                                );
+                                writer.remove_tcp_writer(&association.remote_addr);
+                                handle_tcp_connection_closed(&association);
+                            }
                         }
                     }
                     Zip::Event(event) => {
@@ -150,15 +216,38 @@ async fn write_net(
                                 break;
                             }
                             if matches!(event.association.protocol, Protocol::TCP) {
-                                writer.remove_tcp_writer(&event.association.remote_addr);
+                                debug!(
+                                    "tcp disconnect requested: source=session_active, \
+                                     association={:?}",
+                                    event.association
+                                );
+                                if writer.has_tcp_writer(&event.association.remote_addr) {
+                                    close_tracker.mark_session_close(event.association.clone());
+                                    writer.remove_tcp_writer(&event.association.remote_addr);
+                                } else {
+                                    debug!(
+                                        "tcp disconnected: source=session_active, \
+                                         association={:?}, writer=absent",
+                                        event.association
+                                    );
+                                    handle_tcp_connection_closed(&event.association);
+                                }
                             }
                         }
                     }
                 }
             }
-            _ = cancel_token.cancelled() => break,
+            _ = cancel_token.cancelled() => {
+                debug!("session network io shutdown requested");
+                break;
+            },
         }
     }
+}
+
+fn handle_tcp_connection_closed(association: &Association) {
+    RWContext::clean_rw_session_by_bill(association);
+    TransactionContext::handle_connection_closed(association);
 }
 
 /// 将日志内容压缩为单行，保留可还原换行信息
@@ -215,13 +304,13 @@ pub async fn read(
                 .await;
             }
             Zip::Event(event) => {
-                info!(
+                debug!(
                     "接收: event code={:?}, from={:?}",
                     event.type_code, event.association
                 );
                 if matches!(event.type_code, IoEventType::Close) {
                     request_locks.remove(&event.association);
-                    RWContext::clean_rw_session_by_bill(&event.association);
+                    handle_tcp_connection_closed(&event.association);
                 }
             }
         }
@@ -266,7 +355,7 @@ async fn hand_pkt(
                 SipMessage::Response(res) => {
                     let headers = compact_for_log(&format!("{}", &res.headers));
                     let body = compact_for_log(&GB18030.decode(&res.body).0);
-                    info!(
+                    debug!(
                         "接收:{:?} \\nResponse: {} {} \\n{} \\n{}\\n",
                         &association, &res.version, &res.status_code, headers, body
                     );
@@ -278,6 +367,32 @@ async fn hand_pkt(
         Err(err) => {
             warn!("接收: {association:?},\\n invalid data {err:?}",);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TcpCloseSource, TcpCloseTracker};
+    use base::net::state::{Association, Protocol};
+
+    #[test]
+    fn tcp_close_tracker_distinguishes_session_and_peer_closes() {
+        let tracker = TcpCloseTracker::default();
+        let association = Association::new(
+            "0.0.0.0:25600".parse().unwrap(),
+            "171.217.40.25:50267".parse().unwrap(),
+            Protocol::TCP,
+        );
+
+        tracker.mark_session_close(association.clone());
+        assert_eq!(
+            tracker.take_source(&association),
+            TcpCloseSource::SessionActive
+        );
+        assert_eq!(
+            tracker.take_source(&association),
+            TcpCloseSource::PeerOrNetwork
+        );
     }
 }
 pub async fn write(
@@ -326,10 +441,10 @@ pub fn send_sip_pkt_out(
     let log = compact_for_log(&GB18030.decode(&data).0);
     match ext_log {
         None => {
-            info!("发送:{:?} \\n负载: {}\\n", association, log);
+            debug!("发送:{:?} \\n负载: {}\\n", association, log);
         }
         Some(p_log) => {
-            info!("[{}] 发送:{:?} \\n负载: {}\\n", p_log, association, log);
+            debug!("[{}] 发送:{:?} \\n负载: {}\\n", p_log, association, log);
         }
     }
     let zip = Zip::build_data(Package::new(association, data));

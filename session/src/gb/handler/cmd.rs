@@ -1,7 +1,7 @@
 use crate::gb::core::rw::SipRequestOutput;
-use crate::gb::depot::default_response_callback;
+use crate::gb::depot::{Callback, default_response_callback};
 use crate::gb::depot::extract::HeaderItemExt;
-use crate::gb::handler::builder::RequestBuilder;
+use crate::gb::handler::builder::{DialogTarget, RequestBuilder};
 use crate::state::model::{PtzControlModel, TransMode};
 use anyhow::anyhow;
 use base::err::BaseErrorCode;
@@ -213,13 +213,24 @@ impl CmdStream {
         response: &Response,
         association: Association,
     ) -> GlobalResult<(String, u32)> {
-        let ack_request = RequestBuilder::build_ack_request_by_response(response, device_id)?;
+        let (call_id, seq, _) =
+            Self::invite_ack_with_dialog(device_id, response, association).await?;
+        Ok((call_id, seq))
+    }
+
+    pub async fn invite_ack_with_dialog(
+        device_id: &String,
+        response: &Response,
+        association: Association,
+    ) -> GlobalResult<(String, u32, DialogTarget)> {
+        let (ack_request, dialog_target) =
+            RequestBuilder::build_ack_request_and_dialog_by_response(response, device_id)?;
         let call_id = ack_request.call_id()?.value().to_string();
         let seq = ack_request.seq()?;
         SipRequestOutput::new(device_id, association, ack_request)
             .send_log("invite_ack")
             .await;
-        Ok((call_id, seq))
+        Ok((call_id, seq, dialog_target))
     }
     pub async fn play_speed(
         device_id: &String,
@@ -268,6 +279,54 @@ impl CmdStream {
             seq, call_id, device_id, channel_id, from_tag, to_tag,
         )
         .await?;
+        SipRequestOutput::new(device_id, association, request)
+            .send_log("play_bye")
+            .await;
+        Ok(())
+    }
+
+    pub async fn play_bye_with_callback(
+        seq: u32,
+        call_id: String,
+        device_id: &String,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
+        callback: Callback,
+    ) -> GlobalResult<()> {
+        let (request, association) = RequestBuilder::build_dialog_bye_request(
+            seq,
+            call_id,
+            device_id,
+            remote_target,
+            route_set,
+            from_header,
+            to_header,
+        )?;
+        SipRequestOutput::new(device_id, association, request)
+            .send(callback)
+            .await
+    }
+
+    pub async fn play_bye_dialog(
+        seq: u32,
+        call_id: String,
+        device_id: &String,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
+    ) -> GlobalResult<()> {
+        let (request, association) = RequestBuilder::build_dialog_bye_request(
+            seq,
+            call_id,
+            device_id,
+            remote_target,
+            route_set,
+            from_header,
+            to_header,
+        )?;
         SipRequestOutput::new(device_id, association, request)
             .send_log("play_bye")
             .await;

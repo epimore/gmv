@@ -868,7 +868,13 @@ async fn start_invite_stream(
             return Err(err);
         }
 
-        let (call_id, seq) = match CmdStream::invite_ack(device_id, &res, association).await {
+        let (call_id, seq, dialog_target) = match CmdStream::invite_ack_with_dialog(
+            device_id,
+            &res,
+            association,
+        )
+        .await
+        {
             Ok(value) => value,
             Err(err) => {
                 cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
@@ -880,6 +886,8 @@ async fn start_invite_stream(
         if let Some(base_stream_info) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
             state::session::Cache::stream_map_insert_info(
                 stream_id.clone(),
+                device_id.clone(),
+                channel_id.clone(),
                 u32ssrc,
                 base_stream_info.rtp_info.proxy_addr.clone(),
                 node_name.clone(),
@@ -888,6 +896,10 @@ async fn start_invite_stream(
                 am,
                 from_tag,
                 to_tag,
+                dialog_target.remote_target,
+                dialog_target.route_set,
+                dialog_target.from_header,
+                dialog_target.to_header,
             );
             state::session::Cache::device_map_insert(
                 device_id.to_string(),
@@ -900,8 +912,16 @@ async fn start_invite_stream(
             return Ok((stream_id, node_name, base_stream_info.rtp_info.proxy_addr));
         }
 
-        let _ =
-            CmdStream::play_bye(seq + 1, call_id, device_id, channel_id, &from_tag, &to_tag).await;
+        let _ = CmdStream::play_bye_dialog(
+            seq + 1,
+            call_id,
+            device_id,
+            &dialog_target.remote_target,
+            &dialog_target.route_set,
+            &dialog_target.from_header,
+            &dialog_target.to_header,
+        )
+        .await;
         cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
         state::session::Cache::ssrc_sn_set(u16ssrc);
         return Err(GlobalError::new_biz_error(

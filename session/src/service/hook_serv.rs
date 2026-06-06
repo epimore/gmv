@@ -11,8 +11,7 @@ use shared::info::obj::{
     StreamRecordInfo, StreamState, TalkClosedEvent, TalkStopModel,
 };
 
-use crate::gb::handler::cmd::CmdStream;
-use crate::service::{KEY_STREAM_IN, api_serv};
+use crate::service::{KEY_STREAM_IN, api_serv, stream_close};
 use crate::state;
 use crate::state::DownloadConf;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
@@ -34,6 +33,11 @@ pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
 }
 
 pub fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRes {
+    if state::session::Cache::stream_is_closing(
+        &stream_state.base_stream_info.stream_id,
+    ) {
+        return InTimeoutEventRes::CloseAll;
+    }
     let ssrc = stream_state.base_stream_info.rtp_info.ssrc;
     let ssrc_num = (ssrc % 10000) as u16;
     state::session::Cache::ssrc_sn_set(ssrc_num);
@@ -67,25 +71,7 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
         return OutputEventRes::CloseMuxer;
     }
 
-    let stream_id = out_stream_info.base_stream_info.stream_id;
-    let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
-    if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
-        if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
-            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag)
-                .await;
-        }
-        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id)
-        {
-            state::session::Cache::device_map_remove(
-                &device_id,
-                Some((&channel_id, Some((am, &ssrc_str)))),
-            );
-            state::session::Cache::stream_map_remove(&stream_id, None);
-        }
-        let ssrc = out_stream_info.base_stream_info.rtp_info.ssrc;
-        let ssrc_num = (ssrc % 10000) as u16;
-        state::session::Cache::ssrc_sn_set(ssrc_num);
-    }
+    stream_close::begin(out_stream_info.base_stream_info.stream_id);
 
     OutputEventRes::CloseAll
 }

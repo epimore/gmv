@@ -68,6 +68,30 @@ struct Shared {
 }
 
 impl Shared {
+    fn fail_association(&self, association: &Association) {
+        let entities = {
+            let mut state = self.state.write();
+            let keys = state
+                .anti_map
+                .iter()
+                .filter_map(|(key, entity)| {
+                    (entity.association == *association).then(|| key.clone())
+                })
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| state.anti_map.remove(&key))
+                .collect::<Vec<_>>()
+        };
+
+        for entity in entities {
+            (entity.cb)(Err(GlobalError::new_biz_error(
+                BaseErrorCode::Network.code(),
+                "sip tcp connection closed",
+                |msg| error!("{msg}: association={association}"),
+            )));
+        }
+    }
+
     fn next_step(&self, keys: Vec<String>) {
         let mut guard = self.state.write();
         let state = &mut *guard;
@@ -123,6 +147,12 @@ impl TransactionContext {
 
     pub fn handle_timeout_keys(keys: Vec<String>) {
         Self::global().shared.next_step(keys);
+    }
+
+    pub fn handle_connection_closed(association: &Association) {
+        if let Some(ctx) = TRANS_CTX.get() {
+            ctx.shared.fail_association(association);
+        }
     }
 
     pub fn process_request(
@@ -192,5 +222,73 @@ impl TransactionContext {
 
     fn no_response(request: &Request) -> bool {
         matches!(request.method(), Method::Ack)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Shared, State, TransEntity};
+    use base::bytes::Bytes;
+    use base::net::state::{Association, Protocol};
+    use base::tokio::sync::{mpsc, oneshot};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn association(port: u16) -> Association {
+        Association::new(
+            "0.0.0.0:25600".parse().unwrap(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+            Protocol::TCP,
+        )
+    }
+
+    #[test]
+    fn connection_close_fails_only_matching_transactions() {
+        let (output, _rx) = mpsc::channel(1);
+        let shared = Shared {
+            state: RwLock::new(State {
+                anti_map: HashMap::new(),
+            }),
+            output,
+        };
+        let closed = association(40001);
+        let other = association(40002);
+        let (closed_tx, closed_rx) = oneshot::channel();
+        let (other_tx, mut other_rx) = oneshot::channel();
+
+        {
+            let mut state = shared.state.write();
+            state.anti_map.insert(
+                "closed".to_string(),
+                TransEntity {
+                    current_state: None,
+                    retry_count: 0,
+                    msg: Bytes::new(),
+                    association: closed.clone(),
+                    cb: Box::new(move |result| {
+                        let _ = closed_tx.send(result);
+                    }),
+                },
+            );
+            state.anti_map.insert(
+                "other".to_string(),
+                TransEntity {
+                    current_state: None,
+                    retry_count: 0,
+                    msg: Bytes::new(),
+                    association: other,
+                    cb: Box::new(move |result| {
+                        let _ = other_tx.send(result);
+                    }),
+                },
+            );
+        }
+
+        shared.fail_association(&closed);
+
+        assert!(closed_rx.blocking_recv().unwrap().is_err());
+        assert!(other_rx.try_recv().is_err());
+        assert!(shared.state.read().anti_map.contains_key("other"));
     }
 }
