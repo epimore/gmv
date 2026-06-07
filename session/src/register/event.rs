@@ -9,6 +9,7 @@ use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
 
 use crate::gb::depot::trans::TransactionContext;
+use crate::gb::handler::cmd::CmdQuery;
 use crate::register::core::{Inner, Register, TimeScheduleKey};
 use crate::register::schedule::ScheduleKey;
 use crate::state::session::Cache as GeneralCache;
@@ -20,6 +21,7 @@ const MAX_WORKER_POOL: usize = 128;
 pub enum Event {
     DeviceOffline(Arc<str>),
     ServerHeart(Arc<str>),
+    RefreshCatalogSubscription(Arc<str>, u64),
     OutSession(u64),
 }
 
@@ -68,6 +70,13 @@ async fn hand_event(event: Event) {
         }
         Event::ServerHeart(domain_id) => {
             let _ = Register::server_keep_heart_update_db(domain_id).await;
+        }
+        Event::RefreshCatalogSubscription(device_id, generation) => {
+            let _ = CmdQuery::refresh_catalog_subscription(device_id, generation)
+                .await
+                .hand_log(|msg| {
+                    warn!("refresh catalog subscription failed: {msg}")
+                });
         }
         Event::OutSession(_) => {}
     }
@@ -128,6 +137,39 @@ async fn on_time_schedule(
                         stream_id, generation
                     );
                 }
+            }
+            ScheduleKey::Register(TimeScheduleKey::TalkClosing(talk_id, generation)) => {
+                if let Some(info) =
+                    GeneralCache::talk_close_force(talk_id.as_ref(), generation)
+                {
+                    warn!(
+                        "force cleanup closing talk: device_id={}, channel_id={}, \
+                         talk_id={}, ssrc={}, call_id={}, generation={}, reason={}",
+                        info.device_id,
+                        info.channel_id,
+                        info.talk_id,
+                        info.ssrc,
+                        info.call_id,
+                        info.generation,
+                        info.last_error
+                            .as_deref()
+                            .unwrap_or("close deadline expired")
+                    );
+                } else {
+                    debug!(
+                        "ignore stale talk closing event: talk_id={}, generation={}",
+                        talk_id, generation
+                    );
+                }
+            }
+            ScheduleKey::Register(TimeScheduleKey::CatalogSubscription(
+                device_id,
+                generation,
+            )) => {
+                let _ = inner
+                    .event_tx
+                    .try_send(Event::RefreshCatalogSubscription(device_id, generation))
+                    .hand_log(|msg| error!("{msg}"));
             }
             ScheduleKey::Register(TimeScheduleKey::ServerHeart(domain_id)) => {
                 let _ = inner

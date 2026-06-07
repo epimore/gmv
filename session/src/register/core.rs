@@ -15,7 +15,7 @@ use crate::register::event::{self, Event};
 pub(crate) use crate::register::io::{DeviceSession, Network};
 use crate::register::schedule::TimeScheduler;
 use crate::register::session::Session;
-use crate::service::stream_close;
+use crate::service::{stream_close, talk_close};
 use crate::state::session::Cache as GeneralCache;
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
@@ -30,6 +30,8 @@ pub enum TimeScheduleKey {
     DeviceRegistration(Arc<str>),
     DeviceReconnect(Arc<str>, u64),
     StreamClosing(Arc<str>, u64),
+    TalkClosing(Arc<str>, u64),
+    CatalogSubscription(Arc<str>, u64),
     OutSession(u64),
     ServerHeart(Arc<str>),
 }
@@ -139,6 +141,7 @@ impl Register {
         }
         if reconnected || previous_session.association != association {
             stream_close::retry_device(device_id);
+            talk_close::retry_device(device_id);
         }
         Ok(())
     }
@@ -174,6 +177,7 @@ impl Register {
                         )
                         .hand_log(|e| error!("insert device registration timer failed: {e}"))?;
                     stream_close::retry_device(device_id.as_ref());
+                    talk_close::retry_device(device_id.as_ref());
                     return Ok(());
                 }
                 Err(ds) => ds,
@@ -212,6 +216,7 @@ impl Register {
         arc.io_map.insert(device_id.clone(), ds);
         if !new_generation {
             stream_close::retry_device(device_id.as_ref());
+            talk_close::retry_device(device_id.as_ref());
         }
         Ok(())
     }

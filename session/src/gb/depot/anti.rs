@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 //最大缓存数量
 const MAX_ANTI_REPLAY_SIZE: usize = 1000 * 1024;
 //宽松策略8秒，且响应相同内容
-const LOOSE_POLICY_TTL: Duration = Duration::from_secs(8);
+const LOOSE_POLICY_TTL: Duration = Duration::from_secs(32);
 //严格策略1分钟，且不做响应
 const STRICT_POLICY_TTL: Duration = Duration::from_secs(60);
 
@@ -204,7 +204,6 @@ pub enum AntiReplayKind {
     /// 使用缓存的响应内容回复
     RespondWithCached(Bytes),
     /// 静默丢弃，不发送任何响应
-    SilentDrop,
     /// 请求已加入排队，等待处理完成
     QueuedForProcessing,
 }
@@ -231,7 +230,6 @@ impl AntiReplayContext {
                 AntiReplayKind::RespondWithCached(res) => {
                     send_sip_pkt_out(&output, res, association, Some("Anti"));
                 }
-                AntiReplayKind::SilentDrop => {}
                 AntiReplayKind::QueuedForProcessing => {}
             }
         }
@@ -248,16 +246,13 @@ impl AntiReplayContext {
         Self::enforce_capacity(&mut shard);
         match shard.anti_map.entry(key) {
             Entry::Occupied(mut occ) => {
-                let (pol, count, res) = occ.get_mut();
-                match pol {
-                    AntiReplayPolicy::Loose { .. } => match res {
-                        None => {
-                            *count += 1;
-                            Ok(AntiReplayKind::QueuedForProcessing)
-                        }
-                        Some(msg) => Ok(AntiReplayKind::RespondWithCached(msg.clone())),
-                    },
-                    AntiReplayPolicy::Strict { .. } => Ok(AntiReplayKind::SilentDrop),
+                let (_, count, res) = occ.get_mut();
+                match res {
+                    None => {
+                        *count += 1;
+                        Ok(AntiReplayKind::QueuedForProcessing)
+                    }
+                    Some(msg) => Ok(AntiReplayKind::RespondWithCached(msg.clone())),
                 }
             }
             Entry::Vacant(vac) => {
@@ -284,14 +279,8 @@ impl AntiReplayContext {
         let mut shard = self.shard.write();
         match shard.anti_map.entry(key) {
             Entry::Occupied(mut occ) => {
-                let (policy, count, res) = occ.get_mut();
-                match policy {
-                    //只有宽松的才缓存响应
-                    AntiReplayPolicy::Loose { .. } => {
-                        *res = Some(Bytes::from(response));
-                    }
-                    AntiReplayPolicy::Strict { .. } => {}
-                }
+                let (_, count, res) = occ.get_mut();
+                *res = Some(Bytes::from(response));
                 Ok(*count)
             }
             Entry::Vacant(va) => Err(GlobalError::new_sys_error("未知或超时响应", |msg| {
@@ -325,5 +314,88 @@ impl AntiReplayContext {
         Self {
             shard: Arc::new(RwLock::new(shard)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AntiReplayContext, AntiReplayKind};
+    use rsip::headers::UntypedHeader;
+    use rsip::{Method, Request, Response, StatusCode, Uri, Version};
+
+    fn invite_request() -> Request {
+        Request {
+            method: Method::Invite,
+            uri: Uri::try_from("sip:device@example.com").unwrap(),
+            headers: vec![
+                rsip::headers::Via::new(
+                    "SIP/2.0/UDP platform.example.com;branch=z9hG4bK-invite",
+                )
+                .into(),
+                rsip::headers::From::new(
+                    "<sip:platform@example.com>;tag=platform-tag",
+                )
+                .into(),
+                rsip::headers::To::new("<sip:device@example.com>").into(),
+                rsip::headers::CallId::new("call-id").into(),
+                rsip::headers::CSeq::new("1 INVITE").into(),
+                rsip::headers::ContentLength::default().into(),
+            ]
+            .into(),
+            version: Version::V2,
+            body: Default::default(),
+        }
+    }
+
+    fn invite_response() -> Response {
+        Response {
+            status_code: StatusCode::MethodNotAllowed,
+            headers: vec![
+                rsip::headers::Via::new(
+                    "SIP/2.0/UDP platform.example.com;branch=z9hG4bK-invite",
+                )
+                .into(),
+                rsip::headers::From::new(
+                    "<sip:platform@example.com>;tag=platform-tag",
+                )
+                .into(),
+                rsip::headers::To::new(
+                    "<sip:device@example.com>;tag=device-tag",
+                )
+                .into(),
+                rsip::headers::CallId::new("call-id").into(),
+                rsip::headers::CSeq::new("1 INVITE").into(),
+                rsip::headers::ContentLength::default().into(),
+            ]
+            .into(),
+            version: Version::V2,
+            body: Default::default(),
+        }
+    }
+
+    #[test]
+    fn strict_request_retransmission_waits_then_reuses_cached_response() {
+        let context = AntiReplayContext::init();
+        let request = invite_request();
+
+        assert!(matches!(
+            context.handle_request(&request, "192.0.2.10:5060").unwrap(),
+            AntiReplayKind::NeedProcess
+        ));
+        assert!(matches!(
+            context.handle_request(&request, "192.0.2.10:5060").unwrap(),
+            AntiReplayKind::QueuedForProcessing
+        ));
+
+        assert_eq!(
+            context
+                .process_response("192.0.2.10:5060", invite_response())
+                .unwrap(),
+            2
+        );
+        assert!(matches!(
+            context.handle_request(&request, "192.0.2.10:5060").unwrap(),
+            AntiReplayKind::RespondWithCached(_)
+        ));
     }
 }

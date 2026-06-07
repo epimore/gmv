@@ -22,6 +22,8 @@ use shared::info::obj::BaseStreamInfo;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(Cache::init);
 static STREAM_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static TALK_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static CATALOG_SUBSCRIPTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub struct Cache {
     shared: Arc<Shared>,
@@ -70,6 +72,44 @@ pub struct StreamCloseInfo {
 }
 
 #[derive(Clone)]
+pub struct DialogCommand {
+    pub call_id: String,
+    pub seq: u32,
+    pub remote_target: String,
+    pub route_set: Vec<String>,
+    pub from_header: String,
+    pub to_header: String,
+}
+
+#[derive(Clone)]
+pub struct CatalogSubscriptionCommand {
+    pub generation: u64,
+    pub call_id: String,
+    pub seq: u32,
+    pub event: String,
+    pub expires: u32,
+    pub remote_target: String,
+    pub route_set: Vec<String>,
+    pub from_header: String,
+    pub to_header: String,
+}
+
+struct CatalogSubscriptionState {
+    generation: u64,
+    call_id: String,
+    seq: u32,
+    event: String,
+    expires: u32,
+    remote_target: String,
+    route_set: Vec<String>,
+    from_header: String,
+    to_header: String,
+    local_tag: String,
+    remote_tag: String,
+    inflight: bool,
+}
+
+#[derive(Clone)]
 pub struct TalkSessionState {
     pub talk_id: String,
     pub device_id: String,
@@ -80,9 +120,44 @@ pub struct TalkSessionState {
     pub seq: u32,
     pub from_tag: String,
     pub to_tag: String,
+    pub remote_target: String,
+    pub route_set: Vec<String>,
+    pub from_header: String,
+    pub to_header: String,
     pub codec: String,
     pub sample_rate: u32,
     pub channel_count: u8,
+    pub closing_generation: Option<u64>,
+    pub bye_inflight_seq: Option<u32>,
+    pub close_last_error: Option<String>,
+}
+
+pub struct TalkCloseStart {
+    pub generation: u64,
+    pub device_id: String,
+    pub newly_started: bool,
+}
+
+pub struct TalkByeCommand {
+    pub talk_id: String,
+    pub generation: u64,
+    pub device_id: String,
+    pub call_id: String,
+    pub seq: u32,
+    pub remote_target: String,
+    pub route_set: Vec<String>,
+    pub from_header: String,
+    pub to_header: String,
+}
+
+pub struct TalkCloseInfo {
+    pub talk_id: String,
+    pub generation: u64,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: u32,
+    pub call_id: String,
+    pub last_error: Option<String>,
 }
 
 impl Cache {
@@ -187,6 +262,22 @@ impl Cache {
         })
     }
 
+    pub fn stream_map_update_source(
+        stream_id: &str,
+        proxy_addr: String,
+        stream_node_name: String,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
+            .is_some_and(|mut stream| {
+                stream.proxy_addr = proxy_addr;
+                stream.stream_node_name = stream_node_name;
+                true
+            })
+    }
+
     pub fn stream_map_query_node(stream_id: &String) -> Option<(String, String)> {
         GENERAL_CACHE.shared.stream_map.get(stream_id).map(|item| {
             (
@@ -217,22 +308,21 @@ impl Cache {
         }
     }
 
-    pub fn stream_map_build_call_id_seq_from_to_tag(
-        stream_id: &String,
-    ) -> Option<(String, u32, String, String)> {
+    pub fn stream_dialog_next(stream_id: &str) -> Option<DialogCommand> {
         GENERAL_CACHE
             .shared
             .stream_map
             .get_mut(stream_id)
-            .map(|mut ref_mut| {
-                let stream_table = ref_mut.value_mut();
-                stream_table.seq += 1;
-                (
-                    stream_table.call_id.clone(),
-                    stream_table.seq,
-                    stream_table.from_tag.clone(),
-                    stream_table.to_tag.clone(),
-                )
+            .map(|mut stream| {
+                stream.seq = stream.seq.saturating_add(1);
+                DialogCommand {
+                    call_id: stream.call_id.clone(),
+                    seq: stream.seq,
+                    remote_target: stream.remote_target.clone(),
+                    route_set: stream.route_set.clone(),
+                    from_header: stream.from_header.clone(),
+                    to_header: stream.to_header.clone(),
+                }
             })
     }
 
@@ -297,18 +387,13 @@ impl Cache {
     pub fn stream_close_ids_by_device(device_id: &str) -> Vec<String> {
         GENERAL_CACHE
             .shared
-            .device_map
-            .get(device_id)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| {
-                        Self::stream_is_closing(&entry.stream_id)
-                            .then(|| entry.stream_id.clone())
-                    })
-                    .collect()
+            .stream_map
+            .iter()
+            .filter_map(|stream| {
+                (stream.device_id == device_id && stream.is_closing())
+                    .then(|| stream.key().clone())
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     pub fn stream_close_complete(
@@ -329,17 +414,59 @@ impl Cache {
             .remove_if(stream_id, |_, stream| {
                 stream.is_closing_generation(generation)
             })?;
+        Self::finish_removed_stream(stream_id, stream, generation)
+    }
+
+    pub fn stream_terminated_by_call_id(call_id: &str) -> Option<StreamCloseInfo> {
+        let stream_id = GENERAL_CACHE
+            .shared
+            .stream_map
+            .iter()
+            .find_map(|stream| (stream.call_id == call_id).then(|| stream.key().clone()))?;
+        let (_, stream) = GENERAL_CACHE
+            .shared
+            .stream_map
+            .remove_if(&stream_id, |_, stream| stream.call_id == call_id)?;
+        let generation = stream.closing_generation().unwrap_or_default();
+        Self::finish_removed_stream(&stream_id, stream, generation)
+    }
+
+    pub fn stream_ids_for_media_status(device_id: &str, channel_id: &str) -> Vec<String> {
+        GENERAL_CACHE
+            .shared
+            .device_map
+            .get(device_id)
+            .map(|streams| {
+                streams
+                    .iter()
+                    .filter(|stream| {
+                        stream.channel_id == channel_id
+                            && matches!(stream.am, AccessMode::Back | AccessMode::Down)
+                    })
+                    .map(|stream| stream.stream_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn finish_removed_stream(
+        stream_id: &str,
+        stream: StreamTable,
+        generation: u64,
+    ) -> Option<StreamCloseInfo> {
         Self::device_map_remove_stream(&stream.device_id, stream_id);
         GENERAL_CACHE
             .shared
             .ssrc_sn
             .insert((stream.ssrc % 10000) as u16);
-        let _ = Register::scheduler().remove_register(
-            &crate::register::core::TimeScheduleKey::StreamClosing(
-                Arc::from(stream_id),
-                generation,
-            ),
-        );
+        if let Some(closing_generation) = stream.closing_generation() {
+            let _ = Register::scheduler().remove_register(
+                &crate::register::core::TimeScheduleKey::StreamClosing(
+                    Arc::from(stream_id),
+                    closing_generation,
+                ),
+            );
+        }
         let last_error = stream.last_error();
         Some(StreamCloseInfo {
             stream_id: stream_id.to_string(),
@@ -465,11 +592,174 @@ impl Cache {
     }
 
     pub fn talk_map_remove(talk_id: &str) -> Option<TalkSessionState> {
-        GENERAL_CACHE
+        let talk = GENERAL_CACHE
             .shared
             .talk_map
             .remove(talk_id)
-            .map(|(_, state)| state)
+            .map(|(_, state)| state)?;
+        Self::cancel_talk_close_timer(talk_id, &talk);
+        Some(talk)
+    }
+
+    pub fn talk_map_get(talk_id: &str) -> Option<TalkSessionState> {
+        GENERAL_CACHE
+            .shared
+            .talk_map
+            .get(talk_id)
+            .map(|talk| talk.clone())
+    }
+
+    pub fn talk_map_remove_by_call_id(call_id: &str) -> Option<TalkSessionState> {
+        let talk_id = GENERAL_CACHE
+            .shared
+            .talk_map
+            .iter()
+            .find_map(|talk| (talk.call_id == call_id).then(|| talk.key().clone()))?;
+        let talk = GENERAL_CACHE
+            .shared
+            .talk_map
+            .remove_if(&talk_id, |_, talk| talk.call_id == call_id)
+            .map(|(_, talk)| talk)?;
+        Self::cancel_talk_close_timer(&talk_id, &talk);
+        Some(talk)
+    }
+
+    fn cancel_talk_close_timer(talk_id: &str, talk: &TalkSessionState) {
+        let Some(generation) = talk.closing_generation else {
+            return;
+        };
+        if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
+            let _ = scheduler.remove_register(
+                &crate::register::core::TimeScheduleKey::TalkClosing(
+                    Arc::from(talk_id),
+                    generation,
+                ),
+            );
+        }
+    }
+
+    pub fn talk_close_begin(talk_id: &str) -> Option<TalkCloseStart> {
+        let mut talk = GENERAL_CACHE.shared.talk_map.get_mut(talk_id)?;
+        let newly_started = talk.closing_generation.is_none();
+        if newly_started {
+            talk.closing_generation =
+                Some(TALK_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed));
+            talk.bye_inflight_seq = None;
+            talk.close_last_error = None;
+        }
+        Some(TalkCloseStart {
+            generation: talk.closing_generation?,
+            device_id: talk.device_id.clone(),
+            newly_started,
+        })
+    }
+
+    pub fn talk_close_take_bye(talk_id: &str) -> Option<TalkByeCommand> {
+        let mut talk = GENERAL_CACHE.shared.talk_map.get_mut(talk_id)?;
+        let generation = talk.closing_generation?;
+        if talk.bye_inflight_seq.is_some() {
+            return None;
+        }
+        talk.seq = talk.seq.saturating_add(1);
+        talk.bye_inflight_seq = Some(talk.seq);
+        Some(TalkByeCommand {
+            talk_id: talk_id.to_string(),
+            generation,
+            device_id: talk.device_id.clone(),
+            call_id: talk.call_id.clone(),
+            seq: talk.seq,
+            remote_target: talk.remote_target.clone(),
+            route_set: talk.route_set.clone(),
+            from_header: talk.from_header.clone(),
+            to_header: talk.to_header.clone(),
+        })
+    }
+
+    pub fn talk_close_mark_failed(
+        talk_id: &str,
+        generation: u64,
+        seq: u32,
+        reason: String,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .talk_map
+            .get_mut(talk_id)
+            .is_some_and(|mut talk| {
+                if talk.closing_generation != Some(generation)
+                    || talk.bye_inflight_seq != Some(seq)
+                {
+                    return false;
+                }
+                talk.bye_inflight_seq = None;
+                talk.close_last_error = Some(reason);
+                true
+            })
+    }
+
+    pub fn talk_close_ids_by_device(device_id: &str) -> Vec<String> {
+        GENERAL_CACHE
+            .shared
+            .talk_map
+            .iter()
+            .filter_map(|talk| {
+                (talk.device_id == device_id && talk.closing_generation.is_some())
+                    .then(|| talk.talk_id.clone())
+            })
+            .collect()
+    }
+
+    pub fn talk_close_complete(
+        talk_id: &str,
+        generation: u64,
+    ) -> Option<TalkCloseInfo> {
+        let (_, talk) = GENERAL_CACHE
+            .shared
+            .talk_map
+            .remove_if(talk_id, |_, talk| {
+                talk.closing_generation == Some(generation)
+            })?;
+        GENERAL_CACHE
+            .shared
+            .ssrc_sn
+            .insert((talk.ssrc % 10000) as u16);
+        if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
+            let _ = scheduler.remove_register(
+                &crate::register::core::TimeScheduleKey::TalkClosing(
+                    Arc::from(talk_id),
+                    generation,
+                ),
+            );
+        }
+        Some(TalkCloseInfo {
+            talk_id: talk_id.to_string(),
+            generation,
+            device_id: talk.device_id,
+            channel_id: talk.channel_id,
+            ssrc: talk.ssrc,
+            call_id: talk.call_id,
+            last_error: talk.close_last_error,
+        })
+    }
+
+    pub fn talk_close_force(
+        talk_id: &str,
+        generation: u64,
+    ) -> Option<TalkCloseInfo> {
+        Self::talk_close_complete(talk_id, generation)
+    }
+
+    pub fn has_dialog_call_id(call_id: &str) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .iter()
+            .any(|stream| stream.call_id == call_id)
+            || GENERAL_CACHE
+                .shared
+                .talk_map
+                .iter()
+                .any(|talk| talk.call_id == call_id)
     }
 
     pub fn talk_map_get_by_device_channel(
@@ -484,6 +774,203 @@ impl Cache {
                 None
             }
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn catalog_subscription_begin(
+        device_id: String,
+        call_id: String,
+        seq: u32,
+        event: String,
+        expires: u32,
+        remote_target: String,
+        from_header: String,
+        to_header: String,
+        local_tag: String,
+    ) -> Option<u64> {
+        match GENERAL_CACHE
+            .shared
+            .catalog_subscriptions
+            .entry(device_id)
+        {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(entry) => {
+                let generation =
+                    CATALOG_SUBSCRIPTION_GENERATION.fetch_add(1, Ordering::Relaxed);
+                entry.insert(CatalogSubscriptionState {
+                    generation,
+                    call_id,
+                    seq,
+                    event,
+                    expires,
+                    remote_target,
+                    route_set: Vec::new(),
+                    from_header,
+                    to_header,
+                    local_tag,
+                    remote_tag: String::new(),
+                    inflight: true,
+                });
+                Some(generation)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn catalog_subscription_complete(
+        device_id: &str,
+        generation: u64,
+        remote_target: String,
+        route_set: Vec<String>,
+        from_header: String,
+        to_header: String,
+        remote_tag: String,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .catalog_subscriptions
+            .get_mut(device_id)
+            .is_some_and(|mut subscription| {
+                if subscription.generation != generation {
+                    return false;
+                }
+                subscription.remote_target = remote_target;
+                subscription.route_set = route_set;
+                subscription.from_header = from_header;
+                subscription.to_header = to_header;
+                subscription.remote_tag = remote_tag;
+                subscription.inflight = false;
+                true
+            })
+    }
+
+    pub fn catalog_subscription_take_refresh(
+        device_id: &str,
+        generation: u64,
+    ) -> Option<CatalogSubscriptionCommand> {
+        let mut subscription = GENERAL_CACHE
+            .shared
+            .catalog_subscriptions
+            .get_mut(device_id)?;
+        if subscription.generation != generation || subscription.inflight {
+            return None;
+        }
+        subscription.seq = subscription.seq.saturating_add(1);
+        subscription.inflight = true;
+        Some(CatalogSubscriptionCommand {
+            generation,
+            call_id: subscription.call_id.clone(),
+            seq: subscription.seq,
+            event: subscription.event.clone(),
+            expires: subscription.expires,
+            remote_target: subscription.remote_target.clone(),
+            route_set: subscription.route_set.clone(),
+            from_header: subscription.from_header.clone(),
+            to_header: subscription.to_header.clone(),
+        })
+    }
+
+    pub fn catalog_subscription_mark_failed(
+        device_id: &str,
+        generation: u64,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .catalog_subscriptions
+            .get_mut(device_id)
+            .is_some_and(|mut subscription| {
+                if subscription.generation != generation {
+                    return false;
+                }
+                subscription.inflight = false;
+                true
+            })
+    }
+
+    pub fn catalog_subscription_update_expires(
+        device_id: &str,
+        generation: u64,
+        expires: u32,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .catalog_subscriptions
+            .get_mut(device_id)
+            .is_some_and(|mut subscription| {
+                if subscription.generation != generation {
+                    return false;
+                }
+                subscription.expires = expires;
+                true
+            })
+    }
+
+    pub fn catalog_subscription_expires(
+        device_id: &str,
+        generation: u64,
+    ) -> Option<u32> {
+        GENERAL_CACHE
+            .shared
+            .catalog_subscriptions
+            .get(device_id)
+            .and_then(|subscription| {
+                (subscription.generation == generation)
+                    .then_some(subscription.expires)
+            })
+    }
+
+    pub fn catalog_subscription_validate_notify(
+        device_id: &str,
+        call_id: &str,
+        event: &str,
+        remote_tag: Option<&str>,
+        local_tag: Option<&str>,
+    ) -> Option<u64> {
+        let mut subscription = GENERAL_CACHE
+            .shared
+            .catalog_subscriptions
+            .get_mut(device_id)?;
+        if subscription.call_id != call_id
+            || !catalog_event_matches(&subscription.event, event)
+            || local_tag != Some(subscription.local_tag.as_str())
+        {
+            return None;
+        }
+        match remote_tag {
+            Some(tag) if subscription.remote_tag.is_empty() => {
+                subscription.remote_tag = tag.to_string();
+            }
+            Some(tag) if tag == subscription.remote_tag => {}
+            _ => return None,
+        }
+        Some(subscription.generation)
+    }
+
+    pub fn catalog_subscription_remove(
+        device_id: &str,
+        generation: Option<u64>,
+    ) -> bool {
+        let removed = match generation {
+            Some(generation) => GENERAL_CACHE
+                .shared
+                .catalog_subscriptions
+                .remove_if(device_id, |_, state| state.generation == generation),
+            None => GENERAL_CACHE
+                .shared
+                .catalog_subscriptions
+                .remove(device_id),
+        };
+        if let Some((_, subscription)) = &removed {
+            if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
+                let _ = scheduler.remove_register(
+                    &crate::register::core::TimeScheduleKey::CatalogSubscription(
+                        Arc::from(device_id),
+                        subscription.generation,
+                    ),
+                );
+            }
+        }
+        removed.is_some()
     }
 
     pub fn reset_device_state(device_id: &str) -> Vec<DeviceStreamState> {
@@ -514,6 +1001,43 @@ impl Cache {
                 }
             }
         }
+        let remaining_stream_ids = GENERAL_CACHE
+            .shared
+            .stream_map
+            .iter()
+            .filter_map(|stream| {
+                (stream.device_id == device_id).then(|| stream.key().clone())
+            })
+            .collect::<Vec<_>>();
+        for stream_id in remaining_stream_ids {
+            if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(&stream_id) {
+                if let Some(generation) = stream.closing_generation() {
+                    if let Some(scheduler) =
+                        crate::register::schedule::TimeScheduler::try_global()
+                    {
+                        let _ = scheduler.remove_register(
+                            &crate::register::core::TimeScheduleKey::StreamClosing(
+                                Arc::from(stream_id.as_str()),
+                                generation,
+                            ),
+                        );
+                    }
+                }
+                GENERAL_CACHE
+                    .shared
+                    .ssrc_sn
+                    .insert((stream.ssrc % 10000) as u16);
+                streams.push(DeviceStreamState {
+                    channel_id: stream.channel_id,
+                    stream_id,
+                    ssrc: stream.ssrc.to_string(),
+                    call_id: stream.call_id,
+                    seq: stream.seq.saturating_add(1),
+                    from_tag: stream.from_tag,
+                    to_tag: stream.to_tag,
+                });
+            }
+        }
         let talk_ids = GENERAL_CACHE
             .shared
             .talk_map
@@ -528,6 +1052,18 @@ impl Cache {
             .collect::<Vec<_>>();
         for talk_id in talk_ids {
             if let Some((_, talk)) = GENERAL_CACHE.shared.talk_map.remove(&talk_id) {
+                if let Some(generation) = talk.closing_generation {
+                    if let Some(scheduler) =
+                        crate::register::schedule::TimeScheduler::try_global()
+                    {
+                        let _ = scheduler.remove_register(
+                            &crate::register::core::TimeScheduleKey::TalkClosing(
+                                Arc::from(talk_id.as_str()),
+                                generation,
+                            ),
+                        );
+                    }
+                }
                 let ssrc_num = (talk.ssrc % 10000) as u16;
                 GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
                 streams.push(DeviceStreamState {
@@ -546,6 +1082,7 @@ impl Cache {
             .shared
             .stream_setup_locks
             .retain(|key, _| !key.starts_with(&setup_lock_prefix));
+        Self::catalog_subscription_remove(device_id, None);
         streams
     }
 
@@ -691,6 +1228,7 @@ impl Cache {
                 ssrc_sn: Self::init_ssrc_sn(),
                 stream_map: Default::default(),
                 talk_map: Default::default(),
+                catalog_subscriptions: Default::default(),
                 device_map: Default::default(),
                 stream_setup_locks: Default::default(),
             }),
@@ -704,6 +1242,28 @@ impl Cache {
 
 struct State {
     entities: HashMap<String, StateEntry>,
+}
+
+fn catalog_event_matches(expected: &str, actual: &str) -> bool {
+    fn parts(value: &str) -> (&str, Option<&str>) {
+        let mut parts = value.split(';').map(str::trim);
+        let package = parts.next().unwrap_or_default();
+        let id = parts.find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            key.trim()
+                .eq_ignore_ascii_case("id")
+                .then_some(value.trim())
+        });
+        (package, id)
+    }
+
+    let (expected_package, expected_id) = parts(expected);
+    let (actual_package, actual_id) = parts(actual);
+    expected_package.eq_ignore_ascii_case(actual_package)
+        && match actual_id {
+            Some(actual_id) => expected_id == Some(actual_id),
+            None => true,
+        }
 }
 
 impl State {
@@ -868,6 +1428,7 @@ struct Shared {
     ssrc_sn: DashSet<u16>,
     stream_map: DashMap<String, StreamTable>,
     talk_map: DashMap<String, TalkSessionState>,
+    catalog_subscriptions: DashMap<String, CatalogSubscriptionState>,
     device_map: DashMap<String, Vec<DeviceTable>>,
     stream_setup_locks: DashMap<String, Arc<AsyncMutex<()>>>,
 }
@@ -1064,5 +1625,205 @@ mod tests {
             .shared
             .stream_setup_locks
             .remove(&format!("{other_device_id}:channel-1:live"));
+    }
+
+    #[test]
+    fn dialog_command_reuses_saved_target_and_increments_cseq() {
+        let stream_id = "dialog-command-stream".to_string();
+        Cache::stream_map_insert_info(
+            stream_id.clone(),
+            "device-id".to_string(),
+            "channel-id".to_string(),
+            4321,
+            String::new(),
+            String::new(),
+            "dialog-call-id".to_string(),
+            7,
+            AccessMode::Back,
+            "from-tag".to_string(),
+            "to-tag".to_string(),
+            "sip:device@192.0.2.10:5060".to_string(),
+            vec!["<sip:proxy.example.com;lr>".to_string()],
+            "<sip:platform@example.com>;tag=from-tag".to_string(),
+            "<sip:device@example.com>;tag=to-tag".to_string(),
+        );
+
+        let command = Cache::stream_dialog_next(&stream_id).unwrap();
+
+        assert_eq!(command.seq, 8);
+        assert_eq!(command.call_id, "dialog-call-id");
+        assert_eq!(command.remote_target, "sip:device@192.0.2.10:5060");
+        assert_eq!(
+            command.route_set,
+            vec!["<sip:proxy.example.com;lr>".to_string()]
+        );
+        Cache::stream_terminated_by_call_id("dialog-call-id");
+    }
+
+    #[test]
+    fn peer_terminated_dialog_removes_stream_and_releases_ssrc() {
+        let stream_id = "peer-bye-stream".to_string();
+        let ssrc = 8765u32;
+        GENERAL_CACHE.shared.ssrc_sn.remove(&8765);
+        Cache::stream_map_insert_info(
+            stream_id.clone(),
+            "peer-bye-device".to_string(),
+            "peer-bye-channel".to_string(),
+            ssrc,
+            String::new(),
+            String::new(),
+            "peer-bye-call-id".to_string(),
+            1,
+            AccessMode::Live,
+            "from-tag".to_string(),
+            "to-tag".to_string(),
+            "sip:device@192.0.2.10:5060".to_string(),
+            Vec::new(),
+            "<sip:platform@example.com>;tag=from-tag".to_string(),
+            "<sip:device@example.com>;tag=to-tag".to_string(),
+        );
+
+        let removed = Cache::stream_terminated_by_call_id("peer-bye-call-id").unwrap();
+
+        assert_eq!(removed.stream_id, stream_id);
+        assert!(Cache::stream_map_query_node_ssrc(&removed.stream_id).is_none());
+        assert!(GENERAL_CACHE.shared.ssrc_sn.contains(&8765));
+    }
+
+    #[test]
+    fn catalog_subscription_is_singleton_and_refreshes_cseq() {
+        let device_id = "catalog-device";
+        Cache::catalog_subscription_remove(device_id, None);
+        let generation = Cache::catalog_subscription_begin(
+            device_id.to_string(),
+            "catalog-call-id".to_string(),
+            20,
+            "Catalog;id=123".to_string(),
+            3600,
+            "sip:device@192.0.2.10:5060".to_string(),
+            "<sip:platform@example.com>;tag=local-tag".to_string(),
+            "<sip:device@example.com>".to_string(),
+            "local-tag".to_string(),
+        )
+        .unwrap();
+
+        assert!(Cache::catalog_subscription_begin(
+            device_id.to_string(),
+            "other-call-id".to_string(),
+            1,
+            "Catalog;id=456".to_string(),
+            3600,
+            "sip:device@192.0.2.10:5060".to_string(),
+            "<sip:platform@example.com>;tag=other".to_string(),
+            "<sip:device@example.com>".to_string(),
+            "other".to_string(),
+        )
+        .is_none());
+
+        Cache::catalog_subscription_complete(
+            device_id,
+            generation,
+            "sip:device@192.0.2.10:5080".to_string(),
+            vec!["<sip:proxy.example.com;lr>".to_string()],
+            "<sip:platform@example.com>;tag=local-tag".to_string(),
+            "<sip:device@example.com>;tag=remote-tag".to_string(),
+            "remote-tag".to_string(),
+        );
+        let command = Cache::catalog_subscription_take_refresh(device_id, generation).unwrap();
+
+        assert_eq!(command.seq, 21);
+        assert_eq!(command.call_id, "catalog-call-id");
+        assert_eq!(command.remote_target, "sip:device@192.0.2.10:5080");
+        Cache::catalog_subscription_remove(device_id, Some(generation));
+    }
+
+    #[test]
+    fn catalog_notify_requires_matching_dialog() {
+        let device_id = "catalog-notify-device";
+        Cache::catalog_subscription_remove(device_id, None);
+        let generation = Cache::catalog_subscription_begin(
+            device_id.to_string(),
+            "notify-call-id".to_string(),
+            30,
+            "Catalog;id=789".to_string(),
+            3600,
+            "sip:device@192.0.2.20:5060".to_string(),
+            "<sip:platform@example.com>;tag=local-tag".to_string(),
+            "<sip:device@example.com>".to_string(),
+            "local-tag".to_string(),
+        )
+        .unwrap();
+        Cache::catalog_subscription_complete(
+            device_id,
+            generation,
+            "sip:device@192.0.2.20:5060".to_string(),
+            Vec::new(),
+            "<sip:platform@example.com>;tag=local-tag".to_string(),
+            "<sip:device@example.com>;tag=remote-tag".to_string(),
+            "remote-tag".to_string(),
+        );
+
+        assert_eq!(
+            Cache::catalog_subscription_validate_notify(
+                device_id,
+                "notify-call-id",
+                "Catalog;id=789",
+                Some("remote-tag"),
+                Some("local-tag"),
+            ),
+            Some(generation)
+        );
+        assert!(Cache::catalog_subscription_validate_notify(
+            device_id,
+            "other-call-id",
+            "Catalog;id=789",
+            Some("remote-tag"),
+            Some("local-tag"),
+        )
+        .is_none());
+        assert!(Cache::catalog_subscription_validate_notify(
+            device_id,
+            "notify-call-id",
+            "Catalog;id=999",
+            Some("remote-tag"),
+            Some("local-tag"),
+        )
+        .is_none());
+        Cache::catalog_subscription_remove(device_id, Some(generation));
+    }
+
+    #[test]
+    fn talk_close_keeps_dialog_until_terminal_response() {
+        let talk_id = "closing-talk".to_string();
+        Cache::talk_map_remove(&talk_id);
+        Cache::talk_map_insert(super::TalkSessionState {
+            talk_id: talk_id.clone(),
+            device_id: "talk-device".to_string(),
+            channel_id: "talk-channel".to_string(),
+            ssrc: 4567,
+            stream_node_name: "s1".to_string(),
+            call_id: "talk-call-id".to_string(),
+            seq: 8,
+            from_tag: "from-tag".to_string(),
+            to_tag: "to-tag".to_string(),
+            remote_target: "sip:device@192.0.2.30:5060".to_string(),
+            route_set: Vec::new(),
+            from_header: "<sip:platform@example.com>;tag=from-tag".to_string(),
+            to_header: "<sip:device@example.com>;tag=to-tag".to_string(),
+            codec: "PCMA".to_string(),
+            sample_rate: 8000,
+            channel_count: 1,
+            closing_generation: None,
+            bye_inflight_seq: None,
+            close_last_error: None,
+        });
+
+        let start = Cache::talk_close_begin(&talk_id).unwrap();
+        let command = Cache::talk_close_take_bye(&talk_id).unwrap();
+
+        assert!(Cache::talk_map_get(&talk_id).is_some());
+        assert_eq!(command.seq, 9);
+        assert!(Cache::talk_close_complete(&talk_id, start.generation).is_some());
+        assert!(Cache::talk_map_get(&talk_id).is_none());
     }
 }

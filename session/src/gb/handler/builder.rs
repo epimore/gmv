@@ -16,12 +16,13 @@ use crate::gb::SessionConf;
 use crate::gb::core::rw::RWContext;
 use crate::gb::handler::parser;
 use crate::state::model::{PtzControlModel, TransMode};
+use crate::state::session::CatalogSubscriptionCommand;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
 use crate::utils::date_time::TimeFormatter;
 use anyhow::anyhow;
 use base::cfg_lib::{CliBasic, default_cli_basic};
-use base::chrono::{Local, TimeDelta};
+use base::chrono::{Local, TimeDelta, Utc};
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::warn;
@@ -50,6 +51,9 @@ fn cli_basic() -> CliBasic {
 pub struct ResponseBuilder;
 
 impl ResponseBuilder {
+    const ALLOW_METHODS: &'static str = "REGISTER, MESSAGE, NOTIFY, OPTIONS, BYE";
+    const ACCEPT_TYPES: &'static str = "Application/MANSCDP+xml, Application/SDP";
+
     pub fn build_401_response(req: &Request, socket_addr: &SocketAddr) -> GlobalResult<Response> {
         let mut response_header = Self::build_response_header(req, socket_addr)?;
         Self::push_gb_version_header(&mut response_header, req);
@@ -70,11 +74,7 @@ impl ResponseBuilder {
         Self::push_gb_version_header(&mut response_header, req);
         response_header.push(
             typed::WwwAuthenticate {
-                realm: format!(
-                    "{}@{}",
-                    &req.uri.user().unwrap_or(""),
-                    &req.uri.host().to_string()
-                ),
+                realm: Self::digest_realm(req),
                 algorithm: Some(headers::auth::Algorithm::Md5),
                 qop: Some(headers::auth::Qop::Auth),
                 nonce,
@@ -122,13 +122,41 @@ impl ResponseBuilder {
         socket_addr: &SocketAddr,
         status_code: u16,
     ) -> GlobalResult<Response> {
-        let response_header = Self::build_response_header(req, socket_addr)?;
+        let mut response_header = Self::build_response_header(req, socket_addr)?;
+        if status_code == 405 {
+            Self::push_capability_headers(&mut response_header);
+        }
         Ok(rsip::Response {
             status_code: status_code.into(),
             headers: response_header,
             version: rsip::Version::V2,
             body: Default::default(),
         })
+    }
+
+    pub fn build_method_not_allowed_response(
+        req: &Request,
+        socket_addr: &SocketAddr,
+    ) -> GlobalResult<Response> {
+        Self::build_status_response(req, socket_addr, 405)
+    }
+
+    pub fn build_options_response(
+        req: &Request,
+        socket_addr: &SocketAddr,
+    ) -> GlobalResult<Response> {
+        let mut response_header = Self::build_response_header(req, socket_addr)?;
+        Self::push_capability_headers(&mut response_header);
+        Ok(rsip::Response {
+            status_code: 200.into(),
+            headers: response_header,
+            version: rsip::Version::V2,
+            body: Default::default(),
+        })
+    }
+
+    pub(crate) fn digest_realm(req: &Request) -> String {
+        req.uri.host().to_string()
     }
 
     pub fn build_logout_ok_response(
@@ -142,8 +170,7 @@ impl ResponseBuilder {
             Err(err) => warn!("build logout contact failed: {err}"),
         }
         response_header.push(rsip::headers::Expires::new("0".to_string()).into());
-        let now = Local::now();
-        let date = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let date = Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
         let date_header = rsip::headers::date::Date::new(date);
         response_header.push(date_header.into());
         Self::push_gb_version_header(&mut response_header, req);
@@ -159,26 +186,41 @@ impl ResponseBuilder {
         req: &Request,
         socket_addr: &SocketAddr,
     ) -> GlobalResult<rsip::Headers> {
-        let via_header = parser::header::get_via_header(req)?;
-        let mut params = via_header.params().hand_log(|msg| warn!("{msg}"))?;
-        if params.iter_mut().any(|param| {
-            if (*param).eq(&Other(OtherParam::from("rport"), None)) {
-                *param = Other(
-                    OtherParam::from("rport"),
-                    Some(OtherParamValue::from(socket_addr.port().to_string())),
-                );
-                return true;
-            }
-            false
-        }) {
-            params.push(Param::Received(param::Received::from(
-                socket_addr.ip().to_string(),
-            )));
-        }
-        let mut via: typed::Via = via_header.typed().hand_log(|msg| warn!("{msg}"))?;
-        via.params = params;
         let mut headers: rsip::Headers = Default::default();
-        headers.push(Via(via.untyped()));
+        let mut via_count = 0usize;
+        for header in req.headers.iter() {
+            let Header::Via(via_header) = header else {
+                continue;
+            };
+            let mut via = via_header.clone();
+            if via_count == 0 {
+                let mut params = via_header.params().hand_log(|msg| warn!("{msg}"))?;
+                if params.iter_mut().any(|param| {
+                    if (*param).eq(&Other(OtherParam::from("rport"), None)) {
+                        *param = Other(
+                            OtherParam::from("rport"),
+                            Some(OtherParamValue::from(socket_addr.port().to_string())),
+                        );
+                        return true;
+                    }
+                    false
+                }) {
+                    params.retain(|param| !matches!(param, Param::Received(_)));
+                    params.push(Param::Received(param::Received::from(
+                        socket_addr.ip().to_string(),
+                    )));
+                }
+                let mut typed_via: typed::Via =
+                    via_header.typed().hand_log(|msg| warn!("{msg}"))?;
+                typed_via.params = params;
+                via = typed_via.untyped();
+            }
+            headers.push(Via(via));
+            via_count += 1;
+        }
+        if via_count == 0 {
+            let _ = parser::header::get_via_header(req)?;
+        }
         headers.push(
             req.from_header()
                 .hand_log(|msg| warn!("{msg}"))?
@@ -230,6 +272,12 @@ impl ResponseBuilder {
             headers.push(Header::Other(String::from("X-GB-Ver"), gb_version));
         }
     }
+
+    fn push_capability_headers(headers: &mut rsip::Headers) {
+        headers.push(rsip::headers::Allow::new(Self::ALLOW_METHODS).into());
+        headers.push(rsip::headers::Accept::new(Self::ACCEPT_TYPES).into());
+        headers.push(rsip::headers::Supported::new("").into());
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -244,6 +292,26 @@ pub struct RequestBuilder;
 
 #[allow(unused)]
 impl RequestBuilder {
+    fn xml_encoding_for_gb_version(
+        gb_version: Option<&str>,
+    ) -> parser::xml::XmlEncoding {
+        match gb_version.map(str::trim) {
+            Some("3.0") => parser::xml::XmlEncoding::Gb18030,
+            _ => parser::xml::XmlEncoding::Gb2312,
+        }
+    }
+
+    fn supports_h265(gb_version: Option<&str>) -> bool {
+        !matches!(gb_version.map(str::trim), Some("2.0"))
+    }
+
+    fn encode_xml_body(device_id: &str, body: String) -> GlobalResult<Vec<u8>> {
+        let gb_version = RWContext::get_gb_version_by_device_id(device_id);
+        let encoding = Self::xml_encoding_for_gb_version(gb_version.as_deref());
+        let body = XmlBuilder::with_encoding(body, encoding);
+        parser::xml::encode_xml(&body)
+    }
+
     pub async fn build_query_device_info(
         device_id: &String,
     ) -> GlobalResult<(Request, Association)> {
@@ -259,7 +327,7 @@ impl RequestBuilder {
         expire: u32,
     ) -> GlobalResult<(Request, Association)> {
         let xml = XmlBuilder::subscribe_device_catalog(device_id, expire);
-        RequestBuilder::build_sub_req(device_id, xml).await
+        RequestBuilder::build_sub_req(device_id, expire, xml).await
     }
 
     pub async fn control_snapshot_image(
@@ -293,8 +361,9 @@ impl RequestBuilder {
         device_id: &String,
         body: String,
     ) -> GlobalResult<(Request, Association)> {
+        let body = Self::encode_xml_body(device_id, body)?;
         let (mut headers, uri, association) =
-            Self::build_request_header(channel_id_opt, device_id, false, false, None, None).await?;
+            Self::build_request_header(channel_id_opt, device_id, false, false).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = thread_rng();
@@ -308,17 +377,21 @@ impl RequestBuilder {
             uri,
             headers,
             version: rsip::common::version::Version::V2,
-            body: body.as_bytes().to_vec(),
+            body,
         };
         Ok((request_msg, association))
     }
 
     pub async fn build_sub_req(
         device_id: &String,
+        expires: u32,
         body: String,
     ) -> GlobalResult<(Request, Association)> {
+        let body = Self::encode_xml_body(device_id, body)?;
         let (mut headers, uri, association) =
-            Self::build_request_header(None, device_id, true, true, None, None).await?;
+            Self::build_request_header(None, device_id, true, true).await?;
+        headers.retain(|header| !matches!(header, Header::Expires(_)));
+        headers.push(rsip::headers::Expires::new(expires.to_string()).into());
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = thread_rng();
@@ -339,49 +412,62 @@ impl RequestBuilder {
             uri,
             headers,
             version: rsip::common::version::Version::V2,
-            body: body.as_bytes().to_vec(),
+            body,
         };
         Ok((request, association))
     }
 
     async fn common_info_request(
         device_id: &String,
-        channel_id: &String,
         body: &str,
-        from_tag: &str,
-        to_tag: &str,
-        seq: Option<u32>,
-        call_id: Option<String>,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
+        seq: u32,
+        call_id: String,
     ) -> GlobalResult<(Request, Association)> {
-        let (mut headers, uri, association) = Self::build_request_header(
-            Some(channel_id),
-            device_id,
-            false,
-            true,
-            Some(from_tag),
-            Some(to_tag),
-        )
-        .await?;
-        let call_id = call_id.unwrap_or_else(|| Uuid::new_v4().as_simple().to_string());
-        headers.push(rsip::headers::CallId::new(&call_id).into());
-        let seq = seq.map(|seq| seq).unwrap_or_else(|| {
-            let mut rng = thread_rng();
-            rng.gen_range(12u32..255u32)
-        });
-        let cs_eq_str = format!("{} INFO", seq);
-        let cs_eq = rsip::headers::CSeq::new(&cs_eq_str).into();
-        headers.push(cs_eq);
-
-        headers.push(rsip::headers::ContentType::new("Application/MANSRTSP").into());
-        headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
-        let request = Request {
-            method: Method::Info,
-            uri,
-            headers,
-            version: rsip::common::version::Version::V2,
-            body: body.as_bytes().to_vec(),
-        };
+        let (headers, association) =
+            Self::build_dialog_request_headers(device_id, from_header, to_header)?;
+        let request =
+            Self::finish_info_request(headers, remote_target, route_set, seq, call_id, body)?;
         Ok((request, association))
+    }
+
+    pub fn refresh_device_catalog_subscription(
+        device_id: &String,
+        command: &CatalogSubscriptionCommand,
+    ) -> GlobalResult<(Request, Association)> {
+        let xml = XmlBuilder::subscribe_device_catalog(device_id, command.expires);
+        let body = Self::encode_xml_body(device_id, xml)?;
+        let (mut headers, association) = Self::build_dialog_request_headers(
+            device_id,
+            &command.from_header,
+            &command.to_header,
+        )?;
+        let (uri, routes) =
+            Self::dialog_request_parts(&command.remote_target, &command.route_set)?;
+        for route in routes {
+            headers.push(rsip::headers::Route::new(route).into());
+        }
+        headers.push(rsip::headers::CallId::new(&command.call_id).into());
+        headers.push(
+            rsip::headers::CSeq::new(format!("{} SUBSCRIBE", command.seq)).into(),
+        );
+        headers.push(rsip::headers::Event::new(&command.event).into());
+        headers.push(rsip::headers::Expires::new(command.expires.to_string()).into());
+        headers.push(rsip::headers::ContentType::new("Application/MANSCDP+xml").into());
+        headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
+        Ok((
+            Request {
+                method: Method::Subscribe,
+                uri,
+                headers,
+                version: rsip::common::version::Version::V2,
+                body,
+            },
+            association,
+        ))
     }
 
     /// 构建下发请求头
@@ -390,10 +476,8 @@ impl RequestBuilder {
         device_id: &String,
         expires: bool,
         contact: bool,
-        from_tag: Option<&str>,
-        to_tag: Option<&str>,
     ) -> GlobalResult<(rsip::Headers, Uri, Association)> {
-        let (uri_str, association, lr) = RWContext::get_ds_by_device_id(device_id)
+        let (uri_str, association, _lr) = RWContext::get_ds_by_device_id(device_id)
             .ok_or(SysErr(anyhow!("设备：{device_id}，未注册或已离线")))
             .hand_log(|msg| warn!("{msg}"))?;
         let mut dst_id = device_id;
@@ -428,10 +512,6 @@ impl RequestBuilder {
         let transport = association.protocol.get_value();
 
         let mut headers: rsip::Headers = Default::default();
-        if lr {
-            headers.push(rsip::headers::Route::new(format!("{};lr", uri_str)).into())
-        }
-
         headers.push(
             rsip::headers::Via::new(format!(
                 "SIP/2.0/{} {}:{};rport;branch=z9hG4bK{}",
@@ -447,22 +527,13 @@ impl RequestBuilder {
                 "<sip:{}@{}>;tag={}",
                 domain_id,
                 domain,
-                from_tag.unwrap_or(&Alphanumeric.sample_string(&mut rand::thread_rng(), 16))
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
             ))
             .into(),
         );
         let uri = uri::Uri::try_from(uri_str).hand_log(|msg| warn!("{msg}"))?;
         let r_uri = &uri.host_with_port.to_string();
-        to_tag
-            .map(|tag| {
-                headers.push(
-                    rsip::headers::To::new(format!("<sip:{}@{}>;tag={}", dst_id, r_uri, tag))
-                        .into(),
-                )
-            })
-            .unwrap_or_else(|| {
-                headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, r_uri)).into())
-            });
+        headers.push(rsip::headers::To::new(format!("<sip:{}@{}>", dst_id, r_uri)).into());
         if expires {
             let expires = RWContext::get_expires_by_device_id(device_id)
                 .ok_or(SysErr(anyhow!("device id = [{}] 未知设备", device_id)))?;
@@ -491,7 +562,15 @@ impl RequestBuilder {
         stream_mode: TransMode,
         ssrc: &String,
     ) -> GlobalResult<(Request, Association)> {
-        let sdp = SdpBuilder::play_live(channel_id, dst_ip, dst_port, stream_mode, ssrc)?;
+        let gb_version = RWContext::get_gb_version_by_device_id(device_id);
+        let sdp = SdpBuilder::play_live(
+            channel_id,
+            dst_ip,
+            dst_port,
+            stream_mode,
+            ssrc,
+            Self::supports_h265(gb_version.as_deref()),
+        )?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
@@ -530,7 +609,17 @@ impl RequestBuilder {
         st: u32,
         et: u32,
     ) -> GlobalResult<(Request, Association)> {
-        let sdp = SdpBuilder::playback(channel_id, dst_ip, dst_port, stream_mode, ssrc, st, et)?;
+        let gb_version = RWContext::get_gb_version_by_device_id(device_id);
+        let sdp = SdpBuilder::playback(
+            channel_id,
+            dst_ip,
+            dst_port,
+            stream_mode,
+            ssrc,
+            st,
+            et,
+            Self::supports_h265(gb_version.as_deref()),
+        )?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
     }
 
@@ -546,6 +635,7 @@ impl RequestBuilder {
         et: u32,
         speed: u8,
     ) -> GlobalResult<(Request, Association)> {
+        let gb_version = RWContext::get_gb_version_by_device_id(device_id);
         let sdp = SdpBuilder::download(
             channel_id,
             dst_ip,
@@ -555,30 +645,9 @@ impl RequestBuilder {
             st,
             et,
             speed,
+            Self::supports_h265(gb_version.as_deref()),
         )?;
         Self::build_stream_request(device_id, channel_id, ssrc, sdp).await
-    }
-
-    pub async fn build_bye_request(
-        seq: u32,
-        call_id: String,
-        device_id: &String,
-        channel_id: &String,
-        from_tag: &str,
-        to_tag: &str,
-    ) -> GlobalResult<(Request, Association)> {
-        let (mut headers, uri, association) = Self::build_request_header(
-            Some(channel_id),
-            device_id,
-            false,
-            true,
-            Some(from_tag),
-            Some(to_tag),
-        )
-        .await?;
-        let request =
-            Self::finish_bye_request(headers, &uri.to_string(), &[], seq, call_id)?;
-        Ok((request, association))
     }
 
     pub fn build_dialog_bye_request(
@@ -657,6 +726,31 @@ impl RequestBuilder {
         })
     }
 
+    fn finish_info_request(
+        mut headers: rsip::Headers,
+        remote_target: &str,
+        route_set: &[String],
+        seq: u32,
+        call_id: String,
+        body: &str,
+    ) -> GlobalResult<Request> {
+        let (uri, routes) = Self::dialog_request_parts(remote_target, route_set)?;
+        for route in routes {
+            headers.push(rsip::headers::Route::new(route).into());
+        }
+        headers.push(rsip::headers::CallId::new(call_id).into());
+        headers.push(rsip::headers::CSeq::new(format!("{seq} INFO")).into());
+        headers.push(rsip::headers::ContentType::new("Application/MANSRTSP").into());
+        headers.push(rsip::headers::ContentLength::from(body.len() as u32).into());
+        Ok(Request {
+            method: Method::Info,
+            uri,
+            headers,
+            version: rsip::common::version::Version::V2,
+            body: body.as_bytes().to_vec(),
+        })
+    }
+
     pub fn dialog_target_by_response(
         res: &Response,
         fallback_remote_target: &str,
@@ -715,7 +809,13 @@ impl RequestBuilder {
         let Some(first_uri) = typed_route.uris().first() else {
             return Ok((remote_uri, route_set.to_vec()));
         };
-        if first_uri.params.iter().any(|param| matches!(param, Param::Lr)) {
+        if first_uri
+            .uri
+            .params
+            .iter()
+            .chain(first_uri.params.iter())
+            .any(|param| matches!(param, Param::Lr))
+        {
             return Ok((remote_uri, route_set.to_vec()));
         }
 
@@ -808,22 +908,24 @@ impl RequestBuilder {
     // 拖动播放
     pub async fn seek(
         device_id: &String,
-        channel_id: &String,
         seek: u32,
-        from_tag: &str,
-        to_tag: &str,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
         seq: u32,
         call_id: String,
     ) -> GlobalResult<(Request, Association)> {
         let sdp = SdpBuilder::info_seek(seek);
         Self::common_info_request(
             device_id,
-            channel_id,
             &sdp,
-            from_tag,
-            to_tag,
-            Some(seq),
-            Some(call_id),
+            remote_target,
+            route_set,
+            from_header,
+            to_header,
+            seq,
+            call_id,
         )
         .await
     }
@@ -831,22 +933,24 @@ impl RequestBuilder {
     // 倍速播放
     pub async fn speed(
         device_id: &String,
-        channel_id: &String,
         speed: f32,
-        from_tag: &str,
-        to_tag: &str,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
         seq: u32,
         call_id: String,
     ) -> GlobalResult<(Request, Association)> {
         let sdp = SdpBuilder::info_speed(speed);
         Self::common_info_request(
             device_id,
-            channel_id,
             &sdp,
-            from_tag,
-            to_tag,
-            Some(seq),
-            Some(call_id),
+            remote_target,
+            route_set,
+            from_header,
+            to_header,
+            seq,
+            call_id,
         )
         .await
     }
@@ -854,21 +958,23 @@ impl RequestBuilder {
     // 暂停回放
     pub async fn pause(
         device_id: &String,
-        channel_id: &String,
-        from_tag: &str,
-        to_tag: &str,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
         seq: u32,
         call_id: String,
     ) -> GlobalResult<(Request, Association)> {
         let sdp = SdpBuilder::info_pause();
         Self::common_info_request(
             device_id,
-            channel_id,
             &sdp,
-            from_tag,
-            to_tag,
-            Some(seq),
-            Some(call_id),
+            remote_target,
+            route_set,
+            from_header,
+            to_header,
+            seq,
+            call_id,
         )
         .await
     }
@@ -876,21 +982,23 @@ impl RequestBuilder {
     // 恢复回放
     pub async fn replay(
         device_id: &String,
-        channel_id: &String,
-        from_tag: &str,
-        to_tag: &str,
+        remote_target: &str,
+        route_set: &[String],
+        from_header: &str,
+        to_header: &str,
         seq: u32,
         call_id: String,
     ) -> GlobalResult<(Request, Association)> {
         let sdp = SdpBuilder::info_replay();
         Self::common_info_request(
             device_id,
-            channel_id,
             &sdp,
-            from_tag,
-            to_tag,
-            Some(seq),
-            Some(call_id),
+            remote_target,
+            route_set,
+            from_header,
+            to_header,
+            seq,
+            call_id,
         )
         .await
     }
@@ -902,8 +1010,7 @@ impl RequestBuilder {
         body: String,
     ) -> GlobalResult<(Request, Association)> {
         let (mut headers, uri, association) =
-            Self::build_request_header(Some(channel_id), device_id, false, true, None, None)
-                .await?;
+            Self::build_request_header(Some(channel_id), device_id, false, true).await?;
         let call_id_str = Uuid::new_v4().as_simple().to_string();
         headers.push(rsip::headers::CallId::new(&call_id_str).into());
         let mut rng = thread_rng();
@@ -942,6 +1049,23 @@ pub struct XmlBuilder;
 ///编码格式：2022 GB18030
 /// 2016 GB2312
 impl XmlBuilder {
+    fn with_encoding(
+        mut xml: String,
+        encoding: parser::xml::XmlEncoding,
+    ) -> String {
+        let declaration = format!(
+            "<?xml version=\"1.0\" encoding=\"{}\"?>",
+            encoding.declaration()
+        );
+        if xml.starts_with("<?xml") {
+            if let Some(end) = xml.find("?>") {
+                xml.replace_range(..end + 2, &declaration);
+                return xml;
+            }
+        }
+        format!("{declaration}\r\n{xml}")
+    }
+
     pub fn control_ptz(ptz_control_model: &PtzControlModel) -> String {
         let mut xml = String::with_capacity(200);
         xml.push_str("<?xml version=\"1.0\" encoding=\"GB18030\"?>\r\n");
@@ -1072,6 +1196,14 @@ struct SdpBuilder;
 
 #[allow(unused)]
 impl SdpBuilder {
+    fn video_payloads(support_h265: bool) -> &'static str {
+        if support_h265 {
+            "96 97 98 99 100"
+        } else {
+            "96 97 98 99"
+        }
+    }
+
     pub fn info_pause() -> String {
         let mut sdp = String::with_capacity(100);
         sdp.push_str("PAUSE RTSP/1.0\r\n");
@@ -1115,6 +1247,7 @@ impl SdpBuilder {
         ssrc: &String,
         st: u32,
         et: u32,
+        support_h265: bool,
     ) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
         let sdp = Self::build_common_play(
@@ -1127,6 +1260,7 @@ impl SdpBuilder {
             &st_et,
             true,
             None,
+            support_h265,
         )?;
         Ok(sdp)
     }
@@ -1140,6 +1274,7 @@ impl SdpBuilder {
         st: u32,
         et: u32,
         download_speed: u8,
+        support_h265: bool,
     ) -> GlobalResult<String> {
         let st_et = format!("{} {}", st, et);
         let sdp = Self::build_common_play(
@@ -1152,6 +1287,7 @@ impl SdpBuilder {
             &st_et,
             true,
             Some(download_speed),
+            support_h265,
         )?;
         Ok(sdp)
     }
@@ -1161,6 +1297,7 @@ impl SdpBuilder {
         media_port: u16,
         stream_mode: TransMode,
         ssrc: &String,
+        support_h265: bool,
     ) -> GlobalResult<String> {
         let sdp = Self::build_common_play(
             channel_id,
@@ -1172,6 +1309,7 @@ impl SdpBuilder {
             "0 0",
             false,
             None,
+            support_h265,
         )?;
         Ok(sdp)
     }
@@ -1237,9 +1375,11 @@ impl SdpBuilder {
         st_et: &str,
         u: bool,
         download_speed: Option<u8>,
+        support_h265: bool,
     ) -> GlobalResult<String> {
         let conf = SessionConf::get_session_by_conf();
         let session_ip = &conf.wan_ip.to_string();
+        let payloads = Self::video_payloads(support_h265);
         let mut sdp = String::with_capacity(300);
         sdp.push_str("v=0\r\n");
         sdp.push_str(&format!("o={} 0 0 IN IP4 {}\r\n", channel_id, session_ip));
@@ -1251,21 +1391,21 @@ impl SdpBuilder {
         sdp.push_str(&format!("t={}\r\n", st_et));
         match stream_mode {
             TransMode::Udp => sdp.push_str(&format!(
-                "m=video {} RTP/AVP 96 97 98 99 100\r\n",
-                media_port
+                "m=video {} RTP/AVP {}\r\n",
+                media_port, payloads
             )),
             TransMode::TcpActive => {
                 sdp.push_str(&format!(
-                    "m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n",
-                    media_port
+                    "m=video {} TCP/RTP/AVP {}\r\n",
+                    media_port, payloads
                 ));
                 sdp.push_str("a=setup:active\r\n");
                 sdp.push_str("a=connection:new\r\n");
             }
             TransMode::TcpPassive => {
                 sdp.push_str(&format!(
-                    "m=video {} TCP/RTP/AVP 96 97 98 99 100\r\n",
-                    media_port
+                    "m=video {} TCP/RTP/AVP {}\r\n",
+                    media_port, payloads
                 ));
                 sdp.push_str("a=setup:passive\r\n");
                 sdp.push_str("a=connection:new\r\n");
@@ -1276,7 +1416,9 @@ impl SdpBuilder {
         sdp.push_str("a=rtpmap:97 MPEG4/90000\r\n");
         sdp.push_str("a=rtpmap:98 H264/90000\r\n");
         sdp.push_str("a=rtpmap:99 SVAC/90000\r\n");
-        sdp.push_str("a=rtpmap:100 H265/90000\r\n");
+        if support_h265 {
+            sdp.push_str("a=rtpmap:100 H265/90000\r\n");
+        }
         download_speed.map(|speed| sdp.push_str(&format!("a=downloadspeed:{}\r\n", speed)));
         sdp.push_str(&format!("y={}\r\n", ssrc));
         Ok(sdp)
@@ -1285,12 +1427,63 @@ impl SdpBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::RequestBuilder;
+    use super::{RequestBuilder, ResponseBuilder, SdpBuilder};
+    use crate::gb::handler::parser::xml::XmlEncoding;
     use crate::state::model::PtzControlModel;
-    use base::chrono::Local;
+    use base::chrono::{DateTime, Local};
     use rsip::message::HeadersExt;
     use rsip::prelude::UntypedHeader;
-    use rsip::{Header, Response, StatusCode, Version};
+    use rsip::{Header, Method, Request, Response, StatusCode, Uri, Version};
+    use std::net::SocketAddr;
+
+    fn inbound_request(method: Method) -> Request {
+        Request {
+            method: method.clone(),
+            uri: Uri::try_from("sip:platform@example.com").unwrap(),
+            headers: vec![
+                rsip::headers::Via::new(
+                    "SIP/2.0/UDP edge.example.com;rport;branch=z9hG4bK-edge",
+                )
+                .into(),
+                rsip::headers::Via::new(
+                    "SIP/2.0/UDP device.example.com;branch=z9hG4bK-device",
+                )
+                .into(),
+                rsip::headers::From::new(
+                    "<sip:device@example.com>;tag=device-tag",
+                )
+                .into(),
+                rsip::headers::To::new("<sip:platform@example.com>").into(),
+                rsip::headers::CallId::new("call-id").into(),
+                rsip::headers::CSeq::new(format!("1 {method}")).into(),
+                rsip::headers::ContentLength::default().into(),
+            ]
+            .into(),
+            version: Version::V2,
+            body: Default::default(),
+        }
+    }
+
+    #[test]
+    fn gb_version_selects_xml_encoding_and_h265_capability() {
+        assert_eq!(
+            RequestBuilder::xml_encoding_for_gb_version(Some("2.0")),
+            XmlEncoding::Gb2312
+        );
+        assert!(!RequestBuilder::supports_h265(Some("2.0")));
+        assert_eq!(
+            RequestBuilder::xml_encoding_for_gb_version(Some("3.0")),
+            XmlEncoding::Gb18030
+        );
+        assert!(RequestBuilder::supports_h265(Some("3.0")));
+        assert!(RequestBuilder::supports_h265(None));
+    }
+
+    #[test]
+    fn sdp_payloads_omit_h265_for_2016_devices() {
+        assert_eq!(SdpBuilder::video_payloads(false), "96 97 98 99");
+        assert_eq!(SdpBuilder::video_payloads(true), "96 97 98 99 100");
+    }
 
     #[test]
     fn dialog_target_prefers_invite_response_contact_and_reverses_route_set() {
@@ -1362,10 +1555,94 @@ mod tests {
     }
 
     #[test]
-    fn test_date_format() {
-        let now = Local::now();
-        let date = now.format("%Y-%m-%dT%H:%M:%S").to_string();
-        println!("{date}");
+    fn dialog_info_uses_saved_target_route_and_dialog_cseq() {
+        let request = RequestBuilder::finish_info_request(
+            Default::default(),
+            "sip:device@192.0.2.10:5060",
+            &["<sip:proxy.example.com;lr>".to_string()],
+            9,
+            "call-id".to_string(),
+            "PLAY RTSP/1.0\r\n",
+        )
+        .unwrap();
+
+        assert_eq!(request.uri.to_string(), "sip:device@192.0.2.10:5060");
+        assert_eq!(request.cseq_header().unwrap().value(), "9 INFO");
+        assert!(request.headers.iter().any(
+            |header| matches!(header, Header::Route(value) if value.value().contains("proxy.example.com"))
+        ));
+        assert_eq!(request.body, b"PLAY RTSP/1.0\r\n");
+    }
+
+    #[test]
+    fn response_preserves_all_via_headers() {
+        let request = inbound_request(Method::Options);
+        let response = ResponseBuilder::build_ok_response(
+            &request,
+            &SocketAddr::from(([192, 0, 2, 10], 5060)),
+        )
+        .unwrap();
+        let vias = response
+            .headers
+            .iter()
+            .filter(|header| matches!(header, Header::Via(_)))
+            .collect::<Vec<_>>();
+
+        assert_eq!(vias.len(), 2);
+        assert!(vias[0].to_string().contains("rport=5060"));
+        assert!(vias[0].to_string().contains("received=192.0.2.10"));
+        assert!(vias[1].to_string().contains("z9hG4bK-device"));
+    }
+
+    #[test]
+    fn method_not_allowed_and_options_advertise_supported_methods() {
+        let request = inbound_request(Method::Invite);
+        let response = ResponseBuilder::build_method_not_allowed_response(
+            &request,
+            &SocketAddr::from(([192, 0, 2, 10], 5060)),
+        )
+        .unwrap();
+
+        assert_eq!(response.status_code, StatusCode::MethodNotAllowed);
+        assert!(response.headers.iter().any(
+            |header| matches!(header, Header::Allow(value) if value.value().contains("REGISTER"))
+        ));
+
+        let options = ResponseBuilder::build_options_response(
+            &inbound_request(Method::Options),
+            &SocketAddr::from(([192, 0, 2, 10], 5060)),
+        )
+        .unwrap();
+        assert!(options.headers.iter().any(
+            |header| matches!(header, Header::Allow(_))
+        ));
+        assert!(options.headers.iter().any(
+            |header| matches!(header, Header::Accept(_))
+        ));
+        assert!(options.headers.iter().any(
+            |header| matches!(header, Header::Supported(_))
+        ));
+    }
+
+    #[test]
+    fn logout_date_uses_rfc1123_gmt_format() {
+        let request = inbound_request(Method::Register);
+        let response = ResponseBuilder::build_logout_ok_response(
+            &request,
+            &SocketAddr::from(([192, 0, 2, 10], 5060)),
+        )
+        .unwrap();
+        let date = response
+            .headers
+            .iter()
+            .find_map(|header| match header {
+                Header::Date(value) => Some(value.value()),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(DateTime::parse_from_rfc2822(date).is_ok());
+        assert!(date.ends_with("GMT"));
     }
 
     #[test]

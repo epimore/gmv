@@ -46,6 +46,10 @@ impl TimeScheduler {
         TIME_SCHEDULER.get().expect("TimeScheduler not initialized")
     }
 
+    pub fn try_global() -> Option<&'static Self> {
+        TIME_SCHEDULER.get()
+    }
+
     pub fn insert_register(&self, key: TimeScheduleKey, ttl: Duration) -> GlobalResult<()> {
         self.inner.insert(ScheduleKey::Register(key), ttl)
     }

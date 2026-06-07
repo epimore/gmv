@@ -133,10 +133,9 @@ pub mod xml {
     use base::exception::GlobalError::SysErr;
     use base::exception::{GlobalResult, GlobalResultExt};
     use base::log::{debug, error};
-    use encoding_rs::GB18030;
+    use encoding_rs::{Encoding, GB18030, GBK, UTF_8};
     use quick_xml::events::Event;
-    use quick_xml::{Reader, encoding};
-    use std::ops::Deref;
+    use quick_xml::Reader;
     use std::str::from_utf8;
 
     pub const MESSAGE_TYPE: [&'static str; 4] = [
@@ -196,7 +195,77 @@ pub mod xml {
     pub const NOTIFY_ALARM_METHOD: &str = "Notify,AlarmMethod";
     pub const NOTIFY_INFO_ALARM_TYPE: &str = "Notify,Info,AlarmType";
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum XmlEncoding {
+        Utf8,
+        Gb2312,
+        Gb18030,
+    }
+
+    impl XmlEncoding {
+        pub fn declaration(self) -> &'static str {
+            match self {
+                Self::Utf8 => "UTF-8",
+                Self::Gb2312 => "GB2312",
+                Self::Gb18030 => "GB18030",
+            }
+        }
+
+        fn encoding(self) -> &'static Encoding {
+            match self {
+                Self::Utf8 => UTF_8,
+                Self::Gb2312 => GBK,
+                Self::Gb18030 => GB18030,
+            }
+        }
+    }
+
+    fn detect_xml_encoding(xml: &[u8]) -> XmlEncoding {
+        let declaration = String::from_utf8_lossy(&xml[..xml.len().min(256)])
+            .to_ascii_uppercase();
+        if declaration.contains("ENCODING") {
+            if declaration.contains("GB18030") {
+                return XmlEncoding::Gb18030;
+            }
+            if declaration.contains("GB2312") || declaration.contains("GBK") {
+                return XmlEncoding::Gb2312;
+            }
+            if declaration.contains("UTF-8") || declaration.contains("UTF8") {
+                return XmlEncoding::Utf8;
+            }
+        }
+        if from_utf8(xml).is_ok() {
+            XmlEncoding::Utf8
+        } else {
+            XmlEncoding::Gb18030
+        }
+    }
+
+    fn decode_xml_text(data: &[u8], encoding: XmlEncoding) -> GlobalResult<String> {
+        let (text, _, had_errors) = encoding.encoding().decode(data);
+        if had_errors {
+            return Err(SysErr(anyhow!(
+                "invalid {} XML text",
+                encoding.declaration()
+            )));
+        }
+        Ok(text.into_owned())
+    }
+
+    pub fn encode_xml(xml: &str) -> GlobalResult<Vec<u8>> {
+        let encoding = detect_xml_encoding(xml.as_bytes());
+        let (body, _, had_errors) = encoding.encoding().encode(xml);
+        if had_errors {
+            return Err(SysErr(anyhow!(
+                "XML contains characters not representable by {}",
+                encoding.declaration()
+            )));
+        }
+        Ok(body.into_owned())
+    }
+
     pub fn parse_xlm_to_vec(xml: &[u8]) -> GlobalResult<Vec<(String, String)>> {
+        let encoding = detect_xml_encoding(xml);
         let mut xml_reader = Reader::from_reader(xml);
         xml_reader.trim_text(true);
         xml_reader.expand_empty_elements(true);
@@ -214,15 +283,14 @@ pub mod xml {
                 }
                 Ok(Event::Text(e)) => {
                     //此处使用GB18030进行解析,兼容新版本要求
-                    let val =
-                        encoding::decode(e.deref(), GB18030).hand_log(|msg| error!("{msg}"))?;
+                    let val = decode_xml_text(e.as_ref(), encoding)?;
                     let len = tag.split(",").collect::<Vec<&str>>().len() - 1;
                     if k != len || j {
                         k = len;
                         vec.push(("?<-0_0->?".to_string(), k.to_string()));
                     }
                     let key = tag[..tag.len() - 1].to_string();
-                    vec.push((key, val.to_string()));
+                    vec.push((key, val));
                     b = false;
                 }
                 Ok(Event::End(ref e)) => {
@@ -248,5 +316,38 @@ pub mod xml {
         fn kv_to_model(arr: Vec<(String, String)>) -> GlobalResult<Self>
         where
             Self: Sized;
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{encode_xml, parse_xlm_to_vec};
+
+        fn assert_round_trip(declaration: &str) {
+            let xml = format!(
+                "<?xml version=\"1.0\" encoding=\"{declaration}\"?>\
+                 <Response><CmdType>设备信息</CmdType></Response>"
+            );
+            let bytes = encode_xml(&xml).unwrap();
+            let items = parse_xlm_to_vec(&bytes).unwrap();
+
+            assert!(items.iter().any(|(key, value)| {
+                key == "Response,CmdType" && value == "设备信息"
+            }));
+        }
+
+        #[test]
+        fn xml_declared_gb2312_round_trips_chinese() {
+            assert_round_trip("GB2312");
+        }
+
+        #[test]
+        fn xml_declared_gb18030_round_trips_chinese() {
+            assert_round_trip("GB18030");
+        }
+
+        #[test]
+        fn xml_declared_utf8_round_trips_chinese() {
+            assert_round_trip("UTF-8");
+        }
     }
 }

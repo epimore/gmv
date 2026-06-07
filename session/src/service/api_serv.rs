@@ -21,7 +21,7 @@ use shared::info::res::Resp;
 use crate::gb::RWContext;
 use crate::gb::handler::cmd::{CmdControl, CmdStream};
 use crate::http::client::{HttpClient, HttpStream};
-use crate::service::{EXPIRES, KEY_STREAM_IN};
+use crate::service::{EXPIRES, KEY_STREAM_IN, stream_close, talk_close};
 use crate::state;
 use crate::state::model::{
     CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
@@ -119,8 +119,7 @@ pub async fn download_info_by_stream_id(
 }
 
 pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bool> {
-    let cst_info = state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
-    if let Ok((device_id, channel_id, ssrc_str)) = id_builder::de_stream_id(&stream_id) {
+    if id_builder::de_stream_id(&stream_id).is_ok() {
         let (stream_server, ssrc) = session::Cache::stream_map_query_node_ssrc(&stream_id)
             .ok_or_else(|| {
                 GlobalError::new_biz_error(
@@ -152,21 +151,7 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
                 }
             }
         }
-        if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
-            let _ = CmdStream::play_bye(seq, call_id, &device_id, &channel_id, &from_tag, &to_tag)
-                .await;
-        }
-        if let Some(am) = state::session::Cache::stream_map_query_play_type_by_stream_id(&stream_id)
-        {
-            state::session::Cache::device_map_remove(
-                &device_id,
-                Some((&channel_id, Some((am, &ssrc_str)))),
-            );
-            state::session::Cache::stream_map_remove(&stream_id, None);
-        }
-        let ssrc = u32::from_str_radix(&ssrc_str, 10).hand_log(|msg| error!("{msg}"))?;
-        let ssrc_num = (ssrc % 10000) as u16;
-        state::session::Cache::ssrc_sn_set(ssrc_num);
+        stream_close::begin(stream_id);
         return Ok(true);
     }
     Ok(false)
@@ -289,46 +274,25 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
 }
 
 pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
-    let (device_id, channel_id, _ssrc) = id_builder::de_stream_id(&seek_mode.streamId)?;
-    let (call_id, seq, from_tag, to_tag) =
-        state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&seek_mode.streamId)
-            .ok_or_else(|| {
-                GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "流不存在", |msg| {
-                    error!("{msg}")
-                })
-            })?;
-    CmdStream::play_seek(
-        &device_id,
-        &channel_id,
-        seek_mode.seekSecond,
-        &from_tag,
-        &to_tag,
-        seq,
-        call_id,
-    )
-    .await?;
+    let (device_id, _channel_id, _ssrc) = id_builder::de_stream_id(&seek_mode.streamId)?;
+    let command = state::session::Cache::stream_dialog_next(&seek_mode.streamId).ok_or_else(|| {
+        GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "流不存在", |msg| {
+            error!("{msg}")
+        })
+    })?;
+    CmdStream::play_seek(&device_id, seek_mode.seekSecond, command).await?;
     Ok(true)
 }
 
 pub async fn speed(speed_mode: PlaySpeedModel, _token: String) -> GlobalResult<bool> {
-    let (device_id, channel_id, _ssrc) = id_builder::de_stream_id(&speed_mode.streamId)?;
-    let (call_id, seq, from_tag, to_tag) =
-        state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&speed_mode.streamId)
-            .ok_or_else(|| {
-                GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "流不存在", |msg| {
-                    error!("{msg}")
-                })
-            })?;
-    CmdStream::play_speed(
-        &device_id,
-        &channel_id,
-        speed_mode.speedRate,
-        &from_tag,
-        &to_tag,
-        seq,
-        call_id,
-    )
-    .await?;
+    let (device_id, _channel_id, _ssrc) = id_builder::de_stream_id(&speed_mode.streamId)?;
+    let command =
+        state::session::Cache::stream_dialog_next(&speed_mode.streamId).ok_or_else(|| {
+            GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "流不存在", |msg| {
+                error!("{msg}")
+            })
+        })?;
+    CmdStream::play_speed(&device_id, speed_mode.speedRate, command).await?;
     Ok(true)
 }
 
@@ -446,14 +410,17 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         };
 
         if !audio.compatible_answer(&answer.codec, answer.sample_rate) {
-            if let Ok((call_id, seq)) = CmdStream::invite_ack(device_id, &res, association).await {
-                let _ = CmdStream::play_bye(
+            if let Ok((call_id, seq, dialog)) =
+                CmdStream::invite_ack_with_dialog(device_id, &res, association).await
+            {
+                let _ = CmdStream::play_bye_dialog(
                     seq.saturating_add(1),
                     call_id,
                     device_id,
-                    &channel_id,
-                    &from_tag,
-                    &to_tag,
+                    &dialog.remote_target,
+                    &dialog.route_set,
+                    &dialog.from_header,
+                    &dialog.to_header,
                 )
                 .await;
             }
@@ -471,14 +438,15 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             ));
         }
 
-        let (call_id, seq) = match CmdStream::invite_ack(device_id, &res, association).await {
-            Ok(value) => value,
-            Err(err) => {
-                cleanup_talk_open(client.as_ref(), &talk_id).await;
-                state::session::Cache::ssrc_sn_set(u16ssrc);
-                return Err(err);
-            }
-        };
+        let (call_id, seq, dialog) =
+            match CmdStream::invite_ack_with_dialog(device_id, &res, association).await {
+                Ok(value) => value,
+                Err(err) => {
+                    cleanup_talk_open(client.as_ref(), &talk_id).await;
+                    state::session::Cache::ssrc_sn_set(u16ssrc);
+                    return Err(err);
+                }
+            };
 
         let answer_req = TalkAnswerReq {
             talk_id: talk_id.clone(),
@@ -493,13 +461,14 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             .hand_log(|msg| error!("{msg}"))
             .and_then(|resp| stream_resp_unit(resp.value(), "talk_answer"))
         {
-            let _ = CmdStream::play_bye(
+            let _ = CmdStream::play_bye_dialog(
                 seq.saturating_add(1),
-                call_id,
+                call_id.clone(),
                 device_id,
-                &channel_id,
-                &from_tag,
-                &to_tag,
+                &dialog.remote_target,
+                &dialog.route_set,
+                &dialog.from_header,
+                &dialog.to_header,
             )
             .await;
             cleanup_talk_open(client.as_ref(), &talk_id).await;
@@ -517,18 +486,26 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             seq,
             from_tag,
             to_tag,
+            remote_target: dialog.remote_target,
+            route_set: dialog.route_set,
+            from_header: dialog.from_header,
+            to_header: dialog.to_header,
             codec: open_resp.codec.clone(),
             sample_rate: open_resp.sample_rate,
             channel_count: open_resp.channel_count,
+            closing_generation: None,
+            bye_inflight_seq: None,
+            close_last_error: None,
         };
         if !state::session::Cache::talk_map_insert(talk_state.clone()) {
-            let _ = CmdStream::play_bye(
+            let _ = CmdStream::play_bye_dialog(
                 talk_state.seq.saturating_add(1),
-                talk_state.call_id,
+                talk_state.call_id.clone(),
                 device_id,
-                &channel_id,
-                &talk_state.from_tag,
-                &talk_state.to_tag,
+                &talk_state.remote_target,
+                &talk_state.route_set,
+                &talk_state.from_header,
+                &talk_state.to_header,
             )
             .await;
             cleanup_talk_open(client.as_ref(), &talk_id).await;
@@ -559,7 +536,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
 }
 
 pub async fn talk_stop(model: TalkStopModel, _token: String) -> GlobalResult<bool> {
-    let Some(talk) = state::session::Cache::talk_map_remove(&model.talk_id) else {
+    let Some(talk) = state::session::Cache::talk_map_get(&model.talk_id) else {
         return Ok(false);
     };
 
@@ -583,18 +560,38 @@ pub async fn talk_stop(model: TalkStopModel, _token: String) -> GlobalResult<boo
         }
     }
 
-    let _ = CmdStream::play_bye(
-        talk.seq.saturating_add(1),
-        talk.call_id,
-        &talk.device_id,
-        &talk.channel_id,
-        &talk.from_tag,
-        &talk.to_tag,
-    )
-    .await;
-    let ssrc_num = (talk.ssrc % 10000) as u16;
-    state::session::Cache::ssrc_sn_set(ssrc_num);
-    Ok(true)
+    Ok(talk_close::begin(model.talk_id))
+}
+
+pub async fn peer_dialog_terminated(call_id: String) -> bool {
+    if let Some(stream) = state::session::Cache::stream_terminated_by_call_id(&call_id) {
+        warn!(
+            "stream dialog terminated by device: device_id={}, channel_id={}, stream_id={}, \
+             ssrc={}, call_id={}",
+            stream.device_id, stream.channel_id, stream.stream_id, stream.ssrc, stream.call_id
+        );
+        return true;
+    }
+    let Some(talk) = state::session::Cache::talk_map_remove_by_call_id(&call_id) else {
+        return false;
+    };
+    if let Some(stream_node) = StreamConf::get_stream_conf()
+        .node_map
+        .get(&talk.stream_node_name)
+    {
+        match HttpClient::template_ip_port(
+            &stream_node.local_ip.to_string(),
+            stream_node.local_port,
+        ) {
+            Ok(client) => cleanup_talk_open(client.as_ref(), &talk.talk_id).await,
+            Err(err) => warn!(
+                "peer BYE talk cleanup client build failed: talk_id={}, err={:?}",
+                talk.talk_id, err
+            ),
+        }
+    }
+    state::session::Cache::ssrc_sn_set((talk.ssrc % 10000) as u16);
+    true
 }
 
 const DEFAULT_TALK_CODEC: &str = "PCMA";
@@ -882,24 +879,47 @@ async fn start_invite_stream(
                 return Err(err);
             }
         };
+        if !state::session::Cache::stream_map_insert_info(
+            stream_id.clone(),
+            device_id.clone(),
+            channel_id.clone(),
+            u32ssrc,
+            String::new(),
+            node_name.clone(),
+            call_id.clone(),
+            seq,
+            am,
+            from_tag.clone(),
+            to_tag.clone(),
+            dialog_target.remote_target.clone(),
+            dialog_target.route_set.clone(),
+            dialog_target.from_header.clone(),
+            dialog_target.to_header.clone(),
+        ) {
+            let _ = CmdStream::play_bye_dialog(
+                seq.saturating_add(1),
+                call_id,
+                device_id,
+                &dialog_target.remote_target,
+                &dialog_target.route_set,
+                &dialog_target.from_header,
+                &dialog_target.to_header,
+            )
+            .await;
+            cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
+            state::session::Cache::ssrc_sn_set(u16ssrc);
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "stream dialog already exists",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            ));
+        }
 
         if let Some(base_stream_info) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
-            state::session::Cache::stream_map_insert_info(
-                stream_id.clone(),
-                device_id.clone(),
-                channel_id.clone(),
-                u32ssrc,
+            state::session::Cache::stream_map_update_source(
+                &stream_id,
                 base_stream_info.rtp_info.proxy_addr.clone(),
                 node_name.clone(),
-                call_id,
-                seq,
-                am,
-                from_tag,
-                to_tag,
-                dialog_target.remote_target,
-                dialog_target.route_set,
-                dialog_target.from_header,
-                dialog_target.to_header,
             );
             state::session::Cache::device_map_insert(
                 device_id.to_string(),
@@ -912,18 +932,8 @@ async fn start_invite_stream(
             return Ok((stream_id, node_name, base_stream_info.rtp_info.proxy_addr));
         }
 
-        let _ = CmdStream::play_bye_dialog(
-            seq + 1,
-            call_id,
-            device_id,
-            &dialog_target.remote_target,
-            &dialog_target.route_set,
-            &dialog_target.from_header,
-            &dialog_target.to_header,
-        )
-        .await;
         cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
-        state::session::Cache::ssrc_sn_set(u16ssrc);
+        stream_close::begin(stream_id);
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Timeout.code(),
             "未接收到监控推流",
@@ -972,30 +982,7 @@ async fn enable_invite_stream(
             }
 
             if res.is_none() {
-                let cst_info =
-                    state::session::Cache::stream_map_build_call_id_seq_from_to_tag(&stream_id);
-                state::session::Cache::device_map_remove(
-                    device_id,
-                    Some((channel_id, Some((*am, &ssrc)))),
-                );
-                state::session::Cache::stream_map_remove(&stream_id, None);
-                let ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
-                let ssrc_num = (ssrc % 10000) as u16;
-                state::session::Cache::ssrc_sn_set(ssrc_num);
-                if let Ok((device_id, channel_id, _ssrc_str)) = id_builder::de_stream_id(&stream_id)
-                {
-                    if let Some((call_id, seq, from_tag, to_tag)) = cst_info {
-                        let _ = CmdStream::play_bye(
-                            seq,
-                            call_id,
-                            &device_id,
-                            &channel_id,
-                            &from_tag,
-                            &to_tag,
-                        )
-                        .await;
-                    }
-                }
+                stream_close::begin(stream_id);
             }
             Ok(res)
         }

@@ -220,6 +220,7 @@ impl Network {
     //todo 更新设备状态
 }
 pub struct DeviceSession {
+    pub gb_version: Option<String>,
     pub contact_uri: String, // 来自 REGISTER Contact
     pub registration_call_id: String,
     pub registration_cseq: u32,
@@ -241,6 +242,7 @@ impl DeviceSession {
         registration_duration: Duration,
     ) -> Self {
         Self {
+            gb_version: None,
             contact_uri,
             registration_call_id: String::new(),
             registration_cseq: 0,
@@ -257,6 +259,10 @@ impl DeviceSession {
     }
     pub fn enable_lr(&mut self) {
         self.support_lr.store(true, Ordering::Relaxed)
+    }
+
+    pub fn set_gb_version(&mut self, gb_version: Option<String>) {
+        self.gb_version = gb_version;
     }
 
     pub fn set_registration_identity(&mut self, call_id: String, cseq: u32) {
@@ -277,6 +283,7 @@ impl DeviceSession {
 
     pub fn snapshot(&self) -> Self {
         Self {
+            gb_version: self.gb_version.clone(),
             contact_uri: self.contact_uri.clone(),
             registration_call_id: self.registration_call_id.clone(),
             registration_cseq: self.registration_cseq,
@@ -325,6 +332,14 @@ mod tests {
             60,
             Duration::from_secs(3600),
         )
+    }
+
+    #[test]
+    fn session_snapshot_preserves_gb_version() {
+        let mut session = session(association(40000));
+        session.set_gb_version(Some("3.0".to_string()));
+
+        assert_eq!(session.snapshot().gb_version.as_deref(), Some("3.0"));
     }
 
     #[test]

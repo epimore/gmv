@@ -2,7 +2,9 @@ use crate::gb::core::rw::SipRequestOutput;
 use crate::gb::depot::{Callback, default_response_callback};
 use crate::gb::depot::extract::HeaderItemExt;
 use crate::gb::handler::builder::{DialogTarget, RequestBuilder};
+use crate::register::core::{Register, TimeScheduleKey};
 use crate::state::model::{PtzControlModel, TransMode};
+use crate::state::session::{Cache, DialogCommand};
 use anyhow::anyhow;
 use base::err::BaseErrorCode;
 use base::exception::GlobalError::SysErr;
@@ -10,16 +12,147 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::net::state::{Association, Protocol};
 use base::tokio::sync::oneshot;
+use base::tokio::time::{Duration, sleep};
 use regex::Regex;
+use rsip::message::HeadersExt;
 use rsip::prelude::UntypedHeader;
-use rsip::{Request, Response};
+use rsip::{Header, Request, Response};
 use shared::info::media_info_ext::MediaExt;
+use std::sync::Arc;
 
 pub struct CmdResponse;
 
 pub struct CmdQuery;
 
 impl CmdQuery {
+    fn catalog_refresh_delay(expires: u32) -> Duration {
+        let margin = (expires / 10).clamp(1, 60);
+        Duration::from_secs(u64::from(expires.saturating_sub(margin).max(1)))
+    }
+
+    fn schedule_catalog_refresh(device_id: Arc<str>, generation: u64, expires: u32) {
+        let key = TimeScheduleKey::CatalogSubscription(device_id, generation);
+        let _ = Register::scheduler().remove_register(&key);
+        if let Err(err) =
+            Register::scheduler().insert_register(key, Self::catalog_refresh_delay(expires))
+        {
+            warn!("schedule catalog subscription refresh failed: {err}");
+        }
+    }
+
+    fn schedule_catalog_retry(device_id: Arc<str>, generation: u64, expires: u32) {
+        let key = TimeScheduleKey::CatalogSubscription(device_id, generation);
+        let _ = Register::scheduler().remove_register(&key);
+        let delay = Duration::from_secs(u64::from(expires.clamp(1, 30)));
+        if let Err(err) = Register::scheduler().insert_register(key, delay) {
+            warn!("schedule catalog subscription retry failed: {err}");
+        }
+    }
+
+    pub fn update_catalog_subscription_from_notify(
+        device_id: &str,
+        generation: u64,
+        expires: u32,
+    ) {
+        if Cache::catalog_subscription_update_expires(device_id, generation, expires) {
+            Self::schedule_catalog_refresh(Arc::from(device_id), generation, expires);
+        }
+    }
+
+    pub fn terminate_catalog_subscription(device_id: &str, generation: u64) {
+        let expires =
+            Cache::catalog_subscription_expires(device_id, generation);
+        if Cache::catalog_subscription_remove(device_id, Some(generation)) {
+            if let Some(expires) = expires {
+                Self::retry_new_catalog_subscription(device_id.to_string(), expires);
+            }
+        }
+    }
+
+    fn retry_new_catalog_subscription(device_id: String, expires: u32) {
+        base::tokio::spawn(async move {
+            let mut delay = Duration::from_secs(5);
+            loop {
+                sleep(delay).await;
+                if !crate::gb::core::rw::RWContext::has_session_by_device_id(
+                    &device_id,
+                ) {
+                    break;
+                }
+                match Self::subscribe_device_catalog(&device_id, expires).await {
+                    Ok(()) => break,
+                    Err(err) => {
+                        warn!("retry catalog subscription failed: {err}");
+                        delay = Duration::from_secs(30);
+                    }
+                }
+            }
+        });
+    }
+
+    fn event_header(request: &Request) -> GlobalResult<String> {
+        request
+            .headers
+            .iter()
+            .find_map(|header| match header {
+                Header::Event(event) => Some(event.value().to_string()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                GlobalError::new_sys_error("SUBSCRIBE missing Event header", |msg| {
+                    error!("{msg}")
+                })
+            })
+    }
+
+    fn response_expires(response: &Response, default: u32) -> u32 {
+        response
+            .headers
+            .iter()
+            .find_map(|header| match header {
+                Header::Expires(expires) => expires.value().parse::<u32>().ok(),
+                _ => None,
+            })
+            .unwrap_or(default)
+    }
+
+    fn complete_catalog_subscription(
+        device_id: &str,
+        generation: u64,
+        fallback_remote_target: &str,
+        requested_expires: u32,
+        response: &Response,
+    ) -> GlobalResult<u32> {
+        let target =
+            RequestBuilder::dialog_target_by_response(response, fallback_remote_target);
+        let remote_tag = response
+            .header_to_tag()?
+            .ok_or_else(|| {
+                GlobalError::new_sys_error(
+                    "SUBSCRIBE final response missing To tag",
+                    |msg| error!("{msg}"),
+                )
+            })?
+            .to_string();
+        if !Cache::catalog_subscription_complete(
+            device_id,
+            generation,
+            target.remote_target,
+            target.route_set,
+            target.from_header,
+            target.to_header,
+            remote_tag,
+        ) {
+            return Err(GlobalError::new_sys_error(
+                "catalog subscription state changed before response",
+                |msg| warn!("device_id={device_id}; {msg}"),
+            ));
+        }
+        let expires = Self::response_expires(response, requested_expires);
+        Cache::catalog_subscription_update_expires(device_id, generation, expires);
+        Ok(expires)
+    }
+
     pub async fn query_device_info(device_id: &String) -> GlobalResult<()> {
         let (request, association) = RequestBuilder::build_query_device_info(device_id).await?;
         SipRequestOutput::new(device_id, association, request)
@@ -39,9 +172,168 @@ impl CmdQuery {
     pub async fn subscribe_device_catalog(device_id: &String, expire: u32) -> GlobalResult<()> {
         let (request, association) =
             RequestBuilder::subscribe_device_catalog(device_id, expire).await?;
-        SipRequestOutput::new(device_id, association, request)
-            .send_log("subscribe_device_catalog")
-            .await;
+        let call_id = request.call_id()?.value().to_string();
+        let seq = request.seq()?;
+        let event = Self::event_header(&request)?;
+        let remote_target = request.uri.to_string();
+        let from_header = request
+            .from_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .value()
+            .to_string();
+        let to_header = request
+            .to_header()
+            .hand_log(|msg| warn!("{msg}"))?
+            .value()
+            .to_string();
+        let local_tag = request.header_from_tag()?.to_string();
+        let Some(generation) = Cache::catalog_subscription_begin(
+            device_id.clone(),
+            call_id,
+            seq,
+            event,
+            expire,
+            remote_target.clone(),
+            from_header,
+            to_header,
+            local_tag,
+        ) else {
+            return Ok(());
+        };
+        let callback_device_id = device_id.clone();
+        let schedule_device_id: Arc<str> = Arc::from(device_id.as_str());
+        let callback: Callback = Box::new(move |result| match result {
+            Ok(response) if (200..300).contains(&response.status_code.code()) => {
+                match Self::complete_catalog_subscription(
+                    &callback_device_id,
+                    generation,
+                    &remote_target,
+                    expire,
+                    &response,
+                ) {
+                    Ok(expires) => Self::schedule_catalog_refresh(
+                        schedule_device_id,
+                        generation,
+                        expires,
+                    ),
+                    Err(err) => {
+                        Cache::catalog_subscription_remove(
+                            &callback_device_id,
+                            Some(generation),
+                        );
+                        warn!("complete catalog subscription failed: {err}");
+                    }
+                }
+            }
+            Ok(response) => {
+                Cache::catalog_subscription_remove(&callback_device_id, Some(generation));
+                warn!(
+                    "catalog subscription rejected: device_id={}, status={}",
+                    callback_device_id,
+                    response.status_code.code()
+                );
+                Self::retry_new_catalog_subscription(callback_device_id, expire);
+            }
+            Err(err) => {
+                Cache::catalog_subscription_remove(&callback_device_id, Some(generation));
+                warn!(
+                    "catalog subscription request failed: device_id={}, err={}",
+                    callback_device_id, err
+                );
+                Self::retry_new_catalog_subscription(callback_device_id, expire);
+            }
+        });
+        if let Err(err) = SipRequestOutput::new(device_id, association, request)
+            .send(callback)
+            .await
+        {
+            Cache::catalog_subscription_remove(device_id, Some(generation));
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub async fn refresh_catalog_subscription(
+        device_id: Arc<str>,
+        generation: u64,
+    ) -> GlobalResult<()> {
+        let Some(command) =
+            Cache::catalog_subscription_take_refresh(device_id.as_ref(), generation)
+        else {
+            return Ok(());
+        };
+        let device_key = device_id.to_string();
+        let (request, association) =
+            match RequestBuilder::refresh_device_catalog_subscription(&device_key, &command) {
+                Ok(request) => request,
+                Err(err) => {
+                    Cache::catalog_subscription_mark_failed(&device_key, generation);
+                    Self::schedule_catalog_retry(device_id, generation, command.expires);
+                    return Err(err);
+                }
+            };
+        let remote_target = command.remote_target.clone();
+        let requested_expires = command.expires;
+        let callback_device_id = device_key.clone();
+        let schedule_device_id = device_id.clone();
+        let callback: Callback = Box::new(move |result| match result {
+            Ok(response) if (200..300).contains(&response.status_code.code()) => {
+                match Self::complete_catalog_subscription(
+                    &callback_device_id,
+                    generation,
+                    &remote_target,
+                    requested_expires,
+                    &response,
+                ) {
+                    Ok(expires) => Self::schedule_catalog_refresh(
+                        schedule_device_id,
+                        generation,
+                        expires,
+                    ),
+                    Err(err) => warn!("complete catalog refresh failed: {err}"),
+                }
+            }
+            Ok(response) if response.status_code.code() == 481 => {
+                Cache::catalog_subscription_remove(&callback_device_id, Some(generation));
+                Self::retry_new_catalog_subscription(
+                    callback_device_id,
+                    requested_expires,
+                );
+            }
+            Ok(response) => {
+                Cache::catalog_subscription_mark_failed(&callback_device_id, generation);
+                warn!(
+                    "catalog subscription refresh rejected: device_id={}, status={}",
+                    callback_device_id,
+                    response.status_code.code()
+                );
+                Self::schedule_catalog_retry(
+                    schedule_device_id,
+                    generation,
+                    requested_expires,
+                );
+            }
+            Err(err) => {
+                Cache::catalog_subscription_mark_failed(&callback_device_id, generation);
+                warn!(
+                    "catalog subscription refresh failed: device_id={}, err={}",
+                    callback_device_id, err
+                );
+                Self::schedule_catalog_retry(
+                    schedule_device_id,
+                    generation,
+                    requested_expires,
+                );
+            }
+        });
+        if let Err(err) = SipRequestOutput::new(&device_key, association, request)
+            .send(callback)
+            .await
+        {
+            Cache::catalog_subscription_mark_failed(&device_key, generation);
+            Self::schedule_catalog_retry(device_id, generation, requested_expires);
+            return Err(err);
+        }
         Ok(())
     }
 }
@@ -234,16 +526,20 @@ impl CmdStream {
     }
     pub async fn play_speed(
         device_id: &String,
-        channel_id: &String,
         speed: f32,
-        from_tag: &str,
-        to_tag: &str,
-        seq: u32,
-        call_id: String,
+        command: DialogCommand,
     ) -> GlobalResult<()> {
-        let (request, association) =
-            RequestBuilder::speed(device_id, channel_id, speed, from_tag, to_tag, seq, call_id)
-                .await?;
+        let (request, association) = RequestBuilder::speed(
+            device_id,
+            speed,
+            &command.remote_target,
+            &command.route_set,
+            &command.from_header,
+            &command.to_header,
+            command.seq,
+            command.call_id,
+        )
+        .await?;
         SipRequestOutput::new(device_id, association, request)
             .send_log("play_speed")
             .await;
@@ -251,36 +547,22 @@ impl CmdStream {
     }
     pub async fn play_seek(
         device_id: &String,
-        channel_id: &String,
         seek: u32,
-        from_tag: &str,
-        to_tag: &str,
-        seq: u32,
-        call_id: String,
+        command: DialogCommand,
     ) -> GlobalResult<()> {
-        let (request, association) =
-            RequestBuilder::seek(device_id, channel_id, seek, from_tag, to_tag, seq, call_id)
-                .await?;
-        SipRequestOutput::new(device_id, association, request)
-            .send_log("play_seek")
-            .await;
-        Ok(())
-    }
-
-    pub async fn play_bye(
-        seq: u32,
-        call_id: String,
-        device_id: &String,
-        channel_id: &String,
-        from_tag: &str,
-        to_tag: &str,
-    ) -> GlobalResult<()> {
-        let (request, association) = RequestBuilder::build_bye_request(
-            seq, call_id, device_id, channel_id, from_tag, to_tag,
+        let (request, association) = RequestBuilder::seek(
+            device_id,
+            seek,
+            &command.remote_target,
+            &command.route_set,
+            &command.from_header,
+            &command.to_header,
+            command.seq,
+            command.call_id,
         )
         .await?;
         SipRequestOutput::new(device_id, association, request)
-            .send_log("play_bye")
+            .send_log("play_seek")
             .await;
         Ok(())
     }

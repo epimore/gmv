@@ -55,6 +55,10 @@ pub mod rw {
             Register::get_device_session(device_id.as_str()).map(|ds| ds.registration_duration)
         }
 
+        pub fn get_gb_version_by_device_id(device_id: &str) -> Option<String> {
+            Register::get_device_session(device_id).and_then(|ds| ds.gb_version)
+        }
+
         pub fn get_ds_by_device_id(device_id: &String) -> Option<(String, Association, bool)> {
             Register::get_connected_device_session(device_id.as_str()).map(|ds| {
                 (
