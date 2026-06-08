@@ -1367,6 +1367,7 @@ dependencies = [
  "rsmpeg",
  "rtp-types",
  "shared",
+ "socket2 0.6.2",
  "tokio-stream",
  "utoipa",
  "utoipa-swagger-ui",

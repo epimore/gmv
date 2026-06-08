@@ -441,10 +441,10 @@ pub fn send_sip_pkt_out(
     let log = compact_for_log(&GB18030.decode(&data).0);
     match ext_log {
         None => {
-            debug!("发送:{:?} \\n负载: {}\\n", association, log);
+            debug!("发送:{:?} \\n{}\\n", association, log);
         }
         Some(p_log) => {
-            debug!("[{}] 发送:{:?} \\n负载: {}\\n", p_log, association, log);
+            debug!("[{}] 发送:{:?} \\n{}\\n", p_log, association, log);
         }
     }
     let zip = Zip::build_data(Package::new(association, data));

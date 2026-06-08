@@ -1,7 +1,7 @@
 use crate::io::http::{res_by_code, res_by_error};
 use crate::io::local::mp4::Mp4OutputInnerEvent;
 use crate::state::register::Register;
-use crate::state::talk::TalkManager;
+use crate::io::talk::TalkManager;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -23,6 +23,7 @@ use shared::info::obj::{
 use shared::info::output::OutputEnum;
 use shared::info::res::{EmptyResponse, Resp};
 use std::collections::HashMap;
+use crate::general::util::dump;
 
 pub fn routes(tx: Sender<u32>) -> Router {
     Router::new()
@@ -223,6 +224,7 @@ async fn handle_talk_socket(talk_id: String, mut socket: WebSocket) {
     while let Some(msg) = socket.next().await {
         match msg {
             Ok(Message::Binary(frame)) => {
+                // dump("talk",&frame,false).unwrap();
                 if let Err(err) = TalkManager::push_frame(&talk_id, frame.to_vec()) {
                     warn!(
                         "talk input frame dropped: talk_id={}, err={:?}",

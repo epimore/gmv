@@ -1,6 +1,6 @@
+use crate::io::talk::TalkManager;
 use crate::media;
 use crate::state::register::Register;
-use crate::state::talk::TalkManager;
 use base::bytes::{Bytes, BytesMut};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
@@ -12,10 +12,11 @@ use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
 use crossbeam_channel::TrySendError;
 use rtp_types::RtpPacket;
+use socket2::Socket;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 use std::sync::Arc;
-
+const RECV_BUF_SIZE: usize = 8 * 1024 * 1024;
 pub fn listen_media_server(port: u16) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
     let socket_addr =
         SocketAddr::from_str(&format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
@@ -23,10 +24,28 @@ pub fn listen_media_server(port: u16) -> GlobalResult<(Option<TcpListener>, Opti
 }
 
 pub fn run(
-    tu: (Option<TcpListener>, Option<UdpSocket>),
+    mut tu: (Option<TcpListener>, Option<UdpSocket>),
     cancel: CancellationToken,
 ) -> GlobalResult<()> {
     let rtp_port = listener_port(&tu)?;
+    if let Some(socket) = tu.1.take() {
+        let socket2 = Socket::from(socket);
+
+        socket2
+            .set_recv_buffer_size(RECV_BUF_SIZE)
+            .hand_log(|msg| error!("rtp io set recv_buffer failed: {msg}"))?;
+
+        let actual_size = socket2
+            .recv_buffer_size()
+            .hand_log(|msg| error!("rtp io get recv_buffer failed: {msg}"))?;
+
+        debug!(
+        "rtp udp recv_buffer configured: requested={}, actual={}",
+        RECV_BUF_SIZE, actual_size
+    );
+
+        tu.1 = Some(UdpSocket::from(socket2));
+    }
     let (output_tx, output_rx) = base::tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
     let writer: PacketWriter<U16BeLengthPrefixEncoder> =
         net::rw::direct_rw::<RtpReader, RtpReader, U16BeLengthPrefixEncoder>(
