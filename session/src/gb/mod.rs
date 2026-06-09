@@ -31,6 +31,7 @@ pub mod depot;
 pub mod handler;
 mod io;
 mod sip_tcp_splitter;
+mod sip;
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]

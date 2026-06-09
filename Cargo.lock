@@ -383,6 +383,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.70.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49d8fed880d473ea71efb9bf597651e77201bdd4893efe54c9e5d65ae04ce6f"
+dependencies = [
+ "bitflags 2.11.0",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.12.1",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1333,6 +1353,7 @@ dependencies = [
  "base_db",
  "cron",
  "encoding_rs",
+ "gmv_pjsip",
  "image",
  "openssl",
  "parking_lot",
@@ -1371,6 +1392,26 @@ dependencies = [
  "tokio-stream",
  "utoipa",
  "utoipa-swagger-ui",
+]
+
+[[package]]
+name = "gmv_pjsip"
+version = "0.1.0"
+source = "git+https://github.com/epimore/gmv_pjsip.git?rev=e2289a1c#e2289a1ce00efbc4fe644c506f65a9ccfc79793d"
+dependencies = [
+ "gmv_pjsip_sys",
+ "libc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gmv_pjsip_sys"
+version = "0.1.0"
+source = "git+https://github.com/epimore/gmv_pjsip.git?rev=e2289a1c#e2289a1ce00efbc4fe644c506f65a9ccfc79793d"
+dependencies = [
+ "bindgen 0.70.1",
+ "cc",
+ "libc",
 ]
 
 [[package]]
@@ -3028,7 +3069,7 @@ version = "0.13.3+ffmpeg.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "716adffa5f909c8533611b1dab9ab5666bece35687845865b75ed6a990fc239c"
 dependencies = [
- "bindgen",
+ "bindgen 0.69.5",
  "camino",
  "libc",
  "once_cell",
