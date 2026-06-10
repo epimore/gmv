@@ -7,7 +7,8 @@ edition.workspace = true
 shared = { path = "../shared" }
 #base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "a0b9ed27", features = ["net"] }
 base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
-gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "e2289a1c" }
+#gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "e2289a1c" }
+gmv_pjsip = { path = "../../gmv_pjsip" }
 rsip = "0.4"
 sqlx = { version = "0.8", default-features = false }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }

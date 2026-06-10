@@ -2,5 +2,5 @@
 FFMPEG_DIR = { value = "third_party/ffmpeg-6.1/dist", relative = true }
 FFMPEG_INCLUDE_DIR = { value = "third_party/ffmpeg-6.1/dist/include", relative = true }
 FFMPEG_LIBS_DIR    = { value = "third_party/ffmpeg-6.1/dist/lib", relative = true }
-PJSIP_ROOT = { value = "third_party/pjproject-2.17/dist", relative = true }
-PJSIP_VERSION = "2.17"
+PJSIP_INCLUDE_DIR = { value = "third_party/pjproject-2.17/dist/include", relative = true }
+PJSIP_LIBS_DIR    = { value = "third_party/pjproject-2.17/dist/lib", relative = true }
