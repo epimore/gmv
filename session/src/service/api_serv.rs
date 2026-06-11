@@ -12,9 +12,7 @@ use shared::info::format::{CMaf, Mp4};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
 use shared::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
-use shared::info::obj::{
-    TalkAnswerReq, TalkCloseReq, TalkInfo, TalkOpenReq, TalkOpenResp, TalkStartModel, TalkStopModel,
-};
+use shared::info::obj::{TalkAnswerReq, TalkInfo, TalkOpenReq, TalkStartModel, TalkStopModel};
 use shared::info::output::{DashFmp4Output, LocalMp4Output, OutputEnum, OutputKind};
 use shared::info::res::Resp;
 
@@ -22,6 +20,10 @@ use crate::gb::RWContext;
 use crate::gb::sip::InviteTalkRequest;
 use crate::gb::sip::command as sip_command;
 use crate::http::client::{HttpClient, HttpStream};
+use crate::service::talk::{
+    DEFAULT_TALK_INPUT_TIMEOUT_SECS, TalkAudioOptions, append_gmv_token, cleanup_talk_open,
+    parse_talk_answer, sip_command_target, stream_resp_data, talk_codec_to_pjsip,
+};
 use crate::service::{EXPIRES, KEY_STREAM_IN, stream_close, talk_close};
 use crate::state;
 use crate::state::model::{
@@ -33,7 +35,7 @@ use crate::state::session::TalkSessionState;
 use crate::state::{DownloadConf, StreamConf, session};
 use crate::storage::entity::GmvRecord;
 use crate::utils::id_builder;
-use gmv_pjsip::{TalkAudioCodec, TalkSdpMode};
+use gmv_pjsip::TalkSdpMode;
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_live_model.device_id;
@@ -512,15 +514,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             stream_node_name: node_name,
             call_id: accepted.call_id.clone(),
             seq: 1,
-            from_tag: String::new(),
-            to_tag: String::new(),
-            remote_target: accepted.remote_contact.clone().unwrap_or_default(),
-            route_set: Vec::new(),
-            from_header: String::new(),
-            to_header: String::new(),
-            codec: open_resp.codec.clone(),
-            sample_rate: open_resp.sample_rate,
-            channel_count: open_resp.channel_count,
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,
@@ -621,236 +614,6 @@ pub async fn peer_dialog_terminated(call_id: String) -> bool {
     true
 }
 
-const DEFAULT_TALK_CODEC: &str = "PCMA";
-const DEFAULT_TALK_SAMPLE_RATE: u32 = 8000;
-const DEFAULT_TALK_CHANNEL_COUNT: u8 = 1;
-const DEFAULT_TALK_FRAME_DURATION_MS: u16 = 20;
-const DEFAULT_TALK_INPUT_TIMEOUT_SECS: u16 = 15;
-
-struct TalkAudioOptions {
-    codec: String,
-    payload_type: u8,
-    sample_rate: u32,
-    channel_count: u8,
-    frame_duration_ms: u16,
-    trans_mode: TransMode,
-}
-
-impl TalkAudioOptions {
-    fn try_from_model(model: &TalkStartModel) -> GlobalResult<Self> {
-        let codec_input = model.codec.as_deref().unwrap_or(DEFAULT_TALK_CODEC);
-        let Some((codec, payload_type)) = normalize_talk_codec(codec_input) else {
-            return Err(GlobalError::new_biz_error(
-                BaseErrorCode::Unsupported.code(),
-                "unsupported talk codec",
-                |msg| error!("{msg}: {codec_input}"),
-            ));
-        };
-        let sample_rate = model.sample_rate.unwrap_or(DEFAULT_TALK_SAMPLE_RATE);
-        let channel_count = model.channel_count.unwrap_or(DEFAULT_TALK_CHANNEL_COUNT);
-        let frame_duration_ms = model
-            .frame_duration_ms
-            .unwrap_or(DEFAULT_TALK_FRAME_DURATION_MS);
-        let trans_mode = normalize_talk_transport(model.transport.as_deref())?;
-
-        if sample_rate != DEFAULT_TALK_SAMPLE_RATE || channel_count != DEFAULT_TALK_CHANNEL_COUNT {
-            return Err(GlobalError::new_biz_error(
-                BaseErrorCode::Unsupported.code(),
-                "only 8kHz mono talk audio is supported",
-                |msg| error!("{msg}: sample_rate={sample_rate}, channel_count={channel_count}"),
-            ));
-        }
-        if !(10..=60).contains(&frame_duration_ms)
-            || sample_rate.saturating_mul(frame_duration_ms as u32) % 1000 != 0
-        {
-            return Err(GlobalError::new_biz_error(
-                BaseErrorCode::InvalidRequest.code(),
-                "invalid talk frame duration",
-                |msg| error!("{msg}: frame_duration_ms={frame_duration_ms}"),
-            ));
-        }
-
-        Ok(Self {
-            codec: codec.to_string(),
-            payload_type,
-            sample_rate,
-            channel_count,
-            frame_duration_ms,
-            trans_mode,
-        })
-    }
-
-    fn compatible_answer(&self, codec: &str, sample_rate: u32) -> bool {
-        normalize_talk_codec(codec)
-            .map(|(answer_codec, _)| answer_codec == self.codec && sample_rate == self.sample_rate)
-            .unwrap_or(false)
-    }
-}
-
-fn normalize_talk_transport(transport: Option<&str>) -> GlobalResult<TransMode> {
-    let Some(transport) = transport else {
-        return Ok(TransMode::Udp);
-    };
-    let compact = transport
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .map(|ch| ch.to_ascii_uppercase())
-        .collect::<String>();
-    match compact.as_str() {
-        "" | "UDP" => Ok(TransMode::Udp),
-        "TCP" | "TCPPASSIVE" | "PASSIVE" => Ok(TransMode::TcpPassive),
-        "TCPACTIVE" | "ACTIVE" => Err(GlobalError::new_biz_error(
-            BaseErrorCode::Unsupported.code(),
-            "tcp active talk is not supported",
-            |msg| error!("{msg}: transport={transport}"),
-        )),
-        _ => Err(GlobalError::new_biz_error(
-            BaseErrorCode::InvalidRequest.code(),
-            "unsupported talk transport",
-            |msg| error!("{msg}: transport={transport}"),
-        )),
-    }
-}
-
-fn normalize_talk_codec(codec: &str) -> Option<(&'static str, u8)> {
-    let compact = codec
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .map(|ch| ch.to_ascii_uppercase())
-        .collect::<String>();
-    match compact.as_str() {
-        "PCMA" | "G711A" | "ALAW" => Some(("PCMA", 8)),
-        "PCMU" | "G711U" | "MULAW" | "ULAW" => Some(("PCMU", 0)),
-        _ => None,
-    }
-}
-
-#[derive(Clone, Debug)]
-struct TalkSdpAnswer {
-    device_ip: String,
-    device_port: u16,
-    protocol: base::net::state::Protocol,
-    payload_type: u8,
-    codec: String,
-    sample_rate: u32,
-}
-
-fn talk_codec_to_pjsip(codec: &str) -> TalkAudioCodec {
-    match normalize_talk_codec(codec).map(|(codec, _)| codec) {
-        Some("PCMU") => TalkAudioCodec::G711U,
-        Some("L16") => TalkAudioCodec::L16,
-        _ => TalkAudioCodec::G711A,
-    }
-}
-
-fn parse_talk_answer(
-    accepted: &crate::gb::sip::GbInviteAcceptedEvent,
-) -> GlobalResult<TalkSdpAnswer> {
-    let sdp = &accepted.sdp_info;
-    let device_ip = sdp.connection_addr.clone().ok_or_else(|| {
-        GlobalError::new_biz_error(
-            BaseErrorCode::InvalidState.code(),
-            "talk sdp missing audio connection address",
-            |msg| error!("{msg}"),
-        )
-    })?;
-    let device_port = sdp.media_port.ok_or_else(|| {
-        GlobalError::new_biz_error(
-            BaseErrorCode::InvalidState.code(),
-            "talk sdp missing audio media port",
-            |msg| error!("{msg}"),
-        )
-    })?;
-    let payload_type = sdp
-        .media_payloads
-        .first()
-        .and_then(|value| value.parse::<u8>().ok())
-        .unwrap_or(8);
-    let (codec, sample_rate) = parse_rtpmap_from_sdp(&accepted.remote_sdp, payload_type)
-        .unwrap_or_else(|| match payload_type {
-            0 => ("PCMU".to_string(), 8000),
-            8 => ("PCMA".to_string(), 8000),
-            _ => (String::new(), 8000),
-        });
-    if codec.is_empty() {
-        return Err(GlobalError::new_biz_error(
-            BaseErrorCode::Unsupported.code(),
-            "unsupported talk payload type",
-            |msg| error!("{msg}: pt={payload_type}"),
-        ));
-    }
-    let protocol = sdp
-        .media_proto
-        .as_deref()
-        .map(|proto| {
-            if proto.to_ascii_uppercase().contains("TCP") {
-                base::net::state::Protocol::TCP
-            } else {
-                base::net::state::Protocol::UDP
-            }
-        })
-        .unwrap_or(base::net::state::Protocol::UDP);
-    Ok(TalkSdpAnswer {
-        device_ip,
-        device_port,
-        protocol,
-        payload_type,
-        codec,
-        sample_rate,
-    })
-}
-
-fn parse_rtpmap_from_sdp(sdp: &str, payload_type: u8) -> Option<(String, u32)> {
-    let prefix = format!("a=rtpmap:{payload_type}");
-    for line in sdp.lines().map(str::trim) {
-        let Some(rest) = line.strip_prefix(&prefix) else {
-            continue;
-        };
-        let rest = rest.trim_start_matches([' ', ':']).trim();
-        let mut parts = rest.split('/');
-        let codec = parts.next()?.trim().to_uppercase();
-        let sample_rate = parts
-            .next()
-            .and_then(|value| value.trim().parse::<u32>().ok())
-            .unwrap_or(8000);
-        return Some((codec, sample_rate));
-    }
-    None
-}
-
-fn sip_command_target(device_id: &str) -> GlobalResult<(String, u16, base::net::state::Protocol)> {
-    let Some(session) = crate::register::core::Register::get_connected_device_session(device_id)
-    else {
-        return Err(GlobalError::new_biz_error(
-            BaseErrorCode::NotFound.code(),
-            "device is not registered or connected",
-            |msg| error!("device_id={device_id}; {msg}"),
-        ));
-    };
-    Ok((
-        session.association.remote_addr.ip().to_string(),
-        session.association.remote_addr.port(),
-        session.association.protocol,
-    ))
-}
-
-fn stream_resp_data<T>(resp: Resp<T>, action: &str) -> GlobalResult<T> {
-    let Resp { code, msg, data } = resp;
-    if code == 200 {
-        data.ok_or_else(|| {
-            GlobalError::new_biz_error(
-                BaseErrorCode::InvalidState.code(),
-                "stream response data is empty",
-                |log_msg| error!("{action} failed: {log_msg}"),
-            )
-        })
-    } else {
-        Err(GlobalError::new_biz_error(code, &msg, |log_msg| {
-            error!("{action} failed: {log_msg}")
-        }))
-    }
-}
-
 fn stream_resp_unit(resp: Resp<()>, action: &str) -> GlobalResult<()> {
     let Resp { code, msg, .. } = resp;
     if code == 200 {
@@ -893,12 +656,6 @@ fn playback_stream_device(stream_id: &String) -> GlobalResult<String> {
             error!("{msg}: stream_id={stream_id}")
         })
     })
-}
-
-fn append_gmv_token(input_url: String, token: &str) -> String {
-    let encoded = url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>();
-    let sep = if input_url.contains('?') { '&' } else { '?' };
-    format!("{input_url}{sep}gmv-token={encoded}")
 }
 
 async fn start_invite_stream(
@@ -1025,9 +782,6 @@ async fn start_invite_stream(
                 return Err(err);
             }
         };
-        let from_tag = String::new();
-        let to_tag = String::new();
-
         let map = MediaMap {
             ssrc: u32ssrc,
             ext: media_ext,
@@ -1053,14 +807,6 @@ async fn start_invite_stream(
 
         let call_id = invite_accepted.call_id.clone();
         let seq = 1;
-        let dialog_target = crate::state::session::DialogCommand {
-            call_id: call_id.clone(),
-            seq,
-            remote_target: invite_accepted.remote_contact.clone().unwrap_or_default(),
-            route_set: Vec::new(),
-            from_header: String::new(),
-            to_header: String::new(),
-        };
         if !state::session::Cache::stream_map_insert_info(
             stream_id.clone(),
             device_id.clone(),
@@ -1071,12 +817,6 @@ async fn start_invite_stream(
             call_id.clone(),
             seq,
             am,
-            from_tag.clone(),
-            to_tag.clone(),
-            dialog_target.remote_target.clone(),
-            dialog_target.route_set.clone(),
-            dialog_target.from_header.clone(),
-            dialog_target.to_header.clone(),
         ) {
             let _ = sip_command::invite_stop_by_device(
                 device_id,
@@ -1204,14 +944,6 @@ async fn cleanup_stream_init(client: &impl HttpStream, ssrc: u32, output: &Outpu
         .close_output(&StreamInfoQo {
             ssrc,
             output_enum: output_kind_to_enum(output),
-        })
-        .await;
-}
-
-async fn cleanup_talk_open(client: &impl HttpStream, talk_id: &str) {
-    let _ = client
-        .talk_close(&TalkCloseReq {
-            talk_id: talk_id.to_string(),
         })
         .await;
 }

@@ -30,29 +30,12 @@ pub struct Cache {
 }
 
 #[derive(Clone)]
-pub struct DeviceStreamState {
-    pub channel_id: String,
-    pub stream_id: String,
-    pub ssrc: String,
-    pub call_id: String,
-    pub seq: u32,
-    pub from_tag: String,
-    pub to_tag: String,
-}
-
-#[derive(Clone)]
 pub struct StreamByeCommand {
     pub stream_id: String,
     pub generation: u64,
     pub device_id: String,
-    pub channel_id: String,
-    pub ssrc: u32,
     pub call_id: String,
     pub seq: u32,
-    pub remote_target: String,
-    pub route_set: Vec<String>,
-    pub from_header: String,
-    pub to_header: String,
 }
 
 pub struct StreamCloseStart {
@@ -69,16 +52,6 @@ pub struct StreamCloseInfo {
     pub ssrc: u32,
     pub call_id: String,
     pub last_error: Option<String>,
-}
-
-#[derive(Clone)]
-pub struct DialogCommand {
-    pub call_id: String,
-    pub seq: u32,
-    pub remote_target: String,
-    pub route_set: Vec<String>,
-    pub from_header: String,
-    pub to_header: String,
 }
 
 #[derive(Clone)]
@@ -118,15 +91,6 @@ pub struct TalkSessionState {
     pub stream_node_name: String,
     pub call_id: String,
     pub seq: u32,
-    pub from_tag: String,
-    pub to_tag: String,
-    pub remote_target: String,
-    pub route_set: Vec<String>,
-    pub from_header: String,
-    pub to_header: String,
-    pub codec: String,
-    pub sample_rate: u32,
-    pub channel_count: u8,
     pub closing_generation: Option<u64>,
     pub bye_inflight_seq: Option<u32>,
     pub close_last_error: Option<String>,
@@ -144,10 +108,6 @@ pub struct TalkByeCommand {
     pub device_id: String,
     pub call_id: String,
     pub seq: u32,
-    pub remote_target: String,
-    pub route_set: Vec<String>,
-    pub from_header: String,
-    pub to_header: String,
 }
 
 pub struct TalkCloseInfo {
@@ -222,12 +182,6 @@ impl Cache {
         call_id: String,
         seq: u32,
         am: AccessMode,
-        from_tag: String,
-        to_tag: String,
-        remote_target: String,
-        route_set: Vec<String>,
-        from_header: String,
-        to_header: String,
     ) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => false,
@@ -241,12 +195,6 @@ impl Cache {
                     call_id,
                     seq,
                     am,
-                    from_tag,
-                    to_tag,
-                    remote_target,
-                    route_set,
-                    from_header,
-                    to_header,
                     ssrc,
                     lifecycle: StreamLifecycle::Playing,
                 });
@@ -324,24 +272,6 @@ impl Cache {
         }
     }
 
-    pub fn stream_dialog_next(stream_id: &str) -> Option<DialogCommand> {
-        GENERAL_CACHE
-            .shared
-            .stream_map
-            .get_mut(stream_id)
-            .map(|mut stream| {
-                stream.seq = stream.seq.saturating_add(1);
-                DialogCommand {
-                    call_id: stream.call_id.clone(),
-                    seq: stream.seq,
-                    remote_target: stream.remote_target.clone(),
-                    route_set: stream.route_set.clone(),
-                    from_header: stream.from_header.clone(),
-                    to_header: stream.to_header.clone(),
-                }
-            })
-    }
-
     pub fn stream_map_query_play_type_by_stream_id(stream_id: &String) -> Option<AccessMode> {
         GENERAL_CACHE
             .shared
@@ -376,14 +306,8 @@ impl Cache {
             stream_id: stream_id.to_string(),
             generation,
             device_id: stream.device_id.clone(),
-            channel_id: stream.channel_id.clone(),
-            ssrc: stream.ssrc,
             call_id: stream.call_id.clone(),
             seq,
-            remote_target: stream.remote_target.clone(),
-            route_set: stream.route_set.clone(),
-            from_header: stream.from_header.clone(),
-            to_header: stream.to_header.clone(),
         })
     }
 
@@ -678,10 +602,6 @@ impl Cache {
             device_id: talk.device_id.clone(),
             call_id: talk.call_id.clone(),
             seq: talk.seq,
-            remote_target: talk.remote_target.clone(),
-            route_set: talk.route_set.clone(),
-            from_header: talk.from_header.clone(),
-            to_header: talk.to_header.clone(),
         })
     }
 
@@ -957,8 +877,7 @@ impl Cache {
         removed.is_some()
     }
 
-    pub fn reset_device_state(device_id: &str) -> Vec<DeviceStreamState> {
-        let mut streams = Vec::new();
+    pub fn reset_device_state(device_id: &str) {
         if let Some((_, entries)) = GENERAL_CACHE.shared.device_map.remove(device_id) {
             for entry in entries {
                 if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(&entry.stream_id)
@@ -973,15 +892,6 @@ impl Cache {
                     }
                     let ssrc_num = (stream.ssrc % 10000) as u16;
                     GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
-                    streams.push(DeviceStreamState {
-                        channel_id: entry.channel_id,
-                        stream_id: entry.stream_id,
-                        ssrc: entry.ssrc,
-                        call_id: stream.call_id,
-                        seq: stream.seq.saturating_add(1),
-                        from_tag: stream.from_tag,
-                        to_tag: stream.to_tag,
-                    });
                 }
             }
         }
@@ -1008,15 +918,6 @@ impl Cache {
                     .shared
                     .ssrc_sn
                     .insert((stream.ssrc % 10000) as u16);
-                streams.push(DeviceStreamState {
-                    channel_id: stream.channel_id,
-                    stream_id,
-                    ssrc: stream.ssrc.to_string(),
-                    call_id: stream.call_id,
-                    seq: stream.seq.saturating_add(1),
-                    from_tag: stream.from_tag,
-                    to_tag: stream.to_tag,
-                });
             }
         }
         let talk_ids = GENERAL_CACHE
@@ -1046,15 +947,6 @@ impl Cache {
                 }
                 let ssrc_num = (talk.ssrc % 10000) as u16;
                 GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
-                streams.push(DeviceStreamState {
-                    channel_id: talk.channel_id,
-                    stream_id: talk.talk_id,
-                    ssrc: talk.ssrc.to_string(),
-                    call_id: talk.call_id,
-                    seq: talk.seq.saturating_add(1),
-                    from_tag: talk.from_tag,
-                    to_tag: talk.to_tag,
-                });
             }
         }
         let setup_lock_prefix = format!("{device_id}:");
@@ -1063,7 +955,6 @@ impl Cache {
             .stream_setup_locks
             .retain(|key, _| !key.starts_with(&setup_lock_prefix));
         Self::catalog_subscription_remove(device_id, None);
-        streams
     }
 
     fn upsert_state(
@@ -1297,12 +1188,6 @@ struct StreamTable {
     call_id: String,
     seq: u32,
     am: AccessMode,
-    from_tag: String,
-    to_tag: String,
-    remote_target: String,
-    route_set: Vec<String>,
-    from_header: String,
-    to_header: String,
     ssrc: u32,
     lifecycle: StreamLifecycle,
 }
@@ -1478,12 +1363,6 @@ mod tests {
             call_id: "call-id".to_string(),
             seq: 7,
             am: AccessMode::Live,
-            from_tag: "from-tag".to_string(),
-            to_tag: "to-tag".to_string(),
-            remote_target: "sip:device@127.0.0.1:5060".to_string(),
-            route_set: Vec::new(),
-            from_header: "<sip:platform@127.0.0.1>;tag=from-tag".to_string(),
-            to_header: "<sip:device@127.0.0.1>;tag=to-tag".to_string(),
             ssrc: 1001,
             lifecycle: StreamLifecycle::Playing,
         }
@@ -1606,39 +1485,6 @@ mod tests {
     }
 
     #[test]
-    fn dialog_command_reuses_saved_target_and_increments_cseq() {
-        let stream_id = "dialog-command-stream".to_string();
-        Cache::stream_map_insert_info(
-            stream_id.clone(),
-            "device-id".to_string(),
-            "channel-id".to_string(),
-            4321,
-            String::new(),
-            String::new(),
-            "dialog-call-id".to_string(),
-            7,
-            AccessMode::Back,
-            "from-tag".to_string(),
-            "to-tag".to_string(),
-            "sip:device@192.0.2.10:5060".to_string(),
-            vec!["<sip:proxy.example.com;lr>".to_string()],
-            "<sip:platform@example.com>;tag=from-tag".to_string(),
-            "<sip:device@example.com>;tag=to-tag".to_string(),
-        );
-
-        let command = Cache::stream_dialog_next(&stream_id).unwrap();
-
-        assert_eq!(command.seq, 8);
-        assert_eq!(command.call_id, "dialog-call-id");
-        assert_eq!(command.remote_target, "sip:device@192.0.2.10:5060");
-        assert_eq!(
-            command.route_set,
-            vec!["<sip:proxy.example.com;lr>".to_string()]
-        );
-        Cache::stream_terminated_by_call_id("dialog-call-id");
-    }
-
-    #[test]
     fn peer_terminated_dialog_removes_stream_and_releases_ssrc() {
         let stream_id = "peer-bye-stream".to_string();
         let ssrc = 8765u32;
@@ -1653,12 +1499,6 @@ mod tests {
             "peer-bye-call-id".to_string(),
             1,
             AccessMode::Live,
-            "from-tag".to_string(),
-            "to-tag".to_string(),
-            "sip:device@192.0.2.10:5060".to_string(),
-            Vec::new(),
-            "<sip:platform@example.com>;tag=from-tag".to_string(),
-            "<sip:device@example.com>;tag=to-tag".to_string(),
         );
 
         let removed = Cache::stream_terminated_by_call_id("peer-bye-call-id").unwrap();
@@ -1788,15 +1628,6 @@ mod tests {
             stream_node_name: "s1".to_string(),
             call_id: "talk-call-id".to_string(),
             seq: 8,
-            from_tag: "from-tag".to_string(),
-            to_tag: "to-tag".to_string(),
-            remote_target: "sip:device@192.0.2.30:5060".to_string(),
-            route_set: Vec::new(),
-            from_header: "<sip:platform@example.com>;tag=from-tag".to_string(),
-            to_header: "<sip:device@example.com>;tag=to-tag".to_string(),
-            codec: "PCMA".to_string(),
-            sample_rate: 8000,
-            channel_count: 1,
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,

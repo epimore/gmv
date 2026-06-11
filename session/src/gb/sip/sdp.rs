@@ -87,56 +87,6 @@ pub fn download(
     )
 }
 
-pub fn talk(
-    channel_id: &str,
-    media_ip: &str,
-    media_port: u16,
-    stream_mode: TransMode,
-    ssrc: &str,
-    payload_type: u8,
-    codec: &str,
-    sample_rate: u32,
-) -> String {
-    let conf = SessionConf::get_session_by_conf();
-    let session_ip = conf.wan_ip.to_string();
-    let codec = codec.trim().to_uppercase();
-    let mut sdp = String::with_capacity(240);
-    sdp.push_str("v=0\r\n");
-    sdp.push_str(&format!("o={} 0 0 IN IP4 {}\r\n", channel_id, session_ip));
-    sdp.push_str("s=Talk\r\n");
-    sdp.push_str(&format!("c=IN IP4 {}\r\n", media_ip));
-    sdp.push_str("t=0 0\r\n");
-    match stream_mode {
-        TransMode::Udp => sdp.push_str(&format!(
-            "m=audio {} RTP/AVP {}\r\n",
-            media_port, payload_type
-        )),
-        TransMode::TcpActive => {
-            sdp.push_str(&format!(
-                "m=audio {} TCP/RTP/AVP {}\r\n",
-                media_port, payload_type
-            ));
-            sdp.push_str("a=setup:active\r\n");
-            sdp.push_str("a=connection:new\r\n");
-        }
-        TransMode::TcpPassive => {
-            sdp.push_str(&format!(
-                "m=audio {} TCP/RTP/AVP {}\r\n",
-                media_port, payload_type
-            ));
-            sdp.push_str("a=setup:passive\r\n");
-            sdp.push_str("a=connection:new\r\n");
-        }
-    }
-    sdp.push_str("a=sendonly\r\n");
-    sdp.push_str(&format!(
-        "a=rtpmap:{} {}/{}\r\n",
-        payload_type, codec, sample_rate
-    ));
-    sdp.push_str(&format!("y={}\r\n", ssrc));
-    sdp
-}
-
 fn build_common_play(
     channel_id: &str,
     media_ip: &str,
@@ -193,22 +143,6 @@ fn build_common_play(
     }
     sdp.push_str(&format!("y={}\r\n", ssrc));
     sdp
-}
-
-pub fn info_seek(seek: u32) -> String {
-    format!(
-        "PLAY RTSP/1.0\r\nCSeq: {}\r\nRange: npt={}-\r\n",
-        base::chrono::Local::now().timestamp(),
-        seek
-    )
-}
-
-pub fn info_speed(speed: f32) -> String {
-    format!(
-        "PLAY RTSP/1.0\r\nCSeq: {}\r\nScale: {}.000000\r\n",
-        base::chrono::Local::now().timestamp(),
-        speed
-    )
 }
 
 pub fn parse_media_ext(sdp: &[u8]) -> GlobalResult<MediaExt> {

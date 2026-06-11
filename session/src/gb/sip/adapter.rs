@@ -18,6 +18,7 @@ use crate::service::api_serv;
 use crate::service::stream_close;
 use crate::state::AlarmConf;
 use crate::state::model::AlarmInfo;
+use crate::state::session::Cache as GeneralCache;
 use crate::storage::db_task::{self, DbTask};
 use crate::storage::entity::GmvDevice;
 
@@ -136,6 +137,12 @@ pub enum GbSipEvent {
         call_id: String,
         cseq: u32,
         status: u16,
+        contact: Option<String>,
+        record_routes: Vec<String>,
+        from_header: Option<String>,
+        to_header: Option<String>,
+        to_tag: Option<String>,
+        expires: Option<u32>,
     },
 }
 
@@ -197,6 +204,12 @@ impl From<SipEvent> for GbSipEvent {
                 call_id: e.call_id,
                 cseq: e.cseq,
                 status: e.status,
+                contact: e.contact,
+                record_routes: e.record_routes,
+                from_header: e.from_header,
+                to_header: e.to_header,
+                to_tag: e.to_tag,
+                expires: e.expires,
             },
         }
     }
@@ -275,6 +288,10 @@ impl GbSipRuntime {
         req: CreateDeviceMessageRequest,
     ) -> gmv_pjsip::Result<Bytes> {
         create_device_message(&self.ctx, req)
+    }
+
+    pub fn create_subscribe(&self, req: gmv_pjsip::CreateSubscribe) -> gmv_pjsip::Result<Bytes> {
+        self.ctx.create_subscribe(req)
     }
 
     pub fn create_playback_seek_info(
@@ -405,7 +422,13 @@ pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
             status,
         } => {
             debug!("SIP INFO accepted: call_id={call_id}, cseq={cseq}, status={status}");
-            SipRuntimeCache::global().complete_response(&SipMethod::Info, call_id, *cseq, *status);
+            SipRuntimeCache::global().complete_response(
+                &SipMethod::Info,
+                call_id,
+                *cseq,
+                *status,
+                Default::default(),
+            );
             Ok(())
         }
         GbSipEvent::InfoFailed {
@@ -414,7 +437,13 @@ pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
             status,
         } => {
             warn!("SIP INFO failed: call_id={call_id}, cseq={cseq}, status={status}");
-            SipRuntimeCache::global().complete_response(&SipMethod::Info, call_id, *cseq, *status);
+            SipRuntimeCache::global().complete_response(
+                &SipMethod::Info,
+                call_id,
+                *cseq,
+                *status,
+                Default::default(),
+            );
             Ok(())
         }
         GbSipEvent::Ack { call_id } => {
@@ -431,6 +460,12 @@ pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
             call_id,
             cseq,
             status,
+            contact,
+            record_routes,
+            from_header,
+            to_header,
+            to_tag,
+            expires,
         } => {
             debug!(
                 "SIP standard response: method={method}, call_id={call_id}, cseq={cseq}, status={status}"
@@ -447,7 +482,20 @@ pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
                 SipRuntimeCache::global().fail_bye(call_id, *status);
                 return Ok(());
             }
-            SipRuntimeCache::global().complete_response(method, call_id, *cseq, *status);
+            SipRuntimeCache::global().complete_response(
+                method,
+                call_id,
+                *cseq,
+                *status,
+                super::runtime_cache::SipResponseMetadata {
+                    contact: contact.clone(),
+                    record_routes: record_routes.clone(),
+                    from_header: from_header.clone(),
+                    to_header: to_header.clone(),
+                    to_tag: to_tag.clone(),
+                    expires: *expires,
+                },
+            );
             Ok(())
         }
     }
@@ -479,6 +527,7 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
     let device_id: Arc<str> = Arc::from(event.device_id.as_str());
     if event.is_unregister() {
         Register::remove_device(&device_id);
+        GeneralCache::reset_device_state(&event.device_id);
         db_task::submit(DbTask::ExpireDeviceOnline {
             device_id: event.device_id.clone(),
         });
@@ -508,6 +557,7 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
         session.enable_lr();
     }
     Register::register_device(device_id, session)?;
+    GeneralCache::catalog_subscription_remove(&event.device_id, None);
 
     let now = Local::now().naive_local();
     db_task::submit(DbTask::UpsertDevice(GmvDevice {
@@ -530,6 +580,7 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
     }));
 
     let query_device_id = event.device_id.clone();
+    let subscribe_expires = expires;
     base::tokio::spawn(async move {
         base::tokio::time::sleep(Duration::from_millis(1500)).await;
         let sn = Local::now()
@@ -546,6 +597,14 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
             super::command::query_catalog(&query_device_id, sn.saturating_add(1)).await
         {
             warn!("query catalog after register failed: device_id={query_device_id}, err={err}");
+        }
+        base::tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Err(err) =
+            super::subscription::subscribe_catalog(&query_device_id, subscribe_expires).await
+        {
+            warn!(
+                "subscribe catalog after register failed: device_id={query_device_id}, err={err}"
+            );
         }
     });
     Ok(())
@@ -575,6 +634,15 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
         }
         GbMessageKind::Catalog => {
             if let Some(device_id) = device_id {
+                if matches!(event.method.as_ref(), Some(SipMethod::Notify))
+                    && !super::subscription::accept_catalog_notify(event, device_id)
+                {
+                    warn!(
+                        "ignore catalog NOTIFY outside active subscription: device_id={device_id}, call_id={:?}",
+                        event.call_id
+                    );
+                    return Ok(());
+                }
                 db_task::submit(DbTask::InsertDeviceCatalog {
                     device_id: device_id.to_string(),
                     items,

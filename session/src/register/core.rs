@@ -13,7 +13,6 @@ use crate::gb::SessionConf;
 use crate::register::event::{self, Event};
 pub(crate) use crate::register::io::{DeviceSession, Network};
 use crate::register::schedule::TimeScheduler;
-use crate::register::session::Session;
 use crate::service::{stream_close, talk_close};
 use crate::state::session::Cache as GeneralCache;
 
@@ -44,7 +43,6 @@ pub struct Inner {
     pub io_tx: Sender<Zip>,
     pub event_tx: Sender<Event>,
     pub io_map: Network,
-    pub session_map: Session,
 }
 
 impl Register {
@@ -70,9 +68,6 @@ impl Register {
             io_map: Network {
                 session: Default::default(),
                 net_device_map: Default::default(),
-            },
-            session_map: Session {
-                call_map: Default::default(),
             },
         });
 

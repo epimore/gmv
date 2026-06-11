@@ -2,6 +2,7 @@ pub mod api_serv;
 pub mod edge_serv;
 pub mod hook_serv;
 pub mod stream_close;
+mod talk;
 pub mod talk_close;
 
 pub const EXPIRES: u64 = 8;

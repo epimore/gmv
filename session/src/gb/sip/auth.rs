@@ -15,27 +15,35 @@ static DEVICE_AUTH_CACHE: OnceLock<Arc<DeviceAuthCache>> = OnceLock::new();
 
 #[derive(Default)]
 pub struct DeviceAuthCache {
-    entries: RwLock<HashMap<String, GmvOauth>>,
+    entries: RwLock<Arc<HashMap<String, GmvOauth>>>,
 }
 
 impl DeviceAuthCache {
     async fn reload(&self) -> GlobalResult<()> {
         let entries = GmvOauth::read_all_gmv_oauth().await?;
-        *self.entries.write() = entries
-            .into_iter()
-            .map(|entry| (entry.device_id.clone(), entry))
-            .collect();
+        let next = Arc::new(
+            entries
+                .into_iter()
+                .map(|entry| (entry.device_id.clone(), entry))
+                .collect(),
+        );
+        let previous = {
+            let mut entries = self.entries.write();
+            std::mem::replace(&mut *entries, next)
+        };
+        drop(previous);
         Ok(())
     }
 
     pub fn get(&self, device_id: &str) -> Option<GmvOauth> {
-        self.entries.read().get(device_id).cloned()
+        let entries = self.entries.read().clone();
+        entries.get(device_id).cloned()
     }
 }
 
 impl PasswordProvider for DeviceAuthCache {
     fn requirement_for(&self, username: &str, _realm: &str) -> AuthRequirement {
-        let entries = self.entries.read();
+        let entries = self.entries.read().clone();
         let Some(entry) = entries.get(username) else {
             return AuthRequirement::Forbidden;
         };
@@ -57,8 +65,8 @@ impl PasswordProvider for DeviceAuthCache {
     }
 
     fn password_for(&self, username: &str, _realm: &str) -> Option<String> {
-        self.entries
-            .read()
+        let entries = self.entries.read().clone();
+        entries
             .get(username)
             .filter(|entry| entry.status != 0 && entry.pwd_check != 0)
             .and_then(|entry| entry.pwd.clone())

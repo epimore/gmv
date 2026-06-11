@@ -6,6 +6,7 @@
 //! with the project-wide XML parser.
 
 use anyhow::anyhow;
+use base::bytes::Bytes;
 use base::exception::GlobalError::SysErr;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
@@ -41,6 +42,12 @@ fn detect_encoding(xml: &[u8]) -> XmlEncoding {
     } else {
         XmlEncoding::Gb18030
     }
+}
+
+pub fn encode_document(xml: &str) -> Bytes {
+    let encoding = detect_encoding(xml.as_bytes()).encoding();
+    let (encoded, _, _) = encoding.encode(xml);
+    Bytes::from(encoded.into_owned())
 }
 
 pub fn parse_items(xml: &[u8]) -> GlobalResult<Vec<(String, String)>> {
@@ -143,6 +150,28 @@ pub fn build_catalog_query(sn: u32, device_id: &str) -> String {
     )
 }
 
+pub fn build_catalog_subscription(
+    sn: u32,
+    device_id: &str,
+    start_time: &str,
+    end_time: &str,
+) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n\
+<Query>\r\n\
+<CmdType>Catalog</CmdType>\r\n\
+<SN>{}</SN>\r\n\
+<DeviceID>{}</DeviceID>\r\n\
+<StartTime>{}</StartTime>\r\n\
+<EndTime>{}</EndTime>\r\n\
+</Query>\r\n",
+        sn,
+        escape(device_id),
+        escape(start_time),
+        escape(end_time),
+    )
+}
+
 pub fn build_device_info_query(sn: u32, device_id: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n\
@@ -208,38 +237,6 @@ pub fn build_ptz_control(sn: u32, device_id: &str, command: &str) -> String {
         sn,
         escape(device_id),
         escape(command),
-    )
-}
-
-pub fn build_snapshot(
-    sn: u32,
-    device_id: &str,
-    count: u8,
-    interval: u8,
-    url: &str,
-    session_id: &str,
-) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n\
-<Control>\r\n\
-<CmdType>DeviceControl</CmdType>\r\n\
-<SN>{}</SN>\r\n\
-<DeviceID>{}</DeviceID>\r\n\
-<TeleBoot>Boot</TeleBoot>\r\n\
-<Info>\r\n\
-<ControlPriority>5</ControlPriority>\r\n\
-<SnapNum>{}</SnapNum>\r\n\
-<Interval>{}</Interval>\r\n\
-<UploadURL>{}</UploadURL>\r\n\
-<SessionID>{}</SessionID>\r\n\
-</Info>\r\n\
-</Control>\r\n",
-        sn,
-        escape(device_id),
-        count,
-        interval,
-        escape(url),
-        escape(session_id),
     )
 }
 
@@ -317,7 +314,10 @@ pub fn build_snapshot_control_xml(
 
 #[cfg(test)]
 mod tests {
-    use super::{RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID, SPLIT_CLASS, parse_items};
+    use super::{
+        RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID, SPLIT_CLASS, build_catalog_subscription,
+        encode_document, parse_items,
+    };
     use encoding_rs::GBK;
 
     #[test]
@@ -339,5 +339,33 @@ mod tests {
             2
         );
         assert!(items.iter().any(|(key, _)| key == SPLIT_CLASS));
+    }
+
+    #[test]
+    fn builds_catalog_subscription_window() {
+        let xml = build_catalog_subscription(
+            7,
+            "34020000001320000001",
+            "2026-06-11T12:00:00",
+            "2026-06-11T13:00:00",
+        );
+        assert!(xml.contains("<CmdType>Catalog</CmdType>"));
+        assert!(xml.contains("<SN>7</SN>"));
+        assert!(xml.contains("<StartTime>2026-06-11T12:00:00</StartTime>"));
+        assert!(xml.contains("<EndTime>2026-06-11T13:00:00</EndTime>"));
+    }
+
+    #[test]
+    fn encodes_document_using_declared_gb2312() {
+        let xml = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\
+            <Response><Name>\u{6444}\u{50cf}\u{673a}</Name></Response>";
+        let bytes = encode_document(xml);
+        assert!(std::str::from_utf8(&bytes).is_err());
+        let items = parse_items(&bytes).unwrap();
+        assert!(
+            items.iter().any(|(key, value)| {
+                key == "Response,Name" && value == "\u{6444}\u{50cf}\u{673a}"
+            })
+        );
     }
 }

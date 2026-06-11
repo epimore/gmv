@@ -8,7 +8,7 @@ use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
 
-use crate::gb::sip::command as sip_command;
+use crate::gb::sip::subscription;
 use crate::register::core::{Inner, Register, TimeScheduleKey};
 use crate::register::schedule::ScheduleKey;
 use crate::state::session::Cache as GeneralCache;
@@ -71,13 +71,9 @@ async fn hand_event(event: Event) {
             let _ = Register::server_keep_heart_update_db(domain_id).await;
         }
         Event::RefreshCatalogSubscription(device_id, generation) => {
-            // SUBSCRIBE dialog refresh is not part of the old rsip transaction
-            // layer any more. Until the PJSIP safe layer exposes SUBSCRIBE, use
-            // a Catalog MESSAGE refresh as a compatible lightweight fallback.
-            let sn = generation.min(u64::from(u32::MAX)) as u32;
-            let _ = sip_command::query_catalog(device_id.as_ref(), sn)
+            let _ = subscription::refresh_catalog_subscription(device_id, generation)
                 .await
-                .hand_log(|msg| warn!("refresh catalog query failed: {msg}"));
+                .hand_log(|msg| warn!("refresh catalog subscription failed: {msg}"));
         }
         Event::OutSession(_) => {}
     }

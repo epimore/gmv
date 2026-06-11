@@ -1,6 +1,6 @@
 1.io 0拷贝优化 - OK
 2.rtp 环形缓存优化 - OK
-3.添加语音广播
+3.添加语音广播 - doing
 4.系统异常信息映射到业务说明 - OK
-5.sip层改为ffi绑定pjsip
-6.预置点拍照
+5.sip层改为ffi绑定pjsip - doing
+6.预置点拍照 - doing

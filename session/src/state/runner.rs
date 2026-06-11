@@ -57,7 +57,10 @@ impl PicsRunner {
 impl ScheduleTask for PicsRunner {
     fn do_something(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            let _ = self.snapshot().await;
+            let _ = self
+                .snapshot()
+                .await
+                .hand_log(|msg| error!("scheduled snapshot failed: {msg}"));
         })
     }
 }

@@ -33,9 +33,20 @@ pub struct SipResponseKey {
     pub cseq: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Default)]
+pub struct SipResponseMetadata {
+    pub contact: Option<String>,
+    pub record_routes: Vec<String>,
+    pub from_header: Option<String>,
+    pub to_header: Option<String>,
+    pub to_tag: Option<String>,
+    pub expires: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
 pub struct SipResponseResult {
     pub status: u16,
+    pub metadata: SipResponseMetadata,
 }
 
 struct InviteWaiter {
@@ -171,6 +182,7 @@ impl SipRuntimeCache {
         call_id: &str,
         cseq: u32,
         status: u16,
+        metadata: SipResponseMetadata,
     ) -> bool {
         if status < 200 {
             return false;
@@ -182,7 +194,12 @@ impl SipRuntimeCache {
         };
         self.response_waiters
             .remove(&key)
-            .map(|(_, waiter)| waiter.tx.send(SipResponseResult { status }).is_ok())
+            .map(|(_, waiter)| {
+                waiter
+                    .tx
+                    .send(SipResponseResult { status, metadata })
+                    .is_ok()
+            })
             .unwrap_or(false)
     }
 

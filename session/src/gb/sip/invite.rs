@@ -59,7 +59,6 @@ pub struct GbInviteAcceptedEvent {
     pub channel_id: String,
     pub stream_id: String,
     pub ssrc: Option<u32>,
-    pub remote_contact: Option<String>,
     pub remote_sdp: String,
     pub sdp_info: SdpInfo,
 }
@@ -72,7 +71,6 @@ impl From<InviteAcceptedEvent> for GbInviteAcceptedEvent {
             channel_id: event.channel_id,
             stream_id: event.stream_id,
             ssrc: event.ssrc,
-            remote_contact: event.remote_contact,
             remote_sdp: event.remote_sdp,
             sdp_info: event.sdp_info,
         }

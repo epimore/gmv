@@ -25,14 +25,14 @@ use super::invite::{
     GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest, InviteTalkRequest,
 };
 use super::message::CreateDeviceMessageRequest;
-use super::runtime_cache::{SipResponseKey, SipRuntimeCache, recv_with_timeout};
+use super::runtime_cache::{SipResponseKey, SipResponseResult, SipRuntimeCache, recv_with_timeout};
 use super::{sdp, xml};
 
 const INVITE_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const BYE_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 const REQUEST_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 
-fn runtime() -> GlobalResult<&'static GbSipRuntime> {
+pub(super) fn runtime() -> GlobalResult<&'static GbSipRuntime> {
     GbSipRuntime::global().ok_or_else(|| {
         GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
@@ -42,7 +42,7 @@ fn runtime() -> GlobalResult<&'static GbSipRuntime> {
     })
 }
 
-fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Protocol)> {
+pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Protocol)> {
     let Some(session) = Register::get_connected_device_session(device_id) else {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::NotFound.code(),
@@ -79,14 +79,17 @@ fn response_key(bytes: &Bytes) -> GlobalResult<SipResponseKey> {
     })
 }
 
-async fn send_request_and_wait(device_id: &str, bytes: Bytes) -> GlobalResult<()> {
+pub(super) async fn send_request_and_wait_status(
+    device_id: &str,
+    bytes: Bytes,
+) -> GlobalResult<SipResponseResult> {
     let key = response_key(&bytes)?;
     let rx = SipRuntimeCache::global().insert_response_waiter(key.clone(), REQUEST_WAIT_TIMEOUT);
     if let Err(err) = send_to_registered_device(device_id, bytes).await {
         SipRuntimeCache::global().remove_response_waiter(&key);
         return Err(err);
     }
-    let result = recv_with_timeout(rx, REQUEST_WAIT_TIMEOUT)
+    recv_with_timeout(rx, REQUEST_WAIT_TIMEOUT)
         .await
         .map_err(|reason| {
             SipRuntimeCache::global().remove_response_waiter(&key);
@@ -100,7 +103,12 @@ async fn send_request_and_wait(device_id: &str, bytes: Bytes) -> GlobalResult<()
                     )
                 },
             )
-        })?;
+        })
+}
+
+async fn send_request_and_wait(device_id: &str, bytes: Bytes) -> GlobalResult<()> {
+    let key = response_key(&bytes)?;
+    let result = send_request_and_wait_status(device_id, bytes).await?;
     if (200..300).contains(&result.status) {
         return Ok(());
     }
@@ -507,7 +515,7 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
 }
 
 pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
-    let Some(command) = GeneralCache::stream_dialog_next(stream_id) else {
+    let Some(call_id) = GeneralCache::stream_call_id(stream_id) else {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::NotFound.code(),
             "流不存在",
@@ -524,7 +532,7 @@ pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
     invite_stop_by_device(
         &device_id,
         InviteStopRequest {
-            call_id: Some(command.call_id),
+            call_id: Some(call_id),
             stream_id: Some(stream_id.to_string()),
         },
     )
@@ -565,10 +573,6 @@ mod tests {
 
         assert_eq!(build_ptz_command(&model).unwrap(), "A50F011A2010302F");
     }
-}
-
-pub async fn refresh_catalog_subscription(device_id: &str, generation: u64) -> GlobalResult<()> {
-    query_catalog(device_id, generation.min(u64::from(u32::MAX)) as u32).await
 }
 
 pub fn transport_protocol(

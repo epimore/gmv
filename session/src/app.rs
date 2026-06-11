@@ -4,7 +4,7 @@ use crate::state::runner::{PicsRunner, Runner};
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
-use base::log::info;
+use base::log::{error, info};
 use base::logger;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::net::UdpSocket;
@@ -62,11 +62,18 @@ impl
         let (http_listener, tu) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
         network_rt.rt_handle.spawn(async move {
-            let _ = SessionConf::run(tu, network_rt.cancel.clone()).await;
+            if let Err(err) = SessionConf::run(tu, network_rt.cancel.clone()).await {
+                error!("GB28181 session initialization failed: {err}");
+                network_rt.cancel.cancel();
+                return;
+            }
             GlobalRuntime::get_main_runtime()
                 .rt_handle
                 .spawn(PicsRunner::next());
-            let _ = http.run(http_listener, network_rt.cancel.clone()).await;
+            if let Err(err) = http.run(http_listener, network_rt.cancel.clone()).await {
+                error!("HTTP service stopped with error: {err}");
+                network_rt.cancel.cancel();
+            }
         });
         GlobalRuntime::order_shutdown(&[RuntimeType::CommonNetwork], |msg| info!("{msg}"));
         Ok(())

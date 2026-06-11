@@ -1,3 +1,4 @@
+use crate::gb::sip::auth;
 use crate::storage::entity::GmvOauth;
 use crate::storage::mapper;
 use base::err::BaseErrorCode;
@@ -11,6 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // channel_id 20位十进制纯数字
 // ssrc 10位十进制纯数字
 pub fn en_stream_id(device_id: &str, channel_id: &str, ssrc: &str) -> GlobalResult<String> {
+    validate_decimal_field(device_id, 20, "device_id")?;
+    validate_decimal_field(channel_id, 20, "channel_id")?;
+    validate_decimal_field(ssrc, 10, "ssrc")?;
+
     //使用纳秒的后两位生成填充字符串,并取7个字符
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).map_err(|_| {
@@ -24,11 +29,11 @@ pub fn en_stream_id(device_id: &str, channel_id: &str, ssrc: &str) -> GlobalResu
 //返回(device_id,channel_id,ssrc)
 pub fn de_stream_id(stream_id: &str) -> GlobalResult<(String, String, String)> {
     let ori_str = dig62::de(stream_id)?;
-    if ori_str.len() < 50 {
+    if ori_str.len() < 50 || !ori_str.as_bytes()[..50].iter().all(u8::is_ascii_digit) {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidRequest.code(),
             "Invalid stream id",
-            |msg| error!("{msg}: decoded stream_id too short"),
+            |msg| error!("{msg}: decoded stream_id prefix is invalid"),
         ));
     }
     Ok((
@@ -49,13 +54,16 @@ pub async fn build_ssrc_stream_id(
     num_ssrc: u16,
     live: bool,
 ) -> GlobalResult<(String, String)> {
-    let gmv_oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
-        .await?
-        .ok_or_else(|| {
-            GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "设备不存在", |msg| {
-                error!("{msg}")
-            })
-        })?;
+    let gmv_oauth = if let Some(cache) = auth::global() {
+        cache.get(device_id)
+    } else {
+        GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
+    }
+    .ok_or_else(|| {
+        GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "设备不存在", |msg| {
+            error!("{msg}")
+        })
+    })?;
     //直播：需校验摄像头是否在线；回放：录像机在线即可
     let mut front_live_or_back = 1;
     if live {
@@ -79,10 +87,22 @@ pub async fn build_ssrc_stream_id(
         front_live_or_back = 0;
     }
     let domain_id = gmv_oauth.domain_id;
-    let middle_domain_mark = &domain_id[4..=8];
+    validate_decimal_field(&domain_id, 20, "domain_id")?;
+    let middle_domain_mark = &domain_id[4..9];
     let ssrc = format!("{front_live_or_back}{middle_domain_mark}{num_ssrc:04}");
     let stream_id = en_stream_id(device_id, channel_id, &ssrc)?;
     Ok((ssrc, stream_id))
+}
+
+fn validate_decimal_field(value: &str, expected_len: usize, field: &str) -> GlobalResult<()> {
+    if value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(());
+    }
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::InvalidRequest.code(),
+        &format!("Invalid {field}"),
+        |msg| error!("{msg}: expected {expected_len} decimal digits, value={value}"),
+    ))
 }
 
 #[test]
@@ -112,4 +132,10 @@ fn test_ssrc_to_ssrc_num() {
     let ssrc4: u32 = 1100019999;
     let ssrc_num4 = (ssrc4 % 10000) as u16;
     assert_eq!(ssrc_num4, 9999)
+}
+
+#[test]
+fn invalid_stream_components_are_rejected() {
+    assert!(en_stream_id("short", "34020000001320000101", "1100000001").is_err());
+    assert!(en_stream_id("34020000001110000001", "3402000000132000010a", "1100000001").is_err());
 }

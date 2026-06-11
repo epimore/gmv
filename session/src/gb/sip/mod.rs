@@ -27,6 +27,7 @@ pub mod message;
 pub mod register;
 pub mod runtime_cache;
 pub mod sdp;
+pub mod subscription;
 pub mod xml;
 
 pub use adapter::{
