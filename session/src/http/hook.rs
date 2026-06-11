@@ -117,8 +117,10 @@ async fn stream_idle(Json(info): Json<OutputStreamInfo>) -> Json<Resp<OutputEven
 ))]
 async fn end_record(Json(info): Json<StreamRecordInfo>) -> Json<Resp<()>> {
     info!("end_record = {:?}", &info);
-    hook_serv::end_record(info).await;
-    Json(Resp::build_success())
+    match hook_serv::end_record(info).await {
+        Ok(()) => Json(Resp::build_success()),
+        Err(err) => Json(crate::http::res_by_error(err)),
+    }
 }
 
 #[cfg_attr(debug_assertions, utoipa::path(

@@ -20,7 +20,8 @@ impl GbDialogIndex {
     pub fn insert(&mut self, stream_id: impl Into<String>, call_id: impl Into<String>) {
         let stream_id = stream_id.into();
         let call_id = call_id.into();
-        self.stream_to_call.insert(stream_id.clone(), call_id.clone());
+        self.stream_to_call
+            .insert(stream_id.clone(), call_id.clone());
         self.call_to_stream.insert(call_id, stream_id);
     }
 

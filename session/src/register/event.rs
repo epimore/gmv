@@ -8,8 +8,7 @@ use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
 
-use crate::gb::depot::trans::TransactionContext;
-use crate::gb::handler::cmd::CmdQuery;
+use crate::gb::sip::command as sip_command;
 use crate::register::core::{Inner, Register, TimeScheduleKey};
 use crate::register::schedule::ScheduleKey;
 use crate::state::session::Cache as GeneralCache;
@@ -72,11 +71,13 @@ async fn hand_event(event: Event) {
             let _ = Register::server_keep_heart_update_db(domain_id).await;
         }
         Event::RefreshCatalogSubscription(device_id, generation) => {
-            let _ = CmdQuery::refresh_catalog_subscription(device_id, generation)
+            // SUBSCRIBE dialog refresh is not part of the old rsip transaction
+            // layer any more. Until the PJSIP safe layer exposes SUBSCRIBE, use
+            // a Catalog MESSAGE refresh as a compatible lightweight fallback.
+            let sn = generation.min(u64::from(u32::MAX)) as u32;
+            let _ = sip_command::query_catalog(device_id.as_ref(), sn)
                 .await
-                .hand_log(|msg| {
-                    warn!("refresh catalog subscription failed: {msg}")
-                });
+                .hand_log(|msg| warn!("refresh catalog query failed: {msg}"));
         }
         Event::OutSession(_) => {}
     }
@@ -86,7 +87,6 @@ async fn on_time_schedule(
     inner: &Inner,
     batch: Vec<crate::register::schedule::ScheduleEvent<ScheduleKey>>,
 ) {
-    let mut trans_keys = Vec::new();
     let mut cache_keys = Vec::new();
 
     for event in batch {
@@ -117,8 +117,7 @@ async fn on_time_schedule(
                 }
             }
             ScheduleKey::Register(TimeScheduleKey::StreamClosing(stream_id, generation)) => {
-                if let Some(info) =
-                    GeneralCache::stream_close_force(stream_id.as_ref(), generation)
+                if let Some(info) = GeneralCache::stream_close_force(stream_id.as_ref(), generation)
                 {
                     warn!(
                         "force cleanup closing stream: device_id={}, channel_id={}, \
@@ -129,7 +128,9 @@ async fn on_time_schedule(
                         info.ssrc,
                         info.call_id,
                         info.generation,
-                        info.last_error.as_deref().unwrap_or("close deadline expired")
+                        info.last_error
+                            .as_deref()
+                            .unwrap_or("close deadline expired")
                     );
                 } else {
                     debug!(
@@ -139,9 +140,7 @@ async fn on_time_schedule(
                 }
             }
             ScheduleKey::Register(TimeScheduleKey::TalkClosing(talk_id, generation)) => {
-                if let Some(info) =
-                    GeneralCache::talk_close_force(talk_id.as_ref(), generation)
-                {
+                if let Some(info) = GeneralCache::talk_close_force(talk_id.as_ref(), generation) {
                     warn!(
                         "force cleanup closing talk: device_id={}, channel_id={}, \
                          talk_id={}, ssrc={}, call_id={}, generation={}, reason={}",
@@ -162,10 +161,7 @@ async fn on_time_schedule(
                     );
                 }
             }
-            ScheduleKey::Register(TimeScheduleKey::CatalogSubscription(
-                device_id,
-                generation,
-            )) => {
+            ScheduleKey::Register(TimeScheduleKey::CatalogSubscription(device_id, generation)) => {
                 let _ = inner
                     .event_tx
                     .try_send(Event::RefreshCatalogSubscription(device_id, generation))
@@ -178,14 +174,10 @@ async fn on_time_schedule(
                     .hand_log(|msg| error!("{msg}"));
             }
             ScheduleKey::Register(TimeScheduleKey::OutSession(_)) => {}
-            ScheduleKey::Transaction(key) => trans_keys.push(key),
             ScheduleKey::GeneralCache(key) => cache_keys.push(key),
         }
     }
 
-    if !trans_keys.is_empty() {
-        TransactionContext::handle_timeout_keys(trans_keys);
-    }
     if !cache_keys.is_empty() {
         GeneralCache::purge_expired_keys(cache_keys);
     }

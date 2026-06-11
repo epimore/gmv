@@ -1,3 +1,11 @@
+//! LEGACY RSIP PIPELINE
+//!
+//! The medium-term SIP stack has moved to `crate::gb::sip` + `gmv_pjsip`.
+//! This file is kept temporarily for compatibility with existing service APIs
+//! and for migration reference. New code must not add SIP parsing, transaction,
+//! dialog, CSeq/tag/branch, or header-generation logic here.
+//!
+
 use crate::gb::depot::extract::HeaderItemExt;
 use crate::gb::io::send_sip_pkt_out;
 use base::bytes::Bytes;

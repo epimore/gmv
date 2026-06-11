@@ -255,6 +255,22 @@ impl Cache {
         }
     }
 
+    pub fn stream_device_id(stream_id: &str) -> Option<String> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get(stream_id)
+            .map(|stream| stream.device_id.clone())
+    }
+
+    pub fn stream_call_id(stream_id: &str) -> Option<String> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get(stream_id)
+            .map(|stream| stream.call_id.clone())
+    }
+
     pub fn stream_map_query_node_ssrc(stream_id: &String) -> Option<(String, u32)> {
         GENERAL_CACHE.shared.stream_map.get(stream_id).map(|item| {
             let node_name = item.stream_node_name.clone();
@@ -390,16 +406,12 @@ impl Cache {
             .stream_map
             .iter()
             .filter_map(|stream| {
-                (stream.device_id == device_id && stream.is_closing())
-                    .then(|| stream.key().clone())
+                (stream.device_id == device_id && stream.is_closing()).then(|| stream.key().clone())
             })
             .collect()
     }
 
-    pub fn stream_close_complete(
-        stream_id: &str,
-        generation: u64,
-    ) -> Option<StreamCloseInfo> {
+    pub fn stream_close_complete(stream_id: &str, generation: u64) -> Option<StreamCloseInfo> {
         Self::stream_close_remove(stream_id, generation)
     }
 
@@ -629,12 +641,11 @@ impl Cache {
             return;
         };
         if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
-            let _ = scheduler.remove_register(
-                &crate::register::core::TimeScheduleKey::TalkClosing(
+            let _ =
+                scheduler.remove_register(&crate::register::core::TimeScheduleKey::TalkClosing(
                     Arc::from(talk_id),
                     generation,
-                ),
-            );
+                ));
         }
     }
 
@@ -642,8 +653,7 @@ impl Cache {
         let mut talk = GENERAL_CACHE.shared.talk_map.get_mut(talk_id)?;
         let newly_started = talk.closing_generation.is_none();
         if newly_started {
-            talk.closing_generation =
-                Some(TALK_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed));
+            talk.closing_generation = Some(TALK_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed));
             talk.bye_inflight_seq = None;
             talk.close_last_error = None;
         }
@@ -686,8 +696,7 @@ impl Cache {
             .talk_map
             .get_mut(talk_id)
             .is_some_and(|mut talk| {
-                if talk.closing_generation != Some(generation)
-                    || talk.bye_inflight_seq != Some(seq)
+                if talk.closing_generation != Some(generation) || talk.bye_inflight_seq != Some(seq)
                 {
                     return false;
                 }
@@ -709,10 +718,7 @@ impl Cache {
             .collect()
     }
 
-    pub fn talk_close_complete(
-        talk_id: &str,
-        generation: u64,
-    ) -> Option<TalkCloseInfo> {
+    pub fn talk_close_complete(talk_id: &str, generation: u64) -> Option<TalkCloseInfo> {
         let (_, talk) = GENERAL_CACHE
             .shared
             .talk_map
@@ -724,12 +730,11 @@ impl Cache {
             .ssrc_sn
             .insert((talk.ssrc % 10000) as u16);
         if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
-            let _ = scheduler.remove_register(
-                &crate::register::core::TimeScheduleKey::TalkClosing(
+            let _ =
+                scheduler.remove_register(&crate::register::core::TimeScheduleKey::TalkClosing(
                     Arc::from(talk_id),
                     generation,
-                ),
-            );
+                ));
         }
         Some(TalkCloseInfo {
             talk_id: talk_id.to_string(),
@@ -742,10 +747,7 @@ impl Cache {
         })
     }
 
-    pub fn talk_close_force(
-        talk_id: &str,
-        generation: u64,
-    ) -> Option<TalkCloseInfo> {
+    pub fn talk_close_force(talk_id: &str, generation: u64) -> Option<TalkCloseInfo> {
         Self::talk_close_complete(talk_id, generation)
     }
 
@@ -788,15 +790,10 @@ impl Cache {
         to_header: String,
         local_tag: String,
     ) -> Option<u64> {
-        match GENERAL_CACHE
-            .shared
-            .catalog_subscriptions
-            .entry(device_id)
-        {
+        match GENERAL_CACHE.shared.catalog_subscriptions.entry(device_id) {
             Entry::Occupied(_) => None,
             Entry::Vacant(entry) => {
-                let generation =
-                    CATALOG_SUBSCRIPTION_GENERATION.fetch_add(1, Ordering::Relaxed);
+                let generation = CATALOG_SUBSCRIPTION_GENERATION.fetch_add(1, Ordering::Relaxed);
                 entry.insert(CatalogSubscriptionState {
                     generation,
                     call_id,
@@ -870,10 +867,7 @@ impl Cache {
         })
     }
 
-    pub fn catalog_subscription_mark_failed(
-        device_id: &str,
-        generation: u64,
-    ) -> bool {
+    pub fn catalog_subscription_mark_failed(device_id: &str, generation: u64) -> bool {
         GENERAL_CACHE
             .shared
             .catalog_subscriptions
@@ -905,17 +899,13 @@ impl Cache {
             })
     }
 
-    pub fn catalog_subscription_expires(
-        device_id: &str,
-        generation: u64,
-    ) -> Option<u32> {
+    pub fn catalog_subscription_expires(device_id: &str, generation: u64) -> Option<u32> {
         GENERAL_CACHE
             .shared
             .catalog_subscriptions
             .get(device_id)
             .and_then(|subscription| {
-                (subscription.generation == generation)
-                    .then_some(subscription.expires)
+                (subscription.generation == generation).then_some(subscription.expires)
             })
     }
 
@@ -946,19 +936,13 @@ impl Cache {
         Some(subscription.generation)
     }
 
-    pub fn catalog_subscription_remove(
-        device_id: &str,
-        generation: Option<u64>,
-    ) -> bool {
+    pub fn catalog_subscription_remove(device_id: &str, generation: Option<u64>) -> bool {
         let removed = match generation {
             Some(generation) => GENERAL_CACHE
                 .shared
                 .catalog_subscriptions
                 .remove_if(device_id, |_, state| state.generation == generation),
-            None => GENERAL_CACHE
-                .shared
-                .catalog_subscriptions
-                .remove(device_id),
+            None => GENERAL_CACHE.shared.catalog_subscriptions.remove(device_id),
         };
         if let Some((_, subscription)) = &removed {
             if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
@@ -1005,15 +989,12 @@ impl Cache {
             .shared
             .stream_map
             .iter()
-            .filter_map(|stream| {
-                (stream.device_id == device_id).then(|| stream.key().clone())
-            })
+            .filter_map(|stream| (stream.device_id == device_id).then(|| stream.key().clone()))
             .collect::<Vec<_>>();
         for stream_id in remaining_stream_ids {
             if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(&stream_id) {
                 if let Some(generation) = stream.closing_generation() {
-                    if let Some(scheduler) =
-                        crate::register::schedule::TimeScheduler::try_global()
+                    if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global()
                     {
                         let _ = scheduler.remove_register(
                             &crate::register::core::TimeScheduleKey::StreamClosing(
@@ -1053,8 +1034,7 @@ impl Cache {
         for talk_id in talk_ids {
             if let Some((_, talk)) = GENERAL_CACHE.shared.talk_map.remove(&talk_id) {
                 if let Some(generation) = talk.closing_generation {
-                    if let Some(scheduler) =
-                        crate::register::schedule::TimeScheduler::try_global()
+                    if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global()
                     {
                         let _ = scheduler.remove_register(
                             &crate::register::core::TimeScheduleKey::TalkClosing(
@@ -1483,9 +1463,7 @@ impl AccessMode {
 
 #[cfg(test)]
 mod tests {
-    use crate::state::session::{
-        AccessMode, Cache, GENERAL_CACHE, StreamLifecycle, StreamTable,
-    };
+    use crate::state::session::{AccessMode, Cache, GENERAL_CACHE, StreamLifecycle, StreamTable};
     use base::dashmap::{DashMap, DashSet};
     use base::rand;
     use base::rand::prelude::IteratorRandom;
@@ -1707,18 +1685,20 @@ mod tests {
         )
         .unwrap();
 
-        assert!(Cache::catalog_subscription_begin(
-            device_id.to_string(),
-            "other-call-id".to_string(),
-            1,
-            "Catalog;id=456".to_string(),
-            3600,
-            "sip:device@192.0.2.10:5060".to_string(),
-            "<sip:platform@example.com>;tag=other".to_string(),
-            "<sip:device@example.com>".to_string(),
-            "other".to_string(),
-        )
-        .is_none());
+        assert!(
+            Cache::catalog_subscription_begin(
+                device_id.to_string(),
+                "other-call-id".to_string(),
+                1,
+                "Catalog;id=456".to_string(),
+                3600,
+                "sip:device@192.0.2.10:5060".to_string(),
+                "<sip:platform@example.com>;tag=other".to_string(),
+                "<sip:device@example.com>".to_string(),
+                "other".to_string(),
+            )
+            .is_none()
+        );
 
         Cache::catalog_subscription_complete(
             device_id,
@@ -1773,22 +1753,26 @@ mod tests {
             ),
             Some(generation)
         );
-        assert!(Cache::catalog_subscription_validate_notify(
-            device_id,
-            "other-call-id",
-            "Catalog;id=789",
-            Some("remote-tag"),
-            Some("local-tag"),
-        )
-        .is_none());
-        assert!(Cache::catalog_subscription_validate_notify(
-            device_id,
-            "notify-call-id",
-            "Catalog;id=999",
-            Some("remote-tag"),
-            Some("local-tag"),
-        )
-        .is_none());
+        assert!(
+            Cache::catalog_subscription_validate_notify(
+                device_id,
+                "other-call-id",
+                "Catalog;id=789",
+                Some("remote-tag"),
+                Some("local-tag"),
+            )
+            .is_none()
+        );
+        assert!(
+            Cache::catalog_subscription_validate_notify(
+                device_id,
+                "notify-call-id",
+                "Catalog;id=999",
+                Some("remote-tag"),
+                Some("local-tag"),
+            )
+            .is_none()
+        );
         Cache::catalog_subscription_remove(device_id, Some(generation));
     }
 

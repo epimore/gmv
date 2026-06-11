@@ -10,7 +10,6 @@ use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
 
 use crate::gb::SessionConf;
-use crate::gb::depot::SipPackage;
 use crate::register::event::{self, Event};
 pub(crate) use crate::register::io::{DeviceSession, Network};
 use crate::register::schedule::TimeScheduler;
@@ -43,7 +42,6 @@ pub struct Register {
 pub struct Inner {
     pub server_conf: SessionConf,
     pub io_tx: Sender<Zip>,
-    pub sip_tx: Sender<SipPackage>,
     pub event_tx: Sender<Event>,
     pub io_map: Network,
     pub session_map: Session,
@@ -57,7 +55,6 @@ impl Register {
     pub fn init(
         server_conf: SessionConf,
         io_tx: Sender<Zip>,
-        sip_tx: Sender<SipPackage>,
         cancel_token: CancellationToken,
     ) -> GlobalResult<()> {
         if REGISTER.get().is_some() {
@@ -69,7 +66,6 @@ impl Register {
         let inner = Arc::new(Inner {
             server_conf,
             io_tx,
-            sip_tx,
             event_tx,
             io_map: Network {
                 session: Default::default(),
@@ -161,9 +157,10 @@ impl Register {
         } else {
             match arc.io_map.rebind_registration(&device_id, ds) {
                 Ok(generation) => {
-                    let _ = Self::scheduler().remove_register(
-                        &TimeScheduleKey::DeviceReconnect(device_id.clone(), generation),
-                    );
+                    let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceReconnect(
+                        device_id.clone(),
+                        generation,
+                    ));
                     Self::scheduler()
                         .insert_register(
                             TimeScheduleKey::Device3Heart(device_id.clone()),

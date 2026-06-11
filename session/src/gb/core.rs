@@ -2,21 +2,24 @@ pub mod rw {
     use std::sync::{Arc, OnceLock};
     use std::time::Duration;
 
-    use rsip::Request;
-
-    use crate::gb::depot::{Callback, SipPackage, default_log_callback};
-    use crate::register::core::Register;
-
+    use base::bytes::Bytes;
     use base::exception::{GlobalResult, GlobalResultExt};
-    use base::log::{error, warn};
-    use base::net::state::{Association, Zip};
+    use base::log::error;
+    use base::net::state::{Association, Package, Zip};
     use base::tokio::sync::mpsc::Sender;
+
+    use crate::register::core::{DeviceSession, Register};
 
     static RW_CTX: OnceLock<RWContext> = OnceLock::new();
 
+    /// Network writer facade used by business code.
+    ///
+    /// The old implementation also owned a `SipPackage` channel used by the
+    /// rsip transaction layer. The PJSIP mid-term architecture removes that
+    /// channel completely: all SIP bytes are produced by `gb::sip`/`gmv_pjsip`
+    /// and sent directly to the socket writer.
     pub struct RWContext {
         io_tx: Sender<Zip>,
-        sip_tx: Sender<SipPackage>,
     }
 
     impl RWContext {
@@ -24,8 +27,8 @@ pub mod rw {
             RW_CTX.get().expect("RWContext not initialized")
         }
 
-        pub fn init(io_tx: Sender<Zip>, sip_tx: Sender<SipPackage>) {
-            let _ = RW_CTX.set(RWContext { io_tx, sip_tx });
+        pub fn init(io_tx: Sender<Zip>) {
+            let _ = RW_CTX.set(RWContext { io_tx });
         }
 
         pub fn insert(_device_id: &String, _device_session: DeviceSession) {}
@@ -72,58 +75,20 @@ pub mod rw {
         pub fn has_session_by_device_id(device_id: &String) -> bool {
             Register::has_session(device_id.as_str())
         }
-    }
 
-    pub struct SipRequestOutput<'a> {
-        pub device_id: &'a String,
-        pub association: Association,
-        pub request: Request,
-    }
-
-    impl<'a> SipRequestOutput<'a> {
-        pub fn new(device_id: &'a String, association: Association, request: Request) -> Self {
-            Self {
-                device_id,
-                association,
-                request,
-            }
-        }
-
-        pub async fn send_log(self, log: &str) {
-            let cb = default_log_callback(format!("{}:{}", log, self.device_id));
-            let _ = self.send(cb).await;
-        }
-
-        pub async fn send(self, cb: Callback) -> GlobalResult<()> {
-            let sip_pkg = SipPackage::build_request(self.request, self.association, cb);
+        pub async fn send_sip_bytes(association: Association, bytes: Bytes) -> GlobalResult<()> {
             RWContext::get_ctx()
-                .sip_tx
-                .send(sip_pkg)
+                .io_tx
+                .send(Zip::build_data(Package::new(association, bytes)))
                 .await
                 .hand_log(|msg| error!("{msg}"))
         }
-    }
 
-    pub struct DeviceSession {
-        pub contact_uri: String,
-        pub association: Association,
-        pub support_lr: bool,
-        pub expires: Duration,
-    }
-
-    impl DeviceSession {
-        pub fn build(contact_uri: String, association: Association, heartbeat: u8) -> Self {
-            let expires = Duration::from_secs(heartbeat as u64 * 3);
-            Self {
-                contact_uri,
-                association,
-                support_lr: false,
-                expires,
-            }
-        }
-
-        pub fn enable_lr(&mut self) {
-            self.support_lr = true;
+        pub fn try_send_sip_bytes(association: Association, bytes: Bytes) -> GlobalResult<()> {
+            RWContext::get_ctx()
+                .io_tx
+                .try_send(Zip::build_data(Package::new(association, bytes)))
+                .hand_log(|msg| error!("{msg}"))
         }
     }
 }

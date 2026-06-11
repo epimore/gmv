@@ -18,16 +18,61 @@
 //! ```
 
 pub mod adapter;
+pub mod auth;
 pub mod bye;
+pub mod command;
 pub mod dialog;
 pub mod invite;
 pub mod message;
 pub mod register;
+pub mod runtime_cache;
 pub mod sdp;
 pub mod xml;
 
-pub use adapter::{GbSipConfig, GbSipRuntime, GbSipRuntimeOutput};
+pub use adapter::{
+    GbSipConfig, GbSipEvent, GbSipRuntime, GbSipRuntimeOutput, apply_business_event,
+    base_association_from_pjsip, base_protocol_from_pjsip, pjsip_association_from_base,
+    pjsip_protocol_from_base,
+};
 pub use bye::GbByeEvent;
-pub use invite::{GbIncomingInviteEvent, GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest};
+pub use invite::{
+    GbIncomingInviteEvent, GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest,
+    InviteTalkRequest,
+};
 pub use message::{CreateDeviceMessageRequest, GbMessageEvent, GbMessageKind};
 pub use register::GbRegisterEvent;
+
+/// Periodically clean PJSIP protocol caches and session-level SIP waiters.
+///
+/// This replaces the old rsip transaction timeout path. Device heartbeat /
+/// registration timers still live in register::TimeScheduler because they are
+/// business state, not SIP protocol transactions.
+pub async fn run_cleanup_task(cancel_token: base::tokio_util::sync::CancellationToken) {
+    use std::time::Duration;
+
+    use base::log::debug;
+    use base::tokio::time;
+
+    let mut ticker = time::interval(Duration::from_secs(1));
+    loop {
+        base::tokio::select! {
+            _ = ticker.tick() => {
+                if let Some(runtime) = GbSipRuntime::global() {
+                    let report = runtime.cleanup_expired_with(Duration::from_secs(32));
+                    let waiter_report = runtime_cache::SipRuntimeCache::global().cleanup_expired();
+                    if report != gmv_pjsip::CleanupReport::default()
+                        || waiter_report.invite_waiters > 0
+                        || waiter_report.bye_waiters > 0
+                        || waiter_report.response_waiters > 0
+                    {
+                        debug!(
+                            "sip cleanup: pjsip={:?}, session_waiters={:?}",
+                            report, waiter_report
+                        );
+                    }
+                }
+            }
+            _ = cancel_token.cancelled() => break,
+        }
+    }
+}

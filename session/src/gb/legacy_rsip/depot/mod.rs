@@ -1,3 +1,11 @@
+//! LEGACY RSIP PIPELINE
+//!
+//! The medium-term SIP stack has moved to `crate::gb::sip` + `gmv_pjsip`.
+//! This file is kept temporarily for compatibility with existing service APIs
+//! and for migration reference. New code must not add SIP parsing, transaction,
+//! dialog, CSeq/tag/branch, or header-generation logic here.
+//!
+
 /*
 ### 核心原则：基于“幂等性”和“业务影响”划分
 - **幂等操作**：执行一次和执行多次，产生的副作用是相同的。这类请求可以宽松处理。

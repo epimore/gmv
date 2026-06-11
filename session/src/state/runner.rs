@@ -1,4 +1,4 @@
-use crate::gb::handler::cmd;
+use crate::gb::sip::command as sip_command;
 use crate::service::edge_serv;
 use crate::state::schedule;
 use crate::state::schedule::ScheduleTask;
@@ -36,7 +36,7 @@ impl PicsRunner {
                 let (token, session_id) = edge_token::build_token_session_id(&item.0, &item.1)?;
                 let url = format!("{}/{}", pics_conf.push_url.clone().unwrap(), token);
                 edge_serv::cache_pic_token(token, pics_conf.num);
-                cmd::CmdControl::snapshot_image(
+                sip_command::snapshot_image_call(
                     &item.0,
                     &item.1,
                     pics_conf.num,

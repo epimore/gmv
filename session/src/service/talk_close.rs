@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use base::exception::GlobalResult;
 use base::log::{debug, error, warn};
 use base::tokio::time::Instant;
 
-use crate::gb::depot::Callback;
-use crate::gb::handler::cmd::CmdStream;
+use crate::gb::sip::command as sip_command;
 use crate::register::core::{Register, TimeScheduleKey};
 use crate::state::session::{Cache, TalkByeCommand};
 
@@ -16,6 +14,7 @@ pub fn begin(talk_id: String) -> bool {
     if !start.newly_started {
         return true;
     }
+
     let Some(session) = Register::get_device_session(&start.device_id) else {
         force_cleanup(
             &talk_id,
@@ -36,7 +35,7 @@ pub fn begin(talk_id: String) -> bool {
         force_cleanup(
             &talk_id,
             start.generation,
-            &format!("schedule talk close deadline failed: {err}"),
+            &format!("schedule close deadline failed: {err}"),
         );
         return true;
     }
@@ -58,83 +57,35 @@ fn retry_talk(talk_id: String) {
 }
 
 async fn send_bye(command: TalkByeCommand) {
-    let callback_talk_id = command.talk_id.clone();
-    let callback_generation = command.generation;
-    let callback_seq = command.seq;
-    let callback_device_id = command.device_id.clone();
-    let callback: Callback = Box::new(move |result| {
-        handle_bye_result(
-            &callback_talk_id,
-            callback_generation,
-            callback_seq,
-            &callback_device_id,
-            result,
-        );
-    });
-    let result = CmdStream::play_bye_with_callback(
-        command.seq,
-        command.call_id,
+    let talk_id = command.talk_id.clone();
+    let generation = command.generation;
+    let seq = command.seq;
+    let device_id = command.device_id.clone();
+    let result = sip_command::invite_stop_by_device(
         &command.device_id,
-        &command.remote_target,
-        &command.route_set,
-        &command.from_header,
-        &command.to_header,
-        callback,
+        crate::gb::sip::InviteStopRequest {
+            call_id: Some(command.call_id.clone()),
+            stream_id: Some(command.talk_id.clone()),
+        },
     )
     .await;
-    if let Err(err) = result {
-        mark_failed(
-            &command.talk_id,
-            command.generation,
-            command.seq,
-            &command.device_id,
-            err.to_string(),
-            false,
-        );
-    }
-}
 
-fn handle_bye_result(
-    talk_id: &str,
-    generation: u64,
-    seq: u32,
-    device_id: &str,
-    result: GlobalResult<rsip::Response>,
-) {
     match result {
-        Ok(response) => {
-            let status = response.status_code.code();
-            if (200..300).contains(&status) || status == 481 {
-                if let Some(info) = Cache::talk_close_complete(talk_id, generation) {
-                    debug!(
-                        "talk close completed: device_id={}, channel_id={}, talk_id={}, \
-                         ssrc={}, call_id={}, status={}",
-                        info.device_id,
-                        info.channel_id,
-                        info.talk_id,
-                        info.ssrc,
-                        info.call_id,
-                        status
-                    );
-                }
-            } else {
-                mark_failed(
-                    talk_id,
-                    generation,
-                    seq,
-                    device_id,
-                    format!("unexpected talk BYE response: {status}"),
-                    false,
+        Ok(()) => {
+            if let Some(info) = Cache::talk_close_complete(&talk_id, generation) {
+                debug!(
+                    "talk close completed: device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}",
+                    info.device_id, info.channel_id, info.talk_id, info.ssrc, info.call_id
                 );
             }
         }
         Err(err) => mark_failed(
-            talk_id,
+            &talk_id,
             generation,
             seq,
-            device_id,
+            &device_id,
             err.to_string(),
-            true,
+            false,
         ),
     }
 }
@@ -161,8 +112,7 @@ fn mark_failed(
 fn force_cleanup(talk_id: &str, generation: u64, reason: &str) {
     if let Some(info) = Cache::talk_close_force(talk_id, generation) {
         error!(
-            "force cleanup closing talk: device_id={}, channel_id={}, talk_id={}, \
-             ssrc={}, call_id={}, generation={}, reason={}",
+            "force cleanup closing talk: device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}, generation={}, reason={}",
             info.device_id,
             info.channel_id,
             info.talk_id,

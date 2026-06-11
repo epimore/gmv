@@ -1,8 +1,8 @@
 use base::bytes::Bytes;
-use gmv_pjsip::gb28181::sdp::{build_play_sdp, PlaySdpOptions, SdpInfo};
+use gmv_pjsip::gb28181::sdp::{PlaySdpOptions, SdpInfo, build_play_sdp};
 use gmv_pjsip::{
-    CreateBye, CreateInvite, IncomingInviteEvent, InviteAcceptedEvent, SipAssociation, SipContext,
-    SipTransportProtocol,
+    CreateBye, CreateInvite, CreateTalkInvite, IncomingInviteEvent, InviteAcceptedEvent,
+    SipAssociation, SipContext, SipTransportProtocol, TalkAudioCodec, TalkSdpMode,
 };
 
 use super::message::target_uri;
@@ -19,9 +19,28 @@ pub struct InvitePlayRequest {
     pub ssrc: u32,
     pub payload_type: u8,
     pub protocol: SipTransportProtocol,
-    /// Optional custom SDP for playback/talk/private extensions.
+    /// Optional custom SDP for playback/download/private extensions.
     /// When omitted, a standard GB28181 PS/RTP play SDP is generated.
     pub sdp: Option<String>,
+    pub call_id: Option<String>,
+    pub cseq: Option<u32>,
+    pub subject: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InviteTalkRequest {
+    pub device_id: String,
+    pub channel_id: String,
+    pub talk_id: String,
+    pub device_host: String,
+    pub device_port: u16,
+    pub media_ip: String,
+    pub media_port: u16,
+    pub ssrc: u32,
+    pub payload_type: u8,
+    pub codec: TalkAudioCodec,
+    pub mode: TalkSdpMode,
+    pub protocol: SipTransportProtocol,
     pub call_id: Option<String>,
     pub cseq: Option<u32>,
     pub subject: Option<String>,
@@ -84,7 +103,12 @@ impl From<IncomingInviteEvent> for GbIncomingInviteEvent {
 }
 
 pub fn create_invite_play(ctx: &SipContext, req: InvitePlayRequest) -> gmv_pjsip::Result<Bytes> {
-    let target_uri = target_uri(&req.device_id, &req.device_host, req.device_port, req.protocol);
+    let target_uri = target_uri(
+        &req.device_id,
+        &req.device_host,
+        req.device_port,
+        req.protocol,
+    );
     let sdp = req.sdp.unwrap_or_else(|| {
         build_play_sdp(PlaySdpOptions {
             ip: req.media_ip,
@@ -101,6 +125,31 @@ pub fn create_invite_play(ctx: &SipContext, req: InvitePlayRequest) -> gmv_pjsip
         target_uri,
         sdp,
         ssrc: Some(req.ssrc),
+        protocol: req.protocol,
+        call_id: req.call_id,
+        cseq: req.cseq,
+        subject: req.subject,
+    })
+}
+
+pub fn create_talk_invite(ctx: &SipContext, req: InviteTalkRequest) -> gmv_pjsip::Result<Bytes> {
+    let target_uri = target_uri(
+        &req.device_id,
+        &req.device_host,
+        req.device_port,
+        req.protocol,
+    );
+    ctx.create_talk_invite(CreateTalkInvite {
+        device_id: req.device_id,
+        channel_id: req.channel_id,
+        talk_id: req.talk_id,
+        target_uri,
+        media_ip: req.media_ip,
+        media_port: req.media_port,
+        ssrc: Some(req.ssrc),
+        payload_type: req.payload_type,
+        codec: req.codec,
+        mode: req.mode,
         protocol: req.protocol,
         call_id: req.call_id,
         cseq: req.cseq,

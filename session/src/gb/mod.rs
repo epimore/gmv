@@ -1,4 +1,3 @@
-use crate::gb::depot::SipPackage;
 use crate::register::core::Register;
 use crate::register::core::SERVER_HEART_SECOND;
 use crate::state::runner::Runner;
@@ -11,10 +10,10 @@ use base::chrono::Local;
 use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
-use base::net::state::{CHANNEL_BUFFER_SIZE, Zip};
+use base::net::state::Zip;
 use base::serde::Deserialize;
 use base::tokio::runtime::Handle;
-use base::tokio::sync::{mpsc, oneshot};
+use base::tokio::sync::oneshot;
 use base::tokio_util::sync::CancellationToken;
 use base::{net, tokio};
 pub use core::rw::RWContext;
@@ -27,13 +26,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod core;
-pub mod depot;
-pub mod handler;
+// Legacy rsip modules are intentionally not compiled.
+// See src/gb/legacy_rsip/README.md for the archived source.
 mod io;
+pub mod sip;
 mod sip_tcp_splitter;
-mod sip;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.session", check)]
 pub struct SessionConf {
@@ -129,36 +128,25 @@ impl SessionConf {
         cancel_token: CancellationToken,
     ) -> GlobalResult<()> {
         let (output, input) = io::rw_by_tokio(tu, cancel_token.child_token())?;
-        let (sip_pkg_tx, sip_pkg_rx) = mpsc::channel::<SipPackage>(CHANNEL_BUFFER_SIZE);
         db_task::init(cancel_token.child_token());
+        let session_conf = SessionConf::get_session_by_conf();
+        let auth_cache = sip::auth::init_global().await?;
         Register::init(
-            SessionConf::get_session_by_conf(),
+            session_conf.clone(),
             output.clone(),
-            sip_pkg_tx.clone(),
             cancel_token.child_token(),
         )?;
-        RWContext::init(output.clone(), sip_pkg_tx.clone());
+        sip::GbSipRuntime::init_global(sip::GbSipConfig::from_session_conf(
+            &session_conf,
+            auth_cache,
+        ));
+        RWContext::init(output.clone());
         let handle = Handle::current();
         handle.spawn(SessionConf::heart_server());
-        let ctx = Arc::new(depot::DepotContext::init(
-            handle.clone(),
-            cancel_token.clone(),
-            output.clone(),
-        ));
-        base::tokio::spawn(io::read(
-            input,
-            output.clone(),
-            sip_pkg_tx,
-            cancel_token.child_token(),
-            ctx.clone(),
-        ));
+        handle.spawn(sip::auth::run_refresh_task(cancel_token.child_token()));
+        handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));
+        base::tokio::spawn(io::read(input, output.clone(), cancel_token.child_token()));
         let output_sender = output.clone();
-        base::tokio::spawn(io::write(
-            sip_pkg_rx,
-            output,
-            cancel_token.child_token(),
-            ctx,
-        ));
         base::tokio::spawn(async move {
             cancel_token.cancelled().await;
             let _ = output_sender.send(Zip::build_shutdown_zip(None)).await;

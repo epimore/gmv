@@ -271,8 +271,8 @@ impl DeviceSession {
     }
 
     pub fn registration_generation_changed(&self, next: &Self) -> bool {
-        let transport_changed = self.association != next.association
-            || !self.connected.load(Ordering::Acquire);
+        let transport_changed =
+            self.association != next.association || !self.connected.load(Ordering::Acquire);
         !self.registration_call_id.is_empty()
             && self.registration_call_id == next.registration_call_id
             && self.registration_cseq > 0

@@ -1,8 +1,6 @@
-use crate::gb::handler::parser;
-use rsip::Request;
 use std::sync::Arc;
 
-use base::chrono::{Duration as TimeDelta, Local, NaiveDateTime};
+use base::chrono::{Local, NaiveDateTime};
 use base::constructor::New;
 use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
@@ -117,6 +115,17 @@ pub struct GmvOauth {
 }
 
 impl GmvOauth {
+    pub async fn read_all_gmv_oauth() -> GlobalResult<Vec<GmvOauth>> {
+        let pool = get_conn_by_pool();
+        sqlx::query_as::<_, GmvOauth>(
+            "select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec \
+             from GMV_OAUTH",
+        )
+        .fetch_all(pool)
+        .await
+        .hand_log(|msg| error!("{msg}"))
+    }
+
     pub async fn read_gmv_oauth_by_device_id(device_id: &String) -> GlobalResult<Option<GmvOauth>> {
         let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvOauth>("select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=?")
@@ -202,22 +211,6 @@ impl GmvDevice {
         .hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
-
-    pub fn build_gmv_device(req: &Request, heartbeat_sec: u8) -> GlobalResult<Self> {
-        let now = Local::now().naive_local();
-        let device = Self {
-            device_id: parser::header::get_device_id_by_request(req)?,
-            transport: parser::header::get_transport(req)?,
-            register_expires: parser::header::get_expires(req)?,
-            register_time: now,
-            online_expire_time: Some(now + TimeDelta::seconds((heartbeat_sec as i64) * 3)),
-            local_addr: parser::header::get_local_addr(req)?,
-            contact_uri: parser::header::get_contact_uri(req)?,
-            enable_lr: parser::header::enable_lr(req)?,
-            gb_version: parser::header::get_gb_version(req),
-        };
-        Ok(device)
-    }
 }
 
 #[derive(Default, Debug, Clone, FromRow)]
@@ -247,7 +240,7 @@ impl GmvDeviceExt {
     }
 
     fn build(vs: Vec<(String, String)>) -> GmvDeviceExt {
-        use crate::gb::handler::parser::xml::*;
+        use crate::gb::sip::xml::*;
 
         let mut de = GmvDeviceExt::default();
         for (k, v) in vs {
@@ -364,10 +357,10 @@ impl GmvDeviceChannel {
         Ok(())
     }
 
-    fn build(device_id: &str, vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
-        use crate::gb::handler::parser::xml::*;
+    fn build(parent_device_id: &str, vs: Vec<(String, String)>) -> Vec<GmvDeviceChannel> {
+        use crate::gb::sip::xml::*;
         let mut dc = GmvDeviceChannel::default();
-        dc.device_id = device_id.to_string();
+        dc.device_id = parent_device_id.to_string();
         let mut dcs: Vec<GmvDeviceChannel> = Vec::new();
         for (k, v) in vs {
             match &k[..] {
@@ -429,7 +422,7 @@ impl GmvDeviceChannel {
                     if !dc.channel_id.is_empty() {
                         dcs.push(dc.clone());
                         dc = GmvDeviceChannel::default();
-                        dc.device_id = device_id.to_string();
+                        dc.device_id = parent_device_id.to_string();
                     }
                 }
                 &_ => {}

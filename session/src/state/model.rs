@@ -1,6 +1,6 @@
 use base::serde::{Deserialize, Serialize};
 
-use crate::gb::handler::parser::xml::KV2Model;
+use crate::gb::sip::xml::KV2Model;
 use base::constructor::New;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
@@ -173,7 +173,7 @@ pub struct AlarmInfo {
 
 impl KV2Model for AlarmInfo {
     fn kv_to_model(arr: Vec<(String, String)>) -> GlobalResult<Self> {
-        use crate::gb::handler::parser::xml::*;
+        use crate::gb::sip::xml::*;
         let mut model = AlarmInfo::default();
         for (k, v) in arr {
             match &k[..] {

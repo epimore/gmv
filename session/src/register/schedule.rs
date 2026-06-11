@@ -13,7 +13,6 @@ use crate::register::core::TimeScheduleKey;
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub enum ScheduleKey {
     Register(TimeScheduleKey),
-    Transaction(String),
     GeneralCache(String),
 }
 
@@ -60,19 +59,6 @@ impl TimeScheduler {
 
     pub fn remove_register(&self, key: &TimeScheduleKey) -> GlobalResult<()> {
         self.inner.delete(ScheduleKey::Register(key.clone()))
-    }
-
-    pub fn insert_transaction(&self, key: String, ttl: Duration) -> GlobalResult<()> {
-        self.inner.insert(ScheduleKey::Transaction(key), ttl)
-    }
-
-    pub fn refresh_transaction(&self, key: &str) -> GlobalResult<()> {
-        self.inner
-            .refresh(ScheduleKey::Transaction(key.to_string()))
-    }
-
-    pub fn remove_transaction(&self, key: &str) -> GlobalResult<()> {
-        self.inner.delete(ScheduleKey::Transaction(key.to_string()))
     }
 
     pub fn insert_general_cache(&self, key: String, ttl: Duration) -> GlobalResult<()> {

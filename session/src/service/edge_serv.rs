@@ -2,6 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::gb::sip::command as sip_command;
+use crate::service::{KEY_SNAPSHOT_IMAGE, SNAPSHOT_IDLE_EXPIRES};
+use crate::state;
+use crate::state::model::SnapshotImage;
+use crate::storage::entity::{GmvFileInfo, GmvRecord};
+use crate::storage::pics::Pics;
+use crate::utils::edge_token;
 use base::bytes::Bytes;
 use base::chrono::Local;
 use base::err::BaseErrorCode;
@@ -9,15 +16,6 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::tokio::sync::mpsc;
 use base::tokio::time::Instant;
-use rsip::StatusCodeKind;
-
-use crate::gb::handler::cmd;
-use crate::service::{KEY_SNAPSHOT_IMAGE, SNAPSHOT_IDLE_EXPIRES};
-use crate::state;
-use crate::state::model::SnapshotImage;
-use crate::storage::entity::{GmvFileInfo, GmvRecord};
-use crate::storage::pics::Pics;
-use crate::utils::edge_token;
 
 pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     let pics_conf = Pics::get_pics_by_conf();
@@ -25,8 +23,22 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
         &info.device_channel_ident.device_id,
         &info.device_channel_ident.channel_id,
     )?;
-    let url = format!("{}/{}", pics_conf.push_url.clone().unwrap(), token);
+    let push_url = pics_conf.push_url.clone().ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "snapshot push URL is not configured",
+            |msg| error!("{msg}"),
+        )
+    })?;
+    let url = format!("{}/{}", push_url.trim_end_matches('/'), token);
     let count = info.count.unwrap_or_else(|| pics_conf.num);
+    if count == 0 {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "snapshot count must be greater than zero",
+            |msg| error!("{msg}"),
+        ));
+    }
     let (tx, mut rx) = mpsc::channel(8);
     let timeout = snapshot_idle_timeout();
     let when = Instant::now() + timeout;
@@ -35,7 +47,7 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     state::session::Cache::insert_snapshot_wait(key.clone(), when, tx);
     state::session::Cache::insert_counter(token_key.clone(), count, timeout);
 
-    let response = match cmd::CmdControl::snapshot_image_call(
+    if let Err(err) = sip_command::snapshot_image_call(
         &info.device_channel_ident.device_id,
         &info.device_channel_ident.channel_id,
         count,
@@ -45,22 +57,10 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     )
     .await
     {
-        Ok(response) => response,
-        Err(err) => {
-            state::session::Cache::remove_state(&key);
-            state::session::Cache::remove_state(&token_key);
-            return Err(err);
-        }
-    };
-    if !matches!(response.status_code.kind(), StatusCodeKind::Successful) {
         state::session::Cache::remove_state(&key);
         state::session::Cache::remove_state(&token_key);
-        Err(GlobalError::new_biz_error(
-            BaseErrorCode::InvalidState.code(),
-            "snapshot image failed",
-            |msg| error!("{msg}"),
-        ))?
-    };
+        return Err(err);
+    }
 
     if let Some(true) = rx.recv().await {
         state::session::Cache::remove_state(&key);
@@ -138,18 +138,17 @@ pub async fn upload(
 }
 
 pub async fn rm_file(file_id: i64) -> GlobalResult<()> {
-    if let Ok(file_info) = GmvFileInfo::query_gmv_file_info_by_id(file_id).await {
-        let mut file = file_info.file_name.clone();
-        if let Some(ext) = &file_info.file_format {
-            file = format!("{}.{}", file, ext);
-        }
-        let path_buf = PathBuf::from(&file_info.dir_path).join(file);
-        if path_buf.exists() {
-            fs::remove_file(path_buf).hand_log(|msg| error!("{msg}"))?;
-            GmvFileInfo::rm_gmv_file_info_by_id(file_id).await?;
-            GmvRecord::rm_gmv_record_by_biz_id(&file_info.biz_id).await?;
-        }
+    let file_info = GmvFileInfo::query_gmv_file_info_by_id(file_id).await?;
+    let mut file = file_info.file_name.clone();
+    if let Some(ext) = &file_info.file_format {
+        file = format!("{}.{}", file, ext);
     }
+    let path_buf = PathBuf::from(&file_info.dir_path).join(file);
+    if path_buf.exists() {
+        fs::remove_file(path_buf).hand_log(|msg| error!("{msg}"))?;
+    }
+    GmvFileInfo::rm_gmv_file_info_by_id(file_id).await?;
+    GmvRecord::rm_gmv_record_by_biz_id(&file_info.biz_id).await?;
     Ok(())
 }
 
@@ -171,7 +170,7 @@ fn rebuild_pic_token(token: &str) -> String {
     format!("SNAPSHOT:{}", token)
 }
 
-fn rebuild_snapshot_wait_key(session_id: &str) -> String {
+pub fn rebuild_snapshot_wait_key(session_id: &str) -> String {
     format!("{}{}", KEY_SNAPSHOT_IMAGE, session_id)
 }
 

@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use base::exception::GlobalResult;
 use base::log::{debug, error, warn};
 use base::tokio::time::Instant;
 
-use crate::gb::depot::Callback;
-use crate::gb::handler::cmd::CmdStream;
+use crate::gb::sip::command as sip_command;
 use crate::register::core::{Register, TimeScheduleKey};
 use crate::state::session::{Cache, StreamByeCommand};
 
@@ -58,83 +56,35 @@ fn retry_stream(stream_id: String) {
 }
 
 async fn send_bye(command: StreamByeCommand) {
-    let callback_stream_id = command.stream_id.clone();
-    let callback_generation = command.generation;
-    let callback_seq = command.seq;
-    let callback_device_id = command.device_id.clone();
-    let callback: Callback = Box::new(move |result| {
-        handle_bye_result(
-            &callback_stream_id,
-            callback_generation,
-            callback_seq,
-            &callback_device_id,
-            result,
-        );
-    });
-    let result = CmdStream::play_bye_with_callback(
-        command.seq,
-        command.call_id,
+    let stream_id = command.stream_id.clone();
+    let generation = command.generation;
+    let seq = command.seq;
+    let device_id = command.device_id.clone();
+    let result = sip_command::invite_stop_by_device(
         &command.device_id,
-        &command.remote_target,
-        &command.route_set,
-        &command.from_header,
-        &command.to_header,
-        callback,
+        crate::gb::sip::InviteStopRequest {
+            call_id: Some(command.call_id.clone()),
+            stream_id: Some(command.stream_id.clone()),
+        },
     )
     .await;
-    if let Err(err) = result {
-        mark_failed(
-            &command.stream_id,
-            command.generation,
-            command.seq,
-            &command.device_id,
-            err.to_string(),
-            false,
-        );
-    }
-}
 
-fn handle_bye_result(
-    stream_id: &str,
-    generation: u64,
-    seq: u32,
-    device_id: &str,
-    result: GlobalResult<rsip::Response>,
-) {
     match result {
-        Ok(response) => {
-            let status = response.status_code.code();
-            if is_bye_terminal_status(status) {
-                if let Some(info) = Cache::stream_close_complete(stream_id, generation) {
-                    debug!(
-                        "stream close completed: device_id={}, channel_id={}, stream_id={}, \
-                         ssrc={}, call_id={}, status={}",
-                        info.device_id,
-                        info.channel_id,
-                        info.stream_id,
-                        info.ssrc,
-                        info.call_id,
-                        status
-                    );
-                }
-            } else {
-                mark_failed(
-                    stream_id,
-                    generation,
-                    seq,
-                    device_id,
-                    format!("unexpected BYE response: {status}"),
-                    false,
+        Ok(()) => {
+            if let Some(info) = Cache::stream_close_complete(&stream_id, generation) {
+                debug!(
+                    "stream close completed: device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
+                    info.device_id, info.channel_id, info.stream_id, info.ssrc, info.call_id
                 );
             }
         }
         Err(err) => mark_failed(
-            stream_id,
+            &stream_id,
             generation,
             seq,
-            device_id,
+            &device_id,
             err.to_string(),
-            true,
+            false,
         ),
     }
 }
@@ -161,8 +111,7 @@ fn mark_failed(
 fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
     if let Some(info) = Cache::stream_close_force(stream_id, generation) {
         error!(
-            "force cleanup closing stream: device_id={}, channel_id={}, stream_id={}, \
-             ssrc={}, call_id={}, generation={}, reason={}",
+            "force cleanup closing stream: device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}, generation={}, reason={}",
             info.device_id,
             info.channel_id,
             info.stream_id,
@@ -171,28 +120,5 @@ fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
             info.generation,
             reason
         );
-    }
-}
-
-fn is_bye_terminal_status(status: u16) -> bool {
-    (200..300).contains(&status) || status == 481
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_bye_terminal_status;
-
-    #[test]
-    fn bye_2xx_and_481_are_terminal() {
-        assert!(is_bye_terminal_status(200));
-        assert!(is_bye_terminal_status(299));
-        assert!(is_bye_terminal_status(481));
-    }
-
-    #[test]
-    fn other_bye_responses_keep_closing_state() {
-        assert!(!is_bye_terminal_status(300));
-        assert!(!is_bye_terminal_status(408));
-        assert!(!is_bye_terminal_status(500));
     }
 }
