@@ -123,6 +123,31 @@ impl GmvOauth {
             .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
+
+    pub async fn read_gmv_oauth_by_device_ids(
+        device_ids: &[String],
+    ) -> GlobalResult<Vec<GmvOauth>> {
+        if device_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let pool = get_conn_by_pool();
+        let mut builder = sqlx::query_builder::QueryBuilder::new(
+            "select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec \
+             from GMV_OAUTH where DEL=0 and STATUS=1 and device_id in (",
+        );
+        let mut separated = builder.separated(", ");
+        for device_id in device_ids {
+            separated.push_bind(device_id);
+        }
+        separated.push_unseparated(")");
+        let rows = builder
+            .build_query_as::<GmvOauth>()
+            .fetch_all(pool)
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        Ok(rows)
+    }
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, New, FromRow)]

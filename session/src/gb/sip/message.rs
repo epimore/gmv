@@ -1,7 +1,7 @@
 use base::bytes::Bytes;
 use gmv_pjsip::{
     CreateMessage, MessageEvent, MessageKind, SipAssociation, SipContext, SipMethod,
-    SipTransportProtocol, StandardRequestEvent,
+    SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol, StandardRequestEvent,
 };
 
 use super::xml;
@@ -144,6 +144,34 @@ impl GbMessageEvent {
             event.body,
             None,
         )
+    }
+
+    pub fn from_native(event: &SipRuntimeEvent) -> Option<Self> {
+        if event.kind != SipRuntimeEventKind::RequestReceived
+            || event.method.as_deref() != Some("MESSAGE")
+        {
+            return None;
+        }
+        let association = SipAssociation {
+            local_addr: event.local_addr?,
+            remote_addr: event.remote_addr?,
+            protocol: event.protocol?,
+        };
+        Some(Self::from_parts(
+            GbMessageKind::Unknown,
+            Some(SipMethod::Message),
+            None,
+            event.call_id.clone(),
+            event.cseq,
+            association,
+            event.content_type.clone(),
+            None,
+            None,
+            None,
+            None,
+            Bytes::copy_from_slice(&event.body),
+            None,
+        ))
     }
 }
 

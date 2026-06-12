@@ -24,6 +24,7 @@ pub mod command;
 pub mod dialog;
 pub mod invite;
 pub mod message;
+pub mod native_runtime;
 pub mod register;
 pub mod runtime_cache;
 pub mod sdp;
@@ -41,6 +42,7 @@ pub use invite::{
     InviteTalkRequest,
 };
 pub use message::{CreateDeviceMessageRequest, GbMessageEvent, GbMessageKind};
+pub use native_runtime::NativeSipRuntimeService;
 pub use register::GbRegisterEvent;
 
 /// Periodically clean PJSIP protocol caches and session-level SIP waiters.

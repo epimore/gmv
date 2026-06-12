@@ -535,7 +535,7 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
     }
 
     let oauth = super::auth::global()
-        .and_then(|cache| cache.get(&event.device_id))
+        .and_then(|cache| cache.get_by_device(&event.device_id))
         .ok_or_else(|| {
             GlobalError::new_sys_error(
                 &format!("registered device auth state missing: {}", event.device_id),

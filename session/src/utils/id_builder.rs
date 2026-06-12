@@ -55,7 +55,10 @@ pub async fn build_ssrc_stream_id(
     live: bool,
 ) -> GlobalResult<(String, String)> {
     let gmv_oauth = if let Some(cache) = auth::global() {
-        cache.get_or_load(device_id).await?
+        match cache.get_by_device(device_id) {
+            Some(oauth) => Some(oauth),
+            None => GmvOauth::read_gmv_oauth_by_device_id(device_id).await?,
+        }
     } else {
         GmvOauth::read_gmv_oauth_by_device_id(device_id).await?
     }
