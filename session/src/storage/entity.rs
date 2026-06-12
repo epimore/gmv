@@ -6,7 +6,7 @@ use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde::{Deserialize, Serialize};
-use base::sqlx;
+use base::{serde_default, sqlx};
 use sqlx::FromRow;
 
 //CREATE TABLE `GMV_RECORD` (
@@ -111,24 +111,15 @@ pub struct GmvOauth {
     pub alias: Option<String>,
     //0-停用,1-启用
     pub status: u8,
+    // 默认60
+    #[serde(default = "default_heartbeat_sec")]
     pub heartbeat_sec: u8,
 }
-
+serde_default!(default_heartbeat_sec, u8, 60);
 impl GmvOauth {
-    pub async fn read_all_gmv_oauth() -> GlobalResult<Vec<GmvOauth>> {
+    pub async fn read_gmv_oauth_by_device_id(device_id: &str) -> GlobalResult<Option<GmvOauth>> {
         let pool = get_conn_by_pool();
-        sqlx::query_as::<_, GmvOauth>(
-            "select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec \
-             from GMV_OAUTH",
-        )
-        .fetch_all(pool)
-        .await
-        .hand_log(|msg| error!("{msg}"))
-    }
-
-    pub async fn read_gmv_oauth_by_device_id(device_id: &String) -> GlobalResult<Option<GmvOauth>> {
-        let pool = get_conn_by_pool();
-        let res = sqlx::query_as::<_, GmvOauth>("select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=?")
+        let res = sqlx::query_as::<_, GmvOauth>("select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=? and DEL=0 and STATUS=1")
             .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }

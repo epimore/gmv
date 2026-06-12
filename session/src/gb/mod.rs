@@ -113,7 +113,7 @@ impl SessionConf {
         RWContext::init(output.clone());
         let handle = Handle::current();
         handle.spawn(SessionConf::heart_server());
-        handle.spawn(sip::auth::run_refresh_task(cancel_token.child_token()));
+        handle.spawn(sip::auth::run_cleanup_task(cancel_token.child_token()));
         handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));
         base::tokio::spawn(io::read(input, output.clone(), cancel_token.child_token()));
         let output_sender = output.clone();

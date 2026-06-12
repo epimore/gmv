@@ -17,7 +17,7 @@ use base::tokio_util::sync::CancellationToken;
 use encoding_rs::GB18030;
 
 pub use crate::gb::core::rw::RWContext;
-use crate::gb::sip::{GbSipRuntime, base_association_from_pjsip, pjsip_protocol_from_base};
+use crate::gb::sip::{GbSipRuntime, auth, base_association_from_pjsip, pjsip_protocol_from_base};
 use crate::gb::sip_tcp_splitter::complete_pkt;
 use base::err::BaseErrorCode;
 
@@ -287,6 +287,10 @@ async fn hand_pkt(data: Bytes, output: Sender<Zip>, association: Association) {
         error!("GbSipRuntime is not initialized; drop packet from {association:?}");
         return;
     };
+    if let Err(err) = auth::prepare_register(&data).await {
+        warn!("load SIP device auth failed: association={association:?}, err={err}");
+        return;
+    }
 
     let protocol = pjsip_protocol_from_base(association.protocol);
     match runtime.on_bytes(
