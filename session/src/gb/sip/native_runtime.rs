@@ -1,28 +1,40 @@
-use std::net::Ipv4Addr;
-use std::sync::{Arc, mpsc as std_mpsc};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, mpsc as std_mpsc};
 use std::thread;
 use std::time::Duration;
 
+use base::bytes::Bytes;
+use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, warn};
+use base::net::state::{Association, Protocol};
 use base::tokio::runtime::Handle;
 use base::tokio::sync::mpsc;
 use base::tokio::task::JoinHandle;
 use base::tokio::time;
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::{
-    AuthAlgorithm, AuthCredential, CredentialKind, SipAuthLookupResult, SipOutboundMessage,
-    SipRuntime, SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind,
+    AuthAlgorithm, AuthCredential, CredentialKind, SipAuthLookupResult, SipDialogRequest,
+    SipInviteResponse, SipOutboundInvite, SipOutboundMessage, SipOutboundSubscribe, SipRuntime,
+    SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind, SipRuntimeTransmits, SipTransmit,
+    SipTransportProtocol,
 };
 
 use super::adapter::{GbSipEvent, apply_business_event};
 use super::auth::{AUTH_DB_BATCH_LIMIT, DeviceAuthCache};
+use super::bye::GbByeEvent;
+use super::invite::GbIncomingInviteEvent;
 use super::message::GbMessageEvent;
 use super::register::GbRegisterEvent;
+use super::runtime_cache::SipRuntimeCache;
 
 const AUTH_BATCH_WINDOW: Duration = Duration::from_millis(5);
 const AUTH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PENDING_AUTH: u32 = 20_000;
+const RUNTIME_COMMAND_CAPACITY: usize = 32_768;
+pub const NATIVE_SIP_IO_CAPACITY: usize = 32_768;
+static NATIVE_SIP_RUNTIME: OnceLock<NativeSipRuntimeHandle> = OnceLock::new();
 
 struct AuthLookup {
     lookup_id: u64,
@@ -38,16 +50,214 @@ struct AuthCompletion {
 enum RuntimeCommand {
     CompleteAuth(AuthCompletion),
     SendMessage(SipOutboundMessage),
+    SendInvite(SipOutboundInvite),
+    SendDialog(SipDialogRequest),
+    RespondInvite(SipInviteResponse),
+    SendSubscribe(SipOutboundSubscribe),
+    Receive {
+        association_id: u64,
+        protocol: SipTransportProtocol,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        data: Bytes,
+    },
+    CompleteSend {
+        send_id: u64,
+        result: Result<usize, i32>,
+    },
+    CloseTransport {
+        association_id: u64,
+        status: i32,
+    },
+}
+
+#[derive(Clone)]
+pub struct NativeSipRuntimeHandle {
+    runtime_commands: std_mpsc::SyncSender<RuntimeCommand>,
+    association_ids: Arc<DashMap<Association, u64>>,
+    next_association_id: Arc<AtomicU64>,
+    next_operation_id: Arc<AtomicU64>,
+}
+
+impl NativeSipRuntimeHandle {
+    pub fn install_global(&self) -> GlobalResult<()> {
+        NATIVE_SIP_RUNTIME.set(self.clone()).map_err(|_| {
+            GlobalError::new_sys_error("native SIP runtime is already initialized", |msg| {
+                error!("{msg}")
+            })
+        })
+    }
+
+    pub fn global() -> GlobalResult<&'static Self> {
+        NATIVE_SIP_RUNTIME.get().ok_or_else(|| {
+            GlobalError::new_sys_error("native SIP runtime is not initialized", |msg| {
+                error!("{msg}")
+            })
+        })
+    }
+
+    pub fn next_operation_id(&self) -> u64 {
+        self.next_operation_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn receive_packet(&self, association: Association, data: Bytes) -> GlobalResult<()> {
+        let protocol = native_protocol(association.protocol)?;
+        let association_id = if protocol == SipTransportProtocol::Tcp {
+            *self
+                .association_ids
+                .entry(association.clone())
+                .or_insert_with(|| self.next_association_id.fetch_add(1, Ordering::Relaxed))
+        } else {
+            0
+        };
+        self.try_send(RuntimeCommand::Receive {
+            association_id,
+            protocol,
+            local_addr: association.local_addr,
+            remote_addr: association.remote_addr,
+            data,
+        })
+    }
+
+    pub fn complete_send(&self, send_id: u64, result: Result<usize, i32>) {
+        if let Err(err) = self.try_send(RuntimeCommand::CompleteSend { send_id, result }) {
+            warn!(
+                "queue native SIP send completion failed: send_id={}, err={err}",
+                send_id
+            );
+        }
+    }
+
+    pub fn send_message(
+        &self,
+        association: &Association,
+        mut message: SipOutboundMessage,
+    ) -> GlobalResult<()> {
+        let protocol = native_protocol(association.protocol)?;
+        message.protocol = protocol;
+        message.association_id = if protocol == SipTransportProtocol::Tcp {
+            self.association_ids
+                .get(association)
+                .map(|entry| *entry.value())
+                .ok_or_else(|| {
+                    GlobalError::new_sys_error(
+                        "TCP association is not registered in native SIP runtime",
+                        |msg| error!("{msg}: association={association:?}"),
+                    )
+                })?
+        } else {
+            0
+        };
+        self.try_send(RuntimeCommand::SendMessage(message))
+    }
+
+    pub fn send_invite(
+        &self,
+        association: &Association,
+        mut invite: SipOutboundInvite,
+    ) -> GlobalResult<()> {
+        let protocol = native_protocol(association.protocol)?;
+        invite.protocol = protocol;
+        invite.association_id = if protocol == SipTransportProtocol::Tcp {
+            self.association_ids
+                .get(association)
+                .map(|entry| *entry.value())
+                .ok_or_else(|| {
+                    GlobalError::new_sys_error(
+                        "TCP association is not registered in native SIP runtime",
+                        |msg| error!("{msg}: association={association:?}"),
+                    )
+                })?
+        } else {
+            0
+        };
+        self.try_send(RuntimeCommand::SendInvite(invite))
+    }
+
+    pub fn send_dialog_request(&self, request: SipDialogRequest) -> GlobalResult<()> {
+        self.try_send(RuntimeCommand::SendDialog(request))
+    }
+
+    pub fn respond_invite(&self, response: SipInviteResponse) -> GlobalResult<()> {
+        self.try_send(RuntimeCommand::RespondInvite(response))
+    }
+
+    pub fn send_subscribe(
+        &self,
+        association: &Association,
+        mut subscribe: SipOutboundSubscribe,
+    ) -> GlobalResult<()> {
+        let protocol = native_protocol(association.protocol)?;
+        subscribe.protocol = protocol;
+        subscribe.association_id = if protocol == SipTransportProtocol::Tcp {
+            self.association_ids
+                .get(association)
+                .map(|entry| *entry.value())
+                .ok_or_else(|| {
+                    GlobalError::new_sys_error(
+                        "TCP association is not registered in native SIP runtime",
+                        |msg| error!("{msg}: association={association:?}"),
+                    )
+                })?
+        } else {
+            0
+        };
+        self.try_send(RuntimeCommand::SendSubscribe(subscribe))
+    }
+
+    pub fn close_transport(&self, association: &Association, status: i32) {
+        if !matches!(association.protocol, Protocol::TCP) {
+            return;
+        }
+        let Some((_, association_id)) = self.association_ids.remove(association) else {
+            return;
+        };
+        self.queue_transport_close(association_id, status);
+    }
+
+    pub fn close_transport_id(&self, association_id: u64, status: i32) -> Option<Association> {
+        if association_id == 0 {
+            return None;
+        }
+        let association = self
+            .association_ids
+            .iter()
+            .find_map(|entry| (*entry.value() == association_id).then(|| entry.key().clone()));
+        if let Some(association) = &association {
+            self.association_ids.remove(association);
+        }
+        self.queue_transport_close(association_id, status);
+        association
+    }
+
+    fn queue_transport_close(&self, association_id: u64, status: i32) {
+        if let Err(err) = self.try_send(RuntimeCommand::CloseTransport {
+            association_id,
+            status,
+        }) {
+            warn!(
+                "queue native SIP transport close failed: association_id={association_id}, \
+                 err={err}"
+            );
+        }
+    }
+
+    fn try_send(&self, command: RuntimeCommand) -> GlobalResult<()> {
+        self.runtime_commands.try_send(command).map_err(|err| {
+            GlobalError::new_sys_error(
+                &format!("native SIP runtime command queue is unavailable: {err}"),
+                |msg| error!("{msg}"),
+            )
+        })
+    }
 }
 
 pub struct NativeSipRuntimeService {
     cancel: CancellationToken,
-    runtime_commands: std_mpsc::Sender<RuntimeCommand>,
+    handle: NativeSipRuntimeHandle,
     auth_task: JoinHandle<()>,
     event_task: JoinHandle<()>,
     runtime_thread: Option<thread::JoinHandle<()>>,
-    udp_port: Option<u16>,
-    tcp_port: Option<u16>,
 }
 
 impl NativeSipRuntimeService {
@@ -57,12 +267,24 @@ impl NativeSipRuntimeService {
         realm: String,
         auth_cache: Arc<DeviceAuthCache>,
         cancel: CancellationToken,
-    ) -> GlobalResult<(Self, mpsc::UnboundedReceiver<SipRuntimeEvent>)> {
+    ) -> GlobalResult<(
+        Self,
+        mpsc::UnboundedReceiver<SipRuntimeEvent>,
+        mpsc::Receiver<SipTransmit>,
+    )> {
         let (lookup_tx, lookup_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (business_tx, business_rx) = mpsc::unbounded_channel();
-        let (runtime_command_tx, runtime_command_rx) = std_mpsc::channel();
+        let (transmit_tx, transmit_rx) = mpsc::channel(NATIVE_SIP_IO_CAPACITY);
+        let (runtime_command_tx, runtime_command_rx) =
+            std_mpsc::sync_channel(RUNTIME_COMMAND_CAPACITY);
         let (startup_tx, startup_rx) = std_mpsc::sync_channel(1);
+        let handle = NativeSipRuntimeHandle {
+            runtime_commands: runtime_command_tx.clone(),
+            association_ids: Arc::new(DashMap::new()),
+            next_association_id: Arc::new(AtomicU64::new(1)),
+            next_operation_id: Arc::new(AtomicU64::new(1)),
+        };
 
         let service_cancel = cancel.child_token();
         let auth_cancel = service_cancel.child_token();
@@ -74,6 +296,7 @@ impl NativeSipRuntimeService {
         ));
         let event_task = Handle::current().spawn(run_native_business_events(
             business_rx,
+            handle.clone(),
             service_cancel.child_token(),
         ));
 
@@ -96,8 +319,14 @@ impl NativeSipRuntimeService {
                         return;
                     }
                 };
-                let ports = (runtime.udp_port(), runtime.tcp_port());
-                if startup_tx.send(Ok(ports)).is_err() {
+                let transmits = match runtime.take_transmits() {
+                    Ok(transmits) => transmits,
+                    Err(err) => {
+                        let _ = startup_tx.send(Err(err.to_string()));
+                        return;
+                    }
+                };
+                if startup_tx.send(Ok(())).is_err() {
                     return;
                 }
 
@@ -122,39 +351,143 @@ impl NativeSipRuntimeService {
                                          err={err}",
                                         message.operation_id
                                     );
+                                    SipRuntimeCache::global().complete_native_response(
+                                        message.operation_id,
+                                        503,
+                                        Default::default(),
+                                    );
+                                }
+                            }
+                            RuntimeCommand::SendInvite(invite) => {
+                                if let Err(err) = runtime.send_invite(&invite) {
+                                    warn!(
+                                        "send native SIP INVITE failed: operation_id={}, \
+                                         err={err}",
+                                        invite.operation_id
+                                    );
+                                    SipRuntimeCache::global()
+                                        .fail_native_invite(invite.operation_id, 503);
+                                }
+                            }
+                            RuntimeCommand::SendDialog(request) => {
+                                if let Err(err) = runtime.send_dialog_request(&request) {
+                                    warn!(
+                                        "send native SIP dialog request failed: \
+                                         operation_id={}, err={err}",
+                                        request.operation_id
+                                    );
+                                    SipRuntimeCache::global().complete_native_response(
+                                        request.operation_id,
+                                        503,
+                                        Default::default(),
+                                    );
+                                }
+                            }
+                            RuntimeCommand::RespondInvite(response) => {
+                                if let Err(err) = runtime.respond_invite(&response) {
+                                    warn!(
+                                        "respond to native SIP INVITE failed: call_id={}, \
+                                         status={}, err={err}",
+                                        response.call_id, response.status_code
+                                    );
+                                }
+                            }
+                            RuntimeCommand::SendSubscribe(subscribe) => {
+                                if let Err(err) = runtime.send_subscribe(&subscribe) {
+                                    warn!(
+                                        "send native SIP SUBSCRIBE failed: operation_id={}, \
+                                         err={err}",
+                                        subscribe.operation_id
+                                    );
+                                    if !SipRuntimeCache::global().complete_native_subscription(
+                                        subscribe.operation_id,
+                                        503,
+                                        Default::default(),
+                                    ) {
+                                        SipRuntimeCache::global().complete_native_response(
+                                            subscribe.operation_id,
+                                            503,
+                                            Default::default(),
+                                        );
+                                    }
+                                }
+                            }
+                            RuntimeCommand::Receive {
+                                association_id,
+                                protocol,
+                                local_addr,
+                                remote_addr,
+                                data,
+                            } => {
+                                if let Err(err) = runtime.receive_packet(
+                                    association_id,
+                                    protocol,
+                                    local_addr,
+                                    remote_addr,
+                                    &data,
+                                ) {
+                                    warn!(
+                                        "inject native SIP packet failed: association_id={}, \
+                                         protocol={protocol:?}, err={err}",
+                                        association_id
+                                    );
+                                }
+                            }
+                            RuntimeCommand::CompleteSend { send_id, result } => {
+                                if let Err(err) = runtime.complete_send(send_id, result) {
+                                    warn!(
+                                        "complete native SIP send failed: send_id={}, err={err}",
+                                        send_id
+                                    );
+                                }
+                            }
+                            RuntimeCommand::CloseTransport {
+                                association_id,
+                                status,
+                            } => {
+                                if let Err(err) = runtime.close_transport(
+                                    association_id,
+                                    SipTransportProtocol::Tcp,
+                                    status,
+                                ) {
+                                    warn!(
+                                        "close native SIP transport failed: association_id={}, \
+                                         err={err}",
+                                        association_id
+                                    );
                                 }
                             }
                         }
                     }
 
-                    match events.recv_timeout(Duration::from_millis(2)) {
-                        Ok(event) => {
-                            if event.kind == SipRuntimeEventKind::AuthLookupRequired {
-                                let lookup = event
-                                    .lookup_id
-                                    .zip(event.device_id.clone())
-                                    .zip(event.realm.clone())
-                                    .map(|((lookup_id, device_id), realm)| AuthLookup {
-                                        lookup_id,
-                                        device_id,
-                                        realm,
-                                    });
-                                if let Some(lookup) = lookup {
-                                    if lookup_tx.send(lookup).is_err() {
-                                        break;
-                                    }
-                                } else {
-                                    warn!("native SIP auth event missing lookup identity");
+                    if let Err(err) = runtime.poll() {
+                        warn!("poll native SIP runtime failed: {err}");
+                        break;
+                    }
+                    drain_transmits(&mut runtime, &transmits, &transmit_tx);
+
+                    while let Ok(event) = events.try_recv() {
+                        if event.kind == SipRuntimeEventKind::AuthLookupRequired {
+                            let lookup = event
+                                .lookup_id
+                                .zip(event.device_id.clone())
+                                .zip(event.realm.clone())
+                                .map(|((lookup_id, device_id), realm)| AuthLookup {
+                                    lookup_id,
+                                    device_id,
+                                    realm,
+                                });
+                            if let Some(lookup) = lookup {
+                                if lookup_tx.send(lookup).is_err() {
+                                    return;
                                 }
                             } else {
-                                let _ = business_tx.send(event.clone());
-                                if event_tx.send(event).is_err() {
-                                    break;
-                                }
+                                warn!("native SIP auth event missing lookup identity");
                             }
+                        } else {
+                            let _ = business_tx.send(event.clone());
+                            let _ = event_tx.send(event);
                         }
-                        Err(std_mpsc::RecvTimeoutError::Timeout) => {}
-                        Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
 
@@ -169,7 +502,7 @@ impl NativeSipRuntimeService {
                 )
             })?;
 
-        let (udp_port, tcp_port) = startup_rx
+        startup_rx
             .recv_timeout(Duration::from_secs(10))
             .map_err(|err| {
                 GlobalError::new_sys_error(
@@ -187,59 +520,84 @@ impl NativeSipRuntimeService {
         Ok((
             Self {
                 cancel: service_cancel,
-                runtime_commands: runtime_command_tx,
+                handle,
                 auth_task,
                 event_task,
                 runtime_thread: Some(runtime_thread),
-                udp_port,
-                tcp_port,
             },
             event_rx,
+            transmit_rx,
         ))
     }
 
-    pub fn udp_port(&self) -> Option<u16> {
-        self.udp_port
-    }
-
-    pub fn tcp_port(&self) -> Option<u16> {
-        self.tcp_port
-    }
-
     pub fn send_message(&self, message: SipOutboundMessage) -> GlobalResult<()> {
-        self.runtime_commands
-            .send(RuntimeCommand::SendMessage(message))
-            .map_err(|err| {
-                GlobalError::new_sys_error(
-                    &format!("queue native SIP MESSAGE failed: {err}"),
-                    |msg| error!("{msg}"),
-                )
-            })
+        self.handle.try_send(RuntimeCommand::SendMessage(message))
+    }
+
+    pub fn handle(&self) -> NativeSipRuntimeHandle {
+        self.handle.clone()
     }
 
     pub fn shutdown(mut self) {
+        self.stop();
+    }
+
+    fn stop(&mut self) {
         self.cancel.cancel();
-        self.auth_task.abort();
-        self.event_task.abort();
         if let Some(thread) = self.runtime_thread.take() {
             let _ = thread.join();
         }
+        let failed = SipRuntimeCache::global().fail_all_native(503);
+        if failed > 0 {
+            warn!("failed {failed} native SIP waiter(s) during runtime shutdown");
+        }
+        self.auth_task.abort();
+        self.event_task.abort();
     }
 }
 
 impl Drop for NativeSipRuntimeService {
     fn drop(&mut self) {
-        self.cancel.cancel();
-        self.auth_task.abort();
-        self.event_task.abort();
-        if let Some(thread) = self.runtime_thread.take() {
-            let _ = thread.join();
+        self.stop();
+    }
+}
+
+fn drain_transmits(
+    runtime: &mut SipRuntime,
+    transmits: &SipRuntimeTransmits,
+    transmit_tx: &mpsc::Sender<SipTransmit>,
+) {
+    while let Ok(transmit) = transmits.try_recv() {
+        if let Err(err) = transmit_tx.try_send(transmit) {
+            let transmit = err.into_inner();
+            warn!(
+                "native SIP transmit queue is unavailable: send_id={}",
+                transmit.send_id
+            );
+            if let Err(err) = runtime.complete_send(transmit.send_id, Err(1)) {
+                warn!(
+                    "fail native SIP send after queue rejection failed: send_id={}, err={err}",
+                    transmit.send_id
+                );
+            }
         }
+    }
+}
+
+fn native_protocol(protocol: Protocol) -> GlobalResult<SipTransportProtocol> {
+    match protocol {
+        Protocol::UDP => Ok(SipTransportProtocol::Udp),
+        Protocol::TCP => Ok(SipTransportProtocol::Tcp),
+        Protocol::ALL => Err(GlobalError::new_sys_error(
+            "protocol ALL cannot be injected into native SIP runtime",
+            |msg| error!("{msg}"),
+        )),
     }
 }
 
 async fn run_native_business_events(
     mut events: mpsc::UnboundedReceiver<SipRuntimeEvent>,
+    runtime: NativeSipRuntimeHandle,
     cancel: CancellationToken,
 ) {
     loop {
@@ -250,10 +608,77 @@ async fn run_native_business_events(
         let Some(event) = event else {
             break;
         };
+        if let Some(operation_id) = event.operation_id {
+            match event.kind {
+                SipRuntimeEventKind::OutboundResponse => {
+                    if let Some(status) = event.status_code {
+                        if event.method.as_deref() == Some("INVITE") {
+                            SipRuntimeCache::global().complete_native_invite(
+                                operation_id,
+                                event.call_id.clone().unwrap_or_default(),
+                                status,
+                                String::from_utf8_lossy(&event.body).into_owned(),
+                            );
+                        } else {
+                            let metadata = response_metadata(&event);
+                            if event.method.as_deref() == Some("SUBSCRIBE") {
+                                if !SipRuntimeCache::global().complete_native_subscription(
+                                    operation_id,
+                                    status,
+                                    metadata.clone(),
+                                ) {
+                                    SipRuntimeCache::global().complete_native_response(
+                                        operation_id,
+                                        status,
+                                        metadata,
+                                    );
+                                }
+                            } else {
+                                SipRuntimeCache::global().complete_native_response(
+                                    operation_id,
+                                    status,
+                                    metadata,
+                                );
+                            }
+                        }
+                    }
+                }
+                SipRuntimeEventKind::RuntimeFault => {
+                    if !SipRuntimeCache::global().fail_native_invite(operation_id, 503) {
+                        if !SipRuntimeCache::global().complete_native_subscription(
+                            operation_id,
+                            503,
+                            Default::default(),
+                        ) {
+                            SipRuntimeCache::global().complete_native_response(
+                                operation_id,
+                                503,
+                                Default::default(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let business_event = GbRegisterEvent::from_native(&event)
             .map(GbSipEvent::Register)
-            .or_else(|| GbMessageEvent::from_native(&event).map(GbSipEvent::Message));
+            .or_else(|| GbMessageEvent::from_native(&event).map(GbSipEvent::Message))
+            .or_else(|| GbIncomingInviteEvent::from_native(&event).map(GbSipEvent::IncomingInvite))
+            .or_else(|| native_dialog_event(&event));
         if let Some(business_event) = business_event {
+            if let GbSipEvent::IncomingInvite(invite) = &business_event {
+                if let Err(err) = runtime.respond_invite(SipInviteResponse {
+                    call_id: invite.call_id.clone(),
+                    status_code: 501,
+                    reason: Some("Inbound session is not supported".into()),
+                }) {
+                    warn!(
+                        "queue unsupported incoming INVITE response failed: call_id={}, err={err}",
+                        invite.call_id
+                    );
+                }
+            }
             if let Err(err) = apply_business_event(&business_event) {
                 warn!("apply native SIP business event failed: {err}");
             }
@@ -261,9 +686,49 @@ async fn run_native_business_events(
     }
 }
 
+fn native_dialog_event(event: &SipRuntimeEvent) -> Option<GbSipEvent> {
+    if event.kind != SipRuntimeEventKind::RequestReceived {
+        return None;
+    }
+    match event.method.as_deref()? {
+        "BYE" => Some(GbSipEvent::Bye(GbByeEvent {
+            call_id: event.call_id.clone()?,
+            stream_id: event
+                .call_id
+                .as_deref()
+                .and_then(|call_id| SipRuntimeCache::global().stream_id_by_call_id(call_id)),
+            device_id: None,
+        })),
+        "CANCEL" => Some(GbSipEvent::Cancel {
+            call_id: event.call_id.clone()?,
+        }),
+        "ACK" => Some(GbSipEvent::Ack {
+            call_id: event.call_id.clone()?,
+        }),
+        _ => None,
+    }
+}
+
+fn response_metadata(event: &SipRuntimeEvent) -> super::runtime_cache::SipResponseMetadata {
+    super::runtime_cache::SipResponseMetadata {
+        call_id: event.call_id.clone(),
+        cseq: event.cseq,
+        event: event.event.clone(),
+        contact: event.contact.clone(),
+        record_routes: Vec::new(),
+        from_header: event.from_header.clone(),
+        to_header: event.to_header.clone(),
+        to_tag: event
+            .to_header
+            .as_deref()
+            .and_then(gmv_pjsip::message::extract_tag),
+        expires: event.expires_seconds,
+    }
+}
+
 async fn run_auth_batches(
     mut lookups: mpsc::UnboundedReceiver<AuthLookup>,
-    runtime_commands: std_mpsc::Sender<RuntimeCommand>,
+    runtime_commands: std_mpsc::SyncSender<RuntimeCommand>,
     auth_cache: Arc<DeviceAuthCache>,
     cancel: CancellationToken,
 ) {
@@ -295,7 +760,7 @@ async fn run_auth_batches(
                 for (lookup, oauth) in batch.into_iter().zip(oauths) {
                     let result = auth_result(lookup.device_id, lookup.realm, oauth);
                     if runtime_commands
-                        .send(RuntimeCommand::CompleteAuth(AuthCompletion {
+                        .try_send(RuntimeCommand::CompleteAuth(AuthCompletion {
                             lookup_id: lookup.lookup_id,
                             result,
                         }))
@@ -309,7 +774,7 @@ async fn run_auth_batches(
                 error!("batch native SIP auth lookup failed: {err}");
                 for lookup in batch {
                     if runtime_commands
-                        .send(RuntimeCommand::CompleteAuth(AuthCompletion {
+                        .try_send(RuntimeCommand::CompleteAuth(AuthCompletion {
                             lookup_id: lookup.lookup_id,
                             result: SipAuthLookupResult::Reject,
                         }))
@@ -351,11 +816,12 @@ fn auth_result(
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, UdpSocket};
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::{Arc, Mutex};
-    use std::thread;
     use std::time::Duration;
 
+    use base::bytes::Bytes;
+    use base::net::state::{Association, Protocol};
     use base::tokio::runtime::Runtime;
     use base::tokio::time;
     use base::tokio_util::sync::CancellationToken;
@@ -366,6 +832,16 @@ mod tests {
     use crate::storage::entity::GmvOauth;
 
     static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn header_value<'a>(message: &'a str, name: &str) -> &'a str {
+        message
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.eq_ignore_ascii_case(name).then_some(value.trim())
+            })
+            .unwrap_or_else(|| panic!("missing {name}"))
+    }
 
     fn oauth(pwd_check: u8, pwd: Option<&str>) -> GmvOauth {
         GmvOauth {
@@ -406,23 +882,20 @@ mod tests {
         let runtime = Runtime::new().expect("create Tokio runtime");
         runtime.block_on(async {
             let cancel = CancellationToken::new();
-            let (service, _events) = NativeSipRuntimeService::start(
+            let (service, _events, mut transmits) = NativeSipRuntimeService::start(
                 Ipv4Addr::LOCALHOST,
-                0,
+                5060,
                 "3402000000".into(),
                 Arc::new(DeviceAuthCache::default()),
                 cancel.clone(),
             )
             .expect("start native SIP service");
-            let port = service.udp_port().expect("native UDP port");
-            let socket = UdpSocket::bind("127.0.0.1:0").expect("bind OPTIONS client");
-            socket
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .expect("set OPTIONS timeout");
-            let local = socket.local_addr().expect("OPTIONS local address");
+            let handle = service.handle();
+            let local: SocketAddr = "127.0.0.1:5060".parse().unwrap();
+            let remote: SocketAddr = "127.0.0.1:40000".parse().unwrap();
             let request = format!(
-                "OPTIONS sip:127.0.0.1:{port} SIP/2.0\r\n\
-Via: SIP/2.0/UDP {local};branch=z9hG4bK-session-native;rport\r\n\
+                "OPTIONS sip:{local} SIP/2.0\r\n\
+Via: SIP/2.0/UDP {remote};branch=z9hG4bK-session-native;rport\r\n\
 From: <sip:test@127.0.0.1>;tag=session-native\r\n\
 To: <sip:gmv@127.0.0.1>\r\n\
 Call-ID: session-native-loopback\r\n\
@@ -430,14 +903,66 @@ CSeq: 1 OPTIONS\r\n\
 Max-Forwards: 70\r\n\
 Content-Length: 0\r\n\r\n"
             );
-            socket
-                .send_to(request.as_bytes(), ("127.0.0.1", port))
-                .expect("send OPTIONS");
-            let mut response = [0u8; 2048];
-            let (len, _) = socket
-                .recv_from(&mut response)
+            handle
+                .receive_packet(
+                    Association::new(local, remote, Protocol::UDP),
+                    Bytes::from(request),
+                )
+                .expect("inject OPTIONS");
+            let transmit = time::timeout(Duration::from_secs(2), transmits.recv())
+                .await
+                .expect("wait OPTIONS response")
                 .expect("receive OPTIONS response");
-            assert!(String::from_utf8_lossy(&response[..len]).starts_with("SIP/2.0 200"));
+            assert!(String::from_utf8_lossy(&transmit.data).starts_with("SIP/2.0 200"));
+            handle.complete_send(transmit.send_id, Ok(transmit.data.len()));
+
+            let sdp = "v=0\r\n\
+o=device 0 0 IN IP4 127.0.0.1\r\n\
+s=Play\r\n\
+c=IN IP4 127.0.0.1\r\n\
+t=0 0\r\n\
+m=video 40000 RTP/AVP 96\r\n\
+a=sendonly\r\n\
+a=rtpmap:96 PS/90000\r\n\
+y=0100000001\r\n";
+            let invite = format!(
+                "INVITE sip:platform@{local} SIP/2.0\r\n\
+Via: SIP/2.0/UDP {remote};branch=z9hG4bK-session-invite;rport\r\n\
+From: <sip:device@{remote}>;tag=session-device\r\n\
+To: <sip:platform@{local}>\r\n\
+Call-ID: session-unsupported-invite\r\n\
+CSeq: 1 INVITE\r\n\
+Contact: <sip:device@{remote}>\r\n\
+Subject: channel:1,platform:0\r\n\
+Max-Forwards: 70\r\n\
+Content-Type: application/sdp\r\n\
+Content-Length: {}\r\n\r\n{}",
+                sdp.len(),
+                sdp
+            );
+            handle
+                .receive_packet(
+                    Association::new(local, remote, Protocol::UDP),
+                    Bytes::from(invite),
+                )
+                .expect("inject unsupported INVITE");
+            let trying = time::timeout(Duration::from_secs(2), transmits.recv())
+                .await
+                .expect("wait INVITE provisional response")
+                .expect("receive INVITE provisional response");
+            assert!(String::from_utf8_lossy(&trying.data).starts_with("SIP/2.0 100"));
+            handle.complete_send(trying.send_id, Ok(trying.data.len()));
+            let rejected = time::timeout(Duration::from_secs(2), transmits.recv())
+                .await
+                .expect("wait INVITE final response")
+                .expect("receive INVITE final response");
+            assert!(
+                String::from_utf8_lossy(&rejected.data)
+                    .starts_with("SIP/2.0 501 Inbound session is not supported")
+            );
+            handle.complete_send(rejected.send_id, Ok(rejected.data.len()));
+
+            time::sleep(Duration::from_millis(20)).await;
             service.shutdown();
             assert!(!cancel.is_cancelled());
         });
@@ -448,63 +973,54 @@ Content-Length: 0\r\n\r\n"
         let _guard = RUNTIME_TEST_LOCK.lock().expect("lock native runtime tests");
         let runtime = Runtime::new().expect("create Tokio runtime");
         runtime.block_on(async {
-            let peer = UdpSocket::bind("127.0.0.1:0").expect("bind outbound peer");
-            peer.set_read_timeout(Some(Duration::from_secs(2)))
-                .expect("set outbound peer timeout");
-            let peer_port = peer.local_addr().expect("outbound peer address").port();
-            let responder = thread::spawn(move || {
-                let mut packet = [0u8; 4096];
-                let (len, source) = peer.recv_from(&mut packet).expect("receive MESSAGE");
-                let request = String::from_utf8_lossy(&packet[..len]);
-                let header = |name: &str| {
-                    request
-                        .lines()
-                        .find_map(|line| {
-                            line.split_once(':')
-                                .filter(|(key, _)| key.eq_ignore_ascii_case(name))
-                                .map(|(_, value)| value.trim().to_owned())
-                        })
-                        .unwrap_or_else(|| panic!("missing {name}"))
-                };
-                let response = format!(
-                    "SIP/2.0 200 OK\r\n\
+            let (service, mut events, mut transmits) = NativeSipRuntimeService::start(
+                Ipv4Addr::LOCALHOST,
+                5060,
+                "3402000000".into(),
+                Arc::new(DeviceAuthCache::default()),
+                CancellationToken::new(),
+            )
+            .expect("start native SIP service");
+            let handle = service.handle();
+            let peer: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+            let operation_id = 77;
+            service
+                .send_message(SipOutboundMessage {
+                    operation_id,
+                    association_id: 0,
+                    protocol: gmv_pjsip::SipTransportProtocol::Udp,
+                    target_uri: format!("sip:device@{peer}"),
+                    from_uri: "<sip:platform@127.0.0.1:5060>".into(),
+                    content_type: "Application/MANSCDP+xml".into(),
+                    body: b"<Query><CmdType>Catalog</CmdType></Query>".to_vec(),
+                })
+                .expect("queue native MESSAGE");
+            let transmit = time::timeout(Duration::from_secs(2), transmits.recv())
+                .await
+                .expect("wait outbound MESSAGE")
+                .expect("receive outbound MESSAGE");
+            let request = String::from_utf8_lossy(&transmit.data).into_owned();
+            handle.complete_send(transmit.send_id, Ok(transmit.data.len()));
+            let response = format!(
+                "SIP/2.0 200 OK\r\n\
 Via: {}\r\n\
 From: {}\r\n\
 To: {};tag=session-outbound\r\n\
 Call-ID: {}\r\n\
 CSeq: {}\r\n\
 Content-Length: 0\r\n\r\n",
-                    header("Via"),
-                    header("From"),
-                    header("To"),
-                    header("Call-ID"),
-                    header("CSeq")
-                );
-                peer.send_to(response.as_bytes(), source)
-                    .expect("send MESSAGE response");
-            });
-
-            let (service, mut events) = NativeSipRuntimeService::start(
-                Ipv4Addr::LOCALHOST,
-                0,
-                "3402000000".into(),
-                Arc::new(DeviceAuthCache::default()),
-                CancellationToken::new(),
-            )
-            .expect("start native SIP service");
-            let operation_id = 77;
-            service
-                .send_message(SipOutboundMessage {
-                    operation_id,
-                    target_uri: format!("sip:device@127.0.0.1:{peer_port}"),
-                    from_uri: format!(
-                        "<sip:platform@127.0.0.1:{}>",
-                        service.udp_port().expect("native UDP port")
-                    ),
-                    content_type: "Application/MANSCDP+xml".into(),
-                    body: b"<Query><CmdType>Catalog</CmdType></Query>".to_vec(),
-                })
-                .expect("queue native MESSAGE");
+                header_value(&request, "Via"),
+                header_value(&request, "From"),
+                header_value(&request, "To"),
+                header_value(&request, "Call-ID"),
+                header_value(&request, "CSeq")
+            );
+            handle
+                .receive_packet(
+                    Association::new(transmit.local_addr, peer, Protocol::UDP),
+                    Bytes::from(response),
+                )
+                .expect("inject outbound response");
             let event = time::timeout(Duration::from_secs(2), events.recv())
                 .await
                 .expect("wait outbound response event")
@@ -513,7 +1029,7 @@ Content-Length: 0\r\n\r\n",
             assert_eq!(event.operation_id, Some(operation_id));
             assert_eq!(event.status_code, Some(200));
 
-            responder.join().expect("join outbound peer");
+            time::sleep(Duration::from_millis(20)).await;
             service.shutdown();
         });
     }

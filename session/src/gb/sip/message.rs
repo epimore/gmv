@@ -1,7 +1,7 @@
 use base::bytes::Bytes;
+use gmv_pjsip::message::extract_tag;
 use gmv_pjsip::{
-    CreateMessage, MessageEvent, MessageKind, SipAssociation, SipContext, SipMethod,
-    SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol, StandardRequestEvent,
+    SipAssociation, SipMethod, SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol,
 };
 
 use super::xml;
@@ -26,24 +26,6 @@ pub enum GbMessageKind {
     Prack,
     Standard,
     Unknown,
-}
-
-impl From<MessageKind> for GbMessageKind {
-    fn from(kind: MessageKind) -> Self {
-        match kind {
-            MessageKind::Keepalive => Self::Keepalive,
-            MessageKind::Catalog => Self::Catalog,
-            MessageKind::DeviceInfo => Self::DeviceInfo,
-            MessageKind::RecordInfo => Self::RecordInfo,
-            MessageKind::Alarm => Self::Alarm,
-            MessageKind::MediaStatus => Self::MediaStatus,
-            MessageKind::DeviceControl => Self::DeviceControl,
-            MessageKind::DeviceConfig => Self::DeviceConfig,
-            MessageKind::PresetQuery => Self::PresetQuery,
-            MessageKind::UploadSnapshotFinished => Self::UploadSnapshotFinished,
-            MessageKind::Unknown => Self::Unknown,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -121,77 +103,39 @@ impl GbMessageEvent {
         }
     }
 
-    pub fn from_standard_request(event: StandardRequestEvent) -> Self {
-        let kind = match event.method {
+    pub fn from_native(event: &SipRuntimeEvent) -> Option<Self> {
+        if event.kind != SipRuntimeEventKind::RequestReceived {
+            return None;
+        }
+        let method = SipMethod::parse(event.method.as_deref()?);
+        let kind = match method {
+            SipMethod::Message => GbMessageKind::Unknown,
             SipMethod::Notify => GbMessageKind::Notify,
             SipMethod::Options => GbMessageKind::Options,
             SipMethod::Update => GbMessageKind::Update,
             SipMethod::Prack => GbMessageKind::Prack,
-            _ => GbMessageKind::Standard,
+            _ => return None,
         };
-        Self::from_parts(
-            kind,
-            Some(event.method),
-            None,
-            event.call_id,
-            event.cseq,
-            event.association,
-            event.content_type,
-            event.event,
-            event.from_tag,
-            event.to_tag,
-            event.subscription_state,
-            event.body,
-            None,
-        )
-    }
-
-    pub fn from_native(event: &SipRuntimeEvent) -> Option<Self> {
-        if event.kind != SipRuntimeEventKind::RequestReceived
-            || event.method.as_deref() != Some("MESSAGE")
-        {
-            return None;
-        }
         let association = SipAssociation {
             local_addr: event.local_addr?,
             remote_addr: event.remote_addr?,
             protocol: event.protocol?,
         };
         Some(Self::from_parts(
-            GbMessageKind::Unknown,
-            Some(SipMethod::Message),
+            kind,
+            Some(method),
             None,
             event.call_id.clone(),
             event.cseq,
             association,
             event.content_type.clone(),
-            None,
-            None,
-            None,
-            None,
+            event.event.clone(),
+            event.from_header.as_deref().and_then(extract_tag),
+            event.to_header.as_deref().and_then(extract_tag),
+            event.subscription_state.clone(),
             Bytes::copy_from_slice(&event.body),
             None,
         ))
-    }
-}
-
-impl From<MessageEvent> for GbMessageEvent {
-    fn from(event: MessageEvent) -> Self {
-        Self::from_parts(
-            GbMessageKind::from(event.kind),
-            Some(SipMethod::Message),
-            event.device_id,
-            event.call_id,
-            event.cseq,
-            event.association,
-            event.content_type,
-            None,
-            None,
-            None,
-            None,
-            event.body,
-            event.snapshot_session_id,
-        )
     }
 }
 
@@ -300,20 +244,6 @@ impl CreateDeviceMessageRequest {
             cseq: None,
         }
     }
-}
-
-pub fn create_device_message(
-    ctx: &SipContext,
-    req: CreateDeviceMessageRequest,
-) -> gmv_pjsip::Result<Bytes> {
-    ctx.create_message(CreateMessage {
-        target_uri: req.target_uri(),
-        body: req.body,
-        content_type: req.content_type,
-        protocol: req.protocol,
-        call_id: req.call_id,
-        cseq: req.cseq,
-    })
 }
 
 pub fn target_uri(

@@ -1,25 +1,20 @@
-use std::collections::VecDeque;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::Arc;
 
 use base::bytes::{Bytes, BytesMut};
-use base::dashmap::{DashMap, DashSet};
+use base::dashmap::DashSet;
+use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{debug, error, warn};
+use base::log::{debug, error};
 use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, RawPacketEncoder};
-use base::net::state::{
-    Association, CHANNEL_BUFFER_SIZE, Event, IoEventType, Package, Protocol, Zip,
-};
+use base::net::state::{Association, Event, IoEventType, Package, Protocol, Zip};
 use base::tokio;
-use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use base::tokio_util::sync::CancellationToken;
-use encoding_rs::GB18030;
+use gmv_pjsip::SipTransmit;
 
 pub use crate::gb::core::rw::RWContext;
-use crate::gb::sip::{GbSipRuntime, auth, base_association_from_pjsip, pjsip_protocol_from_base};
-use crate::gb::sip_tcp_splitter::complete_pkt;
-use base::err::BaseErrorCode;
+use crate::gb::sip::NativeSipRuntimeHandle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TcpCloseSource {
@@ -39,7 +34,7 @@ impl TcpCloseSource {
 }
 
 #[derive(Default)]
-struct TcpCloseTracker {
+pub(crate) struct TcpCloseTracker {
     session_closes: DashSet<Association>,
 }
 
@@ -57,15 +52,22 @@ impl TcpCloseTracker {
     }
 }
 
-pub fn rw_by_tokio(
+pub(crate) struct NativeSessionIo {
+    pub output: Sender<Zip>,
+    pub input: Receiver<Zip>,
+    pub writer: PacketWriter<RawPacketEncoder>,
+    pub close_tracker: Arc<TcpCloseTracker>,
+}
+
+pub(crate) fn rw_by_tokio_native(
     tu: (Option<TcpListener>, Option<UdpSocket>),
     cancel_token: CancellationToken,
-) -> GlobalResult<(Sender<Zip>, Receiver<Zip>)> {
+) -> GlobalResult<NativeSessionIo> {
     let local_addr = listener_local_addr(&tu)?;
-    let (input_tx, input_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
-    let (output_tx, output_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+    let (input_tx, input_rx) = tokio::sync::mpsc::channel(32_768);
+    let (output_tx, output_rx) = tokio::sync::mpsc::channel(32_768);
     let close_tracker = Arc::new(TcpCloseTracker::default());
-    let writer = base::net::rw::rw::<SipPacketDispatcher, SipPacketSplitter, RawPacketEncoder>(
+    let writer = base::net::rw::rw::<SipPacketDispatcher, RawChunkSplitter, RawPacketEncoder>(
         tu,
         cancel_token.clone(),
         Arc::new(SipPacketDispatcher {
@@ -76,8 +78,18 @@ pub fn rw_by_tokio(
         }),
         Arc::new(RawPacketEncoder),
     )?;
-    tokio::spawn(write_net(output_rx, writer, close_tracker, cancel_token));
-    Ok((output_tx, input_rx))
+    tokio::spawn(write_net(
+        output_rx,
+        writer.clone(),
+        close_tracker.clone(),
+        cancel_token,
+    ));
+    Ok(NativeSessionIo {
+        output: output_tx,
+        input: input_rx,
+        writer,
+        close_tracker,
+    })
 }
 
 fn listener_local_addr(tu: &(Option<TcpListener>, Option<UdpSocket>)) -> GlobalResult<SocketAddr> {
@@ -113,9 +125,8 @@ impl PacketDispatcher for SipPacketDispatcher {
         protocol: Protocol,
     ) -> GlobalResult<()> {
         let association = Association::new(self.local_addr, remote_addr, protocol);
-        let zip = Zip::build_data(Package::new(association, data));
         self.input_tx
-            .try_send(zip)
+            .try_send(Zip::build_data(Package::new(association, data)))
             .hand_log(|msg| error!("session socket input channel is full: {msg}"))?;
         Ok(())
     }
@@ -132,23 +143,20 @@ impl PacketDispatcher for SipPacketDispatcher {
                 source.as_str()
             );
         }
-        let event = Event {
-            association,
-            type_code: IoEventType::Close,
-        };
         self.input_tx
-            .try_send(Zip::build_event(event))
+            .try_send(Zip::build_event(Event {
+                association,
+                type_code: IoEventType::Close,
+            }))
             .hand_log(|msg| error!("session socket event channel is full: {msg}"))?;
         Ok(())
     }
 }
 
 #[derive(Default)]
-struct SipPacketSplitter {
-    packets: VecDeque<Bytes>,
-}
+struct RawChunkSplitter;
 
-impl PacketSplitter for SipPacketSplitter {
+impl PacketSplitter for RawChunkSplitter {
     fn feed_owned<F>(&mut self, chunk: &mut BytesMut, mut f: F) -> GlobalResult<()>
     where
         F: FnMut(Bytes) -> GlobalResult<()>,
@@ -156,19 +164,7 @@ impl PacketSplitter for SipPacketSplitter {
         if chunk.is_empty() {
             return Ok(());
         }
-        if is_sip_keepalive_or_empty(chunk.as_ref()) {
-            let packet = chunk.split_to(chunk.len()).freeze();
-            f(packet)?;
-            return Ok(());
-        }
-
-        self.packets.clear();
-        complete_pkt(chunk, &mut self.packets);
-        while let Some(packet) = self.packets.pop_front() {
-            f(packet)?;
-        }
-
-        Ok(())
+        f(chunk.split_to(chunk.len()).freeze())
     }
 }
 
@@ -185,10 +181,23 @@ async fn write_net(
                 match zip {
                     Zip::Data(package) => {
                         let association = package.association;
-                        if let Err(err) = writer.write_to(package.data, association.remote_addr, association.protocol).await {
-                            error!("session socket write failed: association={association:?}, err={err}");
+                        if let Err(err) = writer
+                            .write_to(
+                                package.data,
+                                association.remote_addr,
+                                association.protocol,
+                            )
+                            .await
+                        {
+                            error!(
+                                "session socket write failed: association={association:?}, \
+                                 err={err}"
+                            );
                             if matches!(association.protocol, Protocol::TCP) {
-                                debug!("tcp disconnected: source=write_failure, association={association:?}, err={err}");
+                                debug!(
+                                    "tcp disconnected: source=write_failure, \
+                                     association={association:?}, err={err}"
+                                );
                                 writer.remove_tcp_writer(&association.remote_addr);
                                 handle_tcp_connection_closed(&association);
                             }
@@ -196,14 +205,24 @@ async fn write_net(
                     }
                     Zip::Event(event) => {
                         if matches!(event.type_code, IoEventType::Close) {
-                            if matches!(event.association.protocol, Protocol::ALL) { break; }
+                            if matches!(event.association.protocol, Protocol::ALL) {
+                                break;
+                            }
                             if matches!(event.association.protocol, Protocol::TCP) {
-                                debug!("tcp disconnect requested: source=session_active, association={:?}", event.association);
+                                debug!(
+                                    "tcp disconnect requested: source=session_active, \
+                                     association={:?}",
+                                    event.association
+                                );
                                 if writer.has_tcp_writer(&event.association.remote_addr) {
                                     close_tracker.mark_session_close(event.association.clone());
                                     writer.remove_tcp_writer(&event.association.remote_addr);
                                 } else {
-                                    debug!("tcp disconnected: source=session_active, association={:?}, writer=absent", event.association);
+                                    debug!(
+                                        "tcp disconnected: source=session_active, \
+                                         association={:?}, writer=absent",
+                                        event.association
+                                    );
                                     handle_tcp_connection_closed(&event.association);
                                 }
                             }
@@ -219,32 +238,81 @@ async fn write_net(
     }
 }
 
-fn handle_tcp_connection_closed(association: &Association) {
-    RWContext::clean_rw_session_by_bill(association);
-}
-
-/// 将日志内容压缩为单行，保留可还原换行信息。
-pub fn compact_for_log(raw: &str) -> String {
-    let mut result = String::with_capacity(raw.len() * 2);
-    for c in raw.chars() {
-        match c {
-            '\r' => (),
-            '\n' => result.push_str("\\n"),
-            _ => result.push(c),
+pub(crate) async fn write_native_net(
+    mut transmits: Receiver<SipTransmit>,
+    writer: PacketWriter<RawPacketEncoder>,
+    runtime: NativeSipRuntimeHandle,
+    close_tracker: Arc<TcpCloseTracker>,
+    cancel_token: CancellationToken,
+) {
+    loop {
+        let transmit = tokio::select! {
+            transmit = transmits.recv() => transmit,
+            _ = cancel_token.cancelled() => break,
+        };
+        let Some(transmit) = transmit else {
+            break;
+        };
+        let protocol = match transmit.protocol {
+            gmv_pjsip::SipTransportProtocol::Udp => Protocol::UDP,
+            gmv_pjsip::SipTransportProtocol::Tcp => Protocol::TCP,
+            gmv_pjsip::SipTransportProtocol::Tls => {
+                runtime.complete_send(transmit.send_id, Err(1));
+                continue;
+            }
+        };
+        let association = Association::new(transmit.local_addr, transmit.remote_addr, protocol);
+        let send_id = transmit.send_id;
+        let association_id = transmit.association_id;
+        let sent_bytes = transmit.data.len();
+        match writer
+            .write_to(
+                Bytes::from(transmit.data),
+                association.remote_addr,
+                association.protocol,
+            )
+            .await
+        {
+            Ok(()) => runtime.complete_send(send_id, Ok(sent_bytes)),
+            Err(err) => {
+                error!(
+                    "native SIP socket write failed: send_id={}, association={association:?}, \
+                     err={err}",
+                    send_id
+                );
+                runtime.complete_send(send_id, Err(1));
+                if matches!(association.protocol, Protocol::TCP) {
+                    let tracked_association = runtime
+                        .close_transport_id(association_id, 1)
+                        .unwrap_or_else(|| association.clone());
+                    if writer.has_tcp_writer(&association.remote_addr) {
+                        close_tracker.mark_session_close(tracked_association.clone());
+                        writer.remove_tcp_writer(&association.remote_addr);
+                    }
+                    handle_tcp_connection_closed(&tracked_association);
+                }
+            }
         }
     }
-    result
+}
+
+fn handle_tcp_connection_closed(association: &Association) {
+    RWContext::clean_rw_session_by_bill(association);
 }
 
 fn is_sip_keepalive_or_empty(data: &[u8]) -> bool {
     data.is_empty()
         || data
             .iter()
-            .all(|&b| matches!(b, b'\r' | b'\n' | b' ' | b'\t'))
+            .all(|&byte| matches!(byte, b'\r' | b'\n' | b' ' | b'\t'))
 }
 
-pub async fn read(mut input: Receiver<Zip>, output: Sender<Zip>, cancel_token: CancellationToken) {
-    let request_locks: Arc<DashMap<Association, Arc<AsyncMutex<()>>>> = Arc::new(DashMap::new());
+pub(crate) async fn read_native(
+    mut input: Receiver<Zip>,
+    output: Sender<Zip>,
+    runtime: NativeSipRuntimeHandle,
+    cancel_token: CancellationToken,
+) {
     while let Some(zip) = input.recv().await {
         if cancel_token.is_cancelled() {
             break;
@@ -255,26 +323,18 @@ pub async fn read(mut input: Receiver<Zip>, output: Sender<Zip>, cancel_token: C
                     let _ = output
                         .send(Zip::Data(Package { association, data }))
                         .await
-                        .hand_log(|msg| error!("数据发送失败:{msg}"));
+                        .hand_log(|msg| error!("SIP keepalive response failed: {msg}"));
                     continue;
                 }
-                let request_lock = request_locks
-                    .entry(association.clone())
-                    .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-                    .clone();
-                let output = output.clone();
-                tokio::spawn(async move {
-                    let _guard = request_lock.lock().await;
-                    hand_pkt(data, output, association).await;
-                });
+                if let Err(err) = runtime.receive_packet(association.clone(), data) {
+                    error!(
+                        "queue native SIP packet failed: association={association:?}, err={err}"
+                    );
+                }
             }
             Zip::Event(event) => {
-                debug!(
-                    "接收: event code={:?}, from={:?}",
-                    event.type_code, event.association
-                );
                 if matches!(event.type_code, IoEventType::Close) {
-                    request_locks.remove(&event.association);
+                    runtime.close_transport(&event.association, 1);
                     handle_tcp_connection_closed(&event.association);
                 }
             }
@@ -282,49 +342,13 @@ pub async fn read(mut input: Receiver<Zip>, output: Sender<Zip>, cancel_token: C
     }
 }
 
-async fn hand_pkt(data: Bytes, output: Sender<Zip>, association: Association) {
-    let Some(runtime) = GbSipRuntime::global() else {
-        error!("GbSipRuntime is not initialized; drop packet from {association:?}");
-        return;
-    };
-    if let Err(err) = auth::prepare_register(&data).await {
-        warn!("load SIP device auth failed: association={association:?}, err={err}");
-        return;
-    }
-
-    let protocol = pjsip_protocol_from_base(association.protocol);
-    match runtime.on_bytes(
-        data.clone(),
-        association.local_addr,
-        association.remote_addr,
-        protocol,
-    ) {
-        Ok(result) => {
-            let log = compact_for_log(&GB18030.decode(&data).0);
-            debug!("接收:{:?}\\n{}\\n", association, log);
-
-            for (sip_association, bytes) in result.sends {
-                let out_association = base_association_from_pjsip(&sip_association);
-                send_sip_pkt_out(&output, bytes, out_association, Some("pjsip"));
-            }
-
-            if let Some(event) = result.event {
-                if let Err(err) = runtime.apply_business_event(&event) {
-                    warn!("apply SIP event failed: {err}");
-                }
-                debug!("SIP event: {event:?}");
-            }
-        }
-        Err(err) => {
-            warn!("接收: {association:?}, invalid SIP packet by PJSIP adapter: {err:?}");
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{TcpCloseSource, TcpCloseTracker};
+    use base::bytes::BytesMut;
+    use base::net::rw::PacketSplitter;
     use base::net::state::{Association, Protocol};
+
+    use super::{RawChunkSplitter, TcpCloseSource, TcpCloseTracker};
 
     #[test]
     fn tcp_close_tracker_distinguishes_session_and_peer_closes() {
@@ -345,21 +369,19 @@ mod tests {
             TcpCloseSource::PeerOrNetwork
         );
     }
-}
 
-pub fn send_sip_pkt_out(
-    output: &Sender<Zip>,
-    data: Bytes,
-    association: Association,
-    ext_log: Option<&str>,
-) {
-    let log = compact_for_log(&GB18030.decode(&data).0);
-    match ext_log {
-        None => debug!("发送:{:?} \\n{}\\n", association, log),
-        Some(p_log) => debug!("[{}] 发送:{:?} \\n{}\\n", p_log, association, log),
+    #[test]
+    fn raw_chunk_splitter_does_not_parse_tcp_sip() {
+        let mut splitter = RawChunkSplitter;
+        let mut chunk = BytesMut::from(&b"partial SIP chunk"[..]);
+        let mut packets = Vec::new();
+        splitter
+            .feed_owned(&mut chunk, |packet| {
+                packets.push(packet);
+                Ok(())
+            })
+            .unwrap();
+        assert!(chunk.is_empty());
+        assert_eq!(packets, [b"partial SIP chunk".as_slice()]);
     }
-    let zip = Zip::build_data(Package::new(association, data));
-    let _ = output
-        .try_send(zip)
-        .hand_log(|msg| error!("数据发送失败:{msg}"));
 }

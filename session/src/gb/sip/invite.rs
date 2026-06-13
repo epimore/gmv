@@ -1,11 +1,8 @@
-use base::bytes::Bytes;
-use gmv_pjsip::gb28181::sdp::{PlaySdpOptions, SdpInfo, build_play_sdp};
+use gmv_pjsip::gb28181::sdp::SdpInfo;
 use gmv_pjsip::{
-    CreateBye, CreateInvite, CreateTalkInvite, IncomingInviteEvent, InviteAcceptedEvent,
-    SipAssociation, SipContext, SipTransportProtocol, TalkAudioCodec, TalkSdpMode,
+    SipAssociation, SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol, TalkAudioCodec,
+    TalkSdpMode,
 };
-
-use super::message::target_uri;
 
 #[derive(Clone, Debug)]
 pub struct InvitePlayRequest {
@@ -63,20 +60,6 @@ pub struct GbInviteAcceptedEvent {
     pub sdp_info: SdpInfo,
 }
 
-impl From<InviteAcceptedEvent> for GbInviteAcceptedEvent {
-    fn from(event: InviteAcceptedEvent) -> Self {
-        Self {
-            call_id: event.call_id,
-            device_id: event.device_id,
-            channel_id: event.channel_id,
-            stream_id: event.stream_id,
-            ssrc: event.ssrc,
-            remote_sdp: event.remote_sdp,
-            sdp_info: event.sdp_info,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct GbIncomingInviteEvent {
     pub call_id: String,
@@ -87,77 +70,22 @@ pub struct GbIncomingInviteEvent {
     pub subject: Option<String>,
 }
 
-impl From<IncomingInviteEvent> for GbIncomingInviteEvent {
-    fn from(event: IncomingInviteEvent) -> Self {
-        Self {
-            call_id: event.call_id,
-            association: event.association,
-            remote_sdp: event.remote_sdp,
-            from: event.from,
-            to: event.to,
-            subject: event.subject,
+impl GbIncomingInviteEvent {
+    pub fn from_native(event: &SipRuntimeEvent) -> Option<Self> {
+        if event.kind != SipRuntimeEventKind::IncomingInvite {
+            return None;
         }
-    }
-}
-
-pub fn create_invite_play(ctx: &SipContext, req: InvitePlayRequest) -> gmv_pjsip::Result<Bytes> {
-    let target_uri = target_uri(
-        &req.device_id,
-        &req.device_host,
-        req.device_port,
-        req.protocol,
-    );
-    let sdp = req.sdp.unwrap_or_else(|| {
-        build_play_sdp(PlaySdpOptions {
-            ip: req.media_ip,
-            port: req.media_port,
-            ssrc: req.ssrc,
-            payload_type: req.payload_type,
+        Some(Self {
+            call_id: event.call_id.clone()?,
+            association: SipAssociation {
+                local_addr: event.local_addr?,
+                remote_addr: event.remote_addr?,
+                protocol: event.protocol?,
+            },
+            remote_sdp: String::from_utf8_lossy(&event.body).into_owned(),
+            from: event.from_header.clone().unwrap_or_default(),
+            to: event.to_header.clone().unwrap_or_default(),
+            subject: event.subject.clone(),
         })
-    });
-
-    ctx.create_invite(CreateInvite {
-        device_id: req.device_id,
-        channel_id: req.channel_id,
-        stream_id: req.stream_id,
-        target_uri,
-        sdp,
-        ssrc: Some(req.ssrc),
-        protocol: req.protocol,
-        call_id: req.call_id,
-        cseq: req.cseq,
-        subject: req.subject,
-    })
-}
-
-pub fn create_talk_invite(ctx: &SipContext, req: InviteTalkRequest) -> gmv_pjsip::Result<Bytes> {
-    let target_uri = target_uri(
-        &req.device_id,
-        &req.device_host,
-        req.device_port,
-        req.protocol,
-    );
-    ctx.create_talk_invite(CreateTalkInvite {
-        device_id: req.device_id,
-        channel_id: req.channel_id,
-        talk_id: req.talk_id,
-        target_uri,
-        media_ip: req.media_ip,
-        media_port: req.media_port,
-        ssrc: Some(req.ssrc),
-        payload_type: req.payload_type,
-        codec: req.codec,
-        mode: req.mode,
-        protocol: req.protocol,
-        call_id: req.call_id,
-        cseq: req.cseq,
-        subject: req.subject,
-    })
-}
-
-pub fn create_invite_stop(ctx: &SipContext, req: InviteStopRequest) -> gmv_pjsip::Result<Bytes> {
-    ctx.create_bye(CreateBye {
-        call_id: req.call_id,
-        stream_id: req.stream_id,
-    })
+    }
 }

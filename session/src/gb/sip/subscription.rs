@@ -1,32 +1,28 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::bytes::Bytes;
 use base::chrono::{Duration as TimeDelta, Local};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, warn};
-use gmv_pjsip::CreateSubscribe;
-use gmv_pjsip::message::{HeaderMapExt, extract_uri};
-use gmv_pjsip::parser::parse_sip_message;
+use gmv_pjsip::SipOutboundSubscribe;
+use gmv_pjsip::message::extract_uri;
 
+use crate::gb::SessionConf;
 use crate::register::core::{Register, TimeScheduleKey};
 use crate::state::session::{Cache, CatalogSubscriptionCommand};
 
-use super::command::{connected_target, runtime, send_request_and_wait_status, to_global_error};
-use super::message::{GB_XML_CONTENT_TYPE, GbMessageEvent};
-use super::runtime_cache::SipResponseResult;
-use super::{pjsip_protocol_from_base, xml};
+use super::adapter::pjsip_protocol_from_base;
+use super::command::connected_target;
+use super::message::{GB_XML_CONTENT_TYPE, GbMessageEvent, target_uri};
+use super::native_runtime::NativeSipRuntimeHandle;
+use super::runtime_cache::{
+    NativeSubscriptionMetadata, SipResponseResult, SipRuntimeCache, recv_with_timeout,
+};
+use super::xml;
 
-struct SubscribeRequestState {
-    call_id: String,
-    cseq: u32,
-    event: String,
-    remote_target: String,
-    from_header: String,
-    to_header: String,
-    local_tag: String,
-}
+const SUBSCRIBE_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
+const CATALOG_EVENT: &str = "Catalog";
 
 pub async fn subscribe_catalog(device_id: &str, expires: u32) -> GlobalResult<()> {
     let expires = expires.max(1);
@@ -40,74 +36,60 @@ pub async fn subscribe_catalog(device_id: &str, expires: u32) -> GlobalResult<()
 }
 
 async fn subscribe_catalog_once(device_id: &str, expires: u32) -> GlobalResult<()> {
-    let (host, port, protocol) = connected_target(device_id)?;
-    let target_uri =
-        super::message::target_uri(device_id, &host, port, pjsip_protocol_from_base(protocol));
-    let event = format!(
-        "Catalog;id={}",
-        Local::now().timestamp_millis().unsigned_abs()
-    );
-    let body = catalog_subscription_body(device_id, expires);
-    let bytes = runtime()?
-        .create_subscribe(CreateSubscribe {
-            target_uri: target_uri.clone(),
-            body: xml::encode_document(&body),
-            content_type: GB_XML_CONTENT_TYPE.to_string(),
-            protocol: pjsip_protocol_from_base(protocol),
-            call_id: None,
-            cseq: None,
-            event,
-            expires,
-            from_header: None,
-            to_header: None,
-            route_set: Vec::new(),
-        })
-        .map_err(to_global_error)?;
-    let request = subscribe_request_state(&bytes)?;
-    let Some(generation) = Cache::catalog_subscription_begin(
-        device_id.to_string(),
-        request.call_id,
-        request.cseq,
-        request.event,
-        expires,
-        request.remote_target.clone(),
-        request.from_header.clone(),
-        request.to_header.clone(),
-        request.local_tag.clone(),
-    ) else {
-        return Ok(());
+    let (host, port, base_protocol) = connected_target(device_id)?;
+    let Some(session) = Register::get_connected_device_session(device_id) else {
+        return Err(device_not_connected(device_id));
     };
-
-    match send_request_and_wait_status(device_id, bytes).await {
-        Ok(response) if (200..300).contains(&response.status) => {
-            let completed = complete_catalog_subscription(
-                device_id,
-                generation,
-                &request.remote_target,
-                &request.from_header,
-                &request.to_header,
-                expires,
-                response,
-            );
-            match completed {
-                Ok(expires) => {
-                    schedule_catalog_refresh(Arc::from(device_id), generation, expires);
-                    Ok(())
-                }
-                Err(err) => {
-                    Cache::catalog_subscription_remove(device_id, Some(generation));
-                    Err(err)
-                }
-            }
-        }
-        Ok(response) => {
-            Cache::catalog_subscription_remove(device_id, Some(generation));
-            Err(subscription_rejected(device_id, response.status))
-        }
-        Err(err) => {
-            Cache::catalog_subscription_remove(device_id, Some(generation));
-            Err(err)
-        }
+    let protocol = pjsip_protocol_from_base(base_protocol);
+    let remote_target = target_uri(device_id, &host, port, protocol);
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let operation_id = runtime.next_operation_id();
+    let rx = SipRuntimeCache::global().insert_native_subscription_waiter(
+        operation_id,
+        NativeSubscriptionMetadata {
+            device_id: device_id.to_string(),
+            event: CATALOG_EVENT.to_string(),
+            expires,
+            remote_target: remote_target.clone(),
+        },
+        SUBSCRIBE_WAIT_TIMEOUT,
+    );
+    let conf = SessionConf::get_session_by_conf();
+    let request = SipOutboundSubscribe {
+        operation_id,
+        association_id: 0,
+        protocol,
+        target_uri: remote_target,
+        from_uri: format!("<sip:{}@{}>", conf.domain_id, conf.domain),
+        contact_uri: format!(
+            "<{}>",
+            target_uri(
+                &conf.domain_id,
+                &conf.wan_ip.to_string(),
+                conf.wan_port,
+                protocol,
+            )
+        ),
+        call_id: None,
+        event: CATALOG_EVENT.to_string(),
+        expires,
+        content_type: GB_XML_CONTENT_TYPE.to_string(),
+        body: xml::encode_document(&catalog_subscription_body(device_id, expires)).to_vec(),
+    };
+    if let Err(err) = runtime.send_subscribe(&session.association, request) {
+        SipRuntimeCache::global().remove_native_subscription_waiter(operation_id);
+        return Err(err);
+    }
+    let response = recv_with_timeout(rx, SUBSCRIBE_WAIT_TIMEOUT)
+        .await
+        .map_err(|reason| {
+            SipRuntimeCache::global().remove_native_subscription_waiter(operation_id);
+            subscription_timeout(device_id, operation_id, reason)
+        })?;
+    if (200..300).contains(&response.status) {
+        Ok(())
+    } else {
+        Err(subscription_rejected(device_id, response.status))
     }
 }
 
@@ -119,45 +101,76 @@ pub async fn refresh_catalog_subscription(
     else {
         return Ok(());
     };
-    let bytes = build_refresh_request(device_id.as_ref(), &command)?;
-    match send_request_and_wait_status(device_id.as_ref(), bytes).await {
-        Ok(response) if (200..300).contains(&response.status) => {
-            let completed = complete_catalog_subscription(
-                device_id.as_ref(),
-                generation,
-                &command.remote_target,
-                &command.from_header,
-                &command.to_header,
-                command.expires,
-                response,
-            );
-            match completed {
-                Ok(expires) => {
-                    schedule_catalog_refresh(device_id, generation, expires);
-                    Ok(())
-                }
-                Err(err) => {
-                    Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
-                    schedule_catalog_retry(device_id, generation, command.expires);
-                    Err(err)
-                }
+    let Some(session) = Register::get_connected_device_session(device_id.as_ref()) else {
+        Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
+        return Err(device_not_connected(device_id.as_ref()));
+    };
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let operation_id = runtime.next_operation_id();
+    let rx = SipRuntimeCache::global()
+        .insert_native_response_waiter(operation_id, SUBSCRIBE_WAIT_TIMEOUT);
+    let request = SipOutboundSubscribe {
+        operation_id,
+        association_id: 0,
+        protocol: pjsip_protocol_from_base(session.association.protocol),
+        target_uri: String::new(),
+        from_uri: String::new(),
+        contact_uri: String::new(),
+        call_id: Some(command.call_id.clone()),
+        event: command.event.clone(),
+        expires: command.expires,
+        content_type: GB_XML_CONTENT_TYPE.to_string(),
+        body: xml::encode_document(&catalog_subscription_body(
+            device_id.as_ref(),
+            command.expires,
+        ))
+        .to_vec(),
+    };
+    if let Err(err) = runtime.send_subscribe(&session.association, request) {
+        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+        Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
+        return Err(err);
+    }
+    let response = recv_with_timeout(rx, SUBSCRIBE_WAIT_TIMEOUT)
+        .await
+        .map_err(|reason| {
+            SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+            subscription_timeout(device_id.as_ref(), operation_id, reason)
+        })?;
+    complete_refresh(device_id, command, response)
+}
+
+fn complete_refresh(
+    device_id: Arc<str>,
+    command: CatalogSubscriptionCommand,
+    response: SipResponseResult,
+) -> GlobalResult<()> {
+    let generation = command.generation;
+    if (200..300).contains(&response.status) {
+        match complete_catalog_subscription(
+            device_id.as_ref(),
+            generation,
+            &command.remote_target,
+            &command.from_header,
+            &command.to_header,
+            command.expires,
+            response,
+        ) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
+                schedule_catalog_retry(device_id, generation, command.expires);
+                Err(err)
             }
         }
-        Ok(response) if response.status == 481 => {
-            Cache::catalog_subscription_remove(device_id.as_ref(), Some(generation));
-            retry_new_catalog_subscription(device_id.to_string(), command.expires);
-            Ok(())
-        }
-        Ok(response) => {
-            Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
-            schedule_catalog_retry(device_id.clone(), generation, command.expires);
-            Err(subscription_rejected(device_id.as_ref(), response.status))
-        }
-        Err(err) => {
-            Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
-            schedule_catalog_retry(device_id, generation, command.expires);
-            Err(err)
-        }
+    } else if response.status == 481 {
+        Cache::catalog_subscription_remove(device_id.as_ref(), Some(generation));
+        retry_new_catalog_subscription(device_id.to_string(), command.expires);
+        Ok(())
+    } else {
+        Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
+        schedule_catalog_retry(device_id.clone(), generation, command.expires);
+        Err(subscription_rejected(device_id.as_ref(), response.status))
     }
 }
 
@@ -181,58 +194,10 @@ pub fn accept_catalog_notify(event: &GbMessageEvent, device_id: &str) -> bool {
         if state.eq_ignore_ascii_case("terminated") {
             terminate_catalog_subscription(device_id, generation);
         } else if let Some(expires) = expires {
-            update_catalog_subscription_from_notify(device_id, generation, expires);
+            Cache::catalog_subscription_update_expires(device_id, generation, expires.max(1));
         }
     }
     true
-}
-
-fn build_refresh_request(
-    device_id: &str,
-    command: &CatalogSubscriptionCommand,
-) -> GlobalResult<Bytes> {
-    let (_, _, protocol) = connected_target(device_id)?;
-    runtime()?
-        .create_subscribe(CreateSubscribe {
-            target_uri: command.remote_target.clone(),
-            body: xml::encode_document(&catalog_subscription_body(device_id, command.expires)),
-            content_type: GB_XML_CONTENT_TYPE.to_string(),
-            protocol: pjsip_protocol_from_base(protocol),
-            call_id: Some(command.call_id.clone()),
-            cseq: Some(command.seq),
-            event: command.event.clone(),
-            expires: command.expires,
-            from_header: Some(command.from_header.clone()),
-            to_header: Some(command.to_header.clone()),
-            route_set: command.route_set.clone(),
-        })
-        .map_err(to_global_error)
-}
-
-fn subscribe_request_state(bytes: &Bytes) -> GlobalResult<SubscribeRequestState> {
-    let message = parse_sip_message(bytes.clone()).map_err(to_global_error)?;
-    let cseq = message.cseq().map_err(to_global_error)?;
-    Ok(SubscribeRequestState {
-        call_id: message.call_id().map_err(to_global_error)?,
-        cseq: cseq.number,
-        event: required_header(&message, "Event")?,
-        remote_target: message
-            .request_uri()
-            .ok_or_else(|| invalid_subscription("SUBSCRIBE missing request URI"))?
-            .to_string(),
-        from_header: required_header(&message, "From")?,
-        to_header: required_header(&message, "To")?,
-        local_tag: message
-            .from_tag()
-            .ok_or_else(|| invalid_subscription("SUBSCRIBE missing From tag"))?,
-    })
-}
-
-fn required_header(message: &gmv_pjsip::SipMessage, name: &'static str) -> GlobalResult<String> {
-    message
-        .required_header(name)
-        .map(str::to_string)
-        .map_err(to_global_error)
 }
 
 fn complete_catalog_subscription(
@@ -250,7 +215,6 @@ fn complete_catalog_subscription(
         .as_deref()
         .and_then(extract_uri)
         .unwrap_or_else(|| fallback_remote_target.to_string());
-    let route_set = metadata.record_routes.into_iter().rev().collect();
     let from_header = metadata
         .from_header
         .unwrap_or_else(|| fallback_from_header.to_string());
@@ -262,7 +226,7 @@ fn complete_catalog_subscription(
         device_id,
         generation,
         remote_target,
-        route_set,
+        Vec::new(),
         from_header,
         to_header,
         remote_tag,
@@ -288,41 +252,12 @@ fn catalog_subscription_body(device_id: &str, expires: u32) -> String {
     )
 }
 
-fn catalog_refresh_delay(expires: u32) -> Duration {
-    let margin = (expires / 10).clamp(1, 60);
-    Duration::from_secs(u64::from(expires.saturating_sub(margin).max(1)))
-}
-
-fn schedule_catalog_refresh(device_id: Arc<str>, generation: u64, expires: u32) {
-    schedule_catalog(
-        device_id,
-        generation,
-        catalog_refresh_delay(expires),
-        "refresh",
-    );
-}
-
 fn schedule_catalog_retry(device_id: Arc<str>, generation: u64, expires: u32) {
-    schedule_catalog(
-        device_id,
-        generation,
-        Duration::from_secs(u64::from(expires.clamp(1, 30))),
-        "retry",
-    );
-}
-
-fn schedule_catalog(device_id: Arc<str>, generation: u64, delay: Duration, action: &str) {
     let key = TimeScheduleKey::CatalogSubscription(device_id, generation);
     let _ = Register::scheduler().remove_register(&key);
+    let delay = Duration::from_secs(u64::from(expires.clamp(1, 30)));
     if let Err(err) = Register::scheduler().insert_register(key, delay) {
-        warn!("schedule catalog subscription {action} failed: {err}");
-    }
-}
-
-fn update_catalog_subscription_from_notify(device_id: &str, generation: u64, expires: u32) {
-    let expires = expires.max(1);
-    if Cache::catalog_subscription_update_expires(device_id, generation, expires) {
-        schedule_catalog_refresh(Arc::from(device_id), generation, expires);
+        warn!("schedule catalog subscription retry failed: {err}");
     }
 }
 
@@ -366,11 +301,27 @@ fn parse_subscription_state(value: &str) -> (&str, Option<u32>) {
     (state, expires)
 }
 
+fn subscription_timeout(device_id: &str, operation_id: u64, reason: &str) -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::Timeout.code(),
+        "device SUBSCRIBE response timeout",
+        |msg| error!("device_id={device_id}; operation_id={operation_id}; {msg}; reason={reason}"),
+    )
+}
+
 fn subscription_rejected(device_id: &str, status: u16) -> GlobalError {
     GlobalError::new_biz_error(
         BaseErrorCode::InvalidState.code(),
         "device rejected catalog subscription",
         |msg| error!("device_id={device_id}; status={status}; {msg}"),
+    )
+}
+
+fn device_not_connected(device_id: &str) -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::NotFound.code(),
+        "device is not registered or connected",
+        |msg| error!("device_id={device_id}; {msg}"),
     )
 }
 

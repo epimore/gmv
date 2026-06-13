@@ -1,4 +1,4 @@
-use gmv_pjsip::{RegisterEvent, SipAssociation, SipRuntimeEvent, SipRuntimeEventKind};
+use gmv_pjsip::{SipAssociation, SipRuntimeEvent, SipRuntimeEventKind};
 
 #[derive(Clone, Debug)]
 pub struct GbRegisterEvent {
@@ -13,24 +13,6 @@ pub struct GbRegisterEvent {
     pub association: SipAssociation,
     pub user_agent: Option<String>,
     pub gb_version: Option<String>,
-}
-
-impl From<RegisterEvent> for GbRegisterEvent {
-    fn from(event: RegisterEvent) -> Self {
-        Self {
-            device_id: event.device_id,
-            contact: event.contact,
-            support_lr: event.support_lr,
-            expires: event.expires,
-            call_id: event.call_id,
-            cseq: event.cseq,
-            authorized: event.authorized,
-            username: event.username,
-            association: event.association,
-            user_agent: event.user_agent,
-            gb_version: event.gb_version,
-        }
-    }
 }
 
 impl GbRegisterEvent {

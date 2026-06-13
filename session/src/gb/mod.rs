@@ -21,7 +21,6 @@ use std::sync::Arc;
 mod core;
 mod io;
 pub mod sip;
-mod sip_tcp_splitter;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(crate = "base::serde")]
@@ -97,25 +96,52 @@ impl SessionConf {
         tu: (Option<std::net::TcpListener>, Option<UdpSocket>),
         cancel_token: CancellationToken,
     ) -> GlobalResult<()> {
-        let (output, input) = io::rw_by_tokio(tu, cancel_token.child_token())?;
+        let io::NativeSessionIo {
+            output,
+            input,
+            writer,
+            close_tracker,
+        } = io::rw_by_tokio_native(tu, cancel_token.child_token())?;
         db_task::init(cancel_token.child_token());
         let session_conf = SessionConf::get_session_by_conf();
         let auth_cache = sip::auth::init_global().await?;
+        let (native_service, _native_events, native_transmits) =
+            sip::NativeSipRuntimeService::start(
+                session_conf.wan_ip,
+                session_conf.wan_port,
+                session_conf.domain.clone(),
+                auth_cache.clone(),
+                cancel_token.child_token(),
+            )?;
+        let native_runtime = native_service.handle();
+        native_runtime.install_global()?;
         Register::init(
             session_conf.clone(),
             output.clone(),
             cancel_token.child_token(),
         )?;
-        sip::GbSipRuntime::init_global(sip::GbSipConfig::from_session_conf(
-            &session_conf,
-            auth_cache,
-        ));
-        RWContext::init(output.clone());
         let handle = Handle::current();
         handle.spawn(SessionConf::heart_server());
         handle.spawn(sip::auth::run_cleanup_task(cancel_token.child_token()));
         handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));
-        base::tokio::spawn(io::read(input, output.clone(), cancel_token.child_token()));
+        handle.spawn(io::write_native_net(
+            native_transmits,
+            writer,
+            native_runtime.clone(),
+            close_tracker,
+            cancel_token.child_token(),
+        ));
+        handle.spawn(io::read_native(
+            input,
+            output.clone(),
+            native_runtime,
+            cancel_token.child_token(),
+        ));
+        let native_shutdown = cancel_token.child_token();
+        handle.spawn(async move {
+            native_shutdown.cancelled().await;
+            native_service.shutdown();
+        });
         let output_sender = output.clone();
         base::tokio::spawn(async move {
             cancel_token.cancelled().await;

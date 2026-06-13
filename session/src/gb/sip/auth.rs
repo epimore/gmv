@@ -2,16 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use base::bytes::Bytes;
 use base::dashmap::DashMap;
 use base::exception::GlobalResult;
 use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::time::{self, Instant};
 use base::tokio_util::sync::CancellationToken;
-use gmv_pjsip::auth::parse_digest_authorization;
-use gmv_pjsip::message::{HeaderMapExt, extract_uri, extract_user_from_uri_like};
-use gmv_pjsip::parser::parse_sip_message;
-use gmv_pjsip::{AuthRequirement, PasswordProvider, SipMethod};
+use gmv_pjsip::{AuthRequirement, PasswordProvider};
 
 use crate::storage::entity::GmvOauth;
 
@@ -261,52 +257,6 @@ pub fn invalidate_device(device_id: &str) {
     if let Some(cache) = global() {
         cache.invalidate_device(device_id);
     }
-}
-
-fn extract_realm_from_uri_like(value: &str) -> Option<String> {
-    let uri = extract_uri(value)?;
-    let value = uri.strip_prefix("sip:").unwrap_or(&uri);
-    let (_, host) = value.split_once('@')?;
-    let end = host.find([':', ';', '?']).unwrap_or(host.len());
-    (end > 0).then(|| host[..end].to_owned())
-}
-
-pub async fn prepare_register(data: &Bytes) -> GlobalResult<()> {
-    if data.len() < 9
-        || !data[..8].eq_ignore_ascii_case(b"REGISTER")
-        || !data[8].is_ascii_whitespace()
-    {
-        return Ok(());
-    }
-    let Ok(message) = parse_sip_message(data.clone()) else {
-        return Ok(());
-    };
-    if !matches!(message.method(), Some(SipMethod::Register)) {
-        return Ok(());
-    }
-    let Some(device_id) = message
-        .header("From")
-        .and_then(extract_user_from_uri_like)
-        .or_else(|| {
-            message
-                .header("Contact")
-                .and_then(extract_user_from_uri_like)
-        })
-    else {
-        return Ok(());
-    };
-    let realm = message
-        .header("Authorization")
-        .and_then(|value| parse_digest_authorization(value).get("realm").cloned())
-        .or_else(|| message.header("From").and_then(extract_realm_from_uri_like))
-        .or_else(|| message.header("To").and_then(extract_realm_from_uri_like));
-    let Some(realm) = realm else {
-        return Ok(());
-    };
-    if let Some(cache) = global() {
-        cache.get_or_load(&device_id, &realm).await?;
-    }
-    Ok(())
 }
 
 pub async fn run_cleanup_task(cancel_token: CancellationToken) {

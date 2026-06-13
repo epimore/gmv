@@ -6,49 +6,38 @@
 
 use std::time::Duration;
 
-use base::bytes::Bytes;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::net::state::Protocol;
-use gmv_pjsip::message::HeaderMapExt;
-use gmv_pjsip::{SipMethod, parser::parse_sip_message};
+use gmv_pjsip::gb28181::sdp::{TalkSdpOptions, build_play_sdp, build_talk_sdp};
+use gmv_pjsip::gb28181::xml::{
+    CONTENT_TYPE_MANSRTSP, build_mansrtsp_seek_body, build_mansrtsp_speed_body,
+};
+use gmv_pjsip::{SipDialogMethod, SipDialogRequest, SipOutboundInvite, SipOutboundMessage};
 use shared::info::media_info_ext::MediaExt;
 
-use crate::gb::core::rw::RWContext;
+use crate::gb::SessionConf;
 use crate::register::core::Register;
 use crate::state::model::{PtzControlModel, TransMode};
 use crate::state::session::Cache as GeneralCache;
 
-use super::adapter::{GbSipRuntime, pjsip_protocol_from_base};
+use super::adapter::pjsip_protocol_from_base;
 use super::invite::{
     GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest, InviteTalkRequest,
 };
-use super::message::CreateDeviceMessageRequest;
-use super::runtime_cache::{SipResponseKey, SipResponseResult, SipRuntimeCache, recv_with_timeout};
+use super::message::{CreateDeviceMessageRequest, target_uri};
+use super::native_runtime::NativeSipRuntimeHandle;
+use super::runtime_cache::{NativeInviteMetadata, SipRuntimeCache, recv_with_timeout};
 use super::{sdp, xml};
 
 const INVITE_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const BYE_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 const REQUEST_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 
-pub(super) fn runtime() -> GlobalResult<&'static GbSipRuntime> {
-    GbSipRuntime::global().ok_or_else(|| {
-        GlobalError::new_biz_error(
-            BaseErrorCode::InvalidState.code(),
-            "GB SIP runtime is not initialized",
-            |msg| error!("{msg}"),
-        )
-    })
-}
-
 pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Protocol)> {
     let Some(session) = Register::get_connected_device_session(device_id) else {
-        return Err(GlobalError::new_biz_error(
-            BaseErrorCode::NotFound.code(),
-            "device is not registered or connected",
-            |msg| error!("device_id={device_id}; {msg}"),
-        ));
+        return Err(device_not_connected(device_id));
     };
     Ok((
         session.association.remote_addr.ip().to_string(),
@@ -57,58 +46,43 @@ pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Pr
     ))
 }
 
-async fn send_to_registered_device(device_id: &str, bytes: Bytes) -> GlobalResult<()> {
-    let Some(session) = Register::get_connected_device_session(device_id) else {
-        return Err(GlobalError::new_biz_error(
-            BaseErrorCode::NotFound.code(),
-            "device is not registered or connected",
-            |msg| error!("device_id={device_id}; {msg}"),
-        ));
+async fn send_native_message_and_wait(request: CreateDeviceMessageRequest) -> GlobalResult<()> {
+    let device_id = request.device_id.clone();
+    let Some(session) = Register::get_connected_device_session(&device_id) else {
+        return Err(device_not_connected(&device_id));
     };
-    RWContext::send_sip_bytes(session.association, bytes).await
-}
-
-fn response_key(bytes: &Bytes) -> GlobalResult<SipResponseKey> {
-    let message = parse_sip_message(bytes.clone()).map_err(to_global_error)?;
-    let call_id = message.call_id().map_err(to_global_error)?;
-    let cseq = message.cseq().map_err(to_global_error)?;
-    Ok(SipResponseKey {
-        method: SipMethod::parse(&cseq.method),
-        call_id,
-        cseq: cseq.number,
-    })
-}
-
-pub(super) async fn send_request_and_wait_status(
-    device_id: &str,
-    bytes: Bytes,
-) -> GlobalResult<SipResponseResult> {
-    let key = response_key(&bytes)?;
-    let rx = SipRuntimeCache::global().insert_response_waiter(key.clone(), REQUEST_WAIT_TIMEOUT);
-    if let Err(err) = send_to_registered_device(device_id, bytes).await {
-        SipRuntimeCache::global().remove_response_waiter(&key);
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let operation_id = runtime.next_operation_id();
+    let rx =
+        SipRuntimeCache::global().insert_native_response_waiter(operation_id, REQUEST_WAIT_TIMEOUT);
+    let conf = SessionConf::get_session_by_conf();
+    let message = SipOutboundMessage {
+        operation_id,
+        association_id: 0,
+        protocol: request.protocol,
+        target_uri: request.target_uri(),
+        from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
+        content_type: request.content_type,
+        body: request.body.to_vec(),
+    };
+    if let Err(err) = runtime.send_message(&session.association, message) {
+        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
         return Err(err);
     }
-    recv_with_timeout(rx, REQUEST_WAIT_TIMEOUT)
+    let result = recv_with_timeout(rx, REQUEST_WAIT_TIMEOUT)
         .await
         .map_err(|reason| {
-            SipRuntimeCache::global().remove_response_waiter(&key);
+            SipRuntimeCache::global().remove_native_response_waiter(operation_id);
             GlobalError::new_biz_error(
                 BaseErrorCode::Timeout.code(),
                 "device SIP response timeout",
                 |msg| {
                     error!(
-                        "device_id={device_id}; method={}; call_id={}; cseq={}; {msg}; reason={reason}",
-                        key.method, key.call_id, key.cseq
+                        "device_id={device_id}; operation_id={operation_id}; {msg}; reason={reason}"
                     )
                 },
             )
-        })
-}
-
-async fn send_request_and_wait(device_id: &str, bytes: Bytes) -> GlobalResult<()> {
-    let key = response_key(&bytes)?;
-    let result = send_request_and_wait_status(device_id, bytes).await?;
+        })?;
     if (200..300).contains(&result.status) {
         return Ok(());
     }
@@ -117,39 +91,106 @@ async fn send_request_and_wait(device_id: &str, bytes: Bytes) -> GlobalResult<()
         "device rejected SIP request",
         |msg| {
             error!(
-                "device_id={device_id}; method={}; call_id={}; cseq={}; status={}; {msg}",
-                key.method, key.call_id, key.cseq, result.status
+                "device_id={device_id}; operation_id={operation_id}; status={}; {msg}",
+                result.status
             )
         },
     ))
 }
 
+async fn send_native_dialog_and_wait(
+    device_id: &str,
+    method: SipDialogMethod,
+    call_id: String,
+    content_type: Option<String>,
+    body: Vec<u8>,
+    timeout: Duration,
+) -> GlobalResult<()> {
+    if Register::get_connected_device_session(device_id).is_none() {
+        return Err(device_not_connected(device_id));
+    }
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let operation_id = runtime.next_operation_id();
+    let rx = SipRuntimeCache::global().insert_native_response_waiter(operation_id, timeout);
+    if let Err(err) = runtime.send_dialog_request(SipDialogRequest {
+        operation_id,
+        method,
+        call_id: call_id.clone(),
+        content_type,
+        body,
+    }) {
+        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+        return Err(err);
+    }
+    let result = recv_with_timeout(rx, timeout).await.map_err(|reason| {
+        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+        GlobalError::new_biz_error(
+            BaseErrorCode::Timeout.code(),
+            "device SIP dialog response timeout",
+            |msg| {
+                error!(
+                    "device_id={device_id}; call_id={call_id}; operation_id={operation_id}; \
+                     {msg}; reason={reason}"
+                )
+            },
+        )
+    })?;
+    if (200..300).contains(&result.status) {
+        return Ok(());
+    }
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::InvalidState.code(),
+        "device rejected SIP dialog request",
+        |msg| {
+            error!(
+                "device_id={device_id}; call_id={call_id}; operation_id={operation_id}; \
+                 status={}; {msg}",
+                result.status
+            )
+        },
+    ))
+}
+
+fn stream_call_id(stream_id: &str) -> GlobalResult<String> {
+    GeneralCache::stream_call_id(stream_id).ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "SIP dialog not found",
+            |msg| error!("stream_id={stream_id}; {msg}"),
+        )
+    })
+}
+
+fn device_not_connected(device_id: &str) -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::NotFound.code(),
+        "device is not registered or connected",
+        |msg| error!("device_id={device_id}; {msg}"),
+    )
+}
+
 pub async fn query_catalog(device_id: &str, sn: u32) -> GlobalResult<()> {
     let (host, port, proto) = connected_target(device_id)?;
-    let bytes = runtime()?
-        .create_device_message(CreateDeviceMessageRequest::catalog_query(
-            device_id.to_string(),
-            host,
-            port,
-            pjsip_protocol_from_base(proto),
-            sn,
-        ))
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    send_native_message_and_wait(CreateDeviceMessageRequest::catalog_query(
+        device_id.to_string(),
+        host,
+        port,
+        pjsip_protocol_from_base(proto),
+        sn,
+    ))
+    .await
 }
 
 pub async fn query_device_info(device_id: &str, sn: u32) -> GlobalResult<()> {
     let (host, port, proto) = connected_target(device_id)?;
-    let bytes = runtime()?
-        .create_device_message(CreateDeviceMessageRequest::device_info_query(
-            device_id.to_string(),
-            host,
-            port,
-            pjsip_protocol_from_base(proto),
-            sn,
-        ))
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    send_native_message_and_wait(CreateDeviceMessageRequest::device_info_query(
+        device_id.to_string(),
+        host,
+        port,
+        pjsip_protocol_from_base(proto),
+        sn,
+    ))
+    .await
 }
 
 pub async fn query_record_info(
@@ -159,45 +200,39 @@ pub async fn query_record_info(
     end_time: &str,
 ) -> GlobalResult<()> {
     let (host, port, proto) = connected_target(device_id)?;
-    let bytes = runtime()?
-        .create_device_message(CreateDeviceMessageRequest::record_info_query(
-            device_id.to_string(),
-            host,
-            port,
-            pjsip_protocol_from_base(proto),
-            sn,
-            start_time,
-            end_time,
-        ))
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    send_native_message_and_wait(CreateDeviceMessageRequest::record_info_query(
+        device_id.to_string(),
+        host,
+        port,
+        pjsip_protocol_from_base(proto),
+        sn,
+        start_time,
+        end_time,
+    ))
+    .await
 }
 
 pub async fn query_preset(device_id: &str) -> GlobalResult<()> {
     let (host, port, proto) = connected_target(device_id)?;
-    let bytes = runtime()?
-        .create_device_message(CreateDeviceMessageRequest::preset_query(
-            device_id.to_string(),
-            host,
-            port,
-            pjsip_protocol_from_base(proto),
-        ))
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    send_native_message_and_wait(CreateDeviceMessageRequest::preset_query(
+        device_id.to_string(),
+        host,
+        port,
+        pjsip_protocol_from_base(proto),
+    ))
+    .await
 }
 
 pub async fn send_xml_message(device_id: &str, body: String) -> GlobalResult<()> {
     let (host, port, proto) = connected_target(device_id)?;
-    let bytes = runtime()?
-        .create_device_message(CreateDeviceMessageRequest::xml(
-            device_id.to_string(),
-            host,
-            port,
-            pjsip_protocol_from_base(proto),
-            body,
-        ))
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    send_native_message_and_wait(CreateDeviceMessageRequest::xml(
+        device_id.to_string(),
+        host,
+        port,
+        pjsip_protocol_from_base(proto),
+        body,
+    ))
+    .await
 }
 
 pub async fn control_ptz(model: &PtzControlModel) -> GlobalResult<()> {
@@ -256,43 +291,113 @@ pub async fn snapshot_image_call(
     session_id: &str,
 ) -> GlobalResult<()> {
     let (host, port, proto) = connected_target(device_id)?;
-    let bytes = runtime()?
-        .create_device_message(CreateDeviceMessageRequest::snapshot_control(
-            device_id.to_string(),
-            channel_id,
-            host,
-            port,
-            pjsip_protocol_from_base(proto),
-            count,
-            interval,
-            url,
-            session_id,
-        ))
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    send_native_message_and_wait(CreateDeviceMessageRequest::snapshot_control(
+        device_id.to_string(),
+        channel_id,
+        host,
+        port,
+        pjsip_protocol_from_base(proto),
+        count,
+        interval,
+        url,
+        session_id,
+    ))
+    .await
 }
 
 pub async fn invite_play(req: InvitePlayRequest) -> GlobalResult<()> {
     let device_id = req.device_id.clone();
-    let bytes = runtime()?
-        .create_invite_play(req)
-        .map_err(to_global_error)?;
-    send_to_registered_device(&device_id, bytes).await
+    let Some(session) = Register::get_connected_device_session(&device_id) else {
+        return Err(device_not_connected(&device_id));
+    };
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let protocol = pjsip_protocol_from_base(session.association.protocol);
+    let operation_id = runtime.next_operation_id();
+    let conf = SessionConf::get_session_by_conf();
+    let sdp = req.sdp.unwrap_or_else(|| {
+        build_play_sdp(gmv_pjsip::gb28181::sdp::PlaySdpOptions {
+            ip: req.media_ip,
+            port: req.media_port,
+            ssrc: req.ssrc,
+            payload_type: req.payload_type,
+        })
+    });
+    runtime.send_invite(
+        &session.association,
+        SipOutboundInvite {
+            operation_id,
+            association_id: 0,
+            protocol,
+            target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
+            from_uri: format!("<sip:{}@{}>", conf.domain_id, conf.domain),
+            contact_uri: format!(
+                "<{}>",
+                target_uri(
+                    &conf.domain_id,
+                    &conf.wan_ip.to_string(),
+                    conf.wan_port,
+                    protocol,
+                )
+            ),
+            subject: Some(req.subject.unwrap_or_else(|| {
+                format!("{}:{},{}:0", req.channel_id, req.ssrc, conf.domain_id)
+            })),
+            sdp,
+        },
+    )
 }
 
 pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInviteAcceptedEvent> {
     let device_id = req.device_id.clone();
     let stream_id = req.stream_id.clone();
-    let rx = SipRuntimeCache::global().insert_invite_waiter(stream_id.clone(), INVITE_WAIT_TIMEOUT);
-    let bytes = match runtime()?.create_invite_play(req).map_err(to_global_error) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            SipRuntimeCache::global().remove_stream_indexes(&stream_id, None);
-            return Err(err);
-        }
+    let Some(session) = Register::get_connected_device_session(&device_id) else {
+        return Err(device_not_connected(&device_id));
     };
-    if let Err(err) = send_to_registered_device(&device_id, bytes).await {
-        SipRuntimeCache::global().remove_stream_indexes(&stream_id, None);
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let operation_id = runtime.next_operation_id();
+    let rx = SipRuntimeCache::global().insert_native_invite_waiter(
+        operation_id,
+        NativeInviteMetadata {
+            device_id: device_id.clone(),
+            channel_id: req.channel_id.clone(),
+            stream_id: stream_id.clone(),
+            ssrc: Some(req.ssrc),
+        },
+        INVITE_WAIT_TIMEOUT,
+    );
+    let protocol = pjsip_protocol_from_base(session.association.protocol);
+    let conf = SessionConf::get_session_by_conf();
+    let sdp = req.sdp.unwrap_or_else(|| {
+        build_play_sdp(gmv_pjsip::gb28181::sdp::PlaySdpOptions {
+            ip: req.media_ip,
+            port: req.media_port,
+            ssrc: req.ssrc,
+            payload_type: req.payload_type,
+        })
+    });
+    let invite = SipOutboundInvite {
+        operation_id,
+        association_id: 0,
+        protocol,
+        target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
+        from_uri: format!("<sip:{}@{}>", conf.domain_id, conf.domain),
+        contact_uri: format!(
+            "<{}>",
+            target_uri(
+                &conf.domain_id,
+                &conf.wan_ip.to_string(),
+                conf.wan_port,
+                protocol,
+            )
+        ),
+        subject: Some(
+            req.subject
+                .unwrap_or_else(|| format!("{}:{},{}:0", req.channel_id, req.ssrc, conf.domain_id)),
+        ),
+        sdp,
+    };
+    if let Err(err) = runtime.send_invite(&session.association, invite) {
+        SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
         return Err(err);
     }
     match recv_with_timeout(rx, INVITE_WAIT_TIMEOUT).await {
@@ -311,7 +416,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
             ))
         }
         Err(reason) => {
-            SipRuntimeCache::global().remove_stream_indexes(&stream_id, None);
+            SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
             Err(GlobalError::new_biz_error(
                 BaseErrorCode::Timeout.code(),
                 "device INVITE response timeout",
@@ -324,16 +429,53 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
 pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInviteAcceptedEvent> {
     let device_id = req.device_id.clone();
     let talk_id = req.talk_id.clone();
-    let rx = SipRuntimeCache::global().insert_invite_waiter(talk_id.clone(), INVITE_WAIT_TIMEOUT);
-    let bytes = match runtime()?.create_talk_invite(req).map_err(to_global_error) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            SipRuntimeCache::global().remove_stream_indexes(&talk_id, None);
-            return Err(err);
-        }
+    let Some(session) = Register::get_connected_device_session(&device_id) else {
+        return Err(device_not_connected(&device_id));
     };
-    if let Err(err) = send_to_registered_device(&device_id, bytes).await {
-        SipRuntimeCache::global().remove_stream_indexes(&talk_id, None);
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let operation_id = runtime.next_operation_id();
+    let rx = SipRuntimeCache::global().insert_native_invite_waiter(
+        operation_id,
+        NativeInviteMetadata {
+            device_id: device_id.clone(),
+            channel_id: req.channel_id.clone(),
+            stream_id: talk_id.clone(),
+            ssrc: Some(req.ssrc),
+        },
+        INVITE_WAIT_TIMEOUT,
+    );
+    let protocol = pjsip_protocol_from_base(session.association.protocol);
+    let conf = SessionConf::get_session_by_conf();
+    let invite = SipOutboundInvite {
+        operation_id,
+        association_id: 0,
+        protocol,
+        target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
+        from_uri: format!("<sip:{}@{}>", conf.domain_id, conf.domain),
+        contact_uri: format!(
+            "<{}>",
+            target_uri(
+                &conf.domain_id,
+                &conf.wan_ip.to_string(),
+                conf.wan_port,
+                protocol,
+            )
+        ),
+        subject: Some(
+            req.subject
+                .unwrap_or_else(|| format!("{}:{},{}:0", req.channel_id, req.ssrc, conf.domain_id)),
+        ),
+        sdp: build_talk_sdp(TalkSdpOptions {
+            ip: req.media_ip,
+            port: req.media_port,
+            ssrc: req.ssrc,
+            payload_type: req.payload_type,
+            codec: req.codec,
+            mode: req.mode,
+        }),
+    };
+    if let Err(err) = runtime.send_invite(&session.association, invite) {
+        SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
         return Err(err);
     }
     match recv_with_timeout(rx, INVITE_WAIT_TIMEOUT).await {
@@ -352,7 +494,7 @@ pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInvi
             ))
         }
         Err(reason) => {
-            SipRuntimeCache::global().remove_stream_indexes(&talk_id, None);
+            SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
             Err(GlobalError::new_biz_error(
                 BaseErrorCode::Timeout.code(),
                 "device talk INVITE response timeout",
@@ -474,44 +616,29 @@ pub async fn download_invite_wait(
 }
 
 pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> GlobalResult<()> {
-    let key = req
+    let call_id = req
         .call_id
-        .clone()
-        .or_else(|| req.stream_id.clone())
-        .unwrap_or_else(|| device_id.to_string());
-    let rx = SipRuntimeCache::global().insert_bye_waiter(key.clone(), BYE_WAIT_TIMEOUT);
-    let bytes = match runtime()?.create_invite_stop(req).map_err(to_global_error) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            SipRuntimeCache::global().remove_bye_waiter(&key);
-            return Err(err);
-        }
-    };
-    if let Err(err) = send_to_registered_device(device_id, bytes).await {
-        SipRuntimeCache::global().remove_bye_waiter(&key);
-        return Err(err);
-    }
-    match recv_with_timeout(rx, BYE_WAIT_TIMEOUT).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(failure)) => Err(GlobalError::new_biz_error(
-            BaseErrorCode::InvalidState.code(),
-            "device rejected BYE",
-            |msg| {
-                error!(
-                    "device_id={device_id}; call_id={}; status={}; {msg}",
-                    failure.call_id, failure.status
-                )
-            },
-        )),
-        Err(reason) => {
-            SipRuntimeCache::global().remove_bye_waiter(&key);
-            Err(GlobalError::new_biz_error(
-                BaseErrorCode::Timeout.code(),
-                "device BYE response timeout",
-                |msg| error!("device_id={device_id}; key={key}; {msg}; reason={reason}"),
-            ))
-        }
-    }
+        .or_else(|| {
+            req.stream_id
+                .as_deref()
+                .and_then(GeneralCache::stream_call_id)
+        })
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "SIP dialog not found",
+                |msg| error!("device_id={device_id}; {msg}"),
+            )
+        })?;
+    send_native_dialog_and_wait(
+        device_id,
+        SipDialogMethod::Bye,
+        call_id,
+        None,
+        Vec::new(),
+        BYE_WAIT_TIMEOUT,
+    )
+    .await
 }
 
 pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
@@ -540,17 +667,29 @@ pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
 }
 
 pub async fn play_seek(device_id: &str, stream_id: &str, seek_second: u32) -> GlobalResult<()> {
-    let bytes = runtime()?
-        .create_playback_seek_info(stream_id, f64::from(seek_second))
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    let call_id = stream_call_id(stream_id)?;
+    send_native_dialog_and_wait(
+        device_id,
+        SipDialogMethod::Info,
+        call_id,
+        Some(CONTENT_TYPE_MANSRTSP.to_string()),
+        build_mansrtsp_seek_body(f64::from(seek_second), 1).into_bytes(),
+        REQUEST_WAIT_TIMEOUT,
+    )
+    .await
 }
 
 pub async fn play_speed(device_id: &str, stream_id: &str, speed: f32) -> GlobalResult<()> {
-    let bytes = runtime()?
-        .create_playback_speed_info(stream_id, speed)
-        .map_err(to_global_error)?;
-    send_request_and_wait(device_id, bytes).await
+    let call_id = stream_call_id(stream_id)?;
+    send_native_dialog_and_wait(
+        device_id,
+        SipDialogMethod::Info,
+        call_id,
+        Some(CONTENT_TYPE_MANSRTSP.to_string()),
+        build_mansrtsp_speed_body(speed, None, 1).into_bytes(),
+        REQUEST_WAIT_TIMEOUT,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -584,12 +723,4 @@ pub fn transport_protocol(
         TransMode::Udp if matches!(fallback, Protocol::TCP) => gmv_pjsip::SipTransportProtocol::Tcp,
         TransMode::Udp => gmv_pjsip::SipTransportProtocol::Udp,
     }
-}
-
-pub fn to_global_error(err: gmv_pjsip::SipError) -> GlobalError {
-    GlobalError::new_biz_error(
-        BaseErrorCode::InvalidState.code(),
-        &format!("pjsip operation failed: {err}"),
-        |msg| error!("{msg}"),
-    )
 }
