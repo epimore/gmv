@@ -5,12 +5,13 @@ use base::bytes::{Bytes, BytesMut};
 use base::dashmap::DashSet;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{debug, error};
+use base::log::{debug, error, info};
 use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, RawPacketEncoder};
 use base::net::state::{Association, Event, IoEventType, Package, Protocol, Zip};
 use base::tokio;
 use base::tokio::sync::mpsc::{Receiver, Sender};
 use base::tokio_util::sync::CancellationToken;
+use encoding_rs::GB18030;
 use gmv_pjsip::SipTransmit;
 
 pub use crate::gb::core::rw::RWContext;
@@ -181,6 +182,7 @@ async fn write_net(
                 match zip {
                     Zip::Data(package) => {
                         let association = package.association;
+                        log_sip_payload("发送", &association, package.data.as_ref());
                         if let Err(err) = writer
                             .write_to(
                                 package.data,
@@ -204,6 +206,10 @@ async fn write_net(
                         }
                     }
                     Zip::Event(event) => {
+                        info!(
+                            "发送: event={:?}, to={:?}",
+                            event.type_code, event.association
+                        );
                         if matches!(event.type_code, IoEventType::Close) {
                             if matches!(event.association.protocol, Protocol::ALL) {
                                 break;
@@ -262,6 +268,7 @@ pub(crate) async fn write_native_net(
             }
         };
         let association = Association::new(transmit.local_addr, transmit.remote_addr, protocol);
+        log_sip_payload("发送", &association, &transmit.data);
         let send_id = transmit.send_id;
         let association_id = transmit.association_id;
         let sent_bytes = transmit.data.len();
@@ -307,6 +314,21 @@ fn is_sip_keepalive_or_empty(data: &[u8]) -> bool {
             .all(|&byte| matches!(byte, b'\r' | b'\n' | b' ' | b'\t'))
 }
 
+fn compact_sip_payload(data: &[u8]) -> String {
+    let payload = match std::str::from_utf8(data) {
+        Ok(payload) => payload.into(),
+        Err(_) => GB18030.decode(data).0,
+    };
+    payload.replace('\r', "").replace('\n', "\\n")
+}
+
+fn log_sip_payload(direction: &str, association: &Association, data: &[u8]) {
+    debug!(
+        "{direction}:{association:?} 负载: {}",
+        compact_sip_payload(data)
+    );
+}
+
 pub(crate) async fn read_native(
     mut input: Receiver<Zip>,
     output: Sender<Zip>,
@@ -319,6 +341,7 @@ pub(crate) async fn read_native(
         }
         match zip {
             Zip::Data(Package { association, data }) => {
+                log_sip_payload("接收", &association, data.as_ref());
                 if is_sip_keepalive_or_empty(data.as_ref()) {
                     let _ = output
                         .send(Zip::Data(Package { association, data }))
@@ -333,6 +356,10 @@ pub(crate) async fn read_native(
                 }
             }
             Zip::Event(event) => {
+                info!(
+                    "接收: event={:?}, from={:?}",
+                    event.type_code, event.association
+                );
                 if matches!(event.type_code, IoEventType::Close) {
                     runtime.close_transport(&event.association, 1);
                     handle_tcp_connection_closed(&event.association);
@@ -348,7 +375,15 @@ mod tests {
     use base::net::rw::PacketSplitter;
     use base::net::state::{Association, Protocol};
 
-    use super::{RawChunkSplitter, TcpCloseSource, TcpCloseTracker};
+    use super::{RawChunkSplitter, TcpCloseSource, TcpCloseTracker, compact_sip_payload};
+
+    #[test]
+    fn sip_payload_log_is_single_line_and_reversible() {
+        assert_eq!(
+            compact_sip_payload(b"REGISTER sip:test SIP/2.0\r\nContent-Length: 0\r\n\r\n"),
+            "REGISTER sip:test SIP/2.0\\nContent-Length: 0\\n\\n"
+        );
+    }
 
     #[test]
     fn tcp_close_tracker_distinguishes_session_and_peer_closes() {

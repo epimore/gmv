@@ -3,7 +3,7 @@ log:
   prefix: session
   store_path: ./logs
   specify:
-    - crate_name: gmv_session::gb::io$  #信令日志
+    - crate_name: gmv_session::gb::io$  #信令及PJSIP日志
       level: debug #日志等级
       file_name_prefix: gb #日志文件前缀
     - crate_name: gmv_session::http  #请求日志
@@ -79,6 +79,5 @@ server:
 #        pub_port: 19568 #流媒体服务接收rtp流的端口
 #        local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
 #        local_port: 19570 #节点局域网端口,用于流媒体服务之间通信
-
 
 

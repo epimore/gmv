@@ -1,0 +1,23 @@
+INVITE sip:34020000001110000009@198.51.100.20:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.10:25600;rport;branch=z9hG4bK-download-normal
+Max-Forwards: 70
+From: <sip:34020000002000000001@3402000000>;tag=platform-download-normal
+To: <sip:34020000001110000009@198.51.100.20:5060>
+Contact: <sip:34020000002000000001@192.0.2.10:25600>
+Call-ID: download-normal@gmv.test
+CSeq: 22 INVITE
+Subject: 34020000001320000102:8201,34020000002000000001:0
+Content-Type: application/sdp
+Content-Length: 228
+
+v=0
+o=34020000001320000102 0 0 IN IP4 192.0.2.10
+s=Download
+u=34020000001320000102:0
+c=IN IP4 192.0.2.10
+t=1781308800 1781312400
+m=video 18568 RTP/AVP 96
+a=recvonly
+a=rtpmap:96 PS/90000
+a=downloadspeed:1
+y=0100008201

@@ -60,6 +60,11 @@ pub fn check(session_id: &str, token: &str) -> GlobalResult<()> {
 }
 
 #[cfg(test)]
+pub(crate) fn test_token_for_session_id(session_id: &str) -> String {
+    crypto::generate_token(&format!("{}@{}", KEY, session_id))
+}
+
+#[cfg(test)]
 mod test {
     #[test]
     fn t1() {

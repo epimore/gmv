@@ -9,6 +9,90 @@ use base::serde::{Deserialize, Serialize};
 use base::{serde_default, sqlx};
 use sqlx::FromRow;
 
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(test)]
+static TEST_STORAGE_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_FILE_ID: AtomicI64 = AtomicI64::new(1);
+#[cfg(test)]
+static TEST_STORAGE: OnceLock<Mutex<TestStorage>> = OnceLock::new();
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestStorage {
+    oauths: HashMap<String, GmvOauth>,
+    devices: HashMap<String, GmvDevice>,
+    records: HashMap<String, GmvRecord>,
+    files: HashMap<i64, GmvFileInfo>,
+    channels: Vec<GmvDeviceChannel>,
+}
+
+#[cfg(test)]
+fn test_storage() -> &'static Mutex<TestStorage> {
+    TEST_STORAGE.get_or_init(|| Mutex::new(TestStorage::default()))
+}
+
+#[cfg(test)]
+fn use_test_storage() -> bool {
+    TEST_STORAGE_ENABLED.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) fn test_storage_enabled() -> bool {
+    use_test_storage()
+}
+
+#[cfg(test)]
+pub(crate) struct TestStorageGuard;
+
+#[cfg(test)]
+impl Drop for TestStorageGuard {
+    fn drop(&mut self) {
+        TEST_STORAGE_ENABLED.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn enable_test_storage(oauth: GmvOauth) -> TestStorageGuard {
+    let mut storage = test_storage()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *storage = TestStorage::default();
+    storage.oauths.insert(oauth.device_id.clone(), oauth);
+    TEST_FILE_ID.store(1, Ordering::Release);
+    TEST_STORAGE_ENABLED.store(true, Ordering::Release);
+    TestStorageGuard
+}
+
+#[cfg(test)]
+pub(crate) fn test_file_ids() -> Vec<i64> {
+    let mut ids = test_storage()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .files
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids
+}
+
+#[cfg(test)]
+pub(crate) fn test_file_id_by_biz_id(biz_id: &str) -> Option<i64> {
+    test_storage()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .files
+        .iter()
+        .find_map(|(id, info)| (info.biz_id == biz_id).then_some(*id))
+}
+
 //CREATE TABLE `GMV_RECORD` (
 //   `BIZ_ID` varchar(128) NOT NULL COMMENT '业务ID',
 //   `DEVICE_ID` varchar(20) NOT NULL COMMENT '设备编号',
@@ -41,6 +125,15 @@ pub struct GmvRecord {
 
 impl GmvRecord {
     pub async fn rm_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .records
+                .remove(biz_id);
+            return Ok(());
+        }
         let pool = get_conn_by_pool();
         sqlx::query("delete from GMV_RECORD where biz_id=?")
             .bind(biz_id)
@@ -51,6 +144,15 @@ impl GmvRecord {
     }
 
     pub async fn insert_single_gmv_record(&self) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .records
+                .insert(self.biz_id.clone(), self.clone());
+            return Ok(());
+        }
         let pool = get_conn_by_pool();
         sqlx::query("insert into GMV_RECORD (BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,LT,STREAM_APP_NAME) values (?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&self.biz_id)
@@ -73,6 +175,21 @@ impl GmvRecord {
         device_id: &str,
         channel_id: &str,
     ) -> GlobalResult<Option<GmvRecord>> {
+        #[cfg(test)]
+        if use_test_storage() {
+            let storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return Ok(storage
+                .records
+                .values()
+                .find(|record| {
+                    record.state == 0
+                        && record.device_id == device_id
+                        && record.channel_id == channel_id
+                })
+                .cloned());
+        }
         let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvRecord>("select biz_id,device_id,channel_id,user_id,st,et,speed,ct,state,lt,stream_app_name from GMV_RECORD where state=0 and device_id=? and channel_id=?")
             .bind(device_id).bind(channel_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
@@ -80,6 +197,15 @@ impl GmvRecord {
     }
 
     pub async fn query_gmv_record_by_biz_id(biz_id: &str) -> GlobalResult<Option<GmvRecord>> {
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .records
+                .get(biz_id)
+                .cloned());
+        }
         let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvRecord>("select biz_id,device_id,channel_id,user_id,st,et,speed,ct,state,lt,stream_app_name from GMV_RECORD where biz_id=?")
             .bind(biz_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
@@ -87,6 +213,15 @@ impl GmvRecord {
     }
 
     pub async fn update_gmv_record_by_biz_id(&self) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .records
+                .insert(self.biz_id.clone(), self.clone());
+            return Ok(());
+        }
         let pool = get_conn_by_pool();
         sqlx::query("update GMV_RECORD set state=?,lt=? where biz_id=?")
             .bind(&self.state)
@@ -118,6 +253,15 @@ pub struct GmvOauth {
 serde_default!(default_heartbeat_sec, u8, 60);
 impl GmvOauth {
     pub async fn read_gmv_oauth_by_device_id(device_id: &str) -> GlobalResult<Option<GmvOauth>> {
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .oauths
+                .get(device_id)
+                .cloned());
+        }
         let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvOauth>("select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=? and DEL=0 and STATUS=1")
             .bind(device_id).fetch_optional(pool).await.hand_log(|msg| error!("{msg}"))?;
@@ -129,6 +273,17 @@ impl GmvOauth {
     ) -> GlobalResult<Vec<GmvOauth>> {
         if device_ids.is_empty() {
             return Ok(Vec::new());
+        }
+
+        #[cfg(test)]
+        if use_test_storage() {
+            let storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return Ok(device_ids
+                .iter()
+                .filter_map(|device_id| storage.oauths.get(device_id).cloned())
+                .collect());
         }
 
         let pool = get_conn_by_pool();
@@ -168,6 +323,15 @@ impl GmvDevice {
     pub async fn query_gmv_device_by_device_id(
         device_id: &String,
     ) -> GlobalResult<Option<GmvDevice>> {
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .devices
+                .get(device_id)
+                .cloned());
+        }
         let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, Self>(
             r#"select device_id,transport,register_expires,
@@ -182,6 +346,15 @@ impl GmvDevice {
     }
 
     pub async fn insert_single_gmv_device_by_register(&self) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .devices
+                .insert(self.device_id.clone(), self.clone());
+            return Ok(());
+        }
         let pool = get_conn_by_pool();
         sqlx::query(r#"insert into GMV_DEVICE (device_id,transport,register_expires,
         register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?)
@@ -203,6 +376,18 @@ impl GmvDevice {
     }
 
     pub async fn expire_online_by_device_id(device_id: &str) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            if let Some(device) = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .devices
+                .get_mut(device_id)
+            {
+                device.online_expire_time = Some(Local::now().naive_local());
+            }
+            return Ok(());
+        }
         let pool = get_conn_by_pool();
         sqlx::query("update GMV_DEVICE set online_expire_time=? where device_id=?")
             .bind(Local::now().naive_local())
@@ -214,6 +399,18 @@ impl GmvDevice {
     }
 
     pub async fn refresh_online_expire_time_by_device_id(device_id: &str) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            if let Some(device) = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .devices
+                .get_mut(device_id)
+            {
+                device.online_expire_time = Some(Local::now().naive_local());
+            }
+            return Ok(());
+        }
         let pool = get_conn_by_pool();
         sqlx::query(
             r#"update GMV_DEVICE d
@@ -241,6 +438,11 @@ pub struct GmvDeviceExt {
 
 impl GmvDeviceExt {
     pub async fn update_gmv_device_ext_info(vs: Vec<(String, String)>) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            let _ = Self::build(vs);
+            return Ok(());
+        }
         let ext = Self::build(vs);
         let pool = get_conn_by_pool();
         sqlx::query("update GMV_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?")
@@ -315,6 +517,15 @@ impl GmvDeviceChannel {
         vs: Vec<(String, String)>,
     ) -> GlobalResult<Vec<GmvDeviceChannel>> {
         let dc_ls = Self::build(device_id, vs);
+        #[cfg(test)]
+        if use_test_storage() {
+            test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .channels
+                .extend(dc_ls.clone());
+            return Ok(dc_ls);
+        }
         let pool = get_conn_by_pool();
         let mut builder = sqlx::query_builder::QueryBuilder::new("INSERT INTO GMV_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer,
          model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password,
@@ -449,7 +660,7 @@ impl GmvDeviceChannel {
     }
 }
 
-#[derive(Debug, FromRow, Default)]
+#[derive(Debug, Clone, FromRow, Default)]
 pub struct GmvFileInfo {
     pub id: Option<i64>,
     pub device_id: String,
@@ -469,6 +680,21 @@ pub struct GmvFileInfo {
 
 impl GmvFileInfo {
     pub async fn query_gmv_file_info_by_id(id: i64) -> GlobalResult<GmvFileInfo> {
+        #[cfg(test)]
+        if use_test_storage() {
+            return test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .files
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| {
+                    base::exception::GlobalError::new_sys_error(
+                        "test file metadata not found",
+                        |_| {},
+                    )
+                });
+        }
         let pool = get_conn_by_pool();
         let res = sqlx::query_as::<_, GmvFileInfo>("select id,device_id,channel_id,biz_time,biz_id,file_type,file_size,file_name,file_format,dir_path,abs_path,note,is_del,create_time from GMV_FILE_INFO where id=?")
             .bind(id)
@@ -478,6 +704,15 @@ impl GmvFileInfo {
     }
 
     pub async fn rm_gmv_file_info_by_id(biz_id: i64) -> GlobalResult<()> {
+        #[cfg(test)]
+        if use_test_storage() {
+            test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .files
+                .remove(&biz_id);
+            return Ok(());
+        }
         let pool = get_conn_by_pool();
         sqlx::query("delete from GMV_FILE_INFO where id=?")
             .bind(biz_id)
@@ -489,6 +724,20 @@ impl GmvFileInfo {
 
     pub async fn insert_gmv_file_info(arr: Vec<Self>) -> GlobalResult<()> {
         if arr.is_empty() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for mut info in arr {
+                let id = info
+                    .id
+                    .unwrap_or_else(|| TEST_FILE_ID.fetch_add(1, Ordering::AcqRel));
+                info.id = Some(id);
+                storage.files.insert(id, info);
+            }
             return Ok(());
         }
         let pool = get_conn_by_pool();

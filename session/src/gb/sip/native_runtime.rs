@@ -33,8 +33,11 @@ const AUTH_BATCH_WINDOW: Duration = Duration::from_millis(5);
 const AUTH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PENDING_AUTH: u32 = 20_000;
 const RUNTIME_COMMAND_CAPACITY: usize = 32_768;
+const PJSIP_LOG_TARGET: &str = "gmv_session::gb::io";
 pub const NATIVE_SIP_IO_CAPACITY: usize = 32_768;
 static NATIVE_SIP_RUNTIME: OnceLock<NativeSipRuntimeHandle> = OnceLock::new();
+#[cfg(test)]
+pub(crate) static RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct AuthLookup {
     lookup_id: u64,
@@ -308,6 +311,7 @@ impl NativeSipRuntimeService {
                     bind_address,
                     port,
                     auth_realm: realm,
+                    log_target: PJSIP_LOG_TARGET.into(),
                     auth_lookup_timeout: AUTH_LOOKUP_TIMEOUT,
                     max_pending_auth: MAX_PENDING_AUTH,
                     ..SipRuntimeConfig::default()
@@ -817,7 +821,7 @@ fn auth_result(
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use base::bytes::Bytes;
@@ -827,11 +831,9 @@ mod tests {
     use base::tokio_util::sync::CancellationToken;
     use gmv_pjsip::{SipAuthLookupResult, SipOutboundMessage, SipRuntimeEventKind};
 
-    use super::{NativeSipRuntimeService, auth_result};
+    use super::{NativeSipRuntimeService, RUNTIME_TEST_LOCK, auth_result};
     use crate::gb::sip::auth::DeviceAuthCache;
     use crate::storage::entity::GmvOauth;
-
-    static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn header_value<'a>(message: &'a str, name: &str) -> &'a str {
         message

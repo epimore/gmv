@@ -40,9 +40,9 @@ pub fn run(
             .hand_log(|msg| error!("rtp io get recv_buffer failed: {msg}"))?;
 
         debug!(
-        "rtp udp recv_buffer configured: requested={}, actual={}",
-        RECV_BUF_SIZE, actual_size
-    );
+            "rtp udp recv_buffer configured: requested={}, actual={}",
+            RECV_BUF_SIZE, actual_size
+        );
 
         tu.1 = Some(UdpSocket::from(socket2));
     }

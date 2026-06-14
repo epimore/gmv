@@ -66,15 +66,7 @@ impl Http {
             .hand_log(|msg| error!("{msg}"))?;
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         // 创建包含所有路由的统一Router
-        let mut app = Router::new()
-            .nest("/edge", edge::routes())
-            .nest("/hook", hook::routes())
-            .nest("/api", api::routes());
-        #[cfg(debug_assertions)]
-        {
-            use utoipa_swagger_ui::SwaggerUi;
-            app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
-        }
+        let app = routes();
         let server = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -114,6 +106,19 @@ impl Http {
             .body(Body::from("500 Internal Server Error"))
             .unwrap()
     }
+}
+
+pub(crate) fn routes() -> Router {
+    let mut app = Router::new()
+        .nest("/edge", edge::routes())
+        .nest("/hook", hook::routes())
+        .nest("/api", api::routes());
+    #[cfg(debug_assertions)]
+    {
+        use utoipa_swagger_ui::SwaggerUi;
+        app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
+    }
+    app
 }
 
 pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {

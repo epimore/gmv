@@ -1,0 +1,21 @@
+INVITE sip:34020000001110000009@198.51.100.20:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.10:25600;rport;branch=z9hG4bK-talk-normal
+Max-Forwards: 70
+From: <sip:34020000002000000001@3402000000>;tag=platform-talk-normal
+To: <sip:34020000001110000009@198.51.100.20:5060>
+Contact: <sip:34020000002000000001@192.0.2.10:25600>
+Call-ID: talk-normal@gmv.test
+CSeq: 23 INVITE
+Subject: 34020000001320000102:8202,34020000002000000001:0
+Content-Type: application/sdp
+Content-Length: 160
+
+v=0
+o=34020000001320000102 0 0 IN IP4 192.0.2.10
+s=Talk
+c=IN IP4 192.0.2.10
+t=0 0
+m=audio 18570 RTP/AVP 8
+a=sendrecv
+a=rtpmap:8 PCMA/8000
+y=0200008202

@@ -1,0 +1,487 @@
+version: 1
+source: synthetic-wire
+derived_from: 2026-06-13-live-invite-log
+sanitization: rfc5737-addresses-and-fixed-gb28181-identifiers
+generated_by: session/tests/sip_corpus.rs
+integrity_test: generated_sip_corpus_is_current_and_complete
+runtime_test: normal_gb28181_business_dialogues_use_custom_transport
+business_flow_test: all_business_http_apis_complete_the_normal_signaling_flow
+quality:
+  scenario_count: 18
+  packet_count: 44
+  covered_business_api_count: 20
+  failed_scenario_ids: []
+  uncovered_business_apis: []
+packets:
+  - scenario_id: register-normal
+    file: register-normal-01-request.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: REGISTER
+    expected_status: null
+    source: synthetic-wire
+    sha256: aebb4a9b272eddf1ac210a586cae0d7efba5a8a655b24f9522dc170e5029870c
+    business_apis: []
+  - scenario_id: register-normal
+    file: register-normal-02-200.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: REGISTER
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 1d68eb013d06086648a552299175a7c82e5a85498df35a3849bf489489781c47
+    business_apis: []
+  - scenario_id: options-normal
+    file: options-normal-01-request.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: OPTIONS
+    expected_status: null
+    source: synthetic-wire
+    sha256: 7634b29ca3a7742d50a46fe861b4dd6413489e18f941bd0d2ca50f68d9e26f19
+    business_apis: []
+  - scenario_id: options-normal
+    file: options-normal-02-200.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: OPTIONS
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 7116599f20af47f0c11f40cdd7883c865d165fd2a03b73e8c397254c98e87666
+    business_apis: []
+  - scenario_id: keepalive-normal
+    file: keepalive-normal-01-request.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 4097c046029e847c33204a43e75ce743b3a97f4aab2d558d9b6e68ea555b8430
+    business_apis: []
+  - scenario_id: keepalive-normal
+    file: keepalive-normal-02-200.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 2b8035543b019fd6625052e9bf7c2f920745d527d515730a389b47487e5d2700
+    business_apis: []
+  - scenario_id: device-info-normal
+    file: device-info-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: eb81a5d33a99622b25471e75717eb1886c2f423ac6e4fe16865fe8d9aa774109
+    business_apis: []
+  - scenario_id: device-info-normal
+    file: device-info-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: dfd11b6b1e56cfddc91e9b3877abaa4ba107bfc2aa3083d9c9ff002c61a2fbf6
+    business_apis: []
+  - scenario_id: catalog-normal
+    file: catalog-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: d65fa6eef412f3daa3dde607e31573ee003b162d265ce873b4a1b8ad46930c5f
+    business_apis: []
+  - scenario_id: catalog-normal
+    file: catalog-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: c90ce3e7e155c435605fcb85761c8211cb5f607ec15a39ffdb8857d080c712cb
+    business_apis: []
+  - scenario_id: record-info-normal
+    file: record-info-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: ddf09c445035d772ccb807cf87f2529c9a9de8a89a8508339f837abcbc4b1eef
+    business_apis: []
+  - scenario_id: record-info-normal
+    file: record-info-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: a093b45ec2884487f7e367dab981d00bc9856c45ae76467e8dffba020a9e6fae
+    business_apis: []
+  - scenario_id: preset-normal
+    file: preset-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 473decc3d609e97f6efd860547ea8bc4bb120812de3f8488adf70149da789677
+    business_apis: []
+  - scenario_id: preset-normal
+    file: preset-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 02df47c08d95f6f9c16a9beb077f1e3306109da81b56de0e8c31b94c616a3433
+    business_apis: []
+  - scenario_id: ptz-normal
+    file: ptz-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 19c5f10dfa0c92726c85ff06930905674521dfaa1f7cb876390f7af7a22e8a29
+    business_apis:
+      - /api/control/ptz
+  - scenario_id: ptz-normal
+    file: ptz-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 23ccf885954d668d2805d475830b311f6160c25bdc341192294c6f95ec2817ef
+    business_apis:
+      - /api/control/ptz
+  - scenario_id: snapshot-normal
+    file: snapshot-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: afe94a9c6976c2416fb40a765509472420615684983c6f48b16580c4171ec771
+    business_apis:
+      - /edge/snapshot/image
+      - /edge/upload/picture/{token}
+  - scenario_id: snapshot-normal
+    file: snapshot-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 407cb0573353e7f23065285d8b3ffdf008c405370df803e00884e5dc36bee6e1
+    business_apis:
+      - /edge/snapshot/image
+      - /edge/upload/picture/{token}
+  - scenario_id: live-normal
+    file: live-normal-01-invite.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 83755d2d44061c422bcaa994325b10341e23d855087f0b8e64f419aa95fa5b5a
+    business_apis:
+      - /api/play/live/stream
+      - /hook/stream/register
+      - /hook/on/play
+      - /hook/off/play
+  - scenario_id: live-normal
+    file: live-normal-02-100.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 100
+    source: synthetic-wire
+    sha256: 4db67ca36d2a3b9bbb855f76568db713cc8836507cc30f9b3b8cadfdef9a6495
+    business_apis:
+      - /api/play/live/stream
+      - /hook/stream/register
+      - /hook/on/play
+      - /hook/off/play
+  - scenario_id: live-normal
+    file: live-normal-03-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: f57e0f13fd60ad62fa3dadc0024687357cba6cb39e6aea81950be34797e4bff3
+    business_apis:
+      - /api/play/live/stream
+      - /hook/stream/register
+      - /hook/on/play
+      - /hook/off/play
+  - scenario_id: live-normal
+    file: live-normal-04-ack.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    source: synthetic-wire
+    sha256: 3f592b85cc548d96de01212f300843e56fc6786d7ede8eaa75957ef9417778f6
+    business_apis:
+      - /api/play/live/stream
+      - /hook/stream/register
+      - /hook/on/play
+      - /hook/off/play
+  - scenario_id: playback-normal
+    file: playback-normal-01-invite.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    source: synthetic-wire
+    sha256: deab6812a0d026ff95b1078711b325c1b73a9a34e2672c80db0ce3b03a138cd9
+    business_apis:
+      - /api/play/back/stream
+      - /api/play/back/seek
+      - /api/play/back/speed
+  - scenario_id: playback-normal
+    file: playback-normal-02-100.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 100
+    source: synthetic-wire
+    sha256: 02cab44290fc7a68c325cdcb4f5c5726f547a8b1f3f5f51087f61d92a6292dcc
+    business_apis:
+      - /api/play/back/stream
+      - /api/play/back/seek
+      - /api/play/back/speed
+  - scenario_id: playback-normal
+    file: playback-normal-03-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: d07242a46eac0b454b3718c2a45180739e85ee8b609cbbd87e263eb06023f17e
+    business_apis:
+      - /api/play/back/stream
+      - /api/play/back/seek
+      - /api/play/back/speed
+  - scenario_id: playback-normal
+    file: playback-normal-04-ack.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    source: synthetic-wire
+    sha256: 4920a029a2e881066d8a176c59cb86f6405bc163b556b3ac5976b8cb8f999bc8
+    business_apis:
+      - /api/play/back/stream
+      - /api/play/back/seek
+      - /api/play/back/speed
+  - scenario_id: download-normal
+    file: download-normal-01-invite.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 63a33153564010b6f3615f860335c893eae3d84326b3e02c8e38345fb0866057
+    business_apis:
+      - /api/download/mp4
+      - /api/download/stop
+      - /api/downing/info
+      - /api/rm/file
+      - /hook/end/record
+  - scenario_id: download-normal
+    file: download-normal-02-100.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 100
+    source: synthetic-wire
+    sha256: 1592272db9412aacd6783127d17b37e7d4cf704da0be3d22ef3d04276fd230bd
+    business_apis:
+      - /api/download/mp4
+      - /api/download/stop
+      - /api/downing/info
+      - /api/rm/file
+      - /hook/end/record
+  - scenario_id: download-normal
+    file: download-normal-03-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: a194e9529cbf681f5a583ec385e5efe4124ed9697eb67cd64453270c67015c04
+    business_apis:
+      - /api/download/mp4
+      - /api/download/stop
+      - /api/downing/info
+      - /api/rm/file
+      - /hook/end/record
+  - scenario_id: download-normal
+    file: download-normal-04-ack.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    source: synthetic-wire
+    sha256: df150173a4fd18dd12c2de002321025d504db5e54cc1615a31378dc620f99444
+    business_apis:
+      - /api/download/mp4
+      - /api/download/stop
+      - /api/downing/info
+      - /api/rm/file
+      - /hook/end/record
+  - scenario_id: talk-normal
+    file: talk-normal-01-invite.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 7f03f9b45d86f74f7fab5e71362e863e9be03f617894519172432e3b7bc96e90
+    business_apis:
+      - /api/talk/start
+      - /api/talk/stop
+  - scenario_id: talk-normal
+    file: talk-normal-02-100.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 100
+    source: synthetic-wire
+    sha256: a5c1ab13897d7188c921a613afcbdc420bfd2cf0794cfb3417f4cc8b94c7330f
+    business_apis:
+      - /api/talk/start
+      - /api/talk/stop
+  - scenario_id: talk-normal
+    file: talk-normal-03-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: c78b1d3f614bef8b701ff557df65a958b183871053be084d7dd609a571dd6843
+    business_apis:
+      - /api/talk/start
+      - /api/talk/stop
+  - scenario_id: talk-normal
+    file: talk-normal-04-ack.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    source: synthetic-wire
+    sha256: 1dc16cdf0d040fa21bbcd677677c882ee8c7b60ed4b437ce65ac2f9392612995
+    business_apis:
+      - /api/talk/start
+      - /api/talk/stop
+  - scenario_id: seek-normal
+    file: seek-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INFO
+    expected_status: null
+    source: synthetic-wire
+    sha256: d5e0519e0f572402130541df904dd5bb2090508ced6de67af0bf33499f92ab23
+    business_apis:
+      - /api/play/back/seek
+  - scenario_id: seek-normal
+    file: seek-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INFO
+    expected_status: 200
+    source: synthetic-wire
+    sha256: e7bc45248cae6ba27fac799106631982a9e1177be7e80265497ead24980912bc
+    business_apis:
+      - /api/play/back/seek
+  - scenario_id: speed-normal
+    file: speed-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INFO
+    expected_status: null
+    source: synthetic-wire
+    sha256: 65a6da7aa3ba1cf692ea40cff077b6aaf30a091e0dea14c9539d91a83333688e
+    business_apis:
+      - /api/play/back/speed
+  - scenario_id: speed-normal
+    file: speed-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INFO
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 96105206a1898cc81166a63a2ec66bcc3e7c50538caf25ad83c6e7664e5ea8e4
+    business_apis:
+      - /api/play/back/speed
+  - scenario_id: bye-normal
+    file: bye-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: BYE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 5722bad3ad605424ee165dfb42b6a5e9fb2a06fcbeb83305f39b40aa57b299d6
+    business_apis:
+      - /api/download/stop
+      - /api/talk/stop
+      - /hook/stream/input/timeout
+      - /hook/stream/idle
+      - /hook/talk/closed
+  - scenario_id: bye-normal
+    file: bye-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: BYE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 68a9c1fe62dbe0b04f1145581cedebc344db7a0929d200cb4cfb791f667d3257
+    business_apis:
+      - /api/download/stop
+      - /api/talk/stop
+      - /hook/stream/input/timeout
+      - /hook/stream/idle
+      - /hook/talk/closed
+  - scenario_id: subscribe-normal
+    file: subscribe-normal-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: SUBSCRIBE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 468b879325b0bc525f1a24f6927358a6325462ab8a4efbd9dd59d52dcb061bc9
+    business_apis: []
+  - scenario_id: subscribe-normal
+    file: subscribe-normal-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: SUBSCRIBE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 7c2767b465418b15e554327966ecba6e5e130a2474e86ff8943af98592eef9e2
+    business_apis: []
+  - scenario_id: notify-normal
+    file: notify-normal-01-request.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: NOTIFY
+    expected_status: null
+    source: synthetic-wire
+    sha256: f8c435feff96f9d63b75da4bb80cafaa31bf94e1c93f0eb42665fec7d3b99482
+    business_apis: []
+  - scenario_id: notify-normal
+    file: notify-normal-02-200.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: NOTIFY
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 62233f2fc9591e9e736624f7870d279181b97b777b9a2339a27f44b4604b13e5
+    business_apis: []
