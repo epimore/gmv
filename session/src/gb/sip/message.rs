@@ -16,9 +16,15 @@ pub enum GbMessageKind {
     Alarm,
     RecordInfo,
     MediaStatus,
+    DeviceStatus,
     DeviceControl,
     DeviceConfig,
+    ConfigDownload,
     PresetQuery,
+    Broadcast,
+    PtzPosition,
+    CruiseTrackListQuery,
+    CruiseTrackQuery,
     UploadSnapshotFinished,
     Notify,
     Options,
@@ -76,10 +82,18 @@ impl GbMessageEvent {
             Some("Alarm") => GbMessageKind::Alarm,
             Some("RecordInfo") => GbMessageKind::RecordInfo,
             Some("MediaStatus") => GbMessageKind::MediaStatus,
+            Some("DeviceStatus") => GbMessageKind::DeviceStatus,
             Some("DeviceControl") => GbMessageKind::DeviceControl,
             Some("DeviceConfig") => GbMessageKind::DeviceConfig,
+            Some("ConfigDownload") => GbMessageKind::ConfigDownload,
             Some("PresetQuery") => GbMessageKind::PresetQuery,
-            Some("UploadSnapshotFinished") => GbMessageKind::UploadSnapshotFinished,
+            Some("Broadcast") => GbMessageKind::Broadcast,
+            Some("PTZPosition") => GbMessageKind::PtzPosition,
+            Some("CruiseTrackListQuery") => GbMessageKind::CruiseTrackListQuery,
+            Some("CruiseTrackQuery") => GbMessageKind::CruiseTrackQuery,
+            Some("UploadSnapShotFinished" | "UploadSnapshotFinished") => {
+                GbMessageKind::UploadSnapshotFinished
+            }
             _ => kind,
         };
 
@@ -185,6 +199,81 @@ impl CreateDeviceMessageRequest {
         Self::xml(device_id, device_host, device_port, protocol, body)
     }
 
+    pub fn device_status_query(
+        device_id: impl Into<String>,
+        device_host: impl Into<String>,
+        device_port: u16,
+        protocol: SipTransportProtocol,
+        sn: u32,
+    ) -> Self {
+        let device_id = device_id.into();
+        let body = xml::build_device_status_query(sn, &device_id);
+        Self::xml(device_id, device_host, device_port, protocol, body)
+    }
+
+    pub fn config_download_query(
+        device_id: impl Into<String>,
+        device_host: impl Into<String>,
+        device_port: u16,
+        protocol: SipTransportProtocol,
+        sn: u32,
+        config_type: &str,
+    ) -> Self {
+        let device_id = device_id.into();
+        let body = xml::build_config_download_query(sn, &device_id, config_type);
+        Self::xml(device_id, device_host, device_port, protocol, body)
+    }
+
+    pub fn ptz_position_query(
+        device_id: impl Into<String>,
+        device_host: impl Into<String>,
+        device_port: u16,
+        protocol: SipTransportProtocol,
+        sn: u32,
+    ) -> Self {
+        let device_id = device_id.into();
+        let body = xml::build_ptz_position_query(sn, &device_id);
+        Self::xml(device_id, device_host, device_port, protocol, body)
+    }
+
+    pub fn cruise_track_list_query(
+        device_id: impl Into<String>,
+        device_host: impl Into<String>,
+        device_port: u16,
+        protocol: SipTransportProtocol,
+        sn: u32,
+    ) -> Self {
+        let device_id = device_id.into();
+        let body = xml::build_cruise_track_list_query(sn, &device_id);
+        Self::xml(device_id, device_host, device_port, protocol, body)
+    }
+
+    pub fn cruise_track_query(
+        device_id: impl Into<String>,
+        device_host: impl Into<String>,
+        device_port: u16,
+        protocol: SipTransportProtocol,
+        sn: u32,
+        number: u32,
+    ) -> Self {
+        let device_id = device_id.into();
+        let body = xml::build_cruise_track_query(sn, &device_id, number);
+        Self::xml(device_id, device_host, device_port, protocol, body)
+    }
+
+    pub fn broadcast_notify(
+        target_id: impl Into<String>,
+        device_host: impl Into<String>,
+        device_port: u16,
+        protocol: SipTransportProtocol,
+        sn: u32,
+        source_id: &str,
+    ) -> Self {
+        let target_id = target_id.into();
+        let body = xml::build_broadcast_notify(sn, source_id, &target_id);
+        Self::xml(target_id, device_host, device_port, protocol, body)
+    }
+
     pub fn record_info_query(
         device_id: impl Into<String>,
         device_host: impl Into<String>,
@@ -256,5 +345,68 @@ pub fn target_uri(
         SipTransportProtocol::Udp => format!("sip:{device_id}@{host}:{port}"),
         SipTransportProtocol::Tcp => format!("sip:{device_id}@{host}:{port};transport=tcp"),
         SipTransportProtocol::Tls => format!("sips:{device_id}@{host}:{port};transport=tls"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use base::bytes::Bytes;
+    use gmv_pjsip::{SipAssociation, SipMethod, SipTransportProtocol};
+
+    use super::{GB_XML_CONTENT_TYPE, GbMessageEvent, GbMessageKind};
+
+    fn association() -> SipAssociation {
+        SipAssociation {
+            local_addr: "192.0.2.10:5060".parse::<SocketAddr>().unwrap(),
+            remote_addr: "198.51.100.20:5060".parse::<SocketAddr>().unwrap(),
+            protocol: SipTransportProtocol::Udp,
+        }
+    }
+
+    fn classify(cmd_type: &str) -> GbMessageKind {
+        let body = format!(
+            "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n\
+<Response>\r\n\
+<CmdType>{cmd_type}</CmdType>\r\n\
+<SN>1</SN>\r\n\
+<DeviceID>34020000001320000001</DeviceID>\r\n\
+</Response>\r\n"
+        );
+        GbMessageEvent::from_parts(
+            GbMessageKind::Unknown,
+            Some(SipMethod::Message),
+            None,
+            Some("message-classify".into()),
+            Some(1),
+            association(),
+            Some(GB_XML_CONTENT_TYPE.into()),
+            None,
+            None,
+            None,
+            None,
+            Bytes::from(body),
+            None,
+        )
+        .kind
+    }
+
+    #[test]
+    fn classifies_reference_cmd_types() {
+        for (cmd_type, expected) in [
+            ("DeviceStatus", GbMessageKind::DeviceStatus),
+            ("Broadcast", GbMessageKind::Broadcast),
+            ("ConfigDownload", GbMessageKind::ConfigDownload),
+            ("PTZPosition", GbMessageKind::PtzPosition),
+            ("CruiseTrackListQuery", GbMessageKind::CruiseTrackListQuery),
+            ("CruiseTrackQuery", GbMessageKind::CruiseTrackQuery),
+            (
+                "UploadSnapShotFinished",
+                GbMessageKind::UploadSnapshotFinished,
+            ),
+        ] {
+            assert_eq!(classify(cmd_type), expected, "{cmd_type}");
+        }
     }
 }

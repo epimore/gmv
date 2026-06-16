@@ -27,6 +27,28 @@ GMV_UPDATE_SIP_CORPUS=1 ~/.cargo/bin/cargo test --test sip_corpus
   normal_flow_tests::all_business_http_apis_complete_the_normal_signaling_flow
 ```
 
+## Standardized Reference Corpus
+
+`reference/` 保存用户提供的 GB/T 28181-2016/2022 标准化 SIP 基准集：
+
+- `gbt28181-2016-2022-baseline.md`：原始 Markdown 基准，SHA-256 固定为
+  `2d89bb70302b80f83e1aa9d8956c36d95ddb123c3f0bdf4c5c2519333319a262`。
+- `manifest.yaml`：由 `session/tests/sip_corpus.rs` 生成，记录 26 个 TC、108 个 SIP 报文、
+  方法分布、方向、Call-ID、CSeq、Content-Type、Content-Length 和逐报文 SHA-256。
+- `extracted/`：从 Markdown fenced `sip` block 提取出的 108 个 CRLF 线格报文。
+
+该语料来源为 `standardized-reference`，用于协议质量监控和回归校验；它不是未加工的真实厂商固件抓包，
+因此不替代下方 Required Inventory 中仍需采集的真实设备 corpus。
+
+校验和显式重建：
+
+```bash
+cd /home/ubuntu20/code/rs/mv/github/epimore/gmv/session
+GMV_UPDATE_SIP_REFERENCE=1 ~/.cargo/bin/cargo test --test sip_corpus \
+  reference_sip_baseline_is_current_and_complete
+~/.cargo/bin/cargo test --test sip_corpus -- --nocapture
+```
+
 本目录保存 PJSIP 迁移使用的脱敏真实设备报文。2026-06-12 基线调查未找到业务
 `register.txt`、pcap 或 GMV 自有 SIP fixture；当前目录只有接收规范，不能视为 G0
 真实报文 corpus 已完成。

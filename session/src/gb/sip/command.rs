@@ -169,6 +169,27 @@ fn device_not_connected(device_id: &str) -> GlobalError {
     )
 }
 
+fn format_gb_ssrc(ssrc: u32) -> String {
+    format!("{ssrc:010}")
+}
+
+fn normalize_gb_ssrc(ssrc: &str) -> GlobalResult<String> {
+    let ssrc = ssrc.trim();
+    if ssrc.len() != 10 || !ssrc.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "invalid GB28181 SSRC",
+            |msg| error!("{msg}: ssrc={ssrc}"),
+        ));
+    }
+    Ok(ssrc.to_string())
+}
+
+fn invite_subject(channel_id: &str, receiver_id: &str, ssrc: u32) -> String {
+    let ssrc = format_gb_ssrc(ssrc);
+    format!("{channel_id}:{ssrc},{receiver_id}:{ssrc}")
+}
+
 pub async fn query_catalog(device_id: &str, sn: u32) -> GlobalResult<()> {
     let (host, port, proto) = connected_target(device_id)?;
     send_native_message_and_wait(CreateDeviceMessageRequest::catalog_query(
@@ -340,7 +361,7 @@ pub async fn invite_play(req: InvitePlayRequest) -> GlobalResult<()> {
                 )
             ),
             subject: Some(req.subject.unwrap_or_else(|| {
-                format!("{}:{},{}:0", req.channel_id, req.ssrc, conf.domain_id)
+                invite_subject(&req.channel_id, conf.media_receiver_id(), req.ssrc)
             })),
             sdp,
         },
@@ -390,10 +411,9 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
                 protocol,
             )
         ),
-        subject: Some(
-            req.subject
-                .unwrap_or_else(|| format!("{}:{},{}:0", req.channel_id, req.ssrc, conf.domain_id)),
-        ),
+        subject: Some(req.subject.unwrap_or_else(|| {
+            invite_subject(&req.channel_id, conf.media_receiver_id(), req.ssrc)
+        })),
         sdp,
     };
     if let Err(err) = runtime.send_invite(&session.association, invite) {
@@ -461,10 +481,9 @@ pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInvi
                 protocol,
             )
         ),
-        subject: Some(
-            req.subject
-                .unwrap_or_else(|| format!("{}:{},{}:0", req.channel_id, req.ssrc, conf.domain_id)),
-        ),
+        subject: Some(req.subject.unwrap_or_else(|| {
+            invite_subject(&req.channel_id, conf.media_receiver_id(), req.ssrc)
+        })),
         sdp: build_talk_sdp(TalkSdpOptions {
             ip: req.media_ip,
             port: req.media_port,
@@ -479,7 +498,20 @@ pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInvi
         return Err(err);
     }
     match recv_with_timeout(rx, INVITE_WAIT_TIMEOUT).await {
-        Ok(Ok(event)) => Ok(event),
+        Ok(Ok(event)) => {
+            let expected_ssrc = format_gb_ssrc(req.ssrc);
+            if let Err(err) = sdp::validate_invite_answer_sdp(&event.remote_sdp, &expected_ssrc) {
+                close_invite_after_answer_error(
+                    &device_id,
+                    &talk_id,
+                    &event,
+                    "invalid talk answer SDP",
+                )
+                .await;
+                return Err(err);
+            }
+            Ok(event)
+        }
         Ok(Err(failure)) => {
             SipRuntimeCache::global().remove_stream_indexes(&talk_id, Some(&failure.call_id));
             Err(GlobalError::new_biz_error(
@@ -504,6 +536,57 @@ pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInvi
     }
 }
 
+async fn close_invite_after_answer_error(
+    device_id: &str,
+    stream_id: &str,
+    accepted: &GbInviteAcceptedEvent,
+    reason: &str,
+) {
+    if let Err(err) = invite_stop_by_device(
+        device_id,
+        InviteStopRequest {
+            call_id: Some(accepted.call_id.clone()),
+            stream_id: Some(stream_id.to_string()),
+        },
+    )
+    .await
+    {
+        error!(
+            "device_id={device_id}; stream_id={stream_id}; call_id={}; \
+             failed to close invalid SDP dialog: {:?}",
+            accepted.call_id, err
+        );
+    }
+    SipRuntimeCache::global().remove_stream_indexes(stream_id, Some(&accepted.call_id));
+    error!(
+        "device_id={device_id}; stream_id={stream_id}; call_id={}; {reason}",
+        accepted.call_id
+    );
+}
+
+async fn parse_media_ext_or_close(
+    device_id: &str,
+    stream_id: &str,
+    expected_ssrc: &str,
+    accepted: &GbInviteAcceptedEvent,
+) -> GlobalResult<MediaExt> {
+    let result = sdp::validate_invite_answer_sdp(&accepted.remote_sdp, expected_ssrc)
+        .and_then(|()| sdp::parse_media_ext(accepted.remote_sdp.as_bytes()));
+    match result {
+        Ok(ext) => Ok(ext),
+        Err(err) => {
+            close_invite_after_answer_error(
+                device_id,
+                stream_id,
+                accepted,
+                "invalid play answer SDP",
+            )
+            .await;
+            Err(err)
+        }
+    }
+}
+
 pub async fn play_live_invite_wait(
     device_id: &str,
     channel_id: &str,
@@ -514,9 +597,10 @@ pub async fn play_live_invite_wait(
     stream_id: &str,
 ) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)> {
     let (host, port, proto) = connected_target(device_id)?;
+    let ssrc = normalize_gb_ssrc(ssrc)?;
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let protocol = transport_protocol(trans_mode, proto);
-    let sdp = sdp::play_live(channel_id, media_ip, media_port, trans_mode, ssrc, true);
+    let sdp = sdp::play_live(channel_id, media_ip, media_port, trans_mode, &ssrc, true);
     let accepted = invite_play_and_wait(InvitePlayRequest {
         device_id: device_id.to_string(),
         channel_id: channel_id.to_string(),
@@ -534,7 +618,7 @@ pub async fn play_live_invite_wait(
         subject: None,
     })
     .await?;
-    let ext = sdp::parse_media_ext(accepted.remote_sdp.as_bytes())?;
+    let ext = parse_media_ext_or_close(device_id, stream_id, &ssrc, &accepted).await?;
     Ok((accepted, ext))
 }
 
@@ -550,10 +634,11 @@ pub async fn play_back_invite_wait(
     et: u32,
 ) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)> {
     let (host, port, proto) = connected_target(device_id)?;
+    let ssrc = normalize_gb_ssrc(ssrc)?;
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let protocol = transport_protocol(trans_mode, proto);
     let sdp = sdp::playback(
-        channel_id, media_ip, media_port, trans_mode, ssrc, st, et, true,
+        channel_id, media_ip, media_port, trans_mode, &ssrc, st, et, true,
     );
     let accepted = invite_play_and_wait(InvitePlayRequest {
         device_id: device_id.to_string(),
@@ -572,7 +657,7 @@ pub async fn play_back_invite_wait(
         subject: None,
     })
     .await?;
-    let ext = sdp::parse_media_ext(accepted.remote_sdp.as_bytes())?;
+    let ext = parse_media_ext_or_close(device_id, stream_id, &ssrc, &accepted).await?;
     Ok((accepted, ext))
 }
 
@@ -589,10 +674,11 @@ pub async fn download_invite_wait(
     speed: u8,
 ) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)> {
     let (host, port, proto) = connected_target(device_id)?;
+    let ssrc = normalize_gb_ssrc(ssrc)?;
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let protocol = transport_protocol(trans_mode, proto);
     let sdp = sdp::download(
-        channel_id, media_ip, media_port, trans_mode, ssrc, st, et, speed, true,
+        channel_id, media_ip, media_port, trans_mode, &ssrc, st, et, speed, true,
     );
     let accepted = invite_play_and_wait(InvitePlayRequest {
         device_id: device_id.to_string(),
@@ -611,7 +697,7 @@ pub async fn download_invite_wait(
         subject: None,
     })
     .await?;
-    let ext = sdp::parse_media_ext(accepted.remote_sdp.as_bytes())?;
+    let ext = parse_media_ext_or_close(device_id, stream_id, &ssrc, &accepted).await?;
     Ok((accepted, ext))
 }
 

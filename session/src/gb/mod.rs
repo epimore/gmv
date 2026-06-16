@@ -28,6 +28,8 @@ pub mod sip;
 pub struct SessionConf {
     pub domain: String,
     pub domain_id: String,
+    #[serde(default)]
+    pub media_server_id: Option<String>,
     pub http_source: String,
     pub lan_ip: Ipv4Addr,
     pub wan_ip: Ipv4Addr,
@@ -37,13 +39,20 @@ pub struct SessionConf {
 impl CheckFromConf for SessionConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         let re = Regex::new(r"^\d{20}$").unwrap();
-        if re.is_match(&self.domain_id) {
-            return Ok(());
+        if !re.is_match(&self.domain_id) {
+            return Err(FieldCheckError::BizError(format!(
+                "domain_id must be 20 digits: {}",
+                self.domain_id
+            )));
         }
-        Err(FieldCheckError::BizError(format!(
-            "domain_id must be 20 digits: {}",
-            self.domain_id
-        )))
+        if let Some(media_server_id) = &self.media_server_id {
+            if !re.is_match(media_server_id) {
+                return Err(FieldCheckError::BizError(format!(
+                    "media_server_id must be 20 digits: {media_server_id}"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 impl SessionConf {
@@ -83,6 +92,10 @@ impl SessionConf {
 
     pub fn get_session_by_conf() -> Self {
         SessionConf::conf()
+    }
+
+    pub fn media_receiver_id(&self) -> &str {
+        self.media_server_id.as_deref().unwrap_or(&self.domain_id)
     }
 
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {

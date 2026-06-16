@@ -185,6 +185,66 @@ pub fn build_device_info_query(sn: u32, device_id: &str) -> String {
     )
 }
 
+fn build_simple_query(cmd_type: &str, sn: u32, device_id: &str, extra: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n\
+<Query>\r\n\
+<CmdType>{}</CmdType>\r\n\
+<SN>{}</SN>\r\n\
+<DeviceID>{}</DeviceID>\r\n\
+{}</Query>\r\n",
+        escape(cmd_type),
+        sn,
+        escape(device_id),
+        extra,
+    )
+}
+
+pub fn build_device_status_query(sn: u32, device_id: &str) -> String {
+    build_simple_query("DeviceStatus", sn, device_id, "")
+}
+
+pub fn build_config_download_query(sn: u32, device_id: &str, config_type: &str) -> String {
+    build_simple_query(
+        "ConfigDownload",
+        sn,
+        device_id,
+        &format!("<ConfigType>{}</ConfigType>\r\n", escape(config_type)),
+    )
+}
+
+pub fn build_ptz_position_query(sn: u32, device_id: &str) -> String {
+    build_simple_query("PTZPosition", sn, device_id, "")
+}
+
+pub fn build_cruise_track_list_query(sn: u32, device_id: &str) -> String {
+    build_simple_query("CruiseTrackListQuery", sn, device_id, "")
+}
+
+pub fn build_cruise_track_query(sn: u32, device_id: &str, number: u32) -> String {
+    build_simple_query(
+        "CruiseTrackQuery",
+        sn,
+        device_id,
+        &format!("<Number>{number}</Number>\r\n"),
+    )
+}
+
+pub fn build_broadcast_notify(sn: u32, source_id: &str, target_id: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n\
+<Notify>\r\n\
+<CmdType>Broadcast</CmdType>\r\n\
+<SN>{}</SN>\r\n\
+<SourceID>{}</SourceID>\r\n\
+<TargetID>{}</TargetID>\r\n\
+</Notify>\r\n",
+        sn,
+        escape(source_id),
+        escape(target_id),
+    )
+}
+
 pub fn build_record_info_query(
     sn: u32,
     device_id: &str,
@@ -315,7 +375,8 @@ pub fn build_snapshot_control_xml(
 #[cfg(test)]
 mod tests {
     use super::{
-        RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID, SPLIT_CLASS, build_catalog_subscription,
+        RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID, SPLIT_CLASS, build_broadcast_notify,
+        build_catalog_subscription, build_config_download_query, build_cruise_track_query,
         encode_document, parse_items,
     };
     use encoding_rs::GBK;
@@ -367,5 +428,22 @@ mod tests {
                 key == "Response,Name" && value == "\u{6444}\u{50cf}\u{673a}"
             })
         );
+    }
+
+    #[test]
+    fn builds_2022_reference_query_fragments() {
+        let config = build_config_download_query(9003, "34020000001320000002", "SnapShotConfig");
+        assert!(config.contains("<CmdType>ConfigDownload</CmdType>"));
+        assert!(config.contains("<ConfigType>SnapShotConfig</ConfigType>"));
+
+        let cruise = build_cruise_track_query(9103, "34020000001320000002", 1);
+        assert!(cruise.contains("<CmdType>CruiseTrackQuery</CmdType>"));
+        assert!(cruise.contains("<Number>1</Number>"));
+
+        let broadcast =
+            build_broadcast_notify(8001, "34020000001360000001", "34020000001370000001");
+        assert!(broadcast.contains("<CmdType>Broadcast</CmdType>"));
+        assert!(broadcast.contains("<SourceID>34020000001360000001</SourceID>"));
+        assert!(broadcast.contains("<TargetID>34020000001370000001</TargetID>"));
     }
 }

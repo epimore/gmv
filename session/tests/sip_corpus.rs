@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,6 +10,14 @@ const DEVICE_ID: &str = "34020000001110000009";
 const CHANNEL_ID: &str = "34020000001320000102";
 const PLATFORM_ADDR: &str = "192.0.2.10:25600";
 const DEVICE_ADDR: &str = "198.51.100.20:5060";
+const REFERENCE_SOURCE_SHA256: &str =
+    "2d89bb70302b80f83e1aa9d8956c36d95ddb123c3f0bdf4c5c2519333319a262";
+const REFERENCE_PACKET_COUNT: usize = 108;
+const REFERENCE_TC_COUNT: usize = 26;
+const REFERENCE_SDP_PACKET_COUNT: usize = 10;
+const REFERENCE_SDP_Y_COUNT: usize = 10;
+const REFERENCE_PLATFORM_ID: &str = "34020000002000000001";
+const REFERENCE_PLATFORM_ADDR: &str = "192.168.10.10";
 
 struct PacketAsset {
     scenario_id: &'static str,
@@ -18,6 +26,19 @@ struct PacketAsset {
     direction: &'static str,
     sip_method: &'static str,
     expected_status: Option<u16>,
+    bytes: Vec<u8>,
+}
+
+struct ReferencePacket {
+    tc_id: String,
+    tc_title: String,
+    file_name: String,
+    direction: &'static str,
+    sip_method: String,
+    expected_status: Option<u16>,
+    content_type: Option<String>,
+    call_id: String,
+    cseq: String,
     bytes: Vec<u8>,
 }
 
@@ -703,6 +724,14 @@ fn fixture_dir() -> PathBuf {
         .join("generated")
 }
 
+fn reference_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sip")
+        .join("reference")
+}
+
 fn assert_wire_packet(asset: &PacketAsset) {
     assert!(
         asset.bytes.windows(2).any(|pair| pair == b"\r\n"),
@@ -793,6 +822,334 @@ fn assert_wire_packet(asset: &PacketAsset) {
     }
 }
 
+fn header_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    header.lines().find_map(|line| {
+        let (header_name, value) = line.split_once(':')?;
+        header_name
+            .eq_ignore_ascii_case(name)
+            .then_some(value.trim())
+    })
+}
+
+fn reference_body(packet: &[u8]) -> (&str, &[u8]) {
+    let split = packet
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("reference packet contains header/body separator");
+    (
+        std::str::from_utf8(&packet[..split]).expect("reference header is UTF-8"),
+        &packet[split + 4..],
+    )
+}
+
+fn markdown_reference_packets(source: &str) -> Vec<ReferencePacket> {
+    let mut packets = Vec::new();
+    let mut current_title = String::new();
+    let mut current_tc = String::new();
+    let mut in_sip_block = false;
+    let mut block_lines = Vec::new();
+
+    for line in source.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(title) = line.strip_prefix("### TC-") {
+            current_title = format!("TC-{title}");
+            current_tc = current_title
+                .split_whitespace()
+                .next()
+                .unwrap_or("TC-unknown")
+                .to_ascii_lowercase();
+            continue;
+        }
+        if line.trim() == "```sip" {
+            in_sip_block = true;
+            block_lines.clear();
+            continue;
+        }
+        if in_sip_block && line.trim() == "```" {
+            let bytes = block_lines.join("\r\n").into_bytes();
+            let (header, body) = reference_body(&bytes);
+            let start_line = header.lines().next().expect("reference start line");
+            let cseq = header_value(header, "CSeq")
+                .expect("reference packet has CSeq")
+                .to_owned();
+            let (sip_method, expected_status) =
+                if let Some(rest) = start_line.strip_prefix("SIP/2.0 ") {
+                    let status = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|value| value.parse::<u16>().ok())
+                        .expect("reference response has status");
+                    let method = cseq
+                        .split_whitespace()
+                        .last()
+                        .expect("reference CSeq has method")
+                        .to_owned();
+                    (method, Some(status))
+                } else {
+                    let method = start_line
+                        .split_whitespace()
+                        .next()
+                        .expect("reference request has method")
+                        .to_owned();
+                    (method, None)
+                };
+            let direction = reference_direction(header, expected_status.is_some());
+            let content_type = header_value(header, "Content-Type").map(str::to_owned);
+            let call_id = header_value(header, "Call-ID")
+                .expect("reference packet has Call-ID")
+                .to_owned();
+            let packet_index = packets.len() + 1;
+            let tc_id = if current_tc.is_empty() {
+                "tc-unknown".to_owned()
+            } else {
+                current_tc.clone()
+            };
+            let file_name = format!("{tc_id}-{packet_index:03}.sip");
+            assert!(
+                body.is_empty() || content_type.is_some(),
+                "{file_name} has body without Content-Type"
+            );
+            packets.push(ReferencePacket {
+                tc_id,
+                tc_title: current_title.clone(),
+                file_name,
+                direction,
+                sip_method,
+                expected_status,
+                content_type,
+                call_id,
+                cseq,
+                bytes,
+            });
+            in_sip_block = false;
+            continue;
+        }
+        if in_sip_block {
+            block_lines.push(line.to_owned());
+        }
+    }
+
+    packets
+}
+
+fn reference_direction(header: &str, response: bool) -> &'static str {
+    if !response {
+        let from = header_value(header, "From").unwrap_or_default();
+        return if from.contains(REFERENCE_PLATFORM_ID) {
+            "platform-to-device"
+        } else {
+            "device-to-platform"
+        };
+    }
+    let user_agent = header_value(header, "User-Agent").unwrap_or_default();
+    if user_agent.contains("GMV-GB28181-Platform") {
+        return "platform-to-device";
+    }
+    if user_agent.contains("IPC-GB28181-UA") {
+        return "device-to-platform";
+    }
+    let via = header_value(header, "Via").unwrap_or_default();
+    if via.contains(REFERENCE_PLATFORM_ADDR) {
+        "device-to-platform"
+    } else {
+        "platform-to-device"
+    }
+}
+
+fn assert_reference_packet(packet: &ReferencePacket) {
+    assert!(
+        packet.bytes.windows(2).any(|pair| pair == b"\r\n"),
+        "{} has no CRLF",
+        packet.file_name
+    );
+    for (index, byte) in packet.bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            assert!(
+                index > 0 && packet.bytes[index - 1] == b'\r',
+                "{} contains a bare LF",
+                packet.file_name
+            );
+        }
+    }
+    let (header, body) = reference_body(&packet.bytes);
+    let start_line = header.lines().next().expect("reference start line");
+    if let Some(status) = packet.expected_status {
+        assert!(
+            start_line.starts_with(&format!("SIP/2.0 {status} ")),
+            "{} response status mismatch",
+            packet.file_name
+        );
+    } else {
+        assert!(
+            start_line.starts_with(&format!("{} ", packet.sip_method)),
+            "{} request method mismatch",
+            packet.file_name
+        );
+        assert!(
+            header_value(header, "Max-Forwards").is_some(),
+            "{} request missing Max-Forwards",
+            packet.file_name
+        );
+    }
+    for required in ["Via", "From", "To", "Call-ID", "CSeq"] {
+        assert!(
+            header_value(header, required).is_some(),
+            "{} missing {required}",
+            packet.file_name
+        );
+    }
+    let declared = header_value(header, "Content-Length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .expect("reference packet contains valid Content-Length");
+    assert_eq!(
+        declared,
+        body.len(),
+        "{} Content-Length mismatch",
+        packet.file_name
+    );
+    assert!(
+        packet.cseq.ends_with(&packet.sip_method),
+        "{} CSeq method mismatch",
+        packet.file_name
+    );
+    if let Some(content_type) = &packet.content_type {
+        let lower = content_type.to_ascii_lowercase();
+        if lower.contains("xml") {
+            assert!(
+                body.starts_with(b"<?xml"),
+                "{} XML body has no declaration",
+                packet.file_name
+            );
+        }
+        if lower.contains("sdp") {
+            assert_sdp_has_valid_ssrc(packet, header, body);
+        }
+    } else {
+        assert!(body.is_empty(), "{} missing Content-Type", packet.file_name);
+    }
+}
+
+fn assert_sdp_has_valid_ssrc(packet: &ReferencePacket, header: &str, body: &[u8]) {
+    assert!(
+        body.starts_with(b"v=0\r\n") && body.windows(4).any(|part| part == b"\r\nm="),
+        "{} SDP body is incomplete",
+        packet.file_name
+    );
+    let body_text = std::str::from_utf8(body).expect("reference SDP is UTF-8");
+    let ssrc = body_text
+        .lines()
+        .find_map(|line| line.strip_prefix("y="))
+        .unwrap_or_else(|| panic!("{} SDP missing y= SSRC", packet.file_name));
+    assert!(
+        ssrc.len() == 10 && ssrc.bytes().all(|byte| byte.is_ascii_digit()),
+        "{} SDP y= must be a 10-digit SSRC",
+        packet.file_name
+    );
+    if packet.expected_status.is_none() && packet.sip_method == "INVITE" {
+        let subject = header_value(header, "Subject")
+            .unwrap_or_else(|| panic!("{} missing Subject", packet.file_name));
+        let Some((source, target)) = subject.split_once(',') else {
+            panic!("{} Subject missing two legs", packet.file_name);
+        };
+        assert!(
+            source.ends_with(&format!(":{ssrc}")) && target.ends_with(&format!(":{ssrc}")),
+            "{} Subject SSRC must match SDP y=",
+            packet.file_name
+        );
+    }
+}
+
+fn reference_manifest(packets: &[ReferencePacket]) -> String {
+    let mut method_counts = BTreeMap::<String, usize>::new();
+    let mut response_count = 0usize;
+    let mut sdp_packet_count = 0usize;
+    let mut sdp_y_count = 0usize;
+    for packet in packets {
+        if packet.expected_status.is_some() {
+            response_count += 1;
+        } else {
+            *method_counts.entry(packet.sip_method.clone()).or_default() += 1;
+        }
+        if packet
+            .content_type
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains("sdp")
+        {
+            sdp_packet_count += 1;
+            let (_, body) = reference_body(&packet.bytes);
+            sdp_y_count += std::str::from_utf8(body)
+                .expect("reference SDP is UTF-8")
+                .lines()
+                .filter(|line| line.starts_with("y="))
+                .count();
+        }
+    }
+
+    let mut output = String::from(
+        "version: 1\n\
+source: standardized-reference\n\
+source_file: gbt28181-2016-2022-baseline.md\n\
+source_sha256: ",
+    );
+    output.push_str(REFERENCE_SOURCE_SHA256);
+    output.push('\n');
+    output.push_str(
+        "derived_from: user-provided-gbt28181-2016-2022-sip-baseline\n\
+generated_by: session/tests/sip_corpus.rs\n\
+integrity_test: reference_sip_baseline_is_current_and_complete\n\
+sanitization: standardized-closed-field-test-baseline\n\
+quality:\n",
+    );
+    let tc_count = packets
+        .iter()
+        .map(|packet| packet.tc_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    writeln!(output, "  tc_count: {tc_count}").expect("write reference manifest");
+    writeln!(output, "  packet_count: {}", packets.len()).expect("write reference manifest");
+    writeln!(output, "  response_count: {response_count}").expect("write reference manifest");
+    writeln!(output, "  sdp_packet_count: {sdp_packet_count}").expect("write reference manifest");
+    writeln!(output, "  sdp_y_count: {sdp_y_count}").expect("write reference manifest");
+    output.push_str("method_counts:\n");
+    for method in [
+        "REGISTER",
+        "MESSAGE",
+        "INVITE",
+        "ACK",
+        "BYE",
+        "INFO",
+        "SUBSCRIBE",
+        "NOTIFY",
+    ] {
+        let count = method_counts.get(method).copied().unwrap_or_default();
+        writeln!(output, "  {method}: {count}").expect("write reference manifest");
+    }
+    output.push_str("packets:\n");
+    for packet in packets {
+        let status = packet
+            .expected_status
+            .map_or_else(|| "null".to_owned(), |value| value.to_string());
+        let content_type = packet.content_type.as_deref().unwrap_or("null");
+        writeln!(output, "  - tc_id: {}", packet.tc_id).expect("write reference manifest");
+        writeln!(output, "    title: {:?}", packet.tc_title).expect("write reference manifest");
+        writeln!(output, "    file: extracted/{}", packet.file_name)
+            .expect("write reference manifest");
+        writeln!(output, "    direction: {}", packet.direction).expect("write reference manifest");
+        writeln!(output, "    transport: udp").expect("write reference manifest");
+        writeln!(output, "    sip_method: {}", packet.sip_method)
+            .expect("write reference manifest");
+        writeln!(output, "    expected_status: {status}").expect("write reference manifest");
+        writeln!(output, "    content_type: {:?}", content_type).expect("write reference manifest");
+        writeln!(output, "    call_id: {:?}", packet.call_id).expect("write reference manifest");
+        writeln!(output, "    cseq: {:?}", packet.cseq).expect("write reference manifest");
+        writeln!(output, "    sha256: {}", hex(&sha256(&packet.bytes)))
+            .expect("write reference manifest");
+    }
+    output
+}
+
 #[test]
 fn generated_sip_corpus_is_current_and_complete() {
     let assets = packet_assets();
@@ -873,4 +1230,126 @@ failed_scenario_ids=[], uncovered_business_apis=[]",
         assets.len(),
         assets.len()
     );
+}
+
+#[test]
+fn reference_sip_baseline_is_current_and_complete() {
+    let dir = reference_dir();
+    let source_path = dir.join("gbt28181-2016-2022-baseline.md");
+    let source = fs::read_to_string(&source_path).expect("read reference SIP baseline");
+    assert_eq!(
+        hex(&sha256(source.as_bytes())),
+        REFERENCE_SOURCE_SHA256,
+        "reference baseline source hash changed"
+    );
+
+    let packets = markdown_reference_packets(&source);
+    assert_eq!(
+        packets.len(),
+        REFERENCE_PACKET_COUNT,
+        "reference packet count drifted"
+    );
+    let tc_count = packets
+        .iter()
+        .map(|packet| packet.tc_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    assert_eq!(tc_count, REFERENCE_TC_COUNT, "reference TC count drifted");
+    for packet in &packets {
+        assert_reference_packet(packet);
+    }
+
+    let mut method_counts = BTreeMap::<String, usize>::new();
+    let mut response_count = 0usize;
+    let mut sdp_packet_count = 0usize;
+    let mut sdp_y_count = 0usize;
+    for packet in &packets {
+        if packet.expected_status.is_some() {
+            response_count += 1;
+        } else {
+            *method_counts.entry(packet.sip_method.clone()).or_default() += 1;
+        }
+        if packet
+            .content_type
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains("sdp")
+        {
+            sdp_packet_count += 1;
+            let (_, body) = reference_body(&packet.bytes);
+            sdp_y_count += std::str::from_utf8(body)
+                .expect("reference SDP is UTF-8")
+                .lines()
+                .filter(|line| line.starts_with("y="))
+                .count();
+        }
+    }
+    assert_eq!(response_count, 53, "reference response count drifted");
+    assert_eq!(method_counts.get("REGISTER").copied(), Some(4));
+    assert_eq!(method_counts.get("MESSAGE").copied(), Some(31));
+    assert_eq!(method_counts.get("INVITE").copied(), Some(5));
+    assert_eq!(method_counts.get("ACK").copied(), Some(5));
+    assert_eq!(method_counts.get("BYE").copied(), Some(5));
+    assert_eq!(method_counts.get("INFO").copied(), Some(2));
+    assert_eq!(method_counts.get("SUBSCRIBE").copied(), Some(2));
+    assert_eq!(method_counts.get("NOTIFY").copied(), Some(1));
+    assert_eq!(
+        sdp_packet_count, REFERENCE_SDP_PACKET_COUNT,
+        "reference SDP packet count drifted"
+    );
+    assert_eq!(
+        sdp_y_count, REFERENCE_SDP_Y_COUNT,
+        "reference SDP y= SSRC count drifted"
+    );
+    assert!(
+        source.contains("媒体服务器 ID | `34020000002020000001`"),
+        "reference baseline lost media server ID"
+    );
+    assert!(
+        source.contains(REFERENCE_PLATFORM_ADDR),
+        "reference baseline lost platform address"
+    );
+
+    let manifest = reference_manifest(&packets);
+    let extracted_dir = dir.join("extracted");
+    if std::env::var_os("GMV_UPDATE_SIP_REFERENCE").is_some() {
+        fs::create_dir_all(&extracted_dir).expect("create reference extraction directory");
+        for packet in &packets {
+            fs::write(extracted_dir.join(&packet.file_name), &packet.bytes)
+                .expect("write extracted reference SIP packet");
+        }
+        fs::write(dir.join("manifest.yaml"), &manifest).expect("write reference manifest");
+    }
+
+    let actual_manifest =
+        fs::read_to_string(dir.join("manifest.yaml")).expect("read reference manifest");
+    assert_eq!(
+        actual_manifest, manifest,
+        "reference manifest.yaml is stale"
+    );
+    for packet in &packets {
+        let actual = fs::read(extracted_dir.join(&packet.file_name))
+            .unwrap_or_else(|error| panic!("read extracted {}: {error}", packet.file_name));
+        assert_eq!(actual, packet.bytes, "{} is stale", packet.file_name);
+    }
+    let mut expected_files = packets
+        .iter()
+        .map(|packet| packet.file_name.clone())
+        .collect::<BTreeSet<_>>();
+    let actual_files = fs::read_dir(&extracted_dir)
+        .expect("read reference extraction directory")
+        .map(|entry| {
+            entry
+                .expect("read reference extraction entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_files, expected_files,
+        "reference extraction contains stale or missing files"
+    );
+    expected_files.clear();
 }

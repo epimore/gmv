@@ -1,4 +1,5 @@
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use regex::Regex;
 use shared::info::media_info_ext::MediaExt;
@@ -175,6 +176,67 @@ pub fn parse_media_ext(sdp: &[u8]) -> GlobalResult<MediaExt> {
     Ok(ext)
 }
 
+pub fn validate_invite_answer_sdp(remote_sdp: &str, expected_ssrc: &str) -> GlobalResult<()> {
+    let info = SdpInfo::parse_lossy(remote_sdp);
+    let Some(actual_ssrc) = info.ssrc.as_deref() else {
+        return Err(invalid_answer_sdp("missing y= SSRC", expected_ssrc, None));
+    };
+    if actual_ssrc.len() != 10 || !actual_ssrc.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid_answer_sdp(
+            "invalid y= SSRC format",
+            expected_ssrc,
+            Some(actual_ssrc),
+        ));
+    }
+    if actual_ssrc != expected_ssrc {
+        return Err(invalid_answer_sdp(
+            "y= SSRC mismatch",
+            expected_ssrc,
+            Some(actual_ssrc),
+        ));
+    }
+    if info
+        .connection_addr
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Err(invalid_answer_sdp(
+            "missing media connection address",
+            expected_ssrc,
+            Some(actual_ssrc),
+        ));
+    }
+    if info.media_port.unwrap_or_default() == 0 {
+        return Err(invalid_answer_sdp(
+            "missing media port",
+            expected_ssrc,
+            Some(actual_ssrc),
+        ));
+    }
+    if info.media_payloads.is_empty() {
+        return Err(invalid_answer_sdp(
+            "missing media payload",
+            expected_ssrc,
+            Some(actual_ssrc),
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_answer_sdp(reason: &str, expected_ssrc: &str, actual_ssrc: Option<&str>) -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::InvalidState.code(),
+        "invalid device SDP answer",
+        |msg| {
+            error!(
+                "{msg}: reason={reason}; expected_ssrc={expected_ssrc}; actual_ssrc={}",
+                actual_ssrc.unwrap_or("<missing>")
+            )
+        },
+    )
+}
+
 fn extract_f_field(me: &mut MediaExt, sdp: &[u8]) {
     let Ok(sdp) = std::str::from_utf8(sdp) else {
         return;
@@ -208,5 +270,32 @@ fn extract_f_field(me: &mut MediaExt, sdp: &[u8]) {
                 me.audio_params.map_sample_rate(parts[8]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_invite_answer_sdp;
+
+    const VALID_VIDEO_ANSWER: &str = "v=0\r\n\
+o=34020000001320000001 0 0 IN IP4 198.51.100.20\r\n\
+s=Play\r\n\
+c=IN IP4 198.51.100.20\r\n\
+t=0 0\r\n\
+m=video 30000 RTP/AVP 96\r\n\
+a=sendonly\r\n\
+a=rtpmap:96 PS/90000\r\n\
+y=0100008199\r\n";
+
+    #[test]
+    fn invite_answer_requires_matching_y_ssrc() {
+        assert!(validate_invite_answer_sdp(VALID_VIDEO_ANSWER, "0100008199").is_ok());
+        assert!(validate_invite_answer_sdp(VALID_VIDEO_ANSWER, "0100008200").is_err());
+    }
+
+    #[test]
+    fn invite_answer_rejects_missing_y_ssrc() {
+        let without_y = VALID_VIDEO_ANSWER.replace("y=0100008199\r\n", "");
+        assert!(validate_invite_answer_sdp(&without_y, "0100008199").is_err());
     }
 }

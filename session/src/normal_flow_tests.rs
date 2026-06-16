@@ -49,6 +49,7 @@ use crate::utils::edge_token;
 const DEVICE_ID: &str = "34020000001110000009";
 const CHANNEL_ID: &str = "34020000001320000102";
 const PLATFORM_ID: &str = "34020000002000000001";
+const MEDIA_SERVER_ID: &str = "34020000002020000001";
 
 #[derive(Default)]
 struct MediaState {
@@ -280,6 +281,25 @@ async fn run_device(
                 .lines()
                 .find_map(|line| line.strip_prefix("y="))
                 .unwrap_or("0100000001");
+            let subject = header_value(&request, "Subject");
+            let expected_subject_suffix = format!(":{ssrc}");
+            let Some((source_subject, target_subject)) = subject.split_once(',') else {
+                panic!("INVITE Subject missing two legs: {subject}");
+            };
+            assert!(
+                source_subject.ends_with(&expected_subject_suffix),
+                "source_subject={source_subject}; expected_suffix={expected_subject_suffix}; \
+                 request={request}"
+            );
+            assert!(
+                target_subject.ends_with(&expected_subject_suffix),
+                "target_subject={target_subject}; expected_suffix={expected_subject_suffix}; \
+                 request={request}"
+            );
+            assert!(
+                target_subject.starts_with(MEDIA_SERVER_ID),
+                "target_subject={target_subject}; expected_media_server={MEDIA_SERVER_ID}"
+            );
             let answer = if offer.contains("m=audio") {
                 format!(
                     "v=0\r\n\
@@ -403,6 +423,7 @@ fn base_stream_info(stream_id: &str) -> BaseStreamInfo {
 fn prepare_config(media_port: u16, root: &PathBuf) -> PathBuf {
     let mut config = include_str!("../config.yml")
         .replace("51010000002000000001", PLATFORM_ID)
+        .replace("51010000002020000001", MEDIA_SERVER_ID)
         .replace("5101000000", "3402000000")
         .replace("192.168.0.22", "192.0.2.10")
         .replace("local_port: 18570", &format!("local_port: {media_port}"));
