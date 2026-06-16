@@ -187,7 +187,7 @@ fn normalize_gb_ssrc(ssrc: &str) -> GlobalResult<String> {
 
 fn invite_subject(channel_id: &str, receiver_id: &str, ssrc: u32) -> String {
     let ssrc = format_gb_ssrc(ssrc);
-    format!("{channel_id}:{ssrc},{receiver_id}:{ssrc}")
+    format!("{channel_id}:{ssrc},{receiver_id}:0")
 }
 
 pub async fn query_catalog(device_id: &str, sn: u32) -> GlobalResult<()> {
@@ -350,7 +350,7 @@ pub async fn invite_play(req: InvitePlayRequest) -> GlobalResult<()> {
             association_id: 0,
             protocol,
             target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
-            from_uri: format!("<sip:{}@{}>", conf.domain_id, conf.domain),
+            from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
             contact_uri: format!(
                 "<{}>",
                 target_uri(
@@ -401,7 +401,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
         association_id: 0,
         protocol,
         target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
-        from_uri: format!("<sip:{}@{}>", conf.domain_id, conf.domain),
+        from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
         contact_uri: format!(
             "<{}>",
             target_uri(
@@ -471,7 +471,7 @@ pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInvi
         association_id: 0,
         protocol,
         target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
-        from_uri: format!("<sip:{}@{}>", conf.domain_id, conf.domain),
+        from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
         contact_uri: format!(
             "<{}>",
             target_uri(
@@ -780,7 +780,7 @@ pub async fn play_speed(device_id: &str, stream_id: &str, speed: f32) -> GlobalR
 
 #[cfg(test)]
 mod tests {
-    use super::build_ptz_command;
+    use super::{build_ptz_command, invite_subject, normalize_gb_ssrc};
     use crate::state::model::PtzControlModel;
 
     #[test]
@@ -797,6 +797,24 @@ mod tests {
         };
 
         assert_eq!(build_ptz_command(&model).unwrap(), "A50F011A2010302F");
+    }
+
+    #[test]
+    fn invite_subject_keeps_gb28181_receiver_leg_zero() {
+        assert_eq!(
+            invite_subject(
+                "34020000001320000102",
+                "34020000002000000001",
+                4423
+            ),
+            "34020000001320000102:0000004423,34020000002000000001:0"
+        );
+    }
+
+    #[test]
+    fn gb28181_ssrc_must_be_ten_digits() {
+        assert!(normalize_gb_ssrc("0000004423").is_ok());
+        assert!(normalize_gb_ssrc("4423").is_err());
     }
 }
 
