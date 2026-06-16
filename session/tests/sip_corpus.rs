@@ -558,7 +558,7 @@ y=0200008202\r\n"
         talk_answer,
     );
 
-    let seek = "PLAY RTSP/1.0\r\nCSeq: 1\r\nRange: npt=30.000-\r\n\r\n";
+    let seek = "PLAY RTSP/1.0\r\nCSeq: 1\r\nRange: npt=30-\r\n\r\n";
     push_exchange(
         &mut assets,
         "seek-normal",

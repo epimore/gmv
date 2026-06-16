@@ -5,7 +5,7 @@ use base::bytes::{Bytes, BytesMut};
 use base::dashmap::DashSet;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{debug, error, info};
+use base::log::{debug, error, info, trace};
 use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, RawPacketEncoder};
 use base::net::state::{Association, Event, IoEventType, Package, Protocol, Zip};
 use base::tokio;
@@ -182,7 +182,7 @@ async fn write_net(
                 match zip {
                     Zip::Data(package) => {
                         let association = package.association;
-                        log_sip_payload("发送", &association, package.data.as_ref());
+                        log_sip_output(&association, package.data.as_ref());
                         if let Err(err) = writer
                             .write_to(
                                 package.data,
@@ -268,7 +268,7 @@ pub(crate) async fn write_native_net(
             }
         };
         let association = Association::new(transmit.local_addr, transmit.remote_addr, protocol);
-        log_sip_payload("发送", &association, &transmit.data);
+        log_sip_output(&association, &transmit.data);
         let send_id = transmit.send_id;
         let association_id = transmit.association_id;
         let sent_bytes = transmit.data.len();
@@ -322,9 +322,17 @@ fn compact_sip_payload(data: &[u8]) -> String {
     payload.replace('\r', "").replace('\n', "\\n")
 }
 
-fn log_sip_payload(direction: &str, association: &Association, data: &[u8]) {
+fn log_raw_sip_input(direction: &str, association: &Association, data: &[u8]) {
+    trace!(
+        "{direction} raw SIP IO chunk: {association:?} bytes={} data={}",
+        data.len(),
+        compact_sip_payload(data)
+    );
+}
+
+fn log_sip_output(association: &Association, data: &[u8]) {
     debug!(
-        "{direction}:{association:?} 负载: {}",
+        "发送:{association:?} 负载: {}",
         compact_sip_payload(data)
     );
 }
@@ -341,7 +349,7 @@ pub(crate) async fn read_native(
         }
         match zip {
             Zip::Data(Package { association, data }) => {
-                log_sip_payload("接收", &association, data.as_ref());
+                log_raw_sip_input("接收", &association, data.as_ref());
                 if is_sip_keepalive_or_empty(data.as_ref()) {
                     let _ = output
                         .send(Zip::Data(Package { association, data }))

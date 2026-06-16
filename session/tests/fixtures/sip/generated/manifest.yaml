@@ -388,7 +388,7 @@ packets:
     sip_method: INFO
     expected_status: null
     source: synthetic-wire
-    sha256: d5e0519e0f572402130541df904dd5bb2090508ced6de67af0bf33499f92ab23
+    sha256: 85df719e75333033dc572f40a94df33293e0d90bd9985d6b97a639b075996eb8
     business_apis:
       - /api/play/back/seek
   - scenario_id: seek-normal

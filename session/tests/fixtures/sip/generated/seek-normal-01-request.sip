@@ -7,9 +7,9 @@ Contact: <sip:34020000002000000001@192.0.2.10:25600>
 Call-ID: seek-normal@gmv.test
 CSeq: 24 INFO
 Content-Type: Application/MANSRTSP
-Content-Length: 46
+Content-Length: 42
 
 PLAY RTSP/1.0
 CSeq: 1
-Range: npt=30.000-
+Range: npt=30-
 
