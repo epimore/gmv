@@ -4,7 +4,7 @@ derived_from: 2026-06-13-live-invite-log
 sanitization: rfc5737-addresses-and-fixed-gb28181-identifiers
 generated_by: session/tests/sip_corpus.rs
 integrity_test: generated_sip_corpus_is_current_and_complete
-runtime_test: normal_gb28181_business_dialogues_use_custom_transport
+runtime_test: normal_gb28181_business_dialogues_use_owned_io
 business_flow_test: all_business_http_apis_complete_the_normal_signaling_flow
 quality:
   scenario_count: 18

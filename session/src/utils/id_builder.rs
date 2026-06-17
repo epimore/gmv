@@ -114,7 +114,6 @@ fn test1() {
     let channel_id = "34020000001320000101";
     let ssrc = "1100000001";
     let stream_id = en_stream_id(device_id, channel_id, ssrc).unwrap();
-    println!("stream_id = {}", &stream_id);
     let (d_d_id, d_c_id, d_ssrc) = de_stream_id(&stream_id).unwrap();
     assert_eq!(device_id, &d_d_id[..]);
     assert_eq!(channel_id, &d_c_id[..]);

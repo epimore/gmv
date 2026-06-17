@@ -71,11 +71,9 @@ mod test {
         let device_id = "34020000001110000009";
         let channel_id = "34020000001320000101";
         let (token, session_id) = super::build_token_session_id(device_id, channel_id).unwrap();
-        println!("token: {}", token);
-        println!("session_id: {}", session_id);
         let (dc_device_id, dc_channel_id) = super::split_dc(&session_id).unwrap();
-        println!("dc_device_id: {}", dc_device_id);
-        println!("dc_channel_id: {}", dc_channel_id);
+        assert_eq!(device_id, dc_device_id);
+        assert_eq!(channel_id, dc_channel_id);
         super::check(&session_id, &token).unwrap();
     }
 }

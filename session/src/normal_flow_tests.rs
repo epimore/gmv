@@ -249,11 +249,7 @@ async fn inject(socket: &UdpSocket, runtime_addr: SocketAddr, packet: String) {
     sleep(Duration::from_millis(5)).await;
 }
 
-async fn run_device(
-    socket: Arc<UdpSocket>,
-    runtime_addr: SocketAddr,
-    cancel: CancellationToken,
-) {
+async fn run_device(socket: Arc<UdpSocket>, runtime_addr: SocketAddr, cancel: CancellationToken) {
     let mut device_cseq = 100_u32;
     let mut buffer = vec![0; 65_535];
     loop {
@@ -478,7 +474,9 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
                 .await
                 .expect("bind synthetic device UDP"),
         );
-        let device_addr = device_socket.local_addr().expect("device UDP local address");
+        let device_addr = device_socket
+            .local_addr()
+            .expect("device UDP local address");
         let (service, _events) = NativeSipRuntimeService::start(
             Ipv4Addr::LOCALHOST,
             runtime_addr.port(),

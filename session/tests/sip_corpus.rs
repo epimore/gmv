@@ -681,7 +681,7 @@ derived_from: 2026-06-13-live-invite-log\n\
 sanitization: rfc5737-addresses-and-fixed-gb28181-identifiers\n\
 generated_by: session/tests/sip_corpus.rs\n\
 integrity_test: generated_sip_corpus_is_current_and_complete\n\
-runtime_test: normal_gb28181_business_dialogues_use_custom_transport\n\
+runtime_test: normal_gb28181_business_dialogues_use_owned_io\n\
 business_flow_test: all_business_http_apis_complete_the_normal_signaling_flow\n\
 quality:\n",
     );

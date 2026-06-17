@@ -1349,9 +1349,6 @@ impl AccessMode {
 #[cfg(test)]
 mod tests {
     use crate::state::session::{AccessMode, Cache, GENERAL_CACHE, StreamLifecycle, StreamTable};
-    use base::dashmap::{DashMap, DashSet};
-    use base::rand;
-    use base::rand::prelude::IteratorRandom;
 
     fn stream_table() -> StreamTable {
         StreamTable {
@@ -1366,18 +1363,6 @@ mod tests {
             ssrc: 1001,
             lifecycle: StreamLifecycle::Playing,
         }
-    }
-
-    #[test]
-    fn test_ref_mut() {
-        let table = stream_table();
-        let map = DashMap::new();
-        map.insert(1, table);
-        map.get_mut(&1).map(|mut ref_mut| {
-            let stream_table = ref_mut.value_mut();
-            stream_table.seq += 1;
-        });
-        println!("{:?}", map.get_mut(&1).map(|item| item.value().seq));
     }
 
     #[test]
@@ -1424,34 +1409,10 @@ mod tests {
     #[test]
     fn test_ssrc_sn() {
         let ssrc_sn = Cache::ssrc_sn_get().unwrap();
-        println!("ssrc_sn = {ssrc_sn}");
         assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9998);
         assert!(!GENERAL_CACHE.shared.ssrc_sn.contains(&ssrc_sn));
         Cache::ssrc_sn_set(ssrc_sn);
         assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9999);
-    }
-
-    #[test]
-    fn test_rand_remove() {
-        let sets = DashSet::new();
-        for i in 1..10000 {
-            sets.insert(i);
-        }
-
-        let mut rng = rand::thread_rng();
-        for _i in 0..10 {
-            if let Some(val) = sets.iter().choose(&mut rng).map(|v| *v) {
-                match sets.remove(&val) {
-                    None => {
-                        println!("end");
-                    }
-                    Some(val) => {
-                        println!("val = {}", val);
-                        sets.insert(val);
-                    }
-                }
-            };
-        }
     }
 
     #[test]

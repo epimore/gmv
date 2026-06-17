@@ -16,7 +16,8 @@ use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::{
     AuthAlgorithm, AuthCredential, CredentialKind, SipAuthLookupResult, SipDialogRequest,
     SipInviteResponse, SipOutboundInvite, SipOutboundMessage, SipOutboundSubscribe, SipRuntime,
-    SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind, SipRuntimeSockets, SipTransportProtocol,
+    SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind, SipRuntimeSockets,
+    SipTransportProtocol,
 };
 
 use super::adapter::{GbSipEvent, apply_business_event};
@@ -55,10 +56,7 @@ enum RuntimeCommand {
     SendDialog(SipDialogRequest),
     RespondInvite(SipInviteResponse),
     SendSubscribe(SipOutboundSubscribe),
-    CloseTransport {
-        association_id: u64,
-        status: i32,
-    },
+    CloseTransport { association_id: u64, status: i32 },
 }
 
 #[derive(Clone)]
@@ -801,5 +799,4 @@ mod tests {
             SipAuthLookupResult::NotFound
         ));
     }
-
 }
