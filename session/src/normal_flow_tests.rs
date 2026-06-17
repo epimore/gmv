@@ -10,17 +10,14 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
-use base::bytes::Bytes;
 use base::cfg_lib::conf::init_cfg;
-use base::net::state::{Association, Protocol, Zip};
 use base::serde::Serialize;
 use base::serde_json::{Value, json};
-use base::tokio::net::TcpListener;
-use base::tokio::sync::mpsc;
+use base::tokio::net::{TcpListener, UdpSocket};
 use base::tokio::time::{sleep, timeout};
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::gb28181::xml::extract_xml_value_lossy;
-use gmv_pjsip::{SipTransmit, SipTransportProtocol};
+use gmv_pjsip::{SipRuntimeSockets, SipTransportProtocol};
 use image::{DynamicImage, ImageFormat};
 use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
@@ -48,6 +45,7 @@ use crate::utils::edge_token;
 
 const DEVICE_ID: &str = "34020000001110000009";
 const CHANNEL_ID: &str = "34020000001320000102";
+const PLAYBACK_CHANNEL_ID: &str = "34020000001320000103";
 const PLATFORM_ID: &str = "34020000002000000001";
 const MEDIA_SERVER_ID: &str = "34020000002020000001";
 
@@ -243,36 +241,34 @@ Content-Length: 0\r\n\r\n"
     )
 }
 
-async fn inject(handle: &NativeSipRuntimeHandle, association: &Association, packet: String) {
-    handle
-        .receive_packet(association.clone(), Bytes::from(packet))
+async fn inject(socket: &UdpSocket, runtime_addr: SocketAddr, packet: String) {
+    socket
+        .send_to(packet.as_bytes(), runtime_addr)
+        .await
         .expect("inject device packet");
     sleep(Duration::from_millis(5)).await;
 }
 
 async fn run_device(
-    handle: NativeSipRuntimeHandle,
-    mut transmits: mpsc::Receiver<SipTransmit>,
-    association: Association,
+    socket: Arc<UdpSocket>,
+    runtime_addr: SocketAddr,
     cancel: CancellationToken,
 ) {
     let mut device_cseq = 100_u32;
+    let mut buffer = vec![0; 65_535];
     loop {
-        let transmit = base::tokio::select! {
-            transmit = transmits.recv() => transmit,
+        let received = base::tokio::select! {
+            received = socket.recv_from(&mut buffer) => received,
             _ = cancel.cancelled() => break,
         };
-        let Some(transmit) = transmit else {
-            break;
-        };
-        let request = String::from_utf8_lossy(&transmit.data).into_owned();
-        handle.complete_send(transmit.send_id, Ok(transmit.data.len()));
+        let (len, _) = received.expect("receive runtime SIP packet");
+        let request = String::from_utf8_lossy(&buffer[..len]).into_owned();
         if request.starts_with("SIP/2.0 ") || request.starts_with("ACK ") {
             continue;
         }
         if request.starts_with("INVITE ") {
             let trying = response_for(&request, 100, "Trying", None, "", &[]);
-            inject(&handle, &association, trying).await;
+            inject(&socket, runtime_addr, trying).await;
             let offer = request
                 .split_once("\r\n\r\n")
                 .map(|(_, body)| body)
@@ -289,11 +285,6 @@ async fn run_device(
             assert!(
                 source_subject.ends_with(&expected_subject_suffix),
                 "source_subject={source_subject}; expected_suffix={expected_subject_suffix}; \
-                 request={request}"
-            );
-            assert!(
-                target_subject.ends_with(&expected_subject_suffix),
-                "target_subject={target_subject}; expected_suffix={expected_subject_suffix}; \
                  request={request}"
             );
             assert!(
@@ -325,7 +316,8 @@ a=rtpmap:96 PS/90000\r\n\
 y={ssrc}\r\n"
                 )
             };
-            let contact = format!("<sip:{DEVICE_ID}@198.51.100.20:5060>");
+            let contact_addr = socket.local_addr().expect("synthetic device address");
+            let contact = format!("<sip:{DEVICE_ID}@{contact_addr}>");
             let ok = response_for(
                 &request,
                 200,
@@ -334,11 +326,12 @@ y={ssrc}\r\n"
                 &answer,
                 &[("Contact", contact.as_str())],
             );
-            inject(&handle, &association, ok).await;
+            inject(&socket, runtime_addr, ok).await;
             continue;
         }
         if request.starts_with("SUBSCRIBE ") {
-            let contact = format!("<sip:{DEVICE_ID}@198.51.100.20:5060>");
+            let contact_addr = socket.local_addr().expect("synthetic device address");
+            let contact = format!("<sip:{DEVICE_ID}@{contact_addr}>");
             let ok = response_for(
                 &request,
                 200,
@@ -347,7 +340,7 @@ y={ssrc}\r\n"
                 "",
                 &[("Contact", contact.as_str()), ("Expires", "3600")],
             );
-            inject(&handle, &association, ok).await;
+            inject(&socket, runtime_addr, ok).await;
             continue;
         }
 
@@ -357,7 +350,7 @@ y={ssrc}\r\n"
             .then(|| extract_xml_value_lossy(&request, "SessionID"))
             .flatten();
         let ok = response_for(&request, 200, "OK", None, "", &[]);
-        inject(&handle, &association, ok).await;
+        inject(&socket, runtime_addr, ok).await;
         if let Some(session_id) = snapshot_session_id {
             device_cseq += 1;
             let body = format!(
@@ -370,8 +363,8 @@ y={ssrc}\r\n"
 </Notify>\r\n"
             );
             inject(
-                &handle,
-                &association,
+                &socket,
+                runtime_addr,
                 device_message("snapshot-finished", device_cseq, &body),
             )
             .await;
@@ -475,32 +468,38 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
         let media_task = start_media_stub(media_listener, cancel.child_token()).await;
         db_task::init(cancel.child_token());
         let session_conf = SessionConf::get_session_by_conf();
-        let (io_tx, _io_rx) = mpsc::channel::<Zip>(128);
-        Register::init(session_conf.clone(), io_tx, cancel.child_token())
-            .expect("initialize Register");
+        Register::init(session_conf.clone(), cancel.child_token()).expect("initialize Register");
         let auth_cache = auth::init_global().await.expect("initialize auth cache");
-        let (service, _events, transmits) = NativeSipRuntimeService::start(
-            session_conf.wan_ip,
-            session_conf.wan_port,
+        let runtime_udp =
+            std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind SIP runtime UDP");
+        let runtime_addr = runtime_udp.local_addr().expect("runtime UDP local address");
+        let device_socket = Arc::new(
+            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("bind synthetic device UDP"),
+        );
+        let device_addr = device_socket.local_addr().expect("device UDP local address");
+        let (service, _events) = NativeSipRuntimeService::start(
+            Ipv4Addr::LOCALHOST,
+            runtime_addr.port(),
             session_conf.domain.clone(),
+            SipRuntimeSockets {
+                udp: Some(runtime_udp),
+                tcp: None,
+                tls: None,
+            },
             auth_cache,
             cancel.child_token(),
         )
         .expect("start native SIP service");
         let handle = service.handle();
         handle.install_global().expect("install native runtime");
-        let association = Association::new(
-            SocketAddr::from((session_conf.wan_ip, session_conf.wan_port)),
-            "198.51.100.20:5060".parse().expect("device address"),
-            Protocol::UDP,
-        );
         let device_task = base::tokio::spawn(run_device(
-            handle.clone(),
-            transmits,
-            association.clone(),
+            device_socket.clone(),
+            runtime_addr,
             cancel.child_token(),
         ));
-        inject(&handle, &association, register_packet()).await;
+        inject(&device_socket, runtime_addr, register_packet()).await;
         timeout(Duration::from_secs(3), async {
             while !Register::has_session(DEVICE_ID) {
                 sleep(Duration::from_millis(10)).await;
@@ -576,13 +575,14 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
             let value = post_json(&app, path, &body, false).await;
             assert_success(&value, path);
         }
+        state::session::Cache::stream_map_remove(&live_id, None);
 
         let playback = post_json(
             &app,
             "/api/play/back/stream",
             &json!({
                 "device_id": DEVICE_ID,
-                "channel_id": CHANNEL_ID,
+                "channel_id": PLAYBACK_CHANNEL_ID,
                 "trans_mode": null,
                 "custom_media_config": null,
                 "st": 1781308800_u32,

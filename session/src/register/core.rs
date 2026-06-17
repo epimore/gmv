@@ -4,12 +4,13 @@ use std::time::Duration;
 
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
-use base::net::state::{Association, Event as IoEvent, IoEventType, Protocol, Zip};
+use base::net::state::{Association, Protocol};
 use base::once_cell::sync::OnceCell;
 use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
 
 use crate::gb::SessionConf;
+use crate::gb::sip::NativeSipRuntimeHandle;
 use crate::register::event::{self, Event};
 pub(crate) use crate::register::io::{DeviceSession, Network};
 use crate::register::schedule::TimeScheduler;
@@ -40,7 +41,6 @@ pub struct Register {
 
 pub struct Inner {
     pub server_conf: SessionConf,
-    pub io_tx: Sender<Zip>,
     pub event_tx: Sender<Event>,
     pub io_map: Network,
 }
@@ -50,11 +50,7 @@ impl Register {
         REGISTER.get().expect("Register not initialized")
     }
 
-    pub fn init(
-        server_conf: SessionConf,
-        io_tx: Sender<Zip>,
-        cancel_token: CancellationToken,
-    ) -> GlobalResult<()> {
+    pub fn init(server_conf: SessionConf, cancel_token: CancellationToken) -> GlobalResult<()> {
         if REGISTER.get().is_some() {
             return Ok(());
         }
@@ -63,7 +59,6 @@ impl Register {
         TimeScheduler::init();
         let inner = Arc::new(Inner {
             server_conf,
-            io_tx,
             event_tx,
             io_map: Network {
                 session: Default::default(),
@@ -308,13 +303,9 @@ impl Register {
 
     pub fn close_tcp_if_needed(session: &DeviceSession) {
         if matches!(session.association.protocol, Protocol::TCP) {
-            let _ = Self::get()
-                .inner
-                .io_tx
-                .try_send(Zip::build_event(IoEvent::new(
-                    session.association.clone(),
-                    IoEventType::Close,
-                )));
+            if let Ok(runtime) = NativeSipRuntimeHandle::global() {
+                runtime.close_transport(&session.association, 1);
+            }
         }
     }
 

@@ -8,10 +8,10 @@ use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::net;
-use base::net::state::Zip;
 use base::serde::Deserialize;
 use base::tokio::runtime::Handle;
 use base::tokio_util::sync::CancellationToken;
+use gmv_pjsip::SipRuntimeSockets;
 pub use core::rw::RWContext;
 use regex::Regex;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
@@ -19,7 +19,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 mod core;
-mod io;
 pub mod sip;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -109,56 +108,33 @@ impl SessionConf {
         tu: (Option<std::net::TcpListener>, Option<UdpSocket>),
         cancel_token: CancellationToken,
     ) -> GlobalResult<()> {
-        let io::NativeSessionIo {
-            output,
-            input,
-            writer,
-            close_tracker,
-        } = io::rw_by_tokio_native(tu, cancel_token.child_token())?;
         db_task::init(cancel_token.child_token());
         let session_conf = SessionConf::get_session_by_conf();
         let auth_cache = sip::auth::init_global().await?;
-        let (native_service, _native_events, native_transmits) =
-            sip::NativeSipRuntimeService::start(
-                session_conf.wan_ip,
-                session_conf.wan_port,
-                session_conf.domain.clone(),
-                auth_cache.clone(),
-                cancel_token.child_token(),
-            )?;
-        let native_runtime = native_service.handle();
-        native_runtime.install_global()?;
-        Register::init(
-            session_conf.clone(),
-            output.clone(),
+        let sockets = SipRuntimeSockets {
+            tcp: tu.0,
+            udp: tu.1,
+            tls: None,
+        };
+        let (native_service, _native_events) = sip::NativeSipRuntimeService::start(
+            session_conf.wan_ip,
+            session_conf.wan_port,
+            session_conf.domain.clone(),
+            sockets,
+            auth_cache.clone(),
             cancel_token.child_token(),
         )?;
+        let native_runtime = native_service.handle();
+        native_runtime.install_global()?;
+        Register::init(session_conf.clone(), cancel_token.child_token())?;
         let handle = Handle::current();
         handle.spawn(SessionConf::heart_server());
         handle.spawn(sip::auth::run_cleanup_task(cancel_token.child_token()));
         handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));
-        handle.spawn(io::write_native_net(
-            native_transmits,
-            writer,
-            native_runtime.clone(),
-            close_tracker,
-            cancel_token.child_token(),
-        ));
-        handle.spawn(io::read_native(
-            input,
-            output.clone(),
-            native_runtime,
-            cancel_token.child_token(),
-        ));
         let native_shutdown = cancel_token.child_token();
         handle.spawn(async move {
             native_shutdown.cancelled().await;
             native_service.shutdown();
-        });
-        let output_sender = output.clone();
-        base::tokio::spawn(async move {
-            cancel_token.cancelled().await;
-            let _ = output_sender.send(Zip::build_shutdown_zip(None)).await;
         });
         Ok(())
     }
