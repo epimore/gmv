@@ -12,13 +12,11 @@ use base::serde::Deserialize;
 use base::tokio::runtime::Handle;
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::SipRuntimeSockets;
-pub use core::rw::RWContext;
 use regex::Regex;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 use std::sync::Arc;
 
-mod core;
 pub mod sip;
 
 #[derive(Clone, Debug, Deserialize)]

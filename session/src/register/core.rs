@@ -12,7 +12,7 @@ use base::tokio_util::sync::CancellationToken;
 use crate::gb::SessionConf;
 use crate::gb::sip::NativeSipRuntimeHandle;
 use crate::register::event::{self, Event};
-pub(crate) use crate::register::io::{DeviceSession, Network};
+pub(crate) use crate::register::network::{DeviceSession, Network};
 use crate::register::schedule::TimeScheduler;
 use crate::service::{stream_close, talk_close};
 use crate::state::session::Cache as GeneralCache;

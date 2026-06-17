@@ -16,10 +16,10 @@ use shared::info::obj::{TalkAnswerReq, TalkInfo, TalkOpenReq, TalkStartModel, Ta
 use shared::info::output::{DashFmp4Output, LocalMp4Output, OutputEnum, OutputKind};
 use shared::info::res::Resp;
 
-use crate::gb::RWContext;
 use crate::gb::sip::InviteTalkRequest;
 use crate::gb::sip::command as sip_command;
 use crate::http::client::{HttpClient, HttpStream};
+use crate::register::core::Register;
 use crate::service::talk::{
     DEFAULT_TALK_INPUT_TIMEOUT_SECS, TalkAudioOptions, append_gmv_token, cleanup_talk_open,
     parse_talk_answer, sip_command_target, stream_resp_data, talk_codec_to_pjsip,
@@ -39,7 +39,7 @@ use gmv_pjsip::TalkSdpMode;
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_live_model.device_id;
-    if !RWContext::has_session_by_device_id(device_id) {
+    if !Register::has_session(device_id) {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Network.code(),
             "设备已离线",
@@ -166,7 +166,7 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
 
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<String> {
     let device_id = &play_back_model.device_id;
-    if !RWContext::has_session_by_device_id(device_id) {
+    if !Register::has_session(device_id) {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Network.code(),
             "设备已离线",
@@ -255,7 +255,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
 
 pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_back_model.device_id;
-    if !RWContext::has_session_by_device_id(device_id) {
+    if !Register::has_session(device_id) {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Network.code(),
             "设备已离线",
@@ -324,7 +324,7 @@ pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalRe
 
 pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<TalkInfo> {
     let device_id = &model.device_id;
-    if !RWContext::has_session_by_device_id(device_id) {
+    if !Register::has_session(device_id) {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Network.code(),
             "设备已离线",

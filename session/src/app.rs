@@ -1,6 +1,5 @@
 use crate::gb::SessionConf;
 use crate::http::Http;
-use crate::state::runner::{PicsRunner, Runner};
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
@@ -67,9 +66,6 @@ impl
                 network_rt.cancel.cancel();
                 return;
             }
-            GlobalRuntime::get_main_runtime()
-                .rt_handle
-                .spawn(PicsRunner::next());
             if let Err(err) = http.run(http_listener, network_rt.cancel.clone()).await {
                 error!("HTTP service stopped with error: {err}");
                 network_rt.cancel.cancel();

@@ -1,6 +1,4 @@
-use cron::Schedule;
 use std::fs;
-use std::str::FromStr;
 use url::Url;
 
 use base::cfg_lib::conf;
@@ -13,11 +11,7 @@ use base::serde_default;
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.pics", check)]
 pub struct Pics {
-    #[serde(default = "default_enable")]
-    pub enable: bool,
     pub push_url: Option<String>,
-    #[serde(default = "default_cron_cycle")]
-    pub cron_cycle: String,
     #[serde(default = "default_num")]
     pub num: u8,
     #[serde(default = "default_interval")]
@@ -27,8 +21,6 @@ pub struct Pics {
     #[serde(default = "default_storage_format")]
     pub storage_format: String,
 }
-serde_default!(default_enable, bool, false);
-serde_default!(default_cron_cycle, String, String::from("0 */5 * * * *"));
 serde_default!(default_num, u8, 1);
 serde_default!(default_interval, u8, 1);
 serde_default!(default_storage_path, String, "./pics/raw".to_string());
@@ -37,14 +29,11 @@ serde_default!(default_storage_format, String, "jpeg".to_string());
 impl CheckFromConf for Pics {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         let pics: Pics = Pics::conf();
-        if pics.enable {
-            let uri = self.push_url.as_ref().ok_or(FieldCheckError::BizError(
-                "push_url is required".to_string(),
-            ))?;
-            Url::parse(uri).map_err(|e| {
-                FieldCheckError::BizError(format!("Invalid push_url: {}", e.to_string()))
-            })?;
-        }
+        let uri = self.push_url.as_ref().ok_or(FieldCheckError::BizError(
+            "push_url is required".to_string(),
+        ))?;
+        Url::parse(uri)
+            .map_err(|e| FieldCheckError::BizError(format!("Invalid push_url: {}", e)))?;
         match &*pics.storage_format.to_ascii_lowercase() {
             "avif" | "bmp" | "farbfeld" | "gif" | "hdr" | "ico" | "jpeg" | "exr" | "png"
             | "pnm" | "qoi" | "tga" | "tiff" | "webp" => {}
@@ -52,9 +41,6 @@ impl CheckFromConf for Pics {
                 return Err(FieldCheckError::BizError("storage_format must be in [avif,bmp,farbfeld,gif,hdr,ico,jpeg,exr,png,pnm,qoi,tga,tiff,webp]".to_string()));
             }
         }
-        Schedule::from_str(&pics.cron_cycle).map_err(|e| {
-            FieldCheckError::BizError(format!("Invalid cron expression: {}", e.to_string()))
-        })?;
         fs::create_dir_all(&pics.storage_path).map_err(|e| {
             FieldCheckError::BizError(format!("create raw_path dir failed: {}", e.to_string()))
         })?;

@@ -128,10 +128,10 @@ async fn end_record(Json(info): Json<StreamRecordInfo>) -> Json<Resp<()>> {
     path = "/hook/talk/closed",
     request_body = TalkClosedEvent,
     responses(
-        (status = 200, description = "å›žè°ƒå¤„ç†æˆåŠŸ", body = Resp<bool>),
-        (status = 500, description = "æœåŠ¡å™¨å†…éƒ¨é”™è¯¯", body = Resp<bool>)
+        (status = 200, description = "回调处理成功", body = Resp<bool>),
+        (status = 500, description = "服务器内部错误", body = Resp<bool>)
     ),
-    tag = "æµåª’ä½“æœåŠ¡å›žè°ƒæŽ¥å£"
+    tag = "流媒体服务回调接口"
 ))]
 async fn talk_closed(Json(info): Json<TalkClosedEvent>) -> Json<Resp<bool>> {
     info!("talk_closed = {:?}", &info);

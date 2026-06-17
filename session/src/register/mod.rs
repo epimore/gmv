@@ -1,4 +1,4 @@
 pub mod core;
 mod event;
-mod io;
+mod network;
 pub mod schedule;

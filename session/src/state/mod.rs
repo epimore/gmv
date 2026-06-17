@@ -10,8 +10,6 @@ use std::sync::OnceLock;
 use url::Url;
 
 pub mod model;
-pub mod runner;
-pub mod schedule;
 pub mod session;
 
 #[derive(Debug, Deserialize)]
