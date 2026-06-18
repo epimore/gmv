@@ -47,7 +47,6 @@ const DEVICE_ID: &str = "34020000001110000009";
 const CHANNEL_ID: &str = "34020000001320000102";
 const PLAYBACK_CHANNEL_ID: &str = "34020000001320000103";
 const PLATFORM_ID: &str = "34020000002000000001";
-const MEDIA_SERVER_ID: &str = "34020000002020000001";
 
 #[derive(Default)]
 struct MediaState {
@@ -284,8 +283,8 @@ async fn run_device(socket: Arc<UdpSocket>, runtime_addr: SocketAddr, cancel: Ca
                  request={request}"
             );
             assert!(
-                target_subject.starts_with(MEDIA_SERVER_ID),
-                "target_subject={target_subject}; expected_media_server={MEDIA_SERVER_ID}"
+                target_subject.starts_with(PLATFORM_ID),
+                "target_subject={target_subject}; expected_media_server={PLATFORM_ID}"
             );
             let answer = if offer.contains("m=audio") {
                 format!(
@@ -412,7 +411,6 @@ fn base_stream_info(stream_id: &str) -> BaseStreamInfo {
 fn prepare_config(media_port: u16, root: &PathBuf) -> PathBuf {
     let mut config = include_str!("../config.yml")
         .replace("51010000002000000001", PLATFORM_ID)
-        .replace("51010000002020000001", MEDIA_SERVER_ID)
         .replace("5101000000", "3402000000")
         .replace("192.168.0.22", "192.0.2.10")
         .replace("local_port: 18570", &format!("local_port: {media_port}"));

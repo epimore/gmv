@@ -25,8 +25,6 @@ pub mod sip;
 pub struct SessionConf {
     pub domain: String,
     pub domain_id: String,
-    #[serde(default)]
-    pub media_server_id: Option<String>,
     pub http_source: String,
     pub lan_ip: Ipv4Addr,
     pub wan_ip: Ipv4Addr,
@@ -41,13 +39,6 @@ impl CheckFromConf for SessionConf {
                 "domain_id must be 20 digits: {}",
                 self.domain_id
             )));
-        }
-        if let Some(media_server_id) = &self.media_server_id {
-            if !re.is_match(media_server_id) {
-                return Err(FieldCheckError::BizError(format!(
-                    "media_server_id must be 20 digits: {media_server_id}"
-                )));
-            }
         }
         Ok(())
     }
@@ -92,7 +83,7 @@ impl SessionConf {
     }
 
     pub fn media_receiver_id(&self) -> &str {
-        self.media_server_id.as_deref().unwrap_or(&self.domain_id)
+        &self.domain_id
     }
 
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
