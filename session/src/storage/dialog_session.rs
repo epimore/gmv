@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
+use base::chrono::NaiveDateTime;
 use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
@@ -169,12 +170,12 @@ pub struct SipDialogSession {
     pub remote_sip_addr: String,
     pub transport: DialogTransport,
     pub state: DialogState,
-    pub established_at: Option<i64>,
-    pub last_seen_at: i64,
-    pub expire_at: i64,
+    pub established_at: Option<NaiveDateTime>,
+    pub last_seen_at: NaiveDateTime,
+    pub expire_at: NaiveDateTime,
     pub version: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
 }
 
 impl SipDialogSession {
@@ -198,7 +199,6 @@ impl SipDialogSession {
             return Err(invalid_data("dialog CSeq must be positive"));
         }
         if self.version < 0
-            || self.created_at <= 0
             || self.updated_at < self.created_at
             || self.last_seen_at < self.created_at
             || self.expire_at <= self.last_seen_at
@@ -233,10 +233,10 @@ pub struct EstablishedDialogFields {
     pub route_set: Vec<String>,
     pub local_sip_addr: String,
     pub remote_sip_addr: String,
-    pub established_at: i64,
-    pub last_seen_at: i64,
-    pub expire_at: i64,
-    pub updated_at: i64,
+    pub established_at: NaiveDateTime,
+    pub last_seen_at: NaiveDateTime,
+    pub expire_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
 }
 
 impl EstablishedDialogFields {
@@ -248,7 +248,6 @@ impl EstablishedDialogFields {
         validate_route_set(&self.route_set)?;
         if self.local_cseq <= 0
             || self.remote_cseq.is_some_and(|value| value <= 0)
-            || self.established_at <= 0
             || self.last_seen_at < self.established_at
             || self.updated_at < self.established_at
             || self.expire_at <= self.last_seen_at
@@ -281,12 +280,12 @@ struct SipDialogSessionRow {
     remote_sip_addr: String,
     transport: String,
     state: String,
-    established_at: Option<i64>,
-    last_seen_at: i64,
-    expire_at: i64,
+    established_at: Option<NaiveDateTime>,
+    last_seen_at: NaiveDateTime,
+    expire_at: NaiveDateTime,
     version: i64,
-    created_at: i64,
-    updated_at: i64,
+    created_at: NaiveDateTime,
+    updated_at: NaiveDateTime,
 }
 
 impl TryFrom<SipDialogSessionRow> for SipDialogSession {
@@ -468,7 +467,7 @@ impl SipDialogSessionRepository {
         expected_version: i64,
         current_cseq: i64,
         next_cseq: i64,
-        updated_at: i64,
+        updated_at: NaiveDateTime,
     ) -> GlobalResult<bool> {
         validate_len(stream_id, 64, "stream_id")?;
         validate_len(signal_node_id, 64, "signal_node_id")?;
@@ -476,7 +475,6 @@ impl SipDialogSessionRepository {
             || current_cseq <= 0
             || next_cseq != current_cseq + 1
             || next_cseq > i64::from(i32::MAX)
-            || updated_at <= 0
         {
             return Err(invalid_data("invalid terminating CSeq reservation"));
         }
@@ -527,12 +525,11 @@ impl SipDialogSessionRepository {
         expected_version: i64,
         expected_state: DialogState,
         next_state: DialogState,
-        updated_at: i64,
+        updated_at: NaiveDateTime,
     ) -> GlobalResult<bool> {
         validate_len(stream_id, 64, "stream_id")?;
         validate_len(signal_node_id, 64, "signal_node_id")?;
         if expected_version < 0
-            || updated_at <= 0
             || expected_state.is_terminal()
             || !expected_state.can_transition_to(next_state)
         {
@@ -582,7 +579,7 @@ impl SipDialogSessionRepository {
         expected_version: i64,
         current_cseq: i64,
         next_cseq: i64,
-        updated_at: i64,
+        updated_at: NaiveDateTime,
     ) -> GlobalResult<bool> {
         validate_len(stream_id, 64, "stream_id")?;
         validate_len(signal_node_id, 64, "signal_node_id")?;
@@ -590,7 +587,6 @@ impl SipDialogSessionRepository {
             || current_cseq <= 0
             || next_cseq != current_cseq + 1
             || next_cseq > i64::from(i32::MAX)
-            || updated_at <= 0
         {
             return Err(invalid_data("invalid local CSeq reservation"));
         }
@@ -641,12 +637,12 @@ impl SipDialogSessionRepository {
         stream_id: &str,
         signal_node_id: &str,
         expected_version: i64,
-        last_seen_at: i64,
-        expire_at: i64,
+        last_seen_at: NaiveDateTime,
+        expire_at: NaiveDateTime,
     ) -> GlobalResult<bool> {
         validate_len(stream_id, 64, "stream_id")?;
         validate_len(signal_node_id, 64, "signal_node_id")?;
-        if expected_version < 0 || last_seen_at <= 0 || expire_at <= last_seen_at {
+        if expected_version < 0 || expire_at <= last_seen_at {
             return Err(invalid_data("invalid dialog activity timestamps"));
         }
         #[cfg(test)]
@@ -916,6 +912,12 @@ pub(crate) fn enable_dialog_test_storage() -> TestStorageGuard {
 mod tests {
     use super::*;
 
+    fn at(offset_millis: i64) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str("2026-06-18 00:00:00.000", "%Y-%m-%d %H:%M:%S%.3f")
+            .expect("parse test datetime")
+            + base::chrono::Duration::milliseconds(offset_millis)
+    }
+
     fn inviting(stream_id: &str) -> SipDialogSession {
         SipDialogSession {
             stream_id: stream_id.into(),
@@ -939,11 +941,11 @@ mod tests {
             transport: DialogTransport::Udp,
             state: DialogState::Inviting,
             established_at: None,
-            last_seen_at: 1_000,
-            expire_at: 28_801_000,
+            last_seen_at: at(1_000),
+            expire_at: at(28_801_000),
             version: 0,
-            created_at: 1_000,
-            updated_at: 1_000,
+            created_at: at(1_000),
+            updated_at: at(1_000),
         }
     }
 
@@ -977,10 +979,10 @@ mod tests {
                 ],
                 local_sip_addr: "127.0.0.1:5060".into(),
                 remote_sip_addr: "127.0.0.1:15060".into(),
-                established_at: 1_100,
-                last_seen_at: 1_100,
-                expire_at: 28_801_100,
-                updated_at: 1_100,
+                established_at: at(1_100),
+                last_seen_at: at(1_100),
+                expire_at: at(28_801_100),
+                updated_at: at(1_100),
             };
             assert!(
                 SipDialogSessionRepository::cas_mark_established(
@@ -1009,7 +1011,7 @@ mod tests {
                     1,
                     10,
                     11,
-                    1_200,
+                    at(1_200),
                 )
                 .await
                 .expect("begin terminating")
@@ -1019,8 +1021,8 @@ mod tests {
                     "stream-1",
                     "session-1",
                     2,
-                    1_250,
-                    28_801_250,
+                    at(1_250),
+                    at(28_801_250),
                 )
                 .await
                 .expect("touch terminating dialog")
@@ -1032,7 +1034,7 @@ mod tests {
                     3,
                     11,
                     12,
-                    1_250,
+                    at(1_250),
                 )
                 .await
                 .expect("non-owner CSeq CAS loser")
@@ -1044,7 +1046,7 @@ mod tests {
                     3,
                     DialogState::Terminating,
                     DialogState::Terminated,
-                    1_400,
+                    at(1_400),
                 )
                 .await
                 .expect("mark terminated")
@@ -1056,6 +1058,7 @@ mod tests {
                 .expect("stored stream");
             assert_eq!(loaded.state, DialogState::Terminated);
             assert_eq!(loaded.local_cseq, 11);
+            assert_eq!(loaded.updated_at.and_utc().timestamp_subsec_millis(), 400);
             assert_eq!(loaded.route_set, established.route_set);
             assert_eq!(
                 SipDialogSessionRepository::find_by_call_id(&first.call_id)
@@ -1105,9 +1108,12 @@ mod tests {
         session.local_cseq = 0;
         assert!(session.validate().is_err());
         session.local_cseq = 1;
-        session.updated_at = session.created_at - 1;
+        session.updated_at = session.created_at - base::chrono::Duration::milliseconds(1);
         assert!(session.validate().is_err());
         session.updated_at = session.created_at;
+        session.expire_at = session.last_seen_at;
+        assert!(session.validate().is_err());
+        session.expire_at = at(28_801_000);
         session.route_set = vec!["sip:proxy@127.0.0.1:5060\r\nRoute: sip:other".into()];
         assert!(session.validate().is_err());
 

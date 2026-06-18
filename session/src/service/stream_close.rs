@@ -146,7 +146,7 @@ fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
                     session.version,
                     session.state,
                     DialogState::Orphan,
-                    Local::now().timestamp_millis(),
+                    Local::now().naive_local(),
                 )
                 .await;
             }

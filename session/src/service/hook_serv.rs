@@ -74,13 +74,13 @@ async fn touch_durable_dialog(stream_id: &str) {
     let Ok(Some(session)) = SipDialogSessionRepository::find_by_stream_id(stream_id).await else {
         return;
     };
-    let now = base::chrono::Local::now().timestamp_millis();
+    let now = base::chrono::Local::now().naive_local();
     match SipDialogSessionRepository::cas_touch(
         stream_id,
         &session.signal_node_id,
         session.version,
         now,
-        now.saturating_add(8 * 60 * 60 * 1_000),
+        now + base::chrono::Duration::hours(8),
     )
     .await
     {

@@ -641,7 +641,7 @@ async fn persist_peer_dialog_terminated(call_id: &str) {
             session.version,
             session.state,
             DialogState::Terminated,
-            Local::now().timestamp_millis(),
+            Local::now().naive_local(),
         )
         .await
         {

@@ -63,7 +63,7 @@ pub(crate) async fn recover_owned_dialogs() -> GlobalResult<()> {
 }
 
 async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<()> {
-    let now = Local::now().timestamp_millis();
+    let now = Local::now().naive_local();
     if session.expire_at <= now
         || session.state == DialogState::Inviting
         || session.session_type == DialogSessionType::Talk
@@ -247,7 +247,7 @@ async fn mark_orphan(session: &SipDialogSession) -> GlobalResult<()> {
         session.version,
         session.state,
         DialogState::Orphan,
-        Local::now().timestamp_millis(),
+        Local::now().naive_local(),
     )
     .await?;
     if !changed {

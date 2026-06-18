@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use base::chrono::Local;
+use base::chrono::{Duration as TimeDelta, Local};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
@@ -42,7 +42,7 @@ use super::{sdp, xml};
 const INVITE_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const BYE_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 const REQUEST_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
-const DIALOG_EXPIRE_MILLIS: i64 = 8 * 60 * 60 * 1_000;
+const DIALOG_EXPIRE_HOURS: i64 = 8;
 
 struct DurableDialogReservation {
     signal_node_id: String,
@@ -529,7 +529,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
         sdp,
     };
     let signal_node_id = conf.domain_id.clone();
-    let now = Local::now().timestamp_millis();
+    let now = Local::now().naive_local();
     SipDialogSessionRepository::insert_inviting(&SipDialogSession {
         stream_id: stream_id.clone(),
         device_id: device_id.clone(),
@@ -553,7 +553,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
         state: DialogState::Inviting,
         established_at: None,
         last_seen_at: now,
-        expire_at: now.saturating_add(DIALOG_EXPIRE_MILLIS),
+        expire_at: now + TimeDelta::hours(DIALOG_EXPIRE_HOURS),
         version: 0,
         created_at: now,
         updated_at: now,
@@ -595,7 +595,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
                     |msg| error!("stream_id={stream_id}; call_id={}; {msg}", event.call_id),
                 ));
             }
-            let established_at = Local::now().timestamp_millis();
+            let established_at = Local::now().naive_local();
             let fields = EstablishedDialogFields {
                 remote_tag: snapshot.remote_tag.clone(),
                 local_cseq: i64::from(snapshot.local_cseq),
@@ -606,7 +606,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
                 remote_sip_addr: snapshot.remote_addr.to_string(),
                 established_at,
                 last_seen_at: established_at,
-                expire_at: established_at.saturating_add(DIALOG_EXPIRE_MILLIS),
+                expire_at: established_at + TimeDelta::hours(DIALOG_EXPIRE_HOURS),
                 updated_at: established_at,
             };
             match SipDialogSessionRepository::cas_mark_established(
@@ -691,7 +691,7 @@ fn dialog_transport(protocol: gmv_pjsip::SipTransportProtocol) -> DialogTranspor
 }
 
 async fn mark_inviting_terminal(stream_id: &str, signal_node_id: &str, next_state: DialogState) {
-    let updated_at = Local::now().timestamp_millis();
+    let updated_at = Local::now().naive_local();
     match SipDialogSessionRepository::cas_transition(
         stream_id,
         signal_node_id,
@@ -1059,7 +1059,7 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
         .await?;
     }
     if let (Some(stream_id), Some(reservation)) = (stream_id.as_deref(), reservation) {
-        let updated_at = Local::now().timestamp_millis();
+        let updated_at = Local::now().naive_local();
         let persisted = SipDialogSessionRepository::cas_transition(
             stream_id,
             &reservation.signal_node_id,
@@ -1200,7 +1200,7 @@ async fn reserve_durable_dialog_request(
             error!("stream_id={stream_id}; {msg}")
         })
     })?;
-    let updated_at = Local::now().timestamp_millis();
+    let updated_at = Local::now().naive_local();
     let reserved = match (method, session.state) {
         (SipDialogMethod::Info, DialogState::Established)
         | (SipDialogMethod::Bye, DialogState::Terminating) => {
