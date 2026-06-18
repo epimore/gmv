@@ -4,6 +4,7 @@ use std::sync::{Arc, OnceLock, mpsc as std_mpsc};
 use std::thread;
 use std::time::Duration;
 
+use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, warn};
@@ -37,6 +38,10 @@ pub const NATIVE_SIP_IO_CAPACITY: usize = 32_768;
 static NATIVE_SIP_RUNTIME: OnceLock<NativeSipRuntimeHandle> = OnceLock::new();
 #[cfg(test)]
 pub(crate) static RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn cli_basic() -> CliBasic {
+    default_cli_basic!()
+}
 
 struct AuthLookup {
     lookup_id: u64,
@@ -295,6 +300,7 @@ impl NativeSipRuntimeService {
                     auth_realm: realm,
                     auth_lookup_timeout: AUTH_LOOKUP_TIMEOUT,
                     max_pending_auth: MAX_PENDING_AUTH,
+                    user_agent: format!("Gmv {}", cli_basic().version),
                     ..SipRuntimeConfig::default()
                 };
                 let (mut runtime, events) = match SipRuntime::start(config, sockets) {
