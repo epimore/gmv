@@ -32,7 +32,6 @@ const AUTH_BATCH_WINDOW: Duration = Duration::from_millis(5);
 const AUTH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_PENDING_AUTH: u32 = 20_000;
 const RUNTIME_COMMAND_CAPACITY: usize = 32_768;
-const PJSIP_LOG_TARGET: &str = "gmv_session::gb::io";
 pub const NATIVE_SIP_IO_CAPACITY: usize = 32_768;
 static NATIVE_SIP_RUNTIME: OnceLock<NativeSipRuntimeHandle> = OnceLock::new();
 #[cfg(test)]
@@ -262,7 +261,6 @@ impl NativeSipRuntimeService {
                     bind_address,
                     port,
                     auth_realm: realm,
-                    log_target: PJSIP_LOG_TARGET.into(),
                     auth_lookup_timeout: AUTH_LOOKUP_TIMEOUT,
                     max_pending_auth: MAX_PENDING_AUTH,
                     ..SipRuntimeConfig::default()

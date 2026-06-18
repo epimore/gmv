@@ -312,7 +312,7 @@ dependencies = [
  "constructor",
  "ctor",
  "daemonize",
- "dashmap 5.5.3",
+ "dashmap",
  "exception",
  "fern",
  "futures",
@@ -836,20 +836,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashmap"
-version = "6.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
 name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1336,13 +1322,8 @@ dependencies = [
 name = "gmv_pjsip"
 version = "0.1.0"
 dependencies = [
- "bytes",
- "dashmap 6.2.1",
+ "base",
  "gmv_pjsip_sys",
- "log",
- "rand 0.8.5",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
