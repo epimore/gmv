@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use base::chrono::Local;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
@@ -14,13 +15,20 @@ use gmv_pjsip::gb28181::sdp::{TalkSdpOptions, build_play_sdp, build_talk_sdp};
 use gmv_pjsip::gb28181::xml::{
     CONTENT_TYPE_MANSRTSP, build_mansrtsp_seek_body, build_mansrtsp_speed_body,
 };
-use gmv_pjsip::{SipDialogMethod, SipDialogRequest, SipOutboundInvite, SipOutboundMessage};
+use gmv_pjsip::{
+    SipDialogMethod, SipDialogRequest, SipDialogSnapshot, SipInviteIdentity, SipOutboundInvite,
+    SipOutboundMessage, SipRestoredDialogRequest,
+};
 use shared::info::media_info_ext::MediaExt;
 
 use crate::gb::SessionConf;
 use crate::register::core::Register;
 use crate::state::model::{PtzControlModel, TransMode};
 use crate::state::session::Cache as GeneralCache;
+use crate::storage::dialog_session::{
+    DialogSessionType, DialogState, DialogTransport, EstablishedDialogFields, SipDialogSession,
+    SipDialogSessionRepository,
+};
 
 use super::adapter::pjsip_protocol_from_base;
 use super::invite::{
@@ -34,6 +42,12 @@ use super::{sdp, xml};
 const INVITE_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const BYE_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 const REQUEST_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
+const DIALOG_EXPIRE_MILLIS: i64 = 8 * 60 * 60 * 1_000;
+
+struct DurableDialogReservation {
+    signal_node_id: String,
+    version: i64,
+}
 
 pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Protocol)> {
     let Some(session) = Register::get_connected_device_session(device_id) else {
@@ -135,7 +149,9 @@ async fn send_native_dialog_and_wait(
             },
         )
     })?;
-    if (200..300).contains(&result.status) {
+    if (200..300).contains(&result.status)
+        || (method == SipDialogMethod::Bye && result.status == 481)
+    {
         return Ok(());
     }
     Err(GlobalError::new_biz_error(
@@ -149,6 +165,109 @@ async fn send_native_dialog_and_wait(
             )
         },
     ))
+}
+
+async fn send_restored_dialog_and_wait(
+    device_id: &str,
+    method: SipDialogMethod,
+    session: &SipDialogSession,
+    content_type: Option<String>,
+    body: Vec<u8>,
+    timeout: Duration,
+) -> GlobalResult<()> {
+    let association = Register::get_connected_device_session(device_id);
+    if session.transport == DialogTransport::Tcp && association.is_none() {
+        return Err(device_not_connected(device_id));
+    }
+    let runtime = NativeSipRuntimeHandle::global()?;
+    let operation_id = runtime.next_operation_id();
+    let rx = SipRuntimeCache::global().insert_native_response_waiter(operation_id, timeout);
+    let request = SipRestoredDialogRequest {
+        operation_id,
+        method,
+        snapshot: dialog_snapshot_from_session(session)?,
+        content_type,
+        body,
+    };
+    if let Err(err) = runtime.send_restored_dialog_request(
+        association.as_ref().map(|value| &value.association),
+        request,
+    ) {
+        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+        return Err(err);
+    }
+    let result = recv_with_timeout(rx, timeout).await.map_err(|reason| {
+        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+        GlobalError::new_biz_error(
+            BaseErrorCode::Timeout.code(),
+            "device restored SIP dialog response timeout",
+            |msg| {
+                error!(
+                    "device_id={device_id}; call_id={}; operation_id={operation_id}; \
+                     {msg}; reason={reason}",
+                    session.call_id
+                )
+            },
+        )
+    })?;
+    if (200..300).contains(&result.status)
+        || (method == SipDialogMethod::Bye && result.status == 481)
+    {
+        return Ok(());
+    }
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::InvalidState.code(),
+        "device rejected restored SIP dialog request",
+        |msg| {
+            error!(
+                "device_id={device_id}; call_id={}; operation_id={operation_id}; \
+                 status={}; {msg}",
+                session.call_id, result.status
+            )
+        },
+    ))
+}
+
+fn dialog_snapshot_from_session(session: &SipDialogSession) -> GlobalResult<SipDialogSnapshot> {
+    let remote_tag = session.remote_tag.clone().ok_or_else(|| {
+        GlobalError::new_sys_error("restored SIP dialog remote tag is missing", |msg| {
+            error!("stream_id={}; {msg}", session.stream_id)
+        })
+    })?;
+    let remote_target = session
+        .contact_uri
+        .clone()
+        .unwrap_or_else(|| session.remote_uri.clone());
+    Ok(SipDialogSnapshot {
+        call_id: session.call_id.clone(),
+        local_uri: session.local_uri.clone(),
+        remote_uri: session.remote_uri.clone(),
+        local_tag: session.local_tag.clone(),
+        remote_tag,
+        local_cseq: u32::try_from(session.local_cseq).map_err(|_| {
+            GlobalError::new_sys_error("restored SIP dialog CSeq is out of range", |msg| {
+                error!("stream_id={}; {msg}", session.stream_id)
+            })
+        })?,
+        remote_target,
+        route_set: session.route_set.clone(),
+        protocol: match session.transport {
+            DialogTransport::Udp => gmv_pjsip::SipTransportProtocol::Udp,
+            DialogTransport::Tcp => gmv_pjsip::SipTransportProtocol::Tcp,
+            DialogTransport::Tls => gmv_pjsip::SipTransportProtocol::Tls,
+        },
+        association_id: 0,
+        local_addr: session.local_sip_addr.parse().map_err(|_| {
+            GlobalError::new_sys_error("invalid restored local SIP address", |msg| {
+                error!("stream_id={}; {msg}", session.stream_id)
+            })
+        })?,
+        remote_addr: session.remote_sip_addr.parse().map_err(|_| {
+            GlobalError::new_sys_error("invalid restored remote SIP address", |msg| {
+                error!("stream_id={}; {msg}", session.stream_id)
+            })
+        })?,
+    })
 }
 
 fn stream_call_id(stream_id: &str) -> GlobalResult<String> {
@@ -349,6 +468,7 @@ pub async fn invite_play(req: InvitePlayRequest) -> GlobalResult<()> {
             operation_id,
             association_id: 0,
             protocol,
+            identity: SipInviteIdentity::generate(),
             target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
             from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
             contact_uri: format!(
@@ -376,19 +496,9 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
     };
     let runtime = NativeSipRuntimeHandle::global()?;
     let operation_id = runtime.next_operation_id();
-    let rx = SipRuntimeCache::global().insert_native_invite_waiter(
-        operation_id,
-        NativeInviteMetadata {
-            device_id: device_id.clone(),
-            channel_id: req.channel_id.clone(),
-            stream_id: stream_id.clone(),
-            ssrc: Some(req.ssrc),
-        },
-        INVITE_WAIT_TIMEOUT,
-    );
     let protocol = pjsip_protocol_from_base(session.association.protocol);
     let conf = SessionConf::get_session_by_conf();
-    let sdp = req.sdp.unwrap_or_else(|| {
+    let sdp = req.sdp.clone().unwrap_or_else(|| {
         build_play_sdp(gmv_pjsip::gb28181::sdp::PlaySdpOptions {
             ip: req.media_ip,
             port: req.media_port,
@@ -396,10 +506,12 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
             payload_type: req.payload_type,
         })
     });
+    let identity = SipInviteIdentity::generate();
     let invite = SipOutboundInvite {
         operation_id,
         association_id: 0,
         protocol,
+        identity: identity.clone(),
         target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
         from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
         contact_uri: format!(
@@ -411,19 +523,142 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
                 protocol,
             )
         ),
-        subject: Some(req.subject.unwrap_or_else(|| {
+        subject: Some(req.subject.clone().unwrap_or_else(|| {
             invite_subject(&req.channel_id, conf.media_receiver_id(), req.ssrc)
         })),
         sdp,
     };
+    let signal_node_id = conf.domain_id.clone();
+    let now = Local::now().timestamp_millis();
+    SipDialogSessionRepository::insert_inviting(&SipDialogSession {
+        stream_id: stream_id.clone(),
+        device_id: device_id.clone(),
+        channel_id: req.channel_id.clone(),
+        session_type: req.session_type,
+        signal_node_id: signal_node_id.clone(),
+        media_node_id: req.media_node_id.clone(),
+        ssrc: Some(format_gb_ssrc(req.ssrc)),
+        call_id: identity.call_id.clone(),
+        local_uri: invite.from_uri.clone(),
+        remote_uri: invite.target_uri.clone(),
+        local_tag: identity.local_tag.clone(),
+        remote_tag: None,
+        local_cseq: i64::from(identity.local_cseq),
+        remote_cseq: None,
+        contact_uri: None,
+        route_set: Vec::new(),
+        local_sip_addr: session.association.local_addr.to_string(),
+        remote_sip_addr: session.association.remote_addr.to_string(),
+        transport: dialog_transport(protocol),
+        state: DialogState::Inviting,
+        established_at: None,
+        last_seen_at: now,
+        expire_at: now.saturating_add(DIALOG_EXPIRE_MILLIS),
+        version: 0,
+        created_at: now,
+        updated_at: now,
+    })
+    .await?;
+    let rx = SipRuntimeCache::global().insert_native_invite_waiter(
+        operation_id,
+        NativeInviteMetadata {
+            device_id: device_id.clone(),
+            channel_id: req.channel_id.clone(),
+            stream_id: stream_id.clone(),
+            ssrc: Some(req.ssrc),
+        },
+        INVITE_WAIT_TIMEOUT,
+    );
     if let Err(err) = runtime.send_invite(&session.association, invite) {
         SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
+        mark_inviting_terminal(&stream_id, &signal_node_id, DialogState::Terminated).await;
         return Err(err);
     }
     match recv_with_timeout(rx, INVITE_WAIT_TIMEOUT).await {
-        Ok(Ok(event)) => Ok(event),
+        Ok(Ok(event)) => {
+            let snapshot = &event.dialog_snapshot;
+            if snapshot.call_id != identity.call_id
+                || snapshot.local_tag != identity.local_tag
+                || snapshot.local_cseq != identity.local_cseq
+                || snapshot.protocol != protocol
+            {
+                rollback_established_invite(
+                    &device_id,
+                    &stream_id,
+                    &signal_node_id,
+                    &event.call_id,
+                    DialogState::Orphan,
+                )
+                .await;
+                return Err(GlobalError::new_sys_error(
+                    "INVITE dialog snapshot does not match persisted identity",
+                    |msg| error!("stream_id={stream_id}; call_id={}; {msg}", event.call_id),
+                ));
+            }
+            let established_at = Local::now().timestamp_millis();
+            let fields = EstablishedDialogFields {
+                remote_tag: snapshot.remote_tag.clone(),
+                local_cseq: i64::from(snapshot.local_cseq),
+                remote_cseq: None,
+                contact_uri: Some(snapshot.remote_target.clone()),
+                route_set: snapshot.route_set.clone(),
+                local_sip_addr: snapshot.local_addr.to_string(),
+                remote_sip_addr: snapshot.remote_addr.to_string(),
+                established_at,
+                last_seen_at: established_at,
+                expire_at: established_at.saturating_add(DIALOG_EXPIRE_MILLIS),
+                updated_at: established_at,
+            };
+            match SipDialogSessionRepository::cas_mark_established(
+                &stream_id,
+                &signal_node_id,
+                0,
+                &fields,
+            )
+            .await
+            {
+                Ok(true) => Ok(event),
+                Ok(false) => {
+                    rollback_established_invite(
+                        &device_id,
+                        &stream_id,
+                        &signal_node_id,
+                        &event.call_id,
+                        DialogState::Orphan,
+                    )
+                    .await;
+                    Err(GlobalError::new_sys_error(
+                        "INVITE dialog ESTABLISHED CAS lost",
+                        |msg| error!("stream_id={stream_id}; call_id={}; {msg}", event.call_id),
+                    ))
+                }
+                Err(err) => {
+                    rollback_established_invite(
+                        &device_id,
+                        &stream_id,
+                        &signal_node_id,
+                        &event.call_id,
+                        DialogState::Orphan,
+                    )
+                    .await;
+                    Err(err)
+                }
+            }
+        }
         Ok(Err(failure)) => {
             SipRuntimeCache::global().remove_stream_indexes(&stream_id, Some(&failure.call_id));
+            if failure.dialog_established {
+                rollback_established_invite(
+                    &device_id,
+                    &stream_id,
+                    &signal_node_id,
+                    &failure.call_id,
+                    DialogState::Orphan,
+                )
+                .await;
+            } else {
+                mark_inviting_terminal(&stream_id, &signal_node_id, DialogState::Terminated).await;
+            }
             Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidState.code(),
                 "device rejected INVITE",
@@ -437,6 +672,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
         }
         Err(reason) => {
             SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
+            mark_inviting_terminal(&stream_id, &signal_node_id, DialogState::Orphan).await;
             Err(GlobalError::new_biz_error(
                 BaseErrorCode::Timeout.code(),
                 "device INVITE response timeout",
@@ -444,6 +680,72 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
             ))
         }
     }
+}
+
+fn dialog_transport(protocol: gmv_pjsip::SipTransportProtocol) -> DialogTransport {
+    match protocol {
+        gmv_pjsip::SipTransportProtocol::Udp => DialogTransport::Udp,
+        gmv_pjsip::SipTransportProtocol::Tcp => DialogTransport::Tcp,
+        gmv_pjsip::SipTransportProtocol::Tls => DialogTransport::Tls,
+    }
+}
+
+async fn mark_inviting_terminal(stream_id: &str, signal_node_id: &str, next_state: DialogState) {
+    let updated_at = Local::now().timestamp_millis();
+    match SipDialogSessionRepository::cas_transition(
+        stream_id,
+        signal_node_id,
+        0,
+        DialogState::Inviting,
+        next_state,
+        updated_at,
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            error!("INVITING terminal CAS lost: stream_id={stream_id}; next_state={next_state}")
+        }
+        Err(err) => error!(
+            "INVITING terminal persistence failed: stream_id={stream_id}; \
+             next_state={next_state}; err={err}"
+        ),
+    }
+}
+
+async fn rollback_established_invite(
+    device_id: &str,
+    stream_id: &str,
+    signal_node_id: &str,
+    call_id: &str,
+    next_state: DialogState,
+) {
+    let bye_result = send_native_dialog_and_wait(
+        device_id,
+        SipDialogMethod::Bye,
+        call_id.to_string(),
+        None,
+        Vec::new(),
+        BYE_WAIT_TIMEOUT,
+    )
+    .await;
+    if let Err(err) = &bye_result {
+        error!(
+            "rollback established INVITE with BYE failed: stream_id={stream_id}; \
+             call_id={call_id}; err={err}"
+        );
+    }
+    SipRuntimeCache::global().remove_stream_indexes(stream_id, Some(call_id));
+    mark_inviting_terminal(
+        stream_id,
+        signal_node_id,
+        if bye_result.is_ok() {
+            DialogState::Terminated
+        } else {
+            next_state
+        },
+    )
+    .await;
 }
 
 pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInviteAcceptedEvent> {
@@ -470,6 +772,7 @@ pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInvi
         operation_id,
         association_id: 0,
         protocol,
+        identity: SipInviteIdentity::generate(),
         target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
         from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
         contact_uri: format!(
@@ -590,6 +893,7 @@ async fn parse_media_ext_or_close(
 pub async fn play_live_invite_wait(
     device_id: &str,
     channel_id: &str,
+    media_node_id: &str,
     media_ip: &str,
     media_port: u16,
     trans_mode: TransMode,
@@ -605,6 +909,8 @@ pub async fn play_live_invite_wait(
         device_id: device_id.to_string(),
         channel_id: channel_id.to_string(),
         stream_id: stream_id.to_string(),
+        media_node_id: media_node_id.to_string(),
+        session_type: DialogSessionType::Live,
         device_host: host,
         device_port: port,
         media_ip: media_ip.to_string(),
@@ -625,6 +931,7 @@ pub async fn play_live_invite_wait(
 pub async fn play_back_invite_wait(
     device_id: &str,
     channel_id: &str,
+    media_node_id: &str,
     media_ip: &str,
     media_port: u16,
     trans_mode: TransMode,
@@ -644,6 +951,8 @@ pub async fn play_back_invite_wait(
         device_id: device_id.to_string(),
         channel_id: channel_id.to_string(),
         stream_id: stream_id.to_string(),
+        media_node_id: media_node_id.to_string(),
+        session_type: DialogSessionType::Playback,
         device_host: host,
         device_port: port,
         media_ip: media_ip.to_string(),
@@ -664,6 +973,7 @@ pub async fn play_back_invite_wait(
 pub async fn download_invite_wait(
     device_id: &str,
     channel_id: &str,
+    media_node_id: &str,
     media_ip: &str,
     media_port: u16,
     trans_mode: TransMode,
@@ -684,6 +994,8 @@ pub async fn download_invite_wait(
         device_id: device_id.to_string(),
         channel_id: channel_id.to_string(),
         stream_id: stream_id.to_string(),
+        media_node_id: media_node_id.to_string(),
+        session_type: DialogSessionType::Download,
         device_host: host,
         device_port: port,
         media_ip: media_ip.to_string(),
@@ -702,6 +1014,7 @@ pub async fn download_invite_wait(
 }
 
 pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> GlobalResult<()> {
+    let stream_id = req.stream_id.clone();
     let call_id = req
         .call_id
         .or_else(|| {
@@ -716,15 +1029,55 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
                 |msg| error!("device_id={device_id}; {msg}"),
             )
         })?;
-    send_native_dialog_and_wait(
-        device_id,
-        SipDialogMethod::Bye,
-        call_id,
-        None,
-        Vec::new(),
-        BYE_WAIT_TIMEOUT,
-    )
-    .await
+    let reservation = match stream_id.as_deref() {
+        Some(stream_id) => reserve_durable_dialog_request(stream_id, SipDialogMethod::Bye).await?,
+        None => None,
+    };
+    if stream_id
+        .as_deref()
+        .is_some_and(GeneralCache::stream_is_restored)
+    {
+        let session = load_durable_dialog(stream_id.as_deref().unwrap_or_default()).await?;
+        send_restored_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Bye,
+            &session,
+            None,
+            Vec::new(),
+            BYE_WAIT_TIMEOUT,
+        )
+        .await?;
+    } else {
+        send_native_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Bye,
+            call_id.clone(),
+            None,
+            Vec::new(),
+            BYE_WAIT_TIMEOUT,
+        )
+        .await?;
+    }
+    if let (Some(stream_id), Some(reservation)) = (stream_id.as_deref(), reservation) {
+        let updated_at = Local::now().timestamp_millis();
+        let persisted = SipDialogSessionRepository::cas_transition(
+            stream_id,
+            &reservation.signal_node_id,
+            reservation.version,
+            DialogState::Terminating,
+            DialogState::Terminated,
+            updated_at,
+        )
+        .await?;
+        if !persisted {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "durable SIP dialog TERMINATED CAS lost",
+                |msg| error!("stream_id={stream_id}; call_id={call_id}; {msg}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
@@ -754,28 +1107,148 @@ pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
 
 pub async fn play_seek(device_id: &str, stream_id: &str, seek_second: u32) -> GlobalResult<()> {
     let call_id = stream_call_id(stream_id)?;
-    send_native_dialog_and_wait(
-        device_id,
-        SipDialogMethod::Info,
-        call_id,
-        Some(CONTENT_TYPE_MANSRTSP.to_string()),
-        build_mansrtsp_seek_body(f64::from(seek_second), 1).into_bytes(),
-        REQUEST_WAIT_TIMEOUT,
-    )
-    .await
+    reserve_durable_dialog_request(stream_id, SipDialogMethod::Info).await?;
+    let content_type = Some(CONTENT_TYPE_MANSRTSP.to_string());
+    let body = build_mansrtsp_seek_body(f64::from(seek_second), 1).into_bytes();
+    if GeneralCache::stream_is_restored(stream_id) {
+        let session = load_durable_dialog(stream_id).await?;
+        send_restored_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Info,
+            &session,
+            content_type,
+            body,
+            REQUEST_WAIT_TIMEOUT,
+        )
+        .await
+    } else {
+        send_native_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Info,
+            call_id,
+            content_type,
+            body,
+            REQUEST_WAIT_TIMEOUT,
+        )
+        .await
+    }
 }
 
 pub async fn play_speed(device_id: &str, stream_id: &str, speed: f32) -> GlobalResult<()> {
     let call_id = stream_call_id(stream_id)?;
-    send_native_dialog_and_wait(
-        device_id,
-        SipDialogMethod::Info,
-        call_id,
-        Some(CONTENT_TYPE_MANSRTSP.to_string()),
-        build_mansrtsp_speed_body(speed, None, 1).into_bytes(),
-        REQUEST_WAIT_TIMEOUT,
-    )
-    .await
+    reserve_durable_dialog_request(stream_id, SipDialogMethod::Info).await?;
+    let content_type = Some(CONTENT_TYPE_MANSRTSP.to_string());
+    let body = build_mansrtsp_speed_body(speed, None, 1).into_bytes();
+    if GeneralCache::stream_is_restored(stream_id) {
+        let session = load_durable_dialog(stream_id).await?;
+        send_restored_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Info,
+            &session,
+            content_type,
+            body,
+            REQUEST_WAIT_TIMEOUT,
+        )
+        .await
+    } else {
+        send_native_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Info,
+            call_id,
+            content_type,
+            body,
+            REQUEST_WAIT_TIMEOUT,
+        )
+        .await
+    }
+}
+
+async fn load_durable_dialog(stream_id: &str) -> GlobalResult<SipDialogSession> {
+    SipDialogSessionRepository::find_by_stream_id(stream_id)
+        .await?
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "durable SIP dialog not found",
+                |msg| error!("stream_id={stream_id}; {msg}"),
+            )
+        })
+}
+
+async fn reserve_durable_dialog_request(
+    stream_id: &str,
+    method: SipDialogMethod,
+) -> GlobalResult<Option<DurableDialogReservation>> {
+    let Some(session) = SipDialogSessionRepository::find_by_stream_id(stream_id).await? else {
+        return Ok(None);
+    };
+    let current_node_id = SessionConf::get_session_by_conf().domain_id;
+    if session.signal_node_id != current_node_id {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "durable SIP dialog belongs to another signal node",
+            |msg| {
+                error!(
+                    "stream_id={stream_id}; owner={}; current={current_node_id}; {msg}",
+                    session.signal_node_id
+                )
+            },
+        ));
+    }
+    let next_cseq = session.local_cseq.checked_add(1).ok_or_else(|| {
+        GlobalError::new_sys_error("durable SIP dialog CSeq overflow", |msg| {
+            error!("stream_id={stream_id}; {msg}")
+        })
+    })?;
+    let updated_at = Local::now().timestamp_millis();
+    let reserved = match (method, session.state) {
+        (SipDialogMethod::Info, DialogState::Established)
+        | (SipDialogMethod::Bye, DialogState::Terminating) => {
+            SipDialogSessionRepository::cas_reserve_local_cseq(
+                stream_id,
+                &session.signal_node_id,
+                session.version,
+                session.local_cseq,
+                next_cseq,
+                updated_at,
+            )
+            .await?
+        }
+        (SipDialogMethod::Bye, DialogState::Established) => {
+            SipDialogSessionRepository::cas_begin_terminating(
+                stream_id,
+                &session.signal_node_id,
+                session.version,
+                session.local_cseq,
+                next_cseq,
+                updated_at,
+            )
+            .await?
+        }
+        _ => {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "durable SIP dialog does not allow this request",
+                |msg| {
+                    error!(
+                        "stream_id={stream_id}; method={method:?}; state={}; {msg}",
+                        session.state
+                    )
+                },
+            ));
+        }
+    };
+    if !reserved {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "durable SIP dialog CSeq reservation lost",
+            |msg| error!("stream_id={stream_id}; method={method:?}; {msg}"),
+        ));
+    }
+    Ok(Some(DurableDialogReservation {
+        signal_node_id: session.signal_node_id,
+        version: session.version + 1,
+    }))
 }
 
 #[cfg(test)]

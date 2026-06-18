@@ -117,6 +117,7 @@ impl SessionConf {
         native_runtime.install_global()?;
         Register::init(session_conf.clone(), cancel_token.child_token())?;
         let handle = Handle::current();
+        handle.spawn(crate::service::dialog_recovery::run_startup_recovery());
         handle.spawn(SessionConf::heart_server());
         handle.spawn(sip::auth::run_cleanup_task(cancel_token.child_token()));
         handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));

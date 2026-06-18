@@ -183,6 +183,57 @@ impl Cache {
         seq: u32,
         am: AccessMode,
     ) -> bool {
+        Self::stream_map_insert(
+            stream_id,
+            device_id,
+            channel_id,
+            ssrc,
+            proxy_addr,
+            stream_node_name,
+            call_id,
+            seq,
+            am,
+            false,
+        )
+    }
+
+    pub fn stream_map_insert_restored(
+        stream_id: String,
+        device_id: String,
+        channel_id: String,
+        ssrc: u32,
+        stream_node_name: String,
+        call_id: String,
+        seq: u32,
+        am: AccessMode,
+    ) -> bool {
+        Self::stream_map_insert(
+            stream_id,
+            device_id,
+            channel_id,
+            ssrc,
+            String::new(),
+            stream_node_name,
+            call_id,
+            seq,
+            am,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stream_map_insert(
+        stream_id: String,
+        device_id: String,
+        channel_id: String,
+        ssrc: u32,
+        proxy_addr: String,
+        stream_node_name: String,
+        call_id: String,
+        seq: u32,
+        am: AccessMode,
+        restored: bool,
+    ) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => false,
             Entry::Vacant(vac) => {
@@ -196,6 +247,7 @@ impl Cache {
                     seq,
                     am,
                     ssrc,
+                    restored,
                     lifecycle: StreamLifecycle::Playing,
                 });
                 true
@@ -217,6 +269,14 @@ impl Cache {
             .stream_map
             .get(stream_id)
             .map(|stream| stream.call_id.clone())
+    }
+
+    pub fn stream_is_restored(stream_id: &str) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get(stream_id)
+            .is_some_and(|stream| stream.restored)
     }
 
     pub fn stream_map_query_node_ssrc(stream_id: &String) -> Option<(String, u32)> {
@@ -441,9 +501,30 @@ impl Cache {
             channel_id,
             am,
             stream_id,
-            config,
+            config: Some(config),
             ssrc,
         };
+        Self::device_map_insert_table(device_id, device_table);
+    }
+
+    pub fn device_map_insert_restored(
+        device_id: String,
+        channel_id: String,
+        ssrc: String,
+        stream_id: String,
+        am: AccessMode,
+    ) {
+        let device_table = DeviceTable {
+            channel_id,
+            am,
+            stream_id,
+            config: None,
+            ssrc,
+        };
+        Self::device_map_insert_table(device_id, device_table);
+    }
+
+    fn device_map_insert_table(device_id: String, device_table: DeviceTable) {
         match GENERAL_CACHE.shared.device_map.entry(device_id) {
             Entry::Occupied(mut occ) => {
                 occ.get_mut().push(device_table);
@@ -1189,6 +1270,7 @@ struct StreamTable {
     seq: u32,
     am: AccessMode,
     ssrc: u32,
+    restored: bool,
     lifecycle: StreamLifecycle,
 }
 
@@ -1284,7 +1366,7 @@ struct DeviceTable {
     channel_id: String,
     am: AccessMode,
     stream_id: String,
-    config: MediaConfig,
+    config: Option<MediaConfig>,
     ssrc: String,
 }
 
@@ -1361,6 +1443,7 @@ mod tests {
             seq: 7,
             am: AccessMode::Live,
             ssrc: 1001,
+            restored: false,
             lifecycle: StreamLifecycle::Playing,
         }
     }

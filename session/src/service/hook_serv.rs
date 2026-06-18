@@ -14,6 +14,7 @@ use shared::info::obj::{
 use crate::service::{KEY_STREAM_IN, stream_close, talk_close};
 use crate::state;
 use crate::state::DownloadConf;
+use crate::storage::dialog_session::SipDialogSessionRepository;
 use crate::storage::entity::{GmvFileInfo, GmvRecord};
 
 pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
@@ -22,6 +23,7 @@ pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
         KEY_STREAM_IN, register_stream_info.base_stream_info.stream_id
     );
     if register_stream_info.code == 200 {
+        touch_durable_dialog(&register_stream_info.base_stream_info.stream_id).await;
         let _ = state::session::Cache::notify_stream_wait(
             &key_stream_in_id,
             Some(register_stream_info.base_stream_info),
@@ -43,7 +45,13 @@ pub fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRes {
 pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
     let gmv_token = stream_play_info.token;
     let stream_id = stream_play_info.base_stream_info.stream_id;
-    state::session::Cache::stream_map_contains_token(&stream_id, &gmv_token)
+    let accepted = state::session::Cache::stream_map_contains_token(&stream_id, &gmv_token);
+    if accepted {
+        base::tokio::spawn(async move {
+            touch_durable_dialog(&stream_id).await;
+        });
+    }
+    accepted
 }
 
 pub async fn off_play(stream_play_info: StreamPlayInfo) {
@@ -60,6 +68,27 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
     stream_close::begin(out_stream_info.base_stream_info.stream_id);
 
     OutputEventRes::CloseAll
+}
+
+async fn touch_durable_dialog(stream_id: &str) {
+    let Ok(Some(session)) = SipDialogSessionRepository::find_by_stream_id(stream_id).await else {
+        return;
+    };
+    let now = base::chrono::Local::now().timestamp_millis();
+    match SipDialogSessionRepository::cas_touch(
+        stream_id,
+        &session.signal_node_id,
+        session.version,
+        now,
+        now.saturating_add(8 * 60 * 60 * 1_000),
+    )
+    .await
+    {
+        Ok(true) | Ok(false) => {}
+        Err(err) => base::log::warn!(
+            "refresh durable dialog activity failed: stream_id={stream_id}; err={err}"
+        ),
+    }
 }
 
 pub async fn end_record(stream_record_info: StreamRecordInfo) -> GlobalResult<()> {

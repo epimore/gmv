@@ -11,6 +11,8 @@ use axum::http::{Request, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use base::cfg_lib::conf::init_cfg;
+use base::chrono::{Duration as TimeDelta, Local};
+use base::net::state::{Association, Protocol};
 use base::serde::Serialize;
 use base::serde_json::{Value, json};
 use base::tokio::net::{TcpListener, UdpSocket};
@@ -37,10 +39,15 @@ use crate::gb::sip::native_runtime::{
 };
 use crate::http;
 use crate::register::core::Register;
+use crate::service::dialog_recovery;
 use crate::service::hook_serv;
 use crate::state;
 use crate::storage::db_task;
-use crate::storage::entity::{GmvOauth, enable_test_storage, test_file_id_by_biz_id};
+use crate::storage::dialog_session::{
+    DialogSessionType, DialogState, SipDialogSession, SipDialogSessionRepository,
+    enable_dialog_test_storage,
+};
+use crate::storage::entity::{GmvDevice, GmvOauth, enable_test_storage, test_file_id_by_biz_id};
 use crate::utils::edge_token;
 
 const DEVICE_ID: &str = "34020000001110000009";
@@ -408,6 +415,23 @@ fn base_stream_info(stream_id: &str) -> BaseStreamInfo {
     }
 }
 
+async fn wait_dialog_state(stream_id: &str, expected: DialogState) -> SipDialogSession {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let session = SipDialogSessionRepository::find_by_stream_id(stream_id)
+                .await
+                .expect("query durable dialog")
+                .expect("durable dialog exists");
+            if session.state == expected {
+                return session;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("durable dialog state transition")
+}
+
 fn prepare_config(media_port: u16, root: &PathBuf) -> PathBuf {
     let mut config = include_str!("../config.yml")
         .replace("51010000002000000001", PLATFORM_ID)
@@ -457,6 +481,7 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
             status: 1,
             heartbeat_sec: 60,
         });
+        let _dialog_storage_guard = enable_dialog_test_storage();
 
         let cancel = CancellationToken::new();
         let media_task = start_media_stub(media_listener, cancel.child_token()).await;
@@ -535,6 +560,9 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
             .as_str()
             .expect("live stream id")
             .to_string();
+        let live_dialog = wait_dialog_state(&live_id, DialogState::Established).await;
+        assert_eq!(live_dialog.session_type, DialogSessionType::Live);
+        assert!(!live_dialog.media_node_id.is_empty());
         let live_base = base_stream_info(&live_id);
         for (path, body) in [
             (
@@ -571,7 +599,7 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
             let value = post_json(&app, path, &body, false).await;
             assert_success(&value, path);
         }
-        state::session::Cache::stream_map_remove(&live_id, None);
+        wait_dialog_state(&live_id, DialogState::Terminated).await;
 
         let playback = post_json(
             &app,
@@ -592,6 +620,9 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
             .as_str()
             .expect("playback stream id")
             .to_string();
+        let playback_dialog = wait_dialog_state(&playback_id, DialogState::Established).await;
+        assert_eq!(playback_dialog.session_type, DialogSessionType::Playback);
+        let playback_initial_cseq = playback_dialog.local_cseq;
         for (path, body) in [
             (
                 "/api/play/back/seek",
@@ -605,6 +636,8 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
             let value = post_json(&app, path, &body, true).await;
             assert_success(&value, path);
         }
+        let playback_after_info = wait_dialog_state(&playback_id, DialogState::Established).await;
+        assert_eq!(playback_after_info.local_cseq, playback_initial_cseq + 2);
         let timeout_hook = post_json(
             &app,
             "/hook/stream/input/timeout",
@@ -616,6 +649,8 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
         )
         .await;
         assert_success(&timeout_hook, "/hook/stream/input/timeout");
+        let playback_terminated = wait_dialog_state(&playback_id, DialogState::Terminated).await;
+        assert_eq!(playback_terminated.local_cseq, playback_initial_cseq + 3);
 
         let ptz = post_json(
             &app,
@@ -654,6 +689,8 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
             .as_str()
             .expect("download stream id")
             .to_string();
+        let download_dialog = wait_dialog_state(&download_id, DialogState::Established).await;
+        assert_eq!(download_dialog.session_type, DialogSessionType::Download);
         let downing = post_json(
             &app,
             "/api/downing/info",
@@ -687,6 +724,32 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
         )
         .await;
         assert_success(&stop_download, "/api/download/stop");
+        wait_dialog_state(&download_id, DialogState::Terminated).await;
+
+        let restored = post_json(
+            &app,
+            "/api/play/live/stream",
+            &json!({
+                "device_id": DEVICE_ID,
+                "channel_id": CHANNEL_ID,
+                "trans_mode": null,
+                "custom_media_config": null
+            }),
+            true,
+        )
+        .await;
+        assert_success(&restored, "/api/play/live/stream recovery seed");
+        let restored_id = restored["data"]["streamId"]
+            .as_str()
+            .expect("recovery seed stream id")
+            .to_string();
+        wait_dialog_state(&restored_id, DialogState::Established).await;
+        state::session::Cache::stream_map_remove(&restored_id, None);
+        assert!(!state::session::Cache::stream_is_restored(&restored_id));
+        dialog_recovery::recover_owned_dialogs()
+            .await
+            .expect("recover owned durable dialogs");
+        assert!(state::session::Cache::stream_is_restored(&restored_id));
 
         let snapshot = post_json(
             &app,
@@ -791,6 +854,63 @@ fn all_business_http_apis_complete_the_normal_signaling_flow() {
         assert!(
             state::session::Cache::stream_terminated_by_call_id(&command_close_call_id).is_some(),
             "remove command close stream state"
+        );
+
+        let lease_started_at = Local::now().naive_local() - TimeDelta::seconds(30);
+        GmvDevice {
+            device_id: DEVICE_ID.to_string(),
+            transport: "TCP".to_string(),
+            register_expires: 120,
+            register_time: lease_started_at,
+            online_expire_time: Some(Local::now().naive_local() + TimeDelta::seconds(120)),
+            local_addr: device_addr.to_string(),
+            contact_uri: format!("sip:{DEVICE_ID}@{device_addr}"),
+            enable_lr: 1,
+            gb_version: Some("3.0".to_string()),
+        }
+        .insert_single_gmv_device_by_register()
+        .await
+        .expect("seed TCP device lease");
+        Register::remove_device(&Arc::from(DEVICE_ID));
+        let first_tcp = Association::new(runtime_addr, device_addr, Protocol::TCP);
+        Register::recover_device_on_keepalive(Arc::from(DEVICE_ID), first_tcp.clone())
+            .expect("schedule TCP keepalive recovery");
+        timeout(Duration::from_secs(3), async {
+            while Register::get_connected_device_session(DEVICE_ID).is_none() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("TCP keepalive recovers device session");
+        let recovered = Register::get_connected_device_session(DEVICE_ID)
+            .expect("recovered TCP device session");
+        assert_eq!(recovered.association, first_tcp);
+        assert!(recovered.registration_duration <= Duration::from_secs(91));
+        assert!(recovered.registration_duration >= Duration::from_secs(88));
+        assert_eq!(recovered.gb_version.as_deref(), Some("3.0"));
+        assert!(
+            recovered
+                .support_lr
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+
+        assert!(Register::detach_device_association(&first_tcp));
+        let second_tcp = Association::new(
+            runtime_addr,
+            SocketAddr::new(device_addr.ip(), device_addr.port().saturating_add(1)),
+            Protocol::TCP,
+        );
+        Register::recover_device_on_keepalive(Arc::from(DEVICE_ID), second_tcp.clone())
+            .expect("rebind TCP keepalive");
+        let rebound =
+            Register::get_connected_device_session(DEVICE_ID).expect("rebound TCP device session");
+        assert_eq!(rebound.association, second_tcp);
+        assert!(!Register::detach_device_association(&first_tcp));
+        assert_eq!(
+            Register::get_connected_device_session(DEVICE_ID)
+                .expect("stale close keeps current TCP session")
+                .association,
+            second_tcp
         );
 
         sleep(Duration::from_millis(100)).await;

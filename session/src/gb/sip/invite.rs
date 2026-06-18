@@ -1,14 +1,18 @@
 use gmv_pjsip::gb28181::sdp::SdpInfo;
 use gmv_pjsip::{
-    SipAssociation, SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol, TalkAudioCodec,
-    TalkSdpMode,
+    SipAssociation, SipDialogSnapshot, SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol,
+    TalkAudioCodec, TalkSdpMode,
 };
+
+use crate::storage::dialog_session::DialogSessionType;
 
 #[derive(Clone, Debug)]
 pub struct InvitePlayRequest {
     pub device_id: String,
     pub channel_id: String,
     pub stream_id: String,
+    pub media_node_id: String,
+    pub session_type: DialogSessionType,
     pub device_host: String,
     pub device_port: u16,
     pub media_ip: String,
@@ -56,6 +60,7 @@ pub struct GbInviteAcceptedEvent {
     pub channel_id: String,
     pub stream_id: String,
     pub ssrc: Option<u32>,
+    pub dialog_snapshot: SipDialogSnapshot,
     pub remote_sdp: String,
     pub sdp_info: SdpInfo,
 }

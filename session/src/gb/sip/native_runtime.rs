@@ -15,9 +15,9 @@ use base::tokio::time;
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::{
     AuthAlgorithm, AuthCredential, CredentialKind, SipAuthLookupResult, SipDialogRequest,
-    SipInviteResponse, SipOutboundInvite, SipOutboundMessage, SipOutboundSubscribe, SipRuntime,
-    SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind, SipRuntimeSockets,
-    SipTransportProtocol,
+    SipInviteResponse, SipOutboundInvite, SipOutboundMessage, SipOutboundSubscribe,
+    SipRestoredDialogRequest, SipRuntime, SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind,
+    SipRuntimeSockets, SipTransportProtocol,
 };
 
 use super::adapter::{GbSipEvent, apply_business_event};
@@ -27,6 +27,7 @@ use super::invite::GbIncomingInviteEvent;
 use super::message::GbMessageEvent;
 use super::register::GbRegisterEvent;
 use super::runtime_cache::SipRuntimeCache;
+use crate::register::core::Register;
 
 const AUTH_BATCH_WINDOW: Duration = Duration::from_millis(5);
 const AUTH_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -53,6 +54,7 @@ enum RuntimeCommand {
     SendMessage(SipOutboundMessage),
     SendInvite(SipOutboundInvite),
     SendDialog(SipDialogRequest),
+    SendRestoredDialog(SipRestoredDialogRequest),
     RespondInvite(SipInviteResponse),
     SendSubscribe(SipOutboundSubscribe),
     CloseTransport { association_id: u64, status: i32 },
@@ -134,6 +136,36 @@ impl NativeSipRuntimeHandle {
 
     pub fn send_dialog_request(&self, request: SipDialogRequest) -> GlobalResult<()> {
         self.try_send(RuntimeCommand::SendDialog(request))
+    }
+
+    pub fn send_restored_dialog_request(
+        &self,
+        association: Option<&Association>,
+        mut request: SipRestoredDialogRequest,
+    ) -> GlobalResult<()> {
+        if request.snapshot.protocol == SipTransportProtocol::Tcp {
+            let association = association.ok_or_else(|| {
+                GlobalError::new_sys_error(
+                    "TCP restored dialog requires current device association",
+                    |msg| error!("{msg}"),
+                )
+            })?;
+            request.snapshot.association_id = self
+                .association_ids
+                .get(association)
+                .map(|entry| *entry.value())
+                .ok_or_else(|| {
+                    GlobalError::new_sys_error(
+                        "TCP association is not registered in native SIP runtime",
+                        |msg| error!("{msg}: association={association:?}"),
+                    )
+                })?;
+            request.snapshot.local_addr = association.local_addr;
+            request.snapshot.remote_addr = association.remote_addr;
+        } else {
+            request.snapshot.association_id = 0;
+        }
+        self.try_send(RuntimeCommand::SendRestoredDialog(request))
     }
 
     pub fn respond_invite(&self, response: SipInviteResponse) -> GlobalResult<()> {
@@ -329,6 +361,20 @@ impl NativeSipRuntimeService {
                                     );
                                 }
                             }
+                            RuntimeCommand::SendRestoredDialog(request) => {
+                                if let Err(err) = runtime.send_restored_dialog_request(&request) {
+                                    warn!(
+                                        "send restored SIP dialog request failed: \
+                                         operation_id={}, err={err}",
+                                        request.operation_id
+                                    );
+                                    SipRuntimeCache::global().complete_native_response(
+                                        request.operation_id,
+                                        503,
+                                        Default::default(),
+                                    );
+                                }
+                            }
                             RuntimeCommand::RespondInvite(response) => {
                                 if let Err(err) = runtime.respond_invite(&response) {
                                     warn!(
@@ -501,7 +547,11 @@ async fn run_native_business_events(
         let Some(event) = event else {
             break;
         };
-        runtime.remember_event_association(&event);
+        if event.kind == SipRuntimeEventKind::TransportClosed {
+            runtime.forget_event_association(&event);
+        } else {
+            runtime.remember_event_association(&event);
+        }
         if let Some(operation_id) = event.operation_id {
             match event.kind {
                 SipRuntimeEventKind::OutboundResponse => {
@@ -512,6 +562,7 @@ async fn run_native_business_events(
                                 event.call_id.clone().unwrap_or_default(),
                                 status,
                                 String::from_utf8_lossy(&event.body).into_owned(),
+                                event.dialog_snapshot.clone(),
                             );
                         } else {
                             let metadata = response_metadata(&event);
@@ -599,6 +650,30 @@ impl NativeSipRuntimeHandle {
             },
             association_id,
         );
+    }
+
+    fn forget_event_association(&self, event: &SipRuntimeEvent) {
+        let Some(association_id) = event.association_id else {
+            return;
+        };
+        let Some(protocol) = event.protocol.and_then(session_protocol) else {
+            return;
+        };
+        let (Some(local_addr), Some(remote_addr)) = (event.local_addr, event.remote_addr) else {
+            return;
+        };
+        let association = Association {
+            local_addr,
+            remote_addr,
+            protocol,
+        };
+        if self
+            .association_ids
+            .remove_if(&association, |_, current_id| *current_id == association_id)
+            .is_some()
+        {
+            Register::detach_device_association(&association);
+        }
     }
 }
 
@@ -742,16 +817,22 @@ fn auth_result(
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::mpsc as std_mpsc;
     use std::time::Duration;
 
     use base::bytes::Bytes;
+    use base::dashmap::DashMap;
     use base::net::state::{Association, Protocol};
     use base::tokio::runtime::Runtime;
     use base::tokio::time;
     use base::tokio_util::sync::CancellationToken;
-    use gmv_pjsip::{SipAuthLookupResult, SipOutboundMessage, SipRuntimeEventKind};
+    use gmv_pjsip::{
+        SipAuthLookupResult, SipOutboundMessage, SipRuntimeEvent, SipRuntimeEventKind,
+        SipTransportProtocol,
+    };
 
-    use super::{NativeSipRuntimeService, RUNTIME_TEST_LOCK, auth_result};
+    use super::{NativeSipRuntimeHandle, NativeSipRuntimeService, RUNTIME_TEST_LOCK, auth_result};
     use crate::gb::sip::auth::DeviceAuthCache;
     use crate::storage::entity::GmvOauth;
 
@@ -778,6 +859,38 @@ mod tests {
         }
     }
 
+    fn transport_closed_event(association: &Association, association_id: u64) -> SipRuntimeEvent {
+        SipRuntimeEvent {
+            event_id: 0,
+            kind: SipRuntimeEventKind::TransportClosed,
+            protocol: Some(SipTransportProtocol::Tcp),
+            status_code: None,
+            pj_status: 0,
+            method: None,
+            call_id: None,
+            cseq: None,
+            content_type: None,
+            body: Vec::new(),
+            local_addr: Some(association.local_addr),
+            remote_addr: Some(association.remote_addr),
+            lookup_id: None,
+            device_id: None,
+            realm: None,
+            expires_seconds: None,
+            contact: None,
+            user_agent: None,
+            gb_version: None,
+            operation_id: None,
+            association_id: Some(association_id),
+            from_header: None,
+            to_header: None,
+            subject: None,
+            event: None,
+            subscription_state: None,
+            dialog_snapshot: None,
+        }
+    }
+
     #[test]
     fn maps_cached_device_policy_to_native_auth_completion() {
         assert!(matches!(
@@ -796,5 +909,30 @@ mod tests {
             auth_result("device".into(), "realm".into(), None),
             SipAuthLookupResult::NotFound
         ));
+    }
+
+    #[test]
+    fn delayed_transport_close_does_not_remove_current_association_id() {
+        let (runtime_commands, _commands) = std_mpsc::sync_channel(1);
+        let handle = NativeSipRuntimeHandle {
+            runtime_commands,
+            association_ids: Arc::new(DashMap::new()),
+            next_operation_id: Arc::new(AtomicU64::new(1)),
+        };
+        let association = Association::new(
+            "127.0.0.1:5060".parse().unwrap(),
+            "127.0.0.1:40000".parse().unwrap(),
+            Protocol::TCP,
+        );
+        handle.association_ids.insert(association.clone(), 2);
+
+        handle.forget_event_association(&transport_closed_event(&association, 1));
+        assert_eq!(
+            handle.association_ids.get(&association).map(|id| *id),
+            Some(2)
+        );
+
+        handle.forget_event_association(&transport_closed_event(&association, 2));
+        assert!(!handle.association_ids.contains_key(&association));
     }
 }

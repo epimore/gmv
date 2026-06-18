@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+use base::chrono::Local;
 use base::log::{debug, error, warn};
 use base::tokio::time::Instant;
 
 use crate::gb::sip::command as sip_command;
 use crate::register::core::{Register, TimeScheduleKey};
 use crate::state::session::{Cache, StreamByeCommand};
+use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
 
 pub fn begin(stream_id: String) {
     let Some(start) = Cache::stream_close_begin(&stream_id) else {
@@ -16,6 +18,14 @@ pub fn begin(stream_id: String) {
     }
 
     let Some(session) = Register::get_device_session(&start.device_id) else {
+        if Cache::stream_is_restored(&stream_id) {
+            warn!(
+                "restored stream close waiting for current device transport: \
+                 stream_id={stream_id}, device_id={}",
+                start.device_id
+            );
+            return;
+        }
         force_cleanup(
             &stream_id,
             start.generation,
@@ -120,5 +130,26 @@ fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
             info.generation,
             reason
         );
+        let stream_id = info.stream_id;
+        base::tokio::spawn(async move {
+            let Ok(Some(session)) = SipDialogSessionRepository::find_by_stream_id(&stream_id).await
+            else {
+                return;
+            };
+            if matches!(
+                session.state,
+                DialogState::Inviting | DialogState::Established | DialogState::Terminating
+            ) {
+                let _ = SipDialogSessionRepository::cas_transition(
+                    &stream_id,
+                    &session.signal_node_id,
+                    session.version,
+                    session.state,
+                    DialogState::Orphan,
+                    Local::now().timestamp_millis(),
+                )
+                .await;
+            }
+        });
     }
 }

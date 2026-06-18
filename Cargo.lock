@@ -1324,6 +1324,7 @@ version = "0.1.0"
 dependencies = [
  "base",
  "gmv_pjsip_sys",
+ "uuid",
 ]
 
 [[package]]

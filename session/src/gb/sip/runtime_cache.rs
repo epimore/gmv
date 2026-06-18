@@ -11,6 +11,7 @@ use base::dashmap::DashMap;
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::oneshot;
 use base::tokio::time::{self, Instant};
+use gmv_pjsip::SipDialogSnapshot;
 use gmv_pjsip::SipMethod;
 use gmv_pjsip::gb28181::sdp::SdpInfo;
 use gmv_pjsip::message::{extract_tag, extract_uri};
@@ -68,6 +69,7 @@ pub struct SipInviteFailure {
     pub call_id: String,
     pub stream_id: String,
     pub status: u16,
+    pub dialog_established: bool,
 }
 
 struct ByeWaiter {
@@ -415,6 +417,7 @@ impl SipRuntimeCache {
         call_id: String,
         status: u16,
         remote_sdp: String,
+        dialog_snapshot: Option<SipDialogSnapshot>,
     ) -> bool {
         if status < 200 {
             return false;
@@ -423,12 +426,22 @@ impl SipRuntimeCache {
             .remove(&operation_id)
             .map(|(_, waiter)| {
                 let result = if (200..300).contains(&status) {
+                    let Some(dialog_snapshot) = dialog_snapshot else {
+                        let _ = waiter.tx.send(Err(SipInviteFailure {
+                            call_id,
+                            stream_id: waiter.metadata.stream_id,
+                            status: 500,
+                            dialog_established: true,
+                        }));
+                        return true;
+                    };
                     let event = GbInviteAcceptedEvent {
                         call_id: call_id.clone(),
                         device_id: waiter.metadata.device_id,
                         channel_id: waiter.metadata.channel_id,
                         stream_id: waiter.metadata.stream_id,
                         ssrc: waiter.metadata.ssrc,
+                        dialog_snapshot,
                         sdp_info: SdpInfo::parse_lossy(&remote_sdp),
                         remote_sdp,
                     };
@@ -440,6 +453,7 @@ impl SipRuntimeCache {
                         call_id,
                         stream_id: waiter.metadata.stream_id,
                         status,
+                        dialog_established: false,
                     })
                 };
                 waiter.tx.send(result).is_ok()
@@ -457,6 +471,7 @@ impl SipRuntimeCache {
                         call_id: String::new(),
                         stream_id: waiter.metadata.stream_id,
                         status,
+                        dialog_established: false,
                     }))
                     .is_ok()
             })
@@ -517,6 +532,10 @@ impl SipRuntimeCache {
             self.call_stream_index.remove(call_id);
             self.bye_waiters.remove(call_id);
         }
+    }
+
+    pub fn restore_stream_index(&self, call_id: String, stream_id: String) {
+        self.call_stream_index.insert(call_id, stream_id);
     }
 
     pub fn cleanup_expired(&self) -> RuntimeCleanupReport {

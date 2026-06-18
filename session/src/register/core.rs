@@ -2,10 +2,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use base::chrono::{Duration as TimeDelta, Local};
+use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
 use base::net::state::{Association, Protocol};
 use base::once_cell::sync::OnceCell;
+use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
 
@@ -16,12 +19,15 @@ pub(crate) use crate::register::network::{DeviceSession, Network};
 use crate::register::schedule::TimeScheduler;
 use crate::service::{stream_close, talk_close};
 use crate::state::session::Cache as GeneralCache;
+use crate::storage::db_task::{self, DbTask};
+use crate::storage::entity::{GmvDevice, GmvOauth};
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
 
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
 pub const SERVER_HEART_SECOND: u64 = 60;
 pub const SERVER_HEART_EXPIRE: Duration = Duration::from_secs(SERVER_HEART_SECOND);
+const MAX_DEVICE_RECOVERY_CONCURRENCY: usize = 64;
 
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub enum TimeScheduleKey {
@@ -43,6 +49,8 @@ pub struct Inner {
     pub server_conf: SessionConf,
     pub event_tx: Sender<Event>,
     pub io_map: Network,
+    recovering_devices: DashMap<Arc<str>, ()>,
+    device_recovery_limit: Arc<Semaphore>,
 }
 
 impl Register {
@@ -64,6 +72,8 @@ impl Register {
                 session: Default::default(),
                 net_device_map: Default::default(),
             },
+            recovering_devices: DashMap::new(),
+            device_recovery_limit: Arc::new(Semaphore::new(MAX_DEVICE_RECOVERY_CONCURRENCY)),
         });
 
         REGISTER
@@ -130,6 +140,129 @@ impl Register {
             talk_close::retry_device(device_id);
         }
         Ok(())
+    }
+
+    pub fn recover_device_on_keepalive(
+        device_id: Arc<str>,
+        association: Association,
+    ) -> GlobalResult<()> {
+        if Self::has_session(&device_id) {
+            Self::device_heart(&device_id, association)?;
+            db_task::submit(DbTask::TouchDeviceHeartbeat {
+                device_id: device_id.to_string(),
+            });
+            return Ok(());
+        }
+
+        let inner = Self::get().inner.clone();
+        if inner
+            .recovering_devices
+            .insert(device_id.clone(), ())
+            .is_some()
+        {
+            return Ok(());
+        }
+        let permit = match inner.device_recovery_limit.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                inner.recovering_devices.remove(&device_id);
+                warn!(
+                    "device keepalive recovery concurrency is full; retry on next keepalive: \
+                     device_id={device_id}"
+                );
+                return Ok(());
+            }
+        };
+        base::tokio::spawn(async move {
+            let _permit = permit;
+            let result = Self::recover_device_session(&device_id, association).await;
+            inner.recovering_devices.remove(&device_id);
+            match result {
+                Ok(()) => db_task::submit(DbTask::TouchDeviceHeartbeat {
+                    device_id: device_id.to_string(),
+                }),
+                Err(err) => warn!(
+                    "recover device session from keepalive failed: device_id={device_id}, err={err}"
+                ),
+            }
+        });
+        Ok(())
+    }
+
+    async fn recover_device_session(
+        device_id: &Arc<str>,
+        association: Association,
+    ) -> GlobalResult<()> {
+        if Self::has_session(device_id) {
+            return Self::device_heart(device_id, association);
+        }
+        let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
+            .await?
+            .ok_or_else(|| {
+                invalid_device_lease(device_id, "enabled device authorization is missing")
+            })?;
+        let device_id_string = device_id.to_string();
+        let device = GmvDevice::query_gmv_device_by_device_id(&device_id_string)
+            .await?
+            .ok_or_else(|| {
+                invalid_device_lease(device_id, "device registration snapshot is missing")
+            })?;
+
+        let expected_protocol = if device.transport.eq_ignore_ascii_case("UDP") {
+            Protocol::UDP
+        } else if device.transport.eq_ignore_ascii_case("TCP") {
+            Protocol::TCP
+        } else {
+            return Err(invalid_device_lease(
+                device_id,
+                "device registration transport is unsupported",
+            ));
+        };
+        if association.protocol != expected_protocol {
+            return Err(invalid_device_lease(
+                device_id,
+                "keepalive transport does not match device registration",
+            ));
+        }
+
+        let stored_remote = device
+            .local_addr
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| invalid_device_lease(device_id, "stored device address is invalid"))?;
+        if stored_remote.ip() != association.remote_addr.ip() {
+            return Err(invalid_device_lease(
+                device_id,
+                "keepalive source IP does not match device registration",
+            ));
+        }
+
+        let now = Local::now().naive_local();
+        let registration_expires_at =
+            device.register_time + TimeDelta::seconds(i64::from(device.register_expires));
+        let online_expires_at = device
+            .online_expire_time
+            .ok_or_else(|| invalid_device_lease(device_id, "device online expiry is missing"))?;
+        if registration_expires_at <= now || online_expires_at <= now {
+            return Err(invalid_device_lease(
+                device_id,
+                "device registration or online lease has expired",
+            ));
+        }
+        let remaining = registration_expires_at
+            .signed_duration_since(now)
+            .num_seconds()
+            .max(1) as u64;
+        let mut session = DeviceSession::build(
+            device.contact_uri,
+            association,
+            oauth.heartbeat_sec,
+            Duration::from_secs(remaining),
+        );
+        session.set_gb_version(device.gb_version);
+        if device.enable_lr != 0 {
+            session.enable_lr();
+        }
+        Self::register_device(device_id.clone(), session)
     }
 
     pub fn register_device(device_id: Arc<str>, ds: DeviceSession) -> GlobalResult<()> {
@@ -235,7 +368,10 @@ impl Register {
     }
 
     pub fn detach_device_association(association: &Association) -> bool {
-        let inner = &Self::get().inner;
+        let Some(register) = REGISTER.get() else {
+            return false;
+        };
+        let inner = &register.inner;
         let Some(detached) = inner.io_map.detach_association(association) else {
             return false;
         };
@@ -319,4 +455,10 @@ impl Register {
 
 fn heartbeat_timeout(heartbeat_sec: u8) -> Duration {
     Duration::from_secs(u64::from(heartbeat_sec).saturating_mul(3))
+}
+
+fn invalid_device_lease(device_id: &str, message: &str) -> GlobalError {
+    GlobalError::new_sys_error(message, |log_message| {
+        warn!("device_id={device_id}; {log_message}")
+    })
 }

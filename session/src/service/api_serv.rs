@@ -16,6 +16,7 @@ use shared::info::obj::{TalkAnswerReq, TalkInfo, TalkOpenReq, TalkStartModel, Ta
 use shared::info::output::{DashFmp4Output, LocalMp4Output, OutputEnum, OutputKind};
 use shared::info::res::Resp;
 
+use crate::gb::SessionConf;
 use crate::gb::sip::InviteTalkRequest;
 use crate::gb::sip::command as sip_command;
 use crate::http::client::{HttpClient, HttpStream};
@@ -33,6 +34,7 @@ use crate::state::model::{
 use crate::state::session::AccessMode;
 use crate::state::session::TalkSessionState;
 use crate::state::{DownloadConf, StreamConf, session};
+use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
 use crate::storage::entity::GmvRecord;
 use crate::utils::id_builder;
 use gmv_pjsip::TalkSdpMode;
@@ -584,6 +586,7 @@ pub async fn talk_stop(model: TalkStopModel, _token: String) -> GlobalResult<boo
 }
 
 pub async fn peer_dialog_terminated(call_id: String) -> bool {
+    persist_peer_dialog_terminated(&call_id).await;
     if let Some(stream) = state::session::Cache::stream_terminated_by_call_id(&call_id) {
         warn!(
             "stream dialog terminated by device: device_id={}, channel_id={}, stream_id={}, \
@@ -612,6 +615,47 @@ pub async fn peer_dialog_terminated(call_id: String) -> bool {
     }
     state::session::Cache::ssrc_sn_set((talk.ssrc % 10000) as u16);
     true
+}
+
+async fn persist_peer_dialog_terminated(call_id: &str) {
+    let sessions = match SipDialogSessionRepository::find_by_call_id(call_id).await {
+        Ok(sessions) => sessions,
+        Err(err) => {
+            error!("lookup peer-terminated dialog failed: call_id={call_id}; err={err}");
+            return;
+        }
+    };
+    let current_node_id = SessionConf::get_session_by_conf().domain_id;
+    for session in sessions {
+        if session.signal_node_id != current_node_id
+            || !matches!(
+                session.state,
+                DialogState::Established | DialogState::Terminating
+            )
+        {
+            continue;
+        }
+        match SipDialogSessionRepository::cas_transition(
+            &session.stream_id,
+            &session.signal_node_id,
+            session.version,
+            session.state,
+            DialogState::Terminated,
+            Local::now().timestamp_millis(),
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => warn!(
+                "peer BYE TERMINATED CAS lost: stream_id={}; call_id={call_id}",
+                session.stream_id
+            ),
+            Err(err) => error!(
+                "persist peer BYE TERMINATED failed: stream_id={}; call_id={call_id}; err={err}",
+                session.stream_id
+            ),
+        }
+    }
 }
 
 fn stream_resp_unit(resp: Resp<()>, action: &str) -> GlobalResult<()> {
@@ -735,6 +779,7 @@ async fn start_invite_stream(
                 sip_command::play_live_invite_wait(
                     device_id,
                     channel_id,
+                    &node_name,
                     &stream_node.pub_ip.to_string(),
                     stream_node.pub_port,
                     trans_mode.unwrap_or(TransMode::Udp),
@@ -747,6 +792,7 @@ async fn start_invite_stream(
                 sip_command::play_back_invite_wait(
                     device_id,
                     channel_id,
+                    &node_name,
                     &stream_node.pub_ip.to_string(),
                     stream_node.pub_port,
                     trans_mode.unwrap_or(TransMode::Udp),
@@ -761,6 +807,7 @@ async fn start_invite_stream(
                 sip_command::download_invite_wait(
                     device_id,
                     channel_id,
+                    &node_name,
                     &stream_node.pub_ip.to_string(),
                     stream_node.pub_port,
                     trans_mode.unwrap_or(TransMode::Udp),

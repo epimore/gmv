@@ -195,13 +195,10 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
                 warn!("keepalive MESSAGE missing device id");
                 return Ok(());
             };
-            Register::device_heart(
-                &Arc::<str>::from(device_id),
+            Register::recover_device_on_keepalive(
+                Arc::<str>::from(device_id),
                 base_association_from_pjsip(&event.association),
             )?;
-            db_task::submit(DbTask::TouchDeviceHeartbeat {
-                device_id: device_id.to_string(),
-            });
         }
         GbMessageKind::DeviceInfo => {
             db_task::submit(DbTask::UpdateDeviceExtInfo(items));
