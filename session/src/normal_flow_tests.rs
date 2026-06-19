@@ -237,7 +237,7 @@ Content-Length: {}\r\n\r\n{}",
 
 fn broadcast_invite(call_id: &str, cseq: u32, target_id: &str) -> String {
     let body = format!(
-        "v=0\r\no={target_id} 0 0 IN IP4 198.51.100.20\r\ns=Play\r\nc=IN IP4 198.51.100.20\r\nt=0 0\r\nm=audio 30002 RTP/AVP 8\r\na=recvonly\r\na=rtpmap:8 PCMA/8000\r\n"
+        "v=0\r\no={target_id} 0 0 IN IP4 198.51.100.20\r\ns=Play\r\nc=IN IP4 198.51.100.20\r\nt=0 0\r\nm=audio 30002 RTP/AVP 8\r\na=recvonly\r\na=rtpmap:8 PCMA/8000/1\r\n"
     );
     format!(
         "INVITE sip:{PLATFORM_ID}@192.0.2.10:25600 SIP/2.0\r\n\

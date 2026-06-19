@@ -189,17 +189,29 @@ impl SipRuntimeCache {
     }
 
     pub fn complete_broadcast_invite(&self, event: &GbIncomingInviteEvent) -> bool {
-        let Some(target_id) = sip_user(&event.from) else {
+        let Some(source_id) = sip_user(&event.to) else {
             return false;
         };
-        let Some((_, waiter)) = self.broadcast_invite_waiters.remove(&target_id) else {
+        let from_id = sip_user(&event.from);
+        let subject_ids = event
+            .subject
+            .as_deref()
+            .map(broadcast_subject_ids)
+            .unwrap_or_default();
+        let target_id = self.broadcast_invite_waiters.iter().find_map(|item| {
+            let target_id = item.key();
+            (item.source_id == source_id
+                && (from_id.as_deref() == Some(target_id.as_str())
+                    || subject_ids.iter().any(|id| id == target_id)))
+            .then(|| target_id.clone())
+        });
+        let Some(target_id) = target_id else {
             return false;
         };
-        if sip_user(&event.to).as_deref() != Some(waiter.source_id.as_str()) {
-            self.broadcast_invite_waiters.insert(target_id, waiter);
-            return false;
-        }
-        waiter.tx.send(event.clone()).is_ok()
+        self.broadcast_invite_waiters
+            .remove(&target_id)
+            .map(|(_, waiter)| waiter.tx.send(event.clone()).is_ok())
+            .unwrap_or(false)
     }
 
     pub fn remove_broadcast_invite_waiter(&self, target_id: &str) {
@@ -731,6 +743,15 @@ fn sip_user(header: &str) -> Option<String> {
     Some(value.split('@').next()?.to_string())
 }
 
+fn broadcast_subject_ids(subject: &str) -> Vec<String> {
+    subject
+        .split(',')
+        .filter_map(|leg| leg.trim().split_once(':').map(|(id, _)| id.trim()))
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RuntimeCleanupReport {
     pub invite_waiters: usize,
@@ -754,7 +775,11 @@ pub async fn recv_with_timeout<T>(
 mod tests {
     use super::*;
 
-    fn incoming_broadcast_invite(from: &str, to: &str) -> GbIncomingInviteEvent {
+    fn incoming_broadcast_invite(
+        from: &str,
+        to: &str,
+        subject: Option<&str>,
+    ) -> GbIncomingInviteEvent {
         let local_addr = "127.0.0.1:5060".parse().expect("local addr");
         let remote_addr = "127.0.0.1:5061".parse().expect("remote addr");
         GbIncomingInviteEvent {
@@ -782,7 +807,7 @@ mod tests {
             remote_sdp: String::new(),
             from: from.into(),
             to: to.into(),
-            subject: None,
+            subject: subject.map(ToOwned::to_owned),
         }
     }
 
@@ -804,10 +829,12 @@ mod tests {
         assert!(!cache.complete_broadcast_invite(&incoming_broadcast_invite(
             "<sip:target@127.0.0.1>",
             "<sip:other@127.0.0.1>",
+            None,
         )));
         assert!(cache.complete_broadcast_invite(&incoming_broadcast_invite(
-            "<sip:target@127.0.0.1>",
+            "<sip:device@127.0.0.1>",
             "<sip:source@127.0.0.1>",
+            Some("source:03d7a8ef,target:0552354c"),
         )));
         assert_eq!(
             invite.try_recv().expect("broadcast invite").call_id,

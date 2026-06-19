@@ -157,18 +157,16 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
     let query_device_id = event.device_id.clone();
     base::tokio::spawn(async move {
         base::tokio::time::sleep(Duration::from_millis(1500)).await;
-        let sn = Local::now()
-            .timestamp()
-            .unsigned_abs()
-            .min(u64::from(u32::MAX)) as u32;
-        if let Err(err) = super::command::query_device_info(&query_device_id, sn).await {
+        if let Err(err) =
+            super::command::query_device_info(&query_device_id, super::sequence::next_sn()).await
+        {
             warn!(
                 "query device info after register failed: device_id={query_device_id}, err={err}"
             );
         }
         base::tokio::time::sleep(Duration::from_millis(500)).await;
         if let Err(err) =
-            super::command::query_catalog(&query_device_id, sn.saturating_add(1)).await
+            super::command::query_catalog(&query_device_id, super::sequence::next_sn()).await
         {
             warn!("query catalog after register failed: device_id={query_device_id}, err={err}");
         }

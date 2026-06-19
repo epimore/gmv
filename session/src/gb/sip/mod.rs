@@ -10,6 +10,7 @@ pub mod native_runtime;
 pub mod register;
 pub mod runtime_cache;
 pub mod sdp;
+pub(crate) mod sequence;
 pub mod subscription;
 pub mod xml;
 

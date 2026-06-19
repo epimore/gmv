@@ -407,10 +407,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             }
         };
 
-        let sn = Local::now()
-            .timestamp_millis()
-            .unsigned_abs()
-            .min(u64::from(u32::MAX)) as u32;
+        let sn = crate::gb::sip::sequence::next_sn();
         let invite = match sip_command::broadcast_notify_and_wait(device_id, &target_id, sn).await {
             Ok(invite) => invite,
             Err(err) => {

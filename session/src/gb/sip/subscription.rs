@@ -243,7 +243,7 @@ fn complete_catalog_subscription(
 fn catalog_subscription_body(device_id: &str, expires: u32) -> String {
     let now = Local::now();
     let end = now + TimeDelta::seconds(i64::from(expires));
-    let sn = now.timestamp().unsigned_abs().min(u64::from(u32::MAX)) as u32;
+    let sn = super::sequence::next_sn();
     xml::build_catalog_subscription(
         sn,
         device_id,

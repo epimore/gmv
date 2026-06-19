@@ -444,7 +444,7 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         return Err(err);
     }
     let sdp = format!(
-        "v=0\r\no={source} 0 0 IN IP4 {ip}\r\ns=Play\r\nc=IN IP4 {ip}\r\nt=0 0\r\nm=audio {port} RTP/AVP {pt}\r\na=sendonly\r\na=rtpmap:{pt} PCMA/8000\r\nf=v/////a/1/8/1\r\ny={ssrc:010}\r\n",
+        "v=0\r\no={source} 0 0 IN IP4 {ip}\r\ns=Play\r\nc=IN IP4 {ip}\r\nt=0 0\r\nm=audio {port} RTP/AVP {pt}\r\na=sendonly\r\na=rtpmap:{pt} PCMA/8000/1\r\nf=v/////a/1/8/1\r\ny={ssrc:010}\r\n",
         source = signal_node_id,
         ip = req.media_ip,
         port = req.media_port,
@@ -586,10 +586,7 @@ pub async fn send_xml_message(device_id: &str, body: String) -> GlobalResult<()>
 }
 
 pub async fn control_ptz(model: &PtzControlModel) -> GlobalResult<()> {
-    let sn = base::chrono::Local::now()
-        .timestamp()
-        .unsigned_abs()
-        .min(u64::from(u32::MAX)) as u32;
+    let sn = super::sequence::next_sn();
     let command = build_ptz_command(model)?;
     let body = xml::build_ptz_control(sn, &model.channelId, &command);
     send_xml_message(&model.deviceId, body).await
