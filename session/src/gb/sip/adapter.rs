@@ -237,6 +237,24 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
                 }
             }
         }
+        GbMessageKind::Broadcast => {
+            let sn = event
+                .xml_sn
+                .as_deref()
+                .or_else(|| super::xml::value(&items, "Response,SN"));
+            let target_id = event
+                .xml_device_id
+                .as_deref()
+                .or_else(|| super::xml::value(&items, "Response,DeviceID"));
+            let result = super::xml::value(&items, "Response,Result");
+            if let (Some(sn), Some(target_id), Some(result)) = (sn, target_id, result) {
+                SipRuntimeCache::global().complete_broadcast_response(
+                    sn,
+                    target_id,
+                    result.eq_ignore_ascii_case("OK"),
+                );
+            }
+        }
         GbMessageKind::UploadSnapshotFinished | GbMessageKind::Notify => {
             if let Some(session_id) = event.snapshot_session_id.as_deref() {
                 let key = crate::service::edge_serv::rebuild_snapshot_wait_key(session_id);

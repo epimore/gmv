@@ -20,7 +20,6 @@ pub use adapter::{
 pub use bye::GbByeEvent;
 pub use invite::{
     GbIncomingInviteEvent, GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest,
-    InviteTalkRequest,
 };
 pub use message::{CreateDeviceMessageRequest, GbMessageEvent, GbMessageKind};
 pub use native_runtime::{NativeSipRuntimeHandle, NativeSipRuntimeService};

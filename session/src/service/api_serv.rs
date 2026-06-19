@@ -17,13 +17,13 @@ use shared::info::output::{DashFmp4Output, LocalMp4Output, OutputEnum, OutputKin
 use shared::info::res::Resp;
 
 use crate::gb::SessionConf;
-use crate::gb::sip::InviteTalkRequest;
 use crate::gb::sip::command as sip_command;
+use crate::gb::sip::invite::AcceptBroadcastInviteRequest;
 use crate::http::client::{HttpClient, HttpStream};
 use crate::register::core::Register;
 use crate::service::talk::{
     DEFAULT_TALK_INPUT_TIMEOUT_SECS, TalkAudioOptions, append_gmv_token, cleanup_talk_open,
-    parse_talk_answer, sip_command_target, stream_resp_data, talk_codec_to_pjsip,
+    parse_broadcast_invite, stream_resp_data,
 };
 use crate::service::{EXPIRES, KEY_STREAM_IN, stream_close, talk_close};
 use crate::state;
@@ -37,7 +37,6 @@ use crate::state::{DownloadConf, StreamConf, session};
 use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
 use crate::storage::entity::GmvRecord;
 use crate::utils::id_builder;
-use gmv_pjsip::TalkSdpMode;
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_live_model.device_id;
@@ -350,6 +349,8 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             |msg| error!("{msg}: device_id={device_id}, channel_id={channel_id}"),
         ));
     }
+    let target_id =
+        crate::storage::mapper::resolve_broadcast_target_id(device_id, &channel_id).await?;
 
     let u16ssrc = state::session::Cache::ssrc_sn_get().ok_or_else(|| {
         GlobalError::new_biz_error(
@@ -406,73 +407,42 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             }
         };
 
-        let (host, port, proto) = match sip_command_target(device_id) {
-            Ok(value) => value,
+        let sn = Local::now()
+            .timestamp_millis()
+            .unsigned_abs()
+            .min(u64::from(u32::MAX)) as u32;
+        let invite = match sip_command::broadcast_notify_and_wait(device_id, &target_id, sn).await {
+            Ok(invite) => invite,
             Err(err) => {
                 cleanup_talk_open(client.as_ref(), &talk_id).await;
                 state::session::Cache::ssrc_sn_set(u16ssrc);
                 return Err(err);
             }
         };
-        let protocol = sip_command::transport_protocol(audio.trans_mode, proto);
-        let accepted = match sip_command::talk_invite_and_wait(InviteTalkRequest {
-            device_id: device_id.clone(),
-            channel_id: channel_id.clone(),
-            talk_id: talk_id.clone(),
-            device_host: host,
-            device_port: port,
-            media_ip: stream_node.pub_ip.to_string(),
-            media_port: open_resp.rtp_port,
-            ssrc: u32ssrc,
-            payload_type: open_resp.payload_type,
-            codec: talk_codec_to_pjsip(&open_resp.codec),
-            mode: TalkSdpMode::SendRecv,
-            protocol,
-            call_id: None,
-            cseq: None,
-            subject: None,
-        })
-        .await
-        {
-            Ok(value) => value,
+        let answer = match parse_broadcast_invite(&invite) {
+            Ok(answer) => answer,
             Err(err) => {
+                sip_command::reject_broadcast_invite(
+                    &invite.call_id,
+                    488,
+                    "Unsupported broadcast SDP",
+                );
                 cleanup_talk_open(client.as_ref(), &talk_id).await;
                 state::session::Cache::ssrc_sn_set(u16ssrc);
                 return Err(err);
             }
         };
-
-        let answer = match parse_talk_answer(&accepted) {
-            Ok(value) => value,
-            Err(err) => {
-                let _ = sip_command::invite_stop_by_device(
-                    device_id,
-                    crate::gb::sip::InviteStopRequest {
-                        call_id: Some(accepted.call_id.clone()),
-                        stream_id: Some(talk_id.clone()),
-                    },
-                )
-                .await;
-                cleanup_talk_open(client.as_ref(), &talk_id).await;
-                state::session::Cache::ssrc_sn_set(u16ssrc);
-                return Err(err);
-            }
-        };
-
         if !audio.compatible_answer(&answer.codec, answer.sample_rate) {
-            let _ = sip_command::invite_stop_by_device(
-                device_id,
-                crate::gb::sip::InviteStopRequest {
-                    call_id: Some(accepted.call_id.clone()),
-                    stream_id: Some(talk_id.clone()),
-                },
-            )
-            .await;
+            sip_command::reject_broadcast_invite(
+                &invite.call_id,
+                488,
+                "Unsupported broadcast codec",
+            );
             cleanup_talk_open(client.as_ref(), &talk_id).await;
             state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
-                "device talk audio codec is unsupported",
+                "device broadcast audio codec is unsupported",
                 |msg| {
                     error!(
                         "{msg}: codec={}, sample_rate={}",
@@ -481,7 +451,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
                 },
             ));
         }
-
         let answer_req = TalkAnswerReq {
             talk_id: talk_id.clone(),
             device_ip: answer.device_ip,
@@ -495,14 +464,28 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             .hand_log(|msg| error!("{msg}"))
             .and_then(|resp| stream_resp_unit(resp.value(), "talk_answer"))
         {
-            let _ = sip_command::invite_stop_by_device(
-                device_id,
-                crate::gb::sip::InviteStopRequest {
-                    call_id: Some(accepted.call_id.clone()),
-                    stream_id: Some(talk_id.clone()),
-                },
-            )
-            .await;
+            sip_command::reject_broadcast_invite(
+                &invite.call_id,
+                500,
+                "Prepare broadcast media failed",
+            );
+            cleanup_talk_open(client.as_ref(), &talk_id).await;
+            state::session::Cache::ssrc_sn_set(u16ssrc);
+            return Err(err);
+        }
+        if let Err(err) = sip_command::accept_broadcast_invite(AcceptBroadcastInviteRequest {
+            device_id: device_id.clone(),
+            channel_id: channel_id.clone(),
+            talk_id: talk_id.clone(),
+            media_node_id: node_name.clone(),
+            media_ip: stream_node.pub_ip.to_string(),
+            media_port: open_resp.rtp_port,
+            ssrc: u32ssrc,
+            payload_type: open_resp.payload_type,
+            invite: invite.clone(),
+        })
+        .await
+        {
             cleanup_talk_open(client.as_ref(), &talk_id).await;
             state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(err);
@@ -514,8 +497,9 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             channel_id: channel_id.clone(),
             ssrc: u32ssrc,
             stream_node_name: node_name,
-            call_id: accepted.call_id.clone(),
-            seq: 1,
+            call_id: invite.call_id.clone(),
+            seq: invite.dialog_snapshot.local_cseq,
+            restored: false,
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,

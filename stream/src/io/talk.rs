@@ -24,6 +24,7 @@ use shared::info::obj::{
     TALK_INPUT_PREFIX, TalkAnswerReq, TalkClosedEvent, TalkOpenReq, TalkOpenResp,
 };
 
+use crate::general::cfg::StreamConf;
 use crate::io::http::call::{HttpClient, HttpSession};
 use crate::state::register::Register;
 
@@ -95,6 +96,8 @@ impl TalkManager {
         let payload_type = Arc::new(AtomicU8::new(req.payload_type));
         let target = Arc::new(Mutex::new(None));
         let cancel = CancellationToken::new();
+        let input_timeout =
+            Duration::from_secs(u64::from(StreamConf::init_by_conf().in_wait_timeout));
 
         let session = TalkSession {
             ssrc: req.ssrc,
@@ -122,7 +125,7 @@ impl TalkManager {
                     req.ssrc,
                     req.sample_rate,
                     req.frame_duration_ms,
-                    Duration::from_secs(req.input_timeout_secs as u64),
+                    input_timeout,
                     payload_type,
                     target,
                     writer,
@@ -168,6 +171,10 @@ impl TalkManager {
                 |msg| error!("{msg}: talk_id={}", req.talk_id),
             )),
         }
+    }
+
+    pub fn is_online(talk_id: &str) -> bool {
+        TALK_SESSIONS.contains_key(talk_id)
     }
 
     pub fn close(talk_id: &str) -> bool {

@@ -17,7 +17,7 @@ use gmv_pjsip::gb28181::sdp::SdpInfo;
 use gmv_pjsip::message::{extract_tag, extract_uri};
 
 use super::bye::GbByeEvent;
-use super::invite::GbInviteAcceptedEvent;
+use super::invite::{GbIncomingInviteEvent, GbInviteAcceptedEvent};
 use crate::state::session::Cache;
 
 static SIP_RUNTIME_CACHE: Lazy<SipRuntimeCache> = Lazy::new(SipRuntimeCache::default);
@@ -30,7 +30,26 @@ pub struct SipRuntimeCache {
     native_response_waiters: DashMap<u64, ResponseWaiter>,
     native_invite_waiters: DashMap<u64, NativeInviteWaiter>,
     native_subscription_waiters: DashMap<u64, NativeSubscriptionWaiter>,
+    broadcast_response_waiters: DashMap<BroadcastResponseKey, BroadcastResponseWaiter>,
+    broadcast_invite_waiters: DashMap<String, BroadcastInviteWaiter>,
     call_stream_index: DashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct BroadcastResponseKey {
+    pub sn: String,
+    pub target_id: String,
+}
+
+struct BroadcastResponseWaiter {
+    deadline: Instant,
+    tx: oneshot::Sender<bool>,
+}
+
+struct BroadcastInviteWaiter {
+    deadline: Instant,
+    source_id: String,
+    tx: oneshot::Sender<GbIncomingInviteEvent>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -119,6 +138,72 @@ struct NativeSubscriptionWaiter {
 impl SipRuntimeCache {
     pub fn global() -> &'static Self {
         &SIP_RUNTIME_CACHE
+    }
+
+    pub fn insert_broadcast_response_waiter(
+        &self,
+        key: BroadcastResponseKey,
+        ttl: Duration,
+    ) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.broadcast_response_waiters.insert(
+            key,
+            BroadcastResponseWaiter {
+                deadline: Instant::now() + ttl,
+                tx,
+            },
+        );
+        rx
+    }
+
+    pub fn complete_broadcast_response(&self, sn: &str, target_id: &str, accepted: bool) -> bool {
+        self.broadcast_response_waiters
+            .remove(&BroadcastResponseKey {
+                sn: sn.to_string(),
+                target_id: target_id.to_string(),
+            })
+            .map(|(_, waiter)| waiter.tx.send(accepted).is_ok())
+            .unwrap_or(false)
+    }
+
+    pub fn remove_broadcast_response_waiter(&self, key: &BroadcastResponseKey) {
+        self.broadcast_response_waiters.remove(key);
+    }
+
+    pub fn insert_broadcast_invite_waiter(
+        &self,
+        target_id: String,
+        source_id: String,
+        ttl: Duration,
+    ) -> oneshot::Receiver<GbIncomingInviteEvent> {
+        let (tx, rx) = oneshot::channel();
+        self.broadcast_invite_waiters.insert(
+            target_id,
+            BroadcastInviteWaiter {
+                deadline: Instant::now() + ttl,
+                source_id,
+                tx,
+            },
+        );
+        rx
+    }
+
+    pub fn complete_broadcast_invite(&self, event: &GbIncomingInviteEvent) -> bool {
+        let Some(target_id) = sip_user(&event.from) else {
+            return false;
+        };
+        let Some((_, waiter)) = self.broadcast_invite_waiters.remove(&target_id) else {
+            return false;
+        };
+        if sip_user(&event.to).as_deref() != Some(waiter.source_id.as_str()) {
+            self.broadcast_invite_waiters.insert(target_id, waiter);
+            return false;
+        }
+        waiter.tx.send(event.clone()).is_ok()
+    }
+
+    pub fn remove_broadcast_invite_waiter(&self, target_id: &str) {
+        self.broadcast_invite_waiters.remove(target_id);
     }
 
     pub fn insert_invite_waiter(
@@ -612,6 +697,23 @@ impl SipRuntimeCache {
             }
         }
 
+        let expired_broadcast_responses = self
+            .broadcast_response_waiters
+            .iter()
+            .filter_map(|item| (item.deadline <= now).then(|| item.key().clone()))
+            .collect::<Vec<_>>();
+        for key in expired_broadcast_responses {
+            self.broadcast_response_waiters.remove(&key);
+        }
+        let expired_broadcast_invites = self
+            .broadcast_invite_waiters
+            .iter()
+            .filter_map(|item| (item.deadline <= now).then(|| item.key().clone()))
+            .collect::<Vec<_>>();
+        for key in expired_broadcast_invites {
+            self.broadcast_invite_waiters.remove(&key);
+        }
+
         RuntimeCleanupReport {
             invite_waiters,
             bye_waiters,
@@ -619,6 +721,14 @@ impl SipRuntimeCache {
             native_response_waiters,
         }
     }
+}
+
+fn sip_user(header: &str) -> Option<String> {
+    let uri = extract_uri(header)?;
+    let value = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))?;
+    Some(value.split('@').next()?.to_string())
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -643,6 +753,67 @@ pub async fn recv_with_timeout<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn incoming_broadcast_invite(from: &str, to: &str) -> GbIncomingInviteEvent {
+        let local_addr = "127.0.0.1:5060".parse().expect("local addr");
+        let remote_addr = "127.0.0.1:5061".parse().expect("remote addr");
+        GbIncomingInviteEvent {
+            call_id: "broadcast-call".into(),
+            cseq: 20,
+            association: gmv_pjsip::SipAssociation {
+                local_addr,
+                remote_addr,
+                protocol: gmv_pjsip::SipTransportProtocol::Udp,
+            },
+            dialog_snapshot: SipDialogSnapshot {
+                call_id: "broadcast-call".into(),
+                local_uri: "sip:source@127.0.0.1:5060".into(),
+                remote_uri: "sip:target@127.0.0.1:5061".into(),
+                local_tag: "local".into(),
+                remote_tag: "remote".into(),
+                local_cseq: 1,
+                remote_target: "sip:target@127.0.0.1:5061".into(),
+                route_set: Vec::new(),
+                protocol: gmv_pjsip::SipTransportProtocol::Udp,
+                association_id: 0,
+                local_addr,
+                remote_addr,
+            },
+            remote_sdp: String::new(),
+            from: from.into(),
+            to: to.into(),
+            subject: None,
+        }
+    }
+
+    #[test]
+    fn broadcast_waiters_require_exact_sn_target_and_sip_users() {
+        let cache = SipRuntimeCache::default();
+        let ttl = Duration::from_secs(1);
+        let key = BroadcastResponseKey {
+            sn: "100".into(),
+            target_id: "target".into(),
+        };
+        let mut response = cache.insert_broadcast_response_waiter(key, ttl);
+        assert!(!cache.complete_broadcast_response("101", "target", true));
+        assert!(cache.complete_broadcast_response("100", "target", true));
+        assert!(response.try_recv().expect("broadcast response"));
+
+        let mut invite =
+            cache.insert_broadcast_invite_waiter("target".into(), "source".into(), ttl);
+        assert!(!cache.complete_broadcast_invite(&incoming_broadcast_invite(
+            "<sip:target@127.0.0.1>",
+            "<sip:other@127.0.0.1>",
+        )));
+        assert!(cache.complete_broadcast_invite(&incoming_broadcast_invite(
+            "<sip:target@127.0.0.1>",
+            "<sip:source@127.0.0.1>",
+        )));
+        assert_eq!(
+            invite.try_recv().expect("broadcast invite").call_id,
+            "broadcast-call"
+        );
+    }
 
     #[test]
     fn fail_all_native_completes_pending_waiters() {

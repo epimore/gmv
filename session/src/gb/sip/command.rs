@@ -9,15 +9,15 @@ use std::time::Duration;
 use base::chrono::{Duration as TimeDelta, Local};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{error, warn};
 use base::net::state::Protocol;
-use gmv_pjsip::gb28181::sdp::{TalkSdpOptions, build_play_sdp, build_talk_sdp};
+use gmv_pjsip::gb28181::sdp::build_play_sdp;
 use gmv_pjsip::gb28181::xml::{
     CONTENT_TYPE_MANSRTSP, build_mansrtsp_seek_body, build_mansrtsp_speed_body,
 };
 use gmv_pjsip::{
-    SipDialogMethod, SipDialogRequest, SipDialogSnapshot, SipInviteIdentity, SipOutboundInvite,
-    SipOutboundMessage, SipRestoredDialogRequest,
+    SipDialogMethod, SipDialogRequest, SipDialogSnapshot, SipInviteIdentity, SipInviteResponse,
+    SipOutboundInvite, SipOutboundMessage, SipRestoredDialogRequest,
 };
 use shared::info::media_info_ext::MediaExt;
 
@@ -32,11 +32,13 @@ use crate::storage::dialog_session::{
 
 use super::adapter::pjsip_protocol_from_base;
 use super::invite::{
-    GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest, InviteTalkRequest,
+    AcceptBroadcastInviteRequest, GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest,
 };
 use super::message::{CreateDeviceMessageRequest, target_uri};
 use super::native_runtime::NativeSipRuntimeHandle;
-use super::runtime_cache::{NativeInviteMetadata, SipRuntimeCache, recv_with_timeout};
+use super::runtime_cache::{
+    BroadcastResponseKey, NativeInviteMetadata, SipRuntimeCache, recv_with_timeout,
+};
 use super::{sdp, xml};
 
 const INVITE_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -62,8 +64,15 @@ pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Pr
 
 async fn send_native_message_and_wait(request: CreateDeviceMessageRequest) -> GlobalResult<()> {
     let device_id = request.device_id.clone();
-    let Some(session) = Register::get_connected_device_session(&device_id) else {
-        return Err(device_not_connected(&device_id));
+    send_native_message_on_device_and_wait(&device_id, request).await
+}
+
+async fn send_native_message_on_device_and_wait(
+    device_id: &str,
+    request: CreateDeviceMessageRequest,
+) -> GlobalResult<()> {
+    let Some(session) = Register::get_connected_device_session(device_id) else {
+        return Err(device_not_connected(device_id));
     };
     let runtime = NativeSipRuntimeHandle::global()?;
     let operation_id = runtime.next_operation_id();
@@ -307,6 +316,207 @@ fn normalize_gb_ssrc(ssrc: &str) -> GlobalResult<String> {
 fn invite_subject(channel_id: &str, receiver_id: &str, ssrc: u32) -> String {
     let ssrc = format_gb_ssrc(ssrc);
     format!("{channel_id}:{ssrc},{receiver_id}:0")
+}
+
+pub async fn broadcast_notify_and_wait(
+    device_id: &str,
+    target_id: &str,
+    sn: u32,
+) -> GlobalResult<super::invite::GbIncomingInviteEvent> {
+    let (host, port, protocol) = connected_target(device_id)?;
+    let protocol = pjsip_protocol_from_base(protocol);
+    let source_id = SessionConf::get_session_by_conf().domain_id;
+    let response_key = BroadcastResponseKey {
+        sn: sn.to_string(),
+        target_id: target_id.to_string(),
+    };
+    let response_rx = SipRuntimeCache::global()
+        .insert_broadcast_response_waiter(response_key.clone(), INVITE_WAIT_TIMEOUT);
+    let mut invite_rx = SipRuntimeCache::global().insert_broadcast_invite_waiter(
+        target_id.to_string(),
+        source_id.clone(),
+        INVITE_WAIT_TIMEOUT,
+    );
+    let request = CreateDeviceMessageRequest::broadcast_notify(
+        target_id, host, port, protocol, sn, &source_id,
+    );
+    if let Err(err) = send_native_message_on_device_and_wait(device_id, request).await {
+        SipRuntimeCache::global().remove_broadcast_response_waiter(&response_key);
+        reject_buffered_broadcast_invite(&mut invite_rx);
+        SipRuntimeCache::global().remove_broadcast_invite_waiter(target_id);
+        return Err(err);
+    }
+    match recv_with_timeout(response_rx, INVITE_WAIT_TIMEOUT).await {
+        Ok(true) => {}
+        Ok(false) => {
+            reject_buffered_broadcast_invite(&mut invite_rx);
+            SipRuntimeCache::global().remove_broadcast_invite_waiter(target_id);
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "device rejected broadcast notification",
+                |msg| error!("device_id={device_id}; target_id={target_id}; {msg}"),
+            ));
+        }
+        Err(reason) => {
+            SipRuntimeCache::global().remove_broadcast_response_waiter(&response_key);
+            reject_buffered_broadcast_invite(&mut invite_rx);
+            SipRuntimeCache::global().remove_broadcast_invite_waiter(target_id);
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Timeout.code(),
+                "device broadcast response timeout",
+                |msg| {
+                    error!("device_id={device_id}; target_id={target_id}; {msg}; reason={reason}")
+                },
+            ));
+        }
+    }
+    recv_with_timeout(invite_rx, INVITE_WAIT_TIMEOUT)
+        .await
+        .map_err(|reason| {
+            SipRuntimeCache::global().remove_broadcast_invite_waiter(target_id);
+            GlobalError::new_biz_error(
+                BaseErrorCode::Timeout.code(),
+                "device broadcast INVITE timeout",
+                |msg| {
+                    error!("device_id={device_id}; target_id={target_id}; {msg}; reason={reason}")
+                },
+            )
+        })
+}
+
+fn reject_buffered_broadcast_invite(
+    invite_rx: &mut base::tokio::sync::oneshot::Receiver<super::invite::GbIncomingInviteEvent>,
+) {
+    if let Ok(invite) = invite_rx.try_recv() {
+        reject_broadcast_invite(&invite.call_id, 503, "Broadcast setup failed");
+    }
+}
+
+pub fn reject_broadcast_invite(call_id: &str, status_code: u16, reason: &str) {
+    let Ok(runtime) = NativeSipRuntimeHandle::global() else {
+        return;
+    };
+    if let Err(err) = runtime.respond_invite(SipInviteResponse {
+        call_id: call_id.to_string(),
+        status_code,
+        reason: Some(reason.to_string()),
+        content_type: None,
+        body: Vec::new(),
+    }) {
+        warn!("queue broadcast INVITE rejection failed: call_id={call_id}; err={err}");
+    }
+}
+
+pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> GlobalResult<()> {
+    let snapshot = &req.invite.dialog_snapshot;
+    let signal_node_id = SessionConf::get_session_by_conf().domain_id;
+    let now = Local::now().naive_local();
+    let session = SipDialogSession {
+        stream_id: req.talk_id.clone(),
+        device_id: req.device_id.clone(),
+        channel_id: req.channel_id.clone(),
+        session_type: DialogSessionType::Talk,
+        signal_node_id: signal_node_id.clone(),
+        media_node_id: req.media_node_id,
+        ssrc: Some(format!("{:010}", req.ssrc)),
+        call_id: req.invite.call_id.clone(),
+        local_uri: snapshot.local_uri.clone(),
+        remote_uri: snapshot.remote_uri.clone(),
+        local_tag: snapshot.local_tag.clone(),
+        remote_tag: None,
+        local_cseq: i64::from(snapshot.local_cseq),
+        remote_cseq: Some(i64::from(req.invite.cseq)),
+        contact_uri: Some(snapshot.remote_target.clone()),
+        route_set: snapshot.route_set.clone(),
+        local_sip_addr: snapshot.local_addr.to_string(),
+        remote_sip_addr: snapshot.remote_addr.to_string(),
+        transport: dialog_transport(snapshot.protocol),
+        state: DialogState::Inviting,
+        established_at: None,
+        last_seen_at: now,
+        expire_at: now + TimeDelta::hours(DIALOG_EXPIRE_HOURS),
+        version: 0,
+        created_at: now,
+        updated_at: now,
+    };
+    if let Err(err) = SipDialogSessionRepository::insert_inviting(&session).await {
+        reject_broadcast_invite(&req.invite.call_id, 500, "Persist broadcast dialog failed");
+        return Err(err);
+    }
+    let sdp = format!(
+        "v=0\r\no={source} 0 0 IN IP4 {ip}\r\ns=Play\r\nc=IN IP4 {ip}\r\nt=0 0\r\nm=audio {port} RTP/AVP {pt}\r\na=sendonly\r\na=rtpmap:{pt} PCMA/8000\r\nf=v/////a/1/8/1\r\ny={ssrc:010}\r\n",
+        source = signal_node_id,
+        ip = req.media_ip,
+        port = req.media_port,
+        pt = req.payload_type,
+        ssrc = req.ssrc,
+    );
+    if let Err(err) = NativeSipRuntimeHandle::global()?.respond_invite(SipInviteResponse {
+        call_id: req.invite.call_id.clone(),
+        status_code: 200,
+        reason: Some("OK".into()),
+        content_type: Some("application/sdp".into()),
+        body: sdp.into_bytes(),
+    }) {
+        mark_inviting_terminal(&req.talk_id, &signal_node_id, DialogState::Orphan).await;
+        return Err(err);
+    }
+    let established_at = Local::now().naive_local();
+    let fields = EstablishedDialogFields {
+        remote_tag: snapshot.remote_tag.clone(),
+        local_cseq: i64::from(snapshot.local_cseq),
+        remote_cseq: Some(i64::from(req.invite.cseq)),
+        contact_uri: Some(snapshot.remote_target.clone()),
+        route_set: snapshot.route_set.clone(),
+        local_sip_addr: snapshot.local_addr.to_string(),
+        remote_sip_addr: snapshot.remote_addr.to_string(),
+        established_at,
+        last_seen_at: established_at,
+        expire_at: established_at + TimeDelta::hours(DIALOG_EXPIRE_HOURS),
+        updated_at: established_at,
+    };
+    match SipDialogSessionRepository::cas_mark_established(
+        &req.talk_id,
+        &signal_node_id,
+        0,
+        &fields,
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            rollback_established_invite(
+                &req.device_id,
+                &req.talk_id,
+                &signal_node_id,
+                &req.invite.call_id,
+                DialogState::Orphan,
+            )
+            .await;
+            return Err(GlobalError::new_sys_error(
+                "broadcast dialog ESTABLISHED CAS lost",
+                |msg| {
+                    error!(
+                        "talk_id={}; call_id={}; {msg}",
+                        req.talk_id, req.invite.call_id
+                    )
+                },
+            ));
+        }
+        Err(err) => {
+            rollback_established_invite(
+                &req.device_id,
+                &req.talk_id,
+                &signal_node_id,
+                &req.invite.call_id,
+                DialogState::Orphan,
+            )
+            .await;
+            return Err(err);
+        }
+    }
+    SipRuntimeCache::global().restore_stream_index(req.invite.call_id.clone(), req.talk_id.clone());
+    Ok(())
 }
 
 pub async fn query_catalog(device_id: &str, sn: u32) -> GlobalResult<()> {
@@ -748,97 +958,6 @@ async fn rollback_established_invite(
     .await;
 }
 
-pub async fn talk_invite_and_wait(req: InviteTalkRequest) -> GlobalResult<GbInviteAcceptedEvent> {
-    let device_id = req.device_id.clone();
-    let talk_id = req.talk_id.clone();
-    let Some(session) = Register::get_connected_device_session(&device_id) else {
-        return Err(device_not_connected(&device_id));
-    };
-    let runtime = NativeSipRuntimeHandle::global()?;
-    let operation_id = runtime.next_operation_id();
-    let rx = SipRuntimeCache::global().insert_native_invite_waiter(
-        operation_id,
-        NativeInviteMetadata {
-            device_id: device_id.clone(),
-            channel_id: req.channel_id.clone(),
-            stream_id: talk_id.clone(),
-            ssrc: Some(req.ssrc),
-        },
-        INVITE_WAIT_TIMEOUT,
-    );
-    let protocol = pjsip_protocol_from_base(session.association.protocol);
-    let conf = SessionConf::get_session_by_conf();
-    let invite = SipOutboundInvite {
-        operation_id,
-        association_id: 0,
-        protocol,
-        identity: SipInviteIdentity::generate(),
-        target_uri: target_uri(&req.device_id, &req.device_host, req.device_port, protocol),
-        from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
-        contact_uri: format!(
-            "<{}>",
-            target_uri(
-                &conf.domain_id,
-                &conf.wan_ip.to_string(),
-                conf.wan_port,
-                protocol,
-            )
-        ),
-        subject: Some(req.subject.unwrap_or_else(|| {
-            invite_subject(&req.channel_id, conf.media_receiver_id(), req.ssrc)
-        })),
-        sdp: build_talk_sdp(TalkSdpOptions {
-            ip: req.media_ip,
-            port: req.media_port,
-            ssrc: req.ssrc,
-            payload_type: req.payload_type,
-            codec: req.codec,
-            mode: req.mode,
-        }),
-    };
-    if let Err(err) = runtime.send_invite(&session.association, invite) {
-        SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
-        return Err(err);
-    }
-    match recv_with_timeout(rx, INVITE_WAIT_TIMEOUT).await {
-        Ok(Ok(event)) => {
-            let expected_ssrc = format_gb_ssrc(req.ssrc);
-            if let Err(err) = sdp::validate_invite_answer_sdp(&event.remote_sdp, &expected_ssrc) {
-                close_invite_after_answer_error(
-                    &device_id,
-                    &talk_id,
-                    &event,
-                    "invalid talk answer SDP",
-                )
-                .await;
-                return Err(err);
-            }
-            Ok(event)
-        }
-        Ok(Err(failure)) => {
-            SipRuntimeCache::global().remove_stream_indexes(&talk_id, Some(&failure.call_id));
-            Err(GlobalError::new_biz_error(
-                BaseErrorCode::InvalidState.code(),
-                "device rejected talk INVITE",
-                |msg| {
-                    error!(
-                        "talk_id={}; call_id={}; status={}; {msg}",
-                        failure.stream_id, failure.call_id, failure.status
-                    )
-                },
-            ))
-        }
-        Err(reason) => {
-            SipRuntimeCache::global().remove_native_invite_waiter(operation_id);
-            Err(GlobalError::new_biz_error(
-                BaseErrorCode::Timeout.code(),
-                "device talk INVITE response timeout",
-                |msg| error!("talk_id={talk_id}; {msg}; reason={reason}"),
-            ))
-        }
-    }
-}
-
 async fn close_invite_after_answer_error(
     device_id: &str,
     stream_id: &str,
@@ -1033,10 +1152,9 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
         Some(stream_id) => reserve_durable_dialog_request(stream_id, SipDialogMethod::Bye).await?,
         None => None,
     };
-    if stream_id
-        .as_deref()
-        .is_some_and(GeneralCache::stream_is_restored)
-    {
+    if stream_id.as_deref().is_some_and(|stream_id| {
+        GeneralCache::stream_is_restored(stream_id) || GeneralCache::talk_is_restored(stream_id)
+    }) {
         let session = load_durable_dialog(stream_id.as_deref().unwrap_or_default()).await?;
         send_restored_dialog_and_wait(
             device_id,

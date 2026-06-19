@@ -142,6 +142,10 @@ async fn talk_close(Json(_request): Json<TalkCloseReq>) -> Json<Resp<()>> {
     Json(Resp::build_success())
 }
 
+async fn talk_online(Json(_request): Json<TalkCloseReq>) -> Json<Resp<bool>> {
+    Json(Resp::build_success_data(true))
+}
+
 async fn start_media_stub(
     listener: TcpListener,
     cancel: CancellationToken,
@@ -155,6 +159,7 @@ async fn start_media_stub(
         .route("/talk/open", post(talk_open))
         .route("/talk/answer", post(talk_answer))
         .route("/talk/close", post(talk_close))
+        .route("/talk/online", post(talk_online))
         .with_state(Arc::new(MediaState::default()));
     base::tokio::spawn(async move {
         axum::serve(listener, app)
@@ -230,6 +235,47 @@ Content-Length: {}\r\n\r\n{}",
     )
 }
 
+fn broadcast_invite(call_id: &str, cseq: u32, target_id: &str) -> String {
+    let body = format!(
+        "v=0\r\no={target_id} 0 0 IN IP4 198.51.100.20\r\ns=Play\r\nc=IN IP4 198.51.100.20\r\nt=0 0\r\nm=audio 30002 RTP/AVP 8\r\na=recvonly\r\na=rtpmap:8 PCMA/8000\r\n"
+    );
+    format!(
+        "INVITE sip:{PLATFORM_ID}@192.0.2.10:25600 SIP/2.0\r\n\
+Via: SIP/2.0/UDP 198.51.100.20:5060;rport;branch=z9hG4bK-{call_id}\r\n\
+From: <sip:{target_id}@3402000000>;tag=device-broadcast\r\n\
+To: <sip:{PLATFORM_ID}@3402000000>\r\n\
+Call-ID: {call_id}\r\n\
+CSeq: {cseq} INVITE\r\n\
+Contact: <sip:{target_id}@198.51.100.20:5060>\r\n\
+Subject: {target_id}:0,{PLATFORM_ID}:0\r\n\
+Max-Forwards: 70\r\n\
+Content-Type: application/sdp\r\n\
+Content-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+fn ack_for(response: &str) -> String {
+    let cseq = header_value(response, "CSeq")
+        .split_whitespace()
+        .next()
+        .expect("INVITE response CSeq");
+    format!(
+        "ACK sip:{PLATFORM_ID}@192.0.2.10:25600 SIP/2.0\r\n\
+Via: SIP/2.0/UDP 198.51.100.20:5060;rport;branch=z9hG4bK-ack-{cseq}\r\n\
+From: {}\r\n\
+To: {}\r\n\
+Call-ID: {}\r\n\
+CSeq: {cseq} ACK\r\n\
+Max-Forwards: 70\r\n\
+Content-Length: 0\r\n\r\n",
+        header_value(response, "From"),
+        header_value(response, "To"),
+        header_value(response, "Call-ID"),
+    )
+}
+
 fn register_packet() -> String {
     format!(
         "REGISTER sip:3402000000@192.0.2.10:25600 SIP/2.0\r\n\
@@ -265,7 +311,16 @@ async fn run_device(socket: Arc<UdpSocket>, runtime_addr: SocketAddr, cancel: Ca
         };
         let (len, _) = received.expect("receive runtime SIP packet");
         let request = String::from_utf8_lossy(&buffer[..len]).into_owned();
-        if request.starts_with("SIP/2.0 ") || request.starts_with("ACK ") {
+        if request.starts_with("SIP/2.0 ") {
+            if request.starts_with("SIP/2.0 200")
+                && header_value(&request, "CSeq").ends_with(" INVITE")
+                && header_value(&request, "Call-ID").starts_with("broadcast-")
+            {
+                inject(&socket, runtime_addr, ack_for(&request)).await;
+            }
+            continue;
+        }
+        if request.starts_with("ACK ") {
             continue;
         }
         if request.starts_with("INVITE ") {
@@ -293,21 +348,12 @@ async fn run_device(socket: Arc<UdpSocket>, runtime_addr: SocketAddr, cancel: Ca
                 target_subject.starts_with(PLATFORM_ID),
                 "target_subject={target_subject}; expected_media_server={PLATFORM_ID}"
             );
-            let answer = if offer.contains("m=audio") {
-                format!(
-                    "v=0\r\n\
-o={DEVICE_ID} 0 0 IN IP4 198.51.100.20\r\n\
-s=Talk\r\n\
-c=IN IP4 198.51.100.20\r\n\
-t=0 0\r\n\
-m=audio 30002 RTP/AVP 8\r\n\
-a=sendrecv\r\n\
-a=rtpmap:8 PCMA/8000\r\n\
-y={ssrc}\r\n"
-                )
-            } else {
-                format!(
-                    "v=0\r\n\
+            assert!(
+                !offer.contains("m=audio"),
+                "platform must not initiate legacy TALK audio INVITE: {request}"
+            );
+            let answer = format!(
+                "v=0\r\n\
 o={DEVICE_ID} 0 0 IN IP4 198.51.100.20\r\n\
 s=Play\r\n\
 c=IN IP4 198.51.100.20\r\n\
@@ -316,8 +362,7 @@ m=video 30000 RTP/AVP 96\r\n\
 a=sendonly\r\n\
 a=rtpmap:96 PS/90000\r\n\
 y={ssrc}\r\n"
-                )
-            };
+            );
             let contact_addr = socket.local_addr().expect("synthetic device address");
             let contact = format!("<sip:{DEVICE_ID}@{contact_addr}>");
             let ok = response_for(
@@ -353,6 +398,34 @@ y={ssrc}\r\n"
             .flatten();
         let ok = response_for(&request, 200, "OK", None, "", &[]);
         inject(&socket, runtime_addr, ok).await;
+        if request.starts_with("MESSAGE ") && request.contains("<CmdType>Broadcast</CmdType>") {
+            let sn = extract_xml_value_lossy(&request, "SN").expect("broadcast SN");
+            let target_id =
+                extract_xml_value_lossy(&request, "TargetID").expect("broadcast TargetID");
+            device_cseq += 1;
+            let response_body = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<Response>\r\n\
+<CmdType>Broadcast</CmdType>\r\n\
+<SN>{sn}</SN>\r\n\
+<DeviceID>{target_id}</DeviceID>\r\n\
+<Result>OK</Result>\r\n\
+</Response>\r\n"
+            );
+            inject(
+                &socket,
+                runtime_addr,
+                device_message("broadcast-response", device_cseq, &response_body),
+            )
+            .await;
+            device_cseq += 1;
+            inject(
+                &socket,
+                runtime_addr,
+                broadcast_invite("broadcast-invite", device_cseq, &target_id),
+            )
+            .await;
+        }
         if let Some(session_id) = snapshot_session_id {
             device_cseq += 1;
             let body = format!(

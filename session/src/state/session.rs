@@ -91,6 +91,7 @@ pub struct TalkSessionState {
     pub stream_node_name: String,
     pub call_id: String,
     pub seq: u32,
+    pub restored: bool,
     pub closing_generation: Option<u64>,
     pub bye_inflight_seq: Option<u32>,
     pub close_last_error: Option<String>,
@@ -624,6 +625,14 @@ impl Cache {
             .talk_map
             .get(talk_id)
             .map(|talk| talk.clone())
+    }
+
+    pub fn talk_is_restored(talk_id: &str) -> bool {
+        GENERAL_CACHE
+            .shared
+            .talk_map
+            .get(talk_id)
+            .is_some_and(|talk| talk.restored)
     }
 
     pub fn talk_map_remove_by_call_id(call_id: &str) -> Option<TalkSessionState> {
@@ -1672,6 +1681,7 @@ mod tests {
             stream_node_name: "s1".to_string(),
             call_id: "talk-call-id".to_string(),
             seq: 8,
+            restored: false,
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,

@@ -18,8 +18,8 @@ use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaMap;
 use shared::info::obj::{
     CLOSE_OUTPUT, LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE, StreamInfoQo, StreamKey,
-    StreamRecordInfo, TALK_ANSWER, TALK_CLOSE, TALK_INPUT_PATH, TALK_OPEN, TalkAnswerReq,
-    TalkCloseReq, TalkOpenReq, TalkOpenResp,
+    StreamRecordInfo, TALK_ANSWER, TALK_CLOSE, TALK_INPUT_PATH, TALK_ONLINE, TALK_OPEN,
+    TalkAnswerReq, TalkCloseReq, TalkOpenReq, TalkOpenResp,
 };
 use shared::info::output::OutputEnum;
 use shared::info::res::{EmptyResponse, Resp};
@@ -38,6 +38,7 @@ pub fn routes(tx: Sender<u32>) -> Router {
         .route(TALK_OPEN, axum::routing::post(talk_open))
         .route(TALK_ANSWER, axum::routing::post(talk_answer))
         .route(TALK_CLOSE, axum::routing::post(talk_close))
+        .route(TALK_ONLINE, axum::routing::post(talk_online))
         .route(TALK_INPUT_PATH, axum::routing::get(talk_input_ws))
 }
 
@@ -194,6 +195,12 @@ async fn talk_answer(Json(req): Json<TalkAnswerReq>) -> Json<Resp<()>> {
     };
     info!("talk_answer response: {:?}", &json);
     Json(json)
+}
+
+async fn talk_online(Json(req): Json<TalkCloseReq>) -> Json<Resp<bool>> {
+    Json(Resp::build_success_data(TalkManager::is_online(
+        &req.talk_id,
+    )))
 }
 
 async fn talk_close(Json(req): Json<TalkCloseReq>) -> Json<Resp<()>> {

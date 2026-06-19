@@ -33,6 +33,7 @@ pub const CLOSE_OUTPUT: &str = "/close/output";
 pub const TALK_OPEN: &str = "/talk/open";
 pub const TALK_ANSWER: &str = "/talk/answer";
 pub const TALK_CLOSE: &str = "/talk/close";
+pub const TALK_ONLINE: &str = "/talk/online";
 pub const TALK_INPUT_PREFIX: &str = "/talk/input";
 pub const TALK_INPUT_PATH: &str = "/talk/input/{talk_id}";
 

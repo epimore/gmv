@@ -1271,7 +1271,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "gmv-session"
-version = "2.0.2-release"
+version = "2.1.0-release"
 dependencies = [
  "anyhow",
  "axum",
@@ -1297,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "gmv-stream"
-version = "2.0.2-release"
+version = "2.1.0-release"
 dependencies = [
  "axum",
  "base",
@@ -3122,7 +3122,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "2.0.2-release"
+version = "2.1.0-release"
 dependencies = [
  "base",
  "paste",

@@ -4,11 +4,9 @@ use base::log::error;
 use shared::info::obj::{TalkCloseReq, TalkStartModel};
 use shared::info::res::Resp;
 
-use crate::gb::sip::GbInviteAcceptedEvent;
+use crate::gb::sip::GbIncomingInviteEvent;
 use crate::http::client::HttpStream;
 use crate::state::model::TransMode;
-
-use gmv_pjsip::TalkAudioCodec;
 
 const DEFAULT_TALK_CODEC: &str = "PCMA";
 const DEFAULT_TALK_SAMPLE_RATE: u32 = 8000;
@@ -36,6 +34,13 @@ impl TalkAudioOptions {
                 |msg| error!("{msg}: {codec_input}"),
             ));
         };
+        if codec != DEFAULT_TALK_CODEC {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "only PCMA talk audio is supported",
+                |msg| error!("{msg}: codec={codec_input}"),
+            ));
+        }
         let sample_rate = model.sample_rate.unwrap_or(DEFAULT_TALK_SAMPLE_RATE);
         let channel_count = model.channel_count.unwrap_or(DEFAULT_TALK_CHANNEL_COUNT);
         let frame_duration_ms = model
@@ -86,15 +91,36 @@ pub(super) struct TalkSdpAnswer {
     pub sample_rate: u32,
 }
 
-pub(super) fn talk_codec_to_pjsip(codec: &str) -> TalkAudioCodec {
-    match normalize_talk_codec(codec).map(|(codec, _)| codec) {
-        Some("PCMU") => TalkAudioCodec::G711U,
-        _ => TalkAudioCodec::G711A,
-    }
+pub(super) fn parse_broadcast_invite(
+    invite: &GbIncomingInviteEvent,
+) -> GlobalResult<TalkSdpAnswer> {
+    parse_broadcast_sdp(&invite.remote_sdp, &invite.call_id)
 }
 
-pub(super) fn parse_talk_answer(accepted: &GbInviteAcceptedEvent) -> GlobalResult<TalkSdpAnswer> {
-    let sdp = &accepted.sdp_info;
+fn parse_broadcast_sdp(remote_sdp: &str, call_id: &str) -> GlobalResult<TalkSdpAnswer> {
+    let sdp = gmv_pjsip::gb28181::sdp::SdpInfo::parse_lossy(remote_sdp);
+    let has_audio = remote_sdp
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with("m=audio "));
+    let recvonly = remote_sdp
+        .lines()
+        .map(str::trim)
+        .any(|line| line.eq_ignore_ascii_case("a=recvonly"));
+    if sdp.session_name.as_deref() != Some("Play") || !has_audio || !recvonly {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "invalid broadcast INVITE SDP",
+            |msg| error!("call_id={call_id}; {msg}"),
+        ));
+    }
+    parse_talk_sdp(remote_sdp, &sdp)
+}
+
+fn parse_talk_sdp(
+    remote_sdp: &str,
+    sdp: &gmv_pjsip::gb28181::sdp::SdpInfo,
+) -> GlobalResult<TalkSdpAnswer> {
     let device_ip = sdp.connection_addr.clone().ok_or_else(|| {
         GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
@@ -114,8 +140,8 @@ pub(super) fn parse_talk_answer(accepted: &GbInviteAcceptedEvent) -> GlobalResul
         .first()
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(8);
-    let (codec, sample_rate) = parse_rtpmap_from_sdp(&accepted.remote_sdp, payload_type)
-        .unwrap_or_else(|| match payload_type {
+    let (codec, sample_rate) =
+        parse_rtpmap_from_sdp(remote_sdp, payload_type).unwrap_or_else(|| match payload_type {
             0 => ("PCMU".to_string(), 8000),
             8 => ("PCMA".to_string(), 8000),
             _ => (String::new(), 8000),
@@ -146,24 +172,6 @@ pub(super) fn parse_talk_answer(accepted: &GbInviteAcceptedEvent) -> GlobalResul
         codec,
         sample_rate,
     })
-}
-
-pub(super) fn sip_command_target(
-    device_id: &str,
-) -> GlobalResult<(String, u16, base::net::state::Protocol)> {
-    let Some(session) = crate::register::core::Register::get_connected_device_session(device_id)
-    else {
-        return Err(GlobalError::new_biz_error(
-            BaseErrorCode::NotFound.code(),
-            "device is not registered or connected",
-            |msg| error!("device_id={device_id}; {msg}"),
-        ));
-    };
-    Ok((
-        session.association.remote_addr.ip().to_string(),
-        session.association.remote_addr.port(),
-        session.association.protocol,
-    ))
 }
 
 pub(super) fn stream_resp_data<T>(resp: Resp<T>, action: &str) -> GlobalResult<T> {
@@ -252,4 +260,23 @@ fn parse_rtpmap_from_sdp(sdp: &str, payload_type: u8) -> Option<(String, u32)> {
         return Some((codec, sample_rate));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_broadcast_sdp;
+
+    #[test]
+    fn broadcast_invite_requires_play_audio_recvonly_pcma() {
+        let valid = "v=0\r\ns=Play\r\nc=IN IP4 192.0.2.10\r\nt=0 0\r\nm=audio 30000 RTP/AVP 8\r\na=recvonly\r\na=rtpmap:8 PCMA/8000\r\n";
+        let answer = parse_broadcast_sdp(valid, "call-1").expect("valid broadcast SDP");
+        assert_eq!(answer.device_ip, "192.0.2.10");
+        assert_eq!(answer.device_port, 30000);
+        assert_eq!(answer.payload_type, 8);
+        assert_eq!(answer.codec, "PCMA");
+        assert_eq!(answer.sample_rate, 8000);
+
+        assert!(parse_broadcast_sdp(&valid.replace("a=recvonly", "a=sendrecv"), "call-2").is_err());
+        assert!(parse_broadcast_sdp(&valid.replace("s=Play", "s=Talk"), "call-3").is_err());
+    }
 }

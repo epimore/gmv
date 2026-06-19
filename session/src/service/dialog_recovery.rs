@@ -6,7 +6,7 @@ use base::chrono::{Duration as TimeDelta, Local};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
 use base::net::state::{Association, Protocol};
-use shared::info::obj::StreamKey;
+use shared::info::obj::{StreamKey, TalkCloseReq};
 
 use crate::gb::SessionConf;
 use crate::gb::sip::runtime_cache::SipRuntimeCache;
@@ -66,7 +66,6 @@ async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<()> {
     let now = Local::now().naive_local();
     if session.expire_at <= now
         || session.state == DialogState::Inviting
-        || session.session_type == DialogSessionType::Talk
         || session.transport == DialogTransport::Tls
     {
         mark_orphan(session).await?;
@@ -79,6 +78,52 @@ async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<()> {
         .ok_or_else(|| invalid_recovery(session, "durable dialog SSRC is missing"))?
         .parse::<u32>()
         .map_err(|_| invalid_recovery(session, "durable dialog SSRC is invalid"))?;
+    if session.session_type == DialogSessionType::Talk {
+        if StreamConf::get_stream_conf()
+            .node_map
+            .get(&session.media_node_id)
+            .is_none()
+        {
+            mark_orphan(session).await?;
+            return Ok(());
+        }
+        if session.transport == DialogTransport::Udp
+            && let Err(err) = ensure_udp_device_session(session).await
+        {
+            mark_orphan(session).await?;
+            return Err(err);
+        }
+        if !query_talk_online(session).await? {
+            mark_orphan(session).await?;
+            return Ok(());
+        }
+        if !Cache::talk_map_insert(crate::state::session::TalkSessionState {
+            talk_id: session.stream_id.clone(),
+            device_id: session.device_id.clone(),
+            channel_id: session.channel_id.clone(),
+            ssrc,
+            stream_node_name: session.media_node_id.clone(),
+            call_id: session.call_id.clone(),
+            seq: u32::try_from(session.local_cseq).unwrap_or(u32::MAX),
+            restored: true,
+            closing_generation: None,
+            bye_inflight_seq: None,
+            close_last_error: None,
+        }) {
+            mark_orphan(session).await?;
+            return Ok(());
+        }
+        SipRuntimeCache::global()
+            .restore_stream_index(session.call_id.clone(), session.stream_id.clone());
+        info!(
+            "restored durable talk: talk_id={}, device_id={}, media_node={}, transport={}",
+            session.stream_id, session.device_id, session.media_node_id, session.transport
+        );
+        if session.state == DialogState::Terminating {
+            crate::service::talk_close::begin(session.stream_id.clone());
+        }
+        return Ok(());
+    }
     let access_mode = access_mode(session.session_type)?;
     if StreamConf::get_stream_conf()
         .node_map
@@ -156,6 +201,22 @@ async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<()> {
         crate::service::stream_close::begin(session.stream_id.clone());
     }
     Ok(())
+}
+
+async fn query_talk_online(session: &SipDialogSession) -> GlobalResult<bool> {
+    let stream_conf = StreamConf::get_stream_conf();
+    let node = stream_conf
+        .node_map
+        .get(&session.media_node_id)
+        .ok_or_else(|| invalid_recovery(session, "configured media node is missing"))?;
+    let client = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
+    let response = client
+        .talk_online(&TalkCloseReq {
+            talk_id: session.stream_id.clone(),
+        })
+        .await
+        .hand_log(|message| error!("{message}"))?;
+    Ok(response.code == 200 && response.data == Some(true))
 }
 
 async fn query_media_online(session: &SipDialogSession, ssrc: u32) -> GlobalResult<bool> {

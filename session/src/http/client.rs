@@ -79,6 +79,8 @@ pub trait HttpStream {
     async fn talk_answer(&self, json: &TalkAnswerReq) -> Result<Json<Resp<()>>>;
     #[request(method = "POST", path = "/talk/close")]
     async fn talk_close(&self, json: &TalkCloseReq) -> Result<Json<Resp<()>>>;
+    #[request(method = "POST", path = "/talk/online")]
+    async fn talk_online(&self, json: &TalkCloseReq) -> Result<Json<Resp<bool>>>;
 }
 
 #[pretend]

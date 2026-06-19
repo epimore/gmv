@@ -618,11 +618,15 @@ async fn run_native_business_events(
             .or_else(|| GbIncomingInviteEvent::from_native(&event).map(GbSipEvent::IncomingInvite))
             .or_else(|| native_dialog_event(&event));
         if let Some(business_event) = business_event {
-            if let GbSipEvent::IncomingInvite(invite) = &business_event {
+            if let GbSipEvent::IncomingInvite(invite) = &business_event
+                && !SipRuntimeCache::global().complete_broadcast_invite(invite)
+            {
                 if let Err(err) = runtime.respond_invite(SipInviteResponse {
                     call_id: invite.call_id.clone(),
                     status_code: 501,
                     reason: Some("Inbound session is not supported".into()),
+                    content_type: None,
+                    body: Vec::new(),
                 }) {
                     warn!(
                         "queue unsupported incoming INVITE response failed: call_id={}, err={err}",

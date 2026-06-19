@@ -135,3 +135,8 @@ quirk: null
 3. 有自动化测试引用，或在计划中记录尚未自动化的原因。
 4. 非标准兼容样本注明厂家/固件范围和最小 quirk。
 5. 将 inventory 状态从 `Missing` 更新为 `Collected` 或 `Automated`。
+
+
+## Voice Broadcast synthetic coverage (2026-06-19)
+
+`session/src/normal_flow_tests.rs` is the executable synthetic baseline for the approved broadcast flow: Broadcast MESSAGE, SIP 200, business `Result=OK`, device-originated Play/audio/recvonly INVITE, platform sendonly 200, ACK, and BYE. Real-device captures remain required before release and must be sanitized before entering this corpus.
