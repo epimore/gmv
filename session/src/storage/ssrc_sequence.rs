@@ -53,7 +53,7 @@ impl SsrcSequence {
         let pool = get_conn_by_pool();
         for (seq_name, kind) in [(realtime, SsrcKind::Realtime), (history, SsrcKind::History)] {
             sqlx::query(
-                "INSERT IGNORE INTO C_SEQ_CODE seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date)VALUES (?,1,1,1,?,4,?,?)",
+                "INSERT IGNORE INTO C_SEQ_CODE (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date)VALUES (?,1,1,1,?,4,?,?)",
             )
             .bind(&seq_name)
             .bind(&seq_name)

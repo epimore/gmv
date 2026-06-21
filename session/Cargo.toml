@@ -15,18 +15,19 @@ encoding_rs = "0.8"
 sdp-types = "0.1"
 image = "0.25"
 pretend = "0.4"
-pretend-reqwest = "0.4"
+pretend-reqwest = { version = "0.4", default-features = false }
 axum = { version = "0.8", features = ["multipart"] }
 
 # 共享依赖（自动继承版本）
 anyhow.workspace = true
 parking_lot.workspace = true
 regex.workspace = true
+reqwest.workspace = true
 url.workspace = true
 uuid.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
-openssl.workspace = true
 
 [dev-dependencies]
+sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }

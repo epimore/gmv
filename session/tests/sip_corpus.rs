@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use openssl::sha::sha256;
+use sha2::{Digest, Sha256};
 
 const PLATFORM_ID: &str = "34020000002000000001";
 const DEVICE_ID: &str = "34020000001110000009";
@@ -703,7 +703,8 @@ quality:\n",
         writeln!(output, "    sip_method: {}", asset.sip_method).expect("write manifest");
         writeln!(output, "    expected_status: {status}").expect("write manifest");
         writeln!(output, "    source: synthetic-wire").expect("write manifest");
-        writeln!(output, "    sha256: {}", hex(&sha256(&asset.bytes))).expect("write manifest");
+        writeln!(output, "    sha256: {}", hex(&Sha256::digest(&asset.bytes)))
+            .expect("write manifest");
         if asset.business_apis.is_empty() {
             writeln!(output, "    business_apis: []").expect("write manifest");
         } else {
@@ -1144,8 +1145,12 @@ quality:\n",
         writeln!(output, "    content_type: {:?}", content_type).expect("write reference manifest");
         writeln!(output, "    call_id: {:?}", packet.call_id).expect("write reference manifest");
         writeln!(output, "    cseq: {:?}", packet.cseq).expect("write reference manifest");
-        writeln!(output, "    sha256: {}", hex(&sha256(&packet.bytes)))
-            .expect("write reference manifest");
+        writeln!(
+            output,
+            "    sha256: {}",
+            hex(&Sha256::digest(&packet.bytes))
+        )
+        .expect("write reference manifest");
     }
     output
 }
@@ -1238,7 +1243,7 @@ fn reference_sip_baseline_is_current_and_complete() {
     let source_path = dir.join("gbt28181-2016-2022-baseline.md");
     let source = fs::read_to_string(&source_path).expect("read reference SIP baseline");
     assert_eq!(
-        hex(&sha256(source.as_bytes())),
+        hex(&Sha256::digest(source.as_bytes())),
         REFERENCE_SOURCE_SHA256,
         "reference baseline source hash changed"
     );
