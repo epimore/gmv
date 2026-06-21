@@ -1,0 +1,1212 @@
+version: 1
+source: standardized-reference
+source_file: gbt28181-2016-2022-baseline.md
+source_sha256: 2d89bb70302b80f83e1aa9d8956c36d95ddb123c3f0bdf4c5c2519333319a262
+derived_from: user-provided-gbt28181-2016-2022-sip-baseline
+generated_by: session/tests/sip_corpus.rs
+integrity_test: reference_sip_baseline_is_current_and_complete
+sanitization: standardized-closed-field-test-baseline
+quality:
+  tc_count: 26
+  packet_count: 108
+  response_count: 53
+  sdp_packet_count: 10
+  sdp_y_count: 10
+method_counts:
+  REGISTER: 4
+  MESSAGE: 31
+  INVITE: 5
+  ACK: 5
+  BYE: 5
+  INFO: 2
+  SUBSCRIBE: 2
+  NOTIFY: 1
+packets:
+  - tc_id: tc-01
+    title: "TC-01 设备注册 REGISTER + Digest 鉴权.1 设备首次 REGISTER"
+    file: extracted/tc-01-001.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: REGISTER
+    expected_status: null
+    content_type: "null"
+    call_id: "reg-34020000001320000001-0001@192.168.10.110"
+    cseq: "1 REGISTER"
+    sha256: 05b13b68223ca18c985be0b87c25300fe476862797dc0e14f67e1147101e1f28
+  - tc_id: tc-01
+    title: "TC-01 设备注册 REGISTER + Digest 鉴权.2 平台 401 Unauthorized"
+    file: extracted/tc-01-002.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: REGISTER
+    expected_status: 401
+    content_type: "null"
+    call_id: "reg-34020000001320000001-0001@192.168.10.110"
+    cseq: "1 REGISTER"
+    sha256: 66e5a569b32b43706b1debea32e7261428faa1cbcbe94689ae21edd6e0af0700
+  - tc_id: tc-01
+    title: "TC-01 设备注册 REGISTER + Digest 鉴权.3 设备携带 Authorization 再次 REGISTER"
+    file: extracted/tc-01-003.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: REGISTER
+    expected_status: null
+    content_type: "null"
+    call_id: "reg-34020000001320000001-0001@192.168.10.110"
+    cseq: "2 REGISTER"
+    sha256: 616165dd49d6c7642359369f0a4a6af4c02493849513b8baa7b5afcdc7669da7
+  - tc_id: tc-01
+    title: "TC-01 设备注册 REGISTER + Digest 鉴权.4 平台 200 OK 注册成功并携 Date 校时"
+    file: extracted/tc-01-004.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: REGISTER
+    expected_status: 200
+    content_type: "null"
+    call_id: "reg-34020000001320000001-0001@192.168.10.110"
+    cseq: "2 REGISTER"
+    sha256: b127905b08884bfe9ba9a311a96f6b5ff58d94664519a7c754614938dbcdff49
+  - tc_id: tc-02
+    title: "TC-02 设备注销 REGISTER Expires=0.1 设备注销 REGISTER"
+    file: extracted/tc-02-005.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: REGISTER
+    expected_status: null
+    content_type: "null"
+    call_id: "reg-34020000001320000001-logout@192.168.10.110"
+    cseq: "1 REGISTER"
+    sha256: 5ea6243c17ba5dd6cb9dadbaebd5409e40ef8eb8227e9508b1f3d7944e4b2aef
+  - tc_id: tc-02
+    title: "TC-02 设备注销 REGISTER Expires=0.2 平台 200 OK"
+    file: extracted/tc-02-006.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: REGISTER
+    expected_status: 200
+    content_type: "null"
+    call_id: "reg-34020000001320000001-logout@192.168.10.110"
+    cseq: "1 REGISTER"
+    sha256: fb89b2aa686b34366b7cf713106c85856aeca22e95678285e3ad81fe246ed4b8
+  - tc_id: tc-03
+    title: "TC-03 状态信息报送 Keepalive.1 请求/通知 MESSAGE"
+    file: extracted/tc-03-007.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-2001@192.168.10.110"
+    cseq: "2001 MESSAGE"
+    sha256: 4769b9f8a0db0e884c89fc3ccde214cc7a74286aa7ef748bdebaa61dea347221
+  - tc_id: tc-03
+    title: "TC-03 状态信息报送 Keepalive.2 接收方 200 OK"
+    file: extracted/tc-03-008.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-2001@192.168.10.110"
+    cseq: "2001 MESSAGE"
+    sha256: bb3bb73a1b0053db0e695d707be175021512db8fc9ecd414f1e7256385ee1bb9
+  - tc_id: tc-04
+    title: "TC-04 设备目录查询 Catalog.1 请求/通知 MESSAGE"
+    file: extracted/tc-04-009.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3001@192.168.10.10"
+    cseq: "3001 MESSAGE"
+    sha256: 30b0608bda59e059c6fc72b2dbbc083771c1a47c00d2f0355be38ce907528548
+  - tc_id: tc-04
+    title: "TC-04 设备目录查询 Catalog.2 接收方 200 OK"
+    file: extracted/tc-04-010.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3001@192.168.10.10"
+    cseq: "3001 MESSAGE"
+    sha256: e70920b85371770e714fd6693683e454bc8032a221523f6fc9cbe6376cc927c5
+  - tc_id: tc-04
+    title: "TC-04 设备目录查询 Catalog.3 业务响应 MESSAGE"
+    file: extracted/tc-04-011.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: e9a9ed8f713ef3e133424e4921e45dc68e7796a77bcf39b8161dee931b020ae2
+  - tc_id: tc-04
+    title: "TC-04 设备目录查询 Catalog.4 业务响应 200 OK"
+    file: extracted/tc-04-012.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 6330d4b5f07177f515e32da2209cefd9c9992371a77e18f40debd32ea5520135
+  - tc_id: tc-05
+    title: "TC-05 设备信息查询 DeviceInfo.1 请求/通知 MESSAGE"
+    file: extracted/tc-05-013.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3002@192.168.10.10"
+    cseq: "3002 MESSAGE"
+    sha256: 2ea1fdceea6e55ea052248217989ee7d4f37ebf19748efa04c16f289cab27f8a
+  - tc_id: tc-05
+    title: "TC-05 设备信息查询 DeviceInfo.2 接收方 200 OK"
+    file: extracted/tc-05-014.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3002@192.168.10.10"
+    cseq: "3002 MESSAGE"
+    sha256: 23b3cdcb756cc1a8d032c0c3ba13fdf1b4cca76b892fa5998eb1d2970dd8a471
+  - tc_id: tc-05
+    title: "TC-05 设备信息查询 DeviceInfo.3 业务响应 MESSAGE"
+    file: extracted/tc-05-015.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3002-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 8082fec7a582fb1ee8a47691d059f6b8685a89ea3069a7edb5d539a0eccda475
+  - tc_id: tc-05
+    title: "TC-05 设备信息查询 DeviceInfo.4 业务响应 200 OK"
+    file: extracted/tc-05-016.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3002-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 513d34b1fea10eba27319f9bce2112ae34c76fc548a9f482b0e022c4ecb010ba
+  - tc_id: tc-06
+    title: "TC-06 设备状态查询 DeviceStatus.1 请求/通知 MESSAGE"
+    file: extracted/tc-06-017.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3003@192.168.10.10"
+    cseq: "3003 MESSAGE"
+    sha256: 450bba890e7eee4eed62f19ac2b7cec941e95a20a4344c8a53545d78fac5b983
+  - tc_id: tc-06
+    title: "TC-06 设备状态查询 DeviceStatus.2 接收方 200 OK"
+    file: extracted/tc-06-018.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3003@192.168.10.10"
+    cseq: "3003 MESSAGE"
+    sha256: 65cc99c5874d92a760a6c20b710d2c3fb05530c828eddb97aa6e2884cf478168
+  - tc_id: tc-06
+    title: "TC-06 设备状态查询 DeviceStatus.3 业务响应 MESSAGE"
+    file: extracted/tc-06-019.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3003-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: c88b68b380eefaf79814e086c468c6ce0c721eaf940914bef5ef6dcda7962e26
+  - tc_id: tc-06
+    title: "TC-06 设备状态查询 DeviceStatus.4 业务响应 200 OK"
+    file: extracted/tc-06-020.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3003-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: d399ffac3477888b907c71687394c56d15714fa36951e2d6649f83f88ba2215d
+  - tc_id: tc-07
+    title: "TC-07 设备预置位查询 PresetQuery.1 请求/通知 MESSAGE"
+    file: extracted/tc-07-021.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3004@192.168.10.10"
+    cseq: "3004 MESSAGE"
+    sha256: 7ae75dc6c72a1c00c69daf975d5faaa61786176e816d29f7eff7b1d5253306eb
+  - tc_id: tc-07
+    title: "TC-07 设备预置位查询 PresetQuery.2 接收方 200 OK"
+    file: extracted/tc-07-022.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3004@192.168.10.10"
+    cseq: "3004 MESSAGE"
+    sha256: 29b44c7d3a2504e6966a21c96d6f3ea5b1706467245119f42b432b7d467cb088
+  - tc_id: tc-07
+    title: "TC-07 设备预置位查询 PresetQuery.3 业务响应 MESSAGE"
+    file: extracted/tc-07-023.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-3004-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 7136f9e2168b2d60c1b7713873a0cc2ab002da0c583e23dd5528b06af7a4b880
+  - tc_id: tc-07
+    title: "TC-07 设备预置位查询 PresetQuery.4 业务响应 200 OK"
+    file: extracted/tc-07-024.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-3004-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 6392189299a609d3796cb5dd0c7464ab659a30ba1083f96b8f49df0828643dd2
+  - tc_id: tc-08
+    title: "TC-08 设备控制 DeviceControl: PTZ 停止.1 请求/通知 MESSAGE"
+    file: extracted/tc-08-025.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-4001@192.168.10.10"
+    cseq: "4001 MESSAGE"
+    sha256: 9daf2b5d00ad89b462cf3e37e9f82007f6a0c4a429859324147d837a42757998
+  - tc_id: tc-08
+    title: "TC-08 设备控制 DeviceControl: PTZ 停止.2 接收方 200 OK"
+    file: extracted/tc-08-026.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-4001@192.168.10.10"
+    cseq: "4001 MESSAGE"
+    sha256: 6bd1ed6c4953193f1b8dcae4e016ad52428c2230da85830f3bc4d48f21e96159
+  - tc_id: tc-08
+    title: "TC-08 设备控制 DeviceControl: PTZ 停止.3 业务响应 MESSAGE"
+    file: extracted/tc-08-027.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-4001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 3c88d91c6a343b3faa95f2ac8cdbe34c513e88ae91d8306f58158de39a03959a
+  - tc_id: tc-08
+    title: "TC-08 设备控制 DeviceControl: PTZ 停止.4 业务响应 200 OK"
+    file: extracted/tc-08-028.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-4001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: a6fc0f72fac6a3f81643fef6a7eff9f9976d91df567e6bf537b129bee268b72c
+  - tc_id: tc-09
+    title: "TC-09 设备控制 DeviceControl: 调用预置位.1 请求/通知 MESSAGE"
+    file: extracted/tc-09-029.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-4002@192.168.10.10"
+    cseq: "4002 MESSAGE"
+    sha256: 774d15f2a04dd013bf9a83249167feda144747e593510b04da2c48ee759dda96
+  - tc_id: tc-09
+    title: "TC-09 设备控制 DeviceControl: 调用预置位.2 接收方 200 OK"
+    file: extracted/tc-09-030.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-4002@192.168.10.10"
+    cseq: "4002 MESSAGE"
+    sha256: 1acb120bdd339642da7a6289d2f24b094da8c5a7a21e9d66cfd4ff83580dc90f
+  - tc_id: tc-09
+    title: "TC-09 设备控制 DeviceControl: 调用预置位.3 业务响应 MESSAGE"
+    file: extracted/tc-09-031.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-4002-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: f1dce40da5910db84480455059245a0ef9240b186bd010a7839646d51b20067b
+  - tc_id: tc-09
+    title: "TC-09 设备控制 DeviceControl: 调用预置位.4 业务响应 200 OK"
+    file: extracted/tc-09-032.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-4002-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: ae730fcdbc1cef742789b582689abb158953fbea0b31bb5ee576dea8b0b3b22e
+  - tc_id: tc-10
+    title: "TC-10 设备控制 DeviceControl: 开始巡航.1 请求/通知 MESSAGE"
+    file: extracted/tc-10-033.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-4003@192.168.10.10"
+    cseq: "4003 MESSAGE"
+    sha256: 0b45da61d8839a8a5ccccd99114ed22acac536d61fbdaed8bf4c76ce5e52c970
+  - tc_id: tc-10
+    title: "TC-10 设备控制 DeviceControl: 开始巡航.2 接收方 200 OK"
+    file: extracted/tc-10-034.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-4003@192.168.10.10"
+    cseq: "4003 MESSAGE"
+    sha256: db4b4cd751fcc4d3724613b475bd0e204343cfd2cf7efcfd7a983ea0d9f197a6
+  - tc_id: tc-10
+    title: "TC-10 设备控制 DeviceControl: 开始巡航.3 业务响应 MESSAGE"
+    file: extracted/tc-10-035.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-4003-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 7cc23ebb7a67291beb534c99521c6992fbce025a3f00ddfc884b18081d778bbd
+  - tc_id: tc-10
+    title: "TC-10 设备控制 DeviceControl: 开始巡航.4 业务响应 200 OK"
+    file: extracted/tc-10-036.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-4003-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 2b3a6c1e238f7190e8a6ba21ec96291812d148798e9e251e996f10be0a554b81
+  - tc_id: tc-11
+    title: "TC-11 实时视音频点播 Play.1 平台 INVITE"
+    file: extracted/tc-11-037.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    content_type: "Application/SDP"
+    call_id: "play-0100000001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 3409380db7eff9ba644b12bb840816c8239c946cd7959fc67981f50941a48dbf
+  - tc_id: tc-11
+    title: "TC-11 实时视音频点播 Play.2 设备 100 Trying"
+    file: extracted/tc-11-038.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 100
+    content_type: "null"
+    call_id: "play-0100000001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: cd5b08f96e0f2afbc0dc560b7281cba1f5d1817be27b2e900fddc2779be603de
+  - tc_id: tc-11
+    title: "TC-11 实时视音频点播 Play.3 设备 200 OK + SDP"
+    file: extracted/tc-11-039.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    content_type: "Application/SDP"
+    call_id: "play-0100000001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 4250e4da90cd879937ec4b9ddb3147362c462a0c5f6707b6a790744eff5e1e4e
+  - tc_id: tc-11
+    title: "TC-11 实时视音频点播 Play.4 平台 ACK"
+    file: extracted/tc-11-040.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    content_type: "null"
+    call_id: "play-0100000001@192.168.10.10"
+    cseq: "1 ACK"
+    sha256: 64ad351b2c5447b20097bf2fc308f527deb893d387bc14f71a912b9fe017bb3c
+  - tc_id: tc-11
+    title: "TC-11 实时视音频点播 Play.5 平台 BYE 停止点播"
+    file: extracted/tc-11-041.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: BYE
+    expected_status: null
+    content_type: "null"
+    call_id: "play-0100000001@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: 4b55f1d8107e21b2965655165fe980e0239f941ccfb8e6ca4d11e4b08940e9c7
+  - tc_id: tc-11
+    title: "TC-11 实时视音频点播 Play.6 设备 200 OK"
+    file: extracted/tc-11-042.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: BYE
+    expected_status: 200
+    content_type: "null"
+    call_id: "play-0100000001@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: fde9ac699604dc34e0714a22985fad694d78f401e65bae25ed28b31b0535edc2
+  - tc_id: tc-12
+    title: "TC-12 报警信息通知 Alarm.1 请求/通知 MESSAGE"
+    file: extracted/tc-12-043.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-5001@192.168.10.110"
+    cseq: "5001 MESSAGE"
+    sha256: 49f6da24fcad95526cccc801c5a4cab2b43ea418d881d7dd398419373bd53c42
+  - tc_id: tc-12
+    title: "TC-12 报警信息通知 Alarm.2 接收方 200 OK"
+    file: extracted/tc-12-044.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-5001@192.168.10.110"
+    cseq: "5001 MESSAGE"
+    sha256: 4aa50777a3f8f3de45b76ed8953ffdfda964bbdf353c6768095d8911d14198f0
+  - tc_id: tc-13
+    title: "TC-13 设备视音频文件检索 RecordInfo.1 请求/通知 MESSAGE"
+    file: extracted/tc-13-045.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-6001@192.168.10.10"
+    cseq: "6001 MESSAGE"
+    sha256: 534282c2b48c2bec906c72edc14e2f8f5545df277d61cac29f50d44a3b24519e
+  - tc_id: tc-13
+    title: "TC-13 设备视音频文件检索 RecordInfo.2 接收方 200 OK"
+    file: extracted/tc-13-046.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-6001@192.168.10.10"
+    cseq: "6001 MESSAGE"
+    sha256: 234a68b5279dc5557bfab712e9bc16dff32ab593abf371658befc1250db39a43
+  - tc_id: tc-13
+    title: "TC-13 设备视音频文件检索 RecordInfo.3 业务响应 MESSAGE"
+    file: extracted/tc-13-047.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-6001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 198ae47a0fc46823f5cb8e6ea603f6be276718a92f2f98c97375d494e26447f5
+  - tc_id: tc-13
+    title: "TC-13 设备视音频文件检索 RecordInfo.4 业务响应 200 OK"
+    file: extracted/tc-13-048.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-6001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: cb1a493b69aa175aa013c728bf7ebfce6162026e0bacbefe0abc6bc0f88b331a
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.1 平台 INVITE Playback"
+    file: extracted/tc-14-049.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    content_type: "Application/SDP"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 4a5d055ff27334f20a99510c2a2c7b5810e62c8a713ff051286beaeb0c6b2c8b
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.2 设备 100 Trying"
+    file: extracted/tc-14-050.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 100
+    content_type: "null"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 880d07fcae1771c103e3d4e6f1396fff47ae7c1dc58ee2d71f24cd0c1fa280a4
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.3 设备 200 OK + SDP"
+    file: extracted/tc-14-051.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    content_type: "Application/SDP"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: b1e9408c1737d10005bd6d19ef47e3e6b891e1d5b3a0f4a86d1d5c72a95020db
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.4 平台 ACK"
+    file: extracted/tc-14-052.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    content_type: "null"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "1 ACK"
+    sha256: 611716ef74814f85da18cd40ebd614098209eedf2c1bbceadb176d3271e215c8
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.5 平台 INFO PAUSE"
+    file: extracted/tc-14-053.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INFO
+    expected_status: null
+    content_type: "Application/MANSRTSP"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "2 INFO"
+    sha256: 75e01a03a636c23d8468a2a9d2ed8e3e4240030b945ca0238dc2243b7823209c
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.6 设备 200 OK + RTSP"
+    file: extracted/tc-14-054.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INFO
+    expected_status: 200
+    content_type: "Application/MANSRTSP"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "2 INFO"
+    sha256: fde2371d5bfc7ea722c1c789c5cc9a71cd2024ea57eb85428b82eb4887b0f302
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.7 平台 INFO PLAY Range/Scale"
+    file: extracted/tc-14-055.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INFO
+    expected_status: null
+    content_type: "Application/MANSRTSP"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "3 INFO"
+    sha256: a5634ffd61ec2eda6c576f2fbfc337d298edf8e9c89839eb8233821ce27ab836
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.8 设备 200 OK + RTSP"
+    file: extracted/tc-14-056.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INFO
+    expected_status: 200
+    content_type: "Application/MANSRTSP"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "3 INFO"
+    sha256: 82c80fea2ff73f0ff8dfae70df6a8948133ed597ac8011cd73aba4afed9342b1
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.9 平台 BYE"
+    file: extracted/tc-14-057.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: BYE
+    expected_status: null
+    content_type: "null"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "4 BYE"
+    sha256: a0545dad931e13a0163916346cb090c0e7de00084cd4f074706104e4bd1a5ad5
+  - tc_id: tc-14
+    title: "TC-14 历史视音频回放 Playback + INFO 控制.10 设备 200 OK"
+    file: extracted/tc-14-058.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: BYE
+    expected_status: 200
+    content_type: "null"
+    call_id: "playback-1100000001@192.168.10.10"
+    cseq: "4 BYE"
+    sha256: d45f1f168810918880d96e53365ef0cde8b4e14d5d2abde592318bd358a2d7f2
+  - tc_id: tc-15
+    title: "TC-15 视音频文件下载 Download.1 平台 INVITE Download"
+    file: extracted/tc-15-059.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    content_type: "Application/SDP"
+    call_id: "download-1100000002@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: dc24fb925e8480c58b8e8b18a04deda5af7632b22cd87cbbf44f39773701a571
+  - tc_id: tc-15
+    title: "TC-15 视音频文件下载 Download.2 设备 100 Trying"
+    file: extracted/tc-15-060.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 100
+    content_type: "null"
+    call_id: "download-1100000002@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 3880055ab0a370400133a6dd6df82d9298083040226930b2a910ea76286a0190
+  - tc_id: tc-15
+    title: "TC-15 视音频文件下载 Download.3 设备 200 OK + SDP"
+    file: extracted/tc-15-061.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    content_type: "Application/SDP"
+    call_id: "download-1100000002@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: c076c970fe0dcb71b0ef027b17f55d0648b55e991afc29866db214d823984732
+  - tc_id: tc-15
+    title: "TC-15 视音频文件下载 Download.4 平台 ACK"
+    file: extracted/tc-15-062.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    content_type: "null"
+    call_id: "download-1100000002@192.168.10.10"
+    cseq: "1 ACK"
+    sha256: b63e43f5ec9707c1f9a7c1605b89c88806cc7e9d73bf8ca1e87ebb66fb5c78f0
+  - tc_id: tc-15
+    title: "TC-15 视音频文件下载 Download.5 平台 BYE"
+    file: extracted/tc-15-063.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: BYE
+    expected_status: null
+    content_type: "null"
+    call_id: "download-1100000002@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: 73874470efa6318c516f9a24151316523ba5223094785ef2d0a688eaaa9016d0
+  - tc_id: tc-15
+    title: "TC-15 视音频文件下载 Download.6 设备 200 OK"
+    file: extracted/tc-15-064.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: BYE
+    expected_status: 200
+    content_type: "null"
+    call_id: "download-1100000002@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: 924d11d9afda93b01c3ffa04d9f16f5aa69fa1cfa4c95cdfb8dace306849d058
+  - tc_id: tc-16
+    title: "TC-16 校时 Register-Date.1 设备 REGISTER 刷新注册"
+    file: extracted/tc-16-065.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: REGISTER
+    expected_status: null
+    content_type: "null"
+    call_id: "reg-timesync-001@192.168.10.110"
+    cseq: "10 REGISTER"
+    sha256: aeab0db5c565728ef43991ade5c98b0a61056df815b6ad761f68988b53102829
+  - tc_id: tc-16
+    title: "TC-16 校时 Register-Date.2 平台 200 OK + Date"
+    file: extracted/tc-16-066.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: REGISTER
+    expected_status: 200
+    content_type: "null"
+    call_id: "reg-timesync-001@192.168.10.110"
+    cseq: "10 REGISTER"
+    sha256: 19dec6cfc78115cb24b29529ea94577b377aa347a982ea8384dbeef4be941691
+  - tc_id: tc-17
+    title: "TC-17 订阅和通知 Catalog SUBSCRIBE/NOTIFY.1 平台 SUBSCRIBE"
+    file: extracted/tc-17-067.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: SUBSCRIBE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "sub-catalog-7001@192.168.10.10"
+    cseq: "1 SUBSCRIBE"
+    sha256: 88f01ec89fbe9117b963629f4b036f25d0ab66439bf6e85699557a36941e74ce
+  - tc_id: tc-17
+    title: "TC-17 订阅和通知 Catalog SUBSCRIBE/NOTIFY.2 设备 200 OK"
+    file: extracted/tc-17-068.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: SUBSCRIBE
+    expected_status: 200
+    content_type: "null"
+    call_id: "sub-catalog-7001@192.168.10.10"
+    cseq: "1 SUBSCRIBE"
+    sha256: e55ce932c26fe6785387b5ac37710b05c09aa647a4c40d1ccb92ffd60c4d8d5a
+  - tc_id: tc-17
+    title: "TC-17 订阅和通知 Catalog SUBSCRIBE/NOTIFY.3 设备 NOTIFY"
+    file: extracted/tc-17-069.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: NOTIFY
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "sub-catalog-7001@192.168.10.10"
+    cseq: "1 NOTIFY"
+    sha256: dd4887f5ef16dfc92b22da0c9f6a8043dc7f581ee5cfb13170348c4ff2230a70
+  - tc_id: tc-17
+    title: "TC-17 订阅和通知 Catalog SUBSCRIBE/NOTIFY.4 平台 200 OK"
+    file: extracted/tc-17-070.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: NOTIFY
+    expected_status: 200
+    content_type: "null"
+    call_id: "sub-catalog-7001@192.168.10.10"
+    cseq: "1 NOTIFY"
+    sha256: e8a86b9174f942f1f20f1f3ac2523161ca7627e40b6f784d7e3086747ba226ba
+  - tc_id: tc-17
+    title: "TC-17 订阅和通知 Catalog SUBSCRIBE/NOTIFY.5 平台取消订阅 SUBSCRIBE Expires=0"
+    file: extracted/tc-17-071.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: SUBSCRIBE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "sub-catalog-7001@192.168.10.10"
+    cseq: "2 SUBSCRIBE"
+    sha256: d02559e5c040c409868f3e965618df1fe6f6dde66fef5edd1c5bf234e7300626
+  - tc_id: tc-17
+    title: "TC-17 订阅和通知 Catalog SUBSCRIBE/NOTIFY.6 设备 200 OK"
+    file: extracted/tc-17-072.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: SUBSCRIBE
+    expected_status: 200
+    content_type: "null"
+    call_id: "sub-catalog-7001@192.168.10.10"
+    cseq: "2 SUBSCRIBE"
+    sha256: c94ef066388d2667dcde55edb7e93c2d81437f1e2f2bef94845a9a4d707833bb
+  - tc_id: tc-18
+    title: "TC-18 语音广播 Broadcast 通知.1 请求/通知 MESSAGE"
+    file: extracted/tc-18-073.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-8001@192.168.10.10"
+    cseq: "8001 MESSAGE"
+    sha256: cbd8f2866010f7f3b0e46b7d705bbf941244e2184c26f18284a82ac719b48ae6
+  - tc_id: tc-18
+    title: "TC-18 语音广播 Broadcast 通知.2 接收方 200 OK"
+    file: extracted/tc-18-074.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-8001@192.168.10.10"
+    cseq: "8001 MESSAGE"
+    sha256: 48069173cb4cd7345ebd8e96b79441b29b928ec80a9ae5536c79fab1c6d32fa9
+  - tc_id: tc-18
+    title: "TC-18 语音广播 Broadcast 通知.3 业务响应 MESSAGE"
+    file: extracted/tc-18-075.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-8001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 0ad1753f6a7aed1a7694579ab1bf7325d4ef1e271385b45353dbc6b70a3d5d13
+  - tc_id: tc-18
+    title: "TC-18 语音广播 Broadcast 通知.4 业务响应 200 OK"
+    file: extracted/tc-18-076.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-8001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 7434876b6ed83759d7f7a4f0f0356759d9e755b7236c3f8bade28c9ae06d5428
+  - tc_id: tc-19
+    title: "TC-19 语音广播音频会话.1 平台 INVITE 音频下行"
+    file: extracted/tc-19-077.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    content_type: "Application/SDP"
+    call_id: "broadcast-audio-8001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 2b942aaeb26ca91b774dd6f8f36c24baacb99c019baef7db8995bb04e4da07a0
+  - tc_id: tc-19
+    title: "TC-19 语音广播音频会话.2 设备 200 OK"
+    file: extracted/tc-19-078.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    content_type: "Application/SDP"
+    call_id: "broadcast-audio-8001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 0d63ed3dc291ae0228a5a1d692f6a59ea8b08475a42cd92fe2b6fa1684df382b
+  - tc_id: tc-19
+    title: "TC-19 语音广播音频会话.3 平台 ACK"
+    file: extracted/tc-19-079.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    content_type: "null"
+    call_id: "broadcast-audio-8001@192.168.10.10"
+    cseq: "1 ACK"
+    sha256: ab0182ad1ca37e5fc937cbd018bdf1f71c3d340462770d4a97c3c47d66283a1c
+  - tc_id: tc-19
+    title: "TC-19 语音广播音频会话.4 平台 BYE"
+    file: extracted/tc-19-080.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: BYE
+    expected_status: null
+    content_type: "null"
+    call_id: "broadcast-audio-8001@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: 722f38baf5ef5ebce401bc65b3ba71d6b4d6f29aa43750aef474111913129235
+  - tc_id: tc-19
+    title: "TC-19 语音广播音频会话.5 设备 200 OK"
+    file: extracted/tc-19-081.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: BYE
+    expected_status: 200
+    content_type: "null"
+    call_id: "broadcast-audio-8001@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: 014f2f19e3bced1561bb410596acdd4beb5fa690929aa5bf7528a91c4074bf0f
+  - tc_id: tc-20
+    title: "TC-20 语音对讲 Talk.1 平台 INVITE Talk"
+    file: extracted/tc-20-082.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: INVITE
+    expected_status: null
+    content_type: "Application/SDP"
+    call_id: "talk-audio-9001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: ea78c4b03879e68f791f38d48f9bc0eab0077dd64c53dd7834f9120e9d4cb94c
+  - tc_id: tc-20
+    title: "TC-20 语音对讲 Talk.2 设备 200 OK"
+    file: extracted/tc-20-083.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: INVITE
+    expected_status: 200
+    content_type: "Application/SDP"
+    call_id: "talk-audio-9001@192.168.10.10"
+    cseq: "1 INVITE"
+    sha256: 2b8e117feabd281ede8b28e33cb1749142cffd07cccbc01ca48b823e9d3dd6c6
+  - tc_id: tc-20
+    title: "TC-20 语音对讲 Talk.3 平台 ACK"
+    file: extracted/tc-20-084.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: ACK
+    expected_status: null
+    content_type: "null"
+    call_id: "talk-audio-9001@192.168.10.10"
+    cseq: "1 ACK"
+    sha256: 35ec49ecf01c39ac561b76ae8263f253810658fca75de8547ed8f3b3e0a1a2d2
+  - tc_id: tc-20
+    title: "TC-20 语音对讲 Talk.4 平台 BYE"
+    file: extracted/tc-20-085.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: BYE
+    expected_status: null
+    content_type: "null"
+    call_id: "talk-audio-9001@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: e42d0fdfec0357bb33290bb1c768b35d2e9e67fba44d1fd205360f8456c0c1a9
+  - tc_id: tc-20
+    title: "TC-20 语音对讲 Talk.5 设备 200 OK"
+    file: extracted/tc-20-086.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: BYE
+    expected_status: 200
+    content_type: "null"
+    call_id: "talk-audio-9001@192.168.10.10"
+    cseq: "2 BYE"
+    sha256: edba356ffb5f31472b4f405633aacf815a5f28351922edc3ee204ada42ba21d8
+  - tc_id: tc-21
+    title: "TC-21 图像抓拍 SnapShotConfig.1 请求/通知 MESSAGE"
+    file: extracted/tc-21-087.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9001@192.168.10.10"
+    cseq: "9001 MESSAGE"
+    sha256: 0a0d1e80976aa22dfabd69cd1019e1424f958a176e0496361aad982156b8d392
+  - tc_id: tc-21
+    title: "TC-21 图像抓拍 SnapShotConfig.2 接收方 200 OK"
+    file: extracted/tc-21-088.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9001@192.168.10.10"
+    cseq: "9001 MESSAGE"
+    sha256: bbd3f552abf9ade7064f85e59f7c01f12d872001901918639d87b9a498870bf0
+  - tc_id: tc-21
+    title: "TC-21 图像抓拍 SnapShotConfig.3 业务响应 MESSAGE"
+    file: extracted/tc-21-089.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 13b159f8123635c5974e9e73b335779e68e8fd4ff512e3afa0909f105c0feed1
+  - tc_id: tc-21
+    title: "TC-21 图像抓拍 SnapShotConfig.4 业务响应 200 OK"
+    file: extracted/tc-21-090.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9001-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: e9ed49b1394bac61bd05caa3613c6aa8e1b2d4103c75818e9b31811c0b6b6243
+  - tc_id: tc-22
+    title: "TC-22 图像抓拍完成通知 UploadSnapShotFinished.1 请求/通知 MESSAGE"
+    file: extracted/tc-22-091.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9002@192.168.10.110"
+    cseq: "9002 MESSAGE"
+    sha256: 4a62da4aad6d7ad97116c739d71550328ed2df908241195a16ea2aedd5ad7a5d
+  - tc_id: tc-22
+    title: "TC-22 图像抓拍完成通知 UploadSnapShotFinished.2 接收方 200 OK"
+    file: extracted/tc-22-092.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9002@192.168.10.110"
+    cseq: "9002 MESSAGE"
+    sha256: f119dc432a46b85d83ea019d1607ec1601cc286aac82b8f6183bb4efabb29ec7
+  - tc_id: tc-23
+    title: "TC-23 设备配置查询 ConfigDownload: SnapShotConfig.1 请求/通知 MESSAGE"
+    file: extracted/tc-23-093.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9003@192.168.10.10"
+    cseq: "9003 MESSAGE"
+    sha256: beacb6eef063aa23515e054c197f2bfc126f8e80b7ff88c49a186917969843ba
+  - tc_id: tc-23
+    title: "TC-23 设备配置查询 ConfigDownload: SnapShotConfig.2 接收方 200 OK"
+    file: extracted/tc-23-094.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9003@192.168.10.10"
+    cseq: "9003 MESSAGE"
+    sha256: ac967c7c3bc3e44e424459b40a596b7757173a487d40c70793b0443d88d75e80
+  - tc_id: tc-23
+    title: "TC-23 设备配置查询 ConfigDownload: SnapShotConfig.3 业务响应 MESSAGE"
+    file: extracted/tc-23-095.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9003-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 0c136506b3f5190294e41875573572648b8a0da151fc4b35a4768032f770124c
+  - tc_id: tc-23
+    title: "TC-23 设备配置查询 ConfigDownload: SnapShotConfig.4 业务响应 200 OK"
+    file: extracted/tc-23-096.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9003-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: fbb9e6ea5c58ffcbcbe427974f718315400082788b1b3ff4fa6c94df661369e4
+  - tc_id: tc-24
+    title: "TC-24 PTZ 精准状态查询 PTZPosition.1 请求/通知 MESSAGE"
+    file: extracted/tc-24-097.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9101@192.168.10.10"
+    cseq: "9101 MESSAGE"
+    sha256: af13e0797125e57d2eaa9dd8cbd3eb12705c47aa079f97b3d6ca657e709cccad
+  - tc_id: tc-24
+    title: "TC-24 PTZ 精准状态查询 PTZPosition.2 接收方 200 OK"
+    file: extracted/tc-24-098.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9101@192.168.10.10"
+    cseq: "9101 MESSAGE"
+    sha256: 929f18c7854fa76dedc605e3de4b66b00a77a39483d1d400e6ace21144a0feb1
+  - tc_id: tc-24
+    title: "TC-24 PTZ 精准状态查询 PTZPosition.3 业务响应 MESSAGE"
+    file: extracted/tc-24-099.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9101-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 186cee7fa2f1b34465054c0aed7dcf6aabf926df37b9e3c275290f9cc781515f
+  - tc_id: tc-24
+    title: "TC-24 PTZ 精准状态查询 PTZPosition.4 业务响应 200 OK"
+    file: extracted/tc-24-100.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9101-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 4c87d038aa021add1503074a5e1c09ae194de90226bb7362d9189c278e31c334
+  - tc_id: tc-25
+    title: "TC-25 云台巡航轨迹列表查询 CruiseTrackListQuery.1 请求/通知 MESSAGE"
+    file: extracted/tc-25-101.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9102@192.168.10.10"
+    cseq: "9102 MESSAGE"
+    sha256: bc60cb5fbd599a6aac5690ab8aa5a034ef9127ffe924d98424dcdbc81a4805c5
+  - tc_id: tc-25
+    title: "TC-25 云台巡航轨迹列表查询 CruiseTrackListQuery.2 接收方 200 OK"
+    file: extracted/tc-25-102.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9102@192.168.10.10"
+    cseq: "9102 MESSAGE"
+    sha256: 7295599026ff5016c2fe856f3b46e9c85e78933c490d02f6cc00430e7503b314
+  - tc_id: tc-25
+    title: "TC-25 云台巡航轨迹列表查询 CruiseTrackListQuery.3 业务响应 MESSAGE"
+    file: extracted/tc-25-103.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9102-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 13b06355799a7b672a9df82297f1b4eab4c388b873218ff7ea9629e14540188a
+  - tc_id: tc-25
+    title: "TC-25 云台巡航轨迹列表查询 CruiseTrackListQuery.4 业务响应 200 OK"
+    file: extracted/tc-25-104.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9102-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 9a33115dc3f44ba1a8b892134da303497af98aa0298b63176ccdaa1276184798
+  - tc_id: tc-26
+    title: "TC-26 云台巡航轨迹查询 CruiseTrackQuery.1 请求/通知 MESSAGE"
+    file: extracted/tc-26-105.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9103@192.168.10.10"
+    cseq: "9103 MESSAGE"
+    sha256: 1c542ce73e30d1ed7ad317d8ea6ee42b5922721a3684f6e6d9a2a0e7a5511a5d
+  - tc_id: tc-26
+    title: "TC-26 云台巡航轨迹查询 CruiseTrackQuery.2 接收方 200 OK"
+    file: extracted/tc-26-106.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9103@192.168.10.10"
+    cseq: "9103 MESSAGE"
+    sha256: c157780157fd10f6aa19dcd547508e0382271c5b86f3b2b5eb6d66e53664ac3b
+  - tc_id: tc-26
+    title: "TC-26 云台巡航轨迹查询 CruiseTrackQuery.3 业务响应 MESSAGE"
+    file: extracted/tc-26-107.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    content_type: "Application/MANSCDP+xml"
+    call_id: "msg-9103-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: d950488a8848776fc46d9c7baa8970662075afb007437f61e17a5f7c3061d911
+  - tc_id: tc-26
+    title: "TC-26 云台巡航轨迹查询 CruiseTrackQuery.4 业务响应 200 OK"
+    file: extracted/tc-26-108.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    content_type: "null"
+    call_id: "msg-9103-resp@192.168.10.110"
+    cseq: "1 MESSAGE"
+    sha256: 88de8839daa9213467832cc9b498392e5d956635547ababca2d9af38c68b23b3

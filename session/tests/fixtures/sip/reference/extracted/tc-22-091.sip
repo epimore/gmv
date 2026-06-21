@@ -1,0 +1,22 @@
+MESSAGE sip:34020000002000000001@3402000000 SIP/2.0
+Via: SIP/2.0/UDP 192.168.10.110:5060;rport;branch=z9hG4bK-gmv-00000123
+From: <sip:34020000001320000002@3402000000>;tag=dev0000007a
+To: <sip:34020000002000000001@3402000000>
+Call-ID: msg-9002@192.168.10.110
+CSeq: 9002 MESSAGE
+Max-Forwards: 70
+User-Agent: IPC-GB28181-UA/2022
+Content-Type: Application/MANSCDP+xml
+Content-Length: 411
+
+<?xml version="1.0" encoding="GB2312"?>
+<Notify>
+<CmdType>UploadSnapShotFinished</CmdType>
+<SN>9002</SN>
+<DeviceID>34020000001320000002</DeviceID>
+<SessionID>snap202606141200000000000000000001</SessionID>
+<SnapShotList>
+<SnapShotFileID>340200000013200000020220260614120000001.jpg</SnapShotFileID>
+<SnapShotFileID>340200000013200000020220260614120001002.jpg</SnapShotFileID>
+</SnapShotList>
+</Notify>

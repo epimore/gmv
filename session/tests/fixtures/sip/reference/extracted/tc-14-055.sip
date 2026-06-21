@@ -1,0 +1,15 @@
+INFO sip:34020000001320000002@192.168.10.110:5060;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.10.10:5060;rport;branch=z9hG4bK-gmv-00000077
+From: <sip:34020000002000000001@3402000000>;tag=plt00000046
+To: <sip:34020000001320000002@3402000000>;tag=dev00000049
+Call-ID: playback-1100000001@192.168.10.10
+CSeq: 3 INFO
+Max-Forwards: 70
+User-Agent: GMV-GB28181-Platform/2.1.0
+Content-Type: Application/MANSRTSP
+Content-Length: 53
+
+PLAY RTSP/1.0
+CSeq: 2
+Range: npt=120-
+Scale: 2.0

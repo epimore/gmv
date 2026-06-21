@@ -1,0 +1,10 @@
+BYE sip:34020000001370000001@192.168.10.110:5060;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.10.10:5060;rport;branch=z9hG4bK-gmv-00000108
+From: <sip:34020000002000000001@3402000000>;tag=plt00000068
+To: <sip:34020000001370000001@3402000000>;tag=dev0000006a
+Call-ID: broadcast-audio-8001@192.168.10.10
+CSeq: 2 BYE
+Max-Forwards: 70
+User-Agent: GMV-GB28181-Platform/2.1.0
+Content-Length: 0
+

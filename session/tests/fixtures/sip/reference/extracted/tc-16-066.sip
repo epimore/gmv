@@ -1,0 +1,11 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.10.110:5060;rport=5060;branch=z9hG4bK-gmv-00000088;received=192.168.10.110
+From: <sip:34020000001320000001@3402000000>;tag=dev00000059
+To: <sip:34020000001320000001@3402000000>;tag=srv0000005a
+Call-ID: reg-timesync-001@192.168.10.110
+CSeq: 10 REGISTER
+User-Agent: GMV-GB28181-Platform/2.1.0
+Date: Sun, 14 Jun 2026 12:00:00 GMT
+Expires: 3600
+Content-Length: 0
+

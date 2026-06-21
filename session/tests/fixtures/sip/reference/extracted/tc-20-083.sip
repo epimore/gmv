@@ -1,0 +1,21 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.10.10:5060;rport=5060;branch=z9hG4bK-gmv-00000111;received=192.168.10.10
+From: <sip:34020000002000000001@3402000000>;tag=plt0000006e
+To: <sip:34020000001320000002@3402000000>;tag=dev00000070
+Call-ID: talk-audio-9001@192.168.10.10
+CSeq: 1 INVITE
+Contact: <sip:34020000001320000002@192.168.10.110:5060;transport=udp>
+User-Agent: IPC-GB28181-UA/2022
+Content-Type: Application/SDP
+Content-Length: 186
+
+v=0
+o=34020000001320000001 0 0 IN IP4 192.168.10.110
+s=Talk
+c=IN IP4 192.168.10.110
+t=0 0
+m=audio 30010 RTP/AVP 8
+a=sendrecv
+a=rtpmap:8 PCMA/8000
+y=0500000005
+f=v//////a/1/8/1
