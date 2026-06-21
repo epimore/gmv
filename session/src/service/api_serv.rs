@@ -352,21 +352,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
     let target_id =
         crate::storage::mapper::resolve_broadcast_target_id(device_id, &channel_id).await?;
 
-    let u16ssrc = state::session::Cache::ssrc_sn_get().ok_or_else(|| {
-        GlobalError::new_biz_error(
-            BaseErrorCode::IoBusy.code(),
-            "ssrc已用完,并发达上限,等待释放",
-            |msg| error!("{msg}"),
-        )
-    })?;
-    let (ssrc, talk_id) =
-        match id_builder::build_ssrc_stream_id(device_id, &channel_id, u16ssrc, true).await {
-            Ok(value) => value,
-            Err(err) => {
-                state::session::Cache::ssrc_sn_set(u16ssrc);
-                return Err(err);
-            }
-        };
+    let (ssrc, talk_id) = id_builder::build_ssrc_stream_id(device_id, &channel_id, true).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let conf = StreamConf::get_stream_conf();
     let mut node_sets = state::session::Cache::stream_map_order_node();
@@ -412,7 +398,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             Ok(invite) => invite,
             Err(err) => {
                 cleanup_talk_open(client.as_ref(), &talk_id).await;
-                state::session::Cache::ssrc_sn_set(u16ssrc);
                 return Err(err);
             }
         };
@@ -425,7 +410,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
                     "Unsupported broadcast SDP",
                 );
                 cleanup_talk_open(client.as_ref(), &talk_id).await;
-                state::session::Cache::ssrc_sn_set(u16ssrc);
                 return Err(err);
             }
         };
@@ -436,7 +420,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
                 "Unsupported broadcast codec",
             );
             cleanup_talk_open(client.as_ref(), &talk_id).await;
-            state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
                 "device broadcast audio codec is unsupported",
@@ -467,7 +450,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
                 "Prepare broadcast media failed",
             );
             cleanup_talk_open(client.as_ref(), &talk_id).await;
-            state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(err);
         }
         if let Err(err) = sip_command::accept_broadcast_invite(AcceptBroadcastInviteRequest {
@@ -484,7 +466,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         .await
         {
             cleanup_talk_open(client.as_ref(), &talk_id).await;
-            state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(err);
         }
 
@@ -511,7 +492,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             )
             .await;
             cleanup_talk_open(client.as_ref(), &talk_id).await;
-            state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::AlreadyExists.code(),
                 "talk session already exists",
@@ -528,8 +508,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             frame_duration_ms: open_resp.frame_duration_ms,
         });
     }
-
-    state::session::Cache::ssrc_sn_set(u16ssrc);
     Err(GlobalError::new_biz_error(
         BaseErrorCode::Network.code(),
         "无可用流媒体服务",
@@ -594,7 +572,6 @@ pub async fn peer_dialog_terminated(call_id: String) -> bool {
             ),
         }
     }
-    state::session::Cache::ssrc_sn_set((talk.ssrc % 10000) as u16);
     true
 }
 
@@ -693,23 +670,9 @@ async fn start_invite_stream(
     trans_mode: Option<TransMode>,
     custom_media_config: Option<CustomMediaConfig>,
 ) -> GlobalResult<(String, String, String)> {
-    let u16ssrc = state::session::Cache::ssrc_sn_get().ok_or_else(|| {
-        GlobalError::new_biz_error(
-            BaseErrorCode::IoBusy.code(),
-            "ssrc已用完,并发达上限,等待释放",
-            |msg| error!("{msg}"),
-        )
-    })?;
     let mut node_sets = state::session::Cache::stream_map_order_node();
     let live = matches!(am, AccessMode::Live);
-    let (ssrc, stream_id) =
-        match id_builder::build_ssrc_stream_id(device_id, channel_id, u16ssrc, live).await {
-            Ok(value) => value,
-            Err(err) => {
-                state::session::Cache::ssrc_sn_set(u16ssrc);
-                return Err(err);
-            }
-        };
+    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, live).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let conf = StreamConf::get_stream_conf();
     let msc = match custom_media_config {
@@ -806,7 +769,6 @@ async fn start_invite_stream(
             Ok(value) => value,
             Err(err) => {
                 cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
-                state::session::Cache::ssrc_sn_set(u16ssrc);
                 return Err(err);
             }
         };
@@ -829,7 +791,6 @@ async fn start_invite_stream(
             )
             .await;
             cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
-            state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(err);
         }
 
@@ -855,7 +816,6 @@ async fn start_invite_stream(
             )
             .await;
             cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
-            state::session::Cache::ssrc_sn_set(u16ssrc);
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidRequest.code(),
                 "stream dialog already exists",
@@ -888,8 +848,6 @@ async fn start_invite_stream(
             |msg| error!("{msg}"),
         ));
     }
-
-    state::session::Cache::ssrc_sn_set(u16ssrc);
     Err(GlobalError::new_biz_error(
         BaseErrorCode::Network.code(),
         "无可用流媒体服务",

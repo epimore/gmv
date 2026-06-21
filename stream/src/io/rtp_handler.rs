@@ -130,6 +130,7 @@ impl RtpReader {
         let ssrc = pkt.ssrc();
         let Some(rtp_tx) = Register::refresh_rtp(ssrc, pkt.payload_type(), (remote_addr, protocol))
         else {
+            Register::observe_unknown_rtp(ssrc, remote_addr, protocol);
             debug!("drop rtp packet for closed channel; ssrc: {ssrc}");
             return Ok(());
         };

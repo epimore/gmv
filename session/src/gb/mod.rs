@@ -99,6 +99,7 @@ impl SessionConf {
     ) -> GlobalResult<()> {
         db_task::init(cancel_token.child_token());
         let session_conf = SessionConf::get_session_by_conf();
+        crate::storage::ssrc_sequence::SsrcSequence::initialize(&session_conf.domain_id).await?;
         let auth_cache = sip::auth::init_global().await?;
         let sockets = SipRuntimeSockets {
             tcp: tu.0,

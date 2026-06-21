@@ -2,16 +2,17 @@ use std::ops::Sub;
 use std::path::Path;
 
 use base::bytes::Bytes;
-use base::chrono::Local;
+use base::chrono::{Local, TimeZone};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{error, warn};
 use base::serde_json;
 use shared::info::obj::{
     InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo,
-    StreamRecordInfo, StreamState, TalkClosedEvent,
+    StreamRecordInfo, StreamState, TalkClosedEvent, UnknownStreamEvent,
 };
 
-use crate::service::{KEY_STREAM_IN, stream_close, talk_close};
+use crate::gb::SessionConf;
+use crate::service::{KEY_STREAM_IN, dialog_recovery, stream_close, talk_close};
 use crate::state;
 use crate::state::DownloadConf;
 use crate::storage::dialog_session::SipDialogSessionRepository;
@@ -68,6 +69,117 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
     stream_close::begin(out_stream_info.base_stream_info.stream_id);
 
     OutputEventRes::CloseAll
+}
+
+pub async fn stream_unknown(event: UnknownStreamEvent) -> bool {
+    if !state::StreamConf::get_stream_conf()
+        .node_map
+        .contains_key(&event.media_node_id)
+    {
+        warn!(
+            "unknown stream callback rejected: media_node={}, ssrc={}, reason=unconfigured node",
+            event.media_node_id, event.ssrc
+        );
+        return false;
+    }
+
+    if event.ssrc >= 2_000_000_000 || event.ssrc % 10_000 == 0 {
+        warn!(
+            "unknown stream callback rejected: media_node={}, ssrc={}, reason=invalid protocol SSRC",
+            event.media_node_id, event.ssrc
+        );
+        return false;
+    }
+
+    let domain_id = SessionConf::get_session_by_conf().domain_id;
+    let ssrc = format!("{:010}", event.ssrc);
+    let realtime_prefix = match crate::storage::ssrc_sequence::prefix(
+        &domain_id,
+        crate::storage::ssrc_sequence::SsrcKind::Realtime,
+    ) {
+        Ok(prefix) => prefix,
+        Err(err) => {
+            warn!("unknown stream callback rejected: {err}");
+            return false;
+        }
+    };
+    let history_prefix = crate::storage::ssrc_sequence::prefix(
+        &domain_id,
+        crate::storage::ssrc_sequence::SsrcKind::History,
+    )
+    .unwrap_or_default();
+    if !ssrc.starts_with(&realtime_prefix) && !ssrc.starts_with(&history_prefix) {
+        warn!(
+            "unknown stream callback uses legacy SSRC prefix: media_node={}, ssrc={}",
+            event.media_node_id, ssrc
+        );
+    }
+
+    let stream_ids =
+        state::session::Cache::stream_ids_by_node_ssrc(&event.media_node_id, event.ssrc);
+    if stream_ids.len() == 1 {
+        stream_close::begin(stream_ids[0].clone());
+        return true;
+    }
+    if stream_ids.len() > 1 {
+        warn!(
+            "unknown stream callback ambiguous in memory: media_node={}, ssrc={}, matches={}",
+            event.media_node_id,
+            ssrc,
+            stream_ids.len()
+        );
+        return false;
+    }
+
+    let Ok(first_seen_at_ms) = i64::try_from(event.first_seen_at_ms) else {
+        warn!("unknown stream callback rejected: invalid first_seen_at_ms");
+        return false;
+    };
+    let Some(first_seen_at) = Local
+        .timestamp_millis_opt(first_seen_at_ms)
+        .single()
+        .map(|value| value.naive_local())
+    else {
+        warn!("unknown stream callback rejected: invalid first_seen_at_ms");
+        return false;
+    };
+    let sessions = match SipDialogSessionRepository::find_active_by_media_ssrc_before(
+        &domain_id,
+        &event.media_node_id,
+        &ssrc,
+        first_seen_at,
+        Local::now().naive_local(),
+    )
+    .await
+    {
+        Ok(sessions) => sessions,
+        Err(err) => {
+            warn!(
+                "unknown stream durable lookup failed: media_node={}, ssrc={}, err={err}",
+                event.media_node_id, ssrc
+            );
+            return false;
+        }
+    };
+    if sessions.len() != 1 {
+        warn!(
+            "unknown stream durable match is not unique: media_node={}, ssrc={}, matches={}",
+            event.media_node_id,
+            ssrc,
+            sessions.len()
+        );
+        return false;
+    }
+    let session = &sessions[0];
+    if let Err(err) = dialog_recovery::recover_dialog(session).await {
+        warn!(
+            "unknown stream durable recovery failed: stream_id={}, ssrc={}, err={err}",
+            session.stream_id, ssrc
+        );
+        return false;
+    }
+    stream_close::begin(session.stream_id.clone());
+    true
 }
 
 async fn touch_durable_dialog(stream_id: &str) {

@@ -8,12 +8,11 @@ use parking_lot::Mutex;
 
 use crate::register::core::Register;
 use crate::state;
+use base::dashmap::DashMap;
 use base::dashmap::mapref::entry::Entry;
-use base::dashmap::{DashMap, DashSet};
+
 use base::log::warn;
 use base::once_cell::sync::Lazy;
-use base::rand;
-use base::rand::seq::IteratorRandom;
 use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio::time::Instant;
@@ -122,24 +121,6 @@ pub struct TalkCloseInfo {
 }
 
 impl Cache {
-    pub fn ssrc_sn_get() -> Option<u16> {
-        let mut rng = rand::thread_rng();
-        if let Some(val) = GENERAL_CACHE
-            .shared
-            .ssrc_sn
-            .iter()
-            .choose(&mut rng)
-            .map(|v| *v)
-        {
-            return GENERAL_CACHE.shared.ssrc_sn.remove(&val);
-        }
-        None
-    }
-
-    pub fn ssrc_sn_set(ssrc_sn: u16) -> bool {
-        GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_sn)
-    }
-
     pub fn stream_map_order_node() -> BTreeSet<(u16, String)> {
         let mut map = HashMap::<String, u16>::new();
         let mut dash_iter = GENERAL_CACHE.shared.stream_map.iter();
@@ -285,6 +266,31 @@ impl Cache {
             let node_name = item.stream_node_name.clone();
             (node_name, item.ssrc)
         })
+    }
+
+    pub fn stream_ids_by_node_ssrc(node_name: &str, ssrc: u32) -> Vec<String> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .iter()
+            .filter_map(|stream| {
+                (stream.stream_node_name == node_name && stream.ssrc == ssrc)
+                    .then(|| stream.key().clone())
+            })
+            .collect()
+    }
+
+    pub fn ssrc_is_active(ssrc: u32) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .iter()
+            .any(|stream| stream.ssrc == ssrc)
+            || GENERAL_CACHE
+                .shared
+                .talk_map
+                .iter()
+                .any(|talk| talk.ssrc == ssrc)
     }
 
     pub fn stream_map_update_source(
@@ -452,10 +458,6 @@ impl Cache {
         generation: u64,
     ) -> Option<StreamCloseInfo> {
         Self::device_map_remove_stream(&stream.device_id, stream_id);
-        GENERAL_CACHE
-            .shared
-            .ssrc_sn
-            .insert((stream.ssrc % 10000) as u16);
         if let Some(closing_generation) = stream.closing_generation() {
             let _ = Register::scheduler().remove_register(
                 &crate::register::core::TimeScheduleKey::StreamClosing(
@@ -735,10 +737,6 @@ impl Cache {
             .remove_if(talk_id, |_, talk| {
                 talk.closing_generation == Some(generation)
             })?;
-        GENERAL_CACHE
-            .shared
-            .ssrc_sn
-            .insert((talk.ssrc % 10000) as u16);
         if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
             let _ =
                 scheduler.remove_register(&crate::register::core::TimeScheduleKey::TalkClosing(
@@ -980,8 +978,6 @@ impl Cache {
                             ),
                         );
                     }
-                    let ssrc_num = (stream.ssrc % 10000) as u16;
-                    GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
                 }
             }
         }
@@ -1004,10 +1000,6 @@ impl Cache {
                         );
                     }
                 }
-                GENERAL_CACHE
-                    .shared
-                    .ssrc_sn
-                    .insert((stream.ssrc % 10000) as u16);
             }
         }
         let talk_ids = GENERAL_CACHE
@@ -1035,8 +1027,6 @@ impl Cache {
                         );
                     }
                 }
-                let ssrc_num = (talk.ssrc % 10000) as u16;
-                GENERAL_CACHE.shared.ssrc_sn.insert(ssrc_num);
             }
         }
         let setup_lock_prefix = format!("{device_id}:");
@@ -1172,21 +1162,12 @@ impl Cache {
         handled.is_some()
     }
 
-    fn init_ssrc_sn() -> DashSet<u16> {
-        let sets = DashSet::new();
-        for i in 1..10000 {
-            sets.insert(i);
-        }
-        sets
-    }
-
     fn init() -> Self {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
                     entities: HashMap::new(),
                 }),
-                ssrc_sn: Self::init_ssrc_sn(),
                 stream_map: Default::default(),
                 talk_map: Default::default(),
                 catalog_subscriptions: Default::default(),
@@ -1381,7 +1362,6 @@ struct DeviceTable {
 
 struct Shared {
     state: Mutex<State>,
-    ssrc_sn: DashSet<u16>,
     stream_map: DashMap<String, StreamTable>,
     talk_map: DashMap<String, TalkSessionState>,
     catalog_subscriptions: DashMap<String, CatalogSubscriptionState>,
@@ -1458,6 +1438,52 @@ mod tests {
     }
 
     #[test]
+    fn node_ssrc_lookup_reports_unique_and_ambiguous_matches() {
+        let first = "unknown-ssrc-first".to_string();
+        let second = "unknown-ssrc-second".to_string();
+        let ssrc = 200_009_999;
+        for stream_id in [&first, &second] {
+            Cache::stream_map_remove(stream_id, None);
+        }
+
+        Cache::stream_map_insert_info(
+            first.clone(),
+            "device-id".to_string(),
+            "channel-id".to_string(),
+            ssrc,
+            String::new(),
+            "media-unknown-test".to_string(),
+            format!("call-{first}"),
+            1,
+            AccessMode::Live,
+        );
+        assert_eq!(
+            Cache::stream_ids_by_node_ssrc("media-unknown-test", ssrc),
+            vec![first.clone()]
+        );
+        assert!(Cache::ssrc_is_active(ssrc));
+
+        Cache::stream_map_insert_info(
+            second.clone(),
+            "device-id".to_string(),
+            "channel-id".to_string(),
+            ssrc,
+            String::new(),
+            "media-unknown-test".to_string(),
+            format!("call-{second}"),
+            1,
+            AccessMode::Live,
+        );
+        let mut matches = Cache::stream_ids_by_node_ssrc("media-unknown-test", ssrc);
+        matches.sort();
+        assert_eq!(matches, vec![first.clone(), second.clone()]);
+
+        Cache::stream_map_remove(&first, None);
+        Cache::stream_map_remove(&second, None);
+        assert!(!Cache::ssrc_is_active(ssrc));
+    }
+
+    #[test]
     fn closing_stream_allows_only_one_bye_in_flight() {
         let mut table = stream_table();
 
@@ -1499,15 +1525,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ssrc_sn() {
-        let ssrc_sn = Cache::ssrc_sn_get().unwrap();
-        assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9998);
-        assert!(!GENERAL_CACHE.shared.ssrc_sn.contains(&ssrc_sn));
-        Cache::ssrc_sn_set(ssrc_sn);
-        assert_eq!(GENERAL_CACHE.shared.ssrc_sn.len(), 9999);
-    }
-
-    #[test]
     fn reset_device_state_removes_only_matching_setup_locks() {
         let device_id = "34020000001320009991";
         let other_device_id = "34020000001320009992";
@@ -1538,10 +1555,9 @@ mod tests {
     }
 
     #[test]
-    fn peer_terminated_dialog_removes_stream_and_releases_ssrc() {
+    fn peer_terminated_dialog_removes_stream() {
         let stream_id = "peer-bye-stream".to_string();
         let ssrc = 8765u32;
-        GENERAL_CACHE.shared.ssrc_sn.remove(&8765);
         Cache::stream_map_insert_info(
             stream_id.clone(),
             "peer-bye-device".to_string(),
@@ -1558,7 +1574,6 @@ mod tests {
 
         assert_eq!(removed.stream_id, stream_id);
         assert!(Cache::stream_map_query_node_ssrc(&removed.stream_id).is_none());
-        assert!(GENERAL_CACHE.shared.ssrc_sn.contains(&8765));
     }
 
     #[test]

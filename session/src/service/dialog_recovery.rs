@@ -62,7 +62,7 @@ pub(crate) async fn recover_owned_dialogs() -> GlobalResult<()> {
     Ok(())
 }
 
-async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<()> {
+pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<()> {
     let now = Local::now().naive_local();
     if session.expire_at <= now
         || session.state == DialogState::Inviting

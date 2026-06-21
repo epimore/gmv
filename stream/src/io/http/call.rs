@@ -7,7 +7,7 @@ use pretend::{Json, Url};
 use pretend::{Pretend, Result, pretend};
 use shared::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
-    StreamPlayInfo, StreamRecordInfo, StreamState, TalkClosedEvent,
+    StreamPlayInfo, StreamRecordInfo, StreamState, TalkClosedEvent, UnknownStreamEvent,
 };
 use shared::info::res::Resp;
 use std::str::FromStr;
@@ -47,6 +47,8 @@ pub trait HttpSession {
         &self,
         json: &StreamState,
     ) -> Result<Json<Resp<InTimeoutEventRes>>>;
+    #[request(method = "POST", path = "/hook/stream/unknown")]
+    async fn stream_unknown(&self, json: &UnknownStreamEvent) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/hook/on/play")]
     async fn on_play(&self, json: &StreamPlayInfo) -> Result<Json<Resp<bool>>>;
     #[request(method = "POST", path = "/hook/stream/idle")]

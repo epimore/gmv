@@ -32,7 +32,7 @@ use shared::info::media_info::MediaConfig;
 use shared::info::media_info_ext::MediaExt;
 use shared::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, NetSource, OutputEventRes, OutputStreamInfo,
-    RegisterStreamInfo, RtpInfo, StreamKey, StreamPlayInfo, StreamState,
+    RegisterStreamInfo, RtpInfo, StreamKey, StreamPlayInfo, StreamState, UnknownStreamEvent,
 };
 use shared::info::output::{OutputEnum, OutputKind};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -43,6 +43,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 static REGISTER: OnceCell<Register> = OnceCell::new();
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
 const RTP_INPUT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const UNKNOWN_STREAM_CONFIRM_MS: u64 = 2_000;
+const UNKNOWN_STREAM_MIN_PACKETS: u64 = 3;
+const UNKNOWN_STREAM_COOLDOWN_MS: u64 = 30_000;
+const UNKNOWN_STREAM_EXPIRE_MS: u64 = 30_000;
 //时间偏移：用于如mpd、playlist一次加载多个媒体片段，导致提前超时
 pub const DEFAULT_OFFSET_SECOND: u8 = 4;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -112,11 +116,10 @@ impl RtpChannel {
                 count % 300 == 0
             };
             if call_io_busy {
-                //todo 回调信令
                 Err(GlobalError::new_biz_error(
                     BaseErrorCode::IoBusy.code(),
-                    "rtp channel is full",
-                    |msg| error!("ssrc: {ssrc},{msg}"),
+                    "rtp channel is full,miss pkt count: ",
+                    |msg| error!("ssrc: {ssrc},{msg}{count}"),
                 ))?;
             }
         } else {
@@ -130,6 +133,7 @@ impl RtpChannel {
 pub enum TimeScheduleKey {
     RtpGateway(u32),
     OutSession(u64),
+    UnknownStream(Arc<str>),
 }
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub struct OutSession {
@@ -137,6 +141,37 @@ pub struct OutSession {
     pub token: Arc<str>,
     pub output_enum: OutputEnum,
     pub stream_id: Arc<str>,
+}
+#[derive(Clone)]
+pub struct UnknownStreamObservation {
+    pub ssrc: u32,
+    pub remote_addr: SocketAddr,
+    pub protocol: String,
+    pub first_seen_at_ms: u64,
+    pub last_seen_at_ms: u64,
+    pub packet_count: u64,
+    pub last_notify_at_ms: u64,
+}
+
+impl UnknownStreamObservation {
+    fn observe(&mut self, now_ms: u64) -> bool {
+        self.last_seen_at_ms = now_ms;
+        self.packet_count = self.packet_count.saturating_add(1);
+        let confirmed = self.packet_count >= UNKNOWN_STREAM_MIN_PACKETS
+            && now_ms.saturating_sub(self.first_seen_at_ms) >= UNKNOWN_STREAM_CONFIRM_MS;
+        let cooled_down = self.last_notify_at_ms == 0
+            || now_ms.saturating_sub(self.last_notify_at_ms) >= UNKNOWN_STREAM_COOLDOWN_MS;
+        if confirmed && cooled_down {
+            self.last_notify_at_ms = now_ms;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn idle_ms(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.last_seen_at_ms)
+    }
 }
 pub struct StreamMetadata {
     pub ssrc: u32,
@@ -241,6 +276,7 @@ pub struct Inner {
     //key:stream_id
     pub stream_metadata_map: DashMap<Arc<str>, StreamMetadata>,
     pub out_session_map: DashMap<u64, OutSession>,
+    pub unknown_stream_map: DashMap<Arc<str>, UnknownStreamObservation>,
     //key:(token,stream_id),value: key-OutputEnum,value-playCount
     pub user_token_map: DashMap<(Arc<str>, Arc<str>), DashMap<OutputEnum, u32>>,
     pub server_conf: ServerConf,
@@ -273,6 +309,79 @@ impl Register {
                 OptAction::Remove => meta.output_count.subtract(output_enum),
             });
     }
+    pub fn observe_unknown_rtp(ssrc: u32, remote_addr: SocketAddr, protocol: Protocol) {
+        let arc = Self::get().inner.clone();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as u64);
+        let protocol = protocol.get_value().to_string();
+        let key: Arc<str> = Arc::from(format!("{ssrc}|{remote_addr}|{protocol}"));
+        let mut schedule_expiry = false;
+        let event = match arc.unknown_stream_map.entry(key.clone()) {
+            Entry::Vacant(vacant) => {
+                schedule_expiry = true;
+                vacant.insert(UnknownStreamObservation {
+                    ssrc,
+                    remote_addr,
+                    protocol,
+                    first_seen_at_ms: now,
+                    last_seen_at_ms: now,
+                    packet_count: 1,
+                    last_notify_at_ms: 0,
+                });
+                None
+            }
+            Entry::Occupied(mut occupied) => {
+                let observation = occupied.get_mut();
+                if observation.observe(now) {
+                    Some(UnknownStreamEvent {
+                        media_node_id: arc.server_conf.name.clone(),
+                        ssrc: observation.ssrc,
+                        remote_addr: observation.remote_addr.to_string(),
+                        protocol: observation.protocol.clone(),
+                        first_seen_at_ms: observation.first_seen_at_ms,
+                        last_seen_at_ms: observation.last_seen_at_ms,
+                        packet_count: observation.packet_count,
+                        reason: "unknown_ssrc_after_media_restart".to_string(),
+                    })
+                } else {
+                    None
+                }
+            }
+        };
+        if schedule_expiry {
+            let _ = arc.time_schedule.insert(
+                TimeScheduleKey::UnknownStream(key),
+                Duration::from_millis(UNKNOWN_STREAM_EXPIRE_MS),
+            );
+        }
+        if let Some(event) = event {
+            let _ = arc
+                .event_tx
+                .try_send((Event::Out(OutEvent::StreamUnknown(event)), None))
+                .hand_log(|msg| error!("{msg}: ssrc={ssrc}"));
+        }
+    }
+
+    pub fn expire_unknown_stream(key: Arc<str>, inner: &Inner) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as u64);
+        let Some(observation) = inner.unknown_stream_map.get(&key) else {
+            return;
+        };
+        let idle_ms = observation.idle_ms(now);
+        drop(observation);
+        if idle_ms >= UNKNOWN_STREAM_EXPIRE_MS {
+            inner.unknown_stream_map.remove(&key);
+        } else {
+            let _ = inner.time_schedule.insert(
+                TimeScheduleKey::UnknownStream(key),
+                Duration::from_millis(UNKNOWN_STREAM_EXPIRE_MS - idle_ms),
+            );
+        }
+    }
+
     pub fn handle_rtp_in_timeout(ssrc: u32, inner: &Inner) {
         if let Some(rc) = inner.rtp_gateway_map.get(&ssrc) {
             if let Some(meta) = inner.stream_metadata_map.get(&rc.stream_id) {
@@ -535,8 +644,14 @@ impl Register {
         match stream_id {
             None => arc.rtp_gateway_map.contains_key(&ssrc),
             Some(stream_id) => {
-                arc.stream_metadata_map.contains_key(&Arc::from(stream_id))
-                    && arc.rtp_gateway_map.contains_key(&ssrc)
+                let stream_id: Arc<str> = Arc::from(stream_id);
+                arc.stream_metadata_map
+                    .get(&stream_id)
+                    .is_some_and(|metadata| metadata.ssrc == ssrc)
+                    && arc
+                        .rtp_gateway_map
+                        .get(&ssrc)
+                        .is_some_and(|channel| channel.stream_id == stream_id)
             }
         }
     }
@@ -810,6 +925,7 @@ impl Register {
             event_tx,
             stream_metadata_map: Default::default(),
             out_session_map: Default::default(),
+            unknown_stream_map: Default::default(),
             user_token_map: Default::default(),
             server_conf,
             stream_conf,
@@ -1031,5 +1147,45 @@ impl OutputCount {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod unknown_stream_tests {
+    use super::{UNKNOWN_STREAM_COOLDOWN_MS, UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation};
+    use std::net::SocketAddr;
+
+    fn observation() -> UnknownStreamObservation {
+        UnknownStreamObservation {
+            ssrc: 200_000_001,
+            remote_addr: "127.0.0.1:9000".parse::<SocketAddr>().unwrap(),
+            protocol: "UDP".to_string(),
+            first_seen_at_ms: 1_000,
+            last_seen_at_ms: 1_000,
+            packet_count: 1,
+            last_notify_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn unknown_stream_requires_duration_and_packet_count() {
+        let mut observation = observation();
+        assert!(!observation.observe(1_500));
+        assert!(observation.observe(3_000));
+    }
+
+    #[test]
+    fn unknown_stream_notification_is_cooled_down() {
+        let mut observation = observation();
+        assert!(!observation.observe(1_500));
+        assert!(observation.observe(3_000));
+        assert!(!observation.observe(3_001));
+        assert!(observation.observe(3_000 + UNKNOWN_STREAM_COOLDOWN_MS));
+    }
+
+    #[test]
+    fn unknown_stream_observation_expires_after_idle_window() {
+        let observation = observation();
+        assert!(observation.idle_ms(1_000 + UNKNOWN_STREAM_EXPIRE_MS) >= UNKNOWN_STREAM_EXPIRE_MS);
     }
 }

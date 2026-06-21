@@ -20,6 +20,7 @@ pub const INPUT_TIMEOUT: &str = "/stream/input/timeout";
 pub const ON_PLAY: &str = "/on/play";
 pub const OFF_PLAY: &str = "/off/play";
 pub const STREAM_IDLE: &str = "/stream/idle";
+pub const STREAM_UNKNOWN: &str = "/stream/unknown";
 pub const END_RECORD: &str = "/end/record";
 pub const TALK_CLOSED: &str = "/talk/closed";
 
@@ -152,6 +153,20 @@ pub struct RtpInfo {
 pub struct StreamKey {
     pub ssrc: u32,
     pub stream_id: Option<String>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct UnknownStreamEvent {
+    pub media_node_id: String,
+    pub ssrc: u32,
+    pub remote_addr: String,
+    pub protocol: String,
+    pub first_seen_at_ms: u64,
+    pub last_seen_at_ms: u64,
+    pub packet_count: u64,
+    pub reason: String,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]

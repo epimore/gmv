@@ -4,7 +4,7 @@ use crate::state::layer::output_layer::OutputLayer;
 use crate::state::register::{Inner, Register, TimeScheduleKey};
 use base::cache::c100k::CacheEvent;
 use base::exception::GlobalResultExt;
-use base::log::{error, info};
+use base::log::{error, info, warn};
 use base::net::state::Protocol;
 use base::tokio;
 use base::tokio::select;
@@ -18,7 +18,7 @@ use pretend::resolver::UrlResolver;
 use pretend_reqwest::Client;
 use shared::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
-    RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState,
+    RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -59,7 +59,7 @@ pub enum OutEvent {
     StreamRegister(RegisterStreamInfo),
     StreamInTimeout(StreamState),
     StreamIdle(OutputStreamInfo),
-    StreamUnknown(RtpInfo),
+    StreamUnknown(UnknownStreamEvent),
     OnPlay(StreamPlayInfo),
     OffPlay(StreamPlayInfo),
     EndRecord(StreamRecordInfo),
@@ -200,7 +200,33 @@ impl Event {
                 Register::close_stream_by_output(os, oe);
                 // let _ = res.hand_log(|msg| error!("{msg}"));
             }
-            OutEvent::StreamUnknown(_) => {}
+            OutEvent::StreamUnknown(event) => {
+                for attempt in 1..=4 {
+                    match pretend.stream_unknown(&event).await {
+                        Ok(response) => {
+                            let response = response.value();
+                            if response.code == 200 && response.data == Some(true) {
+                                info!(
+                                    "stream_unknown accepted: media_node={}, ssrc={}",
+                                    event.media_node_id, event.ssrc
+                                );
+                                break;
+                            }
+                            warn!(
+                                "stream_unknown rejected: media_node={}, ssrc={}, attempt={}, response={:?}",
+                                event.media_node_id, event.ssrc, attempt, response
+                            );
+                        }
+                        Err(err) => warn!(
+                            "stream_unknown failed: media_node={}, ssrc={}, attempt={}, err={:?}",
+                            event.media_node_id, event.ssrc, attempt, err
+                        ),
+                    }
+                    if attempt < 4 {
+                        tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                    }
+                }
+            }
             OutEvent::OffPlay(spi) => {
                 info!("Calling off_play with: {:?}", spi);
                 let res = pretend.off_play(&spi).await;
@@ -244,6 +270,9 @@ async fn on_time_schedule(inner: &Inner) {
                 }
                 TimeScheduleKey::OutSession(expire_id) => {
                     Register::clean_play_token(expire_id);
+                }
+                TimeScheduleKey::UnknownStream(key) => {
+                    Register::expire_unknown_stream(key, inner);
                 }
             }
         }

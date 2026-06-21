@@ -735,6 +735,55 @@ impl SipDialogSessionRepository {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    pub async fn find_active_by_media_ssrc_before(
+        signal_node_id: &str,
+        media_node_id: &str,
+        ssrc: &str,
+        first_seen_at: NaiveDateTime,
+        now: NaiveDateTime,
+    ) -> GlobalResult<Vec<SipDialogSession>> {
+        validate_len(signal_node_id, 64, "signal_node_id")?;
+        validate_len(media_node_id, 64, "media_node_id")?;
+        validate_optional_len(Some(ssrc), 16, "ssrc")?;
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut sessions = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .filter(|session| {
+                    session.signal_node_id == signal_node_id
+                        && session.media_node_id == media_node_id
+                        && session.ssrc.as_deref() == Some(ssrc)
+                        && session.session_type != DialogSessionType::Talk
+                        && matches!(
+                            session.state,
+                            DialogState::Established | DialogState::Terminating
+                        )
+                        && session.created_at <= first_seen_at
+                        && session.expire_at > now
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            sessions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+            sessions.truncate(2);
+            return Ok(sessions);
+        }
+
+        let rows = sqlx::query_as::<_, SipDialogSessionRow>(&format!(
+            "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION              WHERE SIGNAL_NODE_ID=? AND MEDIA_NODE_ID=? AND SSRC=?              AND SESSION_TYPE IN ('LIVE','PLAYBACK','DOWNLOAD')              AND STATE IN ('ESTABLISHED','TERMINATING')              AND CREATED_AT<=? AND EXPIRE_AT>?              ORDER BY CREATED_AT DESC LIMIT 2"
+        ))
+        .bind(signal_node_id)
+        .bind(media_node_id)
+        .bind(ssrc)
+        .bind(first_seen_at)
+        .bind(now)
+        .fetch_all(get_conn_by_pool())
+        .await
+        .hand_log(|message| error!("{message}"))?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
     pub async fn page_owned_by_states(
         signal_node_id: &str,
         states: &[DialogState],
@@ -1095,6 +1144,68 @@ mod tests {
                     .await
                     .is_err()
             );
+        });
+    }
+
+    #[test]
+    fn unknown_stream_lookup_requires_one_active_preexisting_dialog() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let _guard = enable_dialog_test_storage();
+            let mut matching = inviting("unknown-match");
+            matching.session_type = DialogSessionType::Live;
+            matching.state = DialogState::Established;
+            matching.created_at = at(1_000);
+            matching.updated_at = at(1_000);
+
+            let mut future = matching.clone();
+            future.stream_id = "unknown-future".into();
+            future.created_at = at(3_000);
+            future.updated_at = at(3_000);
+
+            let mut talk = matching.clone();
+            talk.stream_id = "unknown-talk".into();
+            talk.session_type = DialogSessionType::Talk;
+
+            {
+                let mut storage = test_storage()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                storage.insert(matching.stream_id.clone(), matching.clone());
+                storage.insert(future.stream_id.clone(), future);
+                storage.insert(talk.stream_id.clone(), talk);
+            }
+
+            let sessions = SipDialogSessionRepository::find_active_by_media_ssrc_before(
+                "session-1",
+                "media-1",
+                "1100000001",
+                at(2_000),
+                at(1_500),
+            )
+            .await
+            .expect("lookup unique dialog");
+            assert_eq!(sessions, vec![matching.clone()]);
+
+            let mut duplicate = matching;
+            duplicate.stream_id = "unknown-duplicate".into();
+            duplicate.created_at = at(900);
+            duplicate.updated_at = at(900);
+            test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(duplicate.stream_id.clone(), duplicate);
+
+            let sessions = SipDialogSessionRepository::find_active_by_media_ssrc_before(
+                "session-1",
+                "media-1",
+                "1100000001",
+                at(2_000),
+                at(1_500),
+            )
+            .await
+            .expect("lookup ambiguous dialogs");
+            assert_eq!(sessions.len(), 2);
         });
     }
 

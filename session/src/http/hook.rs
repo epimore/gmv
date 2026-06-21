@@ -2,8 +2,9 @@ use axum::{Json, Router};
 use base::log::info;
 use shared::info::obj::{
     END_RECORD, INPUT_TIMEOUT, InTimeoutEventRes, OFF_PLAY, ON_PLAY, OutputEventRes,
-    OutputStreamInfo, RegisterStreamInfo, STREAM_IDLE, STREAM_REGISTER, StreamPlayInfo,
-    StreamRecordInfo, StreamState, TALK_CLOSED, TalkClosedEvent,
+    OutputStreamInfo, RegisterStreamInfo, STREAM_IDLE, STREAM_REGISTER, STREAM_UNKNOWN,
+    StreamPlayInfo, StreamRecordInfo, StreamState, TALK_CLOSED, TalkClosedEvent,
+    UnknownStreamEvent,
 };
 use shared::info::res::{EmptyResponse, Resp};
 
@@ -15,6 +16,7 @@ pub fn routes() -> Router {
         .route(INPUT_TIMEOUT, axum::routing::post(stream_input_timeout))
         .route(ON_PLAY, axum::routing::post(on_play))
         .route(STREAM_IDLE, axum::routing::post(stream_idle))
+        .route(STREAM_UNKNOWN, axum::routing::post(stream_unknown))
         .route(OFF_PLAY, axum::routing::post(off_play))
         .route(END_RECORD, axum::routing::post(end_record))
         .route(TALK_CLOSED, axum::routing::post(talk_closed))
@@ -102,6 +104,13 @@ async fn off_play(Json(info): Json<StreamPlayInfo>) -> Json<Resp<()>> {
 async fn stream_idle(Json(info): Json<OutputStreamInfo>) -> Json<Resp<OutputEventRes>> {
     info!("stream_idle = {:?}", &info);
     Json(Resp::build_success_data(hook_serv::stream_idle(info).await))
+}
+
+async fn stream_unknown(Json(info): Json<UnknownStreamEvent>) -> Json<Resp<bool>> {
+    info!("stream_unknown = {:?}", &info);
+    Json(Resp::build_success_data(
+        hook_serv::stream_unknown(info).await,
+    ))
 }
 
 #[cfg_attr(debug_assertions, utoipa::path(
