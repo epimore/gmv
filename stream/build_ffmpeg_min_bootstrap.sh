@@ -30,6 +30,32 @@ echo
 
 mkdir -p "$THIRD_PARTY_DIR"
 
+REQUIRED_STATIC_LIBS=(
+  libavcodec.a
+  libavdevice.a
+  libavfilter.a
+  libavformat.a
+  libavutil.a
+  libswresample.a
+  libswscale.a
+)
+
+complete_install=1
+for library in "${REQUIRED_STATIC_LIBS[@]}"; do
+  if [[ ! -f "$PREFIX/lib/$library" ]]; then
+    complete_install=0
+    break
+  fi
+done
+
+if [[ "$FORCE_REDOWNLOAD" == "0" ]] \
+  && [[ -f "$PREFIX/include/libavformat/avformat.h" ]] \
+  && [[ "$complete_install" == "1" ]] \
+  && ! compgen -G "$PREFIX/lib/*.so*" >/dev/null; then
+  echo "FFmpeg already built: $PREFIX"
+  exit 0
+fi
+
 if [[ "$FORCE_REDOWNLOAD" == "1" ]]; then
   echo "[0/7] force cleanup existing source/archive"
   rm -rf "$SRC_DIR"

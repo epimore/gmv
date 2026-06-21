@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   FFMPEG_VERSION: 6.1
+  PJSIP_VERSION: 2.17
 
 jobs:
   build:
@@ -30,110 +31,22 @@ jobs:
       # Cache FFmpeg build
       # =========================
       - name: Cache FFmpeg
-        id: cache-ffmpeg
         uses: actions/cache@v4
         with:
-          path: |
-            third_party/ffmpeg-${{ env.FFMPEG_VERSION }}/dist
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ runner.os }}
+          path: third_party/ffmpeg-${{ env.FFMPEG_VERSION }}/dist
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('stream/build_ffmpeg_min_bootstrap.sh') }}
 
       # =========================
-      # Build FFmpeg（仅在 cache miss 时）
+      # Cache PJSIP build
       # =========================
-      - name: Build FFmpeg (third_party)
-        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-        run: |
-          set -e
-
-          ROOT=$(pwd)
-
-          mkdir -p third_party/ffmpeg-${FFMPEG_VERSION}
-
-          git clone --depth=1 https://github.com/FFmpeg/FFmpeg \
-            -b release/${FFMPEG_VERSION} \
-            third_party/ffmpeg-${FFMPEG_VERSION}/src
-
-          cd third_party/ffmpeg-${FFMPEG_VERSION}/src
-
-          ./configure \
-            --prefix=$ROOT/third_party/ffmpeg-${FFMPEG_VERSION}/dist \
-            \
-            --enable-static \
-            --disable-shared \
-            --enable-pic \
-            \
-            --enable-gpl \
-            --enable-version3 \
-            --disable-debug \
-            --disable-doc \
-            --disable-programs \
-            --extra-cflags="-fPIC -I/usr/local/include" \
-            --extra-ldflags="-L/usr/local/lib" \
-            \
-            --enable-avdevice \
-            --enable-avcodec \
-            --enable-avformat \
-            --disable-postproc \
-            --enable-swscale \
-            --enable-swresample \
-            \
-            --disable-network \
-            \
-            --disable-everything \
-            \
-            --enable-protocol=file \
-            \
-            --enable-demuxer=mov \
-            --enable-demuxer=flv \
-            --enable-demuxer=mpegts \
-            --enable-demuxer=mpegps \
-            --enable-demuxer=h264 \
-            --enable-demuxer=hevc \
-            --enable-demuxer=aac \
-            \
-            --enable-muxer=mov \
-            --enable-muxer=mp4 \
-            --enable-muxer=flv \
-            --enable-muxer=mpegts \
-            --enable-muxer=hls \
-            --enable-muxer=dash \
-            \
-            --enable-decoder=h264 \
-            --enable-decoder=hevc \
-            --enable-decoder=aac \
-            --enable-decoder=pcm_alaw \
-            --enable-decoder=pcm_mulaw \
-            \
-            --enable-encoder=aac \
-            --enable-encoder=pcm_alaw \
-            --enable-encoder=pcm_mulaw \
-            \
-            --enable-parser=h264 \
-            --enable-parser=hevc \
-            --enable-parser=aac \
-            \
-            --enable-bsf=h264_mp4toannexb \
-            --enable-bsf=hevc_mp4toannexb \
-            --enable-bsf=aac_adtstoasc \
-            \
-            --disable-filters \
-            --disable-devices \
-            --disable-hwaccels \
-            --disable-indevs \
-            --disable-outdevs \
-            \
-            --disable-iconv \
-            --disable-zlib \
-            --disable-lzma \
-            --disable-bzlib \
-            --disable-openssl \
-            --disable-gnutls
-
-          make -j$(nproc)
-          make install
+      - name: Cache PJSIP
+        uses: actions/cache@v4
+        with:
+          path: third_party/pjproject-${{ env.PJSIP_VERSION }}/dist
+          key: pjsip-${{ env.PJSIP_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('session/build_pjsip_bootstrap.sh') }}
 
       # =========================
-      # Cache Cargo（依赖 + target）
+      # Cache Cargo
       # =========================
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -143,6 +56,12 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      # =========================
+      # Bootstrap native dependencies
+      # =========================
+      - name: Bootstrap native dependencies
+        run: bash scripts/bootstrap_dev.sh
 
       # =========================
       # Build Rust
