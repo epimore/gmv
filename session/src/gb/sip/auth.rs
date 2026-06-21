@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base::dashmap::DashMap;
 use base::exception::GlobalResult;
+use base::log::warn;
 use base::tokio::sync::Mutex as AsyncMutex;
 use base::tokio::time::{self, Instant};
 use base::tokio_util::sync::CancellationToken;
@@ -269,7 +270,10 @@ pub async fn run_cleanup_task(cancel_token: CancellationToken) {
                     cache.cleanup_expired();
                 }
             }
-            _ = cancel_token.cancelled() => break,
+            _ = cancel_token.cancelled() => {
+                warn!("device auth cache cleanup task exiting after cancellation");
+                break;
+            },
         }
     }
 }

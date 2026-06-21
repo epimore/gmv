@@ -306,11 +306,13 @@ impl NativeSipRuntimeService {
                 let (mut runtime, events) = match SipRuntime::start(config, sockets) {
                     Ok(started) => started,
                     Err(err) => {
+                        warn!("native SIP owner thread exiting after startup failure: {err}");
                         let _ = startup_tx.send(Err(err.to_string()));
                         return;
                     }
                 };
                 if startup_tx.send(Ok(())).is_err() {
+                    warn!("native SIP owner thread exiting because startup receiver was dropped");
                     return;
                 }
 
@@ -430,7 +432,7 @@ impl NativeSipRuntimeService {
                     }
 
                     if let Err(err) = runtime.poll() {
-                        warn!("poll native SIP runtime failed: {err}");
+                        warn!("native SIP owner loop exiting because runtime poll failed: {err}");
                         break;
                     }
 
@@ -447,6 +449,9 @@ impl NativeSipRuntimeService {
                                 });
                             if let Some(lookup) = lookup {
                                 if lookup_tx.send(lookup).is_err() {
+                                    warn!(
+                                        "native SIP owner thread exiting because auth lookup receiver was dropped"
+                                    );
                                     return;
                                 }
                             } else {
@@ -459,8 +464,14 @@ impl NativeSipRuntimeService {
                     }
                 }
 
+                warn!(
+                    "native SIP owner loop exited; cancellation_requested={}",
+                    runtime_cancel.is_cancelled()
+                );
                 if let Err(err) = runtime.stop() {
                     warn!("stop native SIP runtime failed: {err}");
+                } else {
+                    warn!("native SIP runtime stopped");
                 }
             })
             .map_err(|err| {
@@ -511,8 +522,12 @@ impl NativeSipRuntimeService {
 
     fn stop(&mut self) {
         self.cancel.cancel();
+        warn!("native SIP runtime service shutdown requested");
         if let Some(thread) = self.runtime_thread.take() {
-            let _ = thread.join();
+            match thread.join() {
+                Ok(()) => warn!("native SIP owner thread joined"),
+                Err(_) => warn!("native SIP owner thread panicked before join"),
+            }
         }
         let failed = SipRuntimeCache::global().fail_all_native(503);
         if failed > 0 {
@@ -548,9 +563,13 @@ async fn run_native_business_events(
     loop {
         let event = base::tokio::select! {
             event = events.recv() => event,
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => {
+                warn!("native SIP business event task exiting after cancellation");
+                break;
+            },
         };
         let Some(event) = event else {
+            warn!("native SIP business event task exiting because event channel closed");
             break;
         };
         if event.kind == SipRuntimeEventKind::TransportClosed {
@@ -744,9 +763,13 @@ async fn run_auth_batches(
     loop {
         let first = base::tokio::select! {
             lookup = lookups.recv() => lookup,
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => {
+                warn!("native SIP auth task exiting after cancellation");
+                break;
+            },
         };
         let Some(first) = first else {
+            warn!("native SIP auth task exiting because lookup channel closed");
             break;
         };
 
@@ -775,6 +798,7 @@ async fn run_auth_batches(
                         }))
                         .is_err()
                     {
+                        warn!("native SIP auth task exiting because runtime command queue closed");
                         return;
                     }
                 }
@@ -789,6 +813,7 @@ async fn run_auth_batches(
                         }))
                         .is_err()
                     {
+                        warn!("native SIP auth task exiting because runtime command queue closed");
                         return;
                     }
                 }

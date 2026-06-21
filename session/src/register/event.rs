@@ -36,11 +36,19 @@ pub async fn schedule_event(
             batch = Register::scheduler().next_batch(&cancel_token) => {
                 match batch {
                     Some(items) => on_time_schedule(&inner, items).await,
-                    None => break,
+                    None => {
+                        warn!(
+                            "register scheduler task exiting because scheduler channel closed or cancellation was requested"
+                        );
+                        break;
+                    },
                 }
             }
             _ = handle_rx_event(&mut event_rx, semaphore.clone()) => {}
-            _ = cancel_token.cancelled() => break,
+            _ = cancel_token.cancelled() => {
+                warn!("register scheduler task exiting after cancellation");
+                break;
+            },
         }
     }
 }

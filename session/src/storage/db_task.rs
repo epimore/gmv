@@ -62,11 +62,15 @@ async fn run(mut rx: Receiver<DbTask>, cancel: CancellationToken) {
         select! {
             item = rx.recv() => {
                 let Some(task) = item else {
+                    warn!("session DB worker exiting because task queue closed");
                     break;
                 };
                 handle_task(task).await;
             }
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => {
+                warn!("session DB worker exiting after cancellation");
+                break;
+            },
         }
     }
 }

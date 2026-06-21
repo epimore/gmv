@@ -5,7 +5,7 @@ use axum::response::Response;
 use base::cfg_lib::conf;
 use base::err::{BaseErrorCode, CodeOutErr};
 use base::exception::{BizError, GlobalError, GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{error, warn};
 use base::serde::{Deserialize, Serialize};
 use base::serde_default;
 use base::tokio::net::TcpListener;
@@ -67,15 +67,23 @@ impl Http {
         let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
         // 创建包含所有路由的统一Router
         let app = routes();
+        let shutdown_cancel = cancel_token.clone();
         let server = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async move {
-            cancel_token.cancelled().await;
+            shutdown_cancel.cancelled().await;
+            warn!("HTTP graceful shutdown requested by cancellation token");
         });
         match server.await.hand_log(|msg| error!("{msg}")) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                warn!(
+                    "HTTP server exited; cancellation_requested={}",
+                    cancel_token.is_cancelled()
+                );
+                Ok(())
+            }
             error => error,
         }
     }

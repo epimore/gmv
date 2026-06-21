@@ -24,10 +24,8 @@ sudo sysctl -w net.core.rmem_default=4194304
 |  8C | 16GB |  800 |   1x |    800 | 960 Mbps | 960 Mbps | 1.92 Gbps | 10GbE                |
 ...
 ````
-1.异常信息反馈
-2.时间调度 |ok
-3.net-channel 优化 |ok
-4.sip lib select |remaining
+遗留：
+1.公网语音广播，需非标实现；
 
 cargo fix --allow-dirty --allow-staged
 cargo build --release --target x86_64-unknown-linux-gnu

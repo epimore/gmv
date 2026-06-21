@@ -3,7 +3,7 @@ use crate::http::Http;
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
-use base::log::{error, info};
+use base::log::{error, info, warn};
 use base::logger;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::net::UdpSocket;
@@ -60,15 +60,38 @@ impl
         let http = self.http;
         let (http_listener, tu) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
-        network_rt.rt_handle.spawn(async move {
+        let service_cancel = network_rt.cancel.clone();
+        let service_task = network_rt.rt_handle.spawn(async move {
             if let Err(err) = SessionConf::run(tu, network_rt.cancel.clone()).await {
                 error!("GB28181 session initialization failed: {err}");
+                warn!("session network task is cancelling after GB28181 initialization failure");
                 network_rt.cancel.cancel();
                 return;
             }
-            if let Err(err) = http.run(http_listener, network_rt.cancel.clone()).await {
-                error!("HTTP service stopped with error: {err}");
-                network_rt.cancel.cancel();
+            match http.run(http_listener, network_rt.cancel.clone()).await {
+                Ok(()) => warn!(
+                    "HTTP service returned; cancellation_requested={}",
+                    network_rt.cancel.is_cancelled()
+                ),
+                Err(err) => {
+                    error!("HTTP service stopped with error: {err}");
+                    warn!("session network task is cancelling after HTTP service failure");
+                    network_rt.cancel.cancel();
+                }
+            }
+            warn!("session network task exited");
+        });
+        network_rt.rt_handle.spawn(async move {
+            match service_task.await {
+                Ok(()) => warn!(
+                    "session network task completed; cancellation_requested={}",
+                    service_cancel.is_cancelled()
+                ),
+                Err(err) => warn!(
+                    "session network task terminated unexpectedly: cancelled={}, panic={}, err={err}",
+                    err.is_cancelled(),
+                    err.is_panic()
+                ),
             }
         });
         GlobalRuntime::order_shutdown(&[RuntimeType::CommonNetwork], |msg| info!("{msg}"));

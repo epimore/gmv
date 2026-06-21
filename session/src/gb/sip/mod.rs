@@ -30,7 +30,7 @@ pub use register::GbRegisterEvent;
 pub async fn run_cleanup_task(cancel_token: base::tokio_util::sync::CancellationToken) {
     use std::time::Duration;
 
-    use base::log::debug;
+    use base::log::{debug, warn};
     use base::tokio::time;
 
     let mut ticker = time::interval(Duration::from_secs(1));
@@ -46,7 +46,10 @@ pub async fn run_cleanup_task(cancel_token: base::tokio_util::sync::Cancellation
                     debug!("sip business waiter cleanup: {report:?}");
                 }
             }
-            _ = cancel_token.cancelled() => break,
+            _ = cancel_token.cancelled() => {
+                warn!("SIP business waiter cleanup task exiting after cancellation");
+                break;
+            },
         }
     }
 }
