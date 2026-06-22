@@ -1,4 +1,5 @@
 use base::bytes::Bytes;
+use base::exception::GlobalResult;
 use gmv_pjsip::message::extract_tag;
 use gmv_pjsip::{
     SipAssociation, SipMethod, SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol,
@@ -47,7 +48,7 @@ pub struct GbMessageEvent {
     pub from_tag: Option<String>,
     pub to_tag: Option<String>,
     pub subscription_state: Option<String>,
-    pub body: Bytes,
+    pub items: Vec<(String, String)>,
     pub xml_cmd_type: Option<String>,
     pub xml_sn: Option<String>,
     pub xml_device_id: Option<String>,
@@ -69,12 +70,13 @@ impl GbMessageEvent {
         subscription_state: Option<String>,
         body: Bytes,
         snapshot_session_id_hint: Option<String>,
-    ) -> Self {
-        let text = String::from_utf8_lossy(&body);
-        let xml_cmd_type = xml::cmd_type(&text);
-        let xml_sn = xml::sn(&text);
-        let xml_device_id = xml::device_id(&text);
-        let snapshot_session_id = snapshot_session_id_hint.or_else(|| xml::session_id(&text));
+    ) -> GlobalResult<Self> {
+        let items = xml::parse_items(&body)?;
+        let xml_cmd_type = xml::value_by_tag(&items, "CmdType").map(str::to_owned);
+        let xml_sn = xml::value_by_tag(&items, "SN").map(str::to_owned);
+        let xml_device_id = xml::value_by_tag(&items, "DeviceID").map(str::to_owned);
+        let snapshot_session_id = snapshot_session_id_hint
+            .or_else(|| xml::value_by_tag(&items, "SessionID").map(str::to_owned));
         let kind = match xml_cmd_type.as_deref() {
             Some("Keepalive") => GbMessageKind::Keepalive,
             Some("Catalog") => GbMessageKind::Catalog,
@@ -97,7 +99,7 @@ impl GbMessageEvent {
             _ => kind,
         };
 
-        Self {
+        Ok(Self {
             kind,
             method,
             device_id: device_id.or_else(|| xml_device_id.clone()),
@@ -109,33 +111,40 @@ impl GbMessageEvent {
             from_tag,
             to_tag,
             subscription_state,
-            body,
+            items,
             xml_cmd_type,
             xml_sn,
             xml_device_id,
             snapshot_session_id,
-        }
+        })
     }
 
-    pub fn from_native(event: &SipRuntimeEvent) -> Option<Self> {
+    pub fn from_native(event: &SipRuntimeEvent) -> GlobalResult<Option<Self>> {
         if event.kind != SipRuntimeEventKind::RequestReceived {
-            return None;
+            return Ok(None);
         }
-        let method = SipMethod::parse(event.method.as_deref()?);
+        let Some(method) = event.method.as_deref().map(SipMethod::parse) else {
+            return Ok(None);
+        };
         let kind = match method {
             SipMethod::Message => GbMessageKind::Unknown,
             SipMethod::Notify => GbMessageKind::Notify,
             SipMethod::Options => GbMessageKind::Options,
             SipMethod::Update => GbMessageKind::Update,
             SipMethod::Prack => GbMessageKind::Prack,
-            _ => return None,
+            _ => return Ok(None),
+        };
+        let (Some(local_addr), Some(remote_addr), Some(protocol)) =
+            (event.local_addr, event.remote_addr, event.protocol)
+        else {
+            return Ok(None);
         };
         let association = SipAssociation {
-            local_addr: event.local_addr?,
-            remote_addr: event.remote_addr?,
-            protocol: event.protocol?,
+            local_addr,
+            remote_addr,
+            protocol,
         };
-        Some(Self::from_parts(
+        Self::from_parts(
             kind,
             Some(method),
             None,
@@ -149,187 +158,101 @@ impl GbMessageEvent {
             event.subscription_state.clone(),
             Bytes::copy_from_slice(&event.body),
             None,
-        ))
+        )
+        .map(Some)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct CreateDeviceMessageRequest {
     pub device_id: String,
-    pub device_host: String,
-    pub device_port: u16,
-    pub protocol: SipTransportProtocol,
     pub body: String,
     pub content_type: String,
-    pub call_id: Option<String>,
-    pub cseq: Option<u32>,
 }
 
 impl CreateDeviceMessageRequest {
-    pub fn target_uri(&self) -> String {
-        target_uri(
-            &self.device_id,
-            &self.device_host,
-            self.device_port,
-            self.protocol,
-        )
-    }
-
-    pub fn catalog_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-    ) -> Self {
+    pub fn catalog_query(device_id: impl Into<String>, sn: u32) -> Self {
         let device_id = device_id.into();
         let body = xml::build_catalog_query(sn, &device_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn device_info_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-    ) -> Self {
+    pub fn device_info_query(device_id: impl Into<String>, sn: u32) -> Self {
         let device_id = device_id.into();
         let body = xml::build_device_info_query(sn, &device_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn device_status_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-    ) -> Self {
+    pub fn device_status_query(device_id: impl Into<String>, sn: u32) -> Self {
         let device_id = device_id.into();
         let body = xml::build_device_status_query(sn, &device_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn config_download_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-        config_type: &str,
-    ) -> Self {
+    pub fn config_download_query(device_id: impl Into<String>, sn: u32, config_type: &str) -> Self {
         let device_id = device_id.into();
         let body = xml::build_config_download_query(sn, &device_id, config_type);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn ptz_position_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-    ) -> Self {
+    pub fn ptz_position_query(device_id: impl Into<String>, sn: u32) -> Self {
         let device_id = device_id.into();
         let body = xml::build_ptz_position_query(sn, &device_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn cruise_track_list_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-    ) -> Self {
+    pub fn cruise_track_list_query(device_id: impl Into<String>, sn: u32) -> Self {
         let device_id = device_id.into();
         let body = xml::build_cruise_track_list_query(sn, &device_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn cruise_track_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-        number: u32,
-    ) -> Self {
+    pub fn cruise_track_query(device_id: impl Into<String>, sn: u32, number: u32) -> Self {
         let device_id = device_id.into();
         let body = xml::build_cruise_track_query(sn, &device_id, number);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn broadcast_notify(
-        target_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        sn: u32,
-        source_id: &str,
-    ) -> Self {
+    pub fn broadcast_notify(target_id: impl Into<String>, sn: u32, source_id: &str) -> Self {
         let target_id = target_id.into();
         let body = xml::build_broadcast_notify(sn, source_id, &target_id);
-        Self::xml(target_id, device_host, device_port, protocol, body)
+        Self::xml(target_id, body)
     }
 
     pub fn record_info_query(
         device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
         sn: u32,
         start_time: &str,
         end_time: &str,
     ) -> Self {
         let device_id = device_id.into();
         let body = xml::build_record_info_query(sn, &device_id, start_time, end_time);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn preset_query(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-    ) -> Self {
+    pub fn preset_query(device_id: impl Into<String>) -> Self {
         let device_id = device_id.into();
         let body = xml::build_preset_query_xml(&device_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
     pub fn snapshot_control(
         device_id: impl Into<String>,
         channel_id: &str,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
         count: u8,
         interval: u8,
         url: &str,
         session_id: &str,
     ) -> Self {
         let body = xml::build_snapshot_control_xml(channel_id, count, interval, url, session_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        Self::xml(device_id, body)
     }
 
-    pub fn xml(
-        device_id: impl Into<String>,
-        device_host: impl Into<String>,
-        device_port: u16,
-        protocol: SipTransportProtocol,
-        body: impl Into<String>,
-    ) -> Self {
+    pub fn xml(device_id: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
             device_id: device_id.into(),
-            device_host: device_host.into(),
-            device_port,
-            protocol,
             body: body.into(),
             content_type: GB_XML_CONTENT_TYPE.to_string(),
-            call_id: None,
-            cseq: None,
         }
     }
 }
@@ -388,6 +311,7 @@ mod tests {
             Bytes::from(body),
             None,
         )
+        .unwrap()
         .kind
     }
 

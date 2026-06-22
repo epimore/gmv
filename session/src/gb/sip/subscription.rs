@@ -13,7 +13,6 @@ use crate::register::core::{Register, TimeScheduleKey};
 use crate::state::session::{Cache, CatalogSubscriptionCommand};
 
 use super::adapter::pjsip_protocol_from_base;
-use super::command::connected_target;
 use super::message::{GB_XML_CONTENT_TYPE, GbMessageEvent, target_uri};
 use super::native_runtime::NativeSipRuntimeHandle;
 use super::runtime_cache::{
@@ -36,12 +35,17 @@ pub async fn subscribe_catalog(device_id: &str, expires: u32) -> GlobalResult<()
 }
 
 async fn subscribe_catalog_once(device_id: &str, expires: u32) -> GlobalResult<()> {
-    let (host, port, base_protocol) = connected_target(device_id)?;
     let Some(session) = Register::get_connected_device_session(device_id) else {
         return Err(device_not_connected(device_id));
     };
-    let protocol = pjsip_protocol_from_base(base_protocol);
-    let remote_target = target_uri(device_id, &host, port, protocol);
+    let protocol = pjsip_protocol_from_base(session.association.protocol);
+    let remote_addr = session.association.remote_addr;
+    let remote_target = target_uri(
+        device_id,
+        &remote_addr.ip().to_string(),
+        remote_addr.port(),
+        protocol,
+    );
     let runtime = NativeSipRuntimeHandle::global()?;
     let operation_id = runtime.next_operation_id();
     let rx = SipRuntimeCache::global().insert_native_subscription_waiter(

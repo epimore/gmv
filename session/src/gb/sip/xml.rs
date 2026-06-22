@@ -132,24 +132,10 @@ pub fn value<'a>(items: &'a [(String, String)], key: &str) -> Option<&'a str> {
         .find_map(|(item_key, value)| (item_key == key).then_some(value.as_str()))
 }
 
-pub fn tag_value(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = xml.find(&open)? + open.len();
-    let end = xml[start..].find(&close)? + start;
-    Some(xml[start..end].trim().to_string())
-}
-
-pub fn cmd_type(xml: &str) -> Option<String> {
-    tag_value(xml, "CmdType")
-}
-
-pub fn sn(xml: &str) -> Option<String> {
-    tag_value(xml, "SN")
-}
-
-pub fn device_id(xml: &str) -> Option<String> {
-    tag_value(xml, "DeviceID")
+pub fn value_by_tag<'a>(items: &'a [(String, String)], tag: &str) -> Option<&'a str> {
+    items
+        .iter()
+        .find_map(|(key, value)| (key.rsplit(',').next() == Some(tag)).then_some(value.as_str()))
 }
 
 pub fn escape(value: &str) -> String {
@@ -351,10 +337,6 @@ pub const RESPONSE_DEVICE_LIST_ITEM_PORT: &str = "Response,DeviceList,Item,Port"
 pub const RESPONSE_DEVICE_LIST_ITEM_PASSWORD: &str = "Response,DeviceList,Item,Password";
 pub const RESPONSE_DEVICE_LIST_ITEM_STATUS: &str = "Response,DeviceList,Item,Status";
 pub const SPLIT_CLASS: &str = "?<-0_0->?";
-
-pub fn session_id(xml: &str) -> Option<String> {
-    tag_value(xml, "SessionID")
-}
 
 pub fn build_preset_query_xml(device_id: &str) -> String {
     format!(

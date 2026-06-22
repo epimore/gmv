@@ -79,12 +79,19 @@ async fn send_native_message_on_device_and_wait(
     let rx =
         SipRuntimeCache::global().insert_native_response_waiter(operation_id, REQUEST_WAIT_TIMEOUT);
     let conf = SessionConf::get_session_by_conf();
+    let protocol = pjsip_protocol_from_base(session.association.protocol);
+    let remote_addr = session.association.remote_addr;
     let body = xml::encode_document(&request.body, session.gb_version.as_deref());
     let message = SipOutboundMessage {
         operation_id,
         association_id: 0,
-        protocol: request.protocol,
-        target_uri: request.target_uri(),
+        protocol,
+        target_uri: target_uri(
+            &request.device_id,
+            &remote_addr.ip().to_string(),
+            remote_addr.port(),
+            protocol,
+        ),
         from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
         content_type: request.content_type,
         body: body.to_vec(),
@@ -324,8 +331,6 @@ pub async fn broadcast_notify_and_wait(
     target_id: &str,
     sn: u32,
 ) -> GlobalResult<super::invite::GbIncomingInviteEvent> {
-    let (host, port, protocol) = connected_target(device_id)?;
-    let protocol = pjsip_protocol_from_base(protocol);
     let source_id = SessionConf::get_session_by_conf().domain_id;
     let response_key = BroadcastResponseKey {
         sn: sn.to_string(),
@@ -338,9 +343,7 @@ pub async fn broadcast_notify_and_wait(
         source_id.clone(),
         INVITE_WAIT_TIMEOUT,
     );
-    let request = CreateDeviceMessageRequest::broadcast_notify(
-        target_id, host, port, protocol, sn, &source_id,
-    );
+    let request = CreateDeviceMessageRequest::broadcast_notify(target_id, sn, &source_id);
     if let Err(err) = send_native_message_on_device_and_wait(device_id, request).await {
         SipRuntimeCache::global().remove_broadcast_response_waiter(&response_key);
         reject_buffered_broadcast_invite(&mut invite_rx);
@@ -521,27 +524,11 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
 }
 
 pub async fn query_catalog(device_id: &str, sn: u32) -> GlobalResult<()> {
-    let (host, port, proto) = connected_target(device_id)?;
-    send_native_message_and_wait(CreateDeviceMessageRequest::catalog_query(
-        device_id.to_string(),
-        host,
-        port,
-        pjsip_protocol_from_base(proto),
-        sn,
-    ))
-    .await
+    send_native_message_and_wait(CreateDeviceMessageRequest::catalog_query(device_id, sn)).await
 }
 
 pub async fn query_device_info(device_id: &str, sn: u32) -> GlobalResult<()> {
-    let (host, port, proto) = connected_target(device_id)?;
-    send_native_message_and_wait(CreateDeviceMessageRequest::device_info_query(
-        device_id.to_string(),
-        host,
-        port,
-        pjsip_protocol_from_base(proto),
-        sn,
-    ))
-    .await
+    send_native_message_and_wait(CreateDeviceMessageRequest::device_info_query(device_id, sn)).await
 }
 
 pub async fn query_record_info(
@@ -550,40 +537,18 @@ pub async fn query_record_info(
     start_time: &str,
     end_time: &str,
 ) -> GlobalResult<()> {
-    let (host, port, proto) = connected_target(device_id)?;
     send_native_message_and_wait(CreateDeviceMessageRequest::record_info_query(
-        device_id.to_string(),
-        host,
-        port,
-        pjsip_protocol_from_base(proto),
-        sn,
-        start_time,
-        end_time,
+        device_id, sn, start_time, end_time,
     ))
     .await
 }
 
 pub async fn query_preset(device_id: &str) -> GlobalResult<()> {
-    let (host, port, proto) = connected_target(device_id)?;
-    send_native_message_and_wait(CreateDeviceMessageRequest::preset_query(
-        device_id.to_string(),
-        host,
-        port,
-        pjsip_protocol_from_base(proto),
-    ))
-    .await
+    send_native_message_and_wait(CreateDeviceMessageRequest::preset_query(device_id)).await
 }
 
 pub async fn send_xml_message(device_id: &str, body: String) -> GlobalResult<()> {
-    let (host, port, proto) = connected_target(device_id)?;
-    send_native_message_and_wait(CreateDeviceMessageRequest::xml(
-        device_id.to_string(),
-        host,
-        port,
-        pjsip_protocol_from_base(proto),
-        body,
-    ))
-    .await
+    send_native_message_and_wait(CreateDeviceMessageRequest::xml(device_id, body)).await
 }
 
 pub async fn control_ptz(model: &PtzControlModel) -> GlobalResult<()> {
@@ -638,17 +603,8 @@ pub async fn snapshot_image_call(
     url: &str,
     session_id: &str,
 ) -> GlobalResult<()> {
-    let (host, port, proto) = connected_target(device_id)?;
     send_native_message_and_wait(CreateDeviceMessageRequest::snapshot_control(
-        device_id.to_string(),
-        channel_id,
-        host,
-        port,
-        pjsip_protocol_from_base(proto),
-        count,
-        interval,
-        url,
-        session_id,
+        device_id, channel_id, count, interval, url, session_id,
     ))
     .await
 }

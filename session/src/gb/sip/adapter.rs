@@ -53,9 +53,9 @@ pub fn base_association_from_pjsip(association: &SipAssociation) -> Association 
     )
 }
 
-pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
+pub fn apply_business_event(event: GbSipEvent) -> GlobalResult<()> {
     match event {
-        GbSipEvent::Register(event) => apply_register_event(event),
+        GbSipEvent::Register(event) => apply_register_event(&event),
         GbSipEvent::Message(event) => apply_message_event(event),
         GbSipEvent::IncomingInvite(event) => {
             info!(
@@ -68,7 +68,7 @@ pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
             debug!("SIP ACK received: call_id={call_id}");
             Ok(())
         }
-        GbSipEvent::Bye(event) => apply_bye_event(event),
+        GbSipEvent::Bye(event) => apply_bye_event(&event),
         GbSipEvent::Cancel { call_id } => {
             warn!("SIP CANCEL received: call_id={call_id}");
             Ok(())
@@ -180,12 +180,12 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
     Ok(())
 }
 
-fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
-    let items = super::xml::parse_items(&event.body)?;
+fn apply_message_event(mut event: GbMessageEvent) -> GlobalResult<()> {
     let device_id = event
         .device_id
-        .as_deref()
-        .or(event.xml_device_id.as_deref());
+        .clone()
+        .or_else(|| event.xml_device_id.clone());
+    let device_id = device_id.as_deref();
 
     match event.kind {
         GbMessageKind::Keepalive => {
@@ -199,12 +199,14 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
             )?;
         }
         GbMessageKind::DeviceInfo => {
-            db_task::submit(DbTask::UpdateDeviceExtInfo(items));
+            db_task::submit(DbTask::UpdateDeviceExtInfo(std::mem::take(
+                &mut event.items,
+            )));
         }
         GbMessageKind::Catalog => {
             if let Some(device_id) = device_id {
                 if matches!(event.method.as_ref(), Some(SipMethod::Notify))
-                    && !super::subscription::accept_catalog_notify(event, device_id)
+                    && !super::subscription::accept_catalog_notify(&event, device_id)
                 {
                     warn!(
                         "ignore catalog NOTIFY outside active subscription: \
@@ -215,16 +217,16 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
                 }
                 db_task::submit(DbTask::InsertDeviceCatalog {
                     device_id: device_id.to_string(),
-                    items,
+                    items: std::mem::take(&mut event.items),
                 });
             } else {
                 warn!("catalog MESSAGE missing device id");
             }
         }
-        GbMessageKind::Alarm => dispatch_alarm(device_id, items)?,
+        GbMessageKind::Alarm => dispatch_alarm(device_id, std::mem::take(&mut event.items))?,
         GbMessageKind::MediaStatus => {
-            let channel_id = super::xml::value(&items, super::xml::NOTIFY_DEVICE_ID);
-            let notify_type = super::xml::value(&items, super::xml::NOTIFY_TYPE);
+            let channel_id = super::xml::value(&event.items, super::xml::NOTIFY_DEVICE_ID);
+            let notify_type = super::xml::value(&event.items, super::xml::NOTIFY_TYPE);
             if notify_type.is_none_or(|value| value == "121") {
                 if let (Some(device_id), Some(channel_id)) = (device_id, channel_id) {
                     for stream_id in
@@ -239,12 +241,12 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
             let sn = event
                 .xml_sn
                 .as_deref()
-                .or_else(|| super::xml::value(&items, "Response,SN"));
+                .or_else(|| super::xml::value(&event.items, "Response,SN"));
             let target_id = event
                 .xml_device_id
                 .as_deref()
-                .or_else(|| super::xml::value(&items, "Response,DeviceID"));
-            let result = super::xml::value(&items, "Response,Result");
+                .or_else(|| super::xml::value(&event.items, "Response,DeviceID"));
+            let result = super::xml::value(&event.items, "Response,Result");
             if let (Some(sn), Some(target_id), Some(result)) = (sn, target_id, result) {
                 SipRuntimeCache::global().complete_broadcast_response(
                     sn,

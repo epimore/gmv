@@ -257,7 +257,7 @@ pub struct NativeSipRuntimeService {
 
 impl NativeSipRuntimeService {
     pub fn start(
-        bind_address: Ipv4Addr,
+        advertised_address: Ipv4Addr,
         port: u16,
         realm: String,
         sockets: SipRuntimeSockets,
@@ -295,7 +295,7 @@ impl NativeSipRuntimeService {
             .name("gmv-pjsip-owner".into())
             .spawn(move || {
                 let config = SipRuntimeConfig {
-                    bind_address,
+                    advertised_address,
                     port,
                     auth_realm: realm,
                     auth_lookup_timeout: AUTH_LOOKUP_TIMEOUT,
@@ -631,9 +631,16 @@ async fn run_native_business_events(
                 _ => {}
             }
         }
+        let message_event = match GbMessageEvent::from_native(&event) {
+            Ok(event) => event,
+            Err(err) => {
+                warn!("parse native SIP MESSAGE failed: {err}");
+                None
+            }
+        };
         let business_event = GbRegisterEvent::from_native(&event)
             .map(GbSipEvent::Register)
-            .or_else(|| GbMessageEvent::from_native(&event).map(GbSipEvent::Message))
+            .or_else(|| message_event.map(GbSipEvent::Message))
             .or_else(|| GbIncomingInviteEvent::from_native(&event).map(GbSipEvent::IncomingInvite))
             .or_else(|| native_dialog_event(&event));
         if let Some(business_event) = business_event {
@@ -653,7 +660,7 @@ async fn run_native_business_events(
                     );
                 }
             }
-            if let Err(err) = apply_business_event(&business_event) {
+            if let Err(err) = apply_business_event(business_event) {
                 warn!("apply native SIP business event failed: {err}");
             }
         }
