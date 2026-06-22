@@ -475,10 +475,12 @@ impl SipRuntimeCache {
             extract_tag(&to_header).unwrap_or_default(),
         );
         if completed {
-            Cache::catalog_subscription_update_expires(
-                &pending.device_id,
+            let expires = response.expires.unwrap_or(pending.expires).max(1);
+            Cache::catalog_subscription_update_expires(&pending.device_id, generation, expires);
+            super::subscription::schedule_catalog_refresh(
+                pending.device_id.clone().into(),
                 generation,
-                response.expires.unwrap_or(pending.expires).max(1),
+                expires,
             );
         } else {
             Cache::catalog_subscription_remove(&pending.device_id, Some(generation));

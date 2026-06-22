@@ -135,6 +135,8 @@ pub async fn refresh_catalog_subscription(
         .await
         .map_err(|reason| {
             SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+            Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
+            schedule_catalog_retry(device_id.clone(), generation, command.expires);
             subscription_timeout(device_id.as_ref(), operation_id, reason)
         })?;
     complete_refresh(device_id, command, response)
@@ -156,7 +158,10 @@ fn complete_refresh(
             command.expires,
             response,
         ) {
-            Ok(_) => Ok(()),
+            Ok(expires) => {
+                schedule_catalog_refresh(device_id, generation, expires);
+                Ok(())
+            }
             Err(err) => {
                 Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
                 schedule_catalog_retry(device_id, generation, command.expires);
@@ -194,7 +199,9 @@ pub fn accept_catalog_notify(event: &GbMessageEvent, device_id: &str) -> bool {
         if state.eq_ignore_ascii_case("terminated") {
             terminate_catalog_subscription(device_id, generation);
         } else if let Some(expires) = expires {
-            Cache::catalog_subscription_update_expires(device_id, generation, expires.max(1));
+            let expires = expires.max(1);
+            Cache::catalog_subscription_update_expires(device_id, generation, expires);
+            schedule_catalog_refresh(Arc::from(device_id), generation, expires);
         }
     }
     true
@@ -240,6 +247,12 @@ fn complete_catalog_subscription(
     Ok(expires)
 }
 
+#[test]
+fn test_catalog() {
+    let body = catalog_subscription_body("asf", 3600);
+    println!("{}", body);
+}
+
 fn catalog_subscription_body(device_id: &str, expires: u32) -> String {
     let now = Local::now();
     let end = now + TimeDelta::seconds(i64::from(expires));
@@ -250,6 +263,19 @@ fn catalog_subscription_body(device_id: &str, expires: u32) -> String {
         &now.format("%Y-%m-%dT%H:%M:%S").to_string(),
         &end.format("%Y-%m-%dT%H:%M:%S").to_string(),
     )
+}
+
+pub(super) fn schedule_catalog_refresh(device_id: Arc<str>, generation: u64, expires: u32) {
+    let key = TimeScheduleKey::CatalogSubscription(device_id, generation);
+    let _ = Register::scheduler().remove_register(&key);
+    if let Err(err) = Register::scheduler().insert_register(key, catalog_refresh_delay(expires)) {
+        warn!("schedule catalog subscription refresh failed: {err}");
+    }
+}
+
+fn catalog_refresh_delay(expires: u32) -> Duration {
+    let advance = (expires / 10).clamp(1, 30);
+    Duration::from_secs(u64::from(expires.saturating_sub(advance).max(1)))
 }
 
 fn schedule_catalog_retry(device_id: Arc<str>, generation: u64, expires: u32) {
@@ -333,7 +359,25 @@ fn invalid_subscription(message: &'static str) -> GlobalError {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_subscription_state;
+    use std::time::Duration;
+
+    use super::{catalog_refresh_delay, parse_subscription_state};
+
+    #[test]
+    fn schedules_catalog_refresh_before_native_refresh() {
+        assert_eq!(catalog_refresh_delay(3_600), Duration::from_secs(3_570));
+        assert_eq!(catalog_refresh_delay(300), Duration::from_secs(270));
+        assert_eq!(catalog_refresh_delay(5), Duration::from_secs(4));
+        assert_eq!(catalog_refresh_delay(1), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn catalog_refresh_builds_a_new_body() {
+        let first = super::catalog_subscription_body("device", 3_600);
+        let second = super::catalog_subscription_body("device", 3_600);
+
+        assert_ne!(first, second);
+    }
 
     #[test]
     fn parses_subscription_state_expires() {
