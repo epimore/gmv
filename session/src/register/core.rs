@@ -454,11 +454,22 @@ impl Register {
 }
 
 fn heartbeat_timeout(heartbeat_sec: u8) -> Duration {
-    Duration::from_secs(u64::from(heartbeat_sec).saturating_mul(3))
+    Duration::from_secs(u64::from(heartbeat_sec).saturating_mul(3).saturating_add(1))
 }
 
 fn invalid_device_lease(device_id: &str, message: &str) -> GlobalError {
     GlobalError::new_sys_error(message, |log_message| {
         warn!("device_id={device_id}; {log_message}")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::heartbeat_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn heartbeat_timeout_includes_one_second_grace() {
+        assert_eq!(heartbeat_timeout(60), Duration::from_secs(181));
+    }
 }

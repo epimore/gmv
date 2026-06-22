@@ -4,8 +4,8 @@ members = [
     "session",
     "shared",
     "stream",
-#    "ruminate"
-]
+    "avai"
+, "guard"]
 
 [workspace.package]
 version = "2.1.0-release"

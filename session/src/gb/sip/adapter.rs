@@ -146,7 +146,7 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
         register_expires: expires,
         register_time: now,
         online_expire_time: Some(
-            now + TimeDelta::seconds(i64::from(heartbeat_sec).saturating_mul(3)),
+            now + TimeDelta::seconds(i64::from(heartbeat_sec).saturating_mul(3).saturating_add(1)),
         ),
         local_addr: association.remote_addr.to_string(),
         contact_uri: event.contact.clone().unwrap_or_default(),

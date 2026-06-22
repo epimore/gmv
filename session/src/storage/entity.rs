@@ -415,7 +415,7 @@ impl GmvDevice {
         sqlx::query(
             r#"update GMV_DEVICE d
             inner join GMV_OAUTH o on o.DEVICE_ID=d.DEVICE_ID
-            set d.online_expire_time=timestampadd(second,o.heartbeat_sec * 3,now())
+            set d.online_expire_time=timestampadd(second,o.heartbeat_sec * 3 + 1,now())
             where d.device_id=?"#,
         )
         .bind(device_id)

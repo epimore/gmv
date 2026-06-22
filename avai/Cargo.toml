@@ -8,12 +8,12 @@ authors.workspace = true
 shared = { path = "../shared" }
 #base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "0ac18e3", features = ["net"] }
 base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
-burn = "0.19"
-burn-tensor = "0.19"
-candle-transformers = "0.9"
-candle-core = "0.9"
-candle-nn = "0.9"
-tract-core = "0.22"
-tract-linalg = "0.22"
-smartcore = "0.4"
-automl = "0.3"
+#burn = "0.19"
+#burn-tensor = "0.19"
+#candle-transformers = "0.9"
+#candle-core = "0.9"
+#candle-nn = "0.9"
+#tract-core = "0.22"
+#tract-linalg = "0.22"
+#smartcore = "0.4"
+#automl = "0.3"

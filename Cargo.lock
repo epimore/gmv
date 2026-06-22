@@ -233,6 +233,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "avai"
+version = "2.1.0-release"
+dependencies = [
+ "base_db 0.1.0",
+ "shared",
+]
+
+[[package]]
 name = "avif-serialize"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -300,6 +308,42 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.2.0"
+dependencies = [
+ "aes",
+ "ahash",
+ "base64 0.22.1",
+ "block-modes",
+ "bytebuffer",
+ "bytes",
+ "cfg_lib 0.1.0",
+ "chrono",
+ "constructor 0.2.0",
+ "ctor",
+ "daemonize",
+ "dashmap",
+ "exception 0.1.0",
+ "fern",
+ "futures",
+ "hex",
+ "inventory",
+ "libc",
+ "log",
+ "once_cell",
+ "paste",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "smallvec",
+ "tokio",
+ "tokio-util",
+ "users",
+]
+
+[[package]]
+name = "base"
+version = "0.2.0"
 source = "git+https://github.com/epimore/pigs.git?rev=f2fc8914#f2fc8914a1c4c0e25168f00755ffeb55515693eb"
 dependencies = [
  "aes",
@@ -308,13 +352,13 @@ dependencies = [
  "block-modes",
  "bytebuffer",
  "bytes",
- "cfg_lib",
+ "cfg_lib 0.1.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "chrono",
- "constructor",
+ "constructor 0.2.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "ctor",
  "daemonize",
  "dashmap",
- "exception",
+ "exception 0.1.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "fern",
  "futures",
  "hex",
@@ -355,9 +399,17 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "base_db"
 version = "0.1.0"
+dependencies = [
+ "base 0.2.0",
+ "sqlx",
+]
+
+[[package]]
+name = "base_db"
+version = "0.1.0"
 source = "git+https://github.com/epimore/pigs.git?rev=f2fc8914#f2fc8914a1c4c0e25168f00755ffeb55515693eb"
 dependencies = [
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "sqlx",
 ]
 
@@ -555,11 +607,29 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
-source = "git+https://github.com/epimore/pigs.git?rev=f2fc8914#f2fc8914a1c4c0e25168f00755ffeb55515693eb"
 dependencies = [
- "cfg_macro",
+ "cfg_macro 0.1.0",
  "clap",
  "once_cell",
+]
+
+[[package]]
+name = "cfg_lib"
+version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=f2fc8914#f2fc8914a1c4c0e25168f00755ffeb55515693eb"
+dependencies = [
+ "cfg_macro 0.1.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
+ "clap",
+ "once_cell",
+]
+
+[[package]]
+name = "cfg_macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -670,6 +740,15 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "constructor"
+version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "constructor"
@@ -966,6 +1045,15 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "exception"
+version = "0.1.0"
 source = "git+https://github.com/epimore/pigs.git?rev=f2fc8914#f2fc8914a1c4c0e25168f00755ffeb55515693eb"
 dependencies = [
  "anyhow",
@@ -1250,7 +1338,7 @@ version = "2.1.0-release"
 dependencies = [
  "anyhow",
  "axum",
- "base_db",
+ "base_db 0.1.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "encoding_rs",
  "gmv_pjsip",
  "image",
@@ -1276,7 +1364,7 @@ name = "gmv-stream"
 version = "2.1.0-release"
 dependencies = [
  "axum",
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "crossbeam-channel",
  "futures-core",
  "futures-util",
@@ -1299,7 +1387,7 @@ name = "gmv_pjsip"
 version = "0.1.0"
 source = "git+https://github.com/epimore/gmv_pjsip.git?rev=b86c032e#b86c032e646f7ac2fe4c3db568d73d36f99b86e9"
 dependencies = [
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "gmv_pjsip_sys",
  "uuid",
 ]
@@ -1314,6 +1402,10 @@ dependencies = [
  "libc",
  "pkg-config",
 ]
+
+[[package]]
+name = "guard"
+version = "2.1.0-release"
 
 [[package]]
 name = "h2"
@@ -3014,7 +3106,7 @@ dependencies = [
 name = "shared"
 version = "2.1.0-release"
 dependencies = [
- "base",
+ "base 0.2.0 (git+https://github.com/epimore/pigs.git?rev=f2fc8914)",
  "paste",
  "utoipa",
 ]
