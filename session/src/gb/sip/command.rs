@@ -79,6 +79,7 @@ async fn send_native_message_on_device_and_wait(
     let rx =
         SipRuntimeCache::global().insert_native_response_waiter(operation_id, REQUEST_WAIT_TIMEOUT);
     let conf = SessionConf::get_session_by_conf();
+    let body = xml::encode_document(&request.body, session.gb_version.as_deref());
     let message = SipOutboundMessage {
         operation_id,
         association_id: 0,
@@ -86,7 +87,7 @@ async fn send_native_message_on_device_and_wait(
         target_uri: request.target_uri(),
         from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
         content_type: request.content_type,
-        body: request.body.to_vec(),
+        body: body.to_vec(),
     };
     if let Err(err) = runtime.send_message(&session.association, message) {
         SipRuntimeCache::global().remove_native_response_waiter(operation_id);

@@ -74,7 +74,11 @@ async fn subscribe_catalog_once(device_id: &str, expires: u32) -> GlobalResult<(
         event: CATALOG_EVENT.to_string(),
         expires,
         content_type: GB_XML_CONTENT_TYPE.to_string(),
-        body: xml::encode_document(&catalog_subscription_body(device_id, expires)).to_vec(),
+        body: xml::encode_document(
+            &catalog_subscription_body(device_id, expires),
+            session.gb_version.as_deref(),
+        )
+        .to_vec(),
     };
     if let Err(err) = runtime.send_subscribe(&session.association, request) {
         SipRuntimeCache::global().remove_native_subscription_waiter(operation_id);
@@ -120,10 +124,10 @@ pub async fn refresh_catalog_subscription(
         event: command.event.clone(),
         expires: command.expires,
         content_type: GB_XML_CONTENT_TYPE.to_string(),
-        body: xml::encode_document(&catalog_subscription_body(
-            device_id.as_ref(),
-            command.expires,
-        ))
+        body: xml::encode_document(
+            &catalog_subscription_body(device_id.as_ref(), command.expires),
+            session.gb_version.as_deref(),
+        )
         .to_vec(),
     };
     if let Err(err) = runtime.send_subscribe(&session.association, request) {

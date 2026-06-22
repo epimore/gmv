@@ -159,7 +159,7 @@ pub struct CreateDeviceMessageRequest {
     pub device_host: String,
     pub device_port: u16,
     pub protocol: SipTransportProtocol,
-    pub body: Bytes,
+    pub body: String,
     pub content_type: String,
     pub call_id: Option<String>,
     pub cseq: Option<u32>,
@@ -321,13 +321,12 @@ impl CreateDeviceMessageRequest {
         protocol: SipTransportProtocol,
         body: impl Into<String>,
     ) -> Self {
-        let body = body.into();
         Self {
             device_id: device_id.into(),
             device_host: device_host.into(),
             device_port,
             protocol,
-            body: xml::encode_document(&body),
+            body: body.into(),
             content_type: GB_XML_CONTENT_TYPE.to_string(),
             call_id: None,
             cseq: None,

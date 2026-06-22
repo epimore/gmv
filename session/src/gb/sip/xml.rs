@@ -14,6 +14,8 @@ use encoding_rs::{Encoding, GB18030, GBK, UTF_8};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
+const GB_2022_VERSION: &str = "3.0";
+
 #[derive(Clone, Copy)]
 enum XmlEncoding {
     Utf8,
@@ -44,10 +46,32 @@ fn detect_encoding(xml: &[u8]) -> XmlEncoding {
     }
 }
 
-pub fn encode_document(xml: &str) -> Bytes {
-    let encoding = detect_encoding(xml.as_bytes()).encoding();
-    let (encoded, _, _) = encoding.encode(xml);
+pub fn encode_document(xml: &str, gb_version: Option<&str>) -> Bytes {
+    let encoding = if gb_version.is_some_and(|version| version.trim() == GB_2022_VERSION) {
+        XmlEncoding::Gb18030
+    } else {
+        XmlEncoding::Gb2312
+    };
+    let declaration = match encoding {
+        XmlEncoding::Gb18030 => "GB18030",
+        _ => "GB2312",
+    };
+    let xml = with_encoding_declaration(xml, declaration);
+    let (encoded, _, _) = encoding.encoding().encode(&xml);
     Bytes::from(encoded.into_owned())
+}
+
+fn with_encoding_declaration(xml: &str, encoding: &str) -> String {
+    let xml = xml.trim_start_matches('\u{feff}');
+    let body = if xml.starts_with("<?xml") {
+        xml.find("?>").map_or(xml, |end| &xml[end + 2..])
+    } else {
+        xml
+    };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"{encoding}\"?>\r\n{}",
+        body.trim_start_matches(['\r', '\n'])
+    )
 }
 
 pub fn parse_items(xml: &[u8]) -> GlobalResult<Vec<(String, String)>> {
@@ -377,9 +401,9 @@ mod tests {
     use super::{
         RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID, SPLIT_CLASS, build_broadcast_notify,
         build_catalog_subscription, build_config_download_query, build_cruise_track_query,
-        encode_document, parse_items,
+        build_snapshot_control_xml, encode_document, parse_items,
     };
-    use encoding_rs::GBK;
+    use encoding_rs::{GB18030, GBK};
 
     #[test]
     fn parses_gb2312_catalog_items_with_paths() {
@@ -420,7 +444,7 @@ mod tests {
     fn encodes_document_using_declared_gb2312() {
         let xml = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\
             <Response><Name>\u{6444}\u{50cf}\u{673a}</Name></Response>";
-        let bytes = encode_document(xml);
+        let bytes = encode_document(xml, None);
         assert!(std::str::from_utf8(&bytes).is_err());
         let items = parse_items(&bytes).unwrap();
         assert!(
@@ -428,6 +452,33 @@ mod tests {
                 key == "Response,Name" && value == "\u{6444}\u{50cf}\u{673a}"
             })
         );
+    }
+
+    #[test]
+    fn encodes_outbound_document_using_device_version() {
+        let xml = "<?xml version=\"1.0\"?><Control><Name>摄像机</Name></Control>";
+
+        let gb2312 = encode_document(xml, Some("2.0"));
+        let (decoded, _, had_errors) = GBK.decode(&gb2312);
+        assert!(!had_errors);
+        assert!(decoded.starts_with("<?xml version=\"1.0\" encoding=\"GB2312\"?>"));
+        assert!(decoded.contains("<Name>摄像机</Name>"));
+
+        let gb18030 = encode_document(xml, Some("3.0"));
+        let (decoded, _, had_errors) = GB18030.decode(&gb18030);
+        assert!(!had_errors);
+        assert!(decoded.starts_with("<?xml version=\"1.0\" encoding=\"GB18030\"?>"));
+        assert!(decoded.contains("<Name>摄像机</Name>"));
+    }
+
+    #[test]
+    fn snapshot_control_receives_versioned_encoding_declaration() {
+        let xml = build_snapshot_control_xml("channel", 1, 1, "http://example", "session");
+        let bytes = encode_document(&xml, Some("3.0"));
+        let (decoded, _, had_errors) = GB18030.decode(&bytes);
+        assert!(!had_errors);
+        assert!(decoded.starts_with("<?xml version=\"1.0\" encoding=\"GB18030\"?>"));
+        assert!(decoded.contains("<CmdType>DeviceConfig</CmdType>"));
     }
 
     #[test]
