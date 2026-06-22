@@ -1297,7 +1297,7 @@ dependencies = [
 [[package]]
 name = "gmv_pjsip"
 version = "0.1.0"
-source = "git+https://github.com/epimore/gmv_pjsip.git?rev=e3045330#e30453308a8432f72dcb77c0f7499c1a48f4ecdc"
+source = "git+https://github.com/epimore/gmv_pjsip.git?rev=b86c032e#b86c032e646f7ac2fe4c3db568d73d36f99b86e9"
 dependencies = [
  "base",
  "gmv_pjsip_sys",
@@ -1307,7 +1307,7 @@ dependencies = [
 [[package]]
 name = "gmv_pjsip_sys"
 version = "0.1.0"
-source = "git+https://github.com/epimore/gmv_pjsip.git?rev=e3045330#e30453308a8432f72dcb77c0f7499c1a48f4ecdc"
+source = "git+https://github.com/epimore/gmv_pjsip.git?rev=b86c032e#b86c032e646f7ac2fe4c3db568d73d36f99b86e9"
 dependencies = [
  "bindgen 0.70.1",
  "cc",
