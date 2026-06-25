@@ -295,7 +295,7 @@ impl NativeSipRuntimeService {
             .name("gmv-pjsip-owner".into())
             .spawn(move || {
                 let config = SipRuntimeConfig {
-                    bind_address,
+                    advertised_address: bind_address,
                     port,
                     auth_realm: realm,
                     auth_lookup_timeout: AUTH_LOOKUP_TIMEOUT,

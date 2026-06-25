@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
+use base::sha2::{Digest, Sha256};
 
 const PLATFORM_ID: &str = "34020000002000000001";
 const DEVICE_ID: &str = "34020000001110000009";

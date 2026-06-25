@@ -351,10 +351,10 @@ impl SipDialogSessionRepository {
         }
 
         let route_set = route_set_to_json(&session.route_set)?;
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO GMV_SIP_DIALOG_SESSION ({INSERT_COLUMNS}) \
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        ))
+        )))
         .bind(&session.stream_id)
         .bind(&session.device_id)
         .bind(&session.channel_id)
@@ -700,9 +700,9 @@ impl SipDialogSessionRepository {
                 .get(stream_id)
                 .cloned());
         }
-        let row = sqlx::query_as::<_, SipDialogSessionRow>(&format!(
+        let row = sqlx::query_as::<_, SipDialogSessionRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION WHERE STREAM_ID=?"
-        ))
+        )))
         .bind(stream_id)
         .fetch_optional(get_conn_by_pool())
         .await
@@ -724,10 +724,10 @@ impl SipDialogSessionRepository {
             sessions.sort_by(|left, right| left.stream_id.cmp(&right.stream_id));
             return Ok(sessions);
         }
-        let rows = sqlx::query_as::<_, SipDialogSessionRow>(&format!(
+        let rows = sqlx::query_as::<_, SipDialogSessionRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION \
              WHERE CALL_ID=? ORDER BY STREAM_ID"
-        ))
+        )))
         .bind(call_id)
         .fetch_all(get_conn_by_pool())
         .await
@@ -770,9 +770,9 @@ impl SipDialogSessionRepository {
             return Ok(sessions);
         }
 
-        let rows = sqlx::query_as::<_, SipDialogSessionRow>(&format!(
+        let rows = sqlx::query_as::<_, SipDialogSessionRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION              WHERE SIGNAL_NODE_ID=? AND MEDIA_NODE_ID=? AND SSRC=?              AND SESSION_TYPE IN ('LIVE','PLAYBACK','DOWNLOAD')              AND STATE IN ('ESTABLISHED','TERMINATING')              AND CREATED_AT<=? AND EXPIRE_AT>?              ORDER BY CREATED_AT DESC LIMIT 2"
-        ))
+        )))
         .bind(signal_node_id)
         .bind(media_node_id)
         .bind(ssrc)

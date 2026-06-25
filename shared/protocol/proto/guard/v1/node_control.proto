@@ -1,0 +1,167 @@
+syntax = "proto3";
+
+package gmv.guard.v1;
+
+import "common/v1/types.proto";
+
+service GuardNodeControl {
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc OpenControlStream(stream NodeToGuardMessage) returns (stream GuardToNodeMessage);
+}
+
+message RegisterNodeRequest {
+  gmv.common.v1.NodeIdentity identity = 1;
+  string software_version = 2;
+  int64 started_at_epoch_ms = 3;
+  repeated gmv.common.v1.Endpoint endpoints = 4;
+  repeated string capabilities = 5;
+  NodeResourceSnapshot startup_snapshot = 6;
+}
+
+message RegisterNodeResponse {
+  RegisterDecision decision = 1;
+  int64 guard_epoch_ms = 2;
+  uint64 heartbeat_interval_ms = 3;
+  uint64 heartbeat_timeout_ms = 4;
+  string message = 5;
+}
+
+enum RegisterDecision {
+  REGISTER_DECISION_UNSPECIFIED = 0;
+  REGISTER_DECISION_ACCEPTED = 1;
+  REGISTER_DECISION_RECONNECTED = 2;
+  REGISTER_DECISION_SUPERSEDED_OLD_INSTANCE = 3;
+  REGISTER_DECISION_REJECTED = 4;
+}
+
+message NodeToGuardMessage {
+  gmv.common.v1.NodeIdentity identity = 1;
+  uint64 sequence = 2;
+  int64 sent_at_epoch_ms = 3;
+  oneof payload {
+    NodeHeartbeat heartbeat = 10;
+    NodeResourceSnapshot snapshot = 11;
+    NodeEvent event = 12;
+    CommandResult command_result = 13;
+    TimeProbeSample time_probe_sample = 14;
+  }
+}
+
+message GuardToNodeMessage {
+  string message_id = 1;
+  int64 sent_at_epoch_ms = 2;
+  oneof payload {
+    StreamAck ack = 10;
+    GuardCommand command = 11;
+    TimeProbeRequest time_probe_request = 12;
+    TimeProbeResult time_probe_result = 13;
+    ShutdownNotice shutdown_notice = 14;
+  }
+}
+
+message StreamAck {
+  uint64 received_sequence = 1;
+}
+
+message NodeHeartbeat {
+  NodeHealth health = 1;
+  map<string, string> metrics = 2;
+}
+
+enum NodeHealth {
+  NODE_HEALTH_UNSPECIFIED = 0;
+  NODE_HEALTH_STARTING = 1;
+  NODE_HEALTH_READY = 2;
+  NODE_HEALTH_DEGRADED = 3;
+  NODE_HEALTH_DRAINING = 4;
+  NODE_HEALTH_OFFLINE = 5;
+}
+
+message NodeResourceSnapshot {
+  repeated ResourceReport resources = 1;
+  bool full = 2;
+}
+
+message ResourceReport {
+  gmv.common.v1.ResourceRef resource = 1;
+  ResourceState state = 2;
+  map<string, string> labels = 3;
+}
+
+enum ResourceState {
+  RESOURCE_STATE_UNSPECIFIED = 0;
+  RESOURCE_STATE_STARTING = 1;
+  RESOURCE_STATE_RUNNING = 2;
+  RESOURCE_STATE_STOPPING = 3;
+  RESOURCE_STATE_STOPPED = 4;
+  RESOURCE_STATE_FAILED = 5;
+}
+
+message NodeEvent {
+  string event_id = 1;
+  string topic = 2;
+  EventPriority priority = 3;
+  bytes payload = 4;
+}
+
+enum EventPriority {
+  EVENT_PRIORITY_UNSPECIFIED = 0;
+  EVENT_PRIORITY_P0 = 1;
+  EVENT_PRIORITY_P1 = 2;
+  EVENT_PRIORITY_P2 = 3;
+  EVENT_PRIORITY_P3 = 4;
+}
+
+message GuardCommand {
+  string command_id = 1;
+  string expected_instance_id = 2;
+  string command_type = 3;
+  uint64 deadline_ms = 4;
+  bytes payload = 5;
+}
+
+message CommandResult {
+  string command_id = 1;
+  CommandStatus status = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+  bytes payload = 4;
+}
+
+enum CommandStatus {
+  COMMAND_STATUS_UNSPECIFIED = 0;
+  COMMAND_STATUS_ACCEPTED = 1;
+  COMMAND_STATUS_SUCCEEDED = 2;
+  COMMAND_STATUS_FAILED = 3;
+  COMMAND_STATUS_REJECTED_STALE_INSTANCE = 4;
+}
+
+message TimeProbeRequest {
+  string probe_id = 1;
+  int64 guard_sent_at_epoch_ms = 2;
+}
+
+message TimeProbeSample {
+  string probe_id = 1;
+  int64 guard_sent_at_epoch_ms = 2;
+  int64 node_received_at_epoch_ms = 3;
+  int64 node_sent_at_epoch_ms = 4;
+}
+
+message TimeProbeResult {
+  string probe_id = 1;
+  ClockState state = 2;
+  int64 estimated_offset_ms = 3;
+  string message = 4;
+}
+
+enum ClockState {
+  CLOCK_STATE_UNSPECIFIED = 0;
+  CLOCK_STATE_SYNCED = 1;
+  CLOCK_STATE_WARN = 2;
+  CLOCK_STATE_TIME_UNSYNCED = 3;
+}
+
+message ShutdownNotice {
+  string reason = 1;
+  uint64 grace_period_ms = 2;
+}

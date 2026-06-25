@@ -1,0 +1,86 @@
+db:
+  mysql:
+    host_or_ip: 127.0.0.1
+    port: 3306
+    db_name: gmv
+    user: gmv
+    pass_crypto_enable: false
+    pass: ""
+    attrs:
+      log_global_sql_level: debug
+      log_slow_sql_timeout: 30
+      timezone: "+8:00"
+      charset: utf8mb4
+      ssl_level: 0
+    pool:
+      max_connections: 10
+      min_connections: 0
+      connection_timeout: 8
+      max_lifetime: 1800
+      idle_timeout: 60
+      check_health: false
+
+log:
+  level: info
+  prefix: guard
+  store_path: ./logs
+
+guard:
+  http:
+    bind_addr: 127.0.0.1:8080
+    allowed_origin: http://127.0.0.1:8080
+    ui_dist_dir: guard-ui/dist
+    tls:
+      enabled: false
+      certificate_path: ""
+      private_key_path: ""
+    session_ttl_sec: 28800
+    login_window_sec: 60
+    max_failed_attempts: 5
+
+  database:
+    backend: sqlite # sqlite | mysql
+    auto_migrate: true
+    pool:
+      max_connections: 10
+      min_connections: 0
+      connection_timeout_sec: 8
+      max_lifetime_sec: 1800
+      idle_timeout_sec: 60
+      check_health: false
+    sqlite:
+      path: data/guard.db
+    # mysql:
+    #   host: 127.0.0.1
+    #   port: 3306
+    #   database: gmv
+    #   username: gmv
+    #   password_env: GMV_GUARD_DB_PASSWORD
+    #   ssl_mode: preferred # disabled | preferred | required | verify_ca | verify_identity
+
+  security:
+    # Base64（无 padding）的 32 字节随机主密钥，仅从环境变量读取。
+    master_key_env: GMV_GUARD_MASTER_KEY
+    persist_ui_sessions: false
+
+  bootstrap:
+    admin:
+      # 仅 guard_user 为空时写入一次，之后不会覆盖数据库用户。
+      enabled: true
+      username: admin
+      password_hash_env: GMV_ADMIN_PASSWORD_HASH
+
+  simulator:
+    enabled: false
+
+  integrations:
+    mqtt:
+      enabled: false
+      broker: 127.0.0.1
+      port: 8883
+      client_id: gmv-guard
+      username: guard
+      password_env: GMV_GUARD_MQTT_PASSWORD
+      tls: true
+      subscribe_topics:
+        - gmv/commands/#

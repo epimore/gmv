@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package gmv.common.v1;
+
+message NodeIdentity {
+  string node_id = 1;
+  string instance_id = 2;
+  NodeKind kind = 3;
+}
+
+enum NodeKind {
+  NODE_KIND_UNSPECIFIED = 0;
+  NODE_KIND_GUARD = 1;
+  NODE_KIND_SESSION = 2;
+  NODE_KIND_STREAM = 3;
+  NODE_KIND_AVAI = 4;
+}
+
+enum EndpointMode {
+  ENDPOINT_MODE_UNSPECIFIED = 0;
+  ENDPOINT_MODE_SINGLE = 1;
+  ENDPOINT_MODE_MULTI = 2;
+}
+
+message Endpoint {
+  string name = 1;
+  string scheme = 2;
+  string host = 3;
+  uint32 port = 4;
+  EndpointMode mode = 5;
+  map<string, string> labels = 6;
+}
+
+message ResourceRef {
+  string resource_id = 1;
+  string resource_type = 2;
+}
+
+message OperationRef {
+  string operation_id = 1;
+  string idempotency_key = 2;
+}
+
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+  map<string, string> metadata = 3;
+}
+
+message PageRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message PageResponse {
+  string next_page_token = 1;
+}

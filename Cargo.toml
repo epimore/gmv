@@ -3,9 +3,11 @@ resolver = "2"
 members = [
     "session",
     "shared",
+    "shared/protocol",
     "stream",
-    "avai"
-, "guard"]
+    "avai",
+    "guard",
+]
 
 [workspace.package]
 version = "2.1.0-release"
@@ -24,6 +26,13 @@ url = "2.5"
 uuid = { version = "1.7", features = ["v4"] }
 utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
+axum = "0.8"
+axum-server = "0.8"
+tower-http = "0.6"
+argon2 = "0.5"
+tower = "0.5"
+rumqttc = "0.25.1"
+hmac = "0.12"
 
 [profile.dev]
 debug = true

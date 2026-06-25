@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package gmv.session.v1;
+
+import "common/v1/types.proto";
+
+service SessionControl {
+  rpc StartLive(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StartPlayback(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StartDownload(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
+}
+
+message StartDeviceStreamRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string route_id = 4;
+  string lease_id = 5;
+  gmv.common.v1.NodeIdentity expected_session = 6;
+}
+
+message StopDeviceStreamRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string reason = 3;
+}
+
+message DeviceStreamResponse {
+  string stream_id = 1;
+  DeviceStreamState state = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+}
+
+enum DeviceStreamState {
+  DEVICE_STREAM_STATE_UNSPECIFIED = 0;
+  DEVICE_STREAM_STATE_STARTING = 1;
+  DEVICE_STREAM_STATE_RUNNING = 2;
+  DEVICE_STREAM_STATE_STOPPING = 3;
+  DEVICE_STREAM_STATE_STOPPED = 4;
+  DEVICE_STREAM_STATE_FAILED = 5;
+}
+
+message ControlPtzRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string command = 4;
+  uint32 speed = 5;
+}
+
+message ControlPtzResponse {
+  bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}

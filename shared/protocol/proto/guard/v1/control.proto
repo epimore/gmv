@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package gmv.guard.v1;
+
+import "common/v1/types.proto";
+
+service GuardControl {
+  rpc AllocateStream(AllocateStreamRequest) returns (AllocateStreamResponse);
+  rpc ConfirmLease(LeaseRequest) returns (LeaseResponse);
+  rpc FailLease(LeaseRequest) returns (LeaseResponse);
+  rpc ReleaseLease(LeaseRequest) returns (LeaseResponse);
+  rpc QueryNode(QueryNodeRequest) returns (QueryNodeResponse);
+  rpc QueryRoute(QueryRouteRequest) returns (QueryRouteResponse);
+}
+
+message AllocateStreamRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string stream_type = 3;
+  map<string, string> constraints = 4;
+}
+
+message AllocateStreamResponse {
+  string lease_id = 1;
+  string route_id = 2;
+  gmv.common.v1.NodeIdentity stream_node = 3;
+  repeated gmv.common.v1.Endpoint endpoints = 4;
+  uint64 ttl_ms = 5;
+}
+
+message LeaseRequest {
+  string lease_id = 1;
+  string route_id = 2;
+  string expected_instance_id = 3;
+  gmv.common.v1.ErrorDetail error = 4;
+}
+
+message LeaseResponse {
+  LeaseState state = 1;
+}
+
+enum LeaseState {
+  LEASE_STATE_UNSPECIFIED = 0;
+  LEASE_STATE_PENDING = 1;
+  LEASE_STATE_CONFIRMED = 2;
+  LEASE_STATE_FAILED = 3;
+  LEASE_STATE_RELEASED = 4;
+  LEASE_STATE_EXPIRED = 5;
+}
+
+message QueryNodeRequest {
+  string node_id = 1;
+}
+
+message QueryNodeResponse {
+  gmv.common.v1.NodeIdentity current = 1;
+  repeated gmv.common.v1.Endpoint endpoints = 2;
+}
+
+message QueryRouteRequest {
+  string route_id = 1;
+}
+
+message QueryRouteResponse {
+  string route_id = 1;
+  gmv.common.v1.ResourceRef resource = 2;
+  gmv.common.v1.NodeIdentity owner = 3;
+  RouteState state = 4;
+}
+
+enum RouteState {
+  ROUTE_STATE_UNSPECIFIED = 0;
+  ROUTE_STATE_ALLOCATED = 1;
+  ROUTE_STATE_RUNNING = 2;
+  ROUTE_STATE_RECONCILING = 3;
+  ROUTE_STATE_CLOSED = 4;
+  ROUTE_STATE_ORPHANED = 5;
+}

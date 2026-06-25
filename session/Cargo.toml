@@ -5,11 +5,11 @@ edition.workspace = true
 
 [dependencies]
 shared = { path = "../shared" }
-base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
-#base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
-gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "b86c032e" }
-#gmv_pjsip = { path = "../../gmv_pjsip" }
-sqlx = { version = "0.8", default-features = false }
+#base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
+base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
+#gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "b86c032e" }
+gmv_pjsip = { path = "../../gmv_pjsip" }
+sqlx = { version = "0.9", default-features = false }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"
 sdp-types = "0.1"
@@ -29,5 +29,4 @@ utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
 
 [dev-dependencies]
-sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }

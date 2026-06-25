@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package gmv.stream.v1;
+
+import "common/v1/types.proto";
+
+service StreamControl {
+  rpc StartReceive(StartReceiveRequest) returns (StartReceiveResponse);
+  rpc StopReceive(StopReceiveRequest) returns (StopReceiveResponse);
+  rpc QueryStream(QueryStreamRequest) returns (QueryStreamResponse);
+  rpc CreateOutput(CreateOutputRequest) returns (CreateOutputResponse);
+  rpc CloseOutput(CloseOutputRequest) returns (CloseOutputResponse);
+  rpc GetPlaybackEndpoints(GetPlaybackEndpointsRequest) returns (GetPlaybackEndpointsResponse);
+}
+
+message StartReceiveRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string route_id = 3;
+  string lease_id = 4;
+  gmv.common.v1.NodeIdentity expected_stream = 5;
+  repeated gmv.common.v1.Endpoint preferred_endpoints = 6;
+}
+
+message StartReceiveResponse {
+  string stream_id = 1;
+  StreamState state = 2;
+  repeated gmv.common.v1.Endpoint receive_endpoints = 3;
+  gmv.common.v1.ErrorDetail error = 4;
+}
+
+message StopReceiveRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string reason = 3;
+}
+
+message StopReceiveResponse {
+  StreamState state = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message QueryStreamRequest {
+  string stream_id = 1;
+}
+
+message QueryStreamResponse {
+  string stream_id = 1;
+  StreamState state = 2;
+  repeated gmv.common.v1.Endpoint outputs = 3;
+}
+
+message CreateOutputRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string output_type = 3;
+  gmv.common.v1.EndpointMode endpoint_mode = 4;
+}
+
+message CreateOutputResponse {
+  string output_id = 1;
+  repeated gmv.common.v1.Endpoint endpoints = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+}
+
+message CloseOutputRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string output_id = 2;
+}
+
+message CloseOutputResponse {
+  bool closed = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message GetPlaybackEndpointsRequest {
+  string stream_id = 1;
+}
+
+message GetPlaybackEndpointsResponse {
+  repeated gmv.common.v1.Endpoint endpoints = 1;
+}
+
+enum StreamState {
+  STREAM_STATE_UNSPECIFIED = 0;
+  STREAM_STATE_STARTING = 1;
+  STREAM_STATE_RECEIVING = 2;
+  STREAM_STATE_STOPPING = 3;
+  STREAM_STATE_STOPPED = 4;
+  STREAM_STATE_FAILED = 5;
+}
