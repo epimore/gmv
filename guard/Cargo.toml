@@ -15,7 +15,6 @@ base_rpc = { path = "../../pigs/base_rpc" }
 reqwest = { workspace = true, features = ["stream"] }
 url.workspace = true
 rumqttc.workspace = true
-hmac.workspace = true
 axum.workspace = true
 axum-server = { workspace = true, features = ["tls-rustls"] }
 tower-http = { workspace = true, features = ["cors", "fs", "set-header"] }

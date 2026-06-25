@@ -5,6 +5,7 @@ use base::daemon;
 
 mod app;
 pub mod gb;
+pub mod guard_integration;
 mod http;
 pub mod register;
 mod service;

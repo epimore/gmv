@@ -14,7 +14,7 @@ use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{AuthState, Role, UiSession};
-use crate::core::GuardError;
+use crate::core::{GuardError, HealthState};
 use crate::job::{SystemJobRecord, SystemJobRequest, SystemJobStatus, SystemJobType};
 use crate::operation::{OperationRecord, OperationRequest, OperationStatus};
 use crate::outbox::OutboxRepository;
@@ -34,6 +34,7 @@ pub struct HttpState {
 }
 
 pub fn router(state: HttpState) -> Router {
+    let root_state = state.clone();
     let origin = HeaderValue::from_str(state.auth.allowed_origin())
         .expect("validated UI allowed origin must be a valid header value");
     let csrf_header = HeaderName::from_static(CSRF_HEADER);
@@ -73,7 +74,11 @@ pub fn router(state: HttpState) -> Router {
         ));
 
     Router::new()
+        .route("/health/live", get(health_live))
+        .route("/health/ready", get(health_ready))
+        .route("/metrics", get(metrics))
         .nest(paths::API_PREFIX, api)
+        .with_state(root_state)
         .layer(SetResponseHeaderLayer::if_not_present(
             CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
@@ -95,6 +100,76 @@ pub fn router(state: HttpState) -> Router {
 struct LoginRequest {
     username: String,
     password: String,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct HealthResponse {
+    status: &'static str,
+}
+
+async fn health_live() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "live" })
+}
+
+async fn health_ready(State(state): State<HttpState>) -> Result<Json<HealthResponse>, HttpError> {
+    state.outbox.list(1).await?;
+    Ok(Json(HealthResponse { status: "ready" }))
+}
+
+async fn metrics(State(state): State<HttpState>) -> Result<Response, HttpError> {
+    let nodes = state.api.list_nodes();
+    let outbox = state.outbox.list(10_000).await?;
+    let events = state.api.poll_events(EventQuery::default())?;
+    let mut body = String::new();
+    body.push_str("# TYPE gmv_guard_nodes gauge\n");
+    body.push_str(&format!("gmv_guard_nodes {}\n", nodes.len()));
+    body.push_str("# TYPE gmv_guard_nodes_by_health gauge\n");
+    for health in [
+        HealthState::Starting,
+        HealthState::Ready,
+        HealthState::Degraded,
+        HealthState::Draining,
+        HealthState::Offline,
+    ] {
+        let count = nodes.iter().filter(|node| node.health == health).count();
+        body.push_str(&format!(
+            "gmv_guard_nodes_by_health{{health=\"{}\"}} {}\n",
+            health_label(health),
+            count
+        ));
+    }
+    body.push_str("# TYPE gmv_guard_events gauge\n");
+    body.push_str(&format!("gmv_guard_events {}\n", events.items.len()));
+    body.push_str("# TYPE gmv_guard_outbox_backlog gauge\n");
+    let backlog = outbox
+        .iter()
+        .filter(|record| !record.state.is_terminal())
+        .count();
+    body.push_str(&format!("gmv_guard_outbox_backlog {}\n", backlog));
+    body.push_str("# TYPE gmv_guard_outbox_dead gauge\n");
+    let dead = outbox
+        .iter()
+        .filter(|record| record.state == OutboxState::Dead)
+        .count();
+    body.push_str(&format!("gmv_guard_outbox_dead {}\n", dead));
+
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    Ok(response)
+}
+
+fn health_label(health: HealthState) -> &'static str {
+    match health {
+        HealthState::Starting => "starting",
+        HealthState::Ready => "ready",
+        HealthState::Degraded => "degraded",
+        HealthState::Draining => "draining",
+        HealthState::Offline => "offline",
+    }
 }
 
 #[derive(Debug, base::serde::Serialize)]

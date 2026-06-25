@@ -12,6 +12,9 @@ debug = 1   # 保留行号信息，火焰图调优
 strip = true         # 移除调试信息
 
 [dependencies]
+base_rpc = { path = "../../pigs/base_rpc" }
+gmv-protocol = { path = "../shared/protocol" }
+tonic = "0.14"
 #base = { git = "https://github.com/epimore/pigs.git",rev = "f2fc8914",features = ["net"] }
 base = { package = "base", path = "../../pigs/base", features = ["net"] }
 shared = { path = "../shared" }

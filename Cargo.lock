@@ -293,7 +293,10 @@ name = "avai"
 version = "2.1.0-release"
 dependencies = [
  "base_db",
+ "base_rpc",
+ "gmv-protocol",
  "shared",
+ "tonic",
 ]
 
 [[package]]
@@ -426,6 +429,7 @@ dependencies = [
  "fern",
  "futures",
  "hex",
+ "hmac 0.12.1",
  "inventory",
  "libc",
  "log",
@@ -1506,7 +1510,9 @@ dependencies = [
  "anyhow",
  "axum",
  "base_db",
+ "base_rpc",
  "encoding_rs",
+ "gmv-protocol",
  "gmv_pjsip",
  "image",
  "parking_lot",
@@ -1518,6 +1524,7 @@ dependencies = [
  "sdp-types",
  "shared",
  "sqlx",
+ "tonic",
  "tower",
  "url",
  "utoipa",
@@ -1531,9 +1538,11 @@ version = "2.1.0-release"
 dependencies = [
  "axum",
  "base",
+ "base_rpc",
  "crossbeam-channel",
  "futures-core",
  "futures-util",
+ "gmv-protocol",
  "log",
  "parking_lot",
  "pretend",
@@ -1544,6 +1553,7 @@ dependencies = [
  "shared",
  "socket2 0.6.4",
  "tokio-stream",
+ "tonic",
  "utoipa",
  "utoipa-swagger-ui",
 ]
@@ -1579,7 +1589,6 @@ dependencies = [
  "base_db",
  "base_rpc",
  "gmv-protocol",
- "hmac 0.12.1",
  "parking_lot",
  "reqwest",
  "rumqttc",

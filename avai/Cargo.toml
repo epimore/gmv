@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+base_rpc = { path = "../../pigs/base_rpc" }
+gmv-protocol = { path = "../shared/protocol" }
+tonic = "0.14"
 shared = { path = "../shared" }
 #base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "0ac18e3", features = ["net"] }
 base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }

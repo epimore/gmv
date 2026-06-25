@@ -32,7 +32,6 @@ tower-http = "0.6"
 argon2 = "0.5"
 tower = "0.5"
 rumqttc = "0.25.1"
-hmac = "0.12"
 
 [profile.dev]
 debug = true
