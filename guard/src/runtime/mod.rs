@@ -1,3 +1,4 @@
+pub mod node_expirer;
 pub mod node_rpc;
 pub mod web;
 

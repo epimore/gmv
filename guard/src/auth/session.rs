@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,21 +13,25 @@ pub const SESSION_COOKIE: &str = "gmv_session";
 
 #[derive(Debug, Clone)]
 pub struct SessionPolicy {
-    pub allowed_origin: String,
+    pub allowed_origins: Vec<String>,
     pub secure_cookie: bool,
     pub session_ttl: Duration,
     pub login_window: Duration,
     pub max_failed_attempts: usize,
+    pub local_admin_username: Option<String>,
+    pub local_admin_login_only: bool,
 }
 
 impl Default for SessionPolicy {
     fn default() -> Self {
         Self {
-            allowed_origin: "https://127.0.0.1".to_string(),
+            allowed_origins: vec!["https://127.0.0.1".to_string()],
             secure_cookie: true,
             session_ttl: Duration::from_secs(8 * 60 * 60),
             login_window: Duration::from_secs(60),
             max_failed_attempts: 5,
+            local_admin_username: None,
+            local_admin_login_only: false,
         }
     }
 }
@@ -63,8 +68,18 @@ impl AuthState {
         }
     }
 
-    pub fn allowed_origin(&self) -> &str {
-        &self.policy.allowed_origin
+    pub fn allowed_origins(&self) -> &[String] {
+        &self.policy.allowed_origins
+    }
+
+    pub fn local_admin_login_allowed(&self, username: &str, remote_ip: Option<IpAddr>) -> bool {
+        if !self.policy.local_admin_login_only {
+            return true;
+        }
+        if self.policy.local_admin_username.as_deref() != Some(username) {
+            return true;
+        }
+        remote_ip.is_some_and(|ip| ip.is_loopback())
     }
 
     pub fn authenticate(&self, username: &str, password: &str) -> GuardResult<(String, UiSession)> {
@@ -159,7 +174,17 @@ impl AuthState {
     }
 
     pub fn verify_origin(&self, origin: Option<&str>) -> GuardResult<()> {
-        if origin != Some(self.policy.allowed_origin.as_str()) {
+        let Some(origin) = origin else {
+            return Err(GuardError::InvalidIdentity(
+                "request origin is not allowed".to_string(),
+            ));
+        };
+        if !self
+            .policy
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == origin)
+        {
             return Err(GuardError::InvalidIdentity(
                 "request origin is not allowed".to_string(),
             ));
@@ -223,4 +248,44 @@ fn now_ms() -> GuardResult<u64> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .map_err(|error| GuardError::InvalidConfig(format!("system clock before epoch: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_admin_can_be_restricted_to_loopback_login() {
+        let auth = AuthState::new(
+            [],
+            SessionPolicy {
+                local_admin_username: Some("admin".to_string()),
+                local_admin_login_only: true,
+                ..SessionPolicy::default()
+            },
+        );
+        assert!(auth.local_admin_login_allowed("admin", Some("127.0.0.1".parse().unwrap())));
+        assert!(auth.local_admin_login_allowed("admin", Some("::1".parse().unwrap())));
+        assert!(!auth.local_admin_login_allowed("admin", Some("192.0.2.10".parse().unwrap())));
+        assert!(!auth.local_admin_login_allowed("admin", None));
+        assert!(auth.local_admin_login_allowed("ops-admin", Some("192.0.2.10".parse().unwrap())));
+    }
+
+    #[test]
+    fn origin_check_accepts_any_configured_origin() {
+        let auth = AuthState::new(
+            [],
+            SessionPolicy {
+                allowed_origins: vec![
+                    "http://localhost:5173".to_string(),
+                    "https://gmv.example.com".to_string(),
+                ],
+                ..SessionPolicy::default()
+            },
+        );
+        auth.verify_origin(Some("http://localhost:5173")).unwrap();
+        auth.verify_origin(Some("https://gmv.example.com")).unwrap();
+        assert!(auth.verify_origin(Some("http://127.0.0.1:5173")).is_err());
+        assert!(auth.verify_origin(None).is_err());
+    }
 }

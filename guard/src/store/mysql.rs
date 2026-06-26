@@ -299,6 +299,15 @@ impl MysqlStore {
             .collect()
     }
 
+    pub async fn revoke_ui_sessions(&self, username: &str) -> GuardResult<()> {
+        base_db::sqlx::query("DELETE FROM guard_ui_session WHERE username=?")
+            .bind(username)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(())
+    }
+
     pub async fn bootstrap_admin(&self, username: &str, password_hash: &str) -> GuardResult<bool> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
         let count = base_db::sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM guard_user")

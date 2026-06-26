@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use base::chrono::{Local, NaiveDateTime};
 use base::constructor::New;
-use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde::{Deserialize, Serialize};
-use base::{serde_default, sqlx};
+use base::serde_default;
+use base_db::dbx::mysqlx::get_conn_by_pool;
+use base_db::sqlx;
 use sqlx::FromRow;
 
 #[cfg(test)]
@@ -796,8 +797,8 @@ mod tests {
     use super::*;
     use base::cfg_lib::conf::init_cfg;
     use base::chrono::TimeZone;
-    use base::dbx::mysqlx;
     use base::tokio;
+    use base_db::dbx::mysqlx;
 
     // #[tokio::test]
     async fn test_batch_insert_gmv_file_info() {

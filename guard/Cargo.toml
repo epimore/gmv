@@ -25,7 +25,7 @@ rust-embed = { version = "8", optional = true }
 
 
 [dev-dependencies]
-gmv-node-client = { path = "../node-client" }
+gmv-node-client = { path = "../shared/node-client" }
 tower = { workspace = true, features = ["util"] }
 
 [features]

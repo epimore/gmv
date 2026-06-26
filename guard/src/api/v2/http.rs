@@ -1,22 +1,22 @@
-use argon2::Argon2;
-use argon2::password_hash::{PasswordHasher, SaltString};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ORIGIN, REFERRER_POLICY,
     SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
 };
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use tower_http::cors::CorsLayer;
+use std::convert::Infallible;
+use std::net::{IpAddr, SocketAddr};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
-use uuid::Uuid;
 
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
-use crate::auth::{AuthState, Role, UiSession, UserProfile};
+use crate::auth::{AuthState, Role, UiSession, UserProfile, hash_password as hash_ui_password};
 use crate::core::{GuardError, HealthState};
 use crate::job::{SystemJobRecord, SystemJobRequest, SystemJobStatus, SystemJobType};
 use crate::operation::{OperationRecord, OperationRequest, OperationStatus};
@@ -40,8 +40,15 @@ pub struct HttpState {
 
 pub fn router(state: HttpState) -> Router {
     let root_state = state.clone();
-    let origin = HeaderValue::from_str(state.auth.allowed_origin())
-        .expect("validated UI allowed origin must be a valid header value");
+    let origins = state
+        .auth
+        .allowed_origins()
+        .iter()
+        .map(|origin| {
+            HeaderValue::from_str(origin)
+                .expect("validated UI allowed origin must be a valid header value")
+        })
+        .collect::<Vec<_>>();
     let csrf_header = HeaderName::from_static(CSRF_HEADER);
     let api = Router::new()
         .route("/auth/login", post(login))
@@ -72,7 +79,7 @@ pub fn router(state: HttpState) -> Router {
         .with_state(state)
         .layer(
             CorsLayer::new()
-                .allow_origin(origin)
+                .allow_origin(AllowOrigin::list(origins))
                 .allow_credentials(true)
                 .allow_methods([Method::GET, Method::POST])
                 .allow_headers([CONTENT_TYPE, csrf_header]),
@@ -109,6 +116,26 @@ pub fn router(state: HttpState) -> Router {
 struct LoginRequest {
     username: String,
     password: String,
+}
+
+struct OptionalPeerIp(Option<IpAddr>);
+
+impl<S> FromRequestParts<S> for OptionalPeerIp
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        let remote_ip = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(address)| address.ip());
+        async move { Ok(Self(remote_ip)) }
+    }
 }
 
 #[derive(Debug, base::serde::Serialize)]
@@ -193,10 +220,19 @@ struct SessionResponse {
 
 async fn login(
     State(state): State<HttpState>,
+    OptionalPeerIp(remote_ip): OptionalPeerIp,
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, HttpError> {
     verify_origin(&state.auth, &headers)?;
+    if !state
+        .auth
+        .local_admin_login_allowed(&request.username, remote_ip)
+    {
+        return Err(HttpError::forbidden(
+            "bootstrap admin can only login from loopback",
+        ));
+    }
     let (token, session) = state
         .auth
         .authenticate(&request.username, &request.password)
@@ -945,12 +981,7 @@ fn password_hash(password: &str) -> Result<String, HttpError> {
             message: "password is required".to_string(),
         });
     }
-    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
-        .map_err(|_| HttpError::internal("invalid password salt"))?;
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|hash| hash.to_string())
-        .map_err(|_| HttpError::internal("password hash failed"))
+    hash_ui_password(password).map_err(|_| HttpError::internal("password hash failed"))
 }
 
 #[derive(Debug, base::serde::Serialize)]

@@ -1,7 +1,7 @@
-use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
-use base::sqlx;
+use base_db::dbx::mysqlx::get_conn_by_pool;
+use base_db::sqlx;
 
 pub async fn get_device_channel_status(
     device_id: &String,

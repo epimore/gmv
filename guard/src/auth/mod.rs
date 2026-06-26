@@ -8,4 +8,4 @@ pub use rbac::Role;
 pub use secret::Secret;
 pub use service::ServiceCredential;
 pub use session::{AuthState, SessionPolicy, UiSession};
-pub use user::{UserAccount, UserProfile};
+pub use user::{UserAccount, UserProfile, hash_password};

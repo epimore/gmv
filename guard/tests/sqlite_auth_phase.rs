@@ -1,12 +1,8 @@
 use std::time::Duration;
 
-use argon2::Argon2;
-use argon2::password_hash::{PasswordHasher, SaltString};
 use axum::body::{Body, to_bytes};
 use axum::http::header::{CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
 use axum::http::{Request, StatusCode};
-use base::base64::Engine;
-use base::base64::engine::general_purpose::STANDARD_NO_PAD;
 use base::serde_json::{Value, json};
 use guard::api::v2::ApiV2;
 use guard::api::v2::http::{HttpState, router};
@@ -19,14 +15,6 @@ use guard::store::persistent::PersistentStore;
 use tower::ServiceExt;
 
 const ORIGIN_VALUE: &str = "http://127.0.0.1:18080";
-
-fn password_hash(password: &str, salt: &[u8]) -> String {
-    let salt = SaltString::encode_b64(salt).unwrap();
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .unwrap()
-        .to_string()
-}
 
 async fn call(
     app: &axum::Router,
@@ -59,14 +47,25 @@ async fn login(app: &axum::Router, username: &str, password: &str) -> (StatusCod
     let cookie = headers
         .get(SET_COOKIE)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
+        .unwrap_or_default()
+        .split(";")
+        .next()
         .unwrap_or_default()
         .to_string();
-    let csrf = body["csrf_token"].as_str().unwrap_or_default().to_string();
+    let csrf = body
+        .get("csrf_token")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
     (status, cookie, csrf)
 }
 
-fn write_request(path: &str, cookie: &str, csrf: &str, body: Value) -> Request<Body> {
+fn write_request(
+    path: &str,
+    cookie: &str,
+    csrf: &str,
+    body: base::serde_json::Value,
+) -> Request<Body> {
     Request::post(path)
         .header(ORIGIN, ORIGIN_VALUE)
         .header(COOKIE, cookie)
@@ -85,11 +84,6 @@ fn sqlite_users_drive_login_roles_session_revocation_and_disable() {
             std::fs::create_dir_all(&root).unwrap();
             let db_path = root.join("guard.db");
             let config_path = root.join("config.yml");
-            let admin_hash = password_hash("admin-secret", b"guard-auth-admin");
-            unsafe {
-                std::env::set_var("GMV_GUARD_MASTER_KEY", STANDARD_NO_PAD.encode([7_u8; 32]));
-                std::env::set_var("GMV_ADMIN_PASSWORD_HASH", &admin_hash);
-            }
             std::fs::write(
                 &config_path,
                 format!(
@@ -123,7 +117,8 @@ log:
 guard:
   http:
     bind_addr: 127.0.0.1:18080
-    allowed_origin: {}
+    origins:
+      - {}
     tls:
       enabled: false
   database:
@@ -134,13 +129,12 @@ guard:
       min_connections: 0
     sqlite:
       path: {}
-  security:
-    master_key_env: GMV_GUARD_MASTER_KEY
   bootstrap:
     admin:
-      enabled: true
       username: admin
-      password_hash_env: GMV_ADMIN_PASSWORD_HASH
+      pass_crypto_enable: false
+      pass: admin-secret
+      local_login_only: true
 "#,
                     root.join("logs").display(),
                     ORIGIN_VALUE,
@@ -163,11 +157,13 @@ guard:
                 auth: AuthState::new(
                     users,
                     SessionPolicy {
-                        allowed_origin: ORIGIN_VALUE.to_string(),
+                        allowed_origins: vec![ORIGIN_VALUE.to_string()],
                         secure_cookie: false,
                         session_ttl: Duration::from_secs(3600),
                         login_window: Duration::from_secs(60),
                         max_failed_attempts: 5,
+                        local_admin_username: None,
+                        local_admin_login_only: false,
                     },
                 ),
                 outbox: persistent.outbox_repository(),

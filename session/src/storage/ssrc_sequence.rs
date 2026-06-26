@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use base::chrono::Local;
-use base::dbx::mysqlx::get_conn_by_pool;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
-use base::sqlx::{self, Acquire};
+use base_db::dbx::mysqlx::get_conn_by_pool;
+use base_db::sqlx::{self, Acquire};
 
 const SSRC_SEQUENCE_MAX: u16 = 9_999;
 const SSRC_CODE_LENGTH: i32 = 4;

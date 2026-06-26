@@ -7,13 +7,15 @@ use base::log::{error, info, warn};
 use base::logger;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
-use crate::guard_integration::SessionGuardNode;
+use crate::guard_integration::{SessionControlAdapter, SessionControlRpc, SessionGuardNode};
 use crate::register::core::Register;
 use gmv_node_client::{NodeReporter, NodeReporterConfig, generate_instance_id};
+use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
+use gmv_protocol::session::v1::session_control_server::SessionControlServer;
 
 #[derive(Debug)]
 pub struct AppInfo {
@@ -67,6 +69,11 @@ impl
         let http = self.http;
         let node_id = self.session_conf.domain_id.clone();
         let http_port = http.port;
+        let control_grpc_port = std::env::var("GMV_SESSION_CONTROL_GRPC_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(19081);
+        let started_at_epoch_ms = now_epoch_ms();
         let (http_listener, tu) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
         let service_cancel = network_rt.cancel.clone();
@@ -79,6 +86,30 @@ impl
             }
             let mut node =
                 SessionGuardNode::new(node_id, generate_instance_id(), u32::from(http_port));
+            node.started_at_epoch_ms = started_at_epoch_ms;
+            node.endpoints.push(Endpoint {
+                name: "grpc".to_string(),
+                scheme: "grpc".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: u32::from(control_grpc_port),
+                mode: EndpointMode::Single as i32,
+                labels: HashMap::new(),
+            });
+            let control_identity = node.identity.clone();
+            let control_cancel = network_rt.cancel.clone();
+            base::tokio::spawn(async move {
+                let address: SocketAddr = format!("127.0.0.1:{control_grpc_port}")
+                    .parse()
+                    .expect("loopback control address must be valid");
+                let rpc = SessionControlRpc::new(SessionControlAdapter::new(control_identity));
+                if let Err(err) = tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(rpc))
+                    .serve_with_shutdown(address, async move { control_cancel.cancelled().await })
+                    .await
+                {
+                    error!("session control RPC server stopped with error: {err}");
+                }
+            });
             if let Ok(endpoint) = std::env::var("GMV_GUARD_ENDPOINT") {
                 node.guard_channel.endpoint = endpoint;
             }
@@ -143,4 +174,12 @@ fn banner<F: FnOnce(String)>(version: &str, http_port: u16, rtp_port: u16, f: F)
         "Version", version, http_port, rtp_port
     );
     f(msg);
+}
+
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
 }

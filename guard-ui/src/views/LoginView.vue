@@ -32,7 +32,7 @@
     </section>
     <section class="login-visual">
       <div class="preview-card">
-        <div class="panel-title">星舰控制面</div>
+        <div class="panel-title">中间件控制台</div>
         <div class="panel-kicker">节点、租约、事件通过 REST polling 汇聚</div>
         <OrbitChart :option="lineOption('接入延迟')" sm />
       </div>

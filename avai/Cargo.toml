@@ -7,11 +7,11 @@ authors.workspace = true
 [dependencies]
 base_rpc = { path = "../../pigs/base_rpc" }
 gmv-protocol = { path = "../shared/protocol" }
-gmv-node-client = { path = "../node-client" }
+gmv-node-client = { path = "../shared/node-client" }
 tonic = "0.14"
 shared = { path = "../shared" }
-#base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "0ac18e3", features = ["net"] }
-base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
+#base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "0ac18e3", features = ["net"] }
+base = { package = "base", path = "../../pigs/base", features = ["net"] }
 #burn = "0.19"
 #burn-tensor = "0.19"
 #candle-transformers = "0.9"

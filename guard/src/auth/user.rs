@@ -1,5 +1,6 @@
 use argon2::Argon2;
-use argon2::password_hash::{PasswordHash, PasswordVerifier};
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use uuid::Uuid;
 
 use crate::auth::{Role, Secret};
 use crate::core::{GuardError, GuardResult};
@@ -60,4 +61,23 @@ impl UserAccount {
             .verify_password(password.as_bytes(), &hash)
             .is_ok())
     }
+}
+
+#[must_use]
+pub fn password_is_present(password: &str) -> bool {
+    !password.is_empty()
+}
+
+pub fn hash_password(password: &str) -> GuardResult<String> {
+    if !password_is_present(password) {
+        return Err(GuardError::InvalidConfig(
+            "password is required".to_string(),
+        ));
+    }
+    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
+        .map_err(|error| GuardError::InvalidConfig(format!("invalid password salt: {error}")))?;
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| GuardError::InvalidConfig(format!("password hash failed: {error}")))
 }

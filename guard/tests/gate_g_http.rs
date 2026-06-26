@@ -42,11 +42,13 @@ fn app(simulator_enabled: bool) -> (axum::Router, InMemoryGuardStore) {
             UserAccount::new("admin", Role::Admin, hash),
         ],
         SessionPolicy {
-            allowed_origin: ORIGIN_VALUE.to_string(),
+            allowed_origins: vec![ORIGIN_VALUE.to_string()],
             secure_cookie: false,
             session_ttl: Duration::from_secs(3600),
             login_window: Duration::from_secs(60),
             max_failed_attempts: 5,
+            local_admin_username: None,
+            local_admin_login_only: false,
         },
     );
     (

@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use base::utils::crypto::Aes256GcmCipher;
 use base_db::dbx::mysqlx::build_mysql_pool;
 use base_db::dbx::sqlitex::{SqliteConnectionConfig, build_sqlite_pool};
 use base_db::sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
@@ -58,6 +57,13 @@ impl UserRepository {
             }
         }
     }
+
+    pub async fn revoke_ui_sessions(&self, username: &str) -> GuardResult<()> {
+        match self {
+            Self::Mysql(store) => store.revoke_ui_sessions(username).await,
+            Self::Sqlite(store) => store.revoke_ui_sessions(username).await,
+        }
+    }
 }
 
 pub enum PersistentStore {
@@ -67,8 +73,6 @@ pub enum PersistentStore {
 
 impl PersistentStore {
     pub async fn connect(config: &GuardAppConfig) -> GuardResult<Self> {
-        Aes256GcmCipher::from_base64_key_no_pad(&config.security.master_key()?)
-            .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
         match config.database.backend {
             DatabaseBackend::Sqlite => {
                 ensure_parent(&config.database.sqlite.path)?;
@@ -108,7 +112,7 @@ impl PersistentStore {
         if config.database.auto_migrate {
             self.migrate().await?;
         }
-        if config.bootstrap.admin.enabled {
+        if self.load_users().await?.is_empty() {
             let hash = config.bootstrap.admin.password_hash()?;
             UserAccount::new(&config.bootstrap.admin.username, Role::Admin, &hash)
                 .validate_password_hash()?;

@@ -41,10 +41,10 @@ body::before {
   pointer-events: none;
   opacity: 0.58;
   background-image:
+    url("../assets/console-grid.svg"),
     linear-gradient(rgba(103, 219, 255, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(103, 219, 255, 0.08) 1px, transparent 1px),
-    radial-gradient(circle, rgba(255,255,255,.9) 0 1px, transparent 1.5px);
-  background-size: 78px 78px, 78px 78px, 130px 130px;
+    linear-gradient(90deg, rgba(103, 219, 255, 0.08) 1px, transparent 1px);
+  background-size: 240px 240px, 78px 78px, 78px 78px;
   mask-image: linear-gradient(to bottom, transparent 0%, #000 12%, #000 82%, transparent 100%);
 }
 button, input { font: inherit; }
@@ -80,25 +80,25 @@ button, input { font: inherit; }
 .el-progress-bar__outer { background: rgba(104, 176, 255, .16); }
 
 .app-shell { display: grid; grid-template-columns: 256px 1fr; min-height: 100vh; position: relative; }
-.star-arc {
+.console-texture {
   position: fixed;
   right: 6vw;
   top: 4vh;
   width: 44vw;
   height: 44vw;
-  border: 1px solid rgba(55, 216, 255, .16);
-  border-radius: 50%;
   pointer-events: none;
+  background: url("../assets/panel-radar.svg") center / contain no-repeat;
+  opacity: .72;
   filter: blur(.2px);
 }
-.star-arc::before, .star-arc::after {
+.console-texture::before, .console-texture::after {
   content: "";
   position: absolute;
   inset: 9%;
   border-radius: 50%;
   border: 1px dashed rgba(168, 117, 255, .22);
 }
-.star-arc::after { inset: 23%; border-color: rgba(52, 216, 255, .25); transform: rotate(28deg); }
+.console-texture::after { inset: 23%; border-color: rgba(52, 216, 255, .25); transform: rotate(28deg); }
 .sidebar {
   position: sticky;
   top: 0;
@@ -172,7 +172,7 @@ button, input { font: inherit; }
 .login-card h1 { margin: 18px 0 6px; font-size: 34px; letter-spacing: .12em; }
 .login-card p { margin: 0 0 28px; color: var(--muted); }
 .login-visual { min-height: 560px; border:1px solid rgba(116,216,255,.16); border-radius: 34px; background: radial-gradient(circle at 60% 44%, rgba(52,216,255,.22), transparent 16%), radial-gradient(circle at 70% 52%, rgba(168,117,255,.22), transparent 22%), rgba(7,16,34,.34); position: relative; overflow:hidden; }
-.login-visual::before { content:""; position:absolute; inset: 9% 4% 8% 22%; border-radius:50%; border:1px solid rgba(82,216,255,.34); box-shadow: 0 0 80px rgba(52,216,255,.16), inset 0 0 80px rgba(168,117,255,.12); transform: perspective(700px) rotateX(62deg) rotateZ(-18deg); }
+.login-visual::before { content:""; position:absolute; inset: 9% 4% 8% 22%; border-radius:50%; background: url("../assets/panel-radar.svg") center / contain no-repeat; border:1px solid rgba(82,216,255,.24); box-shadow: 0 0 80px rgba(52,216,255,.16), inset 0 0 80px rgba(168,117,255,.12); transform: perspective(700px) rotateX(62deg) rotateZ(-18deg); }
 .preview-card { position:absolute; right: 44px; top: 58px; width: 310px; padding:16px; border:1px solid rgba(120,220,255,.22); border-radius:20px; background:rgba(5,14,30,.70); }
 .preview-card.bottom { top:auto; bottom:58px; right: 110px; }
 @media (max-width: 900px) {

@@ -44,7 +44,35 @@ impl RouteService {
                 });
             }
         }
-        for mut route in self.store.routes() {
+        let existing_routes = self.store.routes();
+        let mut observed_routes = std::collections::HashSet::new();
+        for resource in &snapshot.resources {
+            let Some(route_id) = resource
+                .route_id
+                .as_deref()
+                .filter(|route_id| !route_id.is_empty())
+            else {
+                continue;
+            };
+            observed_routes.insert(route_id.to_string());
+            if existing_routes
+                .iter()
+                .any(|route| route.route_id == route_id)
+            {
+                continue;
+            }
+            self.store.upsert_route(RouteRecord {
+                route_id: route_id.to_string(),
+                resource_id: resource.resource_id.clone(),
+                node_id: snapshot.owner.node_id.clone(),
+                instance_id: snapshot.owner.instance_id.clone(),
+                state: RouteState::Running,
+                desired_generation: snapshot.generation,
+                observed_generation: snapshot.generation,
+                observed_sequence: snapshot.sequence,
+            });
+        }
+        for mut route in existing_routes {
             if route.node_id != snapshot.owner.node_id {
                 continue;
             }
@@ -57,11 +85,7 @@ impl RouteService {
                 });
                 continue;
             }
-            let observed = snapshot
-                .resources
-                .iter()
-                .any(|resource| resource.route_id.as_deref() == Some(route.route_id.as_str()));
-            if observed {
+            if observed_routes.contains(&route.route_id) {
                 route.state = RouteState::Running;
                 route.observed_generation = snapshot.generation;
                 route.observed_sequence = snapshot.sequence;

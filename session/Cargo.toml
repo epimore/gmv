@@ -6,11 +6,12 @@ edition.workspace = true
 [dependencies]
 base_rpc = { path = "../../pigs/base_rpc" }
 gmv-protocol = { path = "../shared/protocol" }
-gmv-node-client = { path = "../node-client" }
+gmv-node-client = { path = "../shared/node-client" }
 tonic = "0.14"
 shared = { path = "../shared" }
-#base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
-base = { package = "base_db", path = "../../pigs/base_db", features = ["net"] }
+#base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
+base = { package = "base", path = "../../pigs/base", features = ["net"] }
+base_db = { path = "../../pigs/base_db" }
 #gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "b86c032e" }
 gmv_pjsip = { path = "../../gmv_pjsip" }
 sqlx = { version = "0.9", default-features = false }

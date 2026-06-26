@@ -1,6 +1,6 @@
 <template>
   <div class="app-shell">
-    <div class="star-arc" />
+    <div class="console-texture" />
     <aside class="sidebar">
       <RouterLink class="brand" to="/dashboard" aria-label="GMV 总览">
         <div class="brand-mark">G</div>
@@ -28,7 +28,7 @@
       <header class="topbar">
         <div class="title">
           <h1>{{ route.meta.title }}</h1>
-          <p>星舰控制面 · API v2</p>
+          <p>GMV 控制台 · API v2</p>
         </div>
         <div class="top-actions">
           <div class="telemetry"><span class="dot" :class="{ paused: polling.paused }" />{{ polling.paused ? '轮询暂停' : 'REST 轮询' }}</div>

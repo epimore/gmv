@@ -17,13 +17,15 @@ pub struct WebTlsConfig {
 #[derive(Debug, Clone)]
 pub struct WebServerConfig {
     pub bind_addr: SocketAddr,
-    pub allowed_origin: String,
+    pub allowed_origins: Vec<String>,
     pub ui_dist_dir: PathBuf,
     pub tls: Option<WebTlsConfig>,
     pub simulator_enabled: bool,
     pub session_ttl: Duration,
     pub login_window: Duration,
     pub max_failed_attempts: usize,
+    pub local_admin_username: String,
+    pub local_admin_login_only: bool,
 }
 
 impl WebServerConfig {
@@ -32,7 +34,7 @@ impl WebServerConfig {
         let http = &config.http;
         let result = Self {
             bind_addr: http.bind_addr,
-            allowed_origin: http.allowed_origin.clone(),
+            allowed_origins: http.origins(),
             ui_dist_dir: http.ui_dist_dir.clone(),
             tls: http.tls.enabled.then(|| WebTlsConfig {
                 certificate_path: http.tls.certificate_path.clone(),
@@ -42,25 +44,25 @@ impl WebServerConfig {
             session_ttl: Duration::from_secs(http.session_ttl_sec),
             login_window: Duration::from_secs(http.login_window_sec),
             max_failed_attempts: http.max_failed_attempts,
+            local_admin_username: config.bootstrap.admin.username.clone(),
+            local_admin_login_only: config.bootstrap.admin.local_login_only,
         };
         result.validate()?;
         Ok(result)
     }
 
     pub fn validate(&self) -> GuardResult<()> {
-        if self.tls.is_none() && !self.bind_addr.ip().is_loopback() {
+        if self.allowed_origins.is_empty() {
             return Err(GuardError::InvalidConfig(
-                "TLS can only be disabled on a loopback HTTP bind".to_string(),
+                "guard.http.origins must not be empty".to_string(),
             ));
         }
-        if self
-            .allowed_origin
-            .parse::<axum::http::HeaderValue>()
-            .is_err()
-        {
-            return Err(GuardError::InvalidConfig(
-                "guard.http.allowed_origin must be a valid Origin".to_string(),
-            ));
+        for origin in &self.allowed_origins {
+            if origin.parse::<axum::http::HeaderValue>().is_err() {
+                return Err(GuardError::InvalidConfig(format!(
+                    "guard.http.origins contains an invalid Origin: {origin}"
+                )));
+            }
         }
         Ok(())
     }
@@ -78,11 +80,13 @@ pub async fn serve(
     let auth = AuthState::new(
         users,
         SessionPolicy {
-            allowed_origin: config.allowed_origin.clone(),
+            allowed_origins: config.allowed_origins.clone(),
             secure_cookie: config.tls.is_some(),
             session_ttl: config.session_ttl,
             login_window: config.login_window,
             max_failed_attempts: config.max_failed_attempts,
+            local_admin_username: Some(config.local_admin_username.clone()),
+            local_admin_login_only: config.local_admin_login_only,
         },
     );
     let app = application_router(
@@ -102,11 +106,15 @@ pub async fn serve(
         )
         .await?;
         axum_server::bind_rustls(config.bind_addr, rustls)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     } else {
         let listener = base::tokio::net::TcpListener::bind(config.bind_addr).await?;
-        axum::serve(listener, app).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -118,7 +126,7 @@ mod tests {
     fn config(bind_addr: &str, tls: bool) -> WebServerConfig {
         WebServerConfig {
             bind_addr: bind_addr.parse().unwrap(),
-            allowed_origin: "http://127.0.0.1:8080".to_string(),
+            allowed_origins: vec!["http://127.0.0.1:8080".to_string()],
             ui_dist_dir: PathBuf::from("guard-ui/dist"),
             tls: tls.then(|| WebTlsConfig {
                 certificate_path: PathBuf::from("server.pem"),
@@ -128,17 +136,26 @@ mod tests {
             session_ttl: Duration::from_secs(3600),
             login_window: Duration::from_secs(60),
             max_failed_attempts: 5,
+            local_admin_username: "admin".to_string(),
+            local_admin_login_only: true,
         }
     }
 
     #[test]
-    fn rejects_plain_http_on_non_loopback_bind() {
-        assert!(config("0.0.0.0:8080", false).validate().is_err());
+    fn accepts_plain_http_on_non_loopback_bind() {
+        config("0.0.0.0:8080", false).validate().unwrap();
         config("127.0.0.1:8080", false).validate().unwrap();
     }
 
     #[test]
     fn accepts_tls_on_non_loopback_bind() {
         config("0.0.0.0:8443", true).validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_empty_origins() {
+        let mut config = config("127.0.0.1:8080", false);
+        config.allowed_origins.clear();
+        assert!(config.validate().is_err());
     }
 }

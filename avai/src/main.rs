@@ -15,13 +15,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(19080);
-        let capabilities = vec!["vehicle".to_string()];
+        let capabilities = vec!["ai.vehicle".to_string()];
         let mut node = AvaiGuardNode::new(
             node_id,
             generate_instance_id(),
             u32::from(grpc_port),
             capabilities.clone(),
         );
+        node.started_at_epoch_ms = now_epoch_ms();
         if let Ok(endpoint) = std::env::var("GMV_GUARD_ENDPOINT") {
             node.guard_channel.endpoint = endpoint;
         }
@@ -52,4 +53,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = reporter_task.await;
         Ok(())
     })
+}
+
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
 }

@@ -8,15 +8,18 @@ use gmv_protocol::guard::v1::guard_node_control_server::{
     GuardNodeControl, GuardNodeControlServer,
 };
 use gmv_protocol::guard::v1::{
-    GuardToNodeMessage, HostMetrics, NodeHealth, NodeHeartbeat, NodeToGuardMessage,
-    RegisterDecision as ProtoRegisterDecision, RegisterNodeRequest, RegisterNodeResponse,
-    StreamAck, guard_to_node_message, node_to_guard_message,
+    EventPriority, GuardToNodeMessage, HostMetrics, NodeHealth, NodeHeartbeat,
+    NodeResourceSnapshot, NodeToGuardMessage, RegisterDecision as ProtoRegisterDecision,
+    RegisterNodeRequest, RegisterNodeResponse, StreamAck, guard_to_node_message,
+    node_to_guard_message,
 };
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind};
 use crate::registry::{HeartbeatReport, RegisterDecision, RegisterRequest, RegistryService};
-use crate::store::model::HostMetricsRecord;
+use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
+use crate::store::InMemoryGuardStore;
+use crate::store::model::{EventRecord, HostMetricsRecord};
 
 #[derive(Debug, Clone)]
 pub struct NodeRpcConfig {
@@ -28,6 +31,8 @@ pub struct NodeRpcConfig {
 #[derive(Debug, Clone)]
 pub struct GuardNodeRpc {
     registry: RegistryService,
+    routes: RouteService,
+    store: InMemoryGuardStore,
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
 }
@@ -35,11 +40,14 @@ pub struct GuardNodeRpc {
 impl GuardNodeRpc {
     pub fn new(
         registry: RegistryService,
+        store: InMemoryGuardStore,
         heartbeat_interval_ms: u64,
         heartbeat_timeout_ms: u64,
     ) -> Self {
         Self {
             registry,
+            routes: RouteService::new(store.clone()),
+            store,
             heartbeat_interval_ms,
             heartbeat_timeout_ms,
         }
@@ -56,10 +64,11 @@ impl GuardNodeControl for GuardNodeRpc {
     ) -> Result<Response<RegisterNodeResponse>, Status> {
         let request = request.into_inner();
         let identity = identity(request.identity)?;
+        let startup_snapshot = request.startup_snapshot.clone();
         let decision = self
             .registry
             .register(RegisterRequest {
-                identity,
+                identity: identity.clone(),
                 capabilities: request.capabilities,
                 capacity: request.capacity.max(1),
                 host_metrics: host_metrics(request.host_metrics),
@@ -68,6 +77,9 @@ impl GuardNodeControl for GuardNodeRpc {
                 takeover: request.takeover,
             })
             .map_err(status)?;
+        if let Some(snapshot) = startup_snapshot {
+            apply_snapshot(&self.routes, identity.clone(), 1, 1, snapshot).map_err(status)?;
+        }
         Ok(Response::new(RegisterNodeResponse {
             decision: match decision {
                 RegisterDecision::Accepted => ProtoRegisterDecision::Accepted as i32,
@@ -91,6 +103,8 @@ impl GuardNodeControl for GuardNodeRpc {
     ) -> Result<Response<Self::OpenControlStreamStream>, Status> {
         let mut input = request.into_inner();
         let registry = self.registry.clone();
+        let routes = self.routes.clone();
+        let store = self.store.clone();
         let (tx, rx) = mpsc::channel(32);
         base::tokio::spawn(async move {
             while let Ok(Some(message)) = input.message().await {
@@ -103,6 +117,16 @@ impl GuardNodeControl for GuardNodeRpc {
                         message.sent_at_epoch_ms,
                         heartbeat,
                     ),
+                    Some(node_to_guard_message::Payload::Snapshot(snapshot)) => {
+                        identity(message.identity)
+                            .map_err(|error| {
+                                GuardError::InvalidIdentity(error.message().to_string())
+                            })
+                            .and_then(|owner| apply_snapshot(&routes, owner, 1, sequence, snapshot))
+                    }
+                    Some(node_to_guard_message::Payload::Event(event)) => {
+                        apply_event(&store, event)
+                    }
                     _ => Ok(()),
                 };
                 if let Err(error) = result {
@@ -130,9 +154,11 @@ impl GuardNodeControl for GuardNodeRpc {
 pub async fn serve(
     config: NodeRpcConfig,
     registry: RegistryService,
+    store: InMemoryGuardStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let service = GuardNodeRpc::new(
         registry,
+        store,
         config.heartbeat_interval_ms,
         config.heartbeat_timeout_ms,
     );
@@ -159,6 +185,59 @@ fn apply_heartbeat(
         host_metrics: host_metrics(heartbeat.host_metrics),
         business_metrics: heartbeat.metrics,
     })
+}
+
+fn apply_snapshot(
+    routes: &RouteService,
+    owner: NodeIdentity,
+    generation: u64,
+    sequence: u64,
+    snapshot: NodeResourceSnapshot,
+) -> Result<(), GuardError> {
+    routes.apply_snapshot(ResourceSnapshot {
+        owner,
+        generation,
+        sequence,
+        resources: snapshot
+            .resources
+            .into_iter()
+            .filter_map(|resource| {
+                let resource_ref = resource.resource?;
+                Some(SnapshotResource {
+                    resource_id: resource_ref.resource_id,
+                    route_id: resource.labels.get("route_id").cloned(),
+                })
+            })
+            .collect(),
+    })?;
+    Ok(())
+}
+
+fn apply_event(
+    store: &InMemoryGuardStore,
+    event: gmv_protocol::guard::v1::NodeEvent,
+) -> Result<(), GuardError> {
+    if event.event_id.is_empty() || event.topic.is_empty() {
+        return Err(GuardError::InvalidConfig(
+            "node event_id and topic are required".to_string(),
+        ));
+    }
+    store.insert_event_once(EventRecord {
+        event_id: event.event_id,
+        topic: event.topic,
+        priority: event_priority(event.priority),
+        payload: event.payload,
+    })?;
+    Ok(())
+}
+
+fn event_priority(value: i32) -> u8 {
+    match EventPriority::try_from(value).unwrap_or(EventPriority::Unspecified) {
+        EventPriority::P0 => 1,
+        EventPriority::P1 => 2,
+        EventPriority::P2 => 3,
+        EventPriority::P3 | EventPriority::Unspecified => 4,
+    }
 }
 
 fn identity(value: Option<ProtoIdentity>) -> Result<NodeIdentity, Status> {

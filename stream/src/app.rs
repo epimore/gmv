@@ -5,17 +5,19 @@ use crate::state::register::Register;
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
-use base::log::info;
+use base::log::{error, info};
 use base::logger;
 use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
-use crate::guard_integration::StreamGuardNode;
+use crate::guard_integration::{StreamControlAdapter, StreamControlRpc, StreamGuardNode};
 use gmv_node_client::{NodeReporter, NodeReporterConfig, generate_instance_id};
+use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
+use gmv_protocol::stream::v1::stream_control_server::StreamControlServer;
 
 pub struct App {
     conf: ServerConf,
@@ -66,6 +68,11 @@ impl
         let node_name = self.conf.name.clone();
         let http_port = self.conf.http_port;
         let rtp_port = self.conf.rtp_port;
+        let control_grpc_port = std::env::var("GMV_STREAM_CONTROL_GRPC_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(19082);
+        let started_at_epoch_ms = now_epoch_ms();
         let (tx, rx) = mpsc::channel(100);
         Register::init()?;
 
@@ -79,6 +86,41 @@ impl
                 u32::from(http_port),
                 u32::from(rtp_port),
             );
+            node.started_at_epoch_ms = started_at_epoch_ms;
+            node.endpoints.push(Endpoint {
+                name: "grpc".to_string(),
+                scheme: "grpc".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: u32::from(control_grpc_port),
+                mode: EndpointMode::Single as i32,
+                labels: HashMap::new(),
+            });
+            let control_identity = node.identity.clone();
+            let receive_endpoint = Endpoint {
+                name: "rtp".to_string(),
+                scheme: "rtp".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: u32::from(rtp_port),
+                mode: EndpointMode::Single as i32,
+                labels: HashMap::new(),
+            };
+            let control_cancel = network_rt.cancel.clone();
+            base::tokio::spawn(async move {
+                let address: SocketAddr = format!("127.0.0.1:{control_grpc_port}")
+                    .parse()
+                    .expect("loopback control address must be valid");
+                let rpc = StreamControlRpc::new(StreamControlAdapter::new(
+                    control_identity,
+                    receive_endpoint,
+                ));
+                if let Err(err) = tonic::transport::Server::builder()
+                    .add_service(StreamControlServer::new(rpc))
+                    .serve_with_shutdown(address, async move { control_cancel.cancelled().await })
+                    .await
+                {
+                    error!("stream control RPC server stopped with error: {err}");
+                }
+            });
             if let Ok(endpoint) = std::env::var("GMV_GUARD_ENDPOINT") {
                 node.guard_channel.endpoint = endpoint;
             }
@@ -128,4 +170,12 @@ fn banner<F: FnOnce(String)>(version: &str, http_port: u16, rtp_port: u16, f: F)
         "Version", version, http_port, rtp_port
     );
     f(msg);
+}
+
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
 }

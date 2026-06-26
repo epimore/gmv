@@ -2,11 +2,11 @@ use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
 use base::chrono::NaiveDateTime;
-use base::dbx::mysqlx::get_conn_by_pool;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde_json;
-use base::sqlx::{self, FromRow};
+use base_db::dbx::mysqlx::get_conn_by_pool;
+use base_db::sqlx::{self, FromRow};
 
 #[cfg(test)]
 use std::collections::HashMap;

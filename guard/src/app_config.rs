@@ -5,7 +5,9 @@ use std::time::Duration;
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::serde::Deserialize;
+use base::utils::crypto::default_decrypt;
 
+use crate::auth::hash_password;
 use crate::core::{GuardError, GuardResult};
 
 #[derive(Clone, Deserialize)]
@@ -18,8 +20,6 @@ pub struct GuardAppConfig {
     pub grpc: GrpcConfig,
     #[serde(default)]
     pub database: DatabaseConfig,
-    #[serde(default)]
-    pub security: SecurityConfig,
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
     #[serde(default)]
@@ -38,7 +38,6 @@ impl GuardAppConfig {
         self.http.validate()?;
         self.grpc.validate()?;
         self.database.validate()?;
-        self.security.validate()?;
         self.bootstrap.validate()?;
         self.integrations.validate()
     }
@@ -96,8 +95,8 @@ impl GrpcConfig {
 pub struct HttpConfig {
     #[serde(default = "default_bind_addr")]
     pub bind_addr: SocketAddr,
-    #[serde(default = "default_origin")]
-    pub allowed_origin: String,
+    #[serde(default = "default_origins")]
+    pub origins: Vec<String>,
     #[serde(default = "default_ui_dist_dir")]
     pub ui_dist_dir: PathBuf,
     #[serde(default)]
@@ -114,7 +113,7 @@ impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             bind_addr: default_bind_addr(),
-            allowed_origin: default_origin(),
+            origins: default_origins(),
             ui_dist_dir: default_ui_dist_dir(),
             tls: HttpTlsConfig::default(),
             session_ttl_sec: default_session_ttl_sec(),
@@ -125,12 +124,15 @@ impl Default for HttpConfig {
 }
 
 impl HttpConfig {
+    pub fn origins(&self) -> Vec<String> {
+        self.origins
+            .iter()
+            .filter(|origin| !origin.trim().is_empty())
+            .cloned()
+            .collect()
+    }
+
     fn validate(&self) -> GuardResult<()> {
-        if !self.tls.enabled && !self.bind_addr.ip().is_loopback() {
-            return Err(GuardError::InvalidConfig(
-                "TLS can only be disabled on a loopback HTTP bind".to_string(),
-            ));
-        }
         if self.tls.enabled
             && (self.tls.certificate_path.as_os_str().is_empty()
                 || self.tls.private_key_path.as_os_str().is_empty())
@@ -139,14 +141,18 @@ impl HttpConfig {
                 "guard.http.tls certificate_path and private_key_path are required".to_string(),
             ));
         }
-        if self
-            .allowed_origin
-            .parse::<axum::http::HeaderValue>()
-            .is_err()
-        {
+        let origins = self.origins();
+        if origins.is_empty() {
             return Err(GuardError::InvalidConfig(
-                "guard.http.allowed_origin is invalid".to_string(),
+                "guard.http.origins must not be empty".to_string(),
             ));
+        }
+        for origin in &origins {
+            if origin.parse::<axum::http::HeaderValue>().is_err() {
+                return Err(GuardError::InvalidConfig(format!(
+                    "guard.http.origins contains an invalid Origin: {origin}"
+                )));
+            }
         }
         if self.session_ttl_sec == 0 || self.login_window_sec == 0 || self.max_failed_attempts == 0
         {
@@ -306,7 +312,9 @@ pub struct MysqlConfig {
     pub port: u16,
     pub database: String,
     pub username: String,
-    pub password_env: String,
+    #[serde(default)]
+    pub pass_crypto_enable: bool,
+    pub pass: String,
     #[serde(default)]
     pub ssl_mode: MysqlSslMode,
 }
@@ -316,7 +324,7 @@ impl MysqlConfig {
         if self.host.trim().is_empty()
             || self.database.trim().is_empty()
             || self.username.trim().is_empty()
-            || self.password_env.trim().is_empty()
+            || self.pass.is_empty()
         {
             return Err(GuardError::InvalidConfig(
                 "guard.database.mysql connection fields are required".to_string(),
@@ -326,7 +334,12 @@ impl MysqlConfig {
     }
 
     pub fn password(&self) -> GuardResult<String> {
-        required_env(&self.password_env)
+        if self.pass_crypto_enable {
+            default_decrypt(&self.pass)
+                .map_err(|error| GuardError::InvalidConfig(error.to_string()))
+        } else {
+            Ok(self.pass.clone())
+        }
     }
 }
 
@@ -339,39 +352,6 @@ pub enum MysqlSslMode {
     Required,
     VerifyCa,
     VerifyIdentity,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(crate = "base::serde")]
-pub struct SecurityConfig {
-    #[serde(default = "default_master_key_env")]
-    pub master_key_env: String,
-    #[serde(default)]
-    pub persist_ui_sessions: bool,
-}
-
-impl Default for SecurityConfig {
-    fn default() -> Self {
-        Self {
-            master_key_env: default_master_key_env(),
-            persist_ui_sessions: false,
-        }
-    }
-}
-
-impl SecurityConfig {
-    fn validate(&self) -> GuardResult<()> {
-        if self.master_key_env.trim().is_empty() {
-            return Err(GuardError::InvalidConfig(
-                "guard.security.master_key_env is required".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn master_key(&self) -> GuardResult<String> {
-        required_env(&self.master_key_env)
-    }
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -390,38 +370,50 @@ impl BootstrapConfig {
 #[derive(Clone, Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct BootstrapAdminConfig {
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(default = "default_admin_username")]
     pub username: String,
-    #[serde(default = "default_admin_hash_env")]
-    pub password_hash_env: String,
+    #[serde(default)]
+    pub pass_crypto_enable: bool,
+    #[serde(default)]
+    pub pass: String,
+    #[serde(default = "default_true")]
+    pub local_login_only: bool,
 }
 
 impl Default for BootstrapAdminConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             username: default_admin_username(),
-            password_hash_env: default_admin_hash_env(),
+            pass_crypto_enable: false,
+            pass: String::new(),
+            local_login_only: true,
         }
     }
 }
 
 impl BootstrapAdminConfig {
     fn validate(&self) -> GuardResult<()> {
-        if self.enabled
-            && (self.username.trim().is_empty() || self.password_hash_env.trim().is_empty())
-        {
+        if self.username.trim().is_empty() {
             return Err(GuardError::InvalidConfig(
-                "guard.bootstrap.admin username and password_hash_env are required".to_string(),
+                "guard.bootstrap.admin username is required".to_string(),
             ));
         }
         Ok(())
     }
 
     pub fn password_hash(&self) -> GuardResult<String> {
-        required_env(&self.password_hash_env)
+        if self.pass.is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "guard.bootstrap.admin pass is required for empty guard_user".to_string(),
+            ));
+        }
+        let password = if self.pass_crypto_enable {
+            default_decrypt(&self.pass)
+                .map_err(|error| GuardError::InvalidConfig(error.to_string()))?
+        } else {
+            self.pass.clone()
+        };
+        hash_password(&password)
     }
 }
 
@@ -459,7 +451,9 @@ pub struct MqttStartupConfig {
     #[serde(default)]
     pub username: String,
     #[serde(default)]
-    pub password_env: String,
+    pub pass_crypto_enable: bool,
+    #[serde(default)]
+    pub pass: String,
     #[serde(default = "default_true")]
     pub tls: bool,
     #[serde(default)]
@@ -474,7 +468,8 @@ impl Default for MqttStartupConfig {
             port: default_mqtt_port(),
             client_id: String::new(),
             username: String::new(),
-            password_env: String::new(),
+            pass_crypto_enable: false,
+            pass: String::new(),
             tls: true,
             subscribe_topics: Vec::new(),
         }
@@ -487,13 +482,22 @@ impl MqttStartupConfig {
             && (self.broker.trim().is_empty()
                 || self.client_id.trim().is_empty()
                 || self.username.trim().is_empty()
-                || self.password_env.trim().is_empty())
+                || self.pass.is_empty())
         {
             return Err(GuardError::InvalidConfig(
                 "guard.integrations.mqtt connection fields are required when enabled".to_string(),
             ));
         }
         Ok(())
+    }
+
+    pub fn password(&self) -> GuardResult<String> {
+        if self.pass_crypto_enable {
+            default_decrypt(&self.pass)
+                .map_err(|error| GuardError::InvalidConfig(error.to_string()))
+        } else {
+            Ok(self.pass.clone())
+        }
     }
 }
 
@@ -513,15 +517,6 @@ pub fn config_path_from_args() -> GuardResult<String> {
     ))
 }
 
-pub fn required_env(name: &str) -> GuardResult<String> {
-    std::env::var(name)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            GuardError::InvalidConfig(format!("environment variable {name} is required"))
-        })
-}
-
 fn default_true() -> bool {
     true
 }
@@ -539,8 +534,8 @@ fn default_heartbeat_timeout_ms() -> u64 {
 fn default_bind_addr() -> SocketAddr {
     "127.0.0.1:8080".parse().unwrap()
 }
-fn default_origin() -> String {
-    "https://127.0.0.1:8080".to_string()
+fn default_origins() -> Vec<String> {
+    vec!["http://127.0.0.1:8080".to_string()]
 }
 fn default_ui_dist_dir() -> PathBuf {
     PathBuf::from("guard-ui/dist")
@@ -575,15 +570,96 @@ fn default_pool_idle_sec() -> u64 {
 fn default_mysql_port() -> u16 {
     3306
 }
-fn default_master_key_env() -> String {
-    "GMV_GUARD_MASTER_KEY".to_string()
-}
 fn default_admin_username() -> String {
     "admin".to_string()
 }
-fn default_admin_hash_env() -> String {
-    "GMV_ADMIN_PASSWORD_HASH".to_string()
-}
 fn default_mqtt_port() -> u16 {
     8883
+}
+
+#[cfg(test)]
+mod tests {
+    use argon2::PasswordHash;
+    use argon2::PasswordVerifier;
+    use base::utils::crypto::default_encrypt;
+
+    use super::*;
+
+    #[test]
+    fn bootstrap_admin_hashes_plaintext_password_source() {
+        let config = BootstrapAdminConfig {
+            username: "admin".to_string(),
+            pass_crypto_enable: false,
+            pass: "admin-secret".to_string(),
+            local_login_only: true,
+        };
+        let hash = config.password_hash().unwrap();
+        let parsed = PasswordHash::new(&hash).unwrap();
+        argon2::Argon2::default()
+            .verify_password("admin-secret".as_bytes(), &parsed)
+            .unwrap();
+    }
+
+    #[test]
+    fn bootstrap_admin_hashes_encrypted_password_source() {
+        let encrypted = default_encrypt("admin-secret").unwrap();
+        let config = BootstrapAdminConfig {
+            username: "admin".to_string(),
+            pass_crypto_enable: true,
+            pass: encrypted,
+            local_login_only: true,
+        };
+        let hash = config.password_hash().unwrap();
+        let parsed = PasswordHash::new(&hash).unwrap();
+        argon2::Argon2::default()
+            .verify_password("admin-secret".as_bytes(), &parsed)
+            .unwrap();
+    }
+
+    #[test]
+    fn mqtt_startup_password_supports_plaintext_and_encrypted_sources() {
+        let plaintext = MqttStartupConfig {
+            enabled: true,
+            broker: "127.0.0.1".to_string(),
+            port: 1883,
+            client_id: "guard".to_string(),
+            username: "guard".to_string(),
+            pass_crypto_enable: false,
+            pass: "mqtt-secret".to_string(),
+            tls: false,
+            subscribe_topics: Vec::new(),
+        };
+        assert_eq!(plaintext.password().unwrap(), "mqtt-secret");
+
+        let encrypted = MqttStartupConfig {
+            pass_crypto_enable: true,
+            pass: default_encrypt("mqtt-secret").unwrap(),
+            ..plaintext
+        };
+        assert_eq!(encrypted.password().unwrap(), "mqtt-secret");
+    }
+
+    #[test]
+    fn bootstrap_admin_password_source_can_be_omitted_after_initialization() {
+        let config = BootstrapAdminConfig {
+            username: "admin".to_string(),
+            pass_crypto_enable: false,
+            pass: String::new(),
+            local_login_only: true,
+        };
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn bootstrap_admin_password_hash_requires_source_when_consumed() {
+        let config = BootstrapAdminConfig {
+            username: "admin".to_string(),
+            pass_crypto_enable: false,
+            pass: String::new(),
+            local_login_only: true,
+        };
+        let error = config.password_hash().unwrap_err();
+        assert!(error.to_string().contains("empty guard_user"));
+    }
 }
