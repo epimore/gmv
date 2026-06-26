@@ -12,6 +12,8 @@ uuid = { version = "1.23", features = ["v4", "v7"] }
 base = { path = "../../pigs/base" }
 base_db = { path = "../../pigs/base_db", default-features = false, features = ["mysql", "sqlite-bundled"] }
 base_rpc = { path = "../../pigs/base_rpc" }
+tonic = "0.14"
+tokio-stream = "0.1"
 reqwest = { workspace = true, features = ["stream"] }
 url.workspace = true
 rumqttc.workspace = true
@@ -23,6 +25,7 @@ rust-embed = { version = "8", optional = true }
 
 
 [dev-dependencies]
+gmv-node-client = { path = "../node-client" }
 tower = { workspace = true, features = ["util"] }
 
 [features]

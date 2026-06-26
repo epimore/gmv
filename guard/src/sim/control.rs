@@ -80,6 +80,7 @@ impl Simulator {
                 identity,
                 capabilities,
                 capacity,
+                host_metrics: Default::default(),
                 zone: Some("sim-zone".to_string()),
                 now_ms,
                 takeover: true,
@@ -166,6 +167,8 @@ impl Simulator {
             health,
             sequence,
             now_ms,
+            host_metrics: Default::default(),
+            business_metrics: Default::default(),
         })
     }
 

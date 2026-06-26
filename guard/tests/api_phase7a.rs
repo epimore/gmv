@@ -10,6 +10,7 @@ use guard::store::model::EventRecord;
 #[test]
 fn api_v2_paths_are_rest_polling_first() {
     assert_eq!(paths::API_PREFIX, "/api/v2");
+    assert_eq!(paths::LEASES, "/api/v2/leases");
     assert_eq!(paths::EVENTS, "/api/v2/events");
     assert_eq!(paths::SSE_EVENTS_STREAM, "/api/v2/events/stream");
     assert!(paths::is_v2_path("/api/v2/events"));

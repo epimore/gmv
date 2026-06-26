@@ -4,18 +4,39 @@ use argon2::password_hash::{PasswordHash, PasswordVerifier};
 use crate::auth::{Role, Secret};
 use crate::core::{GuardError, GuardResult};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserProfile {
+    pub username: String,
+    pub role: Role,
+    pub nickname: String,
+    pub enabled: bool,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct UserAccount {
     pub username: String,
     pub role: Role,
+    pub nickname: String,
     password_hash: Secret,
 }
 
 impl UserAccount {
     pub fn new(username: impl Into<String>, role: Role, password_hash: impl Into<String>) -> Self {
+        Self::with_nickname(username, role, "", password_hash)
+    }
+
+    pub fn with_nickname(
+        username: impl Into<String>,
+        role: Role,
+        nickname: impl Into<String>,
+        password_hash: impl Into<String>,
+    ) -> Self {
         Self {
             username: username.into(),
             role,
+            nickname: nickname.into(),
             password_hash: Secret::new(password_hash),
         }
     }

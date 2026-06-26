@@ -1,0 +1,85 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use base::tokio_util::sync::CancellationToken;
+use base_rpc::RpcChannelConfig;
+use gmv_node_client::{NodeReporter, NodeReporterConfig};
+use gmv_protocol::common::v1::{NodeIdentity, NodeKind};
+use gmv_protocol::guard::v1::guard_node_control_server::GuardNodeControlServer;
+use gmv_protocol::guard::v1::{NodeResourceSnapshot, RegisterNodeRequest};
+use guard::registry::RegistryService;
+use guard::runtime::node_rpc::GuardNodeRpc;
+use guard::store::InMemoryGuardStore;
+
+#[test]
+fn node_reporter_registers_and_updates_host_metrics_over_grpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            drop(listener);
+            let store = InMemoryGuardStore::default();
+            let service = GuardNodeRpc::new(RegistryService::new(store.clone()), 100, 1_000);
+            let server_cancel = CancellationToken::new();
+            let server_shutdown = server_cancel.clone();
+            let server = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(GuardNodeControlServer::new(service))
+                    .serve_with_shutdown(address, async move { server_shutdown.cancelled().await })
+                    .await
+                    .unwrap();
+            });
+
+            let register = RegisterNodeRequest {
+                identity: Some(NodeIdentity {
+                    node_id: "stream-test".to_string(),
+                    instance_id: "instance-test".to_string(),
+                    kind: NodeKind::Stream as i32,
+                }),
+                software_version: "test".to_string(),
+                started_at_epoch_ms: 1,
+                endpoints: vec![],
+                capabilities: vec!["live".to_string()],
+                startup_snapshot: Some(NodeResourceSnapshot::default()),
+                host_metrics: None,
+                capacity: 10,
+                zone: "test".to_string(),
+                takeover: false,
+            };
+            let mut config = NodeReporterConfig::new(
+                RpcChannelConfig::new(format!("http://{address}")),
+                register,
+            );
+            config.reconnect_delay = Duration::from_millis(20);
+            config.business_metrics =
+                Arc::new(|| HashMap::from([("receiving_streams".to_string(), "3".to_string())]));
+            let reporter_cancel = CancellationToken::new();
+            let reporter = NodeReporter::spawn(config, reporter_cancel.clone());
+
+            base::tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Some(node) = store.get_node("stream-test") {
+                        if node.sequence > 0 && node.host_metrics.memory_total_bytes > 0 {
+                            assert_eq!(
+                                node.business_metrics
+                                    .get("receiving_streams")
+                                    .map(String::as_str),
+                                Some("3")
+                            );
+                            break;
+                        }
+                    }
+                    base::tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+
+            reporter_cancel.cancel();
+            reporter.await.unwrap();
+            server_cancel.cancel();
+            server.await.unwrap();
+        });
+}

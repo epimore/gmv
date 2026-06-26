@@ -59,6 +59,7 @@ fn app(simulator_enabled: bool) -> (axum::Router, InMemoryGuardStore) {
             auth,
             outbox: OutboxRepository::from(store.clone()),
             simulator,
+            users: None,
         }),
         store,
     )

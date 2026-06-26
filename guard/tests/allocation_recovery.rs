@@ -22,6 +22,7 @@ fn register_stream(
             identity: identity.clone(),
             capabilities: vec!["live".to_string()],
             capacity,
+            host_metrics: Default::default(),
             zone: Some("z1".to_string()),
             now_ms: 1_000,
             takeover: false,

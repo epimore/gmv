@@ -125,6 +125,12 @@ impl OperationService {
             .ok_or_else(|| GuardError::NotFound(format!("operation {operation_id}")))
     }
 
+    pub fn list(&self) -> Vec<OperationRecord> {
+        let mut records = self.records.lock().values().cloned().collect::<Vec<_>>();
+        records.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
+        records
+    }
+
     fn update(
         &self,
         operation_id: &str,

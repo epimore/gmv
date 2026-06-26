@@ -6,7 +6,14 @@ use base::exception::GlobalResult;
 use base::log::{error, info, warn};
 use base::logger;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
+use std::collections::HashMap;
 use std::net::UdpSocket;
+use std::sync::Arc;
+
+use crate::guard_integration::SessionGuardNode;
+use crate::register::core::Register;
+use gmv_node_client::{NodeReporter, NodeReporterConfig, generate_instance_id};
+use gmv_protocol::guard::v1::NodeResourceSnapshot;
 
 #[derive(Debug)]
 pub struct AppInfo {
@@ -58,6 +65,8 @@ impl
         ),
     ) -> GlobalResult<()> {
         let http = self.http;
+        let node_id = self.session_conf.domain_id.clone();
+        let http_port = http.port;
         let (http_listener, tu) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
         let service_cancel = network_rt.cancel.clone();
@@ -68,6 +77,22 @@ impl
                 network_rt.cancel.cancel();
                 return;
             }
+            let mut node =
+                SessionGuardNode::new(node_id, generate_instance_id(), u32::from(http_port));
+            if let Ok(endpoint) = std::env::var("GMV_GUARD_ENDPOINT") {
+                node.guard_channel.endpoint = endpoint;
+            }
+            let mut reporter = NodeReporterConfig::new(
+                node.guard_channel.clone(),
+                node.register_request(NodeResourceSnapshot::default()),
+            );
+            reporter.business_metrics = Arc::new(|| {
+                HashMap::from([(
+                    "active_devices".to_string(),
+                    Register::active_device_count().to_string(),
+                )])
+            });
+            NodeReporter::spawn(reporter, network_rt.cancel.clone());
             match http.run(http_listener, network_rt.cancel.clone()).await {
                 Ok(()) => warn!(
                     "HTTP service returned; cancellation_requested={}",

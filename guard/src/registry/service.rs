@@ -3,13 +3,14 @@ use crate::core::{
 };
 use crate::registry::health::scheduling_for_health;
 use crate::store::InMemoryGuardStore;
-use crate::store::model::NodeRecord;
+use crate::store::model::{HostMetricsRecord, NodeRecord};
 
 #[derive(Debug, Clone)]
 pub struct RegisterRequest {
     pub identity: NodeIdentity,
     pub capabilities: Vec<String>,
     pub capacity: u32,
+    pub host_metrics: HostMetricsRecord,
     pub zone: Option<String>,
     pub now_ms: i64,
     pub takeover: bool,
@@ -28,6 +29,8 @@ pub struct HeartbeatReport {
     pub health: HealthState,
     pub sequence: u64,
     pub now_ms: i64,
+    pub host_metrics: HostMetricsRecord,
+    pub business_metrics: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +73,8 @@ impl RegistryService {
             capabilities: request.capabilities,
             capacity: request.capacity,
             pending_leases: 0,
+            host_metrics: request.host_metrics,
+            business_metrics: std::collections::HashMap::new(),
             zone: request.zone,
             last_seen_at_ms: request.now_ms,
             generation: 1,
@@ -101,6 +106,8 @@ impl RegistryService {
         node.scheduling = scheduling_for_health(report.health);
         node.last_seen_at_ms = report.now_ms;
         node.sequence = report.sequence;
+        node.host_metrics = report.host_metrics;
+        node.business_metrics = report.business_metrics;
         self.store.upsert_node(node);
         Ok(())
     }

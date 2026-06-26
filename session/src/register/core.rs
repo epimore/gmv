@@ -90,6 +90,10 @@ impl Register {
         TimeScheduler::global()
     }
 
+    pub fn active_device_count() -> usize {
+        Self::get().inner.io_map.session.len()
+    }
+
     pub fn device_heart(device_id: &Arc<str>, association: Association) -> GlobalResult<()> {
         let arc = Self::get().inner.clone();
 

@@ -38,6 +38,11 @@ guard:
     login_window_sec: 60
     max_failed_attempts: 5
 
+  grpc:
+    bind_addr: 127.0.0.1:18080
+    heartbeat_interval_ms: 5000
+    heartbeat_timeout_ms: 20000
+
   database:
     backend: sqlite # sqlite | mysql
     auto_migrate: true

@@ -72,6 +72,7 @@ pub async fn serve(
     outbox: crate::outbox::OutboxRepository,
     simulator: Option<crate::sim::Simulator>,
     users: Vec<UserAccount>,
+    user_repository: crate::store::persistent::UserRepository,
 ) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
     let auth = AuthState::new(
@@ -90,6 +91,7 @@ pub async fn serve(
             auth,
             outbox,
             simulator,
+            users: Some(user_repository),
         },
         config.ui_dist_dir.clone(),
     );

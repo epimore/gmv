@@ -9,7 +9,13 @@ use base::log::info;
 use base::logger;
 use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
+use std::collections::HashMap;
 use std::net::UdpSocket;
+use std::sync::Arc;
+
+use crate::guard_integration::StreamGuardNode;
+use gmv_node_client::{NodeReporter, NodeReporterConfig, generate_instance_id};
+use gmv_protocol::guard::v1::NodeResourceSnapshot;
 
 pub struct App {
     conf: ServerConf,
@@ -57,6 +63,9 @@ impl
         ),
     ) -> GlobalResult<()> {
         let (http_listener, tu) = t;
+        let node_name = self.conf.name.clone();
+        let http_port = self.conf.http_port;
+        let rtp_port = self.conf.rtp_port;
         let (tx, rx) = mpsc::channel(100);
         Register::init()?;
 
@@ -64,6 +73,26 @@ impl
         {
             let _enter = network_rt.rt_handle.enter();
             rtp_handler::run(tu, network_rt.cancel.clone())?;
+            let mut node = StreamGuardNode::new(
+                node_name,
+                generate_instance_id(),
+                u32::from(http_port),
+                u32::from(rtp_port),
+            );
+            if let Ok(endpoint) = std::env::var("GMV_GUARD_ENDPOINT") {
+                node.guard_channel.endpoint = endpoint;
+            }
+            let mut reporter = NodeReporterConfig::new(
+                node.guard_channel.clone(),
+                node.register_request(NodeResourceSnapshot::default()),
+            );
+            reporter.business_metrics = Arc::new(|| {
+                HashMap::from([(
+                    "receiving_streams".to_string(),
+                    Register::active_stream_count().to_string(),
+                )])
+            });
+            NodeReporter::spawn(reporter, network_rt.cancel.clone());
         }
         network_rt
             .rt_handle

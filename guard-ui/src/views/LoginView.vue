@@ -51,19 +51,27 @@
 import { reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
-import { liveApi, login } from '@/api/client';
 import OrbitChart from '@/components/OrbitChart.vue';
 import { lineOption } from '@/data/mock';
+import { useAuthStore } from '@/stores/auth';
 
 const router = useRouter();
+const auth = useAuthStore();
 const loading = ref(false);
 const form = reactive({ username: '', password: '', remember: true });
 
 async function submit() {
+  if (!form.username.trim() || !form.password) {
+    ElMessage.warning('请输入用户名和密码');
+    return;
+  }
   loading.value = true;
   try {
-    if (liveApi) await login(form.username, form.password);
-    await router.push('/dashboard');
+    await auth.signIn(form.username.trim(), form.password);
+    const redirect = typeof router.currentRoute.value.query.redirect === 'string'
+      ? router.currentRoute.value.query.redirect
+      : '/dashboard';
+    await router.push(redirect);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '登录失败');
   } finally {

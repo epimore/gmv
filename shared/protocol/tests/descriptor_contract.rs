@@ -102,3 +102,31 @@ fn guard_and_direct_service_rpc_boundaries_exist() {
         );
     }
 }
+
+#[test]
+fn node_heartbeat_contains_structured_host_metrics() {
+    let descriptor = descriptor();
+    let guard = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.guard.v1"))
+        .unwrap();
+    let message = |name: &str| {
+        guard
+            .message_type
+            .iter()
+            .find(|message| message.name.as_deref() == Some(name))
+            .unwrap()
+    };
+    let field_number = |message_name: &str, field_name: &str| {
+        message(message_name)
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some(field_name))
+            .unwrap()
+            .number
+    };
+    assert_eq!(field_number("NodeHeartbeat", "host_metrics"), Some(3));
+    assert_eq!(field_number("HostMetrics", "cpu_usage_percent"), Some(1));
+    assert_eq!(field_number("HostMetrics", "process_threads"), Some(14));
+}

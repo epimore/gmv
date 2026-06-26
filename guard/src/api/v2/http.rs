@@ -1,3 +1,5 @@
+use argon2::Argon2;
+use argon2::password_hash::{PasswordHasher, SaltString};
 use axum::extract::{Path, Query, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ORIGIN, REFERRER_POLICY,
@@ -9,19 +11,21 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower_http::cors::CorsLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
+use uuid::Uuid;
 
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
-use crate::auth::{AuthState, Role, UiSession};
+use crate::auth::{AuthState, Role, UiSession, UserProfile};
 use crate::core::{GuardError, HealthState};
 use crate::job::{SystemJobRecord, SystemJobRequest, SystemJobStatus, SystemJobType};
 use crate::operation::{OperationRecord, OperationRequest, OperationStatus};
 use crate::outbox::OutboxRepository;
 use crate::sim::{SimAiTask, SimDevice, SimStatus, SimStream, Simulator};
 use crate::store::model::{
-    EventRecord, NodeRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
+    EventRecord, LeaseRecord, NodeRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
 };
+use crate::store::persistent::UserRepository;
 
 const CSRF_HEADER: &str = "x-csrf-token";
 
@@ -31,6 +35,7 @@ pub struct HttpState {
     pub auth: AuthState,
     pub outbox: OutboxRepository,
     pub simulator: Option<Simulator>,
+    pub users: Option<UserRepository>,
 }
 
 pub fn router(state: HttpState) -> Router {
@@ -42,13 +47,17 @@ pub fn router(state: HttpState) -> Router {
         .route("/auth/login", post(login))
         .route("/auth/session", get(current_session))
         .route("/auth/logout", post(logout))
+        .route("/me", get(current_profile).post(update_profile))
         .route("/dashboard", get(dashboard))
         .route("/nodes", get(nodes))
+        .route("/leases", get(leases))
         .route("/events", get(events))
-        .route("/operations", post(start_operation))
+        .route("/operations", get(operations).post(start_operation))
         .route("/operations/{operation_id}", get(operation))
-        .route("/system/jobs", post(start_system_job))
+        .route("/system/jobs", get(system_jobs).post(start_system_job))
         .route("/system/jobs/{job_id}", get(system_job))
+        .route("/users", get(list_users).post(create_user))
+        .route("/users/{username}", post(update_user))
         .route("/integrations/outbox", get(outbox_records))
         .route("/integrations/outbox/{outbox_id}/retry", post(retry_outbox))
         .route("/devices", get(sim_devices))
@@ -177,6 +186,7 @@ fn health_label(health: HealthState) -> &'static str {
 struct SessionResponse {
     username: String,
     role: &'static str,
+    nickname: String,
     csrf_token: String,
     expires_at_ms: u64,
 }
@@ -261,10 +271,52 @@ struct NodeResponse {
     capabilities: Vec<String>,
     capacity: u32,
     pending_leases: u32,
+    host_metrics: HostMetricsResponse,
+    business_metrics: std::collections::HashMap<String, String>,
     zone: Option<String>,
     last_seen_at_ms: i64,
     generation: u64,
     sequence: u64,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct HostMetricsResponse {
+    cpu_usage_percent: f64,
+    load_average_1m: f64,
+    load_average_5m: f64,
+    load_average_15m: f64,
+    memory_total_bytes: u64,
+    memory_used_bytes: u64,
+    swap_total_bytes: u64,
+    swap_used_bytes: u64,
+    disk_read_bytes_per_sec: u64,
+    disk_write_bytes_per_sec: u64,
+    network_receive_bytes_per_sec: u64,
+    network_transmit_bytes_per_sec: u64,
+    process_resident_memory_bytes: u64,
+    process_threads: u32,
+}
+
+impl From<crate::store::model::HostMetricsRecord> for HostMetricsResponse {
+    fn from(value: crate::store::model::HostMetricsRecord) -> Self {
+        Self {
+            cpu_usage_percent: value.cpu_usage_percent,
+            load_average_1m: value.load_average_1m,
+            load_average_5m: value.load_average_5m,
+            load_average_15m: value.load_average_15m,
+            memory_total_bytes: value.memory_total_bytes,
+            memory_used_bytes: value.memory_used_bytes,
+            swap_total_bytes: value.swap_total_bytes,
+            swap_used_bytes: value.swap_used_bytes,
+            disk_read_bytes_per_sec: value.disk_read_bytes_per_sec,
+            disk_write_bytes_per_sec: value.disk_write_bytes_per_sec,
+            network_receive_bytes_per_sec: value.network_receive_bytes_per_sec,
+            network_transmit_bytes_per_sec: value.network_transmit_bytes_per_sec,
+            process_resident_memory_bytes: value.process_resident_memory_bytes,
+            process_threads: value.process_threads,
+        }
+    }
 }
 
 impl From<NodeRecord> for NodeResponse {
@@ -279,6 +331,8 @@ impl From<NodeRecord> for NodeResponse {
             capabilities: node.capabilities,
             capacity: node.capacity,
             pending_leases: node.pending_leases,
+            host_metrics: node.host_metrics.into(),
+            business_metrics: node.business_metrics,
             zone: node.zone,
             last_seen_at_ms: node.last_seen_at_ms,
             generation: node.generation,
@@ -291,13 +345,50 @@ async fn nodes(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<NodeResponse>>, HttpError> {
-    let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Viewer)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
+    require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(
         state.api.list_nodes().into_iter().map(Into::into).collect(),
+    ))
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct LeaseResponse {
+    lease_id: String,
+    route_id: String,
+    resource_id: String,
+    node_id: String,
+    instance_id: String,
+    state: &'static str,
+    expires_at_ms: i64,
+}
+
+impl From<LeaseRecord> for LeaseResponse {
+    fn from(lease: LeaseRecord) -> Self {
+        Self {
+            lease_id: lease.lease_id,
+            route_id: lease.route_id,
+            resource_id: lease.resource_id,
+            node_id: lease.node_id,
+            instance_id: lease.instance_id,
+            state: lease_state(lease.state),
+            expires_at_ms: lease.expires_at_ms,
+        }
+    }
+}
+
+async fn leases(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<LeaseResponse>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(
+        state
+            .api
+            .list_leases()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
     ))
 }
 
@@ -424,6 +515,21 @@ async fn start_operation(
     Ok((StatusCode::ACCEPTED, Json(record.into())))
 }
 
+async fn operations(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<OperationResponse>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(
+        state
+            .api
+            .list_operations()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    ))
+}
+
 async fn operation(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -499,6 +605,21 @@ async fn start_system_job(
     Ok((StatusCode::ACCEPTED, Json(record.into())))
 }
 
+async fn system_jobs(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<SystemJobResponse>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(
+        state
+            .api
+            .list_system_jobs()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    ))
+}
+
 async fn system_job(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -552,6 +673,7 @@ fn session_response(session: UiSession) -> SessionResponse {
     SessionResponse {
         username: session.username,
         role: role_name(session.role),
+        nickname: session.nickname,
         csrf_token: session.csrf_token,
         expires_at_ms: session.expires_at_ms,
     }
@@ -562,6 +684,16 @@ fn role_name(role: Role) -> &'static str {
         Role::Viewer => "viewer",
         Role::Operator => "operator",
         Role::Admin => "admin",
+    }
+}
+
+fn lease_state(state: crate::core::LeaseState) -> &'static str {
+    match state {
+        crate::core::LeaseState::Allocated => "allocated",
+        crate::core::LeaseState::Confirmed => "confirmed",
+        crate::core::LeaseState::Failed => "failed",
+        crate::core::LeaseState::Released => "released",
+        crate::core::LeaseState::Expired => "expired",
     }
 }
 
@@ -597,6 +729,228 @@ fn job_status(status: SystemJobStatus) -> &'static str {
 #[serde(crate = "base::serde")]
 struct OutboxQuery {
     limit: Option<usize>,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct UserResponse {
+    username: String,
+    role: &'static str,
+    nickname: String,
+    enabled: bool,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct CreateUserRequest {
+    username: String,
+    role: String,
+    password: String,
+    #[serde(default)]
+    nickname: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct UpdateUserRequest {
+    role: String,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    nickname: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct UpdateProfileRequest {
+    #[serde(default)]
+    nickname: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+async fn current_profile(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<UserResponse>, HttpError> {
+    let session = require_role(&state.auth, &headers, Role::Viewer)?;
+    let profile = require_user_repository(&state)?
+        .list_profiles()
+        .await?
+        .into_iter()
+        .find(|profile| profile.username == session.username)
+        .ok_or_else(|| GuardError::NotFound(format!("user {}", session.username)))?;
+    Ok(Json(user_response(profile)))
+}
+
+async fn update_profile(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateProfileRequest>,
+) -> Result<Json<UserResponse>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Viewer)?;
+    let users = require_user_repository(&state)?;
+    let current = users
+        .list_profiles()
+        .await?
+        .into_iter()
+        .find(|profile| profile.username == session.username)
+        .ok_or_else(|| GuardError::NotFound(format!("user {}", session.username)))?;
+    let hash = request.password.as_deref().map(password_hash).transpose()?;
+    users
+        .upsert_user(
+            &session.username,
+            current.role,
+            hash.as_deref(),
+            request.nickname.as_deref(),
+            current.enabled,
+            http_now_ms()?,
+        )
+        .await?;
+    let user = users
+        .load_user(&session.username)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("user {}", session.username)))?;
+    state.auth.upsert_user(user.clone());
+    state
+        .auth
+        .refresh_user_sessions(&session.username, user.role, &user.nickname);
+    let profile = users
+        .list_profiles()
+        .await?
+        .into_iter()
+        .find(|profile| profile.username == session.username)
+        .ok_or_else(|| GuardError::NotFound(format!("user {}", session.username)))?;
+    Ok(Json(user_response(profile)))
+}
+
+async fn list_users(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<UserResponse>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Admin)?;
+    let users = require_user_repository(&state)?.list_profiles().await?;
+    Ok(Json(users.into_iter().map(user_response).collect()))
+}
+
+async fn create_user(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateUserRequest>,
+) -> Result<(StatusCode, Json<UserResponse>), HttpError> {
+    require_write(&state.auth, &headers, Role::Admin)?;
+    let username = request.username.trim().to_string();
+    let role = Role::parse(&request.role)?;
+    let hash = password_hash(&request.password)?;
+    let now_ms = http_now_ms()?;
+    let users = require_user_repository(&state)?;
+    users
+        .upsert_user(
+            &username,
+            role,
+            Some(&hash),
+            Some(&request.nickname),
+            request.enabled,
+            now_ms,
+        )
+        .await?;
+    refresh_auth_user(&state.auth, users, &username).await?;
+    let profile = users
+        .list_profiles()
+        .await?
+        .into_iter()
+        .find(|profile| profile.username == username)
+        .ok_or_else(|| GuardError::NotFound(format!("user {username}")))?;
+    Ok((StatusCode::CREATED, Json(user_response(profile))))
+}
+
+async fn update_user(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(username): Path<String>,
+    Json(request): Json<UpdateUserRequest>,
+) -> Result<Json<UserResponse>, HttpError> {
+    require_write(&state.auth, &headers, Role::Admin)?;
+    let username = username.trim().to_string();
+    let role = Role::parse(&request.role)?;
+    let hash = request.password.as_deref().map(password_hash).transpose()?;
+    let now_ms = http_now_ms()?;
+    let users = require_user_repository(&state)?;
+    users
+        .upsert_user(
+            &username,
+            role,
+            hash.as_deref(),
+            request.nickname.as_deref(),
+            request.enabled,
+            now_ms,
+        )
+        .await?;
+    refresh_auth_user(&state.auth, users, &username).await?;
+    let profile = users
+        .list_profiles()
+        .await?
+        .into_iter()
+        .find(|profile| profile.username == username)
+        .ok_or_else(|| GuardError::NotFound(format!("user {username}")))?;
+    Ok(Json(user_response(profile)))
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn user_response(profile: UserProfile) -> UserResponse {
+    UserResponse {
+        username: profile.username,
+        role: profile.role.as_str(),
+        nickname: profile.nickname,
+        enabled: profile.enabled,
+        created_at_ms: profile.created_at_ms,
+        updated_at_ms: profile.updated_at_ms,
+    }
+}
+
+fn require_user_repository(state: &HttpState) -> Result<&UserRepository, HttpError> {
+    state.users.as_ref().ok_or_else(|| HttpError {
+        status: StatusCode::NOT_IMPLEMENTED,
+        code: "user_store_disabled",
+        message: "persistent user store is disabled".to_string(),
+    })
+}
+
+async fn refresh_auth_user(
+    auth: &AuthState,
+    users: &UserRepository,
+    username: &str,
+) -> Result<(), HttpError> {
+    auth.revoke_user_sessions(username);
+    match users.load_user(username).await? {
+        Some(user) => auth.upsert_user(user),
+        None => auth.remove_user(username),
+    }
+    Ok(())
+}
+
+fn password_hash(password: &str) -> Result<String, HttpError> {
+    if password.is_empty() {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_user",
+            message: "password is required".to_string(),
+        });
+    }
+    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())
+        .map_err(|_| HttpError::internal("invalid password salt"))?;
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|_| HttpError::internal("password hash failed"))
 }
 
 #[derive(Debug, base::serde::Serialize)]

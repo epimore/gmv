@@ -14,6 +14,7 @@ strip = true         # 移除调试信息
 [dependencies]
 base_rpc = { path = "../../pigs/base_rpc" }
 gmv-protocol = { path = "../shared/protocol" }
+gmv-node-client = { path = "../node-client" }
 tonic = "0.14"
 #base = { git = "https://github.com/epimore/pigs.git",rev = "f2fc8914",features = ["net"] }
 base = { package = "base", path = "../../pigs/base", features = ["net"] }

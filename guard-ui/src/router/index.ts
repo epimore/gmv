@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import AppShell from '@/components/AppShell.vue';
+import { pinia } from '@/stores';
+import { useAuthStore } from '@/stores/auth';
 
 export const menuRoutes = [
   { path: '/dashboard', label: '总览', icon: '总', group: '控制台' },
@@ -19,6 +21,7 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     component: AppShell,
     redirect: '/dashboard',
+    meta: { requiresAuth: true },
     children: [
       { path: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '总览' } },
       { path: 'nodes', component: () => import('@/views/NodesView.vue'), meta: { title: '节点' } },
@@ -31,9 +34,23 @@ const routes: RouteRecordRaw[] = [
       { path: 'system', component: () => import('@/views/SystemView.vue'), meta: { title: '系统' } },
     ],
   },
+  { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
 ];
 
-export default createRouter({
-  history: createWebHistory(),
-  routes,
+const router = createRouter({ history: createWebHistory(), routes });
+
+router.beforeEach(async (to) => {
+  const auth = useAuthStore(pinia);
+  const authenticated = auth.session ? true : await auth.restore();
+
+  if (to.name === 'login') {
+    if (!authenticated) return true;
+    return typeof to.query.redirect === 'string' ? to.query.redirect : '/dashboard';
+  }
+  if (to.matched.some((record) => record.meta.requiresAuth) && !authenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } };
+  }
+  return true;
 });
+
+export default router;

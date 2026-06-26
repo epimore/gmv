@@ -6,12 +6,60 @@ use base_db::dbx::sqlitex::{SqliteConnectionConfig, build_sqlite_pool};
 use base_db::sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
 
 use crate::app_config::{DatabaseBackend, GuardAppConfig, MysqlSslMode as ConfigSslMode};
-use crate::auth::{Role, UserAccount};
+use crate::auth::{Role, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
 use crate::outbox::OutboxRepository;
 use crate::store::{mysql::MysqlStore, sqlite::SqliteStore};
 
 #[derive(Debug, Clone)]
+pub enum UserRepository {
+    Mysql(MysqlStore),
+    Sqlite(SqliteStore),
+}
+
+impl UserRepository {
+    pub async fn list_profiles(&self) -> GuardResult<Vec<UserProfile>> {
+        match self {
+            Self::Mysql(store) => store.list_user_profiles().await,
+            Self::Sqlite(store) => store.list_user_profiles().await,
+        }
+    }
+
+    pub async fn load_user(&self, username: &str) -> GuardResult<Option<UserAccount>> {
+        let user = match self {
+            Self::Mysql(store) => store.load_user(username).await?,
+            Self::Sqlite(store) => store.load_user(username).await?,
+        };
+        if let Some(user) = &user {
+            user.validate_password_hash()?;
+        }
+        Ok(user)
+    }
+
+    pub async fn upsert_user(
+        &self,
+        username: &str,
+        role: Role,
+        password_hash: Option<&str>,
+        nickname: Option<&str>,
+        enabled: bool,
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        match self {
+            Self::Mysql(store) => {
+                store
+                    .upsert_user(username, role, password_hash, nickname, enabled, now_ms)
+                    .await
+            }
+            Self::Sqlite(store) => {
+                store
+                    .upsert_user(username, role, password_hash, nickname, enabled, now_ms)
+                    .await
+            }
+        }
+    }
+}
+
 pub enum PersistentStore {
     Mysql(MysqlStore),
     Sqlite(SqliteStore),
@@ -94,9 +142,20 @@ impl PersistentStore {
     }
 
     pub async fn load_users(&self) -> GuardResult<Vec<UserAccount>> {
+        let users = match self {
+            Self::Mysql(store) => store.load_users().await?,
+            Self::Sqlite(store) => store.load_users().await?,
+        };
+        for user in &users {
+            user.validate_password_hash()?;
+        }
+        Ok(users)
+    }
+
+    pub fn user_repository(&self) -> UserRepository {
         match self {
-            Self::Mysql(store) => store.load_users().await,
-            Self::Sqlite(store) => store.load_users().await,
+            Self::Mysql(store) => UserRepository::Mysql(store.clone()),
+            Self::Sqlite(store) => UserRepository::Sqlite(store.clone()),
         }
     }
 

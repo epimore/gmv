@@ -22,6 +22,7 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: first.clone(),
                 capabilities: vec!["live".to_string()],
                 capacity: 2,
+                host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_000,
                 takeover: false
@@ -35,6 +36,7 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: second.clone(),
                 capabilities: vec!["live".to_string()],
                 capacity: 2,
+                host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_001,
                 takeover: false
@@ -47,6 +49,7 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: second.clone(),
                 capabilities: vec!["live".to_string()],
                 capacity: 2,
+                host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_002,
                 takeover: true
@@ -60,7 +63,9 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: first,
                 health: HealthState::Ready,
                 sequence: 1,
-                now_ms: 1_003
+                now_ms: 1_003,
+                host_metrics: Default::default(),
+                business_metrics: Default::default(),
             })
             .is_err()
     );
@@ -70,6 +75,8 @@ fn registry_fences_old_instances_and_sequences() {
             health: HealthState::Ready,
             sequence: 1,
             now_ms: 1_004,
+            host_metrics: Default::default(),
+            business_metrics: Default::default(),
         })
         .unwrap();
     assert!(
@@ -78,7 +85,9 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: second,
                 health: HealthState::Ready,
                 sequence: 1,
-                now_ms: 1_005
+                now_ms: 1_005,
+                host_metrics: Default::default(),
+                business_metrics: Default::default(),
             })
             .is_err()
     );

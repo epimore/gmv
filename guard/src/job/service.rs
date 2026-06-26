@@ -104,6 +104,12 @@ impl SystemJobService {
             .ok_or_else(|| GuardError::NotFound(format!("system job {job_id}")))
     }
 
+    pub fn list(&self) -> Vec<SystemJobRecord> {
+        let mut records = self.records.lock().values().cloned().collect::<Vec<_>>();
+        records.sort_by(|left, right| left.job_id.cmp(&right.job_id));
+        records
+    }
+
     fn update(
         &self,
         job_id: &str,

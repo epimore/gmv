@@ -9,7 +9,8 @@ test('Guard 模拟节点完成点播、PTZ、AI 和停止闭环', async ({ page 
 
   await page.locator('a[href="/devices"]').click();
   await expect(page.getByRole('heading', { name: '设备', level: 1 })).toBeVisible();
-  await expect(page.getByText('SIM LIVE')).toBeVisible();
+  await expect(page.getByText('Guard 状态')).toBeVisible();
+  await expect(page.getByText('可用', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '发起预览' }).click();
   await expect(page.getByText('预览已创建')).toBeVisible();
   await page.getByRole('button', { name: '云台测试' }).click();

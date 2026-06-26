@@ -656,6 +656,10 @@ impl Register {
         }
     }
 
+    pub fn active_stream_count() -> usize {
+        Self::get().inner.stream_metadata_map.len()
+    }
+
     pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
         Self::get().inner.event_tx.clone()
     }

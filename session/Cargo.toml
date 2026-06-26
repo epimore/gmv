@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 base_rpc = { path = "../../pigs/base_rpc" }
 gmv-protocol = { path = "../shared/protocol" }
+gmv-node-client = { path = "../node-client" }
 tonic = "0.14"
 shared = { path = "../shared" }
 #base = { package = "base_db",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }

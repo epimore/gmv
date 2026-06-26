@@ -7,6 +7,7 @@ members = [
     "stream",
     "avai",
     "guard",
+    "node-client",
 ]
 
 [workspace.package]

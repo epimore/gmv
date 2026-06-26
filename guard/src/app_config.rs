@@ -15,6 +15,8 @@ pub struct GuardAppConfig {
     #[serde(default)]
     pub http: HttpConfig,
     #[serde(default)]
+    pub grpc: GrpcConfig,
+    #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
     pub security: SecurityConfig,
@@ -34,6 +36,7 @@ impl GuardAppConfig {
 
     pub fn validate(&self) -> GuardResult<()> {
         self.http.validate()?;
+        self.grpc.validate()?;
         self.database.validate()?;
         self.security.validate()?;
         self.bootstrap.validate()?;
@@ -45,6 +48,46 @@ impl CheckFromConf for GuardAppConfig {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         self.validate()
             .map_err(|error| FieldCheckError::BizError(error.to_string()))
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct GrpcConfig {
+    #[serde(default = "default_grpc_bind_addr")]
+    pub bind_addr: SocketAddr,
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
+    #[serde(default = "default_heartbeat_timeout_ms")]
+    pub heartbeat_timeout_ms: u64,
+}
+
+impl Default for GrpcConfig {
+    fn default() -> Self {
+        Self {
+            bind_addr: default_grpc_bind_addr(),
+            heartbeat_interval_ms: default_heartbeat_interval_ms(),
+            heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
+        }
+    }
+}
+
+impl GrpcConfig {
+    fn validate(&self) -> GuardResult<()> {
+        if !self.bind_addr.ip().is_loopback() {
+            return Err(GuardError::InvalidConfig(
+                "guard.grpc currently requires a loopback bind until RPC TLS is configured"
+                    .to_string(),
+            ));
+        }
+        if self.heartbeat_interval_ms == 0
+            || self.heartbeat_timeout_ms < self.heartbeat_interval_ms.saturating_mul(3)
+        {
+            return Err(GuardError::InvalidConfig(
+                "guard.grpc heartbeat timeout must cover at least three intervals".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -482,6 +525,17 @@ pub fn required_env(name: &str) -> GuardResult<String> {
 fn default_true() -> bool {
     true
 }
+fn default_grpc_bind_addr() -> SocketAddr {
+    "127.0.0.1:18080".parse().expect("valid default gRPC bind")
+}
+
+fn default_heartbeat_interval_ms() -> u64 {
+    5_000
+}
+fn default_heartbeat_timeout_ms() -> u64 {
+    20_000
+}
+
 fn default_bind_addr() -> SocketAddr {
     "127.0.0.1:8080".parse().unwrap()
 }

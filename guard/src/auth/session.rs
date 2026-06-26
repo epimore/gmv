@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::auth::{Role, UserAccount};
@@ -35,13 +35,14 @@ impl Default for SessionPolicy {
 pub struct UiSession {
     pub username: String,
     pub role: Role,
+    pub nickname: String,
     pub csrf_token: String,
     pub expires_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct AuthState {
-    users: Arc<HashMap<String, UserAccount>>,
+    users: Arc<RwLock<HashMap<String, UserAccount>>>,
     sessions: Arc<Mutex<HashMap<String, UiSession>>>,
     failed_attempts: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     policy: SessionPolicy,
@@ -50,12 +51,12 @@ pub struct AuthState {
 impl AuthState {
     pub fn new(users: impl IntoIterator<Item = UserAccount>, policy: SessionPolicy) -> Self {
         Self {
-            users: Arc::new(
+            users: Arc::new(RwLock::new(
                 users
                     .into_iter()
                     .map(|user| (user.username.clone(), user))
                     .collect(),
-            ),
+            )),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             failed_attempts: Arc::new(Mutex::new(HashMap::new())),
             policy,
@@ -69,9 +70,9 @@ impl AuthState {
     pub fn authenticate(&self, username: &str, password: &str) -> GuardResult<(String, UiSession)> {
         let now_ms = now_ms()?;
         self.check_rate_limit(username, now_ms)?;
-        let verified = self
-            .users
-            .get(username)
+        let user = self.users.read().get(username).cloned();
+        let verified = user
+            .as_ref()
             .map(|user| user.verify_password(password))
             .transpose()?
             .unwrap_or(false);
@@ -82,16 +83,41 @@ impl AuthState {
             ));
         }
         self.failed_attempts.lock().remove(username);
-        let user = &self.users[username];
+        let user = user.expect("verified user must exist");
         let token = Uuid::new_v4().to_string();
         let session = UiSession {
             username: user.username.clone(),
             role: user.role,
+            nickname: user.nickname.clone(),
             csrf_token: Uuid::new_v4().to_string(),
             expires_at_ms: now_ms + self.policy.session_ttl.as_millis() as u64,
         };
         self.sessions.lock().insert(token.clone(), session.clone());
         Ok((token, session))
+    }
+
+    pub fn upsert_user(&self, user: UserAccount) {
+        self.users.write().insert(user.username.clone(), user);
+    }
+
+    pub fn remove_user(&self, username: &str) {
+        self.users.write().remove(username);
+        self.revoke_user_sessions(username);
+    }
+
+    pub fn refresh_user_sessions(&self, username: &str, role: Role, nickname: &str) {
+        for session in self.sessions.lock().values_mut() {
+            if session.username == username {
+                session.role = role;
+                session.nickname = nickname.to_string();
+            }
+        }
+    }
+
+    pub fn revoke_user_sessions(&self, username: &str) {
+        self.sessions
+            .lock()
+            .retain(|_, session| session.username != username);
     }
 
     pub fn session(&self, token: &str) -> GuardResult<UiSession> {

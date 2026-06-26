@@ -2,7 +2,25 @@ use crate::core::{
     ConnectionState, HealthState, LeaseState, NodeIdentity, RouteState, SchedulingState,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HostMetricsRecord {
+    pub cpu_usage_percent: f64,
+    pub load_average_1m: f64,
+    pub load_average_5m: f64,
+    pub load_average_15m: f64,
+    pub memory_total_bytes: u64,
+    pub memory_used_bytes: u64,
+    pub swap_total_bytes: u64,
+    pub swap_used_bytes: u64,
+    pub disk_read_bytes_per_sec: u64,
+    pub disk_write_bytes_per_sec: u64,
+    pub network_receive_bytes_per_sec: u64,
+    pub network_transmit_bytes_per_sec: u64,
+    pub process_resident_memory_bytes: u64,
+    pub process_threads: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct NodeRecord {
     pub identity: NodeIdentity,
     pub connection: ConnectionState,
@@ -11,6 +29,8 @@ pub struct NodeRecord {
     pub capabilities: Vec<String>,
     pub capacity: u32,
     pub pending_leases: u32,
+    pub host_metrics: HostMetricsRecord,
+    pub business_metrics: std::collections::HashMap<String, String>,
     pub zone: Option<String>,
     pub last_seen_at_ms: i64,
     pub generation: u64,

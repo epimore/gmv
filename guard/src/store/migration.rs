@@ -4,19 +4,22 @@ pub const SQLITE_0003: &str = include_str!("../../migrations/sqlite/0003_guard_s
 pub const MYSQL_0004: &str = include_str!("../../migrations/mysql/0004_guard_integrations.sql");
 pub const SQLITE_0004: &str = include_str!("../../migrations/sqlite/0004_guard_integrations.sql");
 pub const MYSQL_0005: &str = include_str!("../../migrations/mysql/0005_guard_settings.sql");
+pub const MYSQL_0006: &str = include_str!("../../migrations/mysql/0006_guard_user_profile.sql");
 pub const SQLITE_0005: &str = include_str!("../../migrations/sqlite/0005_guard_settings.sql");
+pub const SQLITE_0006: &str = include_str!("../../migrations/sqlite/0006_guard_user_profile.sql");
 
 pub const SQLITE_0001: &str = include_str!("../../migrations/sqlite/0001_guard_core.sql");
 pub const MYSQL_0002: &str = include_str!("../../migrations/mysql/0002_guard_outbox.sql");
 pub const SQLITE_0002: &str = include_str!("../../migrations/sqlite/0002_guard_outbox.sql");
 
-pub fn migration_pairs() -> [(&'static str, &'static str); 5] {
+pub fn migration_pairs() -> [(&'static str, &'static str); 6] {
     [
         (MYSQL_0001, SQLITE_0001),
         (MYSQL_0002, SQLITE_0002),
         (MYSQL_0003, SQLITE_0003),
         (MYSQL_0004, SQLITE_0004),
         (MYSQL_0005, SQLITE_0005),
+        (MYSQL_0006, SQLITE_0006),
     ]
 }
 
@@ -46,6 +49,11 @@ pub const MIGRATIONS: &[base_db::migration::Migration] = &[
         name: "guard_settings",
         sql: SQLITE_0005,
     },
+    base_db::migration::Migration {
+        version: 6,
+        name: "guard_user_profile",
+        sql: SQLITE_0006,
+    },
 ];
 
 pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
@@ -73,5 +81,10 @@ pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
         version: 5,
         name: "guard_settings",
         sql: MYSQL_0005,
+    },
+    base_db::migration::Migration {
+        version: 6,
+        name: "guard_user_profile",
+        sql: MYSQL_0006,
     },
 ];

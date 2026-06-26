@@ -9,11 +9,12 @@ use base::serde_json::{Value, json};
 use guard::api::v2::ApiV2;
 use guard::api::v2::http::{HttpState, router};
 use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
+use guard::core::LeaseState;
 use guard::job::SystemJobService;
 use guard::operation::OperationService;
 use guard::outbox::OutboxRepository;
 use guard::store::InMemoryGuardStore;
-use guard::store::model::EventRecord;
+use guard::store::model::{EventRecord, LeaseRecord};
 use tower::ServiceExt;
 
 const ORIGIN_VALUE: &str = "http://127.0.0.1:5173";
@@ -57,6 +58,7 @@ fn test_app(store: InMemoryGuardStore) -> axum::Router {
         auth,
         outbox: OutboxRepository::from(store),
         simulator: None,
+        users: None,
     })
 }
 
@@ -205,13 +207,34 @@ fn viewer_cannot_start_operation_and_only_admin_starts_system_job() {
         assert_eq!(status, StatusCode::FORBIDDEN);
 
         let (operator_cookie, operator_csrf) = login(&app, "operator").await;
+        let (status, _, _) = request(
+            &app,
+            Request::post("/api/v2/operations")
+                .header(ORIGIN, ORIGIN_VALUE)
+                .header(COOKIE, &operator_cookie)
+                .header("x-csrf-token", &operator_csrf)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "operation_id": "op-operator",
+                        "kind": "scheduler.rebalance",
+                        "dangerous": false,
+                        "confirmation": null
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+
         let job_body = json!({ "job_id": "job-1", "job_type": "backup" }).to_string();
         let (status, _, _) = request(
             &app,
             Request::post("/api/v2/system/jobs")
                 .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, operator_cookie)
-                .header("x-csrf-token", operator_csrf)
+                .header(COOKIE, &operator_cookie)
+                .header("x-csrf-token", &operator_csrf)
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from(job_body.clone()))
                 .unwrap(),
@@ -224,8 +247,8 @@ fn viewer_cannot_start_operation_and_only_admin_starts_system_job() {
             &app,
             Request::post("/api/v2/system/jobs")
                 .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, admin_cookie)
-                .header("x-csrf-token", admin_csrf)
+                .header(COOKIE, &admin_cookie)
+                .header("x-csrf-token", &admin_csrf)
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from(job_body))
                 .unwrap(),
@@ -233,6 +256,60 @@ fn viewer_cannot_start_operation_and_only_admin_starts_system_job() {
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
         assert_eq!(body["job_type"], "backup");
+
+        let (status, _, operations) = request(
+            &app,
+            Request::get("/api/v2/operations")
+                .header(COOKIE, &admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(operations[0]["operation_id"], "op-operator");
+
+        let (status, _, jobs) = request(
+            &app,
+            Request::get("/api/v2/system/jobs")
+                .header(COOKIE, admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(jobs[0]["job_id"], "job-1");
+    });
+}
+
+#[test]
+fn leases_are_exposed_to_viewers() {
+    run_async(async {
+        let store = InMemoryGuardStore::default();
+        store
+            .insert_lease(LeaseRecord {
+                lease_id: "lease-1".to_string(),
+                route_id: "route-1".to_string(),
+                resource_id: "stream-1".to_string(),
+                node_id: "stream-a".to_string(),
+                instance_id: "instance-a".to_string(),
+                idempotency_key: "lease-ui-1".to_string(),
+                state: LeaseState::Confirmed,
+                expires_at_ms: 10_000,
+            })
+            .unwrap();
+        let app = test_app(store);
+        let (cookie, _) = login(&app, "viewer").await;
+        let (status, _, body) = request(
+            &app,
+            Request::get("/api/v2/leases")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body[0]["lease_id"], "lease-1");
+        assert_eq!(body[0]["state"], "confirmed");
     });
 }
 

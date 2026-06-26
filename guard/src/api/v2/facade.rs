@@ -3,7 +3,7 @@ use crate::core::GuardResult;
 use crate::job::{SystemJobRecord, SystemJobRequest, SystemJobService};
 use crate::operation::{OperationRecord, OperationRequest, OperationService};
 use crate::store::InMemoryGuardStore;
-use crate::store::model::NodeRecord;
+use crate::store::model::{LeaseRecord, NodeRecord};
 
 #[derive(Debug, Clone)]
 pub struct ApiV2 {
@@ -29,6 +29,10 @@ impl ApiV2 {
         self.store.nodes()
     }
 
+    pub fn list_leases(&self) -> Vec<LeaseRecord> {
+        self.store.leases()
+    }
+
     pub fn poll_events(&self, query: EventQuery) -> GuardResult<EventPage> {
         poll_events(&self.store, query)
     }
@@ -41,11 +45,19 @@ impl ApiV2 {
         self.operations.get(operation_id)
     }
 
+    pub fn list_operations(&self) -> Vec<OperationRecord> {
+        self.operations.list()
+    }
+
     pub fn start_system_job(&self, request: SystemJobRequest) -> GuardResult<SystemJobRecord> {
         self.jobs.start(request)
     }
 
     pub fn get_system_job(&self, job_id: &str) -> GuardResult<SystemJobRecord> {
         self.jobs.get(job_id)
+    }
+
+    pub fn list_system_jobs(&self) -> Vec<SystemJobRecord> {
+        self.jobs.list()
     }
 }

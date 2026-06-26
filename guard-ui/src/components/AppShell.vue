@@ -34,8 +34,10 @@
           <div class="telemetry"><span class="dot" :class="{ paused: polling.paused }" />{{ polling.paused ? '轮询暂停' : 'REST 轮询' }}</div>
           <div class="telemetry">after_id <span class="code">{{ polling.afterId }}</span></div>
           <div class="telemetry">next cursor <span class="code">{{ polling.nextCursor }}</span></div>
+          <div class="telemetry">{{ displayName }} · {{ auth.session?.role }}</div>
           <el-button @click="polling.toggle()">{{ polling.paused ? '恢复' : '暂停' }}</el-button>
-          <el-button type="primary" @click="polling.advance()">拉取增量</el-button>
+          <el-button type="primary" @click="advancePolling">拉取增量</el-button>
+          <el-button :loading="loggingOut" @click="signOut">退出登录</el-button>
         </div>
       </header>
       <RouterView />
@@ -44,13 +46,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, ref } from 'vue';
+import { ElMessage } from 'element-plus';
+import { useRoute, useRouter } from 'vue-router';
 import { menuRoutes } from '@/router';
+import { useAuthStore } from '@/stores/auth';
 import { usePollingStore } from '@/stores/polling';
 
 const route = useRoute();
+const router = useRouter();
+const auth = useAuthStore();
 const polling = usePollingStore();
+const loggingOut = ref(false);
+const displayName = computed(() => auth.session?.nickname || auth.session?.username || '');
 const groups = computed(() => [...new Set(menuRoutes.map((item) => item.group))]);
 const grouped = computed(() =>
   menuRoutes.reduce(
@@ -61,4 +69,19 @@ const grouped = computed(() =>
     {} as Record<string, Array<(typeof menuRoutes)[number]>>,
   ),
 );
+
+async function advancePolling() {
+  try { await polling.advance(); }
+  catch (error) { ElMessage.error(error instanceof Error ? error.message : '事件拉取失败'); }
+}
+
+async function signOut() {
+  loggingOut.value = true;
+  try {
+    await auth.signOut();
+    await router.replace('/login');
+  } finally {
+    loggingOut.value = false;
+  }
+}
 </script>
