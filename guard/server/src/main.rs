@@ -1,4 +1,5 @@
 use std::io::{self, Read};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base::log::warn;
@@ -13,6 +14,8 @@ use guard::mqttc::{
     CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy, MqttRuntime,
 };
 use guard::operation::OperationService;
+use guard::outbox::OutboxWorker;
+use guard::runtime::event_forwarder::{EventForwardRule, EventForwarder};
 use guard::runtime::node_expirer;
 use guard::runtime::node_rpc::{self, NodeRpcConfig};
 use guard::runtime::web::{self, WebServerConfig};
@@ -92,9 +95,11 @@ fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
             }),
         };
         let _node_expirer = node_expirer::spawn(registry.clone(), config.grpc.heartbeat_timeout_ms);
-        if config.integrations.mqtt.enabled {
-            spawn_mqtt_runtime(&config, &persistent, operations.clone(), api_store.clone())?;
-        }
+        let event_forwarder = if config.integrations.mqtt.enabled {
+            spawn_mqtt_runtime(&config, &persistent, operations.clone(), api_store.clone())?
+        } else {
+            None
+        };
         let web = web::serve(
             web_config,
             api,
@@ -102,8 +107,16 @@ fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
             simulator,
             users,
             user_repository,
+            persistent.media_repository(),
+            event_forwarder.clone(),
         );
-        let rpc = node_rpc::serve(rpc_config, registry, api_store.clone());
+        let rpc = node_rpc::serve(
+            rpc_config,
+            registry,
+            api_store.clone(),
+            event_forwarder,
+            persistent.media_repository(),
+        );
         base::tokio::try_join!(web, rpc).map(|_| ())
     })
 }
@@ -113,7 +126,7 @@ fn spawn_mqtt_runtime(
     persistent: &PersistentStore,
     operations: OperationService,
     store: InMemoryGuardStore,
-) -> GuardResult<()> {
+) -> GuardResult<Option<EventForwarder>> {
     let mqtt = &config.integrations.mqtt;
     let runtime = MqttRuntime::new(MqttClientConfig {
         client_id: mqtt.client_id.clone(),
@@ -126,6 +139,19 @@ fn spawn_mqtt_runtime(
         tls: mqtt.tls,
         retry: base_rpc::RetryPolicy::default(),
     })?;
+    let event_forwarder = if mqtt.publish_event_topics.is_empty() {
+        None
+    } else {
+        let rules = mqtt
+            .publish_event_topics
+            .iter()
+            .map(|pattern| EventForwardRule {
+                pattern: pattern.clone(),
+                topic_prefix: mqtt.publish_topic_prefix.clone(),
+            })
+            .collect::<Vec<_>>();
+        Some(EventForwarder::new(persistent.outbox_repository(), rules))
+    };
     let topics = mqtt.subscribe_topics.clone();
     let policy = MqttCommandPolicy::new(
         [
@@ -143,15 +169,38 @@ fn spawn_mqtt_runtime(
     };
     let executor = MqttCommandExecutor::new(operations, store);
     let cancel = CancellationToken::new();
+    let worker = OutboxWorker::new(
+        persistent.outbox_repository(),
+        Arc::new(runtime.publisher.clone()),
+        runtime.publisher.retry_policy().clone(),
+        100,
+    )
+    .with_max_record_age(Duration::from_secs(mqtt.publish_event_ttl_sec));
+    let worker_cancel = cancel.clone();
     base::tokio::spawn(async move {
-        if let Err(error) = runtime
-            .run_commands(topics, policy, repository, executor, cancel)
-            .await
-        {
-            warn!("MQTT command runtime stopped: {error}");
+        loop {
+            if worker_cancel.is_cancelled() {
+                break;
+            }
+            if let Err(error) = worker.run_once(now_ms().unwrap_or_default()).await {
+                warn!("MQTT outbox worker failed: {error}");
+            }
+            base::tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });
-    Ok(())
+    base::tokio::spawn(async move {
+        let result = if topics.is_empty() {
+            runtime.run(cancel).await
+        } else {
+            runtime
+                .run_commands(topics, policy, repository, executor, cancel)
+                .await
+        };
+        if let Err(error) = result {
+            warn!("MQTT runtime stopped: {error}");
+        }
+    });
+    Ok(event_forwarder)
 }
 
 fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {

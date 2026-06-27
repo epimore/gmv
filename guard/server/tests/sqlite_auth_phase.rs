@@ -173,6 +173,9 @@ guard:
                 outbox: persistent.outbox_repository(),
                 simulator: None,
                 users: Some(persistent.user_repository()),
+                media: Default::default(),
+                media_files: Some(persistent.media_repository()),
+                event_forwarder: None,
             });
 
             let (status, admin_cookie, admin_csrf) = login(&app, "admin", "admin-secret").await;

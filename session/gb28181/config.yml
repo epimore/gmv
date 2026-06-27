@@ -20,6 +20,10 @@ http:
   version: v0.2
 
 db:
+  backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
+  sqlite:
+    path: ./session-gb28181.db
+    max_connections: 16
   mysql:
     host_or_ip: 101.33.200.169
     port: 33061
@@ -53,18 +57,14 @@ server:
     lan_port: 25600  #lan端口
     wan_port: 25600  #wan端口
   alarm:
-    enable: false #是否开启告警推送,默认true
-    push_url: http://127.0.0.1:38888/event/alarm #推送地址
-    priority: 4 #告警等级推送 1-4,默认最低4
+    enable: false #是否开启告警事件上报guard，默认false
+    priority: 4 #告警等级 1-4,默认最低4
   videos:
     storage_path: ./videos/down #云端录像存储地址,与流媒体服务共享存储【多节点分开部署则使用NFS共享文件系统】
   pics:
-    push_url: http://192.168.0.22/edge/upload/picture
-#    push_url: https://epimore.cn/session/edge/upload/picture
+    push_url: http://127.0.0.1:8080/api/v2/edge/upload/picture #guard图片上传接收地址，session只下发给设备
     num: 1 #连拍张数,最大10 默认1
     interval: 1 #连拍间隔秒 max u8
-    storage_path: ./pics/raw  #图片存储地址
-    storage_format: jpeg  #图片存储格式：jpeg,bmp,farbfeld,gif,hdr,ico,exr,png,pnm,qoi,tga,tiff,avif,webp;默认jpeg
   stream:
     nodes:
       - name: s1 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
@@ -72,8 +72,10 @@ server:
         pub_port: 18568 #流媒体服务接收rtp流的端口
         local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
         local_port: 18570 #节点局域网端口,用于流媒体服务之间通信
+        control_grpc_uri: http://127.0.0.1:19082 #stream内部控制gRPC地址，不再回退HTTP
 #      - name: s2 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
 #        pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
 #        pub_port: 19568 #流媒体服务接收rtp流的端口
 #        local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
 #        local_port: 19570 #节点局域网端口,用于流媒体服务之间通信
+#        control_grpc_uri: http://127.0.0.1:19092 #stream内部控制gRPC地址，不再回退HTTP

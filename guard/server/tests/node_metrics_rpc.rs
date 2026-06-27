@@ -32,6 +32,7 @@ fn node_reporter_registers_and_updates_host_metrics_over_grpc() {
                 store.clone(),
                 100,
                 1_000,
+                None,
             );
             let server_cancel = CancellationToken::new();
             let server_shutdown = server_cancel.clone();
@@ -106,6 +107,7 @@ fn register_consumes_startup_snapshot() {
                 store.clone(),
                 100,
                 1_000,
+                None,
             );
             GuardNodeControl::register_node(
                 &service,
@@ -149,6 +151,7 @@ fn control_stream_consumes_snapshot_and_event_payloads() {
                 store.clone(),
                 100,
                 1_000,
+                None,
             );
             let server_cancel = CancellationToken::new();
             let server_shutdown = server_cancel.clone();

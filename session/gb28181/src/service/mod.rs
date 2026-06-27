@@ -3,6 +3,7 @@ pub mod dialog_recovery;
 pub mod edge_serv;
 pub mod hook_serv;
 pub mod stream_close;
+pub mod stream_rpc;
 mod talk;
 pub mod talk_close;
 

@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicU16, Ordering};
 
+use crate::storage::db;
 use base::chrono::Local;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
-use base_db::dbx::mysqlx::get_conn_by_pool;
-use base_db::sqlx::{self, Acquire};
+use base_db::sqlx;
 
 const SSRC_SEQUENCE_MAX: u16 = 9_999;
 const SSRC_CODE_LENGTH: i32 = 4;
@@ -50,17 +50,22 @@ impl SsrcSequence {
             return Ok(());
         }
 
-        let pool = get_conn_by_pool();
         for (seq_name, kind) in [(realtime, SsrcKind::Realtime), (history, SsrcKind::History)] {
-            sqlx::query(
-                "INSERT IGNORE INTO C_SEQ_CODE (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date)VALUES (?,1,1,1,?,4,?,?)",
+            let sql = match db::backend() {
+                db::SessionDatabaseBackend::Mysql => {
+                    "INSERT IGNORE INTO C_SEQ_CODE (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date)VALUES (?,1,1,1,?,4,?,?)"
+                }
+                db::SessionDatabaseBackend::Sqlite => {
+                    "INSERT INTO C_SEQ_CODE (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date) VALUES (?,1,1,1,?,4,?,?) ON CONFLICT(seq_name) DO NOTHING"
+                }
+            };
+            db::execute!(
+                sql,
+                &seq_name,
+                &seq_name,
+                kind.remark(),
+                Local::now().naive_local(),
             )
-            .bind(&seq_name)
-            .bind(&seq_name)
-            .bind(kind.remark())
-            .bind(Local::now().naive_local())
-            .execute(pool)
-            .await
             .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
             validate_sequence(&seq_name).await?;
         }
@@ -112,20 +117,37 @@ pub fn prefix(domain_id: &str, kind: SsrcKind) -> GlobalResult<String> {
 }
 
 async fn validate_sequence(seq_name: &str) -> GlobalResult<()> {
-    let row: Option<(u64, u64, i32, Option<String>, Option<i32>)> = sqlx::query_as(
+    let row: Option<(i64, i64, i32, Option<String>, Option<i32>)> = db::fetch_optional_as!(
+        (i64, i64, i32, Option<String>, Option<i32>),
         "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=?",
+        seq_name,
     )
-    .bind(seq_name)
-    .fetch_optional(get_conn_by_pool())
-    .await
     .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
     let Some((init_value, current_value, increment_value, prefix_code, code_length)) = row else {
         return Err(invalid_sequence(seq_name, "row is missing"));
     };
+    validate_sequence_row(
+        seq_name,
+        init_value,
+        current_value,
+        increment_value,
+        prefix_code.as_deref(),
+        code_length,
+    )
+}
+
+fn validate_sequence_row(
+    seq_name: &str,
+    init_value: i64,
+    current_value: i64,
+    increment_value: i32,
+    prefix_code: Option<&str>,
+    code_length: Option<i32>,
+) -> GlobalResult<()> {
     if init_value != 1
-        || !(1..=u64::from(SSRC_SEQUENCE_MAX)).contains(&current_value)
+        || !(1..=i64::from(SSRC_SEQUENCE_MAX)).contains(&current_value)
         || increment_value != 1
-        || prefix_code.as_deref() != Some(seq_name)
+        || prefix_code != Some(seq_name)
         || code_length != Some(SSRC_CODE_LENGTH)
     {
         return Err(invalid_sequence(seq_name, "metadata is incompatible"));
@@ -134,62 +156,68 @@ async fn validate_sequence(seq_name: &str) -> GlobalResult<()> {
 }
 
 async fn take_next_value(seq_name: &str) -> GlobalResult<u16> {
-    let pool = get_conn_by_pool();
-    let mut connection = pool
-        .acquire()
-        .await
-        .hand_log(|msg| error!("{msg}: acquire sequence connection"))?;
-    let mut transaction = connection
-        .begin()
-        .await
-        .hand_log(|msg| error!("{msg}: begin sequence transaction"))?;
-    let row: Option<(u64, u64, i32, Option<String>, Option<i32>)> = sqlx::query_as(
-        "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=? FOR UPDATE",
+    let sql = match db::backend() {
+        db::SessionDatabaseBackend::Mysql => {
+            "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=? FOR UPDATE"
+        }
+        db::SessionDatabaseBackend::Sqlite => {
+            "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=?"
+        }
+    };
+    let row: Option<(i64, i64, i32, Option<String>, Option<i32>)> =
+        db::fetch_optional_as!((i64, i64, i32, Option<String>, Option<i32>), sql, seq_name,)
+            .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
+    let current = current_sequence_value(seq_name, row.as_ref())?;
+    let next = next_sequence_value(seq_name, row.as_ref())?;
+    db::execute!(
+        "UPDATE C_SEQ_CODE SET current_value=? WHERE seq_name=?",
+        next,
+        seq_name
     )
-    .bind(seq_name)
-    .fetch_optional(&mut *transaction)
-    .await
     .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
+    Ok(current)
+}
+
+fn next_sequence_value(
+    seq_name: &str,
+    row: Option<&(i64, i64, i32, Option<String>, Option<i32>)>,
+) -> GlobalResult<i64> {
     let Some((init_value, current_value, increment_value, prefix_code, code_length)) = row else {
         return Err(invalid_sequence(seq_name, "row is missing"));
     };
-    if init_value != 1
-        || !(1..=u64::from(SSRC_SEQUENCE_MAX)).contains(&current_value)
-        || increment_value != 1
-        || prefix_code.as_deref() != Some(seq_name)
-        || code_length != Some(SSRC_CODE_LENGTH)
-    {
-        return Err(invalid_sequence(seq_name, "metadata is incompatible"));
-    }
-
-    let next = if current_value == u64::from(SSRC_SEQUENCE_MAX) {
-        init_value
+    validate_sequence_row(
+        seq_name,
+        *init_value,
+        *current_value,
+        *increment_value,
+        prefix_code.as_deref(),
+        *code_length,
+    )?;
+    Ok(if *current_value == i64::from(SSRC_SEQUENCE_MAX) {
+        *init_value
     } else {
-        current_value + 1
-    };
-    sqlx::query("UPDATE C_SEQ_CODE SET current_value=? WHERE seq_name=?")
-        .bind(next)
-        .bind(seq_name)
-        .execute(&mut *transaction)
-        .await
-        .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
-    transaction
-        .commit()
-        .await
-        .hand_log(|msg| error!("{msg}: commit sequence transaction"))?;
+        *current_value + 1
+    })
+}
 
-    u16::try_from(current_value).map_err(|_| invalid_sequence(seq_name, "value exceeds u16"))
+fn current_sequence_value(
+    seq_name: &str,
+    row: Option<&(i64, i64, i32, Option<String>, Option<i32>)>,
+) -> GlobalResult<u16> {
+    let Some((_, current_value, _, _, _)) = row else {
+        return Err(invalid_sequence(seq_name, "row is missing"));
+    };
+    u16::try_from(*current_value).map_err(|_| invalid_sequence(seq_name, "value exceeds u16"))
 }
 
 async fn is_active(signal_node_id: &str, ssrc: &str) -> GlobalResult<bool> {
-    let row: Option<(i32,)> = sqlx::query_as(
+    let row: Option<(i32,)> = db::fetch_optional_as!(
+        (i32,),
         "SELECT 1 FROM GMV_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=? AND SSRC=? AND STATE IN ('INVITING','ESTABLISHED','TERMINATING') AND EXPIRE_AT>? LIMIT 1",
+        signal_node_id,
+        ssrc,
+        Local::now().naive_local(),
     )
-    .bind(signal_node_id)
-    .bind(ssrc)
-    .bind(Local::now().naive_local())
-    .fetch_optional(get_conn_by_pool())
-    .await
     .hand_log(|msg| error!("{msg}: signal_node_id={signal_node_id}, ssrc={ssrc}"))?;
     Ok(row.is_some())
 }

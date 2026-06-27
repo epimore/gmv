@@ -2,20 +2,15 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
-use base::err::{BaseErrorCode, CodeOutErr};
-use base::exception::{BizError, GlobalError, GlobalResult, GlobalResultExt};
+use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
-use base::serde::Serialize;
 use base::tokio::net::TcpListener;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio_util::sync::CancellationToken;
-use gmv_domain::info::res::Resp;
 use std::net::SocketAddr;
 
 mod api;
 pub mod call;
-#[cfg(debug_assertions)]
-mod doc;
 mod out;
 
 pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
@@ -26,22 +21,14 @@ pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
 
 pub async fn run(
     std_http_listener: std::net::TcpListener,
-    tx: Sender<u32>,
+    _tx: Sender<u32>,
     cancel_token: CancellationToken,
 ) -> GlobalResult<()> {
     std_http_listener
         .set_nonblocking(true)
         .hand_log(|msg| error!("{msg}"))?;
     let listener = TcpListener::from_std(std_http_listener).hand_log(|msg| error!("{msg}"))?;
-    let mut app = Router::new()
-        .merge(out::routes())
-        .merge(api::routes(tx.clone()));
-
-    #[cfg(debug_assertions)]
-    {
-        use utoipa_swagger_ui::SwaggerUi;
-        app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
-    }
+    let app = Router::new().merge(out::routes()).merge(api::routes());
 
     let server = axum::serve(
         listener,
@@ -72,25 +59,4 @@ pub fn res_401() -> Response<Body> {
         .status(StatusCode::UNAUTHORIZED)
         .body(Body::from("401 Unauthorized"))
         .unwrap()
-}
-
-/// 500 Internal Server Error
-pub fn res_500() -> Response<Body> {
-    Response::builder()
-        .header("Content-Type", "text/plain")
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::from("500 Internal Server Error"))
-        .unwrap()
-}
-
-pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {
-    let code = match &err {
-        GlobalError::BizErr(BizError { code, .. }) => *code,
-        GlobalError::SysErr(_) => BaseErrorCode::Internal.code(),
-    };
-    Resp::build_failed_code(code, err.out_err().into_owned())
-}
-
-pub fn res_by_code<T: Serialize>(code: BaseErrorCode) -> Resp<T> {
-    Resp::build_failed_code(code.code(), code.out_msg())
 }

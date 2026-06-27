@@ -1,12 +1,12 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
+use crate::storage::db;
 use base::chrono::NaiveDateTime;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde_json;
-use base_db::dbx::mysqlx::get_conn_by_pool;
-use base_db::sqlx::{self, FromRow};
+use base_db::sqlx::{self, FromRow, MySql, Sqlite};
 
 #[cfg(test)]
 use std::collections::HashMap;
@@ -351,38 +351,38 @@ impl SipDialogSessionRepository {
         }
 
         let route_set = route_set_to_json(&session.route_set)?;
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO GMV_SIP_DIALOG_SESSION ({INSERT_COLUMNS}) \
+        db::execute!(
+            sqlx::AssertSqlSafe(format!(
+                "INSERT INTO GMV_SIP_DIALOG_SESSION ({INSERT_COLUMNS}) \
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        )))
-        .bind(&session.stream_id)
-        .bind(&session.device_id)
-        .bind(&session.channel_id)
-        .bind(session.session_type.to_string())
-        .bind(&session.signal_node_id)
-        .bind(&session.media_node_id)
-        .bind(&session.ssrc)
-        .bind(&session.call_id)
-        .bind(&session.local_uri)
-        .bind(&session.remote_uri)
-        .bind(&session.local_tag)
-        .bind(&session.remote_tag)
-        .bind(session.local_cseq)
-        .bind(session.remote_cseq)
-        .bind(&session.contact_uri)
-        .bind(route_set)
-        .bind(&session.local_sip_addr)
-        .bind(&session.remote_sip_addr)
-        .bind(session.transport.to_string())
-        .bind(session.state.to_string())
-        .bind(session.established_at)
-        .bind(session.last_seen_at)
-        .bind(session.expire_at)
-        .bind(session.version)
-        .bind(session.created_at)
-        .bind(session.updated_at)
-        .execute(get_conn_by_pool())
-        .await
+            )),
+            &session.stream_id,
+            &session.device_id,
+            &session.channel_id,
+            session.session_type.to_string(),
+            &session.signal_node_id,
+            &session.media_node_id,
+            &session.ssrc,
+            &session.call_id,
+            &session.local_uri,
+            &session.remote_uri,
+            &session.local_tag,
+            &session.remote_tag,
+            session.local_cseq,
+            session.remote_cseq,
+            &session.contact_uri,
+            route_set,
+            &session.local_sip_addr,
+            &session.remote_sip_addr,
+            session.transport.to_string(),
+            session.state.to_string(),
+            session.established_at,
+            session.last_seen_at,
+            session.expire_at,
+            session.version,
+            session.created_at,
+            session.updated_at,
+        )
         .hand_log(|message| error!("{message}"))?;
         Ok(())
     }
@@ -432,33 +432,31 @@ impl SipDialogSessionRepository {
         }
 
         let route_set = route_set_to_json(&fields.route_set)?;
-        let result = sqlx::query(
+        let rows = db::execute!(
             "UPDATE GMV_SIP_DIALOG_SESSION SET REMOTE_TAG=?,LOCAL_CSEQ=?,REMOTE_CSEQ=?,\
              CONTACT_URI=?,ROUTE_SET=?,LOCAL_SIP_ADDR=?,REMOTE_SIP_ADDR=?,STATE='ESTABLISHED',\
              ESTABLISHED_AT=?,LAST_SEEN_AT=?,EXPIRE_AT=?,UPDATED_AT=?,VERSION=VERSION+1 \
              WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? AND STATE='INVITING' AND VERSION=? \
              AND CREATED_AT<=? AND UPDATED_AT<=?",
+            &fields.remote_tag,
+            fields.local_cseq,
+            fields.remote_cseq,
+            &fields.contact_uri,
+            route_set,
+            &fields.local_sip_addr,
+            &fields.remote_sip_addr,
+            fields.established_at,
+            fields.last_seen_at,
+            fields.expire_at,
+            fields.updated_at,
+            stream_id,
+            signal_node_id,
+            expected_version,
+            fields.established_at,
+            fields.updated_at,
         )
-        .bind(&fields.remote_tag)
-        .bind(fields.local_cseq)
-        .bind(fields.remote_cseq)
-        .bind(&fields.contact_uri)
-        .bind(route_set)
-        .bind(&fields.local_sip_addr)
-        .bind(&fields.remote_sip_addr)
-        .bind(fields.established_at)
-        .bind(fields.last_seen_at)
-        .bind(fields.expire_at)
-        .bind(fields.updated_at)
-        .bind(stream_id)
-        .bind(signal_node_id)
-        .bind(expected_version)
-        .bind(fields.established_at)
-        .bind(fields.updated_at)
-        .execute(get_conn_by_pool())
-        .await
         .hand_log(|message| error!("{message}"))?;
-        Ok(result.rows_affected() == 1)
+        Ok(rows == 1)
     }
 
     pub async fn cas_begin_terminating(
@@ -501,22 +499,20 @@ impl SipDialogSessionRepository {
             return Ok(true);
         }
 
-        let result = sqlx::query(
+        let rows = db::execute!(
             "UPDATE GMV_SIP_DIALOG_SESSION SET LOCAL_CSEQ=?,STATE='TERMINATING',\
              UPDATED_AT=?,VERSION=VERSION+1 WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? \
              AND STATE='ESTABLISHED' AND LOCAL_CSEQ=? AND VERSION=? AND UPDATED_AT<=?",
+            next_cseq,
+            updated_at,
+            stream_id,
+            signal_node_id,
+            current_cseq,
+            expected_version,
+            updated_at,
         )
-        .bind(next_cseq)
-        .bind(updated_at)
-        .bind(stream_id)
-        .bind(signal_node_id)
-        .bind(current_cseq)
-        .bind(expected_version)
-        .bind(updated_at)
-        .execute(get_conn_by_pool())
-        .await
         .hand_log(|message| error!("{message}"))?;
-        Ok(result.rows_affected() == 1)
+        Ok(rows == 1)
     }
 
     pub async fn cas_transition(
@@ -556,21 +552,19 @@ impl SipDialogSessionRepository {
             return Ok(true);
         }
 
-        let result = sqlx::query(
+        let rows = db::execute!(
             "UPDATE GMV_SIP_DIALOG_SESSION SET STATE=?,UPDATED_AT=?,VERSION=VERSION+1 \
              WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? AND STATE=? AND VERSION=? AND UPDATED_AT<=?",
+            next_state.to_string(),
+            updated_at,
+            stream_id,
+            signal_node_id,
+            expected_state.to_string(),
+            expected_version,
+            updated_at,
         )
-        .bind(next_state.to_string())
-        .bind(updated_at)
-        .bind(stream_id)
-        .bind(signal_node_id)
-        .bind(expected_state.to_string())
-        .bind(expected_version)
-        .bind(updated_at)
-        .execute(get_conn_by_pool())
-        .await
         .hand_log(|message| error!("{message}"))?;
-        Ok(result.rows_affected() == 1)
+        Ok(rows == 1)
     }
 
     pub async fn cas_reserve_local_cseq(
@@ -615,22 +609,20 @@ impl SipDialogSessionRepository {
             return Ok(true);
         }
 
-        let result = sqlx::query(
+        let rows = db::execute!(
             "UPDATE GMV_SIP_DIALOG_SESSION SET LOCAL_CSEQ=?,UPDATED_AT=?,VERSION=VERSION+1 \
              WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? AND STATE IN ('ESTABLISHED','TERMINATING') \
              AND LOCAL_CSEQ=? AND VERSION=? AND UPDATED_AT<=?",
+            next_cseq,
+            updated_at,
+            stream_id,
+            signal_node_id,
+            current_cseq,
+            expected_version,
+            updated_at,
         )
-        .bind(next_cseq)
-        .bind(updated_at)
-        .bind(stream_id)
-        .bind(signal_node_id)
-        .bind(current_cseq)
-        .bind(expected_version)
-        .bind(updated_at)
-        .execute(get_conn_by_pool())
-        .await
         .hand_log(|message| error!("{message}"))?;
-        Ok(result.rows_affected() == 1)
+        Ok(rows == 1)
     }
 
     pub async fn cas_touch(
@@ -670,24 +662,22 @@ impl SipDialogSessionRepository {
             return Ok(true);
         }
 
-        let result = sqlx::query(
+        let rows = db::execute!(
             "UPDATE GMV_SIP_DIALOG_SESSION SET LAST_SEEN_AT=?,EXPIRE_AT=?,UPDATED_AT=?,\
              VERSION=VERSION+1 WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? \
              AND STATE IN ('ESTABLISHED','TERMINATING') AND VERSION=? \
              AND LAST_SEEN_AT<=? AND UPDATED_AT<=?",
+            last_seen_at,
+            expire_at,
+            last_seen_at,
+            stream_id,
+            signal_node_id,
+            expected_version,
+            last_seen_at,
+            last_seen_at,
         )
-        .bind(last_seen_at)
-        .bind(expire_at)
-        .bind(last_seen_at)
-        .bind(stream_id)
-        .bind(signal_node_id)
-        .bind(expected_version)
-        .bind(last_seen_at)
-        .bind(last_seen_at)
-        .execute(get_conn_by_pool())
-        .await
         .hand_log(|message| error!("{message}"))?;
-        Ok(result.rows_affected() == 1)
+        Ok(rows == 1)
     }
 
     pub async fn find_by_stream_id(stream_id: &str) -> GlobalResult<Option<SipDialogSession>> {
@@ -700,12 +690,13 @@ impl SipDialogSessionRepository {
                 .get(stream_id)
                 .cloned());
         }
-        let row = sqlx::query_as::<_, SipDialogSessionRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION WHERE STREAM_ID=?"
-        )))
-        .bind(stream_id)
-        .fetch_optional(get_conn_by_pool())
-        .await
+        let row = db::fetch_optional_as!(
+            SipDialogSessionRow,
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION WHERE STREAM_ID=?"
+            )),
+            stream_id,
+        )
         .hand_log(|message| error!("{message}"))?;
         row.map(TryInto::try_into).transpose()
     }
@@ -724,13 +715,14 @@ impl SipDialogSessionRepository {
             sessions.sort_by(|left, right| left.stream_id.cmp(&right.stream_id));
             return Ok(sessions);
         }
-        let rows = sqlx::query_as::<_, SipDialogSessionRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION \
+        let rows = db::fetch_all_as!(
+            SipDialogSessionRow,
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION \
              WHERE CALL_ID=? ORDER BY STREAM_ID"
-        )))
-        .bind(call_id)
-        .fetch_all(get_conn_by_pool())
-        .await
+            )),
+            call_id,
+        )
         .hand_log(|message| error!("{message}"))?;
         rows.into_iter().map(TryInto::try_into).collect()
     }
@@ -770,16 +762,17 @@ impl SipDialogSessionRepository {
             return Ok(sessions);
         }
 
-        let rows = sqlx::query_as::<_, SipDialogSessionRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION              WHERE SIGNAL_NODE_ID=? AND MEDIA_NODE_ID=? AND SSRC=?              AND SESSION_TYPE IN ('LIVE','PLAYBACK','DOWNLOAD')              AND STATE IN ('ESTABLISHED','TERMINATING')              AND CREATED_AT<=? AND EXPIRE_AT>?              ORDER BY CREATED_AT DESC LIMIT 2"
-        )))
-        .bind(signal_node_id)
-        .bind(media_node_id)
-        .bind(ssrc)
-        .bind(first_seen_at)
-        .bind(now)
-        .fetch_all(get_conn_by_pool())
-        .await
+        let rows = db::fetch_all_as!(
+            SipDialogSessionRow,
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION              WHERE SIGNAL_NODE_ID=? AND MEDIA_NODE_ID=? AND SSRC=?              AND SESSION_TYPE IN ('LIVE','PLAYBACK','DOWNLOAD')              AND STATE IN ('ESTABLISHED','TERMINATING')              AND CREATED_AT<=? AND EXPIRE_AT>?              ORDER BY CREATED_AT DESC LIMIT 2"
+            )),
+            signal_node_id,
+            media_node_id,
+            ssrc,
+            first_seen_at,
+            now,
+        )
         .hand_log(|message| error!("{message}"))?;
         rows.into_iter().map(TryInto::try_into).collect()
     }
@@ -813,24 +806,47 @@ impl SipDialogSessionRepository {
             return Ok(sessions);
         }
 
-        let mut builder = sqlx::QueryBuilder::new(format!(
-            "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID="
-        ));
-        builder.push_bind(signal_node_id).push(" AND STATE IN (");
-        let mut separated = builder.separated(",");
-        for state in states {
-            separated.push_bind(state.to_string());
+        let rows = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => {
+                let mut builder = sqlx::QueryBuilder::<MySql>::new(format!(
+                    "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=",
+                ));
+                builder.push_bind(signal_node_id).push(" AND STATE IN (");
+                let mut separated = builder.separated(",");
+                for state in states {
+                    separated.push_bind(state.to_string());
+                }
+                separated.push_unseparated(")");
+                if let Some(cursor) = after_stream_id {
+                    builder.push(" AND STREAM_ID>").push_bind(cursor);
+                }
+                builder.push(" ORDER BY STREAM_ID LIMIT ").push_bind(limit);
+                builder
+                    .build_query_as::<SipDialogSessionRow>()
+                    .fetch_all(db::mysql_pool())
+                    .await
+            }
+            db::SessionDatabaseBackend::Sqlite => {
+                let mut builder = sqlx::QueryBuilder::<Sqlite>::new(format!(
+                    "SELECT {SELECT_COLUMNS} FROM GMV_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=",
+                ));
+                builder.push_bind(signal_node_id).push(" AND STATE IN (");
+                let mut separated = builder.separated(",");
+                for state in states {
+                    separated.push_bind(state.to_string());
+                }
+                separated.push_unseparated(")");
+                if let Some(cursor) = after_stream_id {
+                    builder.push(" AND STREAM_ID>").push_bind(cursor);
+                }
+                builder.push(" ORDER BY STREAM_ID LIMIT ").push_bind(limit);
+                builder
+                    .build_query_as::<SipDialogSessionRow>()
+                    .fetch_all(db::sqlite_pool())
+                    .await
+            }
         }
-        separated.push_unseparated(")");
-        if let Some(cursor) = after_stream_id {
-            builder.push(" AND STREAM_ID>").push_bind(cursor);
-        }
-        builder.push(" ORDER BY STREAM_ID LIMIT ").push_bind(limit);
-        let rows = builder
-            .build_query_as::<SipDialogSessionRow>()
-            .fetch_all(get_conn_by_pool())
-            .await
-            .hand_log(|message| error!("{message}"))?;
+        .hand_log(|message| error!("{message}"))?;
         rows.into_iter().map(TryInto::try_into).collect()
     }
 }

@@ -2,39 +2,8 @@ use crate::info::output::OutputEnum;
 use base::constructor::New;
 use base::serde::{Deserialize, Serialize};
 
-//session
-pub const PLAY_LIVING: &str = "/play/live/stream";
-pub const PLAY_BACK: &str = "/play/back/stream";
-pub const PLAY_SEEK: &str = "/play/back/seek";
-pub const PLAY_SPEED: &str = "/play/back/speed";
-pub const CONTROL_PTZ: &str = "/control/ptz";
-pub const DOWNLOAD_MP4: &str = "/download/mp4";
-pub const DOWNLOAD_STOP: &str = "/download/stop";
-pub const DOWNING_INFO: &str = "/downing/info";
-pub const RM_FILE: &str = "/rm/file";
-pub const TALK_START: &str = "/talk/start";
-pub const TALK_STOP: &str = "/talk/stop";
-
-pub const STREAM_REGISTER: &str = "/stream/register";
-pub const INPUT_TIMEOUT: &str = "/stream/input/timeout";
-pub const ON_PLAY: &str = "/on/play";
-pub const OFF_PLAY: &str = "/off/play";
-pub const STREAM_IDLE: &str = "/stream/idle";
-pub const STREAM_UNKNOWN: &str = "/stream/unknown";
-pub const END_RECORD: &str = "/end/record";
-pub const TALK_CLOSED: &str = "/talk/closed";
-
-//stream
-pub const LISTEN_MEDIA: &str = "/listen/media";
-pub const SDP_MEDIA: &str = "/sdp/media";
-pub const STREAM_ONLINE: &str = "/stream/online";
+// stream data-plane endpoints
 pub const PLAY_PATH: &str = "/play/{stream_id}";
-pub const RECORD_INFO: &str = "/record/info";
-pub const CLOSE_OUTPUT: &str = "/close/output";
-pub const TALK_OPEN: &str = "/talk/open";
-pub const TALK_ANSWER: &str = "/talk/answer";
-pub const TALK_CLOSE: &str = "/talk/close";
-pub const TALK_ONLINE: &str = "/talk/online";
 pub const TALK_INPUT_PREFIX: &str = "/talk/input";
 pub const TALK_INPUT_PATH: &str = "/talk/input/{talk_id}";
 

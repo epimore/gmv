@@ -27,6 +27,8 @@ pub struct GuardAppConfig {
     #[serde(default)]
     pub simulator: SimulatorConfig,
     #[serde(default)]
+    pub media: MediaConfig,
+    #[serde(default)]
     pub integrations: IntegrationsConfig,
 }
 
@@ -42,6 +44,7 @@ impl GuardAppConfig {
         self.internal_comm.validate()?;
         self.database.validate()?;
         self.bootstrap.validate()?;
+        self.media.validate()?;
         self.integrations.validate()
     }
 }
@@ -493,6 +496,76 @@ pub struct SimulatorConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct MediaConfig {
+    #[serde(default)]
+    pub picture_upload: PictureUploadConfig,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            picture_upload: PictureUploadConfig::default(),
+        }
+    }
+}
+
+impl MediaConfig {
+    fn validate(&self) -> GuardResult<()> {
+        self.picture_upload.validate()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct PictureUploadConfig {
+    #[serde(default = "default_picture_storage_path")]
+    pub storage_path: PathBuf,
+    #[serde(default = "default_picture_max_upload_bytes")]
+    pub max_upload_bytes: usize,
+    #[serde(default = "default_picture_max_session_age_sec")]
+    pub max_session_age_sec: u64,
+}
+
+impl Default for PictureUploadConfig {
+    fn default() -> Self {
+        Self {
+            storage_path: default_picture_storage_path(),
+            max_upload_bytes: default_picture_max_upload_bytes(),
+            max_session_age_sec: default_picture_max_session_age_sec(),
+        }
+    }
+}
+
+impl PictureUploadConfig {
+    fn validate(&self) -> GuardResult<()> {
+        if self.storage_path.as_os_str().is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "guard.media.picture_upload.storage_path is required".to_string(),
+            ));
+        }
+        if self.max_upload_bytes == 0 || self.max_session_age_sec == 0 {
+            return Err(GuardError::InvalidConfig(
+                "guard.media.picture_upload limits must be positive".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn default_picture_storage_path() -> PathBuf {
+    PathBuf::from("./pics/raw")
+}
+
+fn default_picture_max_upload_bytes() -> usize {
+    10 * 1024 * 1024
+}
+
+fn default_picture_max_session_age_sec() -> u64 {
+    300
+}
+
 #[derive(Clone, Default, Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct IntegrationsConfig {
@@ -527,6 +600,12 @@ pub struct MqttStartupConfig {
     pub tls: bool,
     #[serde(default)]
     pub subscribe_topics: Vec<String>,
+    #[serde(default)]
+    pub publish_event_topics: Vec<String>,
+    #[serde(default = "default_mqtt_publish_topic_prefix")]
+    pub publish_topic_prefix: String,
+    #[serde(default = "default_mqtt_publish_event_ttl_sec")]
+    pub publish_event_ttl_sec: u64,
 }
 
 impl Default for MqttStartupConfig {
@@ -541,6 +620,9 @@ impl Default for MqttStartupConfig {
             pass: String::new(),
             tls: true,
             subscribe_topics: Vec::new(),
+            publish_event_topics: Vec::new(),
+            publish_topic_prefix: default_mqtt_publish_topic_prefix(),
+            publish_event_ttl_sec: default_mqtt_publish_event_ttl_sec(),
         }
     }
 }
@@ -557,6 +639,11 @@ impl MqttStartupConfig {
                 "guard.integrations.mqtt connection fields are required when enabled".to_string(),
             ));
         }
+        if self.enabled && self.publish_event_ttl_sec == 0 {
+            return Err(GuardError::InvalidConfig(
+                "guard.integrations.mqtt.publish_event_ttl_sec must be positive".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -568,6 +655,14 @@ impl MqttStartupConfig {
             Ok(self.pass.clone())
         }
     }
+}
+
+fn default_mqtt_publish_topic_prefix() -> String {
+    "gmv/events".to_string()
+}
+
+fn default_mqtt_publish_event_ttl_sec() -> u64 {
+    86_400
 }
 
 pub fn config_path_from_args() -> GuardResult<String> {
@@ -697,6 +792,9 @@ mod tests {
             pass: "mqtt-secret".to_string(),
             tls: false,
             subscribe_topics: Vec::new(),
+            publish_event_topics: Vec::new(),
+            publish_topic_prefix: default_mqtt_publish_topic_prefix(),
+            publish_event_ttl_sec: default_mqtt_publish_event_ttl_sec(),
         };
         assert_eq!(plaintext.password().unwrap(), "mqtt-secret");
 
@@ -752,6 +850,7 @@ mod tests {
             database: DatabaseConfig::default(),
             bootstrap: BootstrapConfig::default(),
             simulator: SimulatorConfig::default(),
+            media: MediaConfig::default(),
             integrations: IntegrationsConfig::default(),
         };
         config.validate().unwrap();

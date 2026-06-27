@@ -85,6 +85,12 @@ guard:
   simulator:
     enabled: false
 
+  media:
+    picture_upload:
+      storage_path: ./pics/raw
+      max_upload_bytes: 10485760
+      max_session_age_sec: 300
+
   integrations:
     mqtt:
       enabled: false
@@ -97,3 +103,8 @@ guard:
       tls: true
       subscribe_topics:
         - gmv/commands/#
+      publish_event_topics:
+        - session.alarm
+        - guard.picture.uploaded
+      publish_topic_prefix: gmv/events
+      publish_event_ttl_sec: 86400 # MQTT事件暂存有效期；超过后标记失败，不再补发陈旧事件

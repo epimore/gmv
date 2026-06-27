@@ -26,14 +26,13 @@ use parking_lot::Mutex;
 
 use crate::general::cfg::StreamConf;
 use crate::guard_integration::publish_guard_event;
-use crate::io::http::call::{HttpClient, HttpSession, try_session_hook_rpc};
+use crate::io::http::call::try_session_hook_rpc;
 use crate::state::register::Register;
 
 const TALK_INPUT_QUEUE_SIZE: usize = 32;
 const TALK_JITTER_MIN_FRAMES: usize = 3;
 const TALK_JITTER_MAX_FRAMES: usize = 8;
 const RTP_HEADER_LEN: usize = 12;
-const TALK_CLOSE_NOTIFY_RETRY: usize = 3;
 
 static RTP_IO: OnceCell<RtpIo> = OnceCell::new();
 static TALK_SESSIONS: Lazy<DashMap<String, TalkSession>> = Lazy::new(DashMap::new);
@@ -462,49 +461,21 @@ async fn notify_talk_closed(talk_id: &str, reason: &str) {
         reason: reason.to_string(),
     };
     publish_guard_event("stream.talk_closed", format!("{event:?}").into_bytes());
-    if let Some(response) = try_session_hook_rpc("stream.talk_closed", &event).await
-        && response.error.is_none()
-        && response.accepted
-    {
-        info!(
-            "talk closed rpc accepted: talk_id={}, reason={}, resp={:?}",
-            talk_id, reason, response
-        );
-        return;
-    }
-    for attempt in 1..=TALK_CLOSE_NOTIFY_RETRY {
-        match HttpClient::template() {
-            Ok(client) => match client.talk_closed(&event).await {
-                Ok(resp) => {
-                    let resp = resp.value();
-                    if resp.code == 200 {
-                        info!(
-                            "talk closed notified: talk_id={}, reason={}, resp={:?}",
-                            talk_id, reason, resp
-                        );
-                        return;
-                    }
-                    warn!(
-                        "talk closed notify rejected: talk_id={}, reason={}, attempt={}, resp={:?}",
-                        talk_id, reason, attempt, resp
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        "talk closed notify failed: talk_id={}, reason={}, attempt={}, err={:?}",
-                        talk_id, reason, attempt, err
-                    );
-                }
-            },
-            Err(err) => {
-                warn!(
-                    "talk closed notify client init failed: talk_id={}, reason={}, err={:?}",
-                    talk_id, reason, err
-                );
-                return;
-            }
+    match try_session_hook_rpc("stream.talk_closed", &event).await {
+        Some(response) if response.error.is_none() && response.accepted => {
+            info!(
+                "talk closed rpc accepted: talk_id={}, reason={}, resp={:?}",
+                talk_id, reason, response
+            );
         }
-        time::sleep(Duration::from_secs(attempt as u64)).await;
+        Some(response) => warn!(
+            "talk closed rpc not accepted: talk_id={}, reason={}, resp={:?}",
+            talk_id, reason, response
+        ),
+        None => warn!(
+            "talk closed rpc unavailable: talk_id={}, reason={}",
+            talk_id, reason
+        ),
     }
 }
 

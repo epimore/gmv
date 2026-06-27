@@ -59,6 +59,9 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             outbox: OutboxRepository::from(store.clone()),
             simulator: Some(simulator),
             users: None,
+            media: Default::default(),
+            media_files: None,
+            event_forwarder: None,
         }),
         store,
     )

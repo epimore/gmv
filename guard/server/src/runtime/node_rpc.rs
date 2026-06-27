@@ -9,6 +9,7 @@ use gmv_protocol::common::v1::{
     NodeKind as ProtoNodeKind,
 };
 use gmv_protocol::guard::v1::guard_control_server::GuardControlServer;
+use gmv_protocol::guard::v1::guard_media_server::GuardMediaServer;
 use gmv_protocol::guard::v1::guard_node_control_server::{
     GuardNodeControl, GuardNodeControlServer,
 };
@@ -24,8 +25,11 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind};
 use crate::registry::{HeartbeatReport, RegisterDecision, RegisterRequest, RegistryService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
+use crate::runtime::event_forwarder::EventForwarder;
+use crate::runtime::media_rpc::GuardMediaRpc;
 use crate::store::InMemoryGuardStore;
 use crate::store::model::{EndpointModeRecord, EndpointRecord, EventRecord, HostMetricsRecord};
+use crate::store::persistent::MediaRepository;
 
 #[derive(Debug, Clone)]
 pub struct NodeRpcConfig {
@@ -46,6 +50,7 @@ pub struct GuardNodeRpc {
     registry: RegistryService,
     routes: RouteService,
     store: InMemoryGuardStore,
+    forwarder: Option<EventForwarder>,
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
 }
@@ -56,11 +61,13 @@ impl GuardNodeRpc {
         store: InMemoryGuardStore,
         heartbeat_interval_ms: u64,
         heartbeat_timeout_ms: u64,
+        forwarder: Option<EventForwarder>,
     ) -> Self {
         Self {
             registry,
             routes: RouteService::new(store.clone()),
             store,
+            forwarder,
             heartbeat_interval_ms,
             heartbeat_timeout_ms,
         }
@@ -119,6 +126,7 @@ impl GuardNodeControl for GuardNodeRpc {
         let registry = self.registry.clone();
         let routes = self.routes.clone();
         let store = self.store.clone();
+        let forwarder = self.forwarder.clone();
         let (tx, rx) = mpsc::channel(32);
         base::tokio::spawn(async move {
             while let Ok(Some(message)) = input.message().await {
@@ -139,7 +147,14 @@ impl GuardNodeControl for GuardNodeRpc {
                             .and_then(|owner| apply_snapshot(&routes, owner, 1, sequence, snapshot))
                     }
                     Some(node_to_guard_message::Payload::Event(event)) => {
-                        apply_event(&store, event)
+                        base::log::info!(
+                            "guard node event inbound: sequence={}, event_id={}, topic={}, payload_bytes={}",
+                            sequence,
+                            event.event_id,
+                            event.topic,
+                            event.payload.len()
+                        );
+                        apply_event(&store, forwarder.as_ref(), event).await
                     }
                     _ => Ok(()),
                 };
@@ -169,14 +184,18 @@ pub async fn serve(
     config: NodeRpcConfig,
     registry: RegistryService,
     store: InMemoryGuardStore,
+    forwarder: Option<EventForwarder>,
+    media_repository: MediaRepository,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let node_service = GuardNodeRpc::new(
         registry,
         store.clone(),
         config.heartbeat_interval_ms,
         config.heartbeat_timeout_ms,
+        forwarder,
     );
     let control_service = crate::runtime::control_rpc::GuardControlRpc::new(store);
+    let media_service = GuardMediaRpc::new(media_repository);
     let mut server = Server::builder();
     if let Some(tls) = config.tls {
         let cert = base::tokio::fs::read(tls.certificate_path).await?;
@@ -187,6 +206,7 @@ pub async fn serve(
     server
         .add_service(GuardNodeControlServer::new(node_service))
         .add_service(GuardControlServer::new(control_service))
+        .add_service(GuardMediaServer::new(media_service))
         .serve(config.bind_addr)
         .await?;
     Ok(())
@@ -257,8 +277,9 @@ fn apply_snapshot(
     Ok(())
 }
 
-fn apply_event(
+async fn apply_event(
     store: &InMemoryGuardStore,
+    forwarder: Option<&EventForwarder>,
     event: gmv_protocol::guard::v1::NodeEvent,
 ) -> Result<(), GuardError> {
     if event.event_id.is_empty() || event.topic.is_empty() {
@@ -266,12 +287,31 @@ fn apply_event(
             "node event_id and topic are required".to_string(),
         ));
     }
-    store.insert_event_once(EventRecord {
-        event_id: event.event_id,
-        topic: event.topic,
-        priority: event_priority(event.priority),
-        payload: event.payload,
+    let event_id = event.event_id;
+    let topic = event.topic;
+    let priority = event_priority(event.priority);
+    let payload = event.payload;
+    let payload_bytes = payload.len();
+    let inserted = store.insert_event_once(EventRecord {
+        event_id: event_id.clone(),
+        topic: topic.clone(),
+        priority,
+        payload: payload.clone(),
     })?;
+    if inserted {
+        if let Some(forwarder) = forwarder {
+            forwarder
+                .forward(event_id.clone(), topic.clone(), payload)
+                .await?;
+        }
+    }
+    base::log::info!(
+        "guard node event stored: event_id={}, topic={}, priority={}, payload_bytes={}",
+        event_id,
+        topic,
+        priority,
+        payload_bytes
+    );
     Ok(())
 }
 

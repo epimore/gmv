@@ -14,18 +14,15 @@ use gmv_domain::info::media_info_ext::MediaMap;
 use gmv_domain::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
 use gmv_domain::info::obj::{TalkAnswerReq, TalkInfo, TalkOpenReq, TalkStartModel, TalkStopModel};
 use gmv_domain::info::output::{DashFmp4Output, LocalMp4Output, OutputEnum, OutputKind};
-use gmv_domain::info::res::Resp;
 
 use crate::gb::SessionConf;
 use crate::gb::sip::command as sip_command;
 use crate::gb::sip::invite::AcceptBroadcastInviteRequest;
-use crate::http::client::{HttpClient, HttpStream};
 use crate::register::core::Register;
 use crate::service::talk::{
-    DEFAULT_TALK_INPUT_TIMEOUT_SECS, TalkAudioOptions, append_gmv_token, cleanup_talk_open,
-    parse_broadcast_invite, stream_resp_data,
+    DEFAULT_TALK_INPUT_TIMEOUT_SECS, TalkAudioOptions, append_gmv_token, parse_broadcast_invite,
 };
-use crate::service::{EXPIRES, KEY_STREAM_IN, stream_close, talk_close};
+use crate::service::{EXPIRES, KEY_STREAM_IN, stream_close, stream_rpc, talk_close};
 use crate::state;
 use crate::state::model::{
     CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
@@ -33,9 +30,8 @@ use crate::state::model::{
 };
 use crate::state::session::AccessMode;
 use crate::state::session::TalkSessionState;
-use crate::state::{DownloadConf, StreamConf, session};
+use crate::state::{DownloadConf, StreamConf, StreamNode, session};
 use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
-use crate::storage::entity::GmvRecord;
 use crate::utils::id_builder;
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
@@ -96,29 +92,8 @@ pub async fn download_info_by_stream_id(
             |msg| error!("{msg}"),
         )),
         Some(node) => {
-            let p = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
             let output_enum = info.media_type.unwrap_or(OutputEnum::LocalMp4);
-            let json_obj = p
-                .record_info(&StreamInfoQo { ssrc, output_enum })
-                .await
-                .hand_log(|msg| error!("{msg}"))?;
-            let value = json_obj.value();
-            if value.code == 200 {
-                match value.data {
-                    None => Err(GlobalError::new_biz_error(
-                        BaseErrorCode::NotFound.code(),
-                        "stream_server 错误",
-                        |msg| error!("{msg}: {}", &value.msg),
-                    )),
-                    Some(info) => Ok(info),
-                }
-            } else {
-                Err(GlobalError::new_biz_error(
-                    BaseErrorCode::NotFound.code(),
-                    "stream_server 错误",
-                    |msg| error!("{msg}: {}", &value.msg),
-                ))
-            }
+            stream_rpc::record_info(node, &StreamInfoQo { ssrc, output_enum }).await
         }
     }
 }
@@ -144,20 +119,14 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
                 ));
             }
             Some(node) => {
-                let p = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
-                let json_obj = p
-                    .close_output(&StreamInfoQo {
+                stream_rpc::close_output(
+                    node,
+                    &StreamInfoQo {
                         ssrc,
                         output_enum: OutputEnum::LocalMp4,
-                    })
-                    .await
-                    .hand_log(|msg| error!("{msg}"))?;
-                let value = json_obj.value();
-                if value.code != 200 {
-                    return Err(GlobalError::new_biz_error(value.code, &value.msg, |msg| {
-                        error!("close stream output failed: {msg}, stream_id={stream_id}")
-                    }));
-                }
+                    },
+                )
+                .await?;
             }
         }
         return Ok(true);
@@ -179,9 +148,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
     let _setup_guard = setup_lock.lock().await;
 
-    if let Some(_) =
-        GmvRecord::query_gmv_record_run_by_device_id_channel_id(device_id, channel_id).await?
-    {
+    if crate::guard_integration::guard_record_running(device_id, channel_id).await? {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::AlreadyExists.code(),
             "任务已存在",
@@ -226,28 +193,11 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     )
     .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    let record = GmvRecord {
-        biz_id: stream_id.clone(),
-        device_id: device_id.to_string(),
-        channel_id: channel_id.to_string(),
-        user_id: None,
-        st: Local
-            .timestamp_opt(st as i64, 0)
-            .single()
-            .ok_or_else(|| GlobalError::new_sys_error("invalid start time", |msg| error!("{msg}")))?
-            .naive_local(),
-        et: Local
-            .timestamp_opt(et as i64, 0)
-            .single()
-            .ok_or_else(|| GlobalError::new_sys_error("invalid end time", |msg| error!("{msg}")))?
-            .naive_local(),
-        speed: 1,
-        ct: Local::now().naive_local(),
-        state: 0,
-        lt: Local::now().naive_local(),
-        stream_app_name: node_name,
-    };
-    if let Err(err) = record.insert_single_gmv_record().await {
+    if let Err(err) = crate::guard_integration::guard_record_started(
+        &stream_id, device_id, channel_id, st as i64, et as i64, 1, &node_name,
+    )
+    .await
+    {
         stream_close::begin(stream_id.clone());
         return Err(err);
     }
@@ -361,9 +311,6 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         let Some(stream_node) = conf.node_map.get(&node_name) else {
             continue;
         };
-        let client =
-            HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port)
-                .hand_log(|msg| error!("{msg}"))?;
         let open_req = TalkOpenReq {
             talk_id: talk_id.clone(),
             ssrc: u32ssrc,
@@ -375,18 +322,8 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             frame_duration_ms: audio.frame_duration_ms,
             input_timeout_secs: DEFAULT_TALK_INPUT_TIMEOUT_SECS,
         };
-        let open_resp = match client
-            .talk_open(&open_req)
-            .await
-            .hand_log(|msg| error!("{msg}"))
-        {
-            Ok(resp) => match stream_resp_data(resp.value(), "talk_open") {
-                Ok(data) => data,
-                Err(err) => {
-                    warn!("talk_open rejected by stream node {}: {:?}", node_name, err);
-                    continue;
-                }
-            },
+        let open_resp = match stream_rpc::talk_open(stream_node, &open_req).await {
+            Ok(data) => data,
             Err(err) => {
                 warn!("talk_open failed on stream node {}: {:?}", node_name, err);
                 continue;
@@ -397,7 +334,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         let invite = match sip_command::broadcast_notify_and_wait(device_id, &target_id, sn).await {
             Ok(invite) => invite,
             Err(err) => {
-                cleanup_talk_open(client.as_ref(), &talk_id).await;
+                cleanup_talk_open(stream_node, &talk_id).await;
                 return Err(err);
             }
         };
@@ -409,7 +346,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
                     488,
                     "Unsupported broadcast SDP",
                 );
-                cleanup_talk_open(client.as_ref(), &talk_id).await;
+                cleanup_talk_open(stream_node, &talk_id).await;
                 return Err(err);
             }
         };
@@ -419,7 +356,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
                 488,
                 "Unsupported broadcast codec",
             );
-            cleanup_talk_open(client.as_ref(), &talk_id).await;
+            cleanup_talk_open(stream_node, &talk_id).await;
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
                 "device broadcast audio codec is unsupported",
@@ -438,18 +375,13 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             protocol: answer.protocol.get_value().to_string(),
             payload_type: answer.payload_type,
         };
-        if let Err(err) = client
-            .talk_answer(&answer_req)
-            .await
-            .hand_log(|msg| error!("{msg}"))
-            .and_then(|resp| stream_resp_unit(resp.value(), "talk_answer"))
-        {
+        if let Err(err) = stream_rpc::talk_answer(stream_node, &answer_req).await {
             sip_command::reject_broadcast_invite(
                 &invite.call_id,
                 500,
                 "Prepare broadcast media failed",
             );
-            cleanup_talk_open(client.as_ref(), &talk_id).await;
+            cleanup_talk_open(stream_node, &talk_id).await;
             return Err(err);
         }
         if let Err(err) = sip_command::accept_broadcast_invite(AcceptBroadcastInviteRequest {
@@ -465,7 +397,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         })
         .await
         {
-            cleanup_talk_open(client.as_ref(), &talk_id).await;
+            cleanup_talk_open(stream_node, &talk_id).await;
             return Err(err);
         }
 
@@ -491,7 +423,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
                 },
             )
             .await;
-            cleanup_talk_open(client.as_ref(), &talk_id).await;
+            cleanup_talk_open(stream_node, &talk_id).await;
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::AlreadyExists.code(),
                 "talk session already exists",
@@ -525,20 +457,7 @@ pub async fn talk_stop(model: TalkStopModel, _token: String) -> GlobalResult<boo
         .node_map
         .get(&talk.stream_node_name)
     {
-        match HttpClient::template_ip_port(
-            &stream_node.local_ip.to_string(),
-            stream_node.local_port,
-        ) {
-            Ok(client) => {
-                cleanup_talk_open(client.as_ref(), &talk.talk_id).await;
-            }
-            Err(err) => {
-                warn!(
-                    "talk_close client build failed: talk_id={}, err={:?}",
-                    talk.talk_id, err
-                );
-            }
-        }
+        cleanup_talk_open(stream_node, &talk.talk_id).await;
     }
 
     Ok(started)
@@ -561,16 +480,7 @@ pub async fn peer_dialog_terminated(call_id: String) -> bool {
         .node_map
         .get(&talk.stream_node_name)
     {
-        match HttpClient::template_ip_port(
-            &stream_node.local_ip.to_string(),
-            stream_node.local_port,
-        ) {
-            Ok(client) => cleanup_talk_open(client.as_ref(), &talk.talk_id).await,
-            Err(err) => warn!(
-                "peer BYE talk cleanup client build failed: talk_id={}, err={:?}",
-                talk.talk_id, err
-            ),
-        }
+        cleanup_talk_open(stream_node, &talk.talk_id).await;
     }
     true
 }
@@ -613,17 +523,6 @@ async fn persist_peer_dialog_terminated(call_id: &str) {
                 session.stream_id
             ),
         }
-    }
-}
-
-fn stream_resp_unit(resp: Resp<()>, action: &str) -> GlobalResult<()> {
-    let Resp { code, msg, .. } = resp;
-    if code == 200 {
-        Ok(())
-    } else {
-        Err(GlobalError::new_biz_error(code, &msg, |log_msg| {
-            error!("{action} failed: {log_msg}")
-        }))
     }
 }
 
@@ -703,18 +602,8 @@ async fn start_invite_stream(
             warn!("stream node configuration not found: node={node_name}");
             continue;
         };
-        let client =
-            HttpClient::template_ip_port(&stream_node.local_ip.to_string(), stream_node.local_port)
-                .hand_log(|msg| error!("{msg}"))?;
-
-        let Ok(res) = client
-            .stream_init(&msc)
-            .await
-            .hand_log(|msg| error!("{msg}"))
-        else {
-            continue;
-        };
-        if res.code != 200 {
+        if let Err(err) = stream_rpc::init_media(stream_node, &msc).await {
+            warn!("stream init failed on stream node {}: {:?}", node_name, err);
             continue;
         }
 
@@ -768,7 +657,7 @@ async fn start_invite_stream(
         let (invite_accepted, media_ext) = match invite_res {
             Ok(value) => value,
             Err(err) => {
-                cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
+                cleanup_stream_init(stream_node, u32ssrc, &msc.output).await;
                 return Err(err);
             }
         };
@@ -776,12 +665,7 @@ async fn start_invite_stream(
             ssrc: u32ssrc,
             ext: media_ext,
         };
-        if let Err(err) = client
-            .stream_init_ext(&map)
-            .await
-            .hand_log(|msg| error!("{msg}"))
-            .and_then(|resp| stream_resp_unit(resp.value(), "stream_init_ext"))
-        {
+        if let Err(err) = stream_rpc::init_media_ext(stream_node, &map).await {
             let _ = sip_command::invite_stop_by_device(
                 device_id,
                 crate::gb::sip::InviteStopRequest {
@@ -790,7 +674,7 @@ async fn start_invite_stream(
                 },
             )
             .await;
-            cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
+            cleanup_stream_init(stream_node, u32ssrc, &msc.output).await;
             return Err(err);
         }
 
@@ -815,7 +699,7 @@ async fn start_invite_stream(
                 },
             )
             .await;
-            cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
+            cleanup_stream_init(stream_node, u32ssrc, &msc.output).await;
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidRequest.code(),
                 "stream dialog already exists",
@@ -840,7 +724,7 @@ async fn start_invite_stream(
             return Ok((stream_id, node_name, base_stream_info.rtp_info.proxy_addr));
         }
 
-        cleanup_stream_init(client.as_ref(), u32ssrc, &msc.output).await;
+        cleanup_stream_init(stream_node, u32ssrc, &msc.output).await;
         stream_close::begin(stream_id);
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Timeout.code(),
@@ -868,20 +752,12 @@ async fn enable_invite_stream(
                 state::session::Cache::stream_map_query_node(&stream_id)
             {
                 if let Some(stream_node) = StreamConf::get_stream_conf().node_map.get(&node_name) {
-                    let pretend = HttpClient::template_ip_port(
-                        &stream_node.local_ip.to_string(),
-                        stream_node.local_port,
-                    )?;
                     let ssrc_num = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
                     let stream_key = StreamKey {
                         ssrc: ssrc_num,
                         stream_id: Some(stream_id.clone()),
                     };
-                    let json_obj = pretend
-                        .stream_online(&stream_key)
-                        .await
-                        .hand_log(|msg| error!("{msg}"))?;
-                    if let Some(true) = json_obj.data {
+                    if stream_rpc::stream_online(stream_node, &stream_key).await? {
                         res = Some((stream_id.clone(), proxy_addr));
                     }
                 }
@@ -908,6 +784,12 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
     res
 }
 
+async fn cleanup_talk_open(node: &StreamNode, talk_id: &str) {
+    let _ = stream_rpc::talk_close(node, talk_id)
+        .await
+        .hand_log(|msg| error!("{msg}"));
+}
+
 fn output_kind_to_enum(output: &OutputKind) -> OutputEnum {
     match output {
         OutputKind::Rtmp(_) => OutputEnum::Rtmp,
@@ -925,11 +807,13 @@ fn output_kind_to_enum(output: &OutputKind) -> OutputEnum {
     }
 }
 
-async fn cleanup_stream_init(client: &impl HttpStream, ssrc: u32, output: &OutputKind) {
-    let _ = client
-        .close_output(&StreamInfoQo {
+async fn cleanup_stream_init(node: &StreamNode, ssrc: u32, output: &OutputKind) {
+    let _ = stream_rpc::close_output(
+        node,
+        &StreamInfoQo {
             ssrc,
             output_enum: output_kind_to_enum(output),
-        })
-        .await;
+        },
+    )
+    .await;
 }

@@ -107,14 +107,15 @@ impl
                 labels: HashMap::new(),
             };
             let control_cancel = network_rt.cancel.clone();
+            let control_media_tx = tx.clone();
             base::tokio::spawn(async move {
                 let address: SocketAddr = format!("127.0.0.1:{control_grpc_port}")
                     .parse()
                     .expect("loopback control address must be valid");
-                let rpc = StreamControlRpc::new(StreamControlAdapter::new(
-                    control_identity,
-                    receive_endpoint,
-                ));
+                let rpc = StreamControlRpc::new(
+                    StreamControlAdapter::new(control_identity, receive_endpoint)
+                        .with_media_tx(control_media_tx),
+                );
                 if let Err(err) = tonic::transport::Server::builder()
                     .add_service(StreamControlServer::new(rpc))
                     .serve_with_shutdown(address, async move { control_cancel.cancelled().await })

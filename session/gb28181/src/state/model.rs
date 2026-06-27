@@ -10,7 +10,6 @@ use gmv_domain::info::codec::Codec;
 use gmv_domain::info::filter::Filter;
 use gmv_domain::info::output::{HttpFlvOutput, OutputEnum, OutputKind};
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamQo {
@@ -20,7 +19,6 @@ pub struct StreamQo {
     pub media_type: Option<OutputEnum>,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(crate = "base::serde")]
 /// 传输方式 默认udp 模式, TcpPassive 被动模式,TcpActive 主动模式
@@ -29,7 +27,6 @@ pub enum TransMode {
     TcpActive,
     TcpPassive,
 }
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(crate = "base::serde")]
 pub struct CustomMediaConfig {
@@ -41,7 +38,6 @@ pub struct CustomMediaConfig {
     pub filter: Filter,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 pub struct PlayLiveModel {
@@ -55,7 +51,6 @@ pub struct PlayLiveModel {
     pub custom_media_config: Option<CustomMediaConfig>,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(crate = "base::serde")]
 pub struct PlayBackModel {
@@ -73,7 +68,6 @@ pub struct PlayBackModel {
     pub et: u32,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
@@ -84,7 +78,6 @@ pub struct PlaySeekModel {
     pub seekSecond: u32,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
@@ -95,7 +88,6 @@ pub struct PlaySpeedModel {
     pub speedRate: f32,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
@@ -118,7 +110,6 @@ pub struct PtzControlModel {
     pub zoomSpeed: u8,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
@@ -158,7 +149,6 @@ impl StreamInfo {
     }
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(crate = "base::serde")]
 #[allow(non_snake_case)]
@@ -199,7 +189,6 @@ impl KV2Model for AlarmInfo {
     }
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct DeviceChannelIdent {
@@ -207,7 +196,6 @@ pub struct DeviceChannelIdent {
     pub channel_id: String,
 }
 
-#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(New, Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct SnapshotImage {

@@ -11,6 +11,16 @@ service StreamControl {
   rpc CreateOutput(CreateOutputRequest) returns (CreateOutputResponse);
   rpc CloseOutput(CloseOutputRequest) returns (CloseOutputResponse);
   rpc GetPlaybackEndpoints(GetPlaybackEndpointsRequest) returns (GetPlaybackEndpointsResponse);
+
+  rpc InitMedia(StreamJsonRequest) returns (StreamUnitResponse);
+  rpc InitMediaExt(StreamJsonRequest) returns (StreamUnitResponse);
+  rpc StreamOnline(StreamJsonRequest) returns (StreamBoolResponse);
+  rpc RecordInfo(StreamJsonRequest) returns (StreamJsonResponse);
+  rpc CloseOutputBySsrc(StreamJsonRequest) returns (StreamUnitResponse);
+  rpc TalkOpen(StreamJsonRequest) returns (StreamJsonResponse);
+  rpc TalkAnswer(StreamJsonRequest) returns (StreamUnitResponse);
+  rpc TalkClose(StreamJsonRequest) returns (StreamUnitResponse);
+  rpc TalkOnline(StreamJsonRequest) returns (StreamBoolResponse);
 }
 
 message StartReceiveRequest {
@@ -88,4 +98,22 @@ enum StreamState {
   STREAM_STATE_STOPPING = 3;
   STREAM_STATE_STOPPED = 4;
   STREAM_STATE_FAILED = 5;
+}
+
+message StreamJsonRequest {
+  bytes payload_json = 1;
+}
+
+message StreamUnitResponse {
+  gmv.common.v1.ErrorDetail error = 1;
+}
+
+message StreamBoolResponse {
+  bool value = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message StreamJsonResponse {
+  bytes payload_json = 1;
+  gmv.common.v1.ErrorDetail error = 2;
 }

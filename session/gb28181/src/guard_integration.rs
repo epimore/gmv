@@ -1,21 +1,27 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex, OnceLock},
 };
 
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::log::{error as log_error, info};
 use base::serde::de::DeserializeOwned;
 use base_rpc::RpcChannelConfig;
 use gmv_domain::info::obj::{
     OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState,
     TalkClosedEvent, UnknownStreamEvent,
 };
+use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
 };
 use gmv_protocol::guard::v1::{
-    AllocateStreamRequest, AllocateStreamResponse, EventPriority, NodeEvent, NodeHealth,
-    NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage, RegisterNodeRequest, ResourceReport,
-    ResourceState, node_to_guard_message,
+    AllocateStreamRequest, AllocateStreamResponse, EventPriority, FinishRecordRequest, NodeEvent,
+    NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage, QueryRunningRecordRequest,
+    RecordMutationResponse, RegisterNodeRequest, ResourceReport, ResourceState, StartRecordRequest,
+    guard_media_client::GuardMediaClient, node_to_guard_message,
 };
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState,
@@ -25,8 +31,138 @@ use gmv_protocol::session::v1::{
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
 };
+use tonic::transport::Channel;
 
 use crate::service::hook_serv;
+
+static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
+static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+pub fn init_guard_event_sender(sender: NodeEventSender) {
+    let _ = GUARD_EVENT_SENDER.set(sender);
+}
+
+async fn guard_media_client() -> GlobalResult<GuardMediaClient<Channel>> {
+    let endpoint = std::env::var("GMV_GUARD_ENDPOINT")
+        .unwrap_or_else(|_| "http://127.0.0.1:18080".to_string());
+    let channel = base_rpc::connect_channel(&RpcChannelConfig::new(endpoint.clone()))
+        .await
+        .map_err(|err| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::Network.code(),
+                "connect guard media rpc failed",
+                |msg| log_error!("{msg}: endpoint={endpoint}, err={err:?}"),
+            )
+        })?;
+    Ok(GuardMediaClient::new(channel))
+}
+
+pub async fn guard_record_running(device_id: &str, channel_id: &str) -> GlobalResult<bool> {
+    let mut client = guard_media_client().await?;
+    let response = client
+        .query_running_record(QueryRunningRecordRequest {
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+        })
+        .await
+        .hand_log(|msg| log_error!("{msg}"))?
+        .into_inner();
+    Ok(response.exists)
+}
+
+pub async fn guard_record_started(
+    biz_id: &str,
+    device_id: &str,
+    channel_id: &str,
+    st_epoch_sec: i64,
+    et_epoch_sec: i64,
+    speed: u32,
+    stream_app_name: &str,
+) -> GlobalResult<()> {
+    let mut client = guard_media_client().await?;
+    let response = client
+        .start_record(StartRecordRequest {
+            biz_id: biz_id.to_string(),
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            user_id: String::new(),
+            st_epoch_sec,
+            et_epoch_sec,
+            speed,
+            stream_app_name: stream_app_name.to_string(),
+        })
+        .await
+        .hand_log(|msg| log_error!("{msg}"))?
+        .into_inner();
+    ensure_record_mutation(response, "start_record")
+}
+
+pub async fn guard_record_finished(
+    biz_id: &str,
+    file_size: u64,
+    record_duration_sec: u64,
+    file_format: &str,
+    dir_path: &str,
+    abs_path: &str,
+) -> GlobalResult<()> {
+    let mut client = guard_media_client().await?;
+    let response = client
+        .finish_record(FinishRecordRequest {
+            biz_id: biz_id.to_string(),
+            file_size,
+            record_duration_sec,
+            file_format: file_format.to_string(),
+            dir_path: dir_path.to_string(),
+            abs_path: abs_path.to_string(),
+        })
+        .await
+        .hand_log(|msg| log_error!("{msg}"))?
+        .into_inner();
+    ensure_record_mutation(response, "finish_record")
+}
+
+fn ensure_record_mutation(response: RecordMutationResponse, action: &str) -> GlobalResult<()> {
+    if response.accepted && response.error.is_none() {
+        return Ok(());
+    }
+    let message = response
+        .error
+        .as_ref()
+        .map(|error| error.message.as_str())
+        .filter(|message| !message.is_empty())
+        .unwrap_or("guard media rpc failed");
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::Internal.code(),
+        message,
+        |msg| log_error!("guard media rpc {action} failed: {msg}"),
+    ))
+}
+
+pub fn publish_guard_event(topic: &str, payload: impl Into<Vec<u8>>) {
+    let payload = payload.into();
+    let Some(sender) = GUARD_EVENT_SENDER.get() else {
+        base::log::warn!(
+            "guard event outbound skipped: topic={topic}, reason=event_sender_not_initialized, payload_bytes={}",
+            payload.len()
+        );
+        return;
+    };
+    let sequence = GUARD_EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let event_id = format!("session-event-{sequence}");
+    base::log::info!(
+        "guard event outbound: event_id={event_id}, topic={topic}, payload_bytes={}",
+        payload.len()
+    );
+    let event = NodeEvent {
+        event_id,
+        topic: topic.to_string(),
+        priority: EventPriority::P1 as i32,
+        payload,
+    };
+    if let Err(error) = sender.try_send(event) {
+        base::log::warn!("drop guard session event {topic}: {error}");
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionGuardNode {
@@ -214,7 +350,14 @@ impl SessionHook for SessionHookRpc {
         request: tonic::Request<SessionHookRequest>,
     ) -> Result<tonic::Response<SessionHookResponse>, tonic::Status> {
         let request = request.into_inner();
-        let response = match request.event_type.as_str() {
+        let event_type = request.event_type.clone();
+        info!(
+            "session hook rpc inbound: event_type={}, payload_bytes={}, operation={:?}",
+            event_type,
+            request.payload_json.len(),
+            request.operation
+        );
+        let response = match event_type.as_str() {
             "stream.registered" | "stream.register" => {
                 let value: RegisterStreamInfo = decode_payload(&request.payload_json)?;
                 hook_serv::stream_register(value).await;
@@ -262,6 +405,13 @@ impl SessionHook for SessionHookRpc {
                 error: Some(error("unknown_hook", "unsupported session hook event_type")),
             },
         };
+        info!(
+            "session hook rpc outbound: event_type={}, accepted={}, error={:?}, payload_bytes={}",
+            event_type,
+            response.accepted,
+            response.error,
+            response.payload_json.len()
+        );
         Ok(tonic::Response::new(response))
     }
 }

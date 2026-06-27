@@ -7,6 +7,7 @@ use crate::app_config::GuardAppConfig;
 use crate::auth::{AuthState, SessionPolicy, UserAccount};
 use crate::core::{GuardError, GuardResult};
 use crate::runtime::application_router;
+use crate::runtime::event_forwarder::EventForwarder;
 
 #[derive(Debug, Clone)]
 pub struct WebTlsConfig {
@@ -26,6 +27,7 @@ pub struct WebServerConfig {
     pub max_failed_attempts: usize,
     pub local_admin_username: String,
     pub local_admin_login_only: bool,
+    pub picture_upload: crate::app_config::PictureUploadConfig,
 }
 
 impl WebServerConfig {
@@ -46,6 +48,7 @@ impl WebServerConfig {
             max_failed_attempts: http.max_failed_attempts,
             local_admin_username: config.bootstrap.admin.username.clone(),
             local_admin_login_only: config.bootstrap.admin.local_login_only,
+            picture_upload: config.media.picture_upload.clone(),
         };
         result.validate()?;
         Ok(result)
@@ -75,6 +78,8 @@ pub async fn serve(
     simulator: Option<crate::sim::Simulator>,
     users: Vec<UserAccount>,
     user_repository: crate::store::persistent::UserRepository,
+    media_repository: crate::store::persistent::MediaRepository,
+    event_forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
     let auth = AuthState::new(
@@ -96,6 +101,9 @@ pub async fn serve(
             outbox,
             simulator,
             users: Some(user_repository),
+            media: config.picture_upload.clone(),
+            media_files: Some(media_repository),
+            event_forwarder,
         },
         config.ui_dist_dir.clone(),
     );
@@ -138,6 +146,7 @@ mod tests {
             max_failed_attempts: 5,
             local_admin_username: "admin".to_string(),
             local_admin_login_only: true,
+            picture_upload: crate::app_config::PictureUploadConfig::default(),
         }
     }
 

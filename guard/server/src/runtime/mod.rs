@@ -1,4 +1,6 @@
 pub mod control_rpc;
+pub mod event_forwarder;
+pub mod media_rpc;
 pub mod node_expirer;
 pub mod node_rpc;
 pub mod web;

@@ -57,6 +57,9 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         "guard_ui_session",
         "guard_integration",
         "guard_system_setting",
+        "GMV_FILE_INFO",
+        "GMV_RECORD",
+        "GMV_DEVICE_PTZ_PRESET",
     ] {
         assert!(mysql_all.contains(table), "mysql missing {table}");
         assert!(sqlite_all.contains(table), "sqlite missing {table}");

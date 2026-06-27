@@ -61,6 +61,9 @@ fn test_app(store: InMemoryGuardStore) -> axum::Router {
         outbox: OutboxRepository::from(store),
         simulator: None,
         users: None,
+        media: Default::default(),
+        media_files: None,
+        event_forwarder: None,
     })
 }
 

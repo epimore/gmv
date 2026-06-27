@@ -7,6 +7,7 @@ use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Protocol};
 use gmv_pjsip::{SipAssociation, SipMethod, SipTransportProtocol};
 
+use crate::guard_integration::publish_guard_event;
 use crate::register::core::{DeviceSession, Register};
 use crate::service::{api_serv, stream_close};
 use crate::state::session::Cache as GeneralCache;
@@ -277,24 +278,7 @@ fn dispatch_alarm(device_id: Option<&str>, items: Vec<(String, String)>) -> Glob
     }
     let mut alarm = AlarmInfo::kv_to_model(items)?;
     alarm.deviceId = device_id.to_string();
-    let Some(push_url) = conf.push_url.clone() else {
-        return Ok(());
-    };
-    base::tokio::spawn(async move {
-        use crate::http::client::HttpBiz;
-
-        let result = async {
-            let client = crate::http::client::HttpClient::template(&push_url)?;
-            client
-                .call_alarm_info(&alarm)
-                .await
-                .hand_log(|msg| error!("{msg}"))?;
-            GlobalResult::<()>::Ok(())
-        }
-        .await;
-        if let Err(err) = result {
-            error!("push alarm failed: device_id={}, err={err}", alarm.deviceId);
-        }
-    });
+    let payload = base::serde_json::to_vec(&alarm).hand_log(|msg| error!("{msg}"))?;
+    publish_guard_event("session.alarm", payload);
     Ok(())
 }

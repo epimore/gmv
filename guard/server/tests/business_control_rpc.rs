@@ -17,7 +17,8 @@ use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
     GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, QueryStreamRequest,
     QueryStreamResponse, StartReceiveRequest, StartReceiveResponse, StopReceiveRequest,
-    StopReceiveResponse, StreamState,
+    StopReceiveResponse, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState,
+    StreamUnitResponse,
 };
 use guard::api::v2::control::BusinessControl;
 use guard::core::{NodeIdentity, NodeKind};
@@ -428,6 +429,81 @@ impl StreamControl for FakeStream {
     ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
         Ok(tonic::Response::new(GetPlaybackEndpointsResponse {
             endpoints: vec![],
+        }))
+    }
+
+    async fn init_media(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn init_media_ext(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn stream_online(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamBoolResponse {
+            value: true,
+            error: None,
+        }))
+    }
+
+    async fn record_info(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamJsonResponse {
+            payload_json: vec![],
+            error: None,
+        }))
+    }
+
+    async fn close_output_by_ssrc(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn talk_open(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamJsonResponse {
+            payload_json: vec![],
+            error: None,
+        }))
+    }
+
+    async fn talk_answer(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn talk_close(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn talk_online(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamBoolResponse {
+            value: true,
+            error: None,
         }))
     }
 }

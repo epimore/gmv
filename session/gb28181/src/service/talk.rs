@@ -1,11 +1,9 @@
 use base::err::BaseErrorCode;
-use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::exception::{GlobalError, GlobalResult};
 use base::log::error;
-use gmv_domain::info::obj::{TalkCloseReq, TalkStartModel};
-use gmv_domain::info::res::Resp;
+use gmv_domain::info::obj::TalkStartModel;
 
 use crate::gb::sip::GbIncomingInviteEvent;
-use crate::http::client::HttpStream;
 use crate::state::model::TransMode;
 
 const DEFAULT_TALK_CODEC: &str = "PCMA";
@@ -174,36 +172,10 @@ fn parse_talk_sdp(
     })
 }
 
-pub(super) fn stream_resp_data<T>(resp: Resp<T>, action: &str) -> GlobalResult<T> {
-    let Resp { code, msg, data } = resp;
-    if code == 200 {
-        data.ok_or_else(|| {
-            GlobalError::new_biz_error(
-                BaseErrorCode::InvalidState.code(),
-                "stream response data is empty",
-                |log_msg| error!("{action} failed: {log_msg}"),
-            )
-        })
-    } else {
-        Err(GlobalError::new_biz_error(code, &msg, |log_msg| {
-            error!("{action} failed: {log_msg}")
-        }))
-    }
-}
-
 pub(super) fn append_gmv_token(input_url: String, token: &str) -> String {
     let encoded = url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>();
     let sep = if input_url.contains('?') { '&' } else { '?' };
     format!("{input_url}{sep}gmv-token={encoded}")
-}
-
-pub(super) async fn cleanup_talk_open(client: &(impl HttpStream + ?Sized), talk_id: &str) {
-    let _ = client
-        .talk_close(&TalkCloseReq {
-            talk_id: talk_id.to_string(),
-        })
-        .await
-        .hand_log(|msg| error!("{msg}"));
 }
 
 fn normalize_talk_transport(transport: Option<&str>) -> GlobalResult<TransMode> {

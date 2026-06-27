@@ -1,6 +1,6 @@
 use crate::register::core::Register;
 use crate::register::core::SERVER_HEART_SECOND;
-use crate::storage::db_task;
+use crate::storage::{db, db_task};
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::chrono::Local;
@@ -10,7 +10,6 @@ use base::net;
 use base::serde::Deserialize;
 use base::tokio::runtime::Handle;
 use base::tokio_util::sync::CancellationToken;
-use base_db::dbx::mysqlx::get_conn_by_pool;
 use gmv_pjsip::SipRuntimeSockets;
 use regex::Regex;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
@@ -50,31 +49,41 @@ impl SessionConf {
         let _ = Register::server_keep_heart_update_db(Arc::from(conf.domain_id)).await;
     }
     pub async fn heart_to_db(&self) -> GlobalResult<()> {
-        let pool = get_conn_by_pool();
-        let _ = sqlx::query(r#"update GB_SERVER set heart_time=? where domain_id=?"#)
-            .bind(Local::now().naive_local())
-            .bind(&self.domain_id)
-            .execute(pool)
-            .await
-            .hand_log(|msg| error!("{msg}"))?;
+        let _ = db::execute!(
+            r#"update GB_SERVER set heart_time=? where domain_id=?"#,
+            Local::now().naive_local(),
+            &self.domain_id,
+        )
+        .hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
     async fn init_to_db(&self) -> GlobalResult<()> {
-        let pool = get_conn_by_pool();
-        sqlx::query(r#"insert into GB_SERVER (domain_id,domain,sip_ip,
+        let sql = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => {
+                r#"insert into GB_SERVER (domain_id,domain,sip_ip,
         sip_port,http_source,status,heart_time,heart_cycle) values (?,?,?,?,?,?,?,?)
-        ON DUPLICATE KEY UPDATE domain_id=VALUES(domain_id),domain=VALUES(domain),sip_ip=VALUES(sip_ip),
-        sip_port=VALUES(sip_port),http_source=VALUES(http_source),status=VALUES(status),heart_time=VALUES(heart_time),heart_cycle=VALUES(heart_cycle)"#)
-            .bind(&self.domain_id)
-            .bind(&self.domain)
-            .bind(&self.wan_ip)
-            .bind(&self.wan_port)
-            .bind(&self.http_source)
-            .bind(1)
-            .bind(Local::now().naive_local())
-            .bind(SERVER_HEART_SECOND)
-            .execute(pool)
-            .await.hand_log(|msg| error!("{msg}"))?;
+        ON DUPLICATE KEY UPDATE domain=VALUES(domain),sip_ip=VALUES(sip_ip),
+        sip_port=VALUES(sip_port),http_source=VALUES(http_source),status=VALUES(status),heart_time=VALUES(heart_time),heart_cycle=VALUES(heart_cycle)"#
+            }
+            db::SessionDatabaseBackend::Sqlite => {
+                r#"insert into GB_SERVER (domain_id,domain,sip_ip,
+        sip_port,http_source,status,heart_time,heart_cycle) values (?,?,?,?,?,?,?,?)
+        ON CONFLICT(domain_id) DO UPDATE SET domain=excluded.domain,sip_ip=excluded.sip_ip,
+        sip_port=excluded.sip_port,http_source=excluded.http_source,status=excluded.status,heart_time=excluded.heart_time,heart_cycle=excluded.heart_cycle"#
+            }
+        };
+        db::execute!(
+            sql,
+            &self.domain_id,
+            &self.domain,
+            self.wan_ip.to_string(),
+            i64::from(self.wan_port),
+            &self.http_source,
+            1_i64,
+            Local::now().naive_local(),
+            SERVER_HEART_SECOND as i64,
+        )
+        .hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 
@@ -97,6 +106,7 @@ impl SessionConf {
         tu: (Option<std::net::TcpListener>, Option<UdpSocket>),
         cancel_token: CancellationToken,
     ) -> GlobalResult<()> {
+        crate::storage::db::initialize().await?;
         db_task::init(cancel_token.child_token());
         let session_conf = SessionConf::get_session_by_conf();
         crate::storage::ssrc_sequence::SsrcSequence::initialize(&session_conf.domain_id).await?;

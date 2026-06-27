@@ -1,4 +1,3 @@
-use std::ops::Sub;
 use std::path::Path;
 
 use base::bytes::Bytes;
@@ -16,7 +15,6 @@ use crate::service::{KEY_STREAM_IN, dialog_recovery, stream_close, talk_close};
 use crate::state;
 use crate::state::DownloadConf;
 use crate::storage::dialog_session::SipDialogSessionRepository;
-use crate::storage::entity::{GmvFileInfo, GmvRecord};
 
 pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
     let key_stream_in_id = format!(
@@ -208,43 +206,15 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) -> GlobalResult<()
         return Ok(());
     };
     let (abs_path, dir_path, biz_id, extension) = get_path(&path_file_name)?;
-    let Some(mut record) = GmvRecord::query_gmv_record_by_biz_id(&biz_id).await? else {
-        return Ok(());
-    };
-    if stream_record_info.file_size == 0 || stream_record_info.timestamp == 0 {
-        record.state = 3;
-    } else {
-        let total_secs = record.et.sub(record.st).num_seconds();
-        if total_secs <= 0 {
-            record.state = 3;
-        } else {
-            let per = (stream_record_info.timestamp as i64) * 1000 / total_secs;
-            if per > 98 {
-                record.state = 1;
-            } else {
-                record.state = 2;
-            }
-        }
-    }
-    record.lt = Local::now().naive_local();
-    record.update_gmv_record_by_biz_id().await?;
-    let file_info = GmvFileInfo {
-        id: None,
-        device_id: record.device_id,
-        channel_id: record.channel_id,
-        biz_time: Some(Local::now().naive_local()),
-        biz_id,
-        file_type: Some(1),
-        file_size: stream_record_info.file_size,
-        file_name: record.biz_id,
-        file_format: Some(extension),
-        dir_path,
-        abs_path,
-        note: None,
-        is_del: Some(0),
-        create_time: Some(Local::now().naive_local()),
-    };
-    GmvFileInfo::insert_gmv_file_info(vec![file_info]).await?;
+    crate::guard_integration::guard_record_finished(
+        &biz_id,
+        stream_record_info.file_size,
+        u64::from(stream_record_info.timestamp),
+        &extension,
+        &dir_path,
+        &abs_path,
+    )
+    .await?;
     Ok(())
 }
 

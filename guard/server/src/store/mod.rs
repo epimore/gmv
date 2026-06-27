@@ -136,6 +136,24 @@ impl InMemoryGuardStore {
         Ok(true)
     }
 
+    pub fn insert_outbox_records(&self, records: Vec<OutboxRecord>) -> GuardResult<()> {
+        let mut inner = self.inner.write();
+        for record in &records {
+            if record.outbox_id.is_empty()
+                || record.destination.is_empty()
+                || inner.outbox.contains_key(&record.outbox_id)
+            {
+                return Err(GuardError::Conflict(
+                    "invalid or duplicate outbox record".to_string(),
+                ));
+            }
+        }
+        for record in records {
+            inner.outbox.insert(record.outbox_id.clone(), record);
+        }
+        Ok(())
+    }
+
     pub fn get_outbox(&self, outbox_id: &str) -> Option<OutboxRecord> {
         self.inner.read().outbox.get(outbox_id).cloned()
     }

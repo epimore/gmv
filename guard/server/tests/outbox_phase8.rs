@@ -175,3 +175,25 @@ fn worker_recovers_stale_sending_after_crash() {
             assert_eq!(store.get_outbox("o1").unwrap().attempts, 2);
         });
 }
+
+#[test]
+fn worker_marks_expired_record_dead_without_delivery() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let store = InMemoryGuardStore::default();
+            store
+                .insert_event_with_outbox(
+                    event("e-expired"),
+                    vec![outbox("o-expired", "e-expired", 0)],
+                )
+                .unwrap();
+            let worker =
+                worker(store.clone(), vec![Ok(())]).with_max_record_age(Duration::from_secs(1));
+            assert_eq!(worker.run_once(1_001).await.unwrap(), 1);
+            assert_eq!(
+                store.get_outbox("o-expired").unwrap().state,
+                OutboxState::Dead
+            );
+        });
+}

@@ -197,3 +197,47 @@ pub(crate) fn outbox_from_row(row: OutboxRow) -> crate::core::GuardResult<Outbox
         updated_at_ms: row.10,
     })
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaFileInsert {
+    pub id: i64,
+    pub device_id: String,
+    pub channel_id: String,
+    pub biz_time: String,
+    pub biz_id: String,
+    pub file_type: i32,
+    pub file_size: u64,
+    pub file_name: String,
+    pub file_format: Option<String>,
+    pub dir_path: String,
+    pub abs_path: Option<String>,
+    pub note: Option<String>,
+    pub is_del: i32,
+    pub create_time: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GmvRecordInsert {
+    pub biz_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub user_id: Option<String>,
+    pub st: String,
+    pub et: String,
+    pub speed: u32,
+    pub ct: String,
+    pub state: i32,
+    pub lt: String,
+    pub stream_app_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordFileInsert {
+    pub biz_id: String,
+    pub file_size: u64,
+    pub record_duration_sec: u64,
+    pub file_format: Option<String>,
+    pub dir_path: String,
+    pub abs_path: Option<String>,
+    pub now: String,
+}

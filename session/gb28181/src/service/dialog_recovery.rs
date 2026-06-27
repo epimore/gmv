@@ -6,12 +6,12 @@ use base::chrono::{Duration as TimeDelta, Local};
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
 use base::net::state::{Association, Protocol};
-use gmv_domain::info::obj::{StreamKey, TalkCloseReq};
+use gmv_domain::info::obj::StreamKey;
 
 use crate::gb::SessionConf;
 use crate::gb::sip::runtime_cache::SipRuntimeCache;
-use crate::http::client::{HttpClient, HttpStream};
 use crate::register::core::{DeviceSession, Register};
+use crate::service::stream_rpc;
 use crate::state::StreamConf;
 use crate::state::session::{AccessMode, Cache};
 use crate::storage::dialog_session::{
@@ -209,14 +209,7 @@ async fn query_talk_online(session: &SipDialogSession) -> GlobalResult<bool> {
         .node_map
         .get(&session.media_node_id)
         .ok_or_else(|| invalid_recovery(session, "configured media node is missing"))?;
-    let client = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
-    let response = client
-        .talk_online(&TalkCloseReq {
-            talk_id: session.stream_id.clone(),
-        })
-        .await
-        .hand_log(|message| error!("{message}"))?;
-    Ok(response.code == 200 && response.data == Some(true))
+    stream_rpc::talk_online(node, &session.stream_id).await
 }
 
 async fn query_media_online(session: &SipDialogSession, ssrc: u32) -> GlobalResult<bool> {
@@ -225,15 +218,14 @@ async fn query_media_online(session: &SipDialogSession, ssrc: u32) -> GlobalResu
         .node_map
         .get(&session.media_node_id)
         .ok_or_else(|| invalid_recovery(session, "configured media node is missing"))?;
-    let client = HttpClient::template_ip_port(&node.local_ip.to_string(), node.local_port)?;
-    let response = client
-        .stream_online(&StreamKey {
+    stream_rpc::stream_online(
+        node,
+        &StreamKey {
             ssrc,
             stream_id: Some(session.stream_id.clone()),
-        })
-        .await
-        .hand_log(|message| error!("{message}"))?;
-    Ok(response.code == 200 && response.data == Some(true))
+        },
+    )
+    .await
 }
 
 async fn ensure_udp_device_session(session: &SipDialogSession) -> GlobalResult<()> {

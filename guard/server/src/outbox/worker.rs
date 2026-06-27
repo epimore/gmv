@@ -74,6 +74,14 @@ impl From<SqliteStore> for OutboxRepository {
 }
 
 impl OutboxRepository {
+    pub async fn insert_outbox_records(&self, records: Vec<OutboxRecord>) -> GuardResult<()> {
+        match self {
+            Self::Memory(store) => store.insert_outbox_records(records),
+            Self::Mysql(store) => store.insert_outbox_records(&records).await,
+            Self::Sqlite(store) => store.insert_outbox_records(&records).await,
+        }
+    }
+
     pub async fn list(&self, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
         match self {
             Self::Memory(store) => Ok(store.outbox_records(limit)),
@@ -131,6 +139,7 @@ pub struct OutboxWorker {
     retry: RetryPolicy,
     batch_size: usize,
     sending_timeout: Duration,
+    max_record_age: Option<Duration>,
 }
 
 impl OutboxWorker {
@@ -146,12 +155,20 @@ impl OutboxWorker {
             retry,
             batch_size: batch_size.max(1),
             sending_timeout: Duration::from_secs(30),
+            max_record_age: None,
         }
     }
 
     pub fn with_sending_timeout(mut self, timeout: Duration) -> Self {
         if !timeout.is_zero() {
             self.sending_timeout = timeout;
+        }
+        self
+    }
+
+    pub fn with_max_record_age(mut self, age: Duration) -> Self {
+        if !age.is_zero() {
+            self.max_record_age = Some(age);
         }
         self
     }
@@ -165,6 +182,11 @@ impl OutboxWorker {
         for mut record in records.iter().cloned() {
             mark_sending(&mut record, now_ms)?;
             self.store.update(record.clone()).await?;
+            if self.record_expired(&record, now_ms) {
+                mark_dead(&mut record, now_ms, "outbox record expired before delivery")?;
+                self.store.update(record).await?;
+                continue;
+            }
             match self.delivery.deliver(&record).await {
                 Ok(()) => mark_delivered(&mut record, now_ms)?,
                 Err(error) if self.retry.permits(record.attempts.saturating_add(1)) => {
@@ -178,5 +200,13 @@ impl OutboxWorker {
             self.store.update(record).await?;
         }
         Ok(records.len())
+    }
+
+    fn record_expired(&self, record: &OutboxRecord, now_ms: i64) -> bool {
+        let Some(max_age) = self.max_record_age else {
+            return false;
+        };
+        let max_age_ms = max_age.as_millis().min(i64::MAX as u128) as i64;
+        now_ms.saturating_sub(record.created_at_ms) > max_age_ms
     }
 }

@@ -1,4 +1,7 @@
-use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
+use axum::body::Bytes;
+use axum::extract::{
+    ConnectInfo, FromRequest, FromRequestParts, Multipart, Path, Query, Request, State,
+};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ORIGIN, REFERRER_POLICY,
     SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
@@ -8,6 +11,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -16,17 +20,20 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::api::v2::control::BusinessControl;
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
+use crate::app_config::PictureUploadConfig;
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{AuthState, Role, UiSession, UserProfile, hash_password as hash_ui_password};
 use crate::core::{GuardError, HealthState};
 use crate::job::{SystemJobRecord, SystemJobRequest, SystemJobStatus, SystemJobType};
+use crate::media::{PictureUploadResult, save_picture_upload};
 use crate::operation::{OperationRecord, OperationRequest, OperationStatus};
 use crate::outbox::OutboxRepository;
+use crate::runtime::event_forwarder::EventForwarder;
 use crate::sim::{SimAiTask, SimDevice, SimStatus, SimStream, Simulator};
 use crate::store::model::{
     EventRecord, LeaseRecord, NodeRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
 };
-use crate::store::persistent::UserRepository;
+use crate::store::persistent::{MediaRepository, UserRepository};
 
 const CSRF_HEADER: &str = "x-csrf-token";
 
@@ -37,6 +44,9 @@ pub struct HttpState {
     pub outbox: OutboxRepository,
     pub simulator: Option<Simulator>,
     pub users: Option<UserRepository>,
+    pub media: PictureUploadConfig,
+    pub media_files: Option<MediaRepository>,
+    pub event_forwarder: Option<EventForwarder>,
 }
 
 pub fn router(state: HttpState) -> Router {
@@ -67,6 +77,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/users", get(list_users).post(create_user))
         .route("/users/{username}", post(update_user))
         .route("/integrations/outbox", get(outbox_records))
+        .route("/edge/upload/picture/{token}", post(upload_picture))
         .route("/integrations/outbox/{outbox_id}/retry", post(retry_outbox))
         .route("/devices", get(sim_devices))
         .route("/devices/{device_id}/preview", post(sim_preview))
@@ -1029,6 +1040,113 @@ impl From<OutboxRecord> for OutboxResponse {
     }
 }
 
+async fn upload_picture(
+    State(state): State<HttpState>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    request: Request,
+) -> Result<Json<PictureUploadResult>, HttpError> {
+    let repository = state
+        .media_files
+        .as_ref()
+        .ok_or_else(|| HttpError::internal("media repository is unavailable"))?;
+    let session_id = params
+        .get("SessionID")
+        .or_else(|| params.get("session_id"))
+        .ok_or_else(|| HttpError {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_upload",
+            message: "SessionID is required".to_string(),
+        })?;
+    let file_id = params
+        .iter()
+        .find(|(key, _)| key.to_ascii_lowercase().ends_with("fileid"))
+        .map(|(_, value)| value.as_str());
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let result = if content_type.starts_with("multipart/form-data") {
+        let (bytes, field_content_type) = read_multipart_image(request).await?;
+        save_picture_upload(
+            &state.media,
+            repository,
+            &token,
+            session_id,
+            file_id,
+            &field_content_type,
+            bytes,
+        )
+        .await?
+    } else if content_type.starts_with("image/") {
+        let bytes = Bytes::from_request(request, &())
+            .await
+            .map_err(|error| HttpError::bad_request(format!("invalid upload body: {error}")))?;
+        save_picture_upload(
+            &state.media,
+            repository,
+            &token,
+            session_id,
+            file_id,
+            &content_type,
+            bytes,
+        )
+        .await?
+    } else {
+        return Err(HttpError::bad_request(
+            "Unsupported Content-Type. Use multipart/form-data or image/*",
+        ));
+    };
+    publish_picture_event(&state, &result).await?;
+    Ok(Json(result))
+}
+
+async fn read_multipart_image(request: Request) -> Result<(Bytes, String), HttpError> {
+    let mut multipart = Multipart::from_request(request, &())
+        .await
+        .map_err(|error| HttpError::bad_request(format!("invalid multipart body: {error}")))?;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| HttpError::bad_request(format!("invalid multipart field: {error}")))?
+    {
+        let content_type = field.content_type().unwrap_or_default().to_string();
+        if !content_type.starts_with("image/") {
+            continue;
+        }
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|error| HttpError::bad_request(format!("invalid image field: {error}")))?;
+        return Ok((bytes, content_type));
+    }
+    Err(HttpError::bad_request("multipart image field is required"))
+}
+
+async fn publish_picture_event(
+    state: &HttpState,
+    result: &PictureUploadResult,
+) -> Result<(), HttpError> {
+    let event_id = format!("picture-uploaded-{}", result.session_id);
+    let topic = "guard.picture.uploaded".to_string();
+    let payload = base::serde_json::to_vec(result)
+        .map_err(|_| HttpError::internal("encode picture upload event failed"))?;
+    let inserted = state.api.store().insert_event_once(EventRecord {
+        event_id: event_id.clone(),
+        topic: topic.clone(),
+        priority: 2,
+        payload: payload.clone(),
+    })?;
+    if inserted {
+        if let Some(forwarder) = &state.event_forwarder {
+            forwarder.forward(event_id, topic, payload).await?;
+        }
+    }
+    Ok(())
+}
+
 async fn outbox_records(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1528,6 +1646,14 @@ impl HttpError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal",
+            message: message.into(),
+        }
+    }
+
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "bad_request",
             message: message.into(),
         }
     }

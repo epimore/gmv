@@ -13,12 +13,7 @@ use base::tokio_util::sync::CancellationToken;
 use gmv_domain::info::res::Resp;
 use std::net::SocketAddr;
 
-mod api;
-pub mod client;
-#[cfg(debug_assertions)]
-mod doc;
 mod edge;
-mod hook;
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
@@ -117,16 +112,7 @@ impl Http {
 }
 
 pub(crate) fn routes() -> Router {
-    let mut app = Router::new()
-        .nest("/edge", edge::routes())
-        .nest("/hook", hook::routes())
-        .nest("/api", api::routes());
-    #[cfg(debug_assertions)]
-    {
-        use utoipa_swagger_ui::SwaggerUi;
-        app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
-    }
-    app
+    Router::new().nest("/edge", edge::routes())
 }
 
 pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {
@@ -135,10 +121,6 @@ pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {
         GlobalError::SysErr(_) => BaseErrorCode::Internal.code(),
     };
     Resp::build_failed_code(code, err.out_err().into_owned())
-}
-
-pub fn res_by_code<T: Serialize>(code: BaseErrorCode) -> Resp<T> {
-    Resp::build_failed_code(code.code(), code.out_msg())
 }
 
 pub fn get_gmv_token(headers: HeaderMap) -> GlobalResult<String> {

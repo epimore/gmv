@@ -49,6 +49,12 @@ pub struct NodeEventSender {
 
 impl NodeEventSender {
     pub fn try_send(&self, event: NodeEvent) -> Result<(), mpsc::error::TrySendError<NodeEvent>> {
+        base::log::info!(
+            "guard event enqueue: event_id={}, topic={}, payload_bytes={}",
+            event.event_id,
+            event.topic,
+            event.payload.len()
+        );
         self.tx.try_send(event)
     }
 }
@@ -133,6 +139,12 @@ async fn run_connection(
                 tx.send(message).await?;
             }
             Some(event) = event_rx.recv() => {
+                base::log::info!(
+                    "guard event stream send: event_id={}, topic={}, payload_bytes={}",
+                    event.event_id,
+                    event.topic,
+                    event.payload.len()
+                );
                 *sequence = sequence.saturating_add(1);
                 let message = NodeToGuardMessage {
                     identity: identity.clone(),

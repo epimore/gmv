@@ -2,7 +2,10 @@ use base_db::sqlx::SqlitePool;
 
 use crate::core::{GuardError, GuardResult};
 use crate::store::migration::MIGRATIONS;
-use crate::store::model::{EventRecord, OutboxRecord, OutboxRow, outbox_from_row};
+use crate::store::model::{
+    EventRecord, GmvRecordInsert, MediaFileInsert, OutboxRecord, OutboxRow, RecordFileInsert,
+    outbox_from_row,
+};
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -69,6 +72,112 @@ impl SqliteStore {
         if result.rows_affected() == 0 {
             return Err(GuardError::NotFound(format!("outbox {}", record.outbox_id)));
         }
+        Ok(())
+    }
+
+    pub async fn insert_outbox_records(&self, records: &[OutboxRecord]) -> GuardResult<()> {
+        let mut tx = self.pool.begin().await.map_err(database_error)?;
+        for record in records {
+            insert_outbox_sqlite(&mut tx, record).await?;
+        }
+        tx.commit().await.map_err(database_error)?;
+        Ok(())
+    }
+
+    pub async fn running_record_exists(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<bool> {
+        let row: Option<(i32,)> = base_db::sqlx::query_as(
+            "SELECT 1 FROM GMV_RECORD WHERE STATE=0 AND DEVICE_ID=? AND CHANNEL_ID=? LIMIT 1",
+        )
+        .bind(device_id)
+        .bind(channel_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(database_error)?;
+        Ok(row.is_some())
+    }
+
+    pub async fn insert_record(&self, record: &GmvRecordInsert) -> GuardResult<()> {
+        base_db::sqlx::query("INSERT INTO GMV_RECORD(BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,LT,STREAM_APP_NAME) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(&record.biz_id)
+            .bind(&record.device_id)
+            .bind(&record.channel_id)
+            .bind(&record.user_id)
+            .bind(&record.st)
+            .bind(&record.et)
+            .bind(i64::from(record.speed))
+            .bind(&record.ct)
+            .bind(i64::from(record.state))
+            .bind(&record.lt)
+            .bind(&record.stream_app_name)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    pub async fn finish_record(&self, file: &RecordFileInsert) -> GuardResult<bool> {
+        let row: Option<(String, String, String, String)> = base_db::sqlx::query_as(
+            "SELECT DEVICE_ID,CHANNEL_ID,ST,ET FROM GMV_RECORD WHERE BIZ_ID=?",
+        )
+        .bind(&file.biz_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(database_error)?;
+        let Some((device_id, channel_id, st, et)) = row else {
+            return Ok(false);
+        };
+        let state = record_state(&st, &et, file.file_size, file.record_duration_sec);
+        base_db::sqlx::query("UPDATE GMV_RECORD SET STATE=?,LT=? WHERE BIZ_ID=?")
+            .bind(i64::from(state))
+            .bind(&file.now)
+            .bind(&file.biz_id)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        self.insert_media_file(&MediaFileInsert {
+            id: crate::media::next_file_id(),
+            device_id,
+            channel_id,
+            biz_time: file.now.clone(),
+            biz_id: file.biz_id.clone(),
+            file_type: 1,
+            file_size: file.file_size,
+            file_name: file.biz_id.clone(),
+            file_format: file.file_format.clone(),
+            dir_path: file.dir_path.clone(),
+            abs_path: file.abs_path.clone(),
+            note: None,
+            is_del: 0,
+            create_time: file.now.clone(),
+        })
+        .await?;
+        Ok(true)
+    }
+
+    pub async fn insert_media_file(&self, file: &MediaFileInsert) -> GuardResult<()> {
+        let file_size = i64::try_from(file.file_size).unwrap_or(i64::MAX);
+        base_db::sqlx::query("INSERT INTO GMV_FILE_INFO(ID,DEVICE_ID,CHANNEL_ID,BIZ_TIME,BIZ_ID,FILE_TYPE,FILE_SIZE,FILE_NAME,FILE_FORMAT,DIR_PATH,ABS_PATH,NOTE,IS_DEL,CREATE_TIME) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(file.id)
+            .bind(&file.device_id)
+            .bind(&file.channel_id)
+            .bind(&file.biz_time)
+            .bind(&file.biz_id)
+            .bind(file.file_type)
+            .bind(file_size)
+            .bind(&file.file_name)
+            .bind(&file.file_format)
+            .bind(&file.dir_path)
+            .bind(&file.abs_path)
+            .bind(&file.note)
+            .bind(file.is_del)
+            .bind(&file.create_time)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
         Ok(())
     }
 
@@ -365,4 +474,26 @@ fn validate_records(event: &EventRecord, records: &[OutboxRecord]) -> GuardResul
 
 fn database_error(error: impl std::fmt::Display) -> GuardError {
     GuardError::Conflict(format!("outbox database operation failed: {error}"))
+}
+
+fn record_state(st: &str, et: &str, file_size: u64, record_duration_sec: u64) -> i32 {
+    if file_size == 0 || record_duration_sec == 0 {
+        return 3;
+    }
+    let total_secs = parse_datetime(et)
+        .zip(parse_datetime(st))
+        .map(|(end, start)| end.signed_duration_since(start).num_seconds())
+        .unwrap_or_default();
+    if total_secs <= 0 {
+        return 3;
+    }
+    let per = i64::try_from(record_duration_sec)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1000)
+        / total_secs;
+    if per > 98 { 1 } else { 2 }
+}
+
+fn parse_datetime(value: &str) -> Option<base::chrono::NaiveDateTime> {
+    base::chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok()
 }

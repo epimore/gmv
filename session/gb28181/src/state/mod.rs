@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::sync::OnceLock;
-use url::Url;
 
 pub mod model;
 pub mod session;
@@ -17,7 +16,6 @@ pub mod session;
 #[conf(prefix = "server.alarm", check)]
 pub struct AlarmConf {
     pub enable: bool,
-    pub push_url: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u8,
 }
@@ -32,20 +30,6 @@ impl AlarmConf {
 
 impl CheckFromConf for AlarmConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
-        if self.enable {
-            if self.push_url.is_none() || self.push_url.as_ref().unwrap().is_empty() {
-                return Err(FieldCheckError::BizError(
-                    "server.alarm.push_url不能为空".to_string(),
-                ));
-            }
-
-            if Url::parse(self.push_url.as_ref().unwrap()).is_err() {
-                return Err(FieldCheckError::BizError(
-                    "server.alarm.push_url非有效的url地址".to_string(),
-                ));
-            }
-        }
-
         if self.priority == 0 || self.priority > 4 {
             return Err(FieldCheckError::BizError(
                 "server.alarm.priority必须为1|2|3|4".to_string(),
@@ -70,6 +54,7 @@ pub struct StreamNode {
     pub name: String,
     pub local_ip: Ipv4Addr,
     pub local_port: u16,
+    pub control_grpc_uri: String,
     pub pub_ip: Ipv4Addr,
     pub pub_port: u16,
 }

@@ -8,7 +8,11 @@ use crate::app_config::{DatabaseBackend, GuardAppConfig, MysqlSslMode as ConfigS
 use crate::auth::{Role, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
 use crate::outbox::OutboxRepository;
-use crate::store::{mysql::MysqlStore, sqlite::SqliteStore};
+use crate::store::{
+    model::{GmvRecordInsert, MediaFileInsert, RecordFileInsert},
+    mysql::MysqlStore,
+    sqlite::SqliteStore,
+};
 
 #[derive(Debug, Clone)]
 pub enum UserRepository {
@@ -62,6 +66,46 @@ impl UserRepository {
         match self {
             Self::Mysql(store) => store.revoke_ui_sessions(username).await,
             Self::Sqlite(store) => store.revoke_ui_sessions(username).await,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum MediaRepository {
+    Mysql(MysqlStore),
+    Sqlite(SqliteStore),
+}
+
+impl MediaRepository {
+    pub async fn running_record_exists(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<bool> {
+        match self {
+            Self::Mysql(store) => store.running_record_exists(device_id, channel_id).await,
+            Self::Sqlite(store) => store.running_record_exists(device_id, channel_id).await,
+        }
+    }
+
+    pub async fn insert_record(&self, record: &GmvRecordInsert) -> GuardResult<()> {
+        match self {
+            Self::Mysql(store) => store.insert_record(record).await,
+            Self::Sqlite(store) => store.insert_record(record).await,
+        }
+    }
+
+    pub async fn finish_record(&self, file: &RecordFileInsert) -> GuardResult<bool> {
+        match self {
+            Self::Mysql(store) => store.finish_record(file).await,
+            Self::Sqlite(store) => store.finish_record(file).await,
+        }
+    }
+
+    pub async fn insert_media_file(&self, file: &MediaFileInsert) -> GuardResult<()> {
+        match self {
+            Self::Mysql(store) => store.insert_media_file(file).await,
+            Self::Sqlite(store) => store.insert_media_file(file).await,
         }
     }
 }
@@ -167,6 +211,13 @@ impl PersistentStore {
         match self {
             Self::Mysql(store) => OutboxRepository::from(store.clone()),
             Self::Sqlite(store) => OutboxRepository::from(store.clone()),
+        }
+    }
+
+    pub fn media_repository(&self) -> MediaRepository {
+        match self {
+            Self::Mysql(store) => MediaRepository::Mysql(store.clone()),
+            Self::Sqlite(store) => MediaRepository::Sqlite(store.clone()),
         }
     }
 }

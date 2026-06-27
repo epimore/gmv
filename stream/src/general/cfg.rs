@@ -42,8 +42,6 @@ pub struct ServerConf {
     pub rtcp_port: u16,
     #[serde(default = "default_http_port")]
     pub http_port: u16,
-    #[serde(default = "default_hook_uri")]
-    pub hook_uri: String,
     #[serde(default)]
     pub hook_rpc_uri: String,
     #[serde(default = "default_proxy_addr")]
@@ -53,11 +51,6 @@ serde_default!(default_name, String, "stream-node-1".to_string());
 serde_default!(default_rtp_port, u16, 18568);
 serde_default!(default_rtcp_port, u16, 18569);
 serde_default!(default_http_port, u16, 18570);
-serde_default!(
-    default_hook_uri,
-    String,
-    "http://127.0.0.1:18567".to_string()
-);
 serde_default!(default_proxy_addr, String, "http:-1".to_string());
 impl ServerConf {
     pub fn init_by_conf() -> Self {

@@ -4,7 +4,18 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult};
+use base::serde::{Serialize, de::DeserializeOwned};
+use base::serde_json;
+use base::tokio::sync::{mpsc, oneshot};
 use base_rpc::RpcChannelConfig;
+use gmv_domain::info::media_info::MediaConfig;
+use gmv_domain::info::media_info_ext::MediaMap;
+use gmv_domain::info::obj::{
+    StreamInfoQo, StreamKey, StreamRecordInfo, TalkAnswerReq, TalkCloseReq, TalkOpenReq,
+};
+use gmv_domain::info::output::OutputEnum;
 use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
@@ -17,8 +28,13 @@ use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
     GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, QueryStreamRequest,
     QueryStreamResponse, StartReceiveRequest, StartReceiveResponse, StopReceiveRequest,
-    StopReceiveResponse, StreamState, stream_control_server::StreamControl,
+    StopReceiveResponse, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState,
+    StreamUnitResponse, stream_control_server::StreamControl,
 };
+
+use crate::io::local::mp4::Mp4OutputInnerEvent;
+use crate::io::talk::TalkManager;
+use crate::state::register::Register;
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -28,15 +44,25 @@ pub fn init_guard_event_sender(sender: NodeEventSender) {
 }
 
 pub fn publish_guard_event(topic: &str, payload: impl Into<Vec<u8>>) {
+    let payload = payload.into();
     let Some(sender) = GUARD_EVENT_SENDER.get() else {
+        base::log::warn!(
+            "guard event outbound skipped: topic={topic}, reason=event_sender_not_initialized, payload_bytes={}",
+            payload.len()
+        );
         return;
     };
     let sequence = GUARD_EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let event_id = format!("stream-event-{sequence}");
+    base::log::info!(
+        "guard event outbound: event_id={event_id}, topic={topic}, payload_bytes={}",
+        payload.len()
+    );
     let event = NodeEvent {
-        event_id: format!("stream-event-{sequence}"),
+        event_id,
         topic: topic.to_string(),
         priority: EventPriority::P1 as i32,
-        payload: payload.into(),
+        payload,
     };
     if let Err(error) = sender.try_send(event) {
         base::log::warn!("drop guard stream event {topic}: {error}");
@@ -245,6 +271,127 @@ impl StreamControl for StreamControlRpc {
             control.get_playback_endpoints(request.into_inner()),
         ))
     }
+
+    async fn init_media(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        let mut control = self
+            .inner
+            .lock()
+            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        Ok(tonic::Response::new(
+            control.init_media(request.into_inner()),
+        ))
+    }
+
+    async fn init_media_ext(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(stream_unit_response(
+            decode_payload::<MediaMap>(&request.into_inner().payload_json).and_then(|value| {
+                Register::init_media_ext(value.ssrc, value.ext).map_err(detail_from_error)
+            }),
+        )))
+    }
+
+    async fn stream_online(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        Ok(tonic::Response::new(
+            match decode_payload::<StreamKey>(&request.into_inner().payload_json) {
+                Ok(value) => StreamBoolResponse {
+                    value: Register::is_exist(value),
+                    error: None,
+                },
+                Err(error) => StreamBoolResponse {
+                    value: false,
+                    error: Some(error),
+                },
+            },
+        ))
+    }
+
+    async fn record_info(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
+        Ok(tonic::Response::new(
+            record_info_response(request.into_inner()).await,
+        ))
+    }
+
+    async fn close_output_by_ssrc(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(stream_unit_response(
+            decode_payload::<StreamInfoQo>(&request.into_inner().payload_json)
+                .and_then(close_output_by_ssrc),
+        )))
+    }
+
+    async fn talk_open(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
+        Ok(tonic::Response::new(
+            match decode_payload::<TalkOpenReq>(&request.into_inner().payload_json) {
+                Ok(value) => match TalkManager::open(value).await {
+                    Ok(response) => json_response(&response),
+                    Err(error) => StreamJsonResponse {
+                        payload_json: vec![],
+                        error: Some(detail_from_error(error)),
+                    },
+                },
+                Err(error) => StreamJsonResponse {
+                    payload_json: vec![],
+                    error: Some(error),
+                },
+            },
+        ))
+    }
+
+    async fn talk_answer(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(stream_unit_response(
+            decode_payload::<TalkAnswerReq>(&request.into_inner().payload_json)
+                .and_then(|value| TalkManager::answer(value).map_err(detail_from_error)),
+        )))
+    }
+
+    async fn talk_close(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(stream_unit_response(
+            decode_payload::<TalkCloseReq>(&request.into_inner().payload_json).map(|value| {
+                TalkManager::close(&value.talk_id);
+            }),
+        )))
+    }
+
+    async fn talk_online(
+        &self,
+        request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        Ok(tonic::Response::new(
+            match decode_payload::<TalkCloseReq>(&request.into_inner().payload_json) {
+                Ok(value) => StreamBoolResponse {
+                    value: TalkManager::is_online(&value.talk_id),
+                    error: None,
+                },
+                Err(error) => StreamBoolResponse {
+                    value: false,
+                    error: Some(error),
+                },
+            },
+        ))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +400,7 @@ pub struct StreamControlAdapter {
     receive_endpoint: Endpoint,
     streams: HashMap<String, StreamRuntime>,
     outputs: HashMap<String, String>,
+    media_tx: Option<mpsc::Sender<u32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -270,7 +418,13 @@ impl StreamControlAdapter {
             receive_endpoint,
             streams: HashMap::new(),
             outputs: HashMap::new(),
+            media_tx: None,
         }
+    }
+
+    pub fn with_media_tx(mut self, media_tx: mpsc::Sender<u32>) -> Self {
+        self.media_tx = Some(media_tx);
+        self
     }
 
     pub fn start_receive(&mut self, request: StartReceiveRequest) -> StartReceiveResponse {
@@ -398,6 +552,31 @@ impl StreamControlAdapter {
         }
     }
 
+    pub fn init_media(&mut self, request: StreamJsonRequest) -> StreamUnitResponse {
+        let media_tx = match self.media_tx.as_ref() {
+            Some(media_tx) => media_tx,
+            None => {
+                return StreamUnitResponse {
+                    error: Some(error(
+                        "media_tx_missing",
+                        "stream media tx is not initialized",
+                    )),
+                };
+            }
+        };
+        let result = decode_payload::<MediaConfig>(&request.payload_json)
+            .and_then(|value| Register::init_media(value).map_err(detail_from_error))
+            .and_then(|ssrc| {
+                media_tx.try_send(ssrc).map_err(|err| {
+                    error(
+                        "media_tx_busy",
+                        &format!("send media init event failed: {err}"),
+                    )
+                })
+            });
+        stream_unit_response(result)
+    }
+
     pub fn resource_snapshot(&self) -> NodeResourceSnapshot {
         NodeResourceSnapshot {
             full: true,
@@ -436,6 +615,95 @@ impl StreamControlAdapter {
 
     fn playback_endpoints(&self) -> Vec<Endpoint> {
         vec![self.receive_endpoint.clone()]
+    }
+}
+
+fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ErrorDetail> {
+    serde_json::from_slice(payload).map_err(|err| {
+        error(
+            "invalid_payload",
+            &format!("decode stream control payload failed: {err}"),
+        )
+    })
+}
+
+fn json_response<T: Serialize>(value: &T) -> StreamJsonResponse {
+    match serde_json::to_vec(value) {
+        Ok(payload_json) => StreamJsonResponse {
+            payload_json,
+            error: None,
+        },
+        Err(err) => StreamJsonResponse {
+            payload_json: vec![],
+            error: Some(error(
+                "encode_failed",
+                &format!("encode stream control response failed: {err}"),
+            )),
+        },
+    }
+}
+
+fn stream_unit_response(result: Result<(), ErrorDetail>) -> StreamUnitResponse {
+    match result {
+        Ok(()) => StreamUnitResponse { error: None },
+        Err(error) => StreamUnitResponse { error: Some(error) },
+    }
+}
+
+fn detail_from_error(error_value: GlobalError) -> ErrorDetail {
+    error("stream_control_failed", &error_value.to_string())
+}
+
+async fn record_info_response(request: StreamJsonRequest) -> StreamJsonResponse {
+    let info = match decode_payload::<StreamInfoQo>(&request.payload_json) {
+        Ok(info) => info,
+        Err(error) => {
+            return StreamJsonResponse {
+                payload_json: vec![],
+                error: Some(error),
+            };
+        }
+    };
+    match info.output_enum {
+        OutputEnum::LocalMp4 => {
+            let (tx, rx) = oneshot::channel();
+            if Register::try_publish_mpsc::<Mp4OutputInnerEvent>(
+                info.ssrc,
+                Mp4OutputInnerEvent::StoreInfo(tx),
+            )
+            .is_ok()
+            {
+                match rx.await {
+                    Ok(record) => json_response(&record),
+                    Err(err) => StreamJsonResponse {
+                        payload_json: vec![],
+                        error: Some(error(
+                            "record_info_closed",
+                            &format!("record info response channel closed: {err}"),
+                        )),
+                    },
+                }
+            } else {
+                StreamJsonResponse {
+                    payload_json: vec![],
+                    error: Some(error("record_not_found", "record output is not available")),
+                }
+            }
+        }
+        _ => StreamJsonResponse {
+            payload_json: vec![],
+            error: Some(error("record_not_found", "record output is not available")),
+        },
+    }
+}
+
+fn close_output_by_ssrc(info: StreamInfoQo) -> Result<(), ErrorDetail> {
+    match info.output_enum {
+        OutputEnum::LocalMp4 => {
+            Register::try_publish_mpsc::<Mp4OutputInnerEvent>(info.ssrc, Mp4OutputInnerEvent::Close)
+                .map_err(detail_from_error)
+        }
+        _ => Ok(()),
     }
 }
 

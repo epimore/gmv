@@ -1,5 +1,6 @@
 use crate::gb::SessionConf;
 use crate::http::Http;
+use crate::storage::db::{self, SessionDatabaseBackend};
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 
 use crate::guard_integration::{
     SessionControlAdapter, SessionControlRpc, SessionGuardNode, SessionHookRpc,
+    init_guard_event_sender,
 };
 use crate::register::core::Register;
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
@@ -51,6 +53,13 @@ impl
             http: Http::get_http_by_conf(),
         };
         logger::Logger::init()?;
+        match db::backend() {
+            SessionDatabaseBackend::Mysql => info!("session database backend: mysql"),
+            SessionDatabaseBackend::Sqlite => {
+                let _ = db::sqlite_pool();
+                info!("session database backend: sqlite");
+            }
+        }
         let http_listener = app_info.http.listen_http_server()?;
         let tu = app_info.session_conf.listen_gb_server()?;
         banner(
@@ -127,7 +136,9 @@ impl
                     Register::active_device_count().to_string(),
                 )])
             });
-            NodeReporter::spawn(reporter, network_rt.cancel.clone());
+            let (_reporter, event_sender) =
+                NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());
+            init_guard_event_sender(event_sender);
             match http.run(http_listener, network_rt.cancel.clone()).await {
                 Ok(()) => warn!(
                     "HTTP service returned; cancellation_requested={}",
