@@ -1,7 +1,0 @@
-[workspace]
-resolver = "2"
-members = [
-    "gb28181",
-    "onvif",
-    "core",
-]
