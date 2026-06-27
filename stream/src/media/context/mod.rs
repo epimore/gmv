@@ -21,13 +21,13 @@ use base::bytes::BytesMut;
 use base::chrono::Local;
 use base::exception::typed::common::MessageBusError;
 use base::exception::{BizError, GlobalError, GlobalResult};
+use gmv_domain::info::media_info_ext::MediaExt;
 use log::{error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
     AV_PKT_FLAG_KEY, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, av_rescale_q,
 };
 use rsmpeg::ffi::{AVMediaType, AVPacket};
-use shared::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::Arc;

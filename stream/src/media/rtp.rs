@@ -3,7 +3,7 @@ use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
-use shared::info::media_info_ext::MediaExt;
+use gmv_domain::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
 use std::ptr;
 use std::time::{Duration, Instant};

@@ -14,15 +14,15 @@ use base::serde_json::json;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio::sync::oneshot;
 use futures_util::StreamExt;
-use shared::info::media_info::MediaConfig;
-use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::{
+use gmv_domain::info::media_info::MediaConfig;
+use gmv_domain::info::media_info_ext::MediaMap;
+use gmv_domain::info::obj::{
     CLOSE_OUTPUT, LISTEN_MEDIA, RECORD_INFO, SDP_MEDIA, STREAM_ONLINE, StreamInfoQo, StreamKey,
     StreamRecordInfo, TALK_ANSWER, TALK_CLOSE, TALK_INPUT_PATH, TALK_ONLINE, TALK_OPEN,
     TalkAnswerReq, TalkCloseReq, TalkOpenReq, TalkOpenResp,
 };
-use shared::info::output::OutputEnum;
-use shared::info::res::{EmptyResponse, Resp};
+use gmv_domain::info::output::OutputEnum;
+use gmv_domain::info::res::{EmptyResponse, Resp};
 use std::collections::HashMap;
 
 pub fn routes(tx: Sender<u32>) -> Router {

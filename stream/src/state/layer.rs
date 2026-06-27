@@ -1,11 +1,11 @@
 pub mod output_layer {
-    use shared::impl_close;
-    use shared::info::output::{
+    use gmv_domain::impl_close;
+    use gmv_domain::info::output::{
         DashFmp4Output, DashMp4Output, Gb28181FrameOutput, Gb28181PsOutput, HlsFmp4Output,
         HlsTsOutput, HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputKind, RtmpOutput,
         RtspOutput, WebRtcOutput,
     };
-    use shared::paste::paste;
+    use gmv_domain::paste::paste;
 
     pub struct OutputLayer {
         pub http_flv: Option<HttpFlvLayer>,
@@ -279,9 +279,9 @@ pub mod converter_layer {
     use crate::state::layer::codec_layer::CodecLayer;
     use crate::state::layer::filter_layer::FilterLayer;
     use crate::state::layer::muxer_layer::MuxerLayer;
-    use shared::info::codec::Codec;
-    use shared::info::filter::Filter;
-    use shared::info::output::OutputKind;
+    use gmv_domain::info::codec::Codec;
+    use gmv_domain::info::filter::Filter;
+    use gmv_domain::info::output::OutputKind;
 
     #[derive(Clone)]
     pub struct ConverterLayer {
@@ -304,7 +304,7 @@ pub mod converter_layer {
     }
 }
 pub mod filter_layer {
-    use shared::info::filter::{Capture, Filter};
+    use gmv_domain::info::filter::{Capture, Filter};
 
     #[derive(Clone)]
     pub struct CaptureLayer {}
@@ -350,8 +350,8 @@ pub mod muxer_layer {
     use base::exception::{GlobalError, GlobalResult};
     use base::log::error;
     use base::tokio::sync::broadcast;
-    use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
-    use shared::info::output::OutputKind;
+    use gmv_domain::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
+    use gmv_domain::info::output::OutputKind;
     use std::sync::Arc;
 
     #[derive(Clone, Default)]
@@ -586,7 +586,7 @@ pub mod muxer_layer {
     }
 }
 pub mod codec_layer {
-    use shared::info::codec::Codec;
+    use gmv_domain::info::codec::Codec;
 
     #[derive(Clone)]
     pub enum CodecLayer {

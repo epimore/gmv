@@ -1,8 +1,8 @@
 use crate::io::http::api;
 use crate::io::http::out;
-use shared::info::media_info::MediaConfig;
-use shared::info::media_info_ext::MediaMap;
-use shared::info::obj::*;
+use gmv_domain::info::media_info::MediaConfig;
+use gmv_domain::info::media_info_ext::MediaMap;
+use gmv_domain::info::obj::*;
 use utoipa::OpenApi;
 
 // 定义 OpenAPI 文档

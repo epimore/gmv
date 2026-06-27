@@ -9,7 +9,7 @@ use base::serde::Serialize;
 use base::tokio::net::TcpListener;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio_util::sync::CancellationToken;
-use shared::info::res::Resp;
+use gmv_domain::info::res::Resp;
 use std::net::SocketAddr;
 
 mod api;

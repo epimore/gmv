@@ -12,14 +12,14 @@ use base::tokio::sync::mpsc::Receiver;
 use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::{Semaphore, mpsc};
 use base::tokio_util::sync::CancellationToken;
+use gmv_domain::info::obj::{
+    BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
+    RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
+};
 use pretend::Pretend;
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
 use pretend_reqwest::Client;
-use shared::info::obj::{
-    BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
-    RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
-};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

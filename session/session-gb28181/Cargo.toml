@@ -1,0 +1,38 @@
+[package]
+name = "gmv-session-gb28181"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gmv-session-core = { path = "../session-core" }
+base_rpc = { path = "../../../pigs/base_rpc" }
+gmv-protocol = { path = "../../shared/protocol" }
+gmv-nodec = { path = "../../shared/nodec" }
+tonic = "0.14"
+gmv-domain = { path = "../../shared/domain" }
+#base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
+base = { path = "../../../pigs/base", features = ["net"] }
+base_db = { path = "../../../pigs/base_db" }
+#gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "b86c032e" }
+gmv_pjsip = { path = "../../../gmv_pjsip" }
+sqlx = { version = "0.9", default-features = false }
+quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
+encoding_rs = "0.8"
+sdp-types = "0.1"
+image = "0.25"
+pretend = "0.4"
+pretend-reqwest = { version = "0.4", default-features = false }
+axum = { version = "0.8", features = ["multipart"] }
+
+# 共享依赖（自动继承版本）
+anyhow.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+url.workspace = true
+uuid.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -1,0 +1,12 @@
+[package]
+name = "gmv-domain"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+#base = { git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
+base = { package = "base", path = "../../../pigs/base", features = ["net"] }
+paste = "1.0"
+
+# 共享依赖
+utoipa.workspace = true

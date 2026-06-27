@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use avai::guard_integration::{AvaiControlAdapter, AvaiControlRpc, AvaiGuardNode};
 use base::tokio_util::sync::CancellationToken;
-use gmv_node_client::{NodeReporter, NodeReporterConfig, generate_instance_id};
+use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::avai::v1::avai_control_server::AvaiControlServer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

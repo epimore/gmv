@@ -1,0 +1,79 @@
+log:
+  level: info
+  prefix: session
+  store_path: ./logs
+  specify:
+    - crate_name: gmv_session_gb28181::gb::io$  #信令及PJSIP日志
+      level: debug #日志等级
+      file_name_prefix: gb #日志文件前缀
+    - crate_name: gmv_session_gb28181::http  #请求日志
+      level: info #日志等级
+      file_name_prefix: web #日志文件前缀
+    - crate_name: sqlx  #sqlx用指全部,可sqlx::xxx
+      level: warn #日志等级
+
+
+http:
+  port: 18567
+  timeout: 30000   #请求超时 单位秒
+  server_name: GMV:SESSION
+  version: v0.2
+
+db:
+  mysql:
+    host_or_ip: 101.33.200.169
+    port: 33061
+    db_name: gmv
+    user: epimore
+    pass_crypto_enable: true #密码是否加密，默认不加密
+    pass: clRXVjIzU1VrS3BEMXZmNxp5adMgQy599aQeu0tHYg0= #密码的密文
+    attrs:
+      log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
+      log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
+      timezone: "+8:00"
+      charset: utf8mb4
+      ssl_level: 0 #加密等级,默认1,取值[0,1],0-不加密,1-可选加密：服务端支持则加密、否则不加密,2-必选加密,服务端不支持则不建立连接,3-满足2外还需验证主机名,4-满足2外还需验证CA证书
+      ssl_ca_crt_file: path/to/ca.crt #CA 证书 ssl_level:3 生效
+      ssl_ca_client_cert_file: path/to/client.crt #SSL 客户端证书 ssl_level:3 生效
+      ssl_ca_client_key_file: path/to/client.key #SSL 客户端密钥 ssl_level:3 生效
+    pool:
+      max_connections: 100  # 默认100,最大连接池值,即峰值时,操作进行排队
+      min_connections: 10   # 默认等同于max_size,最小连接池值,即空闲时也维持
+      connection_timeout: 8     # 默认8秒,获取连接超时时间(最大255)
+      max_lifetime: 1800     # 默认1800 秒,连接最大存活时间
+      idle_timeout: 60     # 默认60 秒,连接空闲回收
+      check_health: false    # 默认false,连接池维持健康测试
+server:
+  session:
+    domain: "5101000000" #服务端sip域
+    domain_id: "51010000002000000001" #服务端sip域ID
+    http_source: http://127.0.0.1:18567 #服务端http接口根路径地址，暴露给三方业务访问调用，默认为本机+http端口，如有反向代理则需修改
+    lan_ip: 172.18.38.186  # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
+    wan_ip: 192.168.0.22  # 公网IP
+    lan_port: 25600  #lan端口
+    wan_port: 25600  #wan端口
+  alarm:
+    enable: false #是否开启告警推送,默认true
+    push_url: http://127.0.0.1:38888/event/alarm #推送地址
+    priority: 4 #告警等级推送 1-4,默认最低4
+  videos:
+    storage_path: ./videos/down #云端录像存储地址,与流媒体服务共享存储【多节点分开部署则使用NFS共享文件系统】
+  pics:
+    push_url: http://192.168.0.22/edge/upload/picture
+#    push_url: https://epimore.cn/session/edge/upload/picture
+    num: 1 #连拍张数,最大10 默认1
+    interval: 1 #连拍间隔秒 max u8
+    storage_path: ./pics/raw  #图片存储地址
+    storage_format: jpeg  #图片存储格式：jpeg,bmp,farbfeld,gif,hdr,ico,exr,png,pnm,qoi,tga,tiff,avif,webp;默认jpeg
+  stream:
+    nodes:
+      - name: s1 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
+        pub_ip: 192.168.0.22 #流媒体服务接收rtp流的公网地址
+        pub_port: 18568 #流媒体服务接收rtp流的端口
+        local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
+        local_port: 18570 #节点局域网端口,用于流媒体服务之间通信
+#      - name: s2 #流媒体服务的标识,节点名称,唯一值,不能与其他节点重复
+#        pub_ip: 172.18.38.186 #流媒体服务接收rtp流的公网地址
+#        pub_port: 19568 #流媒体服务接收rtp流的端口
+#        local_ip: 127.0.0.1 #节点局域网IP,用于流媒体服务之间通信
+#        local_port: 19570 #节点局域网端口,用于流媒体服务之间通信

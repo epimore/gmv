@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: third_party/pjproject-${{ env.PJSIP_VERSION }}/dist
-          key: pjsip-${{ env.PJSIP_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('session/build_pjsip_bootstrap.sh') }}
+          key: pjsip-${{ env.PJSIP_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('session/session-gb28181/build_pjsip_bootstrap.sh') }}
 
       # =========================
       # Cache Cargo

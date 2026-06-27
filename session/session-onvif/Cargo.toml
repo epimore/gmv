@@ -1,0 +1,14 @@
+[package]
+name = "gmv-session-onvif"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gmv-session-core = { path = "../session-core" }
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

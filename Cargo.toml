@@ -1,13 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "session",
-    "shared",
+    "session/session-gb28181",
+    "session/session-core",
+    "session/session-onvif",
+    "shared/domain",
     "shared/protocol",
+    "shared/nodec",
     "stream",
     "avai",
     "guard",
-    "shared/node-client",
 ]
 
 [workspace.package]

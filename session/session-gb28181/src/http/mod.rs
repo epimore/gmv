@@ -1,0 +1,162 @@
+use axum::Router;
+use axum::body::Body;
+use axum::http::{HeaderMap, HeaderName, StatusCode};
+use axum::response::Response;
+use base::cfg_lib::conf;
+use base::err::{BaseErrorCode, CodeOutErr};
+use base::exception::{BizError, GlobalError, GlobalResult, GlobalResultExt};
+use base::log::{error, warn};
+use base::serde::{Deserialize, Serialize};
+use base::serde_default;
+use base::tokio::net::TcpListener;
+use base::tokio_util::sync::CancellationToken;
+use gmv_domain::info::res::Resp;
+use std::net::SocketAddr;
+
+mod api;
+pub mod client;
+#[cfg(debug_assertions)]
+mod doc;
+mod edge;
+mod hook;
+
+#[derive(Debug, Deserialize)]
+#[serde(crate = "base::serde")]
+#[conf(prefix = "http")]
+pub struct Http {
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_timeout")]
+    pub timeout: u16,
+    #[serde(default = "default_server_name")]
+    pub server_name: String,
+    #[serde(default = "default_version")]
+    pub version: String,
+}
+serde_default!(default_port, u16, 8080);
+serde_default!(default_timeout, u16, 30);
+serde_default!(
+    default_server_name,
+    String,
+    env!("CARGO_PKG_NAME").to_string()
+);
+serde_default!(
+    default_version,
+    String,
+    env!("CARGO_PKG_VERSION").to_string()
+);
+impl Http {
+    pub fn get_http_by_conf() -> Self {
+        Http::conf()
+    }
+
+    pub fn listen_http_server(&self) -> GlobalResult<std::net::TcpListener> {
+        let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", self.port))
+            .hand_log(|msg| error!("{msg}"))?;
+        Ok(listener)
+    }
+
+    pub async fn run(
+        &self,
+        listener: std::net::TcpListener,
+        cancel_token: CancellationToken,
+    ) -> GlobalResult<()> {
+        listener
+            .set_nonblocking(true)
+            .hand_log(|msg| error!("{msg}"))?;
+        let listener = TcpListener::from_std(listener).hand_log(|msg| error!("{msg}"))?;
+        // 创建包含所有路由的统一Router
+        let app = routes();
+        let shutdown_cancel = cancel_token.clone();
+        let server = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown_cancel.cancelled().await;
+            warn!("HTTP graceful shutdown requested by cancellation token");
+        });
+        match server.await.hand_log(|msg| error!("{msg}")) {
+            Ok(()) => {
+                warn!(
+                    "HTTP server exited; cancellation_requested={}",
+                    cancel_token.is_cancelled()
+                );
+                Ok(())
+            }
+            error => error,
+        }
+    }
+
+    /// 404 Not Found
+    pub fn res_404() -> Response<Body> {
+        Response::builder()
+            .header("Content-Type", "text/plain")
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("404 Not Found"))
+            .unwrap()
+    }
+
+    /// 401 Unauthorized
+    pub fn res_401() -> Response<Body> {
+        Response::builder()
+            .header("Content-Type", "text/plain")
+            .status(StatusCode::UNAUTHORIZED)
+            .body(Body::from("401 Unauthorized"))
+            .unwrap()
+    }
+
+    /// 500 Internal Server Error
+    pub fn res_500() -> Response<Body> {
+        Response::builder()
+            .header("Content-Type", "text/plain")
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("500 Internal Server Error"))
+            .unwrap()
+    }
+}
+
+pub(crate) fn routes() -> Router {
+    let mut app = Router::new()
+        .nest("/edge", edge::routes())
+        .nest("/hook", hook::routes())
+        .nest("/api", api::routes());
+    #[cfg(debug_assertions)]
+    {
+        use utoipa_swagger_ui::SwaggerUi;
+        app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
+    }
+    app
+}
+
+pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {
+    let code = match &err {
+        GlobalError::BizErr(BizError { code, .. }) => *code,
+        GlobalError::SysErr(_) => BaseErrorCode::Internal.code(),
+    };
+    Resp::build_failed_code(code, err.out_err().into_owned())
+}
+
+pub fn res_by_code<T: Serialize>(code: BaseErrorCode) -> Resp<T> {
+    Resp::build_failed_code(code.code(), code.out_msg())
+}
+
+pub fn get_gmv_token(headers: HeaderMap) -> GlobalResult<String> {
+    let header_name = HeaderName::from_static("gmv-token");
+    if let Some(value) = headers.get(&header_name) {
+        match value.to_str() {
+            Ok(token) => Ok(token.to_string()),
+            Err(_) => Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unauthorized.code(),
+                "Gmv-Token is invalid",
+                |msg| error!("{}", msg),
+            )),
+        }
+    } else {
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::Unauthorized.code(),
+            "Gmv-Token not found",
+            |msg| error!("{}", msg),
+        ))
+    }
+}

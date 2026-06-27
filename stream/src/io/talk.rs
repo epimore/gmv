@@ -19,10 +19,10 @@ use base::tokio::sync::mpsc;
 use base::tokio::sync::mpsc::error::TrySendError;
 use base::tokio::time::{self, Instant, MissedTickBehavior};
 use base::tokio_util::sync::CancellationToken;
-use parking_lot::Mutex;
-use shared::info::obj::{
+use gmv_domain::info::obj::{
     TALK_INPUT_PREFIX, TalkAnswerReq, TalkClosedEvent, TalkOpenReq, TalkOpenResp,
 };
+use parking_lot::Mutex;
 
 use crate::general::cfg::StreamConf;
 use crate::io::http::call::{HttpClient, HttpSession};

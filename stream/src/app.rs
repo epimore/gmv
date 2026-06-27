@@ -14,7 +14,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
 use crate::guard_integration::{StreamControlAdapter, StreamControlRpc, StreamGuardNode};
-use gmv_node_client::{NodeReporter, NodeReporterConfig, generate_instance_id};
+use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
 use gmv_protocol::stream::v1::stream_control_server::StreamControlServer;

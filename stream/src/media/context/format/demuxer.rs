@@ -3,6 +3,7 @@ use crate::media::{DEFAULT_IO_BUF_SIZE, rtp, rw, show_ffmpeg_error_msg};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
+use gmv_domain::info::media_info_ext::MediaExt;
 use rsmpeg::ffi::{
     AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722,
     AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263,
@@ -17,7 +18,6 @@ use rsmpeg::ffi::{
     avformat_find_stream_info, avformat_free_context, avformat_new_stream, avformat_open_input,
     avio_alloc_context, avio_context_free,
 };
-use shared::info::media_info_ext::MediaExt;
 use std::ffi::{CString, c_int, c_void};
 use std::ptr;
 use std::sync::Arc;

@@ -294,9 +294,9 @@ version = "2.1.0-release"
 dependencies = [
  "base",
  "base_rpc",
- "gmv-node-client",
+ "gmv-domain",
+ "gmv-nodec",
  "gmv-protocol",
- "shared",
  "tonic",
 ]
 
@@ -1493,7 +1493,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
-name = "gmv-node-client"
+name = "gmv-domain"
+version = "2.1.0-release"
+dependencies = [
+ "base",
+ "paste",
+ "utoipa",
+]
+
+[[package]]
+name = "gmv-nodec"
 version = "2.1.0-release"
 dependencies = [
  "base",
@@ -1518,7 +1527,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "gmv-session"
+name = "gmv-session-core"
+version = "2.1.0-release"
+
+[[package]]
+name = "gmv-session-gb28181"
 version = "2.1.0-release"
 dependencies = [
  "anyhow",
@@ -1527,8 +1540,10 @@ dependencies = [
  "base_db",
  "base_rpc",
  "encoding_rs",
- "gmv-node-client",
+ "gmv-domain",
+ "gmv-nodec",
  "gmv-protocol",
+ "gmv-session-core",
  "gmv_pjsip",
  "image",
  "parking_lot",
@@ -1538,7 +1553,6 @@ dependencies = [
  "regex",
  "reqwest",
  "sdp-types",
- "shared",
  "sqlx",
  "tonic",
  "tower",
@@ -1546,6 +1560,13 @@ dependencies = [
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
+]
+
+[[package]]
+name = "gmv-session-onvif"
+version = "2.1.0-release"
+dependencies = [
+ "gmv-session-core",
 ]
 
 [[package]]
@@ -1558,7 +1579,8 @@ dependencies = [
  "crossbeam-channel",
  "futures-core",
  "futures-util",
- "gmv-node-client",
+ "gmv-domain",
+ "gmv-nodec",
  "gmv-protocol",
  "log",
  "parking_lot",
@@ -1567,7 +1589,6 @@ dependencies = [
  "reqwest",
  "rsmpeg",
  "rtp-types",
- "shared",
  "socket2 0.6.4",
  "tokio-stream",
  "tonic",
@@ -1605,7 +1626,7 @@ dependencies = [
  "base",
  "base_db",
  "base_rpc",
- "gmv-node-client",
+ "gmv-nodec",
  "gmv-protocol",
  "parking_lot",
  "reqwest",
@@ -3654,15 +3675,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "digest 0.11.3",
-]
-
-[[package]]
-name = "shared"
-version = "2.1.0-release"
-dependencies = [
- "base",
- "paste",
- "utoipa",
 ]
 
 [[package]]

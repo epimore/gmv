@@ -7,9 +7,9 @@ authors.workspace = true
 [dependencies]
 base_rpc = { path = "../../pigs/base_rpc" }
 gmv-protocol = { path = "../shared/protocol" }
-gmv-node-client = { path = "../shared/node-client" }
+gmv-nodec = { path = "../shared/nodec" }
 tonic = "0.14"
-shared = { path = "../shared" }
+gmv-domain = { path = "../shared/domain" }
 #base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "0ac18e3", features = ["net"] }
 base = { package = "base", path = "../../pigs/base", features = ["net"] }
 #burn = "0.19"

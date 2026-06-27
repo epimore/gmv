@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use base::tokio_util::sync::CancellationToken;
 use base_rpc::RpcChannelConfig;
-use gmv_node_client::{NodeReporter, NodeReporterConfig};
+use gmv_nodec::{NodeReporter, NodeReporterConfig};
 use gmv_protocol::common::v1::{NodeIdentity, NodeKind, ResourceRef};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
 use gmv_protocol::guard::v1::guard_node_control_server::{

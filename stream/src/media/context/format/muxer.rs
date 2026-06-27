@@ -11,8 +11,8 @@ use crate::media::context::format::rtp::{RtpEncContext, RtpFrameContext, RtpPsCo
 use crate::media::context::format::ts::TsContext;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use base::serde::{Deserialize, Serialize};
+use gmv_domain::info::output::OutputEnum;
 use rsmpeg::ffi::{AVCodecID_AV_CODEC_ID_HEVC, AVMediaType_AVMEDIA_TYPE_VIDEO};
-use shared::info::output::OutputEnum;
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(crate = "base::serde")]

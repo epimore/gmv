@@ -1,15 +1,15 @@
 use crate::state::register::{DEFAULT_EXPIRES, Register};
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::info;
+use gmv_domain::info::obj::{
+    BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
+    StreamPlayInfo, StreamRecordInfo, StreamState, TalkClosedEvent, UnknownStreamEvent,
+};
+use gmv_domain::info::res::Resp;
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
 use pretend::{Json, Url};
 use pretend::{Pretend, Result, pretend};
-use shared::info::obj::{
-    BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
-    StreamPlayInfo, StreamRecordInfo, StreamState, TalkClosedEvent, UnknownStreamEvent,
-};
-use shared::info::res::Resp;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

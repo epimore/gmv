@@ -14,8 +14,8 @@ use base::log::error;
 use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
 use futures_util::stream;
-use shared::info::obj::{BaseStreamInfo, StreamPlayInfo};
-use shared::info::output::OutputEnum;
+use gmv_domain::info::obj::{BaseStreamInfo, StreamPlayInfo};
+use gmv_domain::info::output::OutputEnum;
 use std::net::SocketAddr;
 use std::sync::Arc;
 

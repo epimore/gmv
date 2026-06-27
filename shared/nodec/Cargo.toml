@@ -1,0 +1,14 @@
+[package]
+name = "gmv-nodec"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+base = { path = "../../../pigs/base" }
+base_rpc = { path = "../../../pigs/base_rpc" }
+gmv-protocol = { path = "../protocol" }
+sys_metrics = { path = "../../../pigs/sys_metrics" }
+tonic = "0.14"
+tokio-stream = "0.1"
+uuid = { version = "1.23", features = ["v7"] }
