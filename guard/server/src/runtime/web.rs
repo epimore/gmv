@@ -127,7 +127,7 @@ mod tests {
         WebServerConfig {
             bind_addr: bind_addr.parse().unwrap(),
             allowed_origins: vec!["http://127.0.0.1:8080".to_string()],
-            ui_dist_dir: PathBuf::from("guard-ui/dist"),
+            ui_dist_dir: PathBuf::from("guard/ui/dist"),
             tls: tls.then(|| WebTlsConfig {
                 certificate_path: PathBuf::from("server.pem"),
                 private_key_path: PathBuf::from("server-key.pem"),

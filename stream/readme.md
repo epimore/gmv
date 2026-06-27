@@ -34,7 +34,7 @@ cargo build --release --target x86_64-unknown-linux-gnu
   cross clean --target x86_64-unknown-linux-gnu
 ./compress.sh
 cat logs/gb_2025-11-25.log |grep 'REGISTER sip:34020000001117000219' | sed 's/ data=/\n/; s/\\r/\r/g; s/\\n/\n/g'
-run --package gmv-session-gb28181 --bin gmv-session-gb28181 -- start -c ./session/session-gb28181/config.yml
+run --package gmv-session-gb28181 --bin gmv-session-gb28181 -- start -c ./session/gb28181/config.yml
 1.文档、视频
 2.db默认明文，支持加密
 3.机器学习

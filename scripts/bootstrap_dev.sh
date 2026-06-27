@@ -10,7 +10,7 @@ echo "[1/3] build FFmpeg"
 bash ./stream/build_ffmpeg_min_bootstrap.sh
 
 echo "[2/3] build PJSIP"
-bash ./session/session-gb28181/build_pjsip_bootstrap.sh
+bash ./session/gb28181/build_pjsip_bootstrap.sh
 
 echo "[3/3] cargo fetch"
 cargo fetch

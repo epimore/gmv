@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "session/session-gb28181",
-    "session/session-core",
-    "session/session-onvif",
+    "guard/server",
+    "session/gb28181",
+    "session/core",
+    "session/onvif",
     "shared/domain",
     "shared/protocol",
     "shared/nodec",
     "stream",
     "avai",
-    "guard",
 ]
 
 [workspace.package]

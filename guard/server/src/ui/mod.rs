@@ -43,7 +43,7 @@ mod embedded {
     use rust_embed::RustEmbed;
 
     #[derive(RustEmbed)]
-    #[folder = "../guard-ui/dist/"]
+    #[folder = "../ui/dist/"]
     struct UiAssets;
 
     pub fn router() -> Router {

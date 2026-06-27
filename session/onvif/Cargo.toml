@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gmv-session-core = { path = "../session-core" }
+gmv-session-core = { path = "../core" }
 
 [lints.rust]
 unsafe_code = "warn"

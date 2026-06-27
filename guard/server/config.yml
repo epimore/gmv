@@ -32,7 +32,7 @@ guard:
       - http://127.0.0.1:5173
       - http://localhost:5173
       - http://127.0.0.1:8080
-    ui_dist_dir: guard-ui/dist
+    ui_dist_dir: guard/ui/dist
     tls:
       enabled: false
       certificate_path: ""
@@ -57,7 +57,7 @@ guard:
       idle_timeout_sec: 60
       check_health: false
     sqlite:
-      path: data/guard.db
+      path: guard/server/data/guard.db
     # mysql:
     #   host: 127.0.0.1
     #   port: 3306

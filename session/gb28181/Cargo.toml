@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gmv-session-core = { path = "../session-core" }
+gmv-session-core = { path = "../core" }
 base_rpc = { path = "../../../pigs/base_rpc" }
 gmv-protocol = { path = "../../shared/protocol" }
 gmv-nodec = { path = "../../shared/nodec" }

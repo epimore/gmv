@@ -1,0 +1,41 @@
+[package]
+name = "gmv-guard-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "guard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "guard"
+path = "src/main.rs"
+
+[dependencies]
+gmv-protocol = { path = "../../shared/protocol" }
+parking_lot.workspace = true
+thiserror = "2"
+uuid = { version = "1.23", features = ["v4", "v7"] }
+base = { path = "../../../pigs/base" }
+base_db = { path = "../../../pigs/base_db", default-features = false, features = ["mysql", "sqlite-bundled"] }
+base_rpc = { path = "../../../pigs/base_rpc" }
+tonic = "0.14"
+tokio-stream = "0.1"
+reqwest = { workspace = true, features = ["stream"] }
+url.workspace = true
+rumqttc.workspace = true
+axum.workspace = true
+axum-server = { workspace = true, features = ["tls-rustls"] }
+tower-http = { workspace = true, features = ["cors", "fs", "set-header"] }
+argon2.workspace = true
+rust-embed = { version = "8", optional = true }
+
+
+[dev-dependencies]
+gmv-nodec = { path = "../../shared/nodec" }
+tower = { workspace = true, features = ["util"] }
+
+[features]
+default = []
+embed-ui = ["dep:rust-embed"]

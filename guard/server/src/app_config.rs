@@ -538,7 +538,7 @@ fn default_origins() -> Vec<String> {
     vec!["http://127.0.0.1:8080".to_string()]
 }
 fn default_ui_dist_dir() -> PathBuf {
-    PathBuf::from("guard-ui/dist")
+    PathBuf::from("guard/ui/dist")
 }
 fn default_session_ttl_sec() -> u64 {
     8 * 60 * 60

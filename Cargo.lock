@@ -1502,6 +1502,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "gmv-guard-server"
+version = "2.1.0-release"
+dependencies = [
+ "argon2",
+ "axum",
+ "axum-server",
+ "base",
+ "base_db",
+ "base_rpc",
+ "gmv-nodec",
+ "gmv-protocol",
+ "parking_lot",
+ "reqwest",
+ "rumqttc",
+ "rust-embed",
+ "thiserror 2.0.18",
+ "tokio-stream",
+ "tonic",
+ "tower",
+ "tower-http",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "gmv-nodec"
 version = "2.1.0-release"
 dependencies = [
@@ -1614,31 +1639,6 @@ dependencies = [
  "cc",
  "libc",
  "pkg-config",
-]
-
-[[package]]
-name = "guard"
-version = "2.1.0-release"
-dependencies = [
- "argon2",
- "axum",
- "axum-server",
- "base",
- "base_db",
- "base_rpc",
- "gmv-nodec",
- "gmv-protocol",
- "parking_lot",
- "reqwest",
- "rumqttc",
- "rust-embed",
- "thiserror 2.0.18",
- "tokio-stream",
- "tonic",
- "tower",
- "tower-http",
- "url",
- "uuid",
 ]
 
 [[package]]

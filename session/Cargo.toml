@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "session-gb28181",
-    "session-onvif",
-    "session-core",
+    "gb28181",
+    "onvif",
+    "core",
 ]

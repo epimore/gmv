@@ -981,8 +981,7 @@ mod tests {
 
     fn init() {
         init_cfg(
-            "/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/session-gb28181/config.yml"
-                .to_string(),
+            "/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/gb28181/config.yml".to_string(),
         );
     }
 
