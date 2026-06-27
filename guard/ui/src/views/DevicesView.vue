@@ -31,14 +31,14 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'; import { ElMessage } from 'element-plus';
-import { ApiError, listDevices, sendPtz, simulatorStatus, startPreview, type SimDevice, type SimStatus } from '@/api/client';
+import { ApiError, listDevices, sendPtz, runtimeStatus, startPreview, type DeviceSummary, type RuntimeStatus } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue'; import OrbitChart from '@/components/OrbitChart.vue'; import StatusPill from '@/components/StatusPill.vue'; import { lineOption } from '@/data/charts'; import { useAuthStore } from '@/stores/auth';
-const auth = useAuthStore(); const rows = ref<SimDevice[]>([]); const selected = ref<SimDevice>(); const status = ref<SimStatus>(); const loading = ref(false); const unavailable = ref(false); const keyword = ref('');
+const auth = useAuthStore(); const rows = ref<DeviceSummary[]>([]); const selected = ref<DeviceSummary>(); const status = ref<RuntimeStatus>(); const loading = ref(false); const unavailable = ref(false); const keyword = ref('');
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 const filteredRows = computed(() => rows.value.filter((item) => !keyword.value || item.device_id.includes(keyword.value) || item.name.includes(keyword.value)));
 const deviceChart = computed(() => lineOption('通道数', rows.value.map((item) => item.channels.length), rows.value.map((item) => item.name), '#35f0a1'));
-async function load() { loading.value = true; unavailable.value = false; try { [rows.value, status.value] = await Promise.all([listDevices(), simulatorStatus()]); selected.value = rows.value[0]; } catch (error) { if (error instanceof ApiError && error.status === 501) { unavailable.value = true; rows.value = []; } else ElMessage.error(error instanceof Error ? error.message : '设备加载失败'); } finally { loading.value = false; } }
-async function preview() { const item = selected.value; const channel = item?.channels[0]; if (!item || !channel) return; try { await startPreview(item.device_id, channel, 'ui-' + Date.now()); ElMessage.success('预览已创建'); status.value = await simulatorStatus(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '预览失败'); } }
-async function ptz() { const item = selected.value; const channel = item?.channels[0]; if (!item || !channel) return; try { await sendPtz(item.device_id, channel); ElMessage.success('PTZ 命令已接受'); status.value = await simulatorStatus(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : 'PTZ 失败'); } }
+async function load() { loading.value = true; unavailable.value = false; try { [rows.value, status.value] = await Promise.all([listDevices(), runtimeStatus()]); selected.value = rows.value[0]; } catch (error) { if (error instanceof ApiError && error.status === 501) { unavailable.value = true; rows.value = []; } else ElMessage.error(error instanceof Error ? error.message : '设备加载失败'); } finally { loading.value = false; } }
+async function preview() { const item = selected.value; const channel = item?.channels[0]; if (!item || !channel) return; try { await startPreview(item.device_id, channel, 'ui-' + Date.now()); ElMessage.success('预览已创建'); status.value = await runtimeStatus(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '预览失败'); } }
+async function ptz() { const item = selected.value; const channel = item?.channels[0]; if (!item || !channel) return; try { await sendPtz(item.device_id, channel); ElMessage.success('PTZ 命令已接受'); status.value = await runtimeStatus(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : 'PTZ 失败'); } }
 onMounted(load);
 </script>

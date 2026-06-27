@@ -12,7 +12,6 @@ use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
 use guard::job::SystemJobService;
 use guard::operation::OperationService;
 use guard::outbox::OutboxRepository;
-use guard::sim::{EndpointMode, Simulator};
 use guard::store::InMemoryGuardStore;
 use guard::store::model::{EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState};
 use tower::ServiceExt;
@@ -27,13 +26,8 @@ fn password_hash() -> String {
         .to_string()
 }
 
-fn app(simulator_enabled: bool) -> (axum::Router, InMemoryGuardStore) {
+fn app() -> (axum::Router, InMemoryGuardStore) {
     let store = InMemoryGuardStore::default();
-    let simulator = simulator_enabled.then(|| {
-        let simulator = Simulator::new(store.clone(), EndpointMode::Multi);
-        simulator.bootstrap(1_000).unwrap();
-        simulator
-    });
     let hash = password_hash();
     let auth = AuthState::new(
         [
@@ -60,7 +54,6 @@ fn app(simulator_enabled: bool) -> (axum::Router, InMemoryGuardStore) {
             ),
             auth,
             outbox: OutboxRepository::from(store.clone()),
-            simulator,
             users: None,
             media: Default::default(),
             media_files: None,
@@ -124,11 +117,11 @@ fn write_request(path: &str, cookie: &str, csrf: &str, body: Value) -> Request<B
 }
 
 #[test]
-fn ui_api_completes_simulated_stream_ptz_ai_and_stop_loop() {
+fn ui_api_requires_registered_nodes_for_device_operations() {
     base::tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async {
-            let (app, _) = app(true);
+            let (app, _) = app();
             let (cookie, csrf) = login(&app, "operator").await;
             let (status, _, devices) = call(
                 &app,
@@ -139,164 +132,52 @@ fn ui_api_completes_simulated_stream_ptz_ai_and_stop_loop() {
             )
             .await;
             assert_eq!(status, StatusCode::OK);
-            let device_id = devices[0]["device_id"].as_str().unwrap();
+            assert_eq!(devices.as_array().unwrap().len(), 0);
 
-            let (status, _, stream) = call(
+            let (status, _, _) = call(
                 &app,
                 write_request(
-                    &format!("/api/v2/devices/{device_id}/preview"),
+                    "/api/v2/devices/34020000001320000001/preview",
                     &cookie,
                     &csrf,
                     json!({ "request_id": "ui-1", "channel_id": "ch-1" }),
                 ),
             )
             .await;
-            assert_eq!(status, StatusCode::ACCEPTED);
-            assert_eq!(stream["state"], "running");
-            assert!(stream["endpoint"].as_str().unwrap().contains(','));
-            let stream_id = stream["stream_id"].as_str().unwrap();
+            assert_eq!(status, StatusCode::NOT_FOUND);
 
-            let (status, _, ptz) = call(
+            let (status, _, _) = call(
                 &app,
                 write_request(
-                    &format!("/api/v2/devices/{device_id}/ptz"),
+                    "/api/v2/devices/34020000001320000001/ptz",
                     &cookie,
                     &csrf,
                     json!({ "channel_id": "ch-1" }),
                 ),
             )
             .await;
-            assert_eq!(status, StatusCode::OK);
-            assert_eq!(ptz["count"], 1);
-
-            let (status, _, task) = call(
-                &app,
-                write_request(
-                    "/api/v2/ai/tasks",
-                    &cookie,
-                    &csrf,
-                    json!({ "request_id": "ui-ai-1", "stream_id": stream_id, "model": "vehicle" }),
-                ),
-            )
-            .await;
-            assert_eq!(status, StatusCode::ACCEPTED);
-            let task_id = task["task_id"].as_str().unwrap();
-            assert_eq!(task["state"], "running");
-
-            assert_eq!(
-                call(
-                    &app,
-                    write_request(
-                        &format!("/api/v2/ai/tasks/{task_id}/cancel"),
-                        &cookie,
-                        &csrf,
-                        json!({}),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
-            assert_eq!(
-                call(
-                    &app,
-                    write_request(
-                        &format!("/api/v2/streams/{stream_id}/stop"),
-                        &cookie,
-                        &csrf,
-                        json!({}),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
+            assert_eq!(status, StatusCode::NOT_FOUND);
         });
 }
 
 #[test]
-fn guard_interruption_and_outbox_manual_retry_are_exposed_safely() {
+fn outbox_manual_retry_is_exposed_safely() {
     base::tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async {
-            let (app, store) = app(true);
+            let (app, store) = app();
             let (operator_cookie, operator_csrf) = login(&app, "operator").await;
-            let stream = call(
-                &app,
-                write_request(
-                    "/api/v2/devices/34020000001320000001/preview",
-                    &operator_cookie,
-                    &operator_csrf,
-                    json!({ "request_id": "keep", "channel_id": "ch-1" }),
-                ),
-            )
-            .await
-            .2;
-            let stream_id = stream["stream_id"].as_str().unwrap();
 
-            let (admin_cookie, admin_csrf) = login(&app, "admin").await;
-            assert_eq!(
-                call(
-                    &app,
-                    write_request(
-                        "/api/v2/sim/availability",
-                        &admin_cookie,
-                        &admin_csrf,
-                        json!({ "available": false }),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
-            assert_eq!(
-                call(
-                    &app,
-                    write_request(
-                        "/api/v2/devices/34020000001320000001/preview",
-                        &operator_cookie,
-                        &operator_csrf,
-                        json!({ "request_id": "blocked", "channel_id": "ch-2" }),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::CONFLICT
-            );
             let status = call(
                 &app,
-                Request::get("/api/v2/sim/status")
+                Request::get("/api/v2/runtime/status")
                     .header(COOKIE, &operator_cookie)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .2;
-            assert_eq!(status["running_streams"], 1);
-            assert_eq!(
-                call(
-                    &app,
-                    write_request(
-                        "/api/v2/sim/availability",
-                        &admin_cookie,
-                        &admin_csrf,
-                        json!({ "available": true }),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
-            let streams = call(
-                &app,
-                Request::get("/api/v2/streams")
-                    .header(COOKIE, &operator_cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .2;
-            assert_eq!(streams[0]["stream_id"], stream_id);
+            assert_eq!(status["running_streams"], 0);
 
             store
                 .insert_event_with_outbox(
@@ -347,11 +228,11 @@ fn guard_interruption_and_outbox_manual_retry_are_exposed_safely() {
 }
 
 #[test]
-fn simulator_disabled_is_explicit() {
+fn devices_are_empty_without_registered_device_source() {
     base::tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async {
-            let (app, _) = app(false);
+            let (app, _) = app();
             let (cookie, _) = login(&app, "viewer").await;
             let response = call(
                 &app,
@@ -361,7 +242,7 @@ fn simulator_disabled_is_explicit() {
                     .unwrap(),
             )
             .await;
-            assert_eq!(response.0, StatusCode::NOT_IMPLEMENTED);
-            assert_eq!(response.2["code"], "simulator_disabled");
+            assert_eq!(response.0, StatusCode::OK);
+            assert_eq!(response.2.as_array().unwrap().len(), 0);
         });
 }

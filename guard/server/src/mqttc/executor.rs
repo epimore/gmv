@@ -1,6 +1,6 @@
 use base::serde_json::Value;
 
-use crate::api::v2::control::BusinessControl;
+use crate::api::v2::control::{BusinessControl, DeviceStreamOptions};
 use crate::core::{GuardError, GuardResult};
 use crate::mqttc::mapping::{CommandAction, RoutedCommand};
 use crate::operation::OperationService;
@@ -28,7 +28,12 @@ impl MqttCommandExecutor {
                     .unwrap_or_else(|| command.target.clone());
                 let channel_id = required_payload_string(&command.payload, "channel_id")?;
                 self.control
-                    .start_live(&command.command_id, &device_id, &channel_id)
+                    .start_live_with_options(
+                        &command.command_id,
+                        &device_id,
+                        &channel_id,
+                        device_stream_options(&command.payload),
+                    )
                     .await
                     .map(|_| ())
             }
@@ -40,7 +45,12 @@ impl MqttCommandExecutor {
                     .unwrap_or_else(|| command.target.clone());
                 let channel_id = required_payload_string(&command.payload, "channel_id")?;
                 self.control
-                    .start_playback(&command.command_id, &device_id, &channel_id)
+                    .start_playback_with_options(
+                        &command.command_id,
+                        &device_id,
+                        &channel_id,
+                        device_stream_options(&command.payload),
+                    )
                     .await
                     .map(|_| ())
             }
@@ -49,7 +59,12 @@ impl MqttCommandExecutor {
                     .unwrap_or_else(|| command.target.clone());
                 let channel_id = required_payload_string(&command.payload, "channel_id")?;
                 self.control
-                    .start_download(&command.command_id, &device_id, &channel_id)
+                    .start_download_with_options(
+                        &command.command_id,
+                        &device_id,
+                        &channel_id,
+                        device_stream_options(&command.payload),
+                    )
                     .await
                     .map(|_| ())
             }
@@ -58,7 +73,12 @@ impl MqttCommandExecutor {
                     .unwrap_or_else(|| command.target.clone());
                 let channel_id = required_payload_string(&command.payload, "channel_id")?;
                 self.control
-                    .start_talk(&command.command_id, &device_id, &channel_id)
+                    .start_talk_with_options(
+                        &command.command_id,
+                        &device_id,
+                        &channel_id,
+                        device_stream_options(&command.payload),
+                    )
                     .await
                     .map(|_| ())
             }
@@ -105,4 +125,26 @@ fn payload_string(payload: &Value, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
+}
+
+fn device_stream_options(payload: &Value) -> DeviceStreamOptions {
+    DeviceStreamOptions {
+        token: payload_string(payload, "token").unwrap_or_default(),
+        start_time_sec: payload_u32(payload, "start_time_sec"),
+        end_time_sec: payload_u32(payload, "end_time_sec"),
+        trans_mode: payload_string(payload, "trans_mode").unwrap_or_default(),
+        output_type: payload_string(payload, "output_type").unwrap_or_default(),
+        talk_codec: payload_string(payload, "talk_codec").unwrap_or_default(),
+        talk_sample_rate: payload_u32(payload, "talk_sample_rate"),
+        talk_channel_count: payload_u32(payload, "talk_channel_count"),
+        talk_frame_duration_ms: payload_u32(payload, "talk_frame_duration_ms"),
+    }
+}
+
+fn payload_u32(payload: &Value, key: &str) -> u32 {
+    payload
+        .get(key)
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_default()
 }

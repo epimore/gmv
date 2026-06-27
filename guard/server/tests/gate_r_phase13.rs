@@ -12,7 +12,6 @@ use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
 use guard::job::SystemJobService;
 use guard::operation::OperationService;
 use guard::outbox::OutboxRepository;
-use guard::sim::{EndpointMode, Simulator};
 use guard::store::InMemoryGuardStore;
 use guard::store::model::{EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState};
 use tower::ServiceExt;
@@ -29,8 +28,6 @@ fn password_hash() -> String {
 
 fn app() -> (axum::Router, InMemoryGuardStore) {
     let store = InMemoryGuardStore::default();
-    let simulator = Simulator::new(store.clone(), EndpointMode::Single);
-    simulator.bootstrap(1_000).unwrap();
     let hash = password_hash();
     let auth = AuthState::new(
         [
@@ -57,7 +54,6 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             ),
             auth,
             outbox: OutboxRepository::from(store.clone()),
-            simulator: Some(simulator),
             users: None,
             media: Default::default(),
             media_files: None,
@@ -128,7 +124,7 @@ fn write_request(path: &str, cookie: &str, csrf: &str, body: Value) -> Request<B
 }
 
 #[test]
-fn gate_r_ui_business_loop_fault_drill_and_observability_contract() {
+fn gate_r_real_device_readiness_and_observability_contract() {
     base::tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async {
@@ -149,7 +145,6 @@ fn gate_r_ui_business_loop_fault_drill_and_observability_contract() {
             assert_eq!(ready["status"], "ready");
 
             let (operator_cookie, operator_csrf) = login(&app, "operator").await;
-            let (admin_cookie, admin_csrf) = login(&app, "admin").await;
             let stream = call_json(
                 &app,
                 write_request(
@@ -160,9 +155,7 @@ fn gate_r_ui_business_loop_fault_drill_and_observability_contract() {
                 ),
             )
             .await;
-            assert_eq!(stream.0, StatusCode::ACCEPTED);
-            assert_eq!(stream.2["state"], "running");
-            let stream_id = stream.2["stream_id"].as_str().unwrap();
+            assert_eq!(stream.0, StatusCode::NOT_FOUND);
 
             let ptz = call_json(
                 &app,
@@ -174,76 +167,19 @@ fn gate_r_ui_business_loop_fault_drill_and_observability_contract() {
                 ),
             )
             .await;
-            assert_eq!(ptz.0, StatusCode::OK);
-            assert_eq!(ptz.2["count"], 1);
+            assert_eq!(ptz.0, StatusCode::NOT_FOUND);
 
-            let ai = call_json(
-            &app,
-            write_request(
-                "/api/v2/ai/tasks",
-                &operator_cookie,
-                &operator_csrf,
-                json!({ "request_id": "gate-r-ai", "stream_id": stream_id, "model": "vehicle" }),
-            ),
-        )
-        .await;
-            assert_eq!(ai.0, StatusCode::ACCEPTED);
-            assert_eq!(ai.2["state"], "running");
-            let task_id = ai.2["task_id"].as_str().unwrap();
-
-            assert_eq!(
-                call_json(
-                    &app,
-                    write_request(
-                        "/api/v2/sim/availability",
-                        &admin_cookie,
-                        &admin_csrf,
-                        json!({ "available": false }),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
-            assert_eq!(
-                call_json(
-                    &app,
-                    write_request(
-                        "/api/v2/devices/34020000001320000001/preview",
-                        &operator_cookie,
-                        &operator_csrf,
-                        json!({ "request_id": "gate-r-blocked", "channel_id": "ch-2" }),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::CONFLICT
-            );
             let status = call_json(
                 &app,
-                Request::get("/api/v2/sim/status")
+                Request::get("/api/v2/runtime/status")
                     .header(COOKIE, &operator_cookie)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .2;
-            assert_eq!(status["running_streams"], 1);
-            assert_eq!(status["running_ai_tasks"], 1);
-            assert_eq!(
-                call_json(
-                    &app,
-                    write_request(
-                        "/api/v2/sim/availability",
-                        &admin_cookie,
-                        &admin_csrf,
-                        json!({ "available": true }),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
+            assert_eq!(status["running_streams"], 0);
+            assert_eq!(status["running_ai_tasks"], 0);
 
             store
                 .insert_event_with_outbox(
@@ -286,38 +222,9 @@ fn gate_r_ui_business_loop_fault_drill_and_observability_contract() {
             let (status, metrics) =
                 call_text(&app, Request::get("/metrics").body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK);
-            assert!(metrics.contains("gmv_guard_nodes 3"));
+            assert!(metrics.contains("gmv_guard_nodes 0"));
             assert!(metrics.contains("gmv_guard_outbox_backlog 1"));
             assert!(metrics.contains("gmv_guard_outbox_dead 1"));
-
-            assert_eq!(
-                call_json(
-                    &app,
-                    write_request(
-                        &format!("/api/v2/ai/tasks/{task_id}/cancel"),
-                        &operator_cookie,
-                        &operator_csrf,
-                        json!({}),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
-            assert_eq!(
-                call_json(
-                    &app,
-                    write_request(
-                        &format!("/api/v2/streams/{stream_id}/stop"),
-                        &operator_cookie,
-                        &operator_csrf,
-                        json!({}),
-                    ),
-                )
-                .await
-                .0,
-                StatusCode::OK
-            );
         });
 }
 

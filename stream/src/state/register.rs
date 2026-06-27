@@ -34,7 +34,7 @@ use gmv_domain::info::obj::{
     RegisterStreamInfo, RtpInfo, StreamKey, StreamPlayInfo, StreamState, UnknownStreamEvent,
 };
 use gmv_domain::info::output::{OutputEnum, OutputKind};
-use log::{error, info};
+use log::{error, info, warn};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -227,22 +227,27 @@ impl StreamMetadata {
         match output_kind {
             OutputKind::HttpFlv(_) => None,
             OutputKind::Rtmp(_) => {
-                unimplemented!()
+                warn!("rtmp active output is not implemented: stream_id={stream_id}");
+                None
             }
             OutputKind::DashFmp4(_) => None,
             OutputKind::HlsFmp4(_) => None,
             OutputKind::HlsTs(_) => None,
             OutputKind::Rtsp(_) => {
-                unimplemented!()
+                warn!("rtsp active output is not implemented: stream_id={stream_id}");
+                None
             }
             OutputKind::Gb28181Frame(_) => {
-                unimplemented!()
+                warn!("gb28181 frame active output is not implemented: stream_id={stream_id}");
+                None
             }
             OutputKind::Gb28181Ps(_) => {
-                unimplemented!()
+                warn!("gb28181 ps active output is not implemented: stream_id={stream_id}");
+                None
             }
             OutputKind::WebRtc(_) => {
-                unimplemented!()
+                warn!("webrtc active output is not implemented: stream_id={stream_id}");
+                None
             }
             OutputKind::LocalMp4(info) => {
                 let context = LocalStoreMp4Context {
@@ -262,7 +267,8 @@ impl StreamMetadata {
                 Some(ActiveEvent::LocalStoreMp4(context))
             }
             OutputKind::LocalTs(_) => {
-                unimplemented!()
+                warn!("local ts output is not implemented: stream_id={stream_id}");
+                None
             }
             OutputKind::DashMp4(_) => None,
         }

@@ -1,13 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
-#[serde(crate = "base::serde", rename_all = "snake_case")]
-pub enum EndpointMode {
-    Single,
-    Multi,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-pub struct SimDevice {
+pub struct DeviceSummary {
     pub device_id: String,
     pub name: String,
     pub session_node_id: String,
@@ -17,7 +10,7 @@ pub struct SimDevice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
-pub enum SimStreamState {
+pub enum StreamSummaryState {
     Running,
     Stopped,
     Failed,
@@ -25,7 +18,7 @@ pub enum SimStreamState {
 
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-pub struct SimStream {
+pub struct StreamSummary {
     pub stream_id: String,
     pub device_id: String,
     pub channel_id: String,
@@ -34,12 +27,12 @@ pub struct SimStream {
     pub lease_id: String,
     pub route_id: String,
     pub endpoint: String,
-    pub state: SimStreamState,
+    pub state: StreamSummaryState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
-pub enum SimAiTaskState {
+pub enum AiTaskSummaryState {
     Running,
     Cancelled,
     Failed,
@@ -47,7 +40,7 @@ pub enum SimAiTaskState {
 
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-pub struct SimAiTask {
+pub struct AiTaskSummary {
     pub task_id: String,
     pub model: String,
     pub stream_id: String,
@@ -55,18 +48,12 @@ pub struct SimAiTask {
     pub instance_id: String,
     pub lease_id: String,
     pub route_id: String,
-    pub state: SimAiTaskState,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SimFaults {
-    pub fail_next_stream_start: bool,
-    pub fail_next_ai_start: bool,
+    pub state: AiTaskSummaryState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-pub struct SimStatus {
+pub struct RuntimeStatus {
     pub guard_available: bool,
     pub streams: usize,
     pub running_streams: usize,

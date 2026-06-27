@@ -59,7 +59,6 @@ fn test_app(store: InMemoryGuardStore) -> axum::Router {
         ),
         auth,
         outbox: OutboxRepository::from(store),
-        simulator: None,
         users: None,
         media: Default::default(),
         media_files: None,

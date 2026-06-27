@@ -9,10 +9,12 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error as log_error, info, warn};
 use base::serde::de::DeserializeOwned;
 use base_rpc::RpcChannelConfig;
+use gmv_domain::info::format::{CMaf, Flv};
 use gmv_domain::info::obj::{
     OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState,
-    TalkClosedEvent, UnknownStreamEvent,
+    TalkClosedEvent, TalkStartModel, TalkStopModel, UnknownStreamEvent,
 };
+use gmv_domain::info::output::{DashFmp4Output, HttpFlvOutput, OutputKind};
 use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
@@ -34,7 +36,8 @@ use gmv_protocol::stream::v1::{
 };
 use tonic::transport::Channel;
 
-use crate::service::hook_serv;
+use crate::service::{api_serv, hook_serv, stream_close};
+use crate::state::model::{PlayBackModel, PlayLiveModel, PtzControlModel, TransMode};
 use crate::state::session::GuardLease;
 use crate::state::{StreamNode, StreamNodeRegistry};
 
@@ -533,26 +536,49 @@ impl SessionControl for SessionControlRpc {
         &self,
         request: tonic::Request<StopDeviceStreamRequest>,
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("session control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.stop_device_stream(request.into_inner()),
-        ))
+        let request = request.into_inner();
+        let stopped = if crate::state::session::Cache::talk_map_get(&request.stream_id).is_some() {
+            api_serv::talk_stop(
+                TalkStopModel {
+                    talk_id: request.stream_id.clone(),
+                },
+                String::new(),
+            )
+            .await
+            .map_err(device_error)
+        } else {
+            stream_close::begin(request.stream_id.clone());
+            Ok(true)
+        };
+        let response = match stopped {
+            Ok(_) => DeviceStreamResponse {
+                stream_id: request.stream_id,
+                state: DeviceStreamState::Stopped as i32,
+                error: None,
+                endpoint: String::new(),
+            },
+            Err(error) => error,
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn control_ptz(
         &self,
         request: tonic::Request<ControlPtzRequest>,
     ) -> Result<tonic::Response<ControlPtzResponse>, tonic::Status> {
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("session control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.control_ptz(request.into_inner()),
-        ))
+        let request = request.into_inner();
+        let model = ptz_model(&request);
+        let response = match api_serv::ptz(model, String::new()).await {
+            Ok(_) => ControlPtzResponse {
+                accepted: true,
+                error: None,
+            },
+            Err(err) => ControlPtzResponse {
+                accepted: false,
+                error: Some(error("ptz_failed", &err.to_string())),
+            },
+        };
+        Ok(tonic::Response::new(response))
     }
 }
 
@@ -562,13 +588,85 @@ impl SessionControlRpc {
         request: tonic::Request<StartDeviceStreamRequest>,
         stream_type: &str,
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("session control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.start_device_stream(request.into_inner(), stream_type),
-        ))
+        let request = request.into_inner();
+        {
+            let control = self
+                .inner
+                .lock()
+                .map_err(|_| tonic::Status::internal("session control lock poisoned"))?;
+            if !control.matches_expected(request.expected_session.as_ref()) {
+                return Ok(tonic::Response::new(device_response(
+                    "",
+                    DeviceStreamState::Failed,
+                    Some(error("stale_instance", "session instance does not match")),
+                )));
+            }
+        }
+        let token = if request.token.trim().is_empty() {
+            operation_token(request.operation.as_ref())
+        } else {
+            request.token.clone()
+        };
+        let response = match stream_type {
+            "live" => api_serv::play_live(
+                PlayLiveModel {
+                    device_id: request.device_id.clone(),
+                    channel_id: optional_channel(&request.channel_id),
+                    trans_mode: trans_mode(&request.trans_mode),
+                    custom_media_config: custom_media_config(&request.output_type),
+                },
+                token,
+            )
+            .await
+            .map(|info| stream_response(info.streamId, info.url)),
+            "playback" => api_serv::play_back(
+                PlayBackModel {
+                    device_id: request.device_id.clone(),
+                    channel_id: optional_channel(&request.channel_id),
+                    trans_mode: trans_mode(&request.trans_mode),
+                    custom_media_config: custom_media_config(&request.output_type),
+                    st: request.start_time_sec,
+                    et: request.end_time_sec,
+                },
+                token,
+            )
+            .await
+            .map(|info| stream_response(info.streamId, info.url)),
+            "download" => api_serv::download(
+                PlayBackModel {
+                    device_id: request.device_id.clone(),
+                    channel_id: optional_channel(&request.channel_id),
+                    trans_mode: trans_mode(&request.trans_mode),
+                    custom_media_config: None,
+                    st: request.start_time_sec,
+                    et: request.end_time_sec,
+                },
+                token,
+            )
+            .await
+            .map(|stream_id| stream_response(stream_id, String::new())),
+            "talk" => api_serv::talk_start(
+                TalkStartModel {
+                    device_id: request.device_id.clone(),
+                    channel_id: optional_channel(&request.channel_id),
+                    transport: empty_to_none(request.trans_mode.clone()),
+                    codec: empty_to_none(request.talk_codec.clone()),
+                    sample_rate: non_zero(request.talk_sample_rate),
+                    channel_count: u8_non_zero(request.talk_channel_count),
+                    frame_duration_ms: u16_non_zero(request.talk_frame_duration_ms),
+                },
+                token,
+            )
+            .await
+            .map(|info| stream_response(info.talk_id, info.input_url)),
+            _ => Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "unsupported stream type",
+                |msg| log_error!("{msg}: {stream_type}"),
+            )),
+        }
+        .unwrap_or_else(device_error);
+        Ok(tonic::Response::new(response))
     }
 }
 
@@ -890,7 +988,7 @@ impl SessionControlAdapter {
                 event_id: format!("guard-unavailable-{operation_id}"),
                 topic: "session.guard.unavailable".to_string(),
                 priority: EventPriority::P1 as i32,
-                payload: format!("stream_id={stream_id};fallback=legacy_http").into_bytes(),
+                payload: format!("stream_id={stream_id};guard=unavailable").into_bytes(),
             })),
         }
     }
@@ -926,7 +1024,107 @@ fn device_response(
         stream_id: stream_id.to_string(),
         state: state as i32,
         error,
+        endpoint: String::new(),
     }
+}
+
+fn stream_response(stream_id: String, endpoint: String) -> DeviceStreamResponse {
+    DeviceStreamResponse {
+        stream_id,
+        state: DeviceStreamState::Running as i32,
+        error: None,
+        endpoint,
+    }
+}
+
+fn device_error(err: GlobalError) -> DeviceStreamResponse {
+    DeviceStreamResponse {
+        stream_id: String::new(),
+        state: DeviceStreamState::Failed as i32,
+        error: Some(error("session_business_failed", &err.to_string())),
+        endpoint: String::new(),
+    }
+}
+
+fn operation_token(operation: Option<&OperationRef>) -> String {
+    operation
+        .and_then(|operation| {
+            (!operation.idempotency_key.is_empty())
+                .then(|| operation.idempotency_key.clone())
+                .or_else(|| {
+                    (!operation.operation_id.is_empty()).then(|| operation.operation_id.clone())
+                })
+        })
+        .map(|value| format!("gmv-{value}"))
+        .unwrap_or_else(|| "gmv-rpc".to_string())
+}
+
+fn optional_channel(channel_id: &str) -> Option<String> {
+    (!channel_id.trim().is_empty()).then(|| channel_id.to_string())
+}
+
+fn empty_to_none(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn non_zero(value: u32) -> Option<u32> {
+    (value != 0).then_some(value)
+}
+
+fn u8_non_zero(value: u32) -> Option<u8> {
+    u8::try_from(value).ok().filter(|value| *value != 0)
+}
+
+fn u16_non_zero(value: u32) -> Option<u16> {
+    u16::try_from(value).ok().filter(|value| *value != 0)
+}
+
+fn trans_mode(value: &str) -> Option<TransMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        "udp" => Some(TransMode::Udp),
+        "tcp_active" | "tcpactive" | "tcp-active" => Some(TransMode::TcpActive),
+        "tcp_passive" | "tcppassive" | "tcp-passive" => Some(TransMode::TcpPassive),
+        _ => None,
+    }
+}
+
+fn custom_media_config(output_type: &str) -> Option<crate::state::model::CustomMediaConfig> {
+    let output = match output_type.trim().to_ascii_lowercase().as_str() {
+        "" => return None,
+        "http_flv" | "flv" => OutputKind::HttpFlv(HttpFlvOutput {
+            fmt: Flv::default(),
+        }),
+        "dash_fmp4" | "fmp4" => OutputKind::DashFmp4(DashFmp4Output {
+            fmt: CMaf::default(),
+        }),
+        _ => return None,
+    };
+    Some(crate::state::model::CustomMediaConfig {
+        output,
+        codec: None,
+        filter: Default::default(),
+    })
+}
+
+fn ptz_model(request: &ControlPtzRequest) -> PtzControlModel {
+    let speed = u8::try_from(request.speed).unwrap_or(u8::MAX).max(1);
+    let mut model = PtzControlModel::default();
+    model.deviceId = request.device_id.clone();
+    model.channelId = request.channel_id.clone();
+    model.horizonSpeed = speed;
+    model.verticalSpeed = speed;
+    model.zoomSpeed = speed.min(15);
+    match request.command.trim().to_ascii_lowercase().as_str() {
+        "left" => model.leftRight = 1,
+        "right" => model.leftRight = 2,
+        "up" => model.upDown = 1,
+        "down" => model.upDown = 2,
+        "zoom_out" | "out" => model.inOut = 1,
+        "zoom_in" | "in" => model.inOut = 2,
+        _ => {}
+    }
+    model
 }
 
 fn error(code: &str, message: &str) -> ErrorDetail {
@@ -1021,6 +1219,7 @@ mod tests {
                 route_id: allocation.route_id,
                 lease_id: allocation.lease_id,
                 expected_session: Some(node.identity.clone()),
+                ..Default::default()
             },
             StartReceiveResponse {
                 stream_id: "stream-1".to_string(),
@@ -1061,6 +1260,7 @@ mod tests {
                 route_id: "route-1".to_string(),
                 lease_id: "lease-1".to_string(),
                 expected_session: Some(stale),
+                ..Default::default()
             },
             StartReceiveResponse {
                 stream_id: "stream-1".to_string(),
@@ -1072,9 +1272,7 @@ mod tests {
         assert_eq!(response.state, DeviceStreamState::Failed as i32);
         assert_eq!(control.resource_snapshot().resources.len(), 0);
         assert!(matches!(
-            control
-                .guard_unavailable_event("op-1", "legacy-stream")
-                .payload,
+            control.guard_unavailable_event("op-1", "stream-1").payload,
             Some(node_to_guard_message::Payload::Event(_))
         ));
     }

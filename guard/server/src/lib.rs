@@ -13,7 +13,6 @@ pub mod outbox;
 pub mod registry;
 pub mod route;
 pub mod runtime;
-pub mod sim;
 pub mod store;
 pub mod ui;
 pub mod webhook;

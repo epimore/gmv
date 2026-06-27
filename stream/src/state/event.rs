@@ -117,7 +117,7 @@ impl Event {
     fn hand_inner(inner_event: InnerEvent, tx: Option<Sender<EventRes>>) {
         match inner_event {
             InnerEvent::RecordInfo(_) => {
-                unimplemented!()
+                warn!("stream ignored unsupported record-info inner event");
             }
             InnerEvent::StreamRegister(rtp_type, stream_id, origin_trans) => {
                 //当不存在则表示数据被释放；统一由时间调度触发OutEvent::StreamInTimeout

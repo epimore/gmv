@@ -9,6 +9,7 @@ use crate::media::context::format::muxer::{MuxerContext, MuxerEnum};
 use crate::state::layer::muxer_layer::{
     CMafLayer, FlvLayer, HlsTsLayer, Mp4Layer, RtpEncLayer, RtpFrameLayer, RtpPsLayer, TsLayer,
 };
+use base::log::warn;
 use rsmpeg::ffi::AVCodecID_AV_CODEC_ID_HEVC;
 
 pub enum MuxerEvent {
@@ -34,28 +35,28 @@ impl MuxerEvent {
                             });
                     }
                 },
-                MuxerKind::Ts(ts) => {
-                    unimplemented!()
+                MuxerKind::Ts(_) => {
+                    warn!("stream muxer event ignored unsupported ts output");
                 }
-                MuxerKind::Mp4(mp4) => {
-                    unimplemented!()
+                MuxerKind::Mp4(_) => {
+                    warn!("stream muxer event ignored unsupported mp4 output");
                 }
                 MuxerKind::FMp4(fmp4) => {
                     let _ = CmafFmp4Context::init_context(demuxer_context, fmp4.tx).map(|ctx| {
                         muxer_context.fmp4 = Some(ctx);
                     });
                 }
-                MuxerKind::HlsTs(hls_ts) => {
-                    unimplemented!()
+                MuxerKind::HlsTs(_) => {
+                    warn!("stream muxer event ignored unsupported hls-ts output");
                 }
-                MuxerKind::RtpFrame(rtp_frame) => {
-                    unimplemented!()
+                MuxerKind::RtpFrame(_) => {
+                    warn!("stream muxer event ignored unsupported rtp-frame output");
                 }
-                MuxerKind::RtpPs(rtp_ps) => {
-                    unimplemented!()
+                MuxerKind::RtpPs(_) => {
+                    warn!("stream muxer event ignored unsupported rtp-ps output");
                 }
-                MuxerKind::RtpEnc(rtp_enc) => {
-                    unimplemented!()
+                MuxerKind::RtpEnc(_) => {
+                    warn!("stream muxer event ignored unsupported rtp-enc output");
                 }
                 MuxerKind::DashMp4(dash_mp4) => {
                     let _ =

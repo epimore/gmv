@@ -19,7 +19,6 @@ use guard::runtime::event_forwarder::{EventForwardRule, EventForwarder};
 use guard::runtime::node_expirer;
 use guard::runtime::node_rpc::{self, NodeRpcConfig};
 use guard::runtime::web::{self, WebServerConfig};
-use guard::sim::{EndpointMode, Simulator};
 use guard::store::InMemoryGuardStore;
 use guard::store::persistent::PersistentStore;
 
@@ -78,13 +77,6 @@ fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
             store.clone(),
             config.registry.to_policy(),
         );
-        let simulator = if web_config.simulator_enabled {
-            let simulator = Simulator::new(store.clone(), EndpointMode::Single);
-            simulator.bootstrap(0)?;
-            Some(simulator)
-        } else {
-            None
-        };
         let api_store = store.clone();
         let operations = OperationService::default();
         let api = ApiV2::new(store, operations.clone(), SystemJobService::default());
@@ -107,7 +99,6 @@ fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
             web_config,
             api,
             persistent.outbox_repository(),
-            simulator,
             users,
             user_repository,
             persistent.media_repository(),

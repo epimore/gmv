@@ -36,6 +36,15 @@ message StartDeviceStreamRequest {
   string route_id = 4;
   string lease_id = 5;
   gmv.common.v1.NodeIdentity expected_session = 6;
+  string token = 7;
+  uint32 start_time_sec = 8;
+  uint32 end_time_sec = 9;
+  string trans_mode = 10;
+  string output_type = 11;
+  string talk_codec = 12;
+  uint32 talk_sample_rate = 13;
+  uint32 talk_channel_count = 14;
+  uint32 talk_frame_duration_ms = 15;
 }
 
 message StopDeviceStreamRequest {
@@ -48,6 +57,7 @@ message DeviceStreamResponse {
   string stream_id = 1;
   DeviceStreamState state = 2;
   gmv.common.v1.ErrorDetail error = 3;
+  string endpoint = 4;
 }
 
 enum DeviceStreamState {

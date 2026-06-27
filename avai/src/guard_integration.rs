@@ -33,11 +33,14 @@ impl AvaiGuardNode {
     pub fn new(
         node_id: impl Into<String>,
         instance_id: impl Into<String>,
+        host: impl Into<String>,
+        guard_endpoint: impl Into<String>,
         grpc_port: u32,
         capabilities: Vec<String>,
     ) -> Self {
+        let host = host.into();
         Self {
-            guard_channel: RpcChannelConfig::new("http://127.0.0.1:18080"),
+            guard_channel: RpcChannelConfig::new(guard_endpoint.into()),
             identity: NodeIdentity {
                 node_id: node_id.into(),
                 instance_id: instance_id.into(),
@@ -48,7 +51,7 @@ impl AvaiGuardNode {
             endpoints: vec![Endpoint {
                 name: "grpc".to_string(),
                 scheme: "grpc".to_string(),
-                host: "127.0.0.1".to_string(),
+                host,
                 port: grpc_port,
                 mode: EndpointMode::Single as i32,
                 labels: HashMap::new(),
@@ -286,17 +289,15 @@ impl AvaiControlAdapter {
                 );
             }
         }
-        self.tasks.insert(
-            request.task_id.clone(),
-            AiTask {
-                task_type: request.task_type,
-                route_id: request.route_id,
-                frame,
-                state: AiTaskState::Running,
-                result: vec![],
-            },
-        );
-        create_response(&request.task_id, AiTaskState::Running, None)
+        let _ = (request.task_type, request.route_id, frame);
+        create_response(
+            &request.task_id,
+            AiTaskState::Failed,
+            Some(error(
+                "executor_unavailable",
+                "avai model executor is not configured",
+            )),
+        )
     }
 
     pub fn cancel_task(&mut self, request: CancelTaskRequest) -> CancelTaskResponse {
@@ -471,7 +472,14 @@ mod tests {
 
     #[test]
     fn avai_registers_filters_capabilities_and_handles_idempotent_tasks() {
-        let node = AvaiGuardNode::new("avai-1", "inst-1", 19090, vec!["ai.vehicle".to_string()]);
+        let node = AvaiGuardNode::new(
+            "avai-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            19090,
+            vec!["ai.vehicle".to_string()],
+        );
         let register = node.register_request(NodeResourceSnapshot {
             resources: vec![],
             full: true,
@@ -498,28 +506,26 @@ mod tests {
             expected_avai: Some(node.identity.clone()),
             payload: frame.encode(),
         };
-        assert_eq!(
-            control.create_task(request.clone(), 1000).state,
-            AiTaskState::Running as i32
-        );
-        assert_eq!(
-            control.create_task(request, 1000).state,
-            AiTaskState::Running as i32
-        );
-        assert_eq!(control.resource_snapshot().resources.len(), 1);
-        assert!(control.progress_event("task-1", 50).is_some());
-        let done = control.complete_task("task-1", b"ok".to_vec()).unwrap();
-        match done.payload {
-            Some(node_to_guard_message::Payload::Event(event)) => {
-                assert_eq!(event.priority, EventPriority::P1 as i32)
-            }
-            _ => panic!("expected event"),
-        }
+        let response = control.create_task(request.clone(), 1000);
+        assert_eq!(response.state, AiTaskState::Failed as i32);
+        assert_eq!(response.error.unwrap().code, "executor_unavailable");
+        let repeated = control.create_task(request, 1000);
+        assert_eq!(repeated.state, AiTaskState::Failed as i32);
+        assert_eq!(control.resource_snapshot().resources.len(), 0);
+        assert!(control.progress_event("task-1", 50).is_none());
+        assert!(control.complete_task("task-1", b"ok".to_vec()).is_none());
     }
 
     #[test]
     fn avai_rejects_expired_frame_unknown_model_and_stale_instance() {
-        let node = AvaiGuardNode::new("avai-1", "inst-1", 19090, vec!["ai.vehicle".to_string()]);
+        let node = AvaiGuardNode::new(
+            "avai-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            19090,
+            vec!["ai.vehicle".to_string()],
+        );
         let mut control = AvaiControlAdapter::new(node.identity.clone(), node.capabilities.clone());
         let expired = FrameReference {
             frame_ref: "frame-old".to_string(),

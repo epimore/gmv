@@ -1,0 +1,9 @@
+guard:
+  endpoint: http://127.0.0.1:18080
+
+server:
+  node_id: avai-node-1
+  host: 127.0.0.1
+  grpc_port: 19080
+  capabilities:
+    - ai.vehicle

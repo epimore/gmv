@@ -27,8 +27,6 @@ pub struct GuardAppConfig {
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
     #[serde(default)]
-    pub simulator: SimulatorConfig,
-    #[serde(default)]
     pub media: MediaConfig,
     #[serde(default)]
     pub integrations: IntegrationsConfig,
@@ -565,13 +563,6 @@ impl BootstrapAdminConfig {
     }
 }
 
-#[derive(Clone, Default, Deserialize)]
-#[serde(crate = "base::serde")]
-pub struct SimulatorConfig {
-    #[serde(default)]
-    pub enabled: bool,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct MediaConfig {
@@ -926,7 +917,6 @@ mod tests {
             registry: RegistryConfig::default(),
             database: DatabaseConfig::default(),
             bootstrap: BootstrapConfig::default(),
-            simulator: SimulatorConfig::default(),
             media: MediaConfig::default(),
             integrations: IntegrationsConfig::default(),
         };

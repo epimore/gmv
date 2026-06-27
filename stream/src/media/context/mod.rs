@@ -402,20 +402,20 @@ impl MediaContext {
         if let Some(context) = &mut muxer.mp4 {
             let _ = context.write_packet(pkt, ts);
         }
-        if let Some(context) = &muxer.ts {
-            unimplemented!()
+        if muxer.ts.is_some() {
+            warn!("stream packet mux ignored unsupported ts output");
         }
-        if let Some(context) = &muxer.rtp_frame {
-            unimplemented!()
+        if muxer.rtp_frame.is_some() {
+            warn!("stream packet mux ignored unsupported rtp-frame output");
         }
-        if let Some(context) = &muxer.rtp_ps {
-            unimplemented!()
+        if muxer.rtp_ps.is_some() {
+            warn!("stream packet mux ignored unsupported rtp-ps output");
         }
-        if let Some(context) = &muxer.rtp_enc {
-            unimplemented!()
+        if muxer.rtp_enc.is_some() {
+            warn!("stream packet mux ignored unsupported rtp-enc output");
         }
-        if let Some(context) = &muxer.hls_ts {
-            unimplemented!()
+        if muxer.hls_ts.is_some() {
+            warn!("stream packet mux ignored unsupported hls-ts output");
         }
         if let Some(context) = &mut muxer.fmp4 {
             if epoch == ProcessResult::Discontinuity {
@@ -450,20 +450,20 @@ impl MediaContext {
         if let Some(context) = &mut muxer.mp4 {
             context.flush();
         }
-        if let Some(context) = &muxer.ts {
-            unimplemented!()
+        if muxer.ts.is_some() {
+            warn!("stream packet mux ignored unsupported ts output");
         }
-        if let Some(context) = &muxer.rtp_frame {
-            unimplemented!()
+        if muxer.rtp_frame.is_some() {
+            warn!("stream packet mux ignored unsupported rtp-frame output");
         }
-        if let Some(context) = &muxer.rtp_ps {
-            unimplemented!()
+        if muxer.rtp_ps.is_some() {
+            warn!("stream packet mux ignored unsupported rtp-ps output");
         }
-        if let Some(context) = &muxer.rtp_enc {
-            unimplemented!()
+        if muxer.rtp_enc.is_some() {
+            warn!("stream packet mux ignored unsupported rtp-enc output");
         }
-        if let Some(context) = &muxer.hls_ts {
-            unimplemented!()
+        if muxer.hls_ts.is_some() {
+            warn!("stream packet mux ignored unsupported hls-ts output");
         }
         if let Some(context) = &mut muxer.fmp4 {
             context.flush();
@@ -479,13 +479,13 @@ impl MediaContext {
     fn handle_event(&mut self, event: ContextEvent) {
         match event {
             ContextEvent::Codec(_) => {
-                unimplemented!()
+                warn!("stream context ignored unsupported codec event");
             }
             ContextEvent::Muxer(m_event) => {
                 m_event.handle_event(&mut self.muxer_context, &self.demuxer_context);
             }
             ContextEvent::Filter(_) => {
-                unimplemented!()
+                warn!("stream context ignored unsupported filter event");
             }
             ContextEvent::Inner(i_event) => {
                 i_event.handle_event(&self);

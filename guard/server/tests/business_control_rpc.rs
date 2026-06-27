@@ -128,8 +128,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .await
                 .unwrap();
             assert_eq!(stream.stream_id, "live-op-live-rpc");
-            assert_eq!(stream.node_id, "stream-rpc");
-            assert_eq!(stream.endpoint, "rtp://127.0.0.1:30000");
+            assert_eq!(stream.node_id, "session-rpc");
+            assert_eq!(stream.endpoint, "rtp://127.0.0.1:30000/live-op-live-rpc");
 
             assert_eq!(
                 control
@@ -163,7 +163,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             assert_eq!(ai_task.task_id, "ai-op-ai-rpc");
             assert_eq!(
                 control.cancel_ai(&ai_task.task_id).await.unwrap().state,
-                guard::sim::SimAiTaskState::Cancelled
+                guard::api::v2::model::AiTaskSummaryState::Cancelled
             );
             assert_eq!(
                 control
@@ -352,6 +352,7 @@ impl SessionControl for FakeSession {
             stream_id: request.into_inner().stream_id,
             state: DeviceStreamState::Stopped as i32,
             error: None,
+            endpoint: String::new(),
         }))
     }
 
@@ -519,10 +520,12 @@ fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> Devi
         })
         .map(|id| format!("{prefix}-{id}"))
         .unwrap_or_default();
+    let endpoint = format!("rtp://127.0.0.1:30000/{stream_id}");
     DeviceStreamResponse {
         stream_id,
         state: DeviceStreamState::Running as i32,
         error: None,
+        endpoint,
     }
 }
 

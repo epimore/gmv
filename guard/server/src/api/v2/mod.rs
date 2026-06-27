@@ -2,6 +2,7 @@ pub mod control;
 pub mod events;
 pub mod facade;
 pub mod http;
+pub mod model;
 pub mod page;
 pub mod paths;
 

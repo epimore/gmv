@@ -171,7 +171,6 @@ guard:
                     },
                 ),
                 outbox: persistent.outbox_repository(),
-                simulator: None,
                 users: Some(persistent.user_repository()),
                 media: Default::default(),
                 media_files: Some(persistent.media_repository()),

@@ -10,6 +10,7 @@ use crate::media::context::format::mp4::Mp4Context;
 use crate::media::context::format::rtp::{RtpEncContext, RtpFrameContext, RtpPsContext};
 use crate::media::context::format::ts::TsContext;
 use crate::state::layer::muxer_layer::MuxerLayer;
+use base::log::warn;
 use base::serde::{Deserialize, Serialize};
 use gmv_domain::info::output::OutputEnum;
 use rsmpeg::ffi::{AVCodecID_AV_CODEC_ID_HEVC, AVMediaType_AVMEDIA_TYPE_VIDEO};
@@ -86,20 +87,20 @@ impl MuxerContext {
                 context.mp4 = Some(mp4_context);
             });
         }
-        if let Some(ts_layer) = muxer.ts {
-            unimplemented!()
+        if muxer.ts.is_some() {
+            warn!("stream muxer init ignored unsupported ts output");
         }
-        if let Some(hls_ts_layer) = muxer.hls_ts {
-            unimplemented!()
+        if muxer.hls_ts.is_some() {
+            warn!("stream muxer init ignored unsupported hls-ts output");
         }
-        if let Some(rtp_frame_layer) = muxer.rtp_frame {
-            unimplemented!()
+        if muxer.rtp_frame.is_some() {
+            warn!("stream muxer init ignored unsupported rtp-frame output");
         }
-        if let Some(rtp_ps_layer) = muxer.rtp_ps {
-            unimplemented!()
+        if muxer.rtp_ps.is_some() {
+            warn!("stream muxer init ignored unsupported rtp-ps output");
         }
-        if let Some(rtp_enc_layer) = muxer.rtp_enc {
-            unimplemented!()
+        if muxer.rtp_enc.is_some() {
+            warn!("stream muxer init ignored unsupported rtp-enc output");
         }
         if let Some(fmp4_layer) = muxer.fmp4 {
             let _ = CmafFmp4Context::init_context(demuxer_context, fmp4_layer.tx).map(|ctx| {

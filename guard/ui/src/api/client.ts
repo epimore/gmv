@@ -13,10 +13,10 @@ export interface LeaseInfo { lease_id: string; route_id: string; resource_id: st
 export interface OperationInfo { operation_id: string; kind: string; requested_by: string; required_role: Role; status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'cancelled'; progress_percent: number; message: string; error: string | null }
 export interface SystemJobInfo { job_id: string; job_type: 'backup' | 'restore' | 'migrate' | 'reconcile'; status: 'pending' | 'running' | 'succeeded' | 'failed'; progress_percent: number; message: string; error: string | null }
 export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
-export interface SimDevice { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
-export interface SimStream { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; state: 'running' | 'stopped' | 'failed' }
-export interface SimAiTask { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
-export interface SimStatus { guard_available: boolean; streams: number; running_streams: number; ai_tasks: number; running_ai_tasks: number; ptz_commands: number }
+export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
+export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; state: 'running' | 'stopped' | 'failed' }
+export interface AiTaskSummary { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
+export interface RuntimeStatus { guard_available: boolean; streams: number; running_streams: number; ai_tasks: number; running_ai_tasks: number; ptz_commands: number }
 export interface HealthInfo { status: string }
 export interface CreateUserPayload { username: string; role: Role; nickname: string; password: string; enabled: boolean }
 export interface UpdateUserPayload { role: Role; nickname?: string; password?: string | null; enabled: boolean }
@@ -60,15 +60,14 @@ export const listSystemJobs = () => request<SystemJobInfo[]>('/system/jobs');
 export const startSystemJob = (jobType: SystemJobInfo['job_type']) => request<SystemJobInfo>('/system/jobs', { method: 'POST', body: JSON.stringify({ job_id: 'ui-' + jobType + '-' + Date.now(), job_type: jobType }) });
 export const listOutbox = (limit = 100) => request<OutboxInfo[]>('/integrations/outbox?limit=' + limit);
 export const retryOutbox = (outboxId: string) => request<OutboxInfo>('/integrations/outbox/' + encodeURIComponent(outboxId) + '/retry', { method: 'POST', body: '{}' });
-export const listDevices = () => request<SimDevice[]>('/devices');
-export const startPreview = (deviceId: string, channelId: string, requestId: string) => request<SimStream>('/devices/' + deviceId + '/preview', { method: 'POST', body: JSON.stringify({ channel_id: channelId, request_id: requestId }) });
+export const listDevices = () => request<DeviceSummary[]>('/devices');
+export const startPreview = (deviceId: string, channelId: string, requestId: string) => request<StreamSummary>('/devices/' + deviceId + '/preview', { method: 'POST', body: JSON.stringify({ channel_id: channelId, request_id: requestId }) });
 export const sendPtz = (deviceId: string, channelId: string) => request<{ accepted: boolean; count: number }>('/devices/' + deviceId + '/ptz', { method: 'POST', body: JSON.stringify({ channel_id: channelId }) });
-export const listStreams = () => request<SimStream[]>('/streams');
-export const stopStream = (streamId: string) => request<SimStream>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
-export const listAiTasks = () => request<SimAiTask[]>('/ai/tasks');
-export const startAiTask = (streamId: string, model: string, requestId: string) => request<SimAiTask>('/ai/tasks', { method: 'POST', body: JSON.stringify({ stream_id: streamId, model, request_id: requestId }) });
-export const cancelAiTask = (taskId: string) => request<SimAiTask>('/ai/tasks/' + taskId + '/cancel', { method: 'POST', body: '{}' });
-export const simulatorStatus = () => request<SimStatus>('/sim/status');
-export const setSimulatorAvailability = (available: boolean) => request<SimStatus>('/sim/availability', { method: 'POST', body: JSON.stringify({ available }) });
+export const listStreams = () => request<StreamSummary[]>('/streams');
+export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
+export const listAiTasks = () => request<AiTaskSummary[]>('/ai/tasks');
+export const startAiTask = (streamId: string, model: string, requestId: string) => request<AiTaskSummary>('/ai/tasks', { method: 'POST', body: JSON.stringify({ stream_id: streamId, model, request_id: requestId }) });
+export const cancelAiTask = (taskId: string) => request<AiTaskSummary>('/ai/tasks/' + taskId + '/cancel', { method: 'POST', body: '{}' });
+export const runtimeStatus = () => request<RuntimeStatus>('/runtime/status');
 export const healthLive = () => requestAt<HealthInfo>('/health/live');
 export const healthReady = () => requestAt<HealthInfo>('/health/ready');

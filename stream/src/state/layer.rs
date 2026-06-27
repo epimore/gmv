@@ -304,13 +304,15 @@ pub mod converter_layer {
     }
 }
 pub mod filter_layer {
+    use base::log::warn;
     use gmv_domain::info::filter::{Capture, Filter};
 
     #[derive(Clone)]
     pub struct CaptureLayer {}
     impl CaptureLayer {
-        pub fn layer(capture: Capture) -> Self {
-            unimplemented!()
+        pub fn layer(_capture: Capture) -> Self {
+            warn!("stream capture filter is not wired yet; ignoring capture layer");
+            Self {}
         }
     }
     #[derive(Clone)]
@@ -348,7 +350,7 @@ pub mod muxer_layer {
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::err::BaseErrorCode;
     use base::exception::{GlobalError, GlobalResult};
-    use base::log::error;
+    use base::log::{error, warn};
     use base::tokio::sync::broadcast;
     use gmv_domain::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
     use gmv_domain::info::output::OutputKind;
@@ -393,9 +395,7 @@ pub mod muxer_layer {
                     }
                     Ok(self.mp4.as_ref().unwrap().tx.subscribe())
                 }
-                MuxerEnum::Ts => {
-                    unimplemented!()
-                }
+                MuxerEnum::Ts => unsupported_muxer_rx(muxer_enum),
                 MuxerEnum::FMp4 => {
                     if self.fmp4.is_none() {
                         Err(GlobalError::new_biz_error(
@@ -406,18 +406,10 @@ pub mod muxer_layer {
                     }
                     Ok(self.fmp4.as_ref().unwrap().tx.subscribe())
                 }
-                MuxerEnum::HlsTs => {
-                    unimplemented!()
-                }
-                MuxerEnum::RtpFrame => {
-                    unimplemented!()
-                }
-                MuxerEnum::RtpPs => {
-                    unimplemented!()
-                }
-                MuxerEnum::RtpEnc => {
-                    unimplemented!()
-                }
+                MuxerEnum::HlsTs => unsupported_muxer_rx(muxer_enum),
+                MuxerEnum::RtpFrame => unsupported_muxer_rx(muxer_enum),
+                MuxerEnum::RtpPs => unsupported_muxer_rx(muxer_enum),
+                MuxerEnum::RtpEnc => unsupported_muxer_rx(muxer_enum),
                 MuxerEnum::DashMp4 => {
                     if self.dash_mp4.is_none() {
                         Err(GlobalError::new_biz_error(
@@ -462,35 +454,25 @@ pub mod muxer_layer {
                         self.fmp4 = Some(CMafLayer::layer(CMaf::default()));
                     }
                 }
-                OutputKind::HlsTs(inner) => {
-                    if self.hls_ts.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::HlsTs(_) => {
+                    warn!("stream output hls-ts is not wired yet; muxer layer not created");
                 }
                 OutputKind::Rtsp(_) | OutputKind::Gb28181Frame(_) => {
-                    if self.rtp_frame.is_none() {
-                        unimplemented!()
-                    }
+                    warn!("stream output rtp-frame is not wired yet; muxer layer not created");
                 }
-                OutputKind::Gb28181Ps(inner) => {
-                    if self.rtp_ps.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::Gb28181Ps(_) => {
+                    warn!("stream output rtp-ps is not wired yet; muxer layer not created");
                 }
-                OutputKind::WebRtc(inner) => {
-                    if self.rtp_enc.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::WebRtc(_) => {
+                    warn!("stream output rtp-enc is not wired yet; muxer layer not created");
                 }
                 OutputKind::LocalMp4(inner) => {
                     if self.mp4.is_none() {
                         self.mp4 = Some(Mp4Layer::layer(inner.fmt.clone()));
                     }
                 }
-                OutputKind::LocalTs(inner) => {
-                    if self.ts.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::LocalTs(_) => {
+                    warn!("stream output local-ts is not wired yet; muxer layer not created");
                 }
                 OutputKind::DashMp4(_) => {
                     if self.dash_mp4.is_none() {
@@ -515,6 +497,17 @@ pub mod muxer_layer {
             }
         }
     }
+
+    fn unsupported_muxer_rx(
+        muxer_enum: MuxerEnum,
+    ) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            &format!("muxer: {:?}暂不支持", muxer_enum),
+            |msg| error!("{msg}"),
+        ))
+    }
+
     #[derive(Clone)]
     pub struct FlvLayer {
         pub tx: broadcast::Sender<Arc<MuxPacket>>,
@@ -540,8 +533,9 @@ pub mod muxer_layer {
     #[derive(Clone)]
     pub struct TsLayer {}
     impl TsLayer {
-        pub fn layer(ts: Ts) -> Self {
-            unimplemented!()
+        pub fn layer(_ts: Ts) -> Self {
+            warn!("stream ts layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
 
@@ -558,30 +552,34 @@ pub mod muxer_layer {
     #[derive(Clone)]
     pub struct RtpFrameLayer {}
     impl RtpFrameLayer {
-        pub fn layer(rtp: RtpFrame) -> Self {
-            unimplemented!()
+        pub fn layer(_rtp: RtpFrame) -> Self {
+            warn!("stream rtp-frame layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
     #[derive(Clone)]
     pub struct RtpPsLayer {}
     impl RtpPsLayer {
-        pub fn layer(rtp: RtpPs) -> Self {
-            unimplemented!()
+        pub fn layer(_rtp: RtpPs) -> Self {
+            warn!("stream rtp-ps layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
     #[derive(Clone)]
     pub struct RtpEncLayer {}
     impl RtpEncLayer {
-        pub fn layer(rtp: RtpEnc) -> Self {
-            unimplemented!()
+        pub fn layer(_rtp: RtpEnc) -> Self {
+            warn!("stream rtp-enc layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
 
     #[derive(Clone)]
     pub struct HlsTsLayer {}
     impl HlsTsLayer {
-        pub fn layer(hls_ts: HlsTs) -> Self {
-            unimplemented!()
+        pub fn layer(_hls_ts: HlsTs) -> Self {
+            warn!("stream hls-ts layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
 }

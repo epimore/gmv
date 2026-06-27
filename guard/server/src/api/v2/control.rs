@@ -1,14 +1,14 @@
 use gmv_protocol::avai::v1::avai_control_client::AvaiControlClient;
 use gmv_protocol::avai::v1::{AiTaskState, CancelTaskRequest, CreateTaskRequest};
 use gmv_protocol::common::v1::{
-    Endpoint, EndpointMode, ErrorDetail, NodeIdentity as ProtoIdentity, NodeKind as ProtoNodeKind,
-    OperationRef,
+    ErrorDetail, NodeIdentity as ProtoIdentity, NodeKind as ProtoNodeKind, OperationRef,
 };
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
-use gmv_protocol::session::v1::{ControlPtzRequest, DeviceStreamState, StartDeviceStreamRequest};
-use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
-use gmv_protocol::stream::v1::{StartReceiveRequest, StopReceiveRequest, StreamState};
+use gmv_protocol::session::v1::{
+    ControlPtzRequest, DeviceStreamState, StartDeviceStreamRequest, StopDeviceStreamRequest,
+};
 
+use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
 use crate::core::{
     ConnectionState, GuardError, GuardResult, LeaseState, NodeIdentity, NodeKind, RouteState,
     SchedulingState,
@@ -16,13 +16,25 @@ use crate::core::{
 use crate::gateway::{AllocationRequest, AllocationService};
 use crate::lease::{LeaseRequest, LeaseService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
-use crate::sim::{SimAiTask, SimAiTaskState, SimStream, SimStreamState};
 use crate::store::InMemoryGuardStore;
-use crate::store::model::{EndpointModeRecord, EndpointRecord, NodeRecord, RouteRecord};
+use crate::store::model::{NodeRecord, RouteRecord};
 
 #[derive(Debug, Clone)]
 pub struct BusinessControl {
     store: InMemoryGuardStore,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DeviceStreamOptions {
+    pub token: String,
+    pub start_time_sec: u32,
+    pub end_time_sec: u32,
+    pub trans_mode: String,
+    pub output_type: String,
+    pub talk_codec: String,
+    pub talk_sample_rate: u32,
+    pub talk_channel_count: u32,
+    pub talk_frame_duration_ms: u32,
 }
 
 impl BusinessControl {
@@ -35,9 +47,31 @@ impl BusinessControl {
         operation_id: &str,
         device_id: &str,
         channel_id: &str,
-    ) -> GuardResult<SimStream> {
-        self.start_device_stream(DeviceStreamKind::Live, operation_id, device_id, channel_id)
-            .await
+    ) -> GuardResult<StreamSummary> {
+        self.start_live_with_options(
+            operation_id,
+            device_id,
+            channel_id,
+            DeviceStreamOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn start_live_with_options(
+        &self,
+        operation_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        options: DeviceStreamOptions,
+    ) -> GuardResult<StreamSummary> {
+        self.start_device_stream(
+            DeviceStreamKind::Live,
+            operation_id,
+            device_id,
+            channel_id,
+            options,
+        )
+        .await
     }
 
     pub async fn start_playback(
@@ -45,12 +79,29 @@ impl BusinessControl {
         operation_id: &str,
         device_id: &str,
         channel_id: &str,
-    ) -> GuardResult<SimStream> {
+    ) -> GuardResult<StreamSummary> {
+        self.start_playback_with_options(
+            operation_id,
+            device_id,
+            channel_id,
+            DeviceStreamOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn start_playback_with_options(
+        &self,
+        operation_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        options: DeviceStreamOptions,
+    ) -> GuardResult<StreamSummary> {
         self.start_device_stream(
             DeviceStreamKind::Playback,
             operation_id,
             device_id,
             channel_id,
+            options,
         )
         .await
     }
@@ -60,12 +111,29 @@ impl BusinessControl {
         operation_id: &str,
         device_id: &str,
         channel_id: &str,
-    ) -> GuardResult<SimStream> {
+    ) -> GuardResult<StreamSummary> {
+        self.start_download_with_options(
+            operation_id,
+            device_id,
+            channel_id,
+            DeviceStreamOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn start_download_with_options(
+        &self,
+        operation_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        options: DeviceStreamOptions,
+    ) -> GuardResult<StreamSummary> {
         self.start_device_stream(
             DeviceStreamKind::Download,
             operation_id,
             device_id,
             channel_id,
+            options,
         )
         .await
     }
@@ -75,9 +143,31 @@ impl BusinessControl {
         operation_id: &str,
         device_id: &str,
         channel_id: &str,
-    ) -> GuardResult<SimStream> {
-        self.start_device_stream(DeviceStreamKind::Talk, operation_id, device_id, channel_id)
-            .await
+    ) -> GuardResult<StreamSummary> {
+        self.start_talk_with_options(
+            operation_id,
+            device_id,
+            channel_id,
+            DeviceStreamOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn start_talk_with_options(
+        &self,
+        operation_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        options: DeviceStreamOptions,
+    ) -> GuardResult<StreamSummary> {
+        self.start_device_stream(
+            DeviceStreamKind::Talk,
+            operation_id,
+            device_id,
+            channel_id,
+            options,
+        )
+        .await
     }
 
     async fn start_device_stream(
@@ -86,89 +176,9 @@ impl BusinessControl {
         operation_id: &str,
         device_id: &str,
         channel_id: &str,
-    ) -> GuardResult<SimStream> {
+        options: DeviceStreamOptions,
+    ) -> GuardResult<StreamSummary> {
         let session = self.select_node(NodeKind::Session, kind.session_capability())?;
-        let stream = self.select_node(NodeKind::Stream, kind.stream_capability())?;
-        let stream_id = format!("{}-{operation_id}", kind.prefix());
-        let lease_id = format!("lease-{operation_id}");
-        let route_id = format!("route-{operation_id}");
-        let operation = OperationRef {
-            operation_id: operation_id.to_string(),
-            idempotency_key: operation_id.to_string(),
-        };
-        let allocation =
-            AllocationService::new(self.store.clone()).allocate(AllocationRequest {
-                request_id: operation_id.to_string(),
-                capability: kind.stream_capability().to_string(),
-                zone: stream.zone.clone(),
-            })?;
-        if allocation.owner.node_id != stream.identity.node_id {
-            return Err(GuardError::Conflict(
-                "selected stream node changed during allocation".to_string(),
-            ));
-        }
-        LeaseService::new(self.store.clone()).allocate(LeaseRequest {
-            lease_id: lease_id.clone(),
-            route_id: route_id.clone(),
-            resource_id: stream_id.clone(),
-            idempotency_key: operation_id.to_string(),
-            owner: stream.identity.clone(),
-            now_ms: now_ms(),
-            ttl_ms: 30_000,
-        })?;
-        RouteService::new(self.store.clone()).create_allocated(RouteRecord {
-            route_id: route_id.clone(),
-            resource_id: stream_id.clone(),
-            node_id: stream.identity.node_id.clone(),
-            instance_id: stream.identity.instance_id.clone(),
-            state: RouteState::Allocated,
-            desired_generation: 1,
-            observed_generation: 0,
-            observed_sequence: 0,
-        })?;
-
-        let stream_grpc = grpc_uri(&stream)?;
-        let mut stream_client = StreamControlClient::connect(stream_grpc)
-            .await
-            .map_err(|error| GuardError::Conflict(format!("connect stream RPC failed: {error}")))?;
-        let stream_response = stream_client
-            .start_receive(StartReceiveRequest {
-                operation: Some(operation.clone()),
-                stream_id: stream_id.clone(),
-                route_id: route_id.clone(),
-                lease_id: lease_id.clone(),
-                expected_stream: Some(proto_identity(&stream.identity)),
-                preferred_endpoints: receive_endpoints(&stream),
-            })
-            .await
-            .map_err(|error| GuardError::Conflict(format!("start stream receive failed: {error}")))?
-            .into_inner();
-        if let Some(error) = non_empty_error(stream_response.error) {
-            let _ =
-                LeaseService::new(self.store.clone()).fail(&lease_id, &stream.identity.instance_id);
-            return Err(GuardError::Conflict(format!(
-                "stream receive rejected: {} {}",
-                error.code, error.message
-            )));
-        }
-        if stream_response.state != StreamState::Receiving as i32 {
-            let _ =
-                LeaseService::new(self.store.clone()).fail(&lease_id, &stream.identity.instance_id);
-            return Err(GuardError::Conflict(
-                "stream did not enter receiving state".to_string(),
-            ));
-        }
-        LeaseService::new(self.store.clone()).confirm(&lease_id, &stream.identity.instance_id)?;
-        RouteService::new(self.store.clone()).apply_snapshot(ResourceSnapshot {
-            owner: stream.identity.clone(),
-            generation: 1,
-            sequence: 1,
-            resources: vec![SnapshotResource {
-                resource_id: stream_id.clone(),
-                route_id: Some(route_id.clone()),
-            }],
-        })?;
-
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
             SessionControlClient::connect(session_grpc)
@@ -176,13 +186,31 @@ impl BusinessControl {
                 .map_err(|error| {
                     GuardError::Conflict(format!("connect session RPC failed: {error}"))
                 })?;
+        let operation = OperationRef {
+            operation_id: operation_id.to_string(),
+            idempotency_key: operation_id.to_string(),
+        };
+        let token = if options.token.trim().is_empty() {
+            format!("gmv-{operation_id}")
+        } else {
+            options.token
+        };
         let request = StartDeviceStreamRequest {
             operation: Some(operation),
             device_id: device_id.to_string(),
             channel_id: channel_id.to_string(),
-            route_id: route_id.clone(),
-            lease_id: lease_id.clone(),
+            route_id: String::new(),
+            lease_id: String::new(),
             expected_session: Some(proto_identity(&session.identity)),
+            token,
+            start_time_sec: options.start_time_sec,
+            end_time_sec: options.end_time_sec,
+            trans_mode: options.trans_mode,
+            output_type: options.output_type,
+            talk_codec: options.talk_codec,
+            talk_sample_rate: options.talk_sample_rate,
+            talk_channel_count: options.talk_channel_count,
+            talk_frame_duration_ms: options.talk_frame_duration_ms,
         };
         let session_response = match kind {
             DeviceStreamKind::Live => session_client.start_live(request).await,
@@ -195,11 +223,6 @@ impl BusinessControl {
         })?
         .into_inner();
         if let Some(error) = non_empty_error(session_response.error) {
-            let _ = self
-                .stop_stream_rpc(&stream, &stream_id, "session rejected")
-                .await;
-            let _ = LeaseService::new(self.store.clone())
-                .release(&lease_id, &stream.identity.instance_id);
             return Err(GuardError::Conflict(format!(
                 "session {} rejected: {} {}",
                 kind.prefix(),
@@ -213,53 +236,83 @@ impl BusinessControl {
                 kind.prefix()
             )));
         }
-        Ok(SimStream {
-            stream_id: session_response.stream_id,
-            device_id: device_id.to_string(),
-            channel_id: channel_id.to_string(),
-            node_id: stream.identity.node_id,
-            instance_id: stream.identity.instance_id,
-            lease_id,
-            route_id,
-            endpoint: endpoint_label(stream_response.receive_endpoints),
-            state: SimStreamState::Running,
-        })
-    }
-
-    pub async fn stop_stream(&self, stream_id: &str) -> GuardResult<SimStream> {
+        let lease = self
+            .store
+            .leases()
+            .into_iter()
+            .find(|lease| lease.resource_id == session_response.stream_id);
         let route = self
             .store
             .routes()
             .into_iter()
-            .find(|route| route.resource_id == stream_id && route.state != RouteState::Closed)
-            .ok_or_else(|| GuardError::NotFound(format!("stream {stream_id}")))?;
-        let stream = self
-            .store
-            .get_node(&route.node_id)
-            .ok_or_else(|| GuardError::NotFound(format!("node {}", route.node_id)))?;
-        self.stop_stream_rpc(&stream, stream_id, "manual").await?;
-        if let Some(mut stored_route) = self.store.get_route(&route.route_id) {
-            stored_route.state = RouteState::Closed;
-            self.store.upsert_route(stored_route);
-        }
-        if let Some(lease) =
-            self.store.leases().into_iter().find(|lease| {
-                lease.resource_id == stream_id && lease.state == LeaseState::Confirmed
+            .find(|route| route.resource_id == session_response.stream_id);
+        Ok(StreamSummary {
+            stream_id: session_response.stream_id,
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            node_id: route
+                .as_ref()
+                .map(|route| route.node_id.clone())
+                .unwrap_or_else(|| session.identity.node_id.clone()),
+            instance_id: route
+                .as_ref()
+                .map(|route| route.instance_id.clone())
+                .unwrap_or_else(|| session.identity.instance_id.clone()),
+            lease_id: lease.map(|lease| lease.lease_id).unwrap_or_default(),
+            route_id: route.map(|route| route.route_id).unwrap_or_default(),
+            endpoint: session_response.endpoint,
+            state: StreamSummaryState::Running,
+        })
+    }
+
+    pub async fn stop_stream(&self, stream_id: &str) -> GuardResult<StreamSummary> {
+        let session = self.select_any_session()?;
+        let session_grpc = grpc_uri(&session)?;
+        let mut session_client =
+            SessionControlClient::connect(session_grpc)
+                .await
+                .map_err(|error| {
+                    GuardError::Conflict(format!("connect session RPC failed: {error}"))
+                })?;
+        let response = session_client
+            .stop_device_stream(StopDeviceStreamRequest {
+                operation: Some(OperationRef {
+                    operation_id: format!("stop-{stream_id}"),
+                    idempotency_key: String::new(),
+                }),
+                stream_id: stream_id.to_string(),
+                reason: "manual".to_string(),
             })
-        {
-            let _ = LeaseService::new(self.store.clone())
-                .release(&lease.lease_id, &stream.identity.instance_id);
+            .await
+            .map_err(|error| GuardError::Conflict(format!("stop session stream failed: {error}")))?
+            .into_inner();
+        if let Some(error) = non_empty_error(response.error) {
+            return Err(GuardError::Conflict(format!(
+                "session stop rejected: {} {}",
+                error.code, error.message
+            )));
         }
-        Ok(SimStream {
+        if let Some(route) = self
+            .store
+            .routes()
+            .into_iter()
+            .find(|route| route.resource_id == stream_id && route.state != RouteState::Closed)
+        {
+            if let Some(mut stored_route) = self.store.get_route(&route.route_id) {
+                stored_route.state = RouteState::Closed;
+                self.store.upsert_route(stored_route);
+            }
+        }
+        Ok(StreamSummary {
             stream_id: stream_id.to_string(),
             device_id: String::new(),
             channel_id: String::new(),
-            node_id: stream.identity.node_id,
-            instance_id: stream.identity.instance_id,
+            node_id: session.identity.node_id,
+            instance_id: session.identity.instance_id,
             lease_id: String::new(),
-            route_id: route.route_id,
+            route_id: String::new(),
             endpoint: String::new(),
-            state: SimStreamState::Stopped,
+            state: StreamSummaryState::Stopped,
         })
     }
 
@@ -301,7 +354,7 @@ impl BusinessControl {
         operation_id: &str,
         stream_id: &str,
         model: &str,
-    ) -> GuardResult<SimAiTask> {
+    ) -> GuardResult<AiTaskSummary> {
         let capability = ai_capability(model);
         let avai = self.select_node(NodeKind::Avai, &capability)?;
         let task_id = format!("ai-{operation_id}");
@@ -384,7 +437,7 @@ impl BusinessControl {
                 route_id: Some(route_id.clone()),
             }],
         })?;
-        Ok(SimAiTask {
+        Ok(AiTaskSummary {
             task_id: response.task_id,
             model: model.to_string(),
             stream_id: stream_id.to_string(),
@@ -392,11 +445,11 @@ impl BusinessControl {
             instance_id: avai.identity.instance_id,
             lease_id,
             route_id,
-            state: SimAiTaskState::Running,
+            state: AiTaskSummaryState::Running,
         })
     }
 
-    pub async fn cancel_ai(&self, task_id: &str) -> GuardResult<SimAiTask> {
+    pub async fn cancel_ai(&self, task_id: &str) -> GuardResult<AiTaskSummary> {
         let route = self
             .store
             .routes()
@@ -447,7 +500,7 @@ impl BusinessControl {
             let _ = LeaseService::new(self.store.clone())
                 .release(&lease.lease_id, &avai.identity.instance_id);
         }
-        Ok(SimAiTask {
+        Ok(AiTaskSummary {
             task_id: task_id.to_string(),
             model: String::new(),
             stream_id: String::new(),
@@ -455,8 +508,21 @@ impl BusinessControl {
             instance_id: avai.identity.instance_id,
             lease_id: String::new(),
             route_id: route.route_id,
-            state: SimAiTaskState::Cancelled,
+            state: AiTaskSummaryState::Cancelled,
         })
+    }
+
+    fn select_any_session(&self) -> GuardResult<NodeRecord> {
+        self.store
+            .nodes()
+            .into_iter()
+            .filter(|node| {
+                node.identity.kind == NodeKind::Session
+                    && node.connection == ConnectionState::Connected
+                    && node.scheduling == SchedulingState::Enabled
+            })
+            .min_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id))
+            .ok_or_else(|| GuardError::NotFound("no connected session node".to_string()))
     }
 
     fn select_node(&self, kind: NodeKind, capability: &str) -> GuardResult<NodeRecord> {
@@ -471,37 +537,6 @@ impl BusinessControl {
             })
             .min_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id))
             .ok_or_else(|| GuardError::NotFound(format!("no {:?} node for {capability}", kind)))
-    }
-
-    async fn stop_stream_rpc(
-        &self,
-        stream: &NodeRecord,
-        stream_id: &str,
-        reason: &str,
-    ) -> GuardResult<()> {
-        let stream_grpc = grpc_uri(stream)?;
-        let mut stream_client = StreamControlClient::connect(stream_grpc)
-            .await
-            .map_err(|error| GuardError::Conflict(format!("connect stream RPC failed: {error}")))?;
-        let response = stream_client
-            .stop_receive(StopReceiveRequest {
-                operation: Some(OperationRef {
-                    operation_id: format!("stop-{stream_id}"),
-                    idempotency_key: String::new(),
-                }),
-                stream_id: stream_id.to_string(),
-                reason: reason.to_string(),
-            })
-            .await
-            .map_err(|error| GuardError::Conflict(format!("stop stream receive failed: {error}")))?
-            .into_inner();
-        if let Some(error) = non_empty_error(response.error) {
-            return Err(GuardError::Conflict(format!(
-                "stream stop rejected: {} {}",
-                error.code, error.message
-            )));
-        }
-        Ok(())
     }
 }
 
@@ -523,15 +558,6 @@ fn grpc_uri(node: &NodeRecord) -> GuardResult<String> {
     Ok(format!("{scheme}://{}:{}", endpoint.host, endpoint.port))
 }
 
-fn receive_endpoints(node: &NodeRecord) -> Vec<Endpoint> {
-    node.endpoints
-        .iter()
-        .filter(|endpoint| endpoint.scheme != "grpc")
-        .cloned()
-        .map(proto_endpoint)
-        .collect()
-}
-
 fn proto_identity(identity: &NodeIdentity) -> ProtoIdentity {
     ProtoIdentity {
         node_id: identity.node_id.clone(),
@@ -542,28 +568,6 @@ fn proto_identity(identity: &NodeIdentity) -> ProtoIdentity {
             NodeKind::Avai => ProtoNodeKind::Avai,
         } as i32,
     }
-}
-
-fn proto_endpoint(endpoint: EndpointRecord) -> Endpoint {
-    Endpoint {
-        name: endpoint.name,
-        scheme: endpoint.scheme,
-        host: endpoint.host,
-        port: endpoint.port,
-        mode: match endpoint.mode {
-            EndpointModeRecord::Single => EndpointMode::Single,
-            EndpointModeRecord::Multi => EndpointMode::Multi,
-        } as i32,
-        labels: endpoint.labels,
-    }
-}
-
-fn endpoint_label(endpoints: Vec<Endpoint>) -> String {
-    endpoints
-        .into_iter()
-        .next()
-        .map(|endpoint| format!("{}://{}:{}", endpoint.scheme, endpoint.host, endpoint.port))
-        .unwrap_or_default()
 }
 
 fn non_empty_error(error: Option<ErrorDetail>) -> Option<ErrorDetail> {
@@ -588,15 +592,6 @@ enum DeviceStreamKind {
 
 impl DeviceStreamKind {
     fn prefix(self) -> &'static str {
-        match self {
-            Self::Live => "live",
-            Self::Playback => "playback",
-            Self::Download => "download",
-            Self::Talk => "talk",
-        }
-    }
-
-    fn stream_capability(self) -> &'static str {
         match self {
             Self::Live => "live",
             Self::Playback => "playback",
