@@ -34,6 +34,8 @@ pub struct StreamState {
 #[derive(New, Serialize, Deserialize, Debug, Default)]
 #[serde(crate = "base::serde")]
 pub struct StreamRecordInfo {
+    #[serde(default)]
+    pub stream_id: Option<String>,
     ///录制完成时返回路径+文件名
     pub path_file_name: Option<String>,
     //单位kb,
@@ -191,6 +193,8 @@ pub struct TalkOpenReq {
     pub payload_type: u8,
     pub frame_duration_ms: u16,
     pub input_timeout_secs: u16,
+    #[serde(default)]
+    pub session_hook_endpoint: Option<String>,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]

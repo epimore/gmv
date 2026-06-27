@@ -644,6 +644,16 @@ impl SessionHook for SessionHookRpc {
             response.error,
             response.payload_json.len()
         );
+        publish_guard_event(
+            &format!("{event_type}.handled"),
+            format!(
+                "event_type={event_type};accepted={};error={:?};payload_bytes={}",
+                response.accepted,
+                response.error,
+                response.payload_json.len()
+            )
+            .into_bytes(),
+        );
         Ok(tonic::Response::new(response))
     }
 }

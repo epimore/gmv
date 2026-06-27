@@ -19,4 +19,6 @@ pub struct MediaConfig {
     pub codec: Option<Codec>,
     pub filter: Filter,
     pub output: OutputKind,
+    #[serde(default)]
+    pub session_hook_endpoint: Option<String>,
 }

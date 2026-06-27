@@ -52,6 +52,7 @@ impl LocalStoreMp4Context {
             match self.run().await {
                 Ok(_) => {
                     let info = StreamRecordInfo {
+                        stream_id: Some(self.file_name.to_string()),
                         path_file_name: Some(format!("{}/mp4/{}.mp4", self.path, self.file_name)),
                         file_size: self.file_size as u64,
                         timestamp: self.ts as u32,
@@ -65,6 +66,7 @@ impl LocalStoreMp4Context {
                 }
                 Err(_) => {
                     let mut info = StreamRecordInfo::default();
+                    info.stream_id = Some(self.file_name.to_string());
                     info.state = 3;
                     info.path_file_name = Some(format!("{}/mp4/{}.mp4", self.path, self.file_name));
                     let _ = self
@@ -115,7 +117,7 @@ impl LocalStoreMp4Context {
                     if let Ok(inner_event) = inner_event_res {
                         match inner_event {
                             Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
-                                let info = StreamRecordInfo{path_file_name: None,file_size: self.file_size as u64,timestamp: self.ts as u32,state: self.state};
+                                let info = StreamRecordInfo { stream_id: Some(self.file_name.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
                                 let _ = record_info_tx.send(info);
                             }
                             Mp4OutputInnerEvent::Close => {break;}
@@ -154,7 +156,7 @@ impl LocalStoreMp4Context {
                     if let Ok(inner_event) = inner_event_res {
                         match inner_event {
                             Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
-                                let info = StreamRecordInfo{path_file_name: None,file_size: self.file_size as u64,timestamp: self.ts as u32,state: self.state};
+                                let info = StreamRecordInfo { stream_id: Some(self.file_name.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
                                 let _ = record_info_tx.send(info);
                             }
                             Mp4OutputInnerEvent::Close => {break;}

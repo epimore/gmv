@@ -14,7 +14,8 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
 use crate::guard_integration::{
-    StreamControlAdapter, StreamControlRpc, StreamGuardNode, init_guard_event_sender,
+    StreamControlAdapter, StreamControlRpc, StreamGuardNode, init_guard_channel,
+    init_guard_event_sender,
 };
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::common::v1::{Endpoint, EndpointMode};
@@ -133,6 +134,7 @@ impl
                     Register::active_stream_count().to_string(),
                 )])
             });
+            init_guard_channel(node.guard_channel.clone());
             let (_reporter, event_sender) =
                 NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());
             init_guard_event_sender(event_sender);

@@ -1,4 +1,5 @@
-use crate::guard_integration::publish_guard_event;
+use crate::guard_integration::{check_playback, publish_guard_event};
+use crate::io::call::{call_session_hook_rpc, decode_hook_payload};
 use crate::io::local::mp4::LocalStoreMp4Context;
 use crate::state::layer::output_layer::OutputLayer;
 use crate::state::register::{Inner, Register, TimeScheduleKey};
@@ -6,6 +7,7 @@ use base::cache::c100k::CacheEvent;
 use base::exception::GlobalResultExt;
 use base::log::{error, info, warn};
 use base::net::state::Protocol;
+use base::serde::Serialize;
 use base::tokio;
 use base::tokio::select;
 use base::tokio::sync::mpsc::Receiver;
@@ -16,6 +18,7 @@ use gmv_domain::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
     RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
 };
+use gmv_protocol::session::v1::SessionHookResponse;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -140,31 +143,99 @@ impl Event {
         }
     }
 
+    async fn call_session_hook_by_stream_id<T>(
+        stream_id: &str,
+        event_type: &str,
+        payload: &T,
+    ) -> Option<SessionHookResponse>
+    where
+        T: Serialize + ?Sized,
+    {
+        let Some(endpoint) = Register::session_hook_endpoint(stream_id) else {
+            warn!("session hook endpoint missing: stream_id={stream_id}, event_type={event_type}");
+            return None;
+        };
+        call_session_hook_rpc(&endpoint, event_type, payload).await
+    }
+
+    fn accepted(response: Option<&SessionHookResponse>) -> bool {
+        response.map(|response| response.accepted).unwrap_or(false)
+    }
+
     async fn hand_out(out_event: OutEvent, tx: Option<Sender<EventRes>>) {
         match out_event {
             OutEvent::StreamRegister(rsi) => {
-                publish_guard_event("stream.registered", format!("{rsi:?}").into_bytes());
-                info!("stream_register event sent to guard: {:?}", rsi);
+                let stream_id = rsi.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.registered", &rsi)
+                        .await;
+                if Self::accepted(response.as_ref()) {
+                    info!("stream_register event sent to session: {:?}", rsi);
+                } else {
+                    publish_guard_event(
+                        "stream.registered.fallback",
+                        format!("{rsi:?}").into_bytes(),
+                    );
+                    warn!("stream_register fallback event sent to guard: {:?}", rsi);
+                }
+                if let Some(tx) = tx {
+                    let result = Self::accepted(response.as_ref()).then_some(());
+                    let _ = tx.send(EventRes::Out(OutEventRes::StreamRegister(result)));
+                }
             }
             OutEvent::StreamInTimeout(ss) => {
-                publish_guard_event("stream.input_timeout", format!("{ss:?}").into_bytes());
-                Register::close_stream_by_input(ss, InTimeoutEventRes::CloseAll);
+                let stream_id = ss.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.input_timeout", &ss)
+                        .await;
+                let event_res = response
+                    .as_ref()
+                    .filter(|response| response.accepted)
+                    .and_then(decode_hook_payload::<InTimeoutEventRes>)
+                    .unwrap_or_else(|| {
+                        publish_guard_event(
+                            "stream.input_timeout.fallback",
+                            format!("{ss:?}").into_bytes(),
+                        );
+                        warn!("stream_input_timeout fallback close all: stream_id={stream_id}");
+                        InTimeoutEventRes::CloseAll
+                    });
+                Register::close_stream_by_input(ss, event_res);
             }
             OutEvent::OnPlay(spi) => {
-                publish_guard_event("stream.on_play", format!("{spi:?}").into_bytes());
-                let accepted = true;
+                let stream_id = spi.base_stream_info.stream_id.clone();
+                let accepted = check_playback(
+                    &stream_id,
+                    &spi.token,
+                    spi.remote_addr.as_deref(),
+                    &format!("{:?}", spi.play_type),
+                )
+                .await;
+                if !accepted {
+                    publish_guard_event("stream.on_play.rejected", format!("{spi:?}").into_bytes());
+                }
                 if let Some(tx) = tx {
                     let _ = tx.send(EventRes::Out(OutEventRes::OnPlay(Some(accepted))));
                 }
             }
             OutEvent::StreamIdle(os) => {
-                publish_guard_event("stream.idle", format!("{os:?}").into_bytes());
-                let oe = if os.user_count == 0 {
-                    OutputEventRes::CloseAll
-                } else {
-                    OutputEventRes::CloseMuxer
-                };
-                Register::close_stream_by_output(os, oe);
+                let stream_id = os.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.idle", &os).await;
+                let event_res = response
+                    .as_ref()
+                    .filter(|response| response.accepted)
+                    .and_then(decode_hook_payload::<OutputEventRes>)
+                    .unwrap_or_else(|| {
+                        publish_guard_event("stream.idle.fallback", format!("{os:?}").into_bytes());
+                        warn!("stream_idle fallback local cleanup: stream_id={stream_id}");
+                        if os.user_count == 0 {
+                            OutputEventRes::CloseAll
+                        } else {
+                            OutputEventRes::CloseMuxer
+                        }
+                    });
+                Register::close_stream_by_output(os, event_res);
             }
             OutEvent::StreamUnknown(event) => {
                 publish_guard_event("stream.unknown", format!("{event:?}").into_bytes());
@@ -174,12 +245,39 @@ impl Event {
                 );
             }
             OutEvent::OffPlay(spi) => {
-                publish_guard_event("stream.off_play", format!("{spi:?}").into_bytes());
-                info!("off_play event sent to guard: {:?}", spi);
+                let stream_id = spi.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.off_play", &spi).await;
+                if Self::accepted(response.as_ref()) {
+                    info!("off_play event sent to session: {:?}", spi);
+                } else {
+                    publish_guard_event(
+                        "stream.off_play.fallback",
+                        format!("{spi:?}").into_bytes(),
+                    );
+                    warn!("off_play fallback event sent to guard: {:?}", spi);
+                }
             }
             OutEvent::EndRecord(info) => {
-                publish_guard_event("stream.end_record", format!("{info:?}").into_bytes());
-                info!("end_record event sent to guard: {:?}", info);
+                let response = match info.stream_id.as_deref() {
+                    Some(stream_id) => {
+                        Self::call_session_hook_by_stream_id(stream_id, "stream.end_record", &info)
+                            .await
+                    }
+                    None => {
+                        warn!("end_record stream_id missing");
+                        None
+                    }
+                };
+                if Self::accepted(response.as_ref()) {
+                    info!("end_record event sent to session: {:?}", info);
+                } else {
+                    publish_guard_event(
+                        "stream.end_record.fallback",
+                        format!("{info:?}").into_bytes(),
+                    );
+                    warn!("end_record fallback event sent to guard: {:?}", info);
+                }
             }
         }
     }

@@ -304,6 +304,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         payload_type: audio.payload_type,
         frame_duration_ms: audio.frame_duration_ms,
         input_timeout_secs: DEFAULT_TALK_INPUT_TIMEOUT_SECS,
+        session_hook_endpoint: Some(crate::state::SessionGrpcConf::get().endpoint()),
     };
     let open_resp = match stream_rpc::talk_open(&stream_node, &open_req).await {
         Ok(data) => data,
@@ -558,6 +559,7 @@ async fn start_invite_stream(
     let live = matches!(am, AccessMode::Live);
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, live).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
+    let session_hook_endpoint = crate::state::SessionGrpcConf::get().endpoint();
     let msc = match custom_media_config {
         None => MediaConfig {
             ssrc: u32ssrc,
@@ -569,6 +571,7 @@ async fn start_invite_stream(
                 fmt: CMaf::default(),
             }),
             out_idle_timeout: None,
+            session_hook_endpoint: Some(session_hook_endpoint.clone()),
         },
         Some(cmc) => MediaConfig {
             ssrc: u32ssrc,
@@ -578,6 +581,7 @@ async fn start_invite_stream(
             output: cmc.output,
             filter: cmc.filter,
             out_idle_timeout: None,
+            session_hook_endpoint: Some(session_hook_endpoint.clone()),
         },
     };
 

@@ -190,6 +190,7 @@ pub struct StreamMetadata {
     pub converter: ConverterLayer,
     pub media_ext: Option<MediaExt>,
     pub output: OutputLayer,
+    pub session_hook_endpoint: Option<String>,
 }
 impl StreamMetadata {
     fn new(
@@ -212,6 +213,7 @@ impl StreamMetadata {
             converter,
             media_ext: None,
             output,
+            session_hook_endpoint: None,
         }
     }
     //云端录制在init_media时，初始化输出端
@@ -842,6 +844,13 @@ impl Register {
         Ok(())
     }
 
+    pub fn session_hook_endpoint(stream_id: &str) -> Option<String> {
+        let arc = Self::get().inner.clone();
+        arc.stream_metadata_map
+            .get(stream_id)
+            .and_then(|meta| meta.session_hook_endpoint.clone())
+    }
+
     pub fn build_stream_info(stream_id: Arc<str>) -> Option<BaseStreamInfo> {
         let arc = Self::get().inner.clone();
         arc.stream_metadata_map.get(&stream_id).map(|meta| {
@@ -892,8 +901,9 @@ impl Register {
         let out_idle_timeout = media_config
             .out_idle_timeout
             .unwrap_or_else(|| arc.stream_conf.out_idle_timeout);
-        let metadata =
+        let mut metadata =
             StreamMetadata::new(ssrc, in_wait_timeout, out_idle_timeout, converter, output);
+        metadata.session_hook_endpoint = media_config.session_hook_endpoint;
         let event = metadata.build_from_output_kind(
             media_config.output,
             ssrc,

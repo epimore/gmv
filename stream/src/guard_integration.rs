@@ -21,8 +21,9 @@ use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
 };
 use gmv_protocol::guard::v1::{
-    EventPriority, NodeEvent, NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
-    RegisterNodeRequest, ResourceReport, ResourceState, node_to_guard_message,
+    CheckPlaybackRequest, EventPriority, NodeEvent, NodeHealth, NodeHeartbeat,
+    NodeResourceSnapshot, NodeToGuardMessage, RegisterNodeRequest, ResourceReport, ResourceState,
+    guard_control_client::GuardControlClient, node_to_guard_message,
 };
 use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
@@ -31,16 +32,83 @@ use gmv_protocol::stream::v1::{
     StopReceiveResponse, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState,
     StreamUnitResponse, stream_control_server::StreamControl,
 };
+use tonic::transport::Channel;
 
 use crate::io::local::mp4::Mp4OutputInnerEvent;
 use crate::io::talk::TalkManager;
 use crate::state::register::Register;
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
+static GUARD_CHANNEL: OnceLock<RpcChannelConfig> = OnceLock::new();
 static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub fn init_guard_event_sender(sender: NodeEventSender) {
     let _ = GUARD_EVENT_SENDER.set(sender);
+}
+
+pub fn init_guard_channel(channel: RpcChannelConfig) {
+    let _ = GUARD_CHANNEL.set(channel);
+}
+
+async fn guard_control_client() -> GlobalResult<GuardControlClient<Channel>> {
+    let Some(channel_config) = GUARD_CHANNEL.get() else {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "guard control rpc channel is not initialized",
+            |msg| base::log::error!("{msg}"),
+        ));
+    };
+    let channel = base_rpc::connect_channel(channel_config)
+        .await
+        .map_err(|err| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::Network.code(),
+                "connect guard control rpc failed",
+                |msg| base::log::error!("{msg}: endpoint={}, err={err:?}", channel_config.endpoint),
+            )
+        })?;
+    Ok(GuardControlClient::new(channel))
+}
+
+pub async fn check_playback(
+    stream_id: &str,
+    token: &str,
+    remote_addr: Option<&str>,
+    output_type: &str,
+) -> bool {
+    let mut client = match guard_control_client().await {
+        Ok(client) => client,
+        Err(err) => {
+            base::log::warn!("guard playback check skipped: stream_id={stream_id}, err={err}");
+            return false;
+        }
+    };
+    match client
+        .check_playback(tonic::Request::new(CheckPlaybackRequest {
+            stream_id: stream_id.to_string(),
+            token: token.to_string(),
+            remote_addr: remote_addr.unwrap_or_default().to_string(),
+            output_type: output_type.to_string(),
+        }))
+        .await
+    {
+        Ok(response) => {
+            let response = response.into_inner();
+            if !response.accepted {
+                base::log::warn!(
+                    "guard playback rejected: stream_id={stream_id}, output_type={output_type}, error={:?}",
+                    response.error
+                );
+            }
+            response.accepted
+        }
+        Err(err) => {
+            base::log::warn!(
+                "guard playback check failed: stream_id={stream_id}, output_type={output_type}, err={err:?}"
+            );
+            false
+        }
+    }
 }
 
 pub fn publish_guard_event(topic: &str, payload: impl Into<Vec<u8>>) {

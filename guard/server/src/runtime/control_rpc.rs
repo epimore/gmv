@@ -4,9 +4,10 @@ use gmv_protocol::common::v1::{
 };
 use gmv_protocol::guard::v1::guard_control_server::GuardControl;
 use gmv_protocol::guard::v1::{
-    AllocateStreamRequest, AllocateStreamResponse, LeaseRequest as ProtoLeaseRequest,
-    LeaseResponse, LeaseState as ProtoLeaseState, QueryNodeRequest, QueryNodeResponse,
-    QueryRouteRequest, QueryRouteResponse, RouteState as ProtoRouteState,
+    AllocateStreamRequest, AllocateStreamResponse, CheckPlaybackRequest, CheckPlaybackResponse,
+    LeaseRequest as ProtoLeaseRequest, LeaseResponse, LeaseState as ProtoLeaseState,
+    QueryNodeRequest, QueryNodeResponse, QueryRouteRequest, QueryRouteResponse,
+    RouteState as ProtoRouteState,
 };
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -132,6 +133,34 @@ impl GuardControl for GuardControlRpc {
         Ok(Response::new(QueryNodeResponse {
             current: Some(proto_identity(&node.identity)),
             endpoints: node.endpoints.into_iter().map(proto_endpoint).collect(),
+        }))
+    }
+
+    async fn check_playback(
+        &self,
+        request: Request<CheckPlaybackRequest>,
+    ) -> Result<Response<CheckPlaybackResponse>, Status> {
+        let request = request.into_inner();
+        if request.stream_id.is_empty() || request.token.is_empty() {
+            return Ok(Response::new(CheckPlaybackResponse {
+                accepted: false,
+                error: Some(gmv_protocol::common::v1::ErrorDetail {
+                    code: "invalid_playback".to_string(),
+                    message: "stream_id and token are required".to_string(),
+                    metadata: Default::default(),
+                }),
+            }));
+        }
+        let accepted = self.store.leases().into_iter().any(|lease| {
+            lease.resource_id == request.stream_id && lease.state == LeaseState::Confirmed
+        });
+        Ok(Response::new(CheckPlaybackResponse {
+            accepted,
+            error: (!accepted).then(|| gmv_protocol::common::v1::ErrorDetail {
+                code: "stream_not_active".to_string(),
+                message: "stream has no confirmed lease".to_string(),
+                metadata: Default::default(),
+            }),
         }))
     }
 

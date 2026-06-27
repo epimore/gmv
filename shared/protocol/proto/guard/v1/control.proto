@@ -52,6 +52,7 @@ service GuardControl {
   rpc ReleaseLease(LeaseRequest) returns (LeaseResponse);
   rpc QueryNode(QueryNodeRequest) returns (QueryNodeResponse);
   rpc QueryRoute(QueryRouteRequest) returns (QueryRouteResponse);
+  rpc CheckPlayback(CheckPlaybackRequest) returns (CheckPlaybackResponse);
 }
 
 message AllocateStreamRequest {
@@ -87,6 +88,19 @@ enum LeaseState {
   LEASE_STATE_FAILED = 3;
   LEASE_STATE_RELEASED = 4;
   LEASE_STATE_EXPIRED = 5;
+}
+
+
+message CheckPlaybackRequest {
+  string stream_id = 1;
+  string token = 2;
+  string remote_addr = 3;
+  string output_type = 4;
+}
+
+message CheckPlaybackResponse {
+  bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
 }
 
 message QueryNodeRequest {

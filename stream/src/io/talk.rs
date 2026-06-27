@@ -26,6 +26,7 @@ use parking_lot::Mutex;
 
 use crate::general::cfg::StreamConf;
 use crate::guard_integration::publish_guard_event;
+use crate::io::call::call_session_hook_rpc;
 use crate::state::register::Register;
 
 const TALK_INPUT_QUEUE_SIZE: usize = 32;
@@ -53,6 +54,7 @@ struct TalkSession {
     target: Arc<Mutex<Option<TalkTarget>>>,
     input_tx: mpsc::Sender<Vec<u8>>,
     cancel: CancellationToken,
+    session_hook_endpoint: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +111,7 @@ impl TalkManager {
             target: target.clone(),
             input_tx,
             cancel: cancel.clone(),
+            session_hook_endpoint: req.session_hook_endpoint.clone(),
         };
 
         match TALK_SESSIONS.entry(req.talk_id.clone()) {
@@ -415,9 +418,9 @@ async fn run_rtp_sender(
         }
     }
 
-    if TALK_SESSIONS.remove(&talk_id).is_some() {
+    if let Some((_, session)) = TALK_SESSIONS.remove(&talk_id) {
         close_talk_target(&output_tx, close_reason, current_target(&target));
-        notify_talk_closed(&talk_id, close_reason).await;
+        notify_talk_closed(&talk_id, close_reason, session.session_hook_endpoint).await;
     }
     info!("talk sender closed: talk_id={talk_id}, ssrc={ssrc}");
 }
@@ -454,14 +457,35 @@ async fn send_rtp_packet(
     }
 }
 
-async fn notify_talk_closed(talk_id: &str, reason: &str) {
+async fn notify_talk_closed(talk_id: &str, reason: &str, session_hook_endpoint: Option<String>) {
     let event = TalkClosedEvent {
         talk_id: talk_id.to_string(),
         reason: reason.to_string(),
     };
-    publish_guard_event("stream.talk_closed", format!("{event:?}").into_bytes());
+    if let Some(endpoint) = session_hook_endpoint.as_deref() {
+        if let Some(response) = call_session_hook_rpc(endpoint, "stream.talk_closed", &event).await
+        {
+            if response.accepted {
+                info!(
+                    "talk closed event sent to session: talk_id={}, reason={}",
+                    talk_id, reason
+                );
+                return;
+            }
+            warn!(
+                "talk closed session hook rejected: talk_id={}, reason={}, error={:?}",
+                talk_id, reason, response.error
+            );
+        }
+    } else {
+        warn!("talk closed session hook endpoint missing: talk_id={talk_id}");
+    }
+    publish_guard_event(
+        "stream.talk_closed.fallback",
+        format!("{event:?}").into_bytes(),
+    );
     info!(
-        "talk closed event sent to guard: talk_id={}, reason={}",
+        "talk closed fallback event sent to guard: talk_id={}, reason={}",
         talk_id, reason
     );
 }

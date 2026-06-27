@@ -43,6 +43,10 @@ impl SessionGrpcConf {
     pub fn get() -> Self {
         Self::conf()
     }
+
+    pub fn endpoint(&self) -> String {
+        format!("http://{}", self.addr)
+    }
 }
 
 fn env_socket_addr(addr_env: &str, port_env: &str, default: &str) -> SocketAddr {
