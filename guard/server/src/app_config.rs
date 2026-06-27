@@ -21,6 +21,8 @@ pub struct GuardAppConfig {
     #[serde(default)]
     pub internal_comm: InternalCommConfig,
     #[serde(default)]
+    pub registry: RegistryConfig,
+    #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
@@ -42,6 +44,7 @@ impl GuardAppConfig {
         self.http.validate()?;
         self.grpc.validate()?;
         self.internal_comm.validate()?;
+        self.registry.validate()?;
         self.database.validate()?;
         self.bootstrap.validate()?;
         self.media.validate()?;
@@ -160,6 +163,79 @@ impl Default for InternalCommMode {
     fn default() -> Self {
         Self::Rpc
     }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct RegistryConfig {
+    #[serde(default = "default_true")]
+    pub allow_unknown_nodes: bool,
+    #[serde(default)]
+    pub allowed_nodes: Vec<AllowedNodeConfig>,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            allow_unknown_nodes: true,
+            allowed_nodes: Vec::new(),
+        }
+    }
+}
+
+impl RegistryConfig {
+    fn validate(&self) -> GuardResult<()> {
+        let mut seen = std::collections::HashSet::new();
+        for node in &self.allowed_nodes {
+            if node.id.trim().is_empty() || node.kind.trim().is_empty() {
+                return Err(GuardError::InvalidConfig(
+                    "guard.registry.allowed_nodes id and kind are required".to_string(),
+                ));
+            }
+            if !seen.insert(node.id.clone()) {
+                return Err(GuardError::InvalidConfig(format!(
+                    "guard.registry.allowed_nodes duplicate id {}",
+                    node.id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_policy(&self) -> crate::registry::RegistryPolicy {
+        let allowed_nodes = self
+            .allowed_nodes
+            .iter()
+            .filter_map(|node| {
+                let kind = match node.kind.as_str() {
+                    "session" => crate::core::NodeKind::Session,
+                    "stream" => crate::core::NodeKind::Stream,
+                    "avai" => crate::core::NodeKind::Avai,
+                    _ => return None,
+                };
+                Some((
+                    node.id.clone(),
+                    crate::registry::AllowedNode {
+                        kind,
+                        required_capabilities: node.required_capabilities.clone(),
+                    },
+                ))
+            })
+            .collect();
+        crate::registry::RegistryPolicy {
+            allow_unknown_nodes: self.allow_unknown_nodes,
+            allowed_nodes,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct AllowedNodeConfig {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub required_capabilities: Vec<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -847,6 +923,7 @@ mod tests {
                 ..GrpcConfig::default()
             },
             internal_comm: InternalCommConfig::default(),
+            registry: RegistryConfig::default(),
             database: DatabaseConfig::default(),
             bootstrap: BootstrapConfig::default(),
             simulator: SimulatorConfig::default(),

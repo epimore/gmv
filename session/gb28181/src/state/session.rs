@@ -43,6 +43,13 @@ pub struct StreamCloseStart {
     pub newly_started: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct GuardLease {
+    pub lease_id: String,
+    pub route_id: String,
+    pub instance_id: String,
+}
+
 pub struct StreamCloseInfo {
     pub stream_id: String,
     pub generation: u64,
@@ -51,6 +58,7 @@ pub struct StreamCloseInfo {
     pub ssrc: u32,
     pub call_id: String,
     pub last_error: Option<String>,
+    pub guard_lease: Option<GuardLease>,
 }
 
 #[derive(Clone)]
@@ -94,6 +102,7 @@ pub struct TalkSessionState {
     pub closing_generation: Option<u64>,
     pub bye_inflight_seq: Option<u32>,
     pub close_last_error: Option<String>,
+    pub guard_lease: Option<GuardLease>,
 }
 
 pub struct TalkCloseStart {
@@ -118,6 +127,7 @@ pub struct TalkCloseInfo {
     pub ssrc: u32,
     pub call_id: String,
     pub last_error: Option<String>,
+    pub guard_lease: Option<GuardLease>,
 }
 
 impl Cache {
@@ -136,10 +146,9 @@ impl Cache {
             }
         }
         let mut set = BTreeSet::new();
-        let conf = state::StreamConf::get_stream_conf();
-        for (k, _v) in conf.node_map.iter() {
-            let count = map.get(k).unwrap_or(&0);
-            set.insert((*count, k.clone()));
+        for node_id in state::StreamNodeRegistry::node_names() {
+            let count = map.get(&node_id).unwrap_or(&0);
+            set.insert((*count, node_id));
         }
         set
     }
@@ -165,6 +174,33 @@ impl Cache {
         seq: u32,
         am: AccessMode,
     ) -> bool {
+        Self::stream_map_insert_info_with_lease(
+            stream_id,
+            device_id,
+            channel_id,
+            ssrc,
+            proxy_addr,
+            stream_node_name,
+            call_id,
+            seq,
+            am,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn stream_map_insert_info_with_lease(
+        stream_id: String,
+        device_id: String,
+        channel_id: String,
+        ssrc: u32,
+        proxy_addr: String,
+        stream_node_name: String,
+        call_id: String,
+        seq: u32,
+        am: AccessMode,
+        guard_lease: Option<GuardLease>,
+    ) -> bool {
         Self::stream_map_insert(
             stream_id,
             device_id,
@@ -176,6 +212,7 @@ impl Cache {
             seq,
             am,
             false,
+            guard_lease,
         )
     }
 
@@ -200,6 +237,7 @@ impl Cache {
             seq,
             am,
             true,
+            None,
         )
     }
 
@@ -215,6 +253,7 @@ impl Cache {
         seq: u32,
         am: AccessMode,
         restored: bool,
+        guard_lease: Option<GuardLease>,
     ) -> bool {
         match GENERAL_CACHE.shared.stream_map.entry(stream_id) {
             Entry::Occupied(_) => false,
@@ -230,6 +269,7 @@ impl Cache {
                     am,
                     ssrc,
                     restored,
+                    guard_lease,
                     lifecycle: StreamLifecycle::Playing,
                 });
                 true
@@ -355,6 +395,14 @@ impl Cache {
             .is_some_and(|stream| stream.is_closing())
     }
 
+    pub fn stream_clear_guard_lease(stream_id: &str) -> Option<GuardLease> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
+            .and_then(|mut stream| stream.guard_lease.take())
+    }
+
     pub fn stream_close_begin(stream_id: &str) -> Option<StreamCloseStart> {
         let mut stream = GENERAL_CACHE.shared.stream_map.get_mut(stream_id)?;
         let generation = STREAM_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed);
@@ -475,6 +523,7 @@ impl Cache {
             ssrc: stream.ssrc,
             call_id: stream.call_id,
             last_error,
+            guard_lease: stream.guard_lease,
         })
     }
 
@@ -752,6 +801,7 @@ impl Cache {
             ssrc: talk.ssrc,
             call_id: talk.call_id,
             last_error: talk.close_last_error,
+            guard_lease: talk.guard_lease,
         })
     }
 
@@ -1261,6 +1311,7 @@ struct StreamTable {
     am: AccessMode,
     ssrc: u32,
     restored: bool,
+    guard_lease: Option<GuardLease>,
     lifecycle: StreamLifecycle,
 }
 
@@ -1433,6 +1484,7 @@ mod tests {
             am: AccessMode::Live,
             ssrc: 1001,
             restored: false,
+            guard_lease: None,
             lifecycle: StreamLifecycle::Playing,
         }
     }
@@ -1700,6 +1752,7 @@ mod tests {
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,
+            guard_lease: None,
         });
 
         let start = Cache::talk_close_begin(&talk_id).unwrap();

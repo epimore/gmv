@@ -12,7 +12,6 @@ use crate::gb::SessionConf;
 use crate::gb::sip::runtime_cache::SipRuntimeCache;
 use crate::register::core::{DeviceSession, Register};
 use crate::service::stream_rpc;
-use crate::state::StreamConf;
 use crate::state::session::{AccessMode, Cache};
 use crate::storage::dialog_session::{
     DialogSessionType, DialogState, DialogTransport, SipDialogSession, SipDialogSessionRepository,
@@ -79,14 +78,6 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
         .parse::<u32>()
         .map_err(|_| invalid_recovery(session, "durable dialog SSRC is invalid"))?;
     if session.session_type == DialogSessionType::Talk {
-        if StreamConf::get_stream_conf()
-            .node_map
-            .get(&session.media_node_id)
-            .is_none()
-        {
-            mark_orphan(session).await?;
-            return Ok(());
-        }
         if session.transport == DialogTransport::Udp
             && let Err(err) = ensure_udp_device_session(session).await
         {
@@ -109,6 +100,7 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,
+            guard_lease: None,
         }) {
             mark_orphan(session).await?;
             return Ok(());
@@ -125,14 +117,6 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
         return Ok(());
     }
     let access_mode = access_mode(session.session_type)?;
-    if StreamConf::get_stream_conf()
-        .node_map
-        .get(&session.media_node_id)
-        .is_none()
-    {
-        mark_orphan(session).await?;
-        return Ok(());
-    }
     let media_online = query_media_online(session, ssrc).await?;
 
     if session.transport == DialogTransport::Udp {
@@ -204,22 +188,14 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
 }
 
 async fn query_talk_online(session: &SipDialogSession) -> GlobalResult<bool> {
-    let stream_conf = StreamConf::get_stream_conf();
-    let node = stream_conf
-        .node_map
-        .get(&session.media_node_id)
-        .ok_or_else(|| invalid_recovery(session, "configured media node is missing"))?;
-    stream_rpc::talk_online(node, &session.stream_id).await
+    let node = crate::guard_integration::ensure_stream_node(&session.media_node_id).await?;
+    stream_rpc::talk_online(&node, &session.stream_id).await
 }
 
 async fn query_media_online(session: &SipDialogSession, ssrc: u32) -> GlobalResult<bool> {
-    let stream_conf = StreamConf::get_stream_conf();
-    let node = stream_conf
-        .node_map
-        .get(&session.media_node_id)
-        .ok_or_else(|| invalid_recovery(session, "configured media node is missing"))?;
+    let node = crate::guard_integration::ensure_stream_node(&session.media_node_id).await?;
     stream_rpc::stream_online(
-        node,
+        &node,
         &StreamKey {
             ssrc,
             stream_id: Some(session.stream_id.clone()),

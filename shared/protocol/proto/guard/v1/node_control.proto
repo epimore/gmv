@@ -20,6 +20,7 @@ message RegisterNodeRequest {
   uint32 capacity = 8;
   string zone = 9;
   bool takeover = 10;
+  map<string, string> config = 11;
 }
 
 message RegisterNodeResponse {

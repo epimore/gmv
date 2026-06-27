@@ -1,5 +1,4 @@
 use crate::guard_integration::publish_guard_event;
-use crate::io::http::call::{decode_hook_payload, try_session_hook_rpc};
 use crate::io::local::mp4::LocalStoreMp4Context;
 use crate::state::layer::output_layer::OutputLayer;
 use crate::state::register::{Inner, Register, TimeScheduleKey};
@@ -145,102 +144,42 @@ impl Event {
         match out_event {
             OutEvent::StreamRegister(rsi) => {
                 publish_guard_event("stream.registered", format!("{rsi:?}").into_bytes());
-                if let Some(response) = try_session_hook_rpc("stream.registered", &rsi).await
-                    && response.error.is_none()
-                    && response.accepted
-                {
-                    info!("stream_register rpc accepted: {:?}", rsi);
-                } else {
-                    warn!("stream_register rpc not accepted: {:?}", rsi);
-                }
+                info!("stream_register event sent to guard: {:?}", rsi);
             }
             OutEvent::StreamInTimeout(ss) => {
                 publish_guard_event("stream.input_timeout", format!("{ss:?}").into_bytes());
-                let mut oe = InTimeoutEventRes::CloseAll;
-                if let Some(response) = try_session_hook_rpc("stream.input_timeout", &ss).await {
-                    if response.error.is_none() && response.accepted {
-                        if let Some(oer) = decode_hook_payload(&response) {
-                            oe = oer;
-                        }
-                    } else {
-                        warn!("stream_input_timeout rpc not accepted: response={response:?}");
-                    }
-                }
-                Register::close_stream_by_input(ss, oe);
+                Register::close_stream_by_input(ss, InTimeoutEventRes::CloseAll);
             }
             OutEvent::OnPlay(spi) => {
                 publish_guard_event("stream.on_play", format!("{spi:?}").into_bytes());
-                let accepted =
-                    if let Some(response) = try_session_hook_rpc("stream.on_play", &spi).await {
-                        if response.error.is_none() {
-                            response.accepted
-                        } else {
-                            warn!("on_play rpc failed: response={response:?}");
-                            false
-                        }
-                    } else {
-                        false
-                    };
+                let accepted = true;
                 if let Some(tx) = tx {
                     let _ = tx.send(EventRes::Out(OutEventRes::OnPlay(Some(accepted))));
                 }
             }
             OutEvent::StreamIdle(os) => {
                 publish_guard_event("stream.idle", format!("{os:?}").into_bytes());
-                let mut oe = if os.user_count == 0 {
+                let oe = if os.user_count == 0 {
                     OutputEventRes::CloseAll
                 } else {
                     OutputEventRes::CloseMuxer
                 };
-                if let Some(response) = try_session_hook_rpc("stream.idle", &os).await {
-                    if response.error.is_none() && response.accepted {
-                        if let Some(oer) = decode_hook_payload(&response) {
-                            oe = oer;
-                        }
-                    } else {
-                        warn!("stream_idle rpc not accepted: response={response:?}");
-                    }
-                }
                 Register::close_stream_by_output(os, oe);
             }
             OutEvent::StreamUnknown(event) => {
                 publish_guard_event("stream.unknown", format!("{event:?}").into_bytes());
-                match try_session_hook_rpc("stream.unknown", &event).await {
-                    Some(response) if response.error.is_none() && response.accepted => {
-                        info!(
-                            "stream_unknown rpc accepted: media_node={}, ssrc={}",
-                            event.media_node_id, event.ssrc
-                        );
-                    }
-                    Some(response) => warn!(
-                        "stream_unknown rpc not accepted: media_node={}, ssrc={}, response={:?}",
-                        event.media_node_id, event.ssrc, response
-                    ),
-                    None => warn!(
-                        "stream_unknown rpc unavailable: media_node={}, ssrc={}",
-                        event.media_node_id, event.ssrc
-                    ),
-                }
+                info!(
+                    "stream_unknown event sent to guard: media_node={}, ssrc={}",
+                    event.media_node_id, event.ssrc
+                );
             }
             OutEvent::OffPlay(spi) => {
                 publish_guard_event("stream.off_play", format!("{spi:?}").into_bytes());
-                if let Some(response) = try_session_hook_rpc("stream.off_play", &spi).await {
-                    if response.error.is_none() && response.accepted {
-                        info!("off_play rpc accepted: {:?}", spi);
-                    } else {
-                        warn!("off_play rpc not accepted: response={response:?}");
-                    }
-                }
+                info!("off_play event sent to guard: {:?}", spi);
             }
             OutEvent::EndRecord(info) => {
                 publish_guard_event("stream.end_record", format!("{info:?}").into_bytes());
-                if let Some(response) = try_session_hook_rpc("stream.end_record", &info).await {
-                    if response.error.is_none() && response.accepted {
-                        info!("end_record rpc accepted: {:?}", info);
-                    } else {
-                        warn!("end_record rpc not accepted: response={response:?}");
-                    }
-                }
+                info!("end_record event sent to guard: {:?}", info);
             }
         }
     }

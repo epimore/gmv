@@ -69,7 +69,26 @@ impl AvaiGuardNode {
             capacity: 100,
             zone: String::new(),
             takeover: false,
+            config: self.config_summary(),
         }
+    }
+
+    fn config_summary(&self) -> HashMap<String, String> {
+        HashMap::from([
+            ("node_id".to_string(), self.identity.node_id.clone()),
+            (
+                "software_version".to_string(),
+                self.software_version.clone(),
+            ),
+            (
+                "endpoint_count".to_string(),
+                self.endpoints.len().to_string(),
+            ),
+            (
+                "capability_count".to_string(),
+                self.capabilities.len().to_string(),
+            ),
+        ])
     }
 
     pub fn heartbeat_message(

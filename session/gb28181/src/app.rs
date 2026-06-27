@@ -8,7 +8,7 @@ use base::log::{error, info, warn};
 use base::logger;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::UdpSocket;
 use std::sync::Arc;
 
 use crate::guard_integration::{
@@ -81,10 +81,7 @@ impl
         let http = self.http;
         let node_id = self.session_conf.domain_id.clone();
         let http_port = http.port;
-        let control_grpc_port = std::env::var("GMV_SESSION_CONTROL_GRPC_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(19081);
+        let grpc = crate::state::SessionGrpcConf::get();
         let started_at_epoch_ms = now_epoch_ms();
         let (http_listener, tu) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
@@ -102,17 +99,15 @@ impl
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
                 scheme: "grpc".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: u32::from(control_grpc_port),
+                host: grpc.addr.ip().to_string(),
+                port: u32::from(grpc.addr.port()),
                 mode: EndpointMode::Single as i32,
                 labels: HashMap::new(),
             });
             let control_identity = node.identity.clone();
             let control_cancel = network_rt.cancel.clone();
             base::tokio::spawn(async move {
-                let address: SocketAddr = format!("127.0.0.1:{control_grpc_port}")
-                    .parse()
-                    .expect("loopback control address must be valid");
+                let address = grpc.addr;
                 let rpc = SessionControlRpc::new(SessionControlAdapter::new(control_identity));
                 if let Err(err) = tonic::transport::Server::builder()
                     .add_service(SessionControlServer::new(rpc))
@@ -123,9 +118,6 @@ impl
                     error!("session control RPC server stopped with error: {err}");
                 }
             });
-            if let Ok(endpoint) = std::env::var("GMV_GUARD_ENDPOINT") {
-                node.guard_channel.endpoint = endpoint;
-            }
             let mut reporter = NodeReporterConfig::new(
                 node.guard_channel.clone(),
                 node.register_request(NodeResourceSnapshot::default()),

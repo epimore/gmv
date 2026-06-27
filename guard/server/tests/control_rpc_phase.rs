@@ -34,6 +34,7 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
                     zone: Some("z1".to_string()),
                     now_ms: 1_000,
                     takeover: false,
+                    config: Default::default(),
                 })
                 .unwrap();
 

@@ -48,6 +48,7 @@ mod tests {
                         zone: None,
                         now_ms: now_ms() - 1_000,
                         takeover: false,
+                        config: Default::default(),
                     })
                     .unwrap();
                 let handle = spawn(registry, 10);

@@ -3,12 +3,17 @@ log:
   prefix: stream
   store_path: ./logs
 
+guard:
+  endpoint: http://127.0.0.1:18080 # guard内部gRPC地址，stream向guard注册、上报事件
+
 server:
   name: s1 #服务标识身份,流媒体集群唯一标识
+  host: 127.0.0.1 #注册到guard的本节点访问地址；分布式部署时配置为节点内网或业务可达地址
   rtp_port: 18568 #监听rtp媒体流端口;
   rtcp_port: 18569 #监听rtcp媒体流端口;  暂未实现
   http_port: 18570 #流媒体API端口
-  hook_rpc_uri: http://127.0.0.1:19081 #session hook gRPC 地址；为空时事件只记录告警，不再回退 HTTP
+  grpc:
+    addr: 127.0.0.1:19082 #stream内部控制gRPC地址，注册到guard并用于节点间控制
   #流代理地址:http://127.0.0.1:[server.http_port]，用于如nginx代理
   #默认播放地址：http://127.0.0.1:[server.http_port]/[server.name]/play/[stream_id].flv?gmv-token=uxxx
   proxy_addr: http://127.0.0.1:18570 #eg:https://epimore.cn/s1/play/4FEqqzfqsa0Vzqqq2lqqc1lqq4fa.flv?gmv-token=uxxx;

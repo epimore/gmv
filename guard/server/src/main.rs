@@ -74,7 +74,10 @@ fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
         let users = persistent.load_users().await?;
         let user_repository = persistent.user_repository();
         let store = InMemoryGuardStore::default();
-        let registry = guard::registry::RegistryService::new(store.clone());
+        let registry = guard::registry::RegistryService::with_policy(
+            store.clone(),
+            config.registry.to_policy(),
+        );
         let simulator = if web_config.simulator_enabled {
             let simulator = Simulator::new(store.clone(), EndpointMode::Single);
             simulator.bootstrap(0)?;

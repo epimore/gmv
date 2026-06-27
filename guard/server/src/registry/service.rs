@@ -1,5 +1,5 @@
 use crate::core::{
-    ConnectionState, GuardError, GuardResult, HealthState, NodeIdentity, SchedulingState,
+    ConnectionState, GuardError, GuardResult, HealthState, NodeIdentity, NodeKind, SchedulingState,
 };
 use crate::registry::health::scheduling_for_health;
 use crate::store::InMemoryGuardStore;
@@ -15,6 +15,28 @@ pub struct RegisterRequest {
     pub zone: Option<String>,
     pub now_ms: i64,
     pub takeover: bool,
+    pub config: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegistryPolicy {
+    pub allow_unknown_nodes: bool,
+    pub allowed_nodes: std::collections::HashMap<String, AllowedNode>,
+}
+
+impl Default for RegistryPolicy {
+    fn default() -> Self {
+        Self {
+            allow_unknown_nodes: true,
+            allowed_nodes: std::collections::HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AllowedNode {
+    pub kind: NodeKind,
+    pub required_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,11 +59,16 @@ pub struct HeartbeatReport {
 #[derive(Debug, Clone)]
 pub struct RegistryService {
     store: InMemoryGuardStore,
+    policy: RegistryPolicy,
 }
 
 impl RegistryService {
     pub fn new(store: InMemoryGuardStore) -> Self {
-        Self { store }
+        Self::with_policy(store, RegistryPolicy::default())
+    }
+
+    pub fn with_policy(store: InMemoryGuardStore, policy: RegistryPolicy) -> Self {
+        Self { store, policy }
     }
 
     pub fn register(&self, request: RegisterRequest) -> GuardResult<RegisterDecision> {
@@ -52,6 +79,7 @@ impl RegistryService {
             ));
         }
         validate_endpoints(&request.endpoints)?;
+        self.validate_policy(&request)?;
         let decision = match self.store.get_node(&request.identity.node_id) {
             None => RegisterDecision::Accepted,
             Some(existing) if existing.identity.instance_id == request.identity.instance_id => {
@@ -78,6 +106,7 @@ impl RegistryService {
             pending_leases: 0,
             host_metrics: request.host_metrics,
             business_metrics: std::collections::HashMap::new(),
+            config: request.config,
             zone: request.zone,
             last_seen_at_ms: request.now_ms,
             generation: 1,
@@ -85,6 +114,33 @@ impl RegistryService {
         };
         self.store.upsert_node(record);
         Ok(decision)
+    }
+
+    fn validate_policy(&self, request: &RegisterRequest) -> GuardResult<()> {
+        let Some(allowed) = self.policy.allowed_nodes.get(&request.identity.node_id) else {
+            if self.policy.allow_unknown_nodes {
+                return Ok(());
+            }
+            return Err(GuardError::InvalidIdentity(format!(
+                "node {} is not allowed",
+                request.identity.node_id
+            )));
+        };
+        if allowed.kind != request.identity.kind {
+            return Err(GuardError::InvalidIdentity(format!(
+                "node {} kind mismatch",
+                request.identity.node_id
+            )));
+        }
+        for capability in &allowed.required_capabilities {
+            if !request.capabilities.iter().any(|value| value == capability) {
+                return Err(GuardError::InvalidConfig(format!(
+                    "node {} missing required capability {}",
+                    request.identity.node_id, capability
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn heartbeat(&self, report: HeartbeatReport) -> GuardResult<()> {

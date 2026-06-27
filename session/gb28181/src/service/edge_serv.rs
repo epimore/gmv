@@ -4,7 +4,6 @@ use crate::gb::sip::command as sip_command;
 use crate::service::{KEY_SNAPSHOT_IMAGE, SNAPSHOT_IDLE_EXPIRES};
 use crate::state;
 use crate::state::model::SnapshotImage;
-use crate::storage::pics::Pics;
 use crate::utils::edge_token;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
@@ -13,20 +12,13 @@ use base::tokio::sync::mpsc;
 use base::tokio::time::Instant;
 
 pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
-    let pics_conf = Pics::get_pics_by_conf();
     let (token, session_id) = edge_token::build_token_session_id(
         &info.device_channel_ident.device_id,
         &info.device_channel_ident.channel_id,
     )?;
-    let push_url = pics_conf.push_url.clone().ok_or_else(|| {
-        GlobalError::new_biz_error(
-            BaseErrorCode::InvalidState.code(),
-            "snapshot push URL is not configured",
-            |msg| error!("{msg}"),
-        )
-    })?;
+    let push_url = crate::state::GuardConf::get_or_default().picture_upload_url();
     let url = format!("{}/{}", push_url.trim_end_matches('/'), token);
-    let count = info.count.unwrap_or_else(|| pics_conf.num);
+    let count = info.count.unwrap_or(1);
     if count == 0 {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidRequest.code(),
@@ -44,7 +36,7 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
         &info.device_channel_ident.device_id,
         &info.device_channel_ident.channel_id,
         count,
-        pics_conf.interval,
+        info.interval.unwrap_or(1),
         &url,
         &session_id,
     )

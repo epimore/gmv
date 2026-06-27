@@ -86,6 +86,7 @@ async fn send_bye(command: StreamByeCommand) {
                     "stream close completed: device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
                     info.device_id, info.channel_id, info.stream_id, info.ssrc, info.call_id
                 );
+                release_guard_lease(info.guard_lease);
             }
         }
         Err(err) => mark_failed(
@@ -130,6 +131,7 @@ fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
             info.generation,
             reason
         );
+        release_guard_lease(info.guard_lease);
         let stream_id = info.stream_id;
         base::tokio::spawn(async move {
             let Ok(Some(session)) = SipDialogSessionRepository::find_by_stream_id(&stream_id).await
@@ -151,5 +153,11 @@ fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
                 .await;
             }
         });
+    }
+}
+
+fn release_guard_lease(lease: Option<crate::state::session::GuardLease>) {
+    if let Some(lease) = lease {
+        base::tokio::spawn(crate::guard_integration::release_stream_lease(lease));
     }
 }

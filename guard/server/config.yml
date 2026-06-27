@@ -53,6 +53,14 @@ guard:
   internal_comm:
     mode: rpc # http | dual | rpc；Phase 6 后固定为 rpc，内部控制不再依赖 HTTP。
 
+  registry:
+    allow_unknown_nodes: true # false时仅允许allowed_nodes中声明的节点注册
+    allowed_nodes: []
+    # - id: s1
+    #   kind: stream # session | stream | avai
+    #   required_capabilities:
+    #     - live
+
   database:
     backend: sqlite # sqlite | mysql
     auto_migrate: true

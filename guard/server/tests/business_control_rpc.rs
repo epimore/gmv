@@ -77,6 +77,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                     zone: None,
                     now_ms: 1_000,
                     takeover: false,
+                    config: Default::default(),
                 })
                 .unwrap();
             registry
@@ -104,6 +105,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                     zone: None,
                     now_ms: 1_000,
                     takeover: false,
+                    config: Default::default(),
                 })
                 .unwrap();
             registry
@@ -116,6 +118,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                     zone: None,
                     now_ms: 1_000,
                     takeover: false,
+                    config: Default::default(),
                 })
                 .unwrap();
 

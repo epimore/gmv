@@ -32,6 +32,7 @@ pub struct NodeRecord {
     pub pending_leases: u32,
     pub host_metrics: HostMetricsRecord,
     pub business_metrics: std::collections::HashMap<String, String>,
+    pub config: std::collections::HashMap<String, String>,
     pub zone: Option<String>,
     pub last_seen_at_ms: i64,
     pub generation: u64,

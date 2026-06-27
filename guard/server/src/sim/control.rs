@@ -85,6 +85,7 @@ impl Simulator {
                 zone: Some("sim-zone".to_string()),
                 now_ms,
                 takeover: true,
+                config: std::collections::HashMap::new(),
             })?;
         }
         Ok(())

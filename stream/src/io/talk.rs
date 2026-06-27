@@ -26,7 +26,6 @@ use parking_lot::Mutex;
 
 use crate::general::cfg::StreamConf;
 use crate::guard_integration::publish_guard_event;
-use crate::io::http::call::try_session_hook_rpc;
 use crate::state::register::Register;
 
 const TALK_INPUT_QUEUE_SIZE: usize = 32;
@@ -461,22 +460,10 @@ async fn notify_talk_closed(talk_id: &str, reason: &str) {
         reason: reason.to_string(),
     };
     publish_guard_event("stream.talk_closed", format!("{event:?}").into_bytes());
-    match try_session_hook_rpc("stream.talk_closed", &event).await {
-        Some(response) if response.error.is_none() && response.accepted => {
-            info!(
-                "talk closed rpc accepted: talk_id={}, reason={}, resp={:?}",
-                talk_id, reason, response
-            );
-        }
-        Some(response) => warn!(
-            "talk closed rpc not accepted: talk_id={}, reason={}, resp={:?}",
-            talk_id, reason, response
-        ),
-        None => warn!(
-            "talk closed rpc unavailable: talk_id={}, reason={}",
-            talk_id, reason
-        ),
-    }
+    info!(
+        "talk closed event sent to guard: talk_id={}, reason={}",
+        talk_id, reason
+    );
 }
 
 fn build_rtp_packet(

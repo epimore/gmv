@@ -96,6 +96,7 @@ impl GuardNodeControl for GuardNodeRpc {
                 zone: (!request.zone.is_empty()).then_some(request.zone),
                 now_ms: now_ms(),
                 takeover: request.takeover,
+                config: request.config,
             })
             .map_err(status)?;
         if let Some(snapshot) = startup_snapshot {

@@ -26,7 +26,8 @@ fn registry_fences_old_instances_and_sequences() {
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_000,
-                takeover: false
+                takeover: false,
+                config: Default::default(),
             })
             .unwrap(),
         RegisterDecision::Accepted
@@ -41,7 +42,8 @@ fn registry_fences_old_instances_and_sequences() {
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_001,
-                takeover: false
+                takeover: false,
+                config: Default::default(),
             })
             .is_err()
     );
@@ -55,7 +57,8 @@ fn registry_fences_old_instances_and_sequences() {
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_002,
-                takeover: true
+                takeover: true,
+                config: Default::default(),
             })
             .unwrap(),
         RegisterDecision::SupersededOldInstance

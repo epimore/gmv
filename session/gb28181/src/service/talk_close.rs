@@ -77,6 +77,7 @@ async fn send_bye(command: TalkByeCommand) {
                     "talk close completed: device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}",
                     info.device_id, info.channel_id, info.talk_id, info.ssrc, info.call_id
                 );
+                release_guard_lease(info.guard_lease);
             }
         }
         Err(err) => mark_failed(
@@ -121,5 +122,12 @@ fn force_cleanup(talk_id: &str, generation: u64, reason: &str) {
             info.generation,
             reason
         );
+        release_guard_lease(info.guard_lease);
+    }
+}
+
+fn release_guard_lease(lease: Option<crate::state::session::GuardLease>) {
+    if let Some(lease) = lease {
+        base::tokio::spawn(crate::guard_integration::release_stream_lease(lease));
     }
 }

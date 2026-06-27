@@ -10,7 +10,6 @@ use base::tokio_util::sync::CancellationToken;
 use std::net::SocketAddr;
 
 mod api;
-pub mod call;
 mod out;
 
 pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {

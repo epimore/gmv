@@ -70,12 +70,12 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
 }
 
 pub async fn stream_unknown(event: UnknownStreamEvent) -> bool {
-    if !state::StreamConf::get_stream_conf()
-        .node_map
-        .contains_key(&event.media_node_id)
+    if crate::guard_integration::ensure_stream_node(&event.media_node_id)
+        .await
+        .is_err()
     {
         warn!(
-            "unknown stream callback rejected: media_node={}, ssrc={}, reason=unconfigured node",
+            "unknown stream callback rejected: media_node={}, ssrc={}, reason=unknown node",
             event.media_node_id, event.ssrc
         );
         return false;

@@ -6,7 +6,7 @@ use std::{
 
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error as log_error, info};
+use base::log::{error as log_error, info, warn};
 use base::serde::de::DeserializeOwned;
 use base_rpc::RpcChannelConfig;
 use gmv_domain::info::obj::{
@@ -18,9 +18,10 @@ use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
 };
 use gmv_protocol::guard::v1::{
-    AllocateStreamRequest, AllocateStreamResponse, EventPriority, FinishRecordRequest, NodeEvent,
-    NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage, QueryRunningRecordRequest,
-    RecordMutationResponse, RegisterNodeRequest, ResourceReport, ResourceState, StartRecordRequest,
+    AllocateStreamRequest, AllocateStreamResponse, EventPriority, FinishRecordRequest,
+    LeaseRequest, NodeEvent, NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
+    QueryNodeRequest, QueryRunningRecordRequest, RecordMutationResponse, RegisterNodeRequest,
+    ResourceReport, ResourceState, StartRecordRequest, guard_control_client::GuardControlClient,
     guard_media_client::GuardMediaClient, node_to_guard_message,
 };
 use gmv_protocol::session::v1::{
@@ -34,6 +35,8 @@ use gmv_protocol::stream::v1::{
 use tonic::transport::Channel;
 
 use crate::service::hook_serv;
+use crate::state::session::GuardLease;
+use crate::state::{StreamNode, StreamNodeRegistry};
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -43,8 +46,7 @@ pub fn init_guard_event_sender(sender: NodeEventSender) {
 }
 
 async fn guard_media_client() -> GlobalResult<GuardMediaClient<Channel>> {
-    let endpoint = std::env::var("GMV_GUARD_ENDPOINT")
-        .unwrap_or_else(|_| "http://127.0.0.1:18080".to_string());
+    let endpoint = crate::state::GuardConf::get_or_default().endpoint;
     let channel = base_rpc::connect_channel(&RpcChannelConfig::new(endpoint.clone()))
         .await
         .map_err(|err| {
@@ -55,6 +57,215 @@ async fn guard_media_client() -> GlobalResult<GuardMediaClient<Channel>> {
             )
         })?;
     Ok(GuardMediaClient::new(channel))
+}
+
+async fn guard_control_client() -> GlobalResult<GuardControlClient<Channel>> {
+    let endpoint = crate::state::GuardConf::get_or_default().endpoint;
+    let channel = base_rpc::connect_channel(&RpcChannelConfig::new(endpoint.clone()))
+        .await
+        .map_err(|err| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::Network.code(),
+                "connect guard control rpc failed",
+                |msg| log_error!("{msg}: endpoint={endpoint}, err={err:?}"),
+            )
+        })?;
+    Ok(GuardControlClient::new(channel))
+}
+
+#[derive(Debug, Clone)]
+pub struct AllocatedStreamNode {
+    pub node: StreamNode,
+    pub lease_id: String,
+    pub route_id: String,
+    pub instance_id: String,
+}
+
+pub async fn allocate_stream_node(
+    operation_id: &str,
+    stream_id: &str,
+    stream_type: &str,
+    device_id: &str,
+    channel_id: &str,
+) -> GlobalResult<AllocatedStreamNode> {
+    let mut client = guard_control_client().await?;
+    let response = client
+        .allocate_stream(AllocateStreamRequest {
+            operation: Some(operation(operation_id)),
+            stream_id: stream_id.to_string(),
+            stream_type: stream_type.to_string(),
+            constraints: HashMap::from([
+                ("device_id".to_string(), device_id.to_string()),
+                ("channel_id".to_string(), channel_id.to_string()),
+            ]),
+        })
+        .await
+        .hand_log(|msg| log_error!("{msg}"))?
+        .into_inner();
+    let node = stream_node_from_allocation(&response)?;
+    StreamNodeRegistry::upsert(node.clone());
+    Ok(AllocatedStreamNode {
+        node,
+        lease_id: response.lease_id,
+        route_id: response.route_id,
+        instance_id: response
+            .stream_node
+            .map(|identity| identity.instance_id)
+            .unwrap_or_default(),
+    })
+}
+
+pub async fn ensure_stream_node(node_id: &str) -> GlobalResult<StreamNode> {
+    if let Some(node) = StreamNodeRegistry::get(node_id) {
+        return Ok(node);
+    }
+    let mut client = guard_control_client().await?;
+    let response = client
+        .query_node(QueryNodeRequest {
+            node_id: node_id.to_string(),
+        })
+        .await
+        .hand_log(|msg| log_error!("{msg}"))?
+        .into_inner();
+    let identity = response.current.ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "guard query node response has no identity",
+            |msg| log_error!("{msg}: node={node_id}"),
+        )
+    })?;
+    let node = stream_node_from_parts(&identity.node_id, response.endpoints)?;
+    StreamNodeRegistry::upsert(node.clone());
+    Ok(node)
+}
+
+impl AllocatedStreamNode {
+    pub fn guard_lease(&self) -> GuardLease {
+        GuardLease {
+            lease_id: self.lease_id.clone(),
+            route_id: self.route_id.clone(),
+            instance_id: self.instance_id.clone(),
+        }
+    }
+}
+
+pub async fn confirm_stream_lease(allocation: &AllocatedStreamNode) -> GlobalResult<()> {
+    let mut client = guard_control_client().await?;
+    let _ = client
+        .confirm_lease(LeaseRequest {
+            lease_id: allocation.lease_id.clone(),
+            route_id: allocation.route_id.clone(),
+            expected_instance_id: allocation.instance_id.clone(),
+            error: None,
+        })
+        .await
+        .hand_log(|msg| log_error!("{msg}"))?;
+    Ok(())
+}
+
+pub async fn fail_stream_lease(allocation: &AllocatedStreamNode, reason: &str) {
+    let Ok(mut client) = guard_control_client().await else {
+        warn!(
+            "skip guard lease fail: lease_id={}, reason=guard_unavailable",
+            allocation.lease_id
+        );
+        return;
+    };
+    let _ = client
+        .fail_lease(LeaseRequest {
+            lease_id: allocation.lease_id.clone(),
+            route_id: allocation.route_id.clone(),
+            expected_instance_id: allocation.instance_id.clone(),
+            error: Some(error("stream_start_failed", reason)),
+        })
+        .await
+        .map_err(|err| {
+            warn!(
+                "guard lease fail rejected: lease_id={}, err={err:?}",
+                allocation.lease_id
+            )
+        });
+}
+
+pub async fn release_stream_lease(lease: GuardLease) {
+    if lease.lease_id.is_empty() || lease.instance_id.is_empty() {
+        return;
+    }
+    let Ok(mut client) = guard_control_client().await else {
+        warn!(
+            "skip guard lease release: lease_id={}, reason=guard_unavailable",
+            lease.lease_id
+        );
+        return;
+    };
+    let _ = client
+        .release_lease(LeaseRequest {
+            lease_id: lease.lease_id.clone(),
+            route_id: lease.route_id.clone(),
+            expected_instance_id: lease.instance_id.clone(),
+            error: None,
+        })
+        .await
+        .map_err(|err| {
+            warn!(
+                "guard lease release rejected: lease_id={}, err={err:?}",
+                lease.lease_id
+            )
+        });
+}
+
+fn stream_node_from_allocation(allocation: &AllocateStreamResponse) -> GlobalResult<StreamNode> {
+    let identity = allocation.stream_node.as_ref().ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "guard allocation response has no stream node",
+            |msg| log_error!("{msg}: lease_id={}", allocation.lease_id),
+        )
+    })?;
+    stream_node_from_parts(&identity.node_id, allocation.endpoints.clone())
+}
+
+fn stream_node_from_parts(node_id: &str, endpoints: Vec<Endpoint>) -> GlobalResult<StreamNode> {
+    let grpc = endpoints
+        .iter()
+        .find(|endpoint| endpoint.name == "grpc" || endpoint.scheme == "grpc")
+        .ok_or_else(|| missing_stream_endpoint(node_id, "grpc"))?;
+    let rtp = endpoints
+        .iter()
+        .find(|endpoint| endpoint.name == "rtp" || endpoint.scheme == "rtp")
+        .ok_or_else(|| missing_stream_endpoint(node_id, "rtp"))?;
+    let http = endpoints
+        .iter()
+        .find(|endpoint| endpoint.name == "http" || endpoint.scheme == "http")
+        .unwrap_or(grpc);
+    Ok(StreamNode {
+        name: node_id.to_string(),
+        local_ip: parse_ipv4(node_id, "http", &http.host)?,
+        local_port: u16::try_from(http.port).unwrap_or(u16::MAX),
+        control_grpc_uri: format!("http://{}:{}", grpc.host, grpc.port),
+        pub_ip: parse_ipv4(node_id, "rtp", &rtp.host)?,
+        pub_port: u16::try_from(rtp.port).unwrap_or(u16::MAX),
+    })
+}
+
+fn missing_stream_endpoint(node_id: &str, endpoint: &str) -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::NotFound.code(),
+        "stream node endpoint is missing",
+        |msg| log_error!("{msg}: node={node_id}, endpoint={endpoint}"),
+    )
+}
+
+fn parse_ipv4(node_id: &str, endpoint: &str, host: &str) -> GlobalResult<std::net::Ipv4Addr> {
+    host.parse().map_err(|err| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "stream endpoint host must be an IPv4 address",
+            |msg| {
+                log_error!("{msg}: node={node_id}, endpoint={endpoint}, host={host}, err={err:?}")
+            },
+        )
+    })
 }
 
 pub async fn guard_record_running(device_id: &str, channel_id: &str) -> GlobalResult<bool> {
@@ -177,7 +388,9 @@ pub struct SessionGuardNode {
 impl SessionGuardNode {
     pub fn new(node_id: impl Into<String>, instance_id: impl Into<String>, http_port: u32) -> Self {
         Self {
-            guard_channel: RpcChannelConfig::new("http://127.0.0.1:18080"),
+            guard_channel: RpcChannelConfig::new(
+                crate::state::GuardConf::get_or_default().endpoint,
+            ),
             identity: NodeIdentity {
                 node_id: node_id.into(),
                 instance_id: instance_id.into(),
@@ -215,7 +428,26 @@ impl SessionGuardNode {
             capacity: 100,
             zone: String::new(),
             takeover: false,
+            config: self.config_summary(),
         }
+    }
+
+    fn config_summary(&self) -> HashMap<String, String> {
+        HashMap::from([
+            ("node_id".to_string(), self.identity.node_id.clone()),
+            (
+                "software_version".to_string(),
+                self.software_version.clone(),
+            ),
+            (
+                "endpoint_count".to_string(),
+                self.endpoints.len().to_string(),
+            ),
+            (
+                "capability_count".to_string(),
+                self.capabilities.len().to_string(),
+            ),
+        ])
     }
 
     pub fn heartbeat_message(

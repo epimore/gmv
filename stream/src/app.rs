@@ -1,4 +1,4 @@
-use crate::general::cfg::ServerConf;
+use crate::general::cfg::{GrpcConf, GuardConf, ServerConf};
 use crate::io::{http, rtp_handler};
 use crate::media;
 use crate::state::register::Register;
@@ -70,10 +70,9 @@ impl
         let node_name = self.conf.name.clone();
         let http_port = self.conf.http_port;
         let rtp_port = self.conf.rtp_port;
-        let control_grpc_port = std::env::var("GMV_STREAM_CONTROL_GRPC_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(19082);
+        let host = self.conf.host.clone();
+        let grpc = GrpcConf::init_by_conf();
+        let guard = GuardConf::init_by_conf();
         let started_at_epoch_ms = now_epoch_ms();
         let (tx, rx) = mpsc::channel(100);
         Register::init()?;
@@ -85,6 +84,8 @@ impl
             let mut node = StreamGuardNode::new(
                 node_name,
                 generate_instance_id(),
+                host.clone(),
+                guard.endpoint.clone(),
                 u32::from(http_port),
                 u32::from(rtp_port),
             );
@@ -92,8 +93,8 @@ impl
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
                 scheme: "grpc".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: u32::from(control_grpc_port),
+                host: grpc.addr.ip().to_string(),
+                port: u32::from(grpc.addr.port()),
                 mode: EndpointMode::Single as i32,
                 labels: HashMap::new(),
             });
@@ -101,7 +102,7 @@ impl
             let receive_endpoint = Endpoint {
                 name: "rtp".to_string(),
                 scheme: "rtp".to_string(),
-                host: "127.0.0.1".to_string(),
+                host: host.clone(),
                 port: u32::from(rtp_port),
                 mode: EndpointMode::Single as i32,
                 labels: HashMap::new(),
@@ -109,9 +110,7 @@ impl
             let control_cancel = network_rt.cancel.clone();
             let control_media_tx = tx.clone();
             base::tokio::spawn(async move {
-                let address: SocketAddr = format!("127.0.0.1:{control_grpc_port}")
-                    .parse()
-                    .expect("loopback control address must be valid");
+                let address: SocketAddr = grpc.addr;
                 let rpc = StreamControlRpc::new(
                     StreamControlAdapter::new(control_identity, receive_endpoint)
                         .with_media_tx(control_media_tx),
@@ -124,9 +123,6 @@ impl
                     error!("stream control RPC server stopped with error: {err}");
                 }
             });
-            if let Ok(endpoint) = std::env::var("GMV_GUARD_ENDPOINT") {
-                node.guard_channel.endpoint = endpoint;
-            }
             let mut reporter = NodeReporterConfig::new(
                 node.guard_channel.clone(),
                 node.register_request(NodeResourceSnapshot::default()),

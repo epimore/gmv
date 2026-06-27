@@ -83,11 +83,14 @@ impl StreamGuardNode {
     pub fn new(
         node_id: impl Into<String>,
         instance_id: impl Into<String>,
+        host: impl Into<String>,
+        guard_endpoint: impl Into<String>,
         http_port: u32,
         rtp_port: u32,
     ) -> Self {
+        let host = host.into();
         Self {
-            guard_channel: RpcChannelConfig::new("http://127.0.0.1:18080"),
+            guard_channel: RpcChannelConfig::new(guard_endpoint.into()),
             identity: NodeIdentity {
                 node_id: node_id.into(),
                 instance_id: instance_id.into(),
@@ -96,8 +99,8 @@ impl StreamGuardNode {
             software_version: env!("CARGO_PKG_VERSION").to_string(),
             started_at_epoch_ms: 0,
             endpoints: vec![
-                endpoint("http", "http", http_port),
-                endpoint("rtp", "rtp", rtp_port),
+                endpoint("http", "http", &host, http_port),
+                endpoint("rtp", "rtp", &host, rtp_port),
             ],
             capabilities: vec![
                 "live".to_string(),
@@ -120,7 +123,26 @@ impl StreamGuardNode {
             capacity: 100,
             zone: String::new(),
             takeover: false,
+            config: self.config_summary(),
         }
+    }
+
+    fn config_summary(&self) -> HashMap<String, String> {
+        HashMap::from([
+            ("node_id".to_string(), self.identity.node_id.clone()),
+            (
+                "software_version".to_string(),
+                self.software_version.clone(),
+            ),
+            (
+                "endpoint_count".to_string(),
+                self.endpoints.len().to_string(),
+            ),
+            (
+                "capability_count".to_string(),
+                self.capabilities.len().to_string(),
+            ),
+        ])
     }
 
     pub fn heartbeat_message(
@@ -707,11 +729,11 @@ fn close_output_by_ssrc(info: StreamInfoQo) -> Result<(), ErrorDetail> {
     }
 }
 
-fn endpoint(name: &str, scheme: &str, port: u32) -> Endpoint {
+fn endpoint(name: &str, scheme: &str, host: &str, port: u32) -> Endpoint {
     Endpoint {
         name: name.to_string(),
         scheme: scheme.to_string(),
-        host: "127.0.0.1".to_string(),
+        host: host.to_string(),
         port,
         mode: EndpointMode::Single as i32,
         labels: HashMap::new(),
@@ -753,7 +775,14 @@ mod tests {
 
     #[test]
     fn stream_registers_heartbeats_starts_idempotently_and_snapshots() {
-        let node = StreamGuardNode::new("stream-1", "inst-1", 18080, 30000);
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            30000,
+        );
         let register = node.register_request(NodeResourceSnapshot {
             resources: vec![],
             full: true,
@@ -768,8 +797,10 @@ mod tests {
             Some(node_to_guard_message::Payload::Heartbeat(_))
         ));
 
-        let mut control =
-            StreamControlAdapter::new(node.identity.clone(), endpoint("rtp", "rtp", 30000));
+        let mut control = StreamControlAdapter::new(
+            node.identity.clone(),
+            endpoint("rtp", "rtp", "127.0.0.1", 30000),
+        );
         let request = StartReceiveRequest {
             operation: Some(operation("op-1")),
             stream_id: "stream-a".to_string(),
@@ -819,9 +850,18 @@ mod tests {
 
     #[test]
     fn stream_rejects_stale_instance_without_touching_existing_state() {
-        let node = StreamGuardNode::new("stream-1", "inst-1", 18080, 30000);
-        let mut control =
-            StreamControlAdapter::new(node.identity.clone(), endpoint("rtp", "rtp", 30000));
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            30000,
+        );
+        let mut control = StreamControlAdapter::new(
+            node.identity.clone(),
+            endpoint("rtp", "rtp", "127.0.0.1", 30000),
+        );
         let stale = NodeIdentity {
             node_id: "stream-1".to_string(),
             instance_id: "old".to_string(),

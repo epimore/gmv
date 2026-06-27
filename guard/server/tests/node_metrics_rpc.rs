@@ -59,6 +59,7 @@ fn node_reporter_registers_and_updates_host_metrics_over_grpc() {
                 capacity: 10,
                 zone: "test".to_string(),
                 takeover: false,
+                config: Default::default(),
             };
             let mut config = NodeReporterConfig::new(
                 RpcChannelConfig::new(format!("http://{address}")),
@@ -126,6 +127,7 @@ fn register_consumes_startup_snapshot() {
                     capacity: 10,
                     zone: String::new(),
                     takeover: false,
+                    config: Default::default(),
                 }),
             )
             .await
@@ -181,6 +183,7 @@ fn control_stream_consumes_snapshot_and_event_payloads() {
                     capacity: 10,
                     zone: String::new(),
                     takeover: false,
+                    config: Default::default(),
                 })
                 .await
                 .unwrap();

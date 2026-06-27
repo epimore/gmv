@@ -202,6 +202,8 @@ pub struct SnapshotImage {
     pub device_channel_ident: DeviceChannelIdent,
     /// 默认拍一张
     pub count: Option<u8>,
+    /// 默认间隔1秒
+    pub interval: Option<u8>,
 }
 
 #[test]
