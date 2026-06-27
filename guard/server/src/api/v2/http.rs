@@ -317,6 +317,9 @@ struct NodeResponse {
     node_id: String,
     instance_id: String,
     kind: String,
+    service: String,
+    protocol: Option<String>,
+    display_name: String,
     connection: String,
     health: String,
     scheduling: String,
@@ -374,9 +377,12 @@ impl From<crate::store::model::HostMetricsRecord> for HostMetricsResponse {
 impl From<NodeRecord> for NodeResponse {
     fn from(node: NodeRecord) -> Self {
         Self {
-            node_id: node.identity.node_id,
-            instance_id: node.identity.instance_id,
+            node_id: node.identity.node_id.clone(),
+            instance_id: node.identity.instance_id.clone(),
             kind: format!("{:?}", node.identity.kind).to_lowercase(),
+            service: node_service(&node),
+            protocol: node_protocol(&node),
+            display_name: node_display_name(&node),
             connection: format!("{:?}", node.connection).to_uppercase(),
             health: format!("{:?}", node.health).to_uppercase(),
             scheduling: format!("{:?}", node.scheduling).to_uppercase(),
@@ -391,6 +397,37 @@ impl From<NodeRecord> for NodeResponse {
             sequence: node.sequence,
         }
     }
+}
+
+fn node_service(node: &NodeRecord) -> String {
+    node.config
+        .get("service")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| format!("{:?}", node.identity.kind).to_lowercase())
+}
+
+fn node_protocol(node: &NodeRecord) -> Option<String> {
+    node.config
+        .get("protocol")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            node.capabilities.iter().find_map(|capability| {
+                capability
+                    .strip_prefix("protocol.")
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned)
+            })
+        })
+}
+
+fn node_display_name(node: &NodeRecord) -> String {
+    node.config
+        .get("display_name")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| node.identity.node_id.clone())
 }
 
 async fn nodes(

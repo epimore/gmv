@@ -9,12 +9,14 @@ use base::serde_json::{Value, json};
 use guard::api::v2::ApiV2;
 use guard::api::v2::http::{HttpState, router};
 use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
-use guard::core::LeaseState;
+use guard::core::{
+    ConnectionState, HealthState, LeaseState, NodeIdentity, NodeKind, SchedulingState,
+};
 use guard::job::SystemJobService;
 use guard::operation::OperationService;
 use guard::outbox::OutboxRepository;
 use guard::store::InMemoryGuardStore;
-use guard::store::model::{EventRecord, LeaseRecord};
+use guard::store::model::{EventRecord, LeaseRecord, NodeRecord};
 use tower::ServiceExt;
 
 const ORIGIN_VALUE: &str = "http://127.0.0.1:5173";
@@ -106,6 +108,49 @@ async fn login(app: &axum::Router, username: &str) -> (String, String) {
         .to_string();
     let csrf = body["csrf_token"].as_str().unwrap().to_string();
     (cookie, csrf)
+}
+
+#[test]
+fn nodes_expose_session_protocol_and_service_metadata() {
+    run_async(async {
+        let store = InMemoryGuardStore::default();
+        store.upsert_node(NodeRecord {
+            identity: NodeIdentity::new("session-gb-1", "inst-1", NodeKind::Session),
+            connection: ConnectionState::Connected,
+            health: HealthState::Ready,
+            scheduling: SchedulingState::Enabled,
+            endpoints: vec![],
+            capabilities: vec!["device.live".to_string(), "protocol.gb28181".to_string()],
+            capacity: 100,
+            pending_leases: 0,
+            host_metrics: Default::default(),
+            business_metrics: Default::default(),
+            config: std::collections::HashMap::from([
+                ("protocol".to_string(), "gb28181".to_string()),
+                ("service".to_string(), "session-gb28181".to_string()),
+                ("display_name".to_string(), "GB28181 会话节点 1".to_string()),
+            ]),
+            zone: None,
+            last_seen_at_ms: 1_000,
+            generation: 1,
+            sequence: 1,
+        });
+        let app = test_app(store);
+        let (cookie, _) = login(&app, "viewer").await;
+        let (status, _, body) = request(
+            &app,
+            Request::get("/api/v2/nodes")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body[0]["kind"], "session");
+        assert_eq!(body[0]["service"], "session-gb28181");
+        assert_eq!(body[0]["protocol"], "gb28181");
+        assert_eq!(body[0]["display_name"], "GB28181 会话节点 1");
+    });
 }
 
 #[test]

@@ -7,8 +7,11 @@
     <GlassPanel class="span-8" title="节点矩阵" subtitle="node_id / instance_id / generation 主动上报">
       <div class="toolbar"><el-button :loading="loading" @click="load">刷新</el-button></div>
       <el-table :data="nodes" height="360" highlight-current-row empty-text="暂无注册节点" @current-change="selected = $event">
+        <el-table-column prop="display_name" label="节点名称" width="180" />
         <el-table-column prop="node_id" label="节点 ID" width="150" />
-        <el-table-column prop="kind" label="服务" width="100" />
+        <el-table-column prop="kind" label="类型" width="90" />
+        <el-table-column prop="service" label="服务" width="150" />
+        <el-table-column label="协议" width="110"><template #default="{ row }">{{ row.protocol || "-" }}</template></el-table-column>
         <el-table-column label="健康" width="120"><template #default="{ row }"><StatusPill :label="row.health" :tone="row.health" /></template></el-table-column>
         <el-table-column prop="scheduling" label="调度" width="130" />
         <el-table-column prop="instance_id" label="实例" min-width="160" />
@@ -23,7 +26,9 @@
     </GlassPanel>
     <GlassPanel class="span-4" title="实例围栏" subtitle="当前选中节点的真实状态">
       <div class="kv">
-        <div class="kv-item"><span>节点</span><b>{{ selected?.node_id || '-' }}</b></div>
+        <div class="kv-item"><span>节点</span><b>{{ selected?.display_name || selected?.node_id || "-" }}</b></div>
+        <div class="kv-item"><span>服务</span><b>{{ selected?.service || "-" }}</b></div>
+        <div class="kv-item"><span>协议</span><b>{{ selected?.protocol || "-" }}</b></div>
         <div class="kv-item"><span>实例</span><b class="code">{{ selected?.instance_id || '-' }}</b></div>
         <div class="kv-item"><span>连接</span><b>{{ selected?.connection || '-' }}</b></div>
         <div class="kv-item"><span>最后心跳</span><b>{{ formatTime(selected?.last_seen_at_ms) }}</b></div>

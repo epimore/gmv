@@ -415,6 +415,7 @@ impl SessionGuardNode {
                 "device.download".to_string(),
                 "device.talk".to_string(),
                 "device.ptz".to_string(),
+                "protocol.gb28181".to_string(),
             ],
         }
     }
@@ -438,6 +439,12 @@ impl SessionGuardNode {
     fn config_summary(&self) -> HashMap<String, String> {
         HashMap::from([
             ("node_id".to_string(), self.identity.node_id.clone()),
+            ("service".to_string(), "session-gb28181".to_string()),
+            ("protocol".to_string(), "gb28181".to_string()),
+            (
+                "display_name".to_string(),
+                format!("GB28181 会话节点 {}", self.identity.node_id),
+            ),
             (
                 "software_version".to_string(),
                 self.software_version.clone(),
@@ -1187,6 +1194,19 @@ mod tests {
         });
         assert_eq!(register.identity.unwrap().kind, NodeKind::Session as i32);
         assert!(register.capabilities.contains(&"device.ptz".to_string()));
+        assert!(
+            register
+                .capabilities
+                .contains(&"protocol.gb28181".to_string())
+        );
+        assert_eq!(
+            register.config.get("protocol").map(String::as_str),
+            Some("gb28181")
+        );
+        assert_eq!(
+            register.config.get("service").map(String::as_str),
+            Some("session-gb28181")
+        );
 
         let mut control = SessionControlAdapter::new(node.identity.clone());
         let allocate = control.allocate_stream_request("op-1", "stream-1", "live", "dev-1", "ch-1");

@@ -25,12 +25,12 @@ db:
     path: ./session-gb28181.db
     max_connections: 16
   mysql:
-    host_or_ip: 101.33.200.169
-    port: 33061
+    host_or_ip: 127.0.0.1
+    port: 3306
     db_name: gmv
-    user: epimore
-    pass_crypto_enable: true #密码是否加密，默认不加密
-    pass: clRXVjIzU1VrS3BEMXZmNxp5adMgQy599aQeu0tHYg0= #密码的密文
+    user: root
+    pass_crypto_enable: false #密码是否加密，默认不加密
+    pass: zaq12345 #密码的密文
     attrs:
       log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
       log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
