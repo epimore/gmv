@@ -1,3 +1,4 @@
+pub mod control;
 pub mod events;
 pub mod facade;
 pub mod http;

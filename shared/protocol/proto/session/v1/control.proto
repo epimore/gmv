@@ -13,6 +13,22 @@ service SessionControl {
   rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
 }
 
+service SessionHook {
+  rpc HandleHook(SessionHookRequest) returns (SessionHookResponse);
+}
+
+message SessionHookRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string event_type = 2;
+  bytes payload_json = 3;
+}
+
+message SessionHookResponse {
+  bool accepted = 1;
+  bytes payload_json = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+}
+
 message StartDeviceStreamRequest {
   gmv.common.v1.OperationRef operation = 1;
   string device_id = 2;

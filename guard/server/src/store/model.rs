@@ -26,6 +26,7 @@ pub struct NodeRecord {
     pub connection: ConnectionState,
     pub health: HealthState,
     pub scheduling: SchedulingState,
+    pub endpoints: Vec<EndpointRecord>,
     pub capabilities: Vec<String>,
     pub capacity: u32,
     pub pending_leases: u32,
@@ -35,6 +36,22 @@ pub struct NodeRecord {
     pub last_seen_at_ms: i64,
     pub generation: u64,
     pub sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointRecord {
+    pub name: String,
+    pub scheme: String,
+    pub host: String,
+    pub port: u32,
+    pub mode: EndpointModeRecord,
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointModeRecord {
+    Single,
+    Multi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

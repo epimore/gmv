@@ -10,12 +10,15 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
-use crate::guard_integration::{SessionControlAdapter, SessionControlRpc, SessionGuardNode};
+use crate::guard_integration::{
+    SessionControlAdapter, SessionControlRpc, SessionGuardNode, SessionHookRpc,
+};
 use crate::register::core::Register;
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
 use gmv_protocol::session::v1::session_control_server::SessionControlServer;
+use gmv_protocol::session::v1::session_hook_server::SessionHookServer;
 
 #[derive(Debug)]
 pub struct AppInfo {
@@ -104,6 +107,7 @@ impl
                 let rpc = SessionControlRpc::new(SessionControlAdapter::new(control_identity));
                 if let Err(err) = tonic::transport::Server::builder()
                     .add_service(SessionControlServer::new(rpc))
+                    .add_service(SessionHookServer::new(SessionHookRpc))
                     .serve_with_shutdown(address, async move { control_cancel.cancelled().await })
                     .await
                 {

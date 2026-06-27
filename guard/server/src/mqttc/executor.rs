@@ -1,0 +1,108 @@
+use base::serde_json::Value;
+
+use crate::api::v2::control::BusinessControl;
+use crate::core::{GuardError, GuardResult};
+use crate::mqttc::mapping::{CommandAction, RoutedCommand};
+use crate::operation::OperationService;
+use crate::store::InMemoryGuardStore;
+
+#[derive(Debug, Clone)]
+pub struct MqttCommandExecutor {
+    operations: OperationService,
+    control: BusinessControl,
+}
+
+impl MqttCommandExecutor {
+    pub fn new(operations: OperationService, store: InMemoryGuardStore) -> Self {
+        Self {
+            operations,
+            control: BusinessControl::new(store),
+        }
+    }
+
+    pub async fn execute(&self, command: RoutedCommand) -> GuardResult<()> {
+        let operation = self.operations.start(command.operation_request("mqtt"))?;
+        let result = match command.action {
+            CommandAction::StreamStart => {
+                let device_id = payload_string(&command.payload, "device_id")
+                    .unwrap_or_else(|| command.target.clone());
+                let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                self.control
+                    .start_live(&command.command_id, &device_id, &channel_id)
+                    .await
+                    .map(|_| ())
+            }
+            CommandAction::StreamStop => {
+                self.control.stop_stream(&command.target).await.map(|_| ())
+            }
+            CommandAction::StreamPlayback => {
+                let device_id = payload_string(&command.payload, "device_id")
+                    .unwrap_or_else(|| command.target.clone());
+                let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                self.control
+                    .start_playback(&command.command_id, &device_id, &channel_id)
+                    .await
+                    .map(|_| ())
+            }
+            CommandAction::StreamDownload => {
+                let device_id = payload_string(&command.payload, "device_id")
+                    .unwrap_or_else(|| command.target.clone());
+                let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                self.control
+                    .start_download(&command.command_id, &device_id, &channel_id)
+                    .await
+                    .map(|_| ())
+            }
+            CommandAction::StreamTalk => {
+                let device_id = payload_string(&command.payload, "device_id")
+                    .unwrap_or_else(|| command.target.clone());
+                let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                self.control
+                    .start_talk(&command.command_id, &device_id, &channel_id)
+                    .await
+                    .map(|_| ())
+            }
+            CommandAction::Ptz => {
+                let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                self.control
+                    .ptz(&command.target, &channel_id)
+                    .await
+                    .map(|_| ())
+            }
+            CommandAction::AiStart => {
+                let stream_id = payload_string(&command.payload, "stream_id")
+                    .unwrap_or_else(|| command.target.clone());
+                let model = required_payload_string(&command.payload, "model")?;
+                self.control
+                    .start_ai(&command.command_id, &stream_id, &model)
+                    .await
+                    .map(|_| ())
+            }
+            CommandAction::AiCancel => self.control.cancel_ai(&command.target).await.map(|_| ()),
+        };
+        match result {
+            Ok(()) => {
+                self.operations
+                    .succeed(&operation.operation_id, "MQTT command executed")?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.operations.fail(&operation.operation_id, error.clone());
+                Err(error)
+            }
+        }
+    }
+}
+
+fn required_payload_string(payload: &Value, key: &str) -> GuardResult<String> {
+    payload_string(payload, key)
+        .ok_or_else(|| GuardError::InvalidConfig(format!("MQTT command payload.{key} is required")))
+}
+
+fn payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}

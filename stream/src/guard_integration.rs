@@ -1,9 +1,11 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use base_rpc::RpcChannelConfig;
+use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
 };
@@ -17,6 +19,29 @@ use gmv_protocol::stream::v1::{
     QueryStreamResponse, StartReceiveRequest, StartReceiveResponse, StopReceiveRequest,
     StopReceiveResponse, StreamState, stream_control_server::StreamControl,
 };
+
+static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
+static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+pub fn init_guard_event_sender(sender: NodeEventSender) {
+    let _ = GUARD_EVENT_SENDER.set(sender);
+}
+
+pub fn publish_guard_event(topic: &str, payload: impl Into<Vec<u8>>) {
+    let Some(sender) = GUARD_EVENT_SENDER.get() else {
+        return;
+    };
+    let sequence = GUARD_EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let event = NodeEvent {
+        event_id: format!("stream-event-{sequence}"),
+        topic: topic.to_string(),
+        priority: EventPriority::P1 as i32,
+        payload: payload.into(),
+    };
+    if let Err(error) = sender.try_send(event) {
+        base::log::warn!("drop guard stream event {topic}: {error}");
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct StreamGuardNode {

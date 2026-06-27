@@ -1,11 +1,16 @@
 use crate::state::register::{DEFAULT_EXPIRES, Register};
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::info;
+use base::log::{info, warn};
+use base::serde::{Serialize, de::DeserializeOwned};
+use base::serde_json;
 use gmv_domain::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
     StreamPlayInfo, StreamRecordInfo, StreamState, TalkClosedEvent, UnknownStreamEvent,
 };
 use gmv_domain::info::res::Resp;
+use gmv_protocol::session::v1::{
+    SessionHookRequest, SessionHookResponse, session_hook_client::SessionHookClient,
+};
 use pretend::interceptor::NoopRequestInterceptor;
 use pretend::resolver::UrlResolver;
 use pretend::{Json, Url};
@@ -35,6 +40,65 @@ impl HttpClient {
         let client = Self::init(&Register::get_server_conf().hook_uri)?;
         let _ = HTTP.set(client.clone());
         Ok(client)
+    }
+}
+
+pub async fn try_session_hook_rpc<T>(event_type: &str, payload: &T) -> Option<SessionHookResponse>
+where
+    T: Serialize + ?Sized,
+{
+    let endpoint = Register::get_server_conf().hook_rpc_uri.clone();
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return None;
+    }
+
+    let payload_json = match serde_json::to_vec(payload) {
+        Ok(payload_json) => payload_json,
+        Err(err) => {
+            warn!("session hook rpc payload encode failed: event_type={event_type}, err={err:?}");
+            return None;
+        }
+    };
+
+    let mut client = match SessionHookClient::connect(endpoint.to_string()).await {
+        Ok(client) => client,
+        Err(err) => {
+            warn!(
+                "session hook rpc connect failed: endpoint={endpoint}, event_type={event_type}, err={err:?}"
+            );
+            return None;
+        }
+    };
+
+    match client
+        .handle_hook(tonic::Request::new(SessionHookRequest {
+            operation: None,
+            event_type: event_type.to_string(),
+            payload_json,
+        }))
+        .await
+    {
+        Ok(response) => Some(response.into_inner()),
+        Err(err) => {
+            warn!(
+                "session hook rpc call failed: endpoint={endpoint}, event_type={event_type}, err={err:?}"
+            );
+            None
+        }
+    }
+}
+
+pub fn decode_hook_payload<T>(response: &SessionHookResponse) -> Option<T>
+where
+    T: DeserializeOwned,
+{
+    match serde_json::from_slice(&response.payload_json) {
+        Ok(payload) => Some(payload),
+        Err(err) => {
+            warn!("session hook rpc response decode failed: err={err:?}, response={response:?}");
+            None
+        }
     }
 }
 

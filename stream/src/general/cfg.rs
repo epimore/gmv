@@ -44,6 +44,8 @@ pub struct ServerConf {
     pub http_port: u16,
     #[serde(default = "default_hook_uri")]
     pub hook_uri: String,
+    #[serde(default)]
+    pub hook_rpc_uri: String,
     #[serde(default = "default_proxy_addr")]
     pub proxy_addr: String,
 }

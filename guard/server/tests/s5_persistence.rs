@@ -53,6 +53,10 @@ guard:
       - http://127.0.0.1:18080
     tls:
       enabled: false
+  grpc:
+    bind_addr: 127.0.0.1:18081
+    tls:
+      enabled: false
   database:
     backend: sqlite
     auto_migrate: true

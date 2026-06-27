@@ -3,12 +3,13 @@ use crate::core::{
 };
 use crate::registry::health::scheduling_for_health;
 use crate::store::InMemoryGuardStore;
-use crate::store::model::{HostMetricsRecord, NodeRecord};
+use crate::store::model::{EndpointRecord, HostMetricsRecord, NodeRecord};
 
 #[derive(Debug, Clone)]
 pub struct RegisterRequest {
     pub identity: NodeIdentity,
     pub capabilities: Vec<String>,
+    pub endpoints: Vec<EndpointRecord>,
     pub capacity: u32,
     pub host_metrics: HostMetricsRecord,
     pub zone: Option<String>,
@@ -50,6 +51,7 @@ impl RegistryService {
                 "node capacity must be positive".to_string(),
             ));
         }
+        validate_endpoints(&request.endpoints)?;
         let decision = match self.store.get_node(&request.identity.node_id) {
             None => RegisterDecision::Accepted,
             Some(existing) if existing.identity.instance_id == request.identity.instance_id => {
@@ -70,6 +72,7 @@ impl RegistryService {
             connection: ConnectionState::Connected,
             health: HealthState::Ready,
             scheduling: SchedulingState::Enabled,
+            endpoints: request.endpoints,
             capabilities: request.capabilities,
             capacity: request.capacity,
             pending_leases: 0,
@@ -125,4 +128,16 @@ impl RegistryService {
         }
         expired
     }
+}
+
+fn validate_endpoints(endpoints: &[EndpointRecord]) -> GuardResult<()> {
+    for endpoint in endpoints {
+        if endpoint.port == 0 {
+            return Err(GuardError::InvalidConfig(format!(
+                "node endpoint {} port must be positive",
+                endpoint.name
+            )));
+        }
+    }
+    Ok(())
 }

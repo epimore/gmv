@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
-use crate::guard_integration::{StreamControlAdapter, StreamControlRpc, StreamGuardNode};
+use crate::guard_integration::{
+    StreamControlAdapter, StreamControlRpc, StreamGuardNode, init_guard_event_sender,
+};
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
@@ -134,7 +136,9 @@ impl
                     Register::active_stream_count().to_string(),
                 )])
             });
-            NodeReporter::spawn(reporter, network_rt.cancel.clone());
+            let (_reporter, event_sender) =
+                NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());
+            init_guard_event_sender(event_sender);
         }
         network_rt
             .rt_handle

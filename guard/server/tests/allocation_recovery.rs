@@ -21,6 +21,7 @@ fn register_stream(
         .register(RegisterRequest {
             identity: identity.clone(),
             capabilities: vec!["live".to_string()],
+            endpoints: vec![],
             capacity,
             host_metrics: Default::default(),
             zone: Some("z1".to_string()),

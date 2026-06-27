@@ -1,0 +1,499 @@
+use std::collections::HashMap;
+use std::net::{SocketAddr, TcpListener};
+
+use gmv_protocol::avai::v1::avai_control_server::{AvaiControl, AvaiControlServer};
+use gmv_protocol::avai::v1::{
+    AiTaskState, CancelTaskRequest, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse,
+    QueryCapabilitiesRequest, QueryCapabilitiesResponse, QueryTaskRequest, QueryTaskResponse,
+};
+use gmv_protocol::common::v1::PageResponse;
+use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
+use gmv_protocol::session::v1::{
+    ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState,
+    StartDeviceStreamRequest, StopDeviceStreamRequest,
+};
+use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
+use gmv_protocol::stream::v1::{
+    CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
+    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, QueryStreamRequest,
+    QueryStreamResponse, StartReceiveRequest, StartReceiveResponse, StopReceiveRequest,
+    StopReceiveResponse, StreamState,
+};
+use guard::api::v2::control::BusinessControl;
+use guard::core::{NodeIdentity, NodeKind};
+use guard::mqttc::{CommandAction, MqttCommandExecutor, RoutedCommand};
+use guard::operation::{OperationService, OperationStatus};
+use guard::registry::{RegisterRequest, RegistryService};
+use guard::store::InMemoryGuardStore;
+use guard::store::model::{EndpointModeRecord, EndpointRecord};
+
+#[test]
+fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let stream_addr = free_loopback_addr();
+            let avai_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            let _stream = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(StreamControlServer::new(FakeStream))
+                    .serve(stream_addr)
+                    .await
+                    .unwrap();
+            });
+            let _avai = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(AvaiControlServer::new(FakeAvai))
+                    .serve(avai_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            let registry = RegistryService::new(store.clone());
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new("session-rpc", "session-inst", NodeKind::Session),
+                    capabilities: vec![
+                        "device.live".to_string(),
+                        "device.playback".to_string(),
+                        "device.download".to_string(),
+                        "device.talk".to_string(),
+                        "device.ptz".to_string(),
+                    ],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    capacity: 8,
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new("stream-rpc", "stream-inst", NodeKind::Stream),
+                    capabilities: vec![
+                        "live".to_string(),
+                        "playback".to_string(),
+                        "download".to_string(),
+                        "talk".to_string(),
+                    ],
+                    endpoints: vec![
+                        grpc_endpoint(stream_addr),
+                        EndpointRecord {
+                            name: "rtp".to_string(),
+                            scheme: "rtp".to_string(),
+                            host: "127.0.0.1".to_string(),
+                            port: 30000,
+                            mode: EndpointModeRecord::Single,
+                            labels: HashMap::new(),
+                        },
+                    ],
+                    capacity: 8,
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new("avai-rpc", "avai-inst", NodeKind::Avai),
+                    capabilities: vec!["ai.vehicle".to_string()],
+                    endpoints: vec![grpc_endpoint(avai_addr)],
+                    capacity: 8,
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                })
+                .unwrap();
+
+            let control = BusinessControl::new(store.clone());
+            let stream = control
+                .start_live("op-live-rpc", "device-1", "channel-1")
+                .await
+                .unwrap();
+            assert_eq!(stream.stream_id, "live-op-live-rpc");
+            assert_eq!(stream.node_id, "stream-rpc");
+            assert_eq!(stream.endpoint, "rtp://127.0.0.1:30000");
+
+            assert_eq!(
+                control
+                    .start_playback("op-playback-rpc", "device-1", "channel-1")
+                    .await
+                    .unwrap()
+                    .stream_id,
+                "playback-op-playback-rpc"
+            );
+            assert_eq!(
+                control
+                    .start_download("op-download-rpc", "device-1", "channel-1")
+                    .await
+                    .unwrap()
+                    .stream_id,
+                "download-op-download-rpc"
+            );
+            assert_eq!(
+                control
+                    .start_talk("op-talk-rpc", "device-1", "channel-1")
+                    .await
+                    .unwrap()
+                    .stream_id,
+                "talk-op-talk-rpc"
+            );
+            assert_eq!(control.ptz("device-1", "channel-1").await.unwrap(), 1);
+            let ai_task = control
+                .start_ai("op-ai-rpc", &stream.stream_id, "vehicle")
+                .await
+                .unwrap();
+            assert_eq!(ai_task.task_id, "ai-op-ai-rpc");
+            assert_eq!(
+                control.cancel_ai(&ai_task.task_id).await.unwrap().state,
+                guard::sim::SimAiTaskState::Cancelled
+            );
+            assert_eq!(
+                control
+                    .stop_stream(&stream.stream_id)
+                    .await
+                    .unwrap()
+                    .stream_id,
+                stream.stream_id
+            );
+
+            let operations = OperationService::default();
+            let executor = MqttCommandExecutor::new(operations.clone(), store);
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-live-1".to_string(),
+                    action: CommandAction::StreamStart,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-live-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-playback-1".to_string(),
+                    action: CommandAction::StreamPlayback,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-playback-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-download-1".to_string(),
+                    action: CommandAction::StreamDownload,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-download-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-talk-1".to_string(),
+                    action: CommandAction::StreamTalk,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-talk-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-ptz-1".to_string(),
+                    action: CommandAction::Ptz,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-ptz-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-ai-1".to_string(),
+                    action: CommandAction::AiStart,
+                    target: "live-mqtt-live-1".to_string(),
+                    payload: base::serde_json::json!({ "model": "vehicle" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-ai-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-ai-cancel-1".to_string(),
+                    action: CommandAction::AiCancel,
+                    target: "ai-mqtt-ai-1".to_string(),
+                    payload: base::serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-ai-cancel-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "mqtt-stop-1".to_string(),
+                    action: CommandAction::StreamStop,
+                    target: "live-mqtt-live-1".to_string(),
+                    payload: base::serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-stop-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+        });
+}
+
+fn free_loopback_addr() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap()
+}
+
+fn grpc_endpoint(addr: SocketAddr) -> EndpointRecord {
+    EndpointRecord {
+        name: "grpc".to_string(),
+        scheme: "grpc".to_string(),
+        host: addr.ip().to_string(),
+        port: u32::from(addr.port()),
+        mode: EndpointModeRecord::Single,
+        labels: HashMap::new(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FakeSession;
+
+#[tonic::async_trait]
+impl SessionControl for FakeSession {
+    async fn start_live(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "live",
+        )))
+    }
+
+    async fn start_playback(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "playback",
+        )))
+    }
+
+    async fn start_download(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "download",
+        )))
+    }
+
+    async fn start_talk(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "talk",
+        )))
+    }
+
+    async fn stop_device_stream(
+        &self,
+        request: tonic::Request<StopDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(DeviceStreamResponse {
+            stream_id: request.into_inner().stream_id,
+            state: DeviceStreamState::Stopped as i32,
+            error: None,
+        }))
+    }
+
+    async fn control_ptz(
+        &self,
+        _request: tonic::Request<ControlPtzRequest>,
+    ) -> Result<tonic::Response<ControlPtzResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ControlPtzResponse {
+            accepted: true,
+            error: None,
+        }))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FakeStream;
+
+#[tonic::async_trait]
+impl StreamControl for FakeStream {
+    async fn start_receive(
+        &self,
+        request: tonic::Request<StartReceiveRequest>,
+    ) -> Result<tonic::Response<StartReceiveResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(StartReceiveResponse {
+            stream_id: request.stream_id,
+            state: StreamState::Receiving as i32,
+            receive_endpoints: request.preferred_endpoints,
+            error: None,
+        }))
+    }
+
+    async fn stop_receive(
+        &self,
+        _request: tonic::Request<StopReceiveRequest>,
+    ) -> Result<tonic::Response<StopReceiveResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StopReceiveResponse {
+            state: StreamState::Stopped as i32,
+            error: None,
+        }))
+    }
+
+    async fn query_stream(
+        &self,
+        request: tonic::Request<QueryStreamRequest>,
+    ) -> Result<tonic::Response<QueryStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(QueryStreamResponse {
+            stream_id: request.into_inner().stream_id,
+            state: StreamState::Receiving as i32,
+            outputs: vec![],
+        }))
+    }
+
+    async fn create_output(
+        &self,
+        _request: tonic::Request<CreateOutputRequest>,
+    ) -> Result<tonic::Response<CreateOutputResponse>, tonic::Status> {
+        Ok(tonic::Response::new(CreateOutputResponse {
+            output_id: "out".to_string(),
+            endpoints: vec![],
+            error: None,
+        }))
+    }
+
+    async fn close_output(
+        &self,
+        _request: tonic::Request<CloseOutputRequest>,
+    ) -> Result<tonic::Response<CloseOutputResponse>, tonic::Status> {
+        Ok(tonic::Response::new(CloseOutputResponse {
+            closed: true,
+            error: None,
+        }))
+    }
+
+    async fn get_playback_endpoints(
+        &self,
+        _request: tonic::Request<GetPlaybackEndpointsRequest>,
+    ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetPlaybackEndpointsResponse {
+            endpoints: vec![],
+        }))
+    }
+}
+
+fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> DeviceStreamResponse {
+    let stream_id = request
+        .operation
+        .and_then(|operation| {
+            (!operation.idempotency_key.is_empty()).then_some(operation.idempotency_key)
+        })
+        .map(|id| format!("{prefix}-{id}"))
+        .unwrap_or_default();
+    DeviceStreamResponse {
+        stream_id,
+        state: DeviceStreamState::Running as i32,
+        error: None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FakeAvai;
+
+#[tonic::async_trait]
+impl AvaiControl for FakeAvai {
+    async fn create_task(
+        &self,
+        request: tonic::Request<CreateTaskRequest>,
+    ) -> Result<tonic::Response<CreateTaskResponse>, tonic::Status> {
+        Ok(tonic::Response::new(CreateTaskResponse {
+            task_id: request.into_inner().task_id,
+            state: AiTaskState::Running as i32,
+            error: None,
+        }))
+    }
+
+    async fn cancel_task(
+        &self,
+        _request: tonic::Request<CancelTaskRequest>,
+    ) -> Result<tonic::Response<CancelTaskResponse>, tonic::Status> {
+        Ok(tonic::Response::new(CancelTaskResponse {
+            state: AiTaskState::Cancelled as i32,
+            error: None,
+        }))
+    }
+
+    async fn query_task(
+        &self,
+        request: tonic::Request<QueryTaskRequest>,
+    ) -> Result<tonic::Response<QueryTaskResponse>, tonic::Status> {
+        Ok(tonic::Response::new(QueryTaskResponse {
+            task_id: request.into_inner().task_id,
+            state: AiTaskState::Running as i32,
+            result: vec![],
+            error: None,
+        }))
+    }
+
+    async fn query_capabilities(
+        &self,
+        _request: tonic::Request<QueryCapabilitiesRequest>,
+    ) -> Result<tonic::Response<QueryCapabilitiesResponse>, tonic::Status> {
+        Ok(tonic::Response::new(QueryCapabilitiesResponse {
+            capabilities: vec!["ai.vehicle".to_string()],
+            page: Some(PageResponse {
+                next_page_token: String::new(),
+            }),
+        }))
+    }
+}

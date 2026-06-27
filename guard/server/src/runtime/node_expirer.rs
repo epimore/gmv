@@ -42,6 +42,7 @@ mod tests {
                     .register(RegisterRequest {
                         identity: NodeIdentity::new("stream-expire", "inst-1", NodeKind::Stream),
                         capabilities: vec!["live".to_string()],
+                        endpoints: vec![],
                         capacity: 1,
                         host_metrics: Default::default(),
                         zone: None,

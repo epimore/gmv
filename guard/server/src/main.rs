@@ -1,12 +1,17 @@
 use std::io::{self, Read};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base::log::warn;
+use base::tokio_util::sync::CancellationToken;
 use base::utils::crypto::{default_decrypt, default_encrypt};
 use guard::api::v2::ApiV2;
 use guard::app_config::{GuardAppConfig, config_path_from_args};
-use guard::auth::{Role, hash_password};
+use guard::auth::{Role, Secret, hash_password};
 use guard::core::{GuardError, GuardResult};
 use guard::job::SystemJobService;
+use guard::mqttc::{
+    CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy, MqttRuntime,
+};
 use guard::operation::OperationService;
 use guard::runtime::node_expirer;
 use guard::runtime::node_rpc::{self, NodeRpcConfig};
@@ -75,17 +80,21 @@ fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
         let api_store = store.clone();
-        let api = ApiV2::new(
-            store,
-            OperationService::default(),
-            SystemJobService::default(),
-        );
+        let operations = OperationService::default();
+        let api = ApiV2::new(store, operations.clone(), SystemJobService::default());
         let rpc_config = NodeRpcConfig {
             bind_addr: config.grpc.bind_addr,
             heartbeat_interval_ms: config.grpc.heartbeat_interval_ms,
             heartbeat_timeout_ms: config.grpc.heartbeat_timeout_ms,
+            tls: config.grpc.tls.enabled.then(|| node_rpc::NodeRpcTlsConfig {
+                certificate_path: config.grpc.tls.certificate_path.clone(),
+                private_key_path: config.grpc.tls.private_key_path.clone(),
+            }),
         };
         let _node_expirer = node_expirer::spawn(registry.clone(), config.grpc.heartbeat_timeout_ms);
+        if config.integrations.mqtt.enabled {
+            spawn_mqtt_runtime(&config, &persistent, operations.clone(), api_store.clone())?;
+        }
         let web = web::serve(
             web_config,
             api,
@@ -97,6 +106,52 @@ fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
         let rpc = node_rpc::serve(rpc_config, registry, api_store.clone());
         base::tokio::try_join!(web, rpc).map(|_| ())
     })
+}
+
+fn spawn_mqtt_runtime(
+    config: &GuardAppConfig,
+    persistent: &PersistentStore,
+    operations: OperationService,
+    store: InMemoryGuardStore,
+) -> GuardResult<()> {
+    let mqtt = &config.integrations.mqtt;
+    let runtime = MqttRuntime::new(MqttClientConfig {
+        client_id: mqtt.client_id.clone(),
+        host: mqtt.broker.clone(),
+        port: mqtt.port,
+        username: Some(mqtt.username.clone()),
+        password: Some(Secret::new(mqtt.password()?)),
+        keep_alive: Duration::from_secs(30),
+        request_capacity: 100,
+        tls: mqtt.tls,
+        retry: base_rpc::RetryPolicy::default(),
+    })?;
+    let topics = mqtt.subscribe_topics.clone();
+    let policy = MqttCommandPolicy::new(
+        [
+            "stream.start".to_string(),
+            "stream.stop".to_string(),
+            "device.ptz".to_string(),
+            "ai.start".to_string(),
+            "ai.cancel".to_string(),
+        ],
+        300_000,
+    )?;
+    let repository = match persistent {
+        PersistentStore::Mysql(store) => CommandIdRepository::from(store.clone()),
+        PersistentStore::Sqlite(store) => CommandIdRepository::from(store.clone()),
+    };
+    let executor = MqttCommandExecutor::new(operations, store);
+    let cancel = CancellationToken::new();
+    base::tokio::spawn(async move {
+        if let Err(error) = runtime
+            .run_commands(topics, policy, repository, executor, cancel)
+            .await
+        {
+            warn!("MQTT command runtime stopped: {error}");
+        }
+    });
+    Ok(())
 }
 
 fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {

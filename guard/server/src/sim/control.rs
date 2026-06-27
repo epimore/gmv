@@ -79,6 +79,7 @@ impl Simulator {
             registry.register(RegisterRequest {
                 identity,
                 capabilities,
+                endpoints: vec![],
                 capacity,
                 host_metrics: Default::default(),
                 zone: Some("sim-zone".to_string()),

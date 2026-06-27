@@ -25,6 +25,10 @@ impl ApiV2 {
         }
     }
 
+    pub fn store(&self) -> InMemoryGuardStore {
+        self.store.clone()
+    }
+
     pub fn list_nodes(&self) -> Vec<NodeRecord> {
         self.store.nodes()
     }
@@ -43,6 +47,22 @@ impl ApiV2 {
 
     pub fn get_operation(&self, operation_id: &str) -> GuardResult<OperationRecord> {
         self.operations.get(operation_id)
+    }
+
+    pub fn succeed_operation(
+        &self,
+        operation_id: &str,
+        message: impl Into<String>,
+    ) -> GuardResult<OperationRecord> {
+        self.operations.succeed(operation_id, message)
+    }
+
+    pub fn fail_operation(
+        &self,
+        operation_id: &str,
+        error: crate::core::GuardError,
+    ) -> GuardResult<OperationRecord> {
+        self.operations.fail(operation_id, error)
     }
 
     pub fn list_operations(&self) -> Vec<OperationRecord> {

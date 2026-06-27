@@ -22,7 +22,18 @@ fn mqtt_config_requires_complete_credentials_and_tls_is_explicit() {
 
 #[test]
 fn mqtt_commands_enforce_schema_ttl_permissions_and_idempotency() {
-    let policy = MqttCommandPolicy::new(["stream.stop".to_string()], 60_000).unwrap();
+    let policy = MqttCommandPolicy::new(
+        [
+            "stream.stop".to_string(),
+            "stream.playback".to_string(),
+            "stream.download".to_string(),
+            "device.talk".to_string(),
+            "ai.start".to_string(),
+            "ai.cancel".to_string(),
+        ],
+        60_000,
+    )
+    .unwrap();
     let payload = br#"{
       "command_id":"cmd-1",
       "issued_at_ms":1000,
@@ -33,8 +44,38 @@ fn mqtt_commands_enforce_schema_ttl_permissions_and_idempotency() {
     }"#;
     let command = policy.decode(payload, 1500).unwrap().unwrap();
     assert_eq!(command.action, CommandAction::StreamStop);
+    let operation = command.operation_request("mqtt");
+    assert_eq!(operation.operation_id, "cmd-1");
+    assert_eq!(operation.kind, "stream.stop");
     assert!(policy.decode(payload, 1500).unwrap().is_none());
     assert!(policy.decode(payload, 2001).is_err());
+
+    for (action, expected) in [
+        ("stream.playback", CommandAction::StreamPlayback),
+        ("stream.download", CommandAction::StreamDownload),
+        ("device.talk", CommandAction::StreamTalk),
+        ("ai.start", CommandAction::AiStart),
+        ("ai.cancel", CommandAction::AiCancel),
+    ] {
+        let payload = format!(
+            r#"{{
+              "command_id":"cmd-{action}",
+              "issued_at_ms":1000,
+              "expires_at_ms":2000,
+              "action":"{action}",
+              "target":"target-1",
+              "payload":{{"channel_id":"ch-1","model":"vehicle"}}
+            }}"#
+        );
+        assert_eq!(
+            policy
+                .decode(payload.as_bytes(), 1500)
+                .unwrap()
+                .unwrap()
+                .action,
+            expected
+        );
+    }
 
     let forbidden = payload.replace_ascii(b"stream.stop", b"device.ptz ");
     assert!(policy.decode(&forbidden, 1500).is_err());

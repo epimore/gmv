@@ -23,11 +23,6 @@ impl Default for GuardConfig {
 
 impl GuardConfig {
     pub fn validate(&self) -> GuardResult<()> {
-        if !self.tls.enabled && !is_loopback_host(&self.bind_host) {
-            return Err(GuardError::InvalidConfig(
-                "TLS can only be disabled on loopback development binds".to_string(),
-            ));
-        }
         self.heartbeat.validate()?;
         self.bus.validate()?;
         self.lease.validate()
@@ -124,10 +119,6 @@ impl LeaseConfig {
     }
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "::1")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,14 +131,11 @@ mod tests {
     }
 
     #[test]
-    fn insecure_non_loopback_bind_is_rejected() {
+    fn tls_can_be_disabled_explicitly() {
         let mut config = GuardConfig::default();
         config.bind_host = "0.0.0.0".to_string();
         config.tls.enabled = false;
-        assert!(matches!(
-            config.validate(),
-            Err(GuardError::InvalidConfig(_))
-        ));
+        config.validate().unwrap();
     }
 
     #[test]

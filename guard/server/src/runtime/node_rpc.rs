@@ -1,9 +1,14 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::pin::Pin;
 
 use base::futures::Stream;
 use base::tokio::sync::mpsc;
-use gmv_protocol::common::v1::{NodeIdentity as ProtoIdentity, NodeKind as ProtoNodeKind};
+use gmv_protocol::common::v1::{
+    Endpoint as ProtoEndpoint, EndpointMode as ProtoEndpointMode, NodeIdentity as ProtoIdentity,
+    NodeKind as ProtoNodeKind,
+};
+use gmv_protocol::guard::v1::guard_control_server::GuardControlServer;
 use gmv_protocol::guard::v1::guard_node_control_server::{
     GuardNodeControl, GuardNodeControlServer,
 };
@@ -13,19 +18,27 @@ use gmv_protocol::guard::v1::{
     RegisterNodeRequest, RegisterNodeResponse, StreamAck, guard_to_node_message,
     node_to_guard_message,
 };
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind};
 use crate::registry::{HeartbeatReport, RegisterDecision, RegisterRequest, RegistryService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
 use crate::store::InMemoryGuardStore;
-use crate::store::model::{EventRecord, HostMetricsRecord};
+use crate::store::model::{EndpointModeRecord, EndpointRecord, EventRecord, HostMetricsRecord};
 
 #[derive(Debug, Clone)]
 pub struct NodeRpcConfig {
     pub bind_addr: SocketAddr,
     pub heartbeat_interval_ms: u64,
     pub heartbeat_timeout_ms: u64,
+    pub tls: Option<NodeRpcTlsConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeRpcTlsConfig {
+    pub certificate_path: PathBuf,
+    pub private_key_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +83,7 @@ impl GuardNodeControl for GuardNodeRpc {
             .register(RegisterRequest {
                 identity: identity.clone(),
                 capabilities: request.capabilities,
+                endpoints: endpoint_records(request.endpoints),
                 capacity: request.capacity.max(1),
                 host_metrics: host_metrics(request.host_metrics),
                 zone: (!request.zone.is_empty()).then_some(request.zone),
@@ -156,17 +170,47 @@ pub async fn serve(
     registry: RegistryService,
     store: InMemoryGuardStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let service = GuardNodeRpc::new(
+    let node_service = GuardNodeRpc::new(
         registry,
-        store,
+        store.clone(),
         config.heartbeat_interval_ms,
         config.heartbeat_timeout_ms,
     );
-    tonic::transport::Server::builder()
-        .add_service(GuardNodeControlServer::new(service))
+    let control_service = crate::runtime::control_rpc::GuardControlRpc::new(store);
+    let mut server = Server::builder();
+    if let Some(tls) = config.tls {
+        let cert = base::tokio::fs::read(tls.certificate_path).await?;
+        let key = base::tokio::fs::read(tls.private_key_path).await?;
+        server =
+            server.tls_config(ServerTlsConfig::new().identity(Identity::from_pem(cert, key)))?;
+    }
+    server
+        .add_service(GuardNodeControlServer::new(node_service))
+        .add_service(GuardControlServer::new(control_service))
         .serve(config.bind_addr)
         .await?;
     Ok(())
+}
+
+fn endpoint_records(endpoints: Vec<ProtoEndpoint>) -> Vec<EndpointRecord> {
+    endpoints
+        .into_iter()
+        .map(|endpoint| EndpointRecord {
+            name: endpoint.name,
+            scheme: endpoint.scheme,
+            host: endpoint.host,
+            port: endpoint.port,
+            mode: match ProtoEndpointMode::try_from(endpoint.mode)
+                .unwrap_or(ProtoEndpointMode::Unspecified)
+            {
+                ProtoEndpointMode::Multi => EndpointModeRecord::Multi,
+                ProtoEndpointMode::Single | ProtoEndpointMode::Unspecified => {
+                    EndpointModeRecord::Single
+                }
+            },
+            labels: endpoint.labels,
+        })
+        .collect()
 }
 
 fn apply_heartbeat(

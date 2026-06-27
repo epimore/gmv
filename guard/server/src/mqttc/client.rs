@@ -2,11 +2,13 @@ use std::time::Duration;
 
 use base::tokio_util::sync::CancellationToken;
 use base_rpc::RetryPolicy;
-use rumqttc::{AsyncClient, EventLoop, MqttOptions, Transport};
+use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS, Transport};
 
 use crate::auth::Secret;
 use crate::core::{GuardError, GuardResult};
+use crate::mqttc::executor::MqttCommandExecutor;
 use crate::mqttc::publisher::MqttPublisher;
+use crate::mqttc::subscriber::{CommandIdRepository, MqttCommandPolicy};
 
 #[derive(Debug, Clone)]
 pub struct MqttClientConfig {
@@ -44,6 +46,7 @@ impl MqttClientConfig {
 
 pub struct MqttRuntime {
     pub publisher: MqttPublisher,
+    client: AsyncClient,
     event_loop: EventLoop,
 }
 
@@ -60,18 +63,65 @@ impl MqttRuntime {
         }
         let (client, event_loop) = AsyncClient::new(options, config.request_capacity);
         Ok(Self {
-            publisher: MqttPublisher::new(client, config.retry),
+            publisher: MqttPublisher::new(client.clone(), config.retry),
+            client,
             event_loop,
         })
     }
 
     pub async fn run(mut self, cancel: CancellationToken) -> GuardResult<()> {
+        self.run_loop(cancel, None).await
+    }
+
+    pub async fn run_commands(
+        mut self,
+        topics: Vec<String>,
+        policy: MqttCommandPolicy,
+        repository: CommandIdRepository,
+        executor: MqttCommandExecutor,
+        cancel: CancellationToken,
+    ) -> GuardResult<()> {
+        if topics.is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "MQTT subscribe_topics is required when command subscription is enabled"
+                    .to_string(),
+            ));
+        }
+        for topic in &topics {
+            self.client
+                .subscribe(topic, QoS::AtLeastOnce)
+                .await
+                .map_err(|error| {
+                    GuardError::Conflict(format!("MQTT subscribe {topic} failed: {error}"))
+                })?;
+        }
+        self.run_loop(
+            cancel,
+            Some(CommandRuntime {
+                policy,
+                repository,
+                executor,
+            }),
+        )
+        .await
+    }
+
+    async fn run_loop(
+        &mut self,
+        cancel: CancellationToken,
+        mut commands: Option<CommandRuntime>,
+    ) -> GuardResult<()> {
         let mut attempt = 0;
         loop {
             base::tokio::select! {
                 _ = cancel.cancelled() => return Ok(()),
                 event = self.event_loop.poll() => match event {
-                    Ok(_) => attempt = 0,
+                    Ok(event) => {
+                        attempt = 0;
+                        if let Some(commands) = commands.as_mut() {
+                            commands.handle(event).await?;
+                        }
+                    }
                     Err(error) => {
                         attempt += 1;
                         if !self.publisher.retry_policy().permits(attempt) {
@@ -87,4 +137,35 @@ impl MqttRuntime {
             }
         }
     }
+}
+
+struct CommandRuntime {
+    policy: MqttCommandPolicy,
+    repository: CommandIdRepository,
+    executor: MqttCommandExecutor,
+}
+
+impl CommandRuntime {
+    async fn handle(&mut self, event: Event) -> GuardResult<()> {
+        let Event::Incoming(Packet::Publish(publish)) = event else {
+            return Ok(());
+        };
+        let now_ms = now_ms();
+        if let Some(command) = self
+            .policy
+            .decode_with_repository(&publish.payload, now_ms, &self.repository)
+            .await?
+        {
+            self.executor.execute(command).await?;
+        }
+        Ok(())
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
 }

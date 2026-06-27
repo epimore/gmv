@@ -21,6 +21,7 @@ fn registry_fences_old_instances_and_sequences() {
             .register(RegisterRequest {
                 identity: first.clone(),
                 capabilities: vec!["live".to_string()],
+                endpoints: vec![],
                 capacity: 2,
                 host_metrics: Default::default(),
                 zone: None,
@@ -35,6 +36,7 @@ fn registry_fences_old_instances_and_sequences() {
             .register(RegisterRequest {
                 identity: second.clone(),
                 capabilities: vec!["live".to_string()],
+                endpoints: vec![],
                 capacity: 2,
                 host_metrics: Default::default(),
                 zone: None,
@@ -48,6 +50,7 @@ fn registry_fences_old_instances_and_sequences() {
             .register(RegisterRequest {
                 identity: second.clone(),
                 capabilities: vec!["live".to_string()],
+                endpoints: vec![],
                 capacity: 2,
                 host_metrics: Default::default(),
                 zone: None,

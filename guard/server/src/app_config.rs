@@ -19,6 +19,8 @@ pub struct GuardAppConfig {
     #[serde(default)]
     pub grpc: GrpcConfig,
     #[serde(default)]
+    pub internal_comm: InternalCommConfig,
+    #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
@@ -37,6 +39,7 @@ impl GuardAppConfig {
     pub fn validate(&self) -> GuardResult<()> {
         self.http.validate()?;
         self.grpc.validate()?;
+        self.internal_comm.validate()?;
         self.database.validate()?;
         self.bootstrap.validate()?;
         self.integrations.validate()
@@ -59,6 +62,8 @@ pub struct GrpcConfig {
     pub heartbeat_interval_ms: u64,
     #[serde(default = "default_heartbeat_timeout_ms")]
     pub heartbeat_timeout_ms: u64,
+    #[serde(default)]
+    pub tls: GrpcTlsConfig,
 }
 
 impl Default for GrpcConfig {
@@ -67,16 +72,19 @@ impl Default for GrpcConfig {
             bind_addr: default_grpc_bind_addr(),
             heartbeat_interval_ms: default_heartbeat_interval_ms(),
             heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
+            tls: GrpcTlsConfig::default(),
         }
     }
 }
 
 impl GrpcConfig {
     fn validate(&self) -> GuardResult<()> {
-        if !self.bind_addr.ip().is_loopback() {
+        if self.tls.enabled
+            && (self.tls.certificate_path.as_os_str().is_empty()
+                || self.tls.private_key_path.as_os_str().is_empty())
+        {
             return Err(GuardError::InvalidConfig(
-                "guard.grpc currently requires a loopback bind until RPC TLS is configured"
-                    .to_string(),
+                "guard.grpc.tls certificate_path and private_key_path are required when TLS is enabled".to_string(),
             ));
         }
         if self.heartbeat_interval_ms == 0
@@ -87,6 +95,67 @@ impl GrpcConfig {
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct GrpcTlsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub certificate_path: PathBuf,
+    #[serde(default)]
+    pub private_key_path: PathBuf,
+}
+
+impl Default for GrpcTlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            certificate_path: PathBuf::new(),
+            private_key_path: PathBuf::new(),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct InternalCommConfig {
+    #[serde(default)]
+    pub mode: InternalCommMode,
+}
+
+impl Default for InternalCommConfig {
+    fn default() -> Self {
+        Self {
+            mode: InternalCommMode::Rpc,
+        }
+    }
+}
+
+impl InternalCommConfig {
+    fn validate(&self) -> GuardResult<()> {
+        if self.mode != InternalCommMode::Rpc {
+            return Err(GuardError::InvalidConfig(
+                "guard.internal_comm.mode must be rpc after Phase 6 cutover".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(crate = "base::serde", rename_all = "lowercase")]
+pub enum InternalCommMode {
+    Http,
+    Dual,
+    Rpc,
+}
+
+impl Default for InternalCommMode {
+    fn default() -> Self {
+        Self::Rpc
     }
 }
 
@@ -649,6 +718,45 @@ mod tests {
         };
 
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn grpc_tls_defaults_to_enabled_but_can_be_disabled() {
+        let mut config = GrpcConfig::default();
+        assert!(config.tls.enabled);
+        assert!(config.validate().is_err());
+        config.tls.enabled = false;
+        config.bind_addr = "0.0.0.0:18080".parse().unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn internal_comm_mode_is_rpc_after_phase6_cutover() {
+        let mut config = GuardAppConfig {
+            http: HttpConfig {
+                tls: HttpTlsConfig {
+                    enabled: true,
+                    certificate_path: "cert.pem".into(),
+                    private_key_path: "key.pem".into(),
+                },
+                ..HttpConfig::default()
+            },
+            grpc: GrpcConfig {
+                tls: GrpcTlsConfig {
+                    enabled: false,
+                    ..GrpcTlsConfig::default()
+                },
+                ..GrpcConfig::default()
+            },
+            internal_comm: InternalCommConfig::default(),
+            database: DatabaseConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            simulator: SimulatorConfig::default(),
+            integrations: IntegrationsConfig::default(),
+        };
+        config.validate().unwrap();
+        config.internal_comm.mode = InternalCommMode::Dual;
+        assert!(config.validate().is_err());
     }
 
     #[test]

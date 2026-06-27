@@ -13,6 +13,7 @@ use std::net::{IpAddr, SocketAddr};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
+use crate::api::v2::control::BusinessControl;
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
@@ -69,6 +70,9 @@ pub fn router(state: HttpState) -> Router {
         .route("/integrations/outbox/{outbox_id}/retry", post(retry_outbox))
         .route("/devices", get(sim_devices))
         .route("/devices/{device_id}/preview", post(sim_preview))
+        .route("/devices/{device_id}/playback", post(sim_playback))
+        .route("/devices/{device_id}/download", post(sim_download))
+        .route("/devices/{device_id}/talk", post(sim_talk))
         .route("/devices/{device_id}/ptz", post(sim_ptz))
         .route("/streams", get(sim_streams))
         .route("/streams/{stream_id}/stop", post(sim_stop_stream))
@@ -1116,16 +1120,155 @@ async fn sim_preview(
     Path(device_id): Path<String>,
     Json(request): Json<PreviewRequest>,
 ) -> Result<(StatusCode, Json<SimStream>), HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(require_simulator(&state)?.start_stream(
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id.clone();
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "stream.start",
+        &session,
+        Role::Operator,
+    ))?;
+    let start_result = if let Some(simulator) = state.simulator.as_ref() {
+        simulator.start_stream(
             &request.request_id,
             &device_id,
             &request.channel_id,
             http_now_ms()?,
-        )?),
-    ))
+        )
+    } else {
+        BusinessControl::new(state.api.store())
+            .start_live(&request.request_id, &device_id, &request.channel_id)
+            .await
+    };
+    match start_result {
+        Ok(stream) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "stream started")?;
+            Ok((StatusCode::ACCEPTED, Json(stream)))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(error.into())
+        }
+    }
+}
+
+async fn sim_playback(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Json(request): Json<PreviewRequest>,
+) -> Result<(StatusCode, Json<SimStream>), HttpError> {
+    start_device_stream_http(
+        state,
+        headers,
+        device_id,
+        request,
+        "stream.playback",
+        "playback started",
+        |control, operation_id, device_id, channel_id| async move {
+            control
+                .start_playback(&operation_id, &device_id, &channel_id)
+                .await
+        },
+    )
+    .await
+}
+
+async fn sim_download(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Json(request): Json<PreviewRequest>,
+) -> Result<(StatusCode, Json<SimStream>), HttpError> {
+    start_device_stream_http(
+        state,
+        headers,
+        device_id,
+        request,
+        "stream.download",
+        "download started",
+        |control, operation_id, device_id, channel_id| async move {
+            control
+                .start_download(&operation_id, &device_id, &channel_id)
+                .await
+        },
+    )
+    .await
+}
+
+async fn sim_talk(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Json(request): Json<PreviewRequest>,
+) -> Result<(StatusCode, Json<SimStream>), HttpError> {
+    start_device_stream_http(
+        state,
+        headers,
+        device_id,
+        request,
+        "device.talk",
+        "talk started",
+        |control, operation_id, device_id, channel_id| async move {
+            control
+                .start_talk(&operation_id, &device_id, &channel_id)
+                .await
+        },
+    )
+    .await
+}
+
+async fn start_device_stream_http<F, Fut>(
+    state: HttpState,
+    headers: HeaderMap,
+    device_id: String,
+    request: PreviewRequest,
+    operation_kind: &str,
+    success_message: &str,
+    rpc_start: F,
+) -> Result<(StatusCode, Json<SimStream>), HttpError>
+where
+    F: FnOnce(BusinessControl, String, String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<SimStream, GuardError>>,
+{
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id.clone();
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        operation_kind,
+        &session,
+        Role::Operator,
+    ))?;
+    let start_result = if let Some(simulator) = state.simulator.as_ref() {
+        simulator.start_stream(
+            &request.request_id,
+            &device_id,
+            &request.channel_id,
+            http_now_ms()?,
+        )
+    } else {
+        rpc_start(
+            BusinessControl::new(state.api.store()),
+            request.request_id,
+            device_id,
+            request.channel_id,
+        )
+        .await
+    };
+    match start_result {
+        Ok(stream) => {
+            state
+                .api
+                .succeed_operation(&operation_id, success_message)?;
+            Ok((StatusCode::ACCEPTED, Json(stream)))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(error.into())
+        }
+    }
 }
 
 async fn sim_ptz(
@@ -1134,11 +1277,33 @@ async fn sim_ptz(
     Path(device_id): Path<String>,
     Json(request): Json<PtzRequest>,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    let count = require_simulator(&state)?.ptz(&device_id, &request.channel_id)?;
-    Ok(Json(
-        base::serde_json::json!({ "accepted": true, "count": count }),
-    ))
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = format!("ptz-{}", http_now_ms()?);
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "device.ptz",
+        &session,
+        Role::Operator,
+    ))?;
+    let ptz_result = if let Some(simulator) = state.simulator.as_ref() {
+        simulator.ptz(&device_id, &request.channel_id)
+    } else {
+        BusinessControl::new(state.api.store())
+            .ptz(&device_id, &request.channel_id)
+            .await
+    };
+    match ptz_result {
+        Ok(count) => {
+            state.api.succeed_operation(&operation_id, "ptz accepted")?;
+            Ok(Json(
+                base::serde_json::json!({ "accepted": true, "count": count }),
+            ))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(error.into())
+        }
+    }
 }
 
 async fn sim_streams(
@@ -1154,8 +1319,33 @@ async fn sim_stop_stream(
     headers: HeaderMap,
     Path(stream_id): Path<String>,
 ) -> Result<Json<SimStream>, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    Ok(Json(require_simulator(&state)?.stop_stream(&stream_id)?))
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = format!("stop-{stream_id}");
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "stream.stop",
+        &session,
+        Role::Operator,
+    ))?;
+    let stop_result = if let Some(simulator) = state.simulator.as_ref() {
+        simulator.stop_stream(&stream_id)
+    } else {
+        BusinessControl::new(state.api.store())
+            .stop_stream(&stream_id)
+            .await
+    };
+    match stop_result {
+        Ok(stream) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "stream stopped")?;
+            Ok(Json(stream))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(error.into())
+        }
+    }
 }
 
 async fn sim_ai_tasks(
@@ -1171,16 +1361,38 @@ async fn sim_start_ai(
     headers: HeaderMap,
     Json(request): Json<StartAiRequest>,
 ) -> Result<(StatusCode, Json<SimAiTask>), HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(require_simulator(&state)?.start_ai(
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id.clone();
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "ai.start",
+        &session,
+        Role::Operator,
+    ))?;
+    let start_result = if let Some(simulator) = state.simulator.as_ref() {
+        simulator.start_ai(
             &request.request_id,
             &request.stream_id,
             &request.model,
             http_now_ms()?,
-        )?),
-    ))
+        )
+    } else {
+        BusinessControl::new(state.api.store())
+            .start_ai(&request.request_id, &request.stream_id, &request.model)
+            .await
+    };
+    match start_result {
+        Ok(task) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "ai task started")?;
+            Ok((StatusCode::ACCEPTED, Json(task)))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(error.into())
+        }
+    }
 }
 
 async fn sim_cancel_ai(
@@ -1188,8 +1400,33 @@ async fn sim_cancel_ai(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> Result<Json<SimAiTask>, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    Ok(Json(require_simulator(&state)?.cancel_ai(&task_id)?))
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = format!("cancel-{task_id}");
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "ai.cancel",
+        &session,
+        Role::Operator,
+    ))?;
+    let cancel_result = if let Some(simulator) = state.simulator.as_ref() {
+        simulator.cancel_ai(&task_id)
+    } else {
+        BusinessControl::new(state.api.store())
+            .cancel_ai(&task_id)
+            .await
+    };
+    match cancel_result {
+        Ok(task) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "ai task cancelled")?;
+            Ok(Json(task))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(error.into())
+        }
+    }
 }
 
 async fn sim_status(
@@ -1212,6 +1449,23 @@ async fn sim_availability(
         simulator.reconcile()?;
     }
     Ok(Json(simulator.status()))
+}
+
+fn operation_request(
+    operation_id: String,
+    kind: &str,
+    session: &UiSession,
+    required_role: Role,
+) -> OperationRequest {
+    OperationRequest {
+        operation_id,
+        kind: kind.to_string(),
+        requested_by: session.username.clone(),
+        caller_role: session.role,
+        required_role,
+        dangerous: false,
+        confirmation: None,
+    }
 }
 
 fn require_simulator(state: &HttpState) -> Result<&Simulator, HttpError> {

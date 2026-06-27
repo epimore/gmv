@@ -8,7 +8,7 @@ use base::tokio_util::sync::CancellationToken;
 use base_rpc::{RpcChannelConfig, connect_channel};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
 use gmv_protocol::guard::v1::{
-    HostMetrics, NodeHealth, NodeHeartbeat, NodeToGuardMessage, RegisterNodeRequest,
+    HostMetrics, NodeEvent, NodeHealth, NodeHeartbeat, NodeToGuardMessage, RegisterNodeRequest,
     node_to_guard_message,
 };
 use sys_metrics::HostMetricsCollector;
@@ -42,15 +42,43 @@ pub fn generate_instance_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
+#[derive(Clone)]
+pub struct NodeEventSender {
+    tx: mpsc::Sender<NodeEvent>,
+}
+
+impl NodeEventSender {
+    pub fn try_send(&self, event: NodeEvent) -> Result<(), mpsc::error::TrySendError<NodeEvent>> {
+        self.tx.try_send(event)
+    }
+}
+
 pub struct NodeReporter;
 
 impl NodeReporter {
     pub fn spawn(config: NodeReporterConfig, cancel: CancellationToken) -> JoinHandle<()> {
-        base::tokio::spawn(async move {
+        let (handle, _) = Self::spawn_with_events(config, cancel);
+        handle
+    }
+
+    pub fn spawn_with_events(
+        config: NodeReporterConfig,
+        cancel: CancellationToken,
+    ) -> (JoinHandle<()>, NodeEventSender) {
+        let (event_tx, mut event_rx) = mpsc::channel(128);
+        let sender = NodeEventSender { tx: event_tx };
+        let handle = base::tokio::spawn(async move {
             let mut sequence = 0u64;
             let mut collector = HostMetricsCollector::new();
             while !cancel.is_cancelled() {
-                let result = run_connection(&config, &cancel, &mut collector, &mut sequence).await;
+                let result = run_connection(
+                    &config,
+                    &cancel,
+                    &mut collector,
+                    &mut sequence,
+                    &mut event_rx,
+                )
+                .await;
                 if cancel.is_cancelled() {
                     break;
                 }
@@ -62,7 +90,8 @@ impl NodeReporter {
                     _ = cancel.cancelled() => break,
                 }
             }
-        })
+        });
+        (handle, sender)
     }
 }
 
@@ -71,6 +100,7 @@ async fn run_connection(
     cancel: &CancellationToken,
     collector: &mut HostMetricsCollector,
     sequence: &mut u64,
+    event_rx: &mut mpsc::Receiver<NodeEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let channel = connect_channel(&config.channel).await?;
     let mut client = GuardNodeControlClient::new(channel);
@@ -99,6 +129,16 @@ async fn run_connection(
                         metrics: (config.business_metrics)(),
                         host_metrics: collector.sample().ok().map(host_metrics),
                     })),
+                };
+                tx.send(message).await?;
+            }
+            Some(event) = event_rx.recv() => {
+                *sequence = sequence.saturating_add(1);
+                let message = NodeToGuardMessage {
+                    identity: identity.clone(),
+                    sequence: *sequence,
+                    sent_at_epoch_ms: now_ms(),
+                    payload: Some(node_to_guard_message::Payload::Event(event)),
                 };
                 tx.send(message).await?;
             }

@@ -45,6 +45,13 @@ guard:
     bind_addr: 127.0.0.1:18080
     heartbeat_interval_ms: 5000
     heartbeat_timeout_ms: 20000
+    tls:
+      enabled: false # TLS 默认启用；开发/受控内网可显式关闭。
+      certificate_path: ""
+      private_key_path: ""
+
+  internal_comm:
+    mode: rpc # http | dual | rpc；Phase 6 后固定为 rpc，内部控制不再依赖 HTTP。
 
   database:
     backend: sqlite # sqlite | mysql

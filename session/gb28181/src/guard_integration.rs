@@ -3,7 +3,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use base::serde::de::DeserializeOwned;
 use base_rpc::RpcChannelConfig;
+use gmv_domain::info::obj::{
+    OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState,
+    TalkClosedEvent, UnknownStreamEvent,
+};
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
 };
@@ -14,9 +19,14 @@ use gmv_protocol::guard::v1::{
 };
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, session_control_server::SessionControl,
+    SessionHookRequest, SessionHookResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    session_control_server::SessionControl, session_hook_server::SessionHook,
 };
-use gmv_protocol::stream::v1::{StartReceiveRequest, StartReceiveResponse, StreamState};
+use gmv_protocol::stream::v1::{
+    StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
+};
+
+use crate::service::hook_serv;
 
 #[derive(Debug, Clone)]
 pub struct SessionGuardNode {
@@ -194,6 +204,90 @@ impl SessionControlRpc {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SessionHookRpc;
+
+#[tonic::async_trait]
+impl SessionHook for SessionHookRpc {
+    async fn handle_hook(
+        &self,
+        request: tonic::Request<SessionHookRequest>,
+    ) -> Result<tonic::Response<SessionHookResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let response = match request.event_type.as_str() {
+            "stream.registered" | "stream.register" => {
+                let value: RegisterStreamInfo = decode_payload(&request.payload_json)?;
+                hook_serv::stream_register(value).await;
+                hook_response(true, None::<()>)?
+            }
+            "stream.input_timeout" => {
+                let value: StreamState = decode_payload(&request.payload_json)?;
+                hook_response(true, Some(hook_serv::stream_input_timeout(value)))?
+            }
+            "stream.on_play" | "stream.on_played" => {
+                let value: StreamPlayInfo = decode_payload(&request.payload_json)?;
+                hook_response(hook_serv::on_play(value), None::<()>)?
+            }
+            "stream.off_play" => {
+                let value: StreamPlayInfo = decode_payload(&request.payload_json)?;
+                hook_serv::off_play(value).await;
+                hook_response(true, None::<()>)?
+            }
+            "stream.idle" => {
+                let value: OutputStreamInfo = decode_payload(&request.payload_json)?;
+                hook_response(true, Some(hook_serv::stream_idle(value).await))?
+            }
+            "stream.unknown" => {
+                let value: UnknownStreamEvent = decode_payload(&request.payload_json)?;
+                hook_response(hook_serv::stream_unknown(value).await, None::<()>)?
+            }
+            "stream.end_record" => {
+                let value: StreamRecordInfo = decode_payload(&request.payload_json)?;
+                match hook_serv::end_record(value).await {
+                    Ok(()) => hook_response(true, None::<()>)?,
+                    Err(err) => SessionHookResponse {
+                        accepted: false,
+                        payload_json: vec![],
+                        error: Some(error("end_record_failed", &err.to_string())),
+                    },
+                }
+            }
+            "stream.talk_closed" => {
+                let value: TalkClosedEvent = decode_payload(&request.payload_json)?;
+                hook_response(hook_serv::talk_closed(value).await, None::<()>)?
+            }
+            _ => SessionHookResponse {
+                accepted: false,
+                payload_json: vec![],
+                error: Some(error("unknown_hook", "unsupported session hook event_type")),
+            },
+        };
+        Ok(tonic::Response::new(response))
+    }
+}
+
+fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, tonic::Status> {
+    base::serde_json::from_slice(payload)
+        .map_err(|error| tonic::Status::invalid_argument(format!("invalid hook payload: {error}")))
+}
+
+fn hook_response<T: base::serde::Serialize>(
+    accepted: bool,
+    payload: Option<T>,
+) -> Result<SessionHookResponse, tonic::Status> {
+    let payload_json = match payload {
+        Some(value) => base::serde_json::to_vec(&value).map_err(|error| {
+            tonic::Status::internal(format!("encode hook response failed: {error}"))
+        })?,
+        None => vec![],
+    };
+    Ok(SessionHookResponse {
+        accepted,
+        payload_json,
+        error: None,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionControlAdapter {
     identity: NodeIdentity,
@@ -266,7 +360,7 @@ impl SessionControlAdapter {
                 Some(error("stale_instance", "session instance does not match")),
             );
         }
-        if stream_start.state != StreamState::Receiving as i32 {
+        if stream_start.state != ProtoStreamState::Receiving as i32 {
             return device_response(
                 &stream_start.stream_id,
                 DeviceStreamState::Failed,
@@ -462,6 +556,37 @@ pub fn operation(operation_id: &str) -> OperationRef {
 mod tests {
     use super::*;
     use gmv_protocol::common::v1::Endpoint;
+    use gmv_protocol::session::v1::session_hook_server::SessionHook;
+
+    #[test]
+    fn session_hook_rpc_rejects_unknown_event_and_invalid_payload() {
+        base::tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                let rpc = SessionHookRpc;
+                let response = rpc
+                    .handle_hook(tonic::Request::new(SessionHookRequest {
+                        operation: Some(operation("hook-unknown")),
+                        event_type: "stream.not_supported".to_string(),
+                        payload_json: vec![],
+                    }))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                assert!(!response.accepted);
+                assert_eq!(response.error.unwrap().code, "unknown_hook");
+
+                let status = rpc
+                    .handle_hook(tonic::Request::new(SessionHookRequest {
+                        operation: Some(operation("hook-invalid")),
+                        event_type: "stream.input_timeout".to_string(),
+                        payload_json: b"not-json".to_vec(),
+                    }))
+                    .await
+                    .unwrap_err();
+                assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            });
+    }
 
     #[test]
     fn session_builds_guard_and_stream_requests_then_records_running_stream() {
@@ -507,7 +632,7 @@ mod tests {
             },
             StartReceiveResponse {
                 stream_id: "stream-1".to_string(),
-                state: StreamState::Receiving as i32,
+                state: ProtoStreamState::Receiving as i32,
                 receive_endpoints: vec![],
                 error: None,
             },
@@ -547,7 +672,7 @@ mod tests {
             },
             StartReceiveResponse {
                 stream_id: "stream-1".to_string(),
-                state: StreamState::Receiving as i32,
+                state: ProtoStreamState::Receiving as i32,
                 receive_endpoints: vec![],
                 error: None,
             },
