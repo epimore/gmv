@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::pin::Pin;
 
@@ -19,7 +19,6 @@ use gmv_protocol::guard::v1::{
     RegisterNodeRequest, RegisterNodeResponse, StreamAck, guard_to_node_message,
     node_to_guard_message,
 };
-use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind};
@@ -183,6 +182,7 @@ impl GuardNodeControl for GuardNodeRpc {
 
 pub async fn serve(
     config: NodeRpcConfig,
+    listener: StdTcpListener,
     registry: RegistryService,
     store: InMemoryGuardStore,
     forwarder: Option<EventForwarder>,
@@ -197,18 +197,22 @@ pub async fn serve(
     );
     let control_service = crate::runtime::control_rpc::GuardControlRpc::new(store);
     let media_service = GuardMediaRpc::new(media_repository);
-    let mut server = Server::builder();
+    let mut server_config = base_rpc::RpcServerConfig::default();
     if let Some(tls) = config.tls {
-        let cert = base::tokio::fs::read(tls.certificate_path).await?;
-        let key = base::tokio::fs::read(tls.private_key_path).await?;
-        server =
-            server.tls_config(ServerTlsConfig::new().identity(Identity::from_pem(cert, key)))?;
+        server_config.tls = Some(base_rpc::load_server_tls_from_files(
+            &base_rpc::TlsFileConfig {
+                certificate_path: Some(tls.certificate_path),
+                private_key_path: Some(tls.private_key_path),
+                ..base_rpc::TlsFileConfig::default()
+            },
+        )?);
     }
-    server
+    let incoming = base_rpc::tcp_incoming_from_std(listener)?;
+    base_rpc::build_server(&server_config)?
         .add_service(GuardNodeControlServer::new(node_service))
         .add_service(GuardControlServer::new(control_service))
         .add_service(GuardMediaServer::new(media_service))
-        .serve(config.bind_addr)
+        .serve_with_incoming(incoming)
         .await?;
     Ok(())
 }

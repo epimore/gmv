@@ -1,25 +1,10 @@
 use std::io::{self, Read};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use base::log::warn;
-use base::tokio_util::sync::CancellationToken;
 use base::utils::crypto::{default_decrypt, default_encrypt};
-use guard::api::v2::ApiV2;
-use guard::app_config::{GuardAppConfig, config_path_from_args};
-use guard::auth::{Role, Secret, hash_password};
+use guard::app_config::GuardAppConfig;
+use guard::auth::{Role, hash_password};
 use guard::core::{GuardError, GuardResult};
-use guard::job::SystemJobService;
-use guard::mqttc::{
-    CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy, MqttRuntime,
-};
-use guard::operation::OperationService;
-use guard::outbox::OutboxWorker;
-use guard::runtime::event_forwarder::{EventForwardRule, EventForwarder};
-use guard::runtime::node_expirer;
-use guard::runtime::node_rpc::{self, NodeRpcConfig};
-use guard::runtime::web::{self, WebServerConfig};
-use guard::store::InMemoryGuardStore;
 use guard::store::persistent::PersistentStore;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,7 +13,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("reset-admin-password") => reset_admin_password(&args[1..]),
         Some("encrypt") => crypto_command(&args[1..], CryptoAction::Encrypt),
         Some("decrypt") => crypto_command(&args[1..], CryptoAction::Decrypt),
-        _ => start_guard(),
+        _ => {
+            guard::run();
+            Ok(())
+        }
     }
 }
 
@@ -62,139 +50,6 @@ fn crypto_command(args: &[String], action: CryptoAction) -> Result<(), Box<dyn s
     .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
     println!("{output}");
     Ok(())
-}
-
-fn start_guard() -> Result<(), Box<dyn std::error::Error>> {
-    let config = GuardAppConfig::load(config_path_from_args()?);
-    base::tokio::runtime::Runtime::new()?.block_on(async {
-        let web_config = WebServerConfig::from_app(&config)?;
-        let persistent = PersistentStore::connect(&config).await?;
-        persistent.initialize(&config).await?;
-        let users = persistent.load_users().await?;
-        let user_repository = persistent.user_repository();
-        let store = InMemoryGuardStore::default();
-        let registry = guard::registry::RegistryService::with_policy(
-            store.clone(),
-            config.registry.to_policy(),
-        );
-        let api_store = store.clone();
-        let operations = OperationService::default();
-        let api = ApiV2::new(store, operations.clone(), SystemJobService::default());
-        let rpc_config = NodeRpcConfig {
-            bind_addr: config.grpc.bind_addr,
-            heartbeat_interval_ms: config.grpc.heartbeat_interval_ms,
-            heartbeat_timeout_ms: config.grpc.heartbeat_timeout_ms,
-            tls: config.grpc.tls.enabled.then(|| node_rpc::NodeRpcTlsConfig {
-                certificate_path: config.grpc.tls.certificate_path.clone(),
-                private_key_path: config.grpc.tls.private_key_path.clone(),
-            }),
-        };
-        let _node_expirer = node_expirer::spawn(registry.clone(), config.grpc.heartbeat_timeout_ms);
-        let event_forwarder = if config.integrations.mqtt.enabled {
-            spawn_mqtt_runtime(&config, &persistent, operations.clone(), api_store.clone())?
-        } else {
-            None
-        };
-        let web = web::serve(
-            web_config,
-            api,
-            persistent.outbox_repository(),
-            users,
-            user_repository,
-            persistent.media_repository(),
-            event_forwarder.clone(),
-        );
-        let rpc = node_rpc::serve(
-            rpc_config,
-            registry,
-            api_store.clone(),
-            event_forwarder,
-            persistent.media_repository(),
-        );
-        base::tokio::try_join!(web, rpc).map(|_| ())
-    })
-}
-
-fn spawn_mqtt_runtime(
-    config: &GuardAppConfig,
-    persistent: &PersistentStore,
-    operations: OperationService,
-    store: InMemoryGuardStore,
-) -> GuardResult<Option<EventForwarder>> {
-    let mqtt = &config.integrations.mqtt;
-    let runtime = MqttRuntime::new(MqttClientConfig {
-        client_id: mqtt.client_id.clone(),
-        host: mqtt.broker.clone(),
-        port: mqtt.port,
-        username: Some(mqtt.username.clone()),
-        password: Some(Secret::new(mqtt.password()?)),
-        keep_alive: Duration::from_secs(30),
-        request_capacity: 100,
-        tls: mqtt.tls,
-        retry: base_rpc::RetryPolicy::default(),
-    })?;
-    let event_forwarder = if mqtt.publish_event_topics.is_empty() {
-        None
-    } else {
-        let rules = mqtt
-            .publish_event_topics
-            .iter()
-            .map(|pattern| EventForwardRule {
-                pattern: pattern.clone(),
-                topic_prefix: mqtt.publish_topic_prefix.clone(),
-            })
-            .collect::<Vec<_>>();
-        Some(EventForwarder::new(persistent.outbox_repository(), rules))
-    };
-    let topics = mqtt.subscribe_topics.clone();
-    let policy = MqttCommandPolicy::new(
-        [
-            "stream.start".to_string(),
-            "stream.stop".to_string(),
-            "device.ptz".to_string(),
-            "ai.start".to_string(),
-            "ai.cancel".to_string(),
-        ],
-        300_000,
-    )?;
-    let repository = match persistent {
-        PersistentStore::Mysql(store) => CommandIdRepository::from(store.clone()),
-        PersistentStore::Sqlite(store) => CommandIdRepository::from(store.clone()),
-    };
-    let executor = MqttCommandExecutor::new(operations, store);
-    let cancel = CancellationToken::new();
-    let worker = OutboxWorker::new(
-        persistent.outbox_repository(),
-        Arc::new(runtime.publisher.clone()),
-        runtime.publisher.retry_policy().clone(),
-        100,
-    )
-    .with_max_record_age(Duration::from_secs(mqtt.publish_event_ttl_sec));
-    let worker_cancel = cancel.clone();
-    base::tokio::spawn(async move {
-        loop {
-            if worker_cancel.is_cancelled() {
-                break;
-            }
-            if let Err(error) = worker.run_once(now_ms().unwrap_or_default()).await {
-                warn!("MQTT outbox worker failed: {error}");
-            }
-            base::tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    });
-    base::tokio::spawn(async move {
-        let result = if topics.is_empty() {
-            runtime.run(cancel).await
-        } else {
-            runtime
-                .run_commands(topics, policy, repository, executor, cancel)
-                .await
-        };
-        if let Err(error) = result {
-            warn!("MQTT runtime stopped: {error}");
-        }
-    });
-    Ok(event_forwarder)
 }
 
 fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {

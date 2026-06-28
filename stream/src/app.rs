@@ -10,7 +10,7 @@ use base::logger;
 use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{TcpListener, UdpSocket};
 use std::sync::Arc;
 
 use crate::guard_integration::{
@@ -30,6 +30,7 @@ impl
     Daemon<(
         std::net::TcpListener,
         (Option<std::net::TcpListener>, Option<UdpSocket>),
+        TcpListener,
     )> for App
 {
     fn cli_basic() -> CliBasic {
@@ -41,6 +42,7 @@ impl
         (
             std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
+            TcpListener,
         ),
     )>
     where
@@ -54,10 +56,17 @@ impl
         let http_listener = http::listen_http_server(http_port)?;
         let rtp_port = app.conf.rtp_port;
         let tu = rtp_handler::listen_media_server(rtp_port)?;
+        let grpc = GrpcConf::init_by_conf();
+        let grpc_listener = TcpListener::bind(grpc.addr).map_err(|error| {
+            base::exception::GlobalError::new_sys_error(
+                &format!("bind stream grpc {} failed: {error}", grpc.addr),
+                |_| {},
+            )
+        })?;
         banner(Self::cli_basic().version, http_port, rtp_port, |msg| {
             info!("{msg}")
         });
-        Ok((app, (http_listener, tu)))
+        Ok((app, (http_listener, tu, grpc_listener)))
     }
 
     fn run_app(
@@ -65,9 +74,10 @@ impl
         t: (
             std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
+            TcpListener,
         ),
     ) -> GlobalResult<()> {
-        let (http_listener, tu) = t;
+        let (http_listener, tu, grpc_listener) = t;
         let node_name = self.conf.name.clone();
         let http_port = self.conf.http_port;
         let rtp_port = self.conf.rtp_port;
@@ -88,12 +98,13 @@ impl
                 host.clone(),
                 guard.endpoint.clone(),
                 u32::from(http_port),
+                self.conf.http.tls.enabled,
                 u32::from(rtp_port),
             );
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
-                scheme: "grpc".to_string(),
+                scheme: base_rpc::rpc_scheme(grpc.tls.enabled).to_string(),
                 host: grpc.addr.ip().to_string(),
                 port: u32::from(grpc.addr.port()),
                 mode: EndpointMode::Single as i32,
@@ -111,14 +122,45 @@ impl
             let control_cancel = network_rt.cancel.clone();
             let control_media_tx = tx.clone();
             base::tokio::spawn(async move {
-                let address: SocketAddr = grpc.addr;
                 let rpc = StreamControlRpc::new(
                     StreamControlAdapter::new(control_identity, receive_endpoint)
                         .with_media_tx(control_media_tx),
                 );
-                if let Err(err) = tonic::transport::Server::builder()
+                let mut server_config = base_rpc::RpcServerConfig::default();
+                if grpc.tls.enabled {
+                    server_config.tls = Some(
+                        match base_rpc::load_server_tls_from_files(&base_rpc::TlsFileConfig {
+                            certificate_path: Some(grpc.tls.certificate_path.clone()),
+                            private_key_path: Some(grpc.tls.private_key_path.clone()),
+                            ..base_rpc::TlsFileConfig::default()
+                        }) {
+                            Ok(tls) => tls,
+                            Err(err) => {
+                                error!("stream control RPC TLS config failed: {err}");
+                                return;
+                            }
+                        },
+                    );
+                }
+                let incoming = match base_rpc::tcp_incoming_from_std(grpc_listener) {
+                    Ok(incoming) => incoming,
+                    Err(err) => {
+                        error!("stream control RPC listener failed: {err}");
+                        return;
+                    }
+                };
+                let mut server = match base_rpc::build_server(&server_config) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        error!("stream control RPC server build failed: {err}");
+                        return;
+                    }
+                };
+                if let Err(err) = server
                     .add_service(StreamControlServer::new(rpc))
-                    .serve_with_shutdown(address, async move { control_cancel.cancelled().await })
+                    .serve_with_incoming_shutdown(incoming, async move {
+                        control_cancel.cancelled().await
+                    })
                     .await
                 {
                     error!("stream control RPC server stopped with error: {err}");
@@ -139,9 +181,15 @@ impl
                 NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());
             init_guard_event_sender(event_sender);
         }
-        network_rt
-            .rt_handle
-            .spawn(http::run(http_listener, tx, network_rt.cancel.clone()));
+        network_rt.rt_handle.spawn(http::run(
+            http_listener,
+            self.conf.http.tls.enabled.then(|| http::HttpTlsConfig {
+                certificate_path: self.conf.http.tls.certificate_path.clone(),
+                private_key_path: self.conf.http.tls.private_key_path.clone(),
+            }),
+            tx,
+            network_rt.cancel.clone(),
+        ));
 
         let compute_rt = GlobalRuntime::register_default(RuntimeType::CommonCompute)?;
         compute_rt.rt_handle.spawn(media::handle_process(rx));

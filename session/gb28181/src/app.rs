@@ -8,7 +8,7 @@ use base::log::{error, info, warn};
 use base::logger;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{TcpListener, UdpSocket};
 use std::sync::Arc;
 
 use crate::guard_integration::{
@@ -32,6 +32,7 @@ impl
     Daemon<(
         std::net::TcpListener,
         (Option<std::net::TcpListener>, Option<UdpSocket>),
+        TcpListener,
     )> for AppInfo
 {
     fn cli_basic() -> CliBasic {
@@ -43,6 +44,7 @@ impl
         (
             std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
+            TcpListener,
         ),
     )>
     where
@@ -62,13 +64,20 @@ impl
         }
         let http_listener = app_info.http.listen_http_server()?;
         let tu = app_info.session_conf.listen_gb_server()?;
+        let grpc = crate::state::SessionGrpcConf::get();
+        let grpc_listener = TcpListener::bind(grpc.addr).map_err(|error| {
+            base::exception::GlobalError::new_sys_error(
+                &format!("bind session grpc {} failed: {error}", grpc.addr),
+                |_| {},
+            )
+        })?;
         banner(
             Self::cli_basic().version,
             app_info.http.port,
             app_info.session_conf.wan_port,
             |msg| info!("{msg}"),
         );
-        Ok((app_info, (http_listener, tu)))
+        Ok((app_info, (http_listener, tu, grpc_listener)))
     }
 
     fn run_app(
@@ -76,6 +85,7 @@ impl
         t: (
             std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
+            TcpListener,
         ),
     ) -> GlobalResult<()> {
         let http = self.http;
@@ -83,7 +93,7 @@ impl
         let http_port = http.port;
         let grpc = crate::state::SessionGrpcConf::get();
         let started_at_epoch_ms = now_epoch_ms();
-        let (http_listener, tu) = t;
+        let (http_listener, tu, grpc_listener) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
         let service_cancel = network_rt.cancel.clone();
         let service_task = network_rt.rt_handle.spawn(async move {
@@ -98,7 +108,7 @@ impl
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
-                scheme: "grpc".to_string(),
+                scheme: grpc.scheme().to_string(),
                 host: grpc.addr.ip().to_string(),
                 port: u32::from(grpc.addr.port()),
                 mode: EndpointMode::Single as i32,
@@ -107,12 +117,43 @@ impl
             let control_identity = node.identity.clone();
             let control_cancel = network_rt.cancel.clone();
             base::tokio::spawn(async move {
-                let address = grpc.addr;
                 let rpc = SessionControlRpc::new(SessionControlAdapter::new(control_identity));
-                if let Err(err) = tonic::transport::Server::builder()
+                let mut server_config = base_rpc::RpcServerConfig::default();
+                if grpc.tls.enabled {
+                    server_config.tls = Some(
+                        match base_rpc::load_server_tls_from_files(&base_rpc::TlsFileConfig {
+                            certificate_path: Some(grpc.tls.certificate_path.clone()),
+                            private_key_path: Some(grpc.tls.private_key_path.clone()),
+                            ..base_rpc::TlsFileConfig::default()
+                        }) {
+                            Ok(tls) => tls,
+                            Err(err) => {
+                                error!("session control RPC TLS config failed: {err}");
+                                return;
+                            }
+                        },
+                    );
+                }
+                let incoming = match base_rpc::tcp_incoming_from_std(grpc_listener) {
+                    Ok(incoming) => incoming,
+                    Err(err) => {
+                        error!("session control RPC listener failed: {err}");
+                        return;
+                    }
+                };
+                let mut server = match base_rpc::build_server(&server_config) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        error!("session control RPC server build failed: {err}");
+                        return;
+                    }
+                };
+                if let Err(err) = server
                     .add_service(SessionControlServer::new(rpc))
                     .add_service(SessionHookServer::new(SessionHookRpc))
-                    .serve_with_shutdown(address, async move { control_cancel.cancelled().await })
+                    .serve_with_incoming_shutdown(incoming, async move {
+                        control_cancel.cancelled().await
+                    })
                     .await
                 {
                     error!("session control RPC server stopped with error: {err}");

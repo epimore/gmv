@@ -5,6 +5,7 @@ use base::serde_default;
 use std::collections::HashMap;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 pub mod model;
@@ -16,6 +17,19 @@ pub mod session;
 pub struct SessionGrpcConf {
     #[serde(default = "default_session_grpc_addr")]
     pub addr: SocketAddr,
+    #[serde(default)]
+    pub tls: GrpcTlsConf,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(crate = "base::serde")]
+pub struct GrpcTlsConf {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub certificate_path: PathBuf,
+    #[serde(default)]
+    pub private_key_path: PathBuf,
 }
 
 serde_default!(
@@ -35,6 +49,14 @@ impl CheckFromConf for SessionGrpcConf {
                 "server.grpc.addr端口不能为0".to_string(),
             ));
         }
+        if self.tls.enabled
+            && (self.tls.certificate_path.as_os_str().is_empty()
+                || self.tls.private_key_path.as_os_str().is_empty())
+        {
+            return Err(FieldCheckError::BizError(
+                "server.grpc.tls启用时certificate_path和private_key_path不能为空".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -45,7 +67,15 @@ impl SessionGrpcConf {
     }
 
     pub fn endpoint(&self) -> String {
-        format!("http://{}", self.addr)
+        base_rpc::rpc_endpoint_uri(
+            self.tls.enabled,
+            &self.addr.ip().to_string(),
+            self.addr.port(),
+        )
+    }
+
+    pub fn scheme(&self) -> &'static str {
+        base_rpc::rpc_scheme(self.tls.enabled)
     }
 }
 

@@ -3,6 +3,7 @@ use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::serde::Deserialize;
 use base::serde_default;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
@@ -33,7 +34,7 @@ impl CheckFromConf for StreamConf {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
-#[conf(prefix = "server")]
+#[conf(prefix = "server", check)]
 pub struct ServerConf {
     #[serde(default = "default_name")]
     pub name: String,
@@ -47,6 +48,26 @@ pub struct ServerConf {
     pub host: String,
     #[serde(default = "default_proxy_addr")]
     pub proxy_addr: String,
+    #[serde(default)]
+    pub http: HttpConf,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct HttpConf {
+    #[serde(default)]
+    pub tls: HttpTlsConf,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct HttpTlsConf {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub certificate_path: PathBuf,
+    #[serde(default)]
+    pub private_key_path: PathBuf,
 }
 serde_default!(default_name, String, "stream-node-1".to_string());
 serde_default!(default_rtp_port, u16, 18568);
@@ -59,12 +80,39 @@ serde_default!(
 );
 serde_default!(default_proxy_addr, String, "http:-1".to_string());
 
+impl CheckFromConf for ServerConf {
+    fn _field_check(&self) -> Result<(), FieldCheckError> {
+        if self.http.tls.enabled
+            && (self.http.tls.certificate_path.as_os_str().is_empty()
+                || self.http.tls.private_key_path.as_os_str().is_empty())
+        {
+            return Err(FieldCheckError::BizError(
+                "server.http.tls启用时certificate_path和private_key_path不能为空".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.grpc", check)]
 pub struct GrpcConf {
     #[serde(default = "default_grpc_addr")]
     pub addr: SocketAddr,
+    #[serde(default)]
+    pub tls: GrpcTlsConf,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct GrpcTlsConf {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub certificate_path: PathBuf,
+    #[serde(default)]
+    pub private_key_path: PathBuf,
 }
 serde_default!(
     default_grpc_addr,
@@ -85,6 +133,14 @@ impl CheckFromConf for GrpcConf {
         if self.addr.port() == 0 {
             return Err(FieldCheckError::BizError(
                 "server.grpc.addr端口不能为0".to_string(),
+            ));
+        }
+        if self.tls.enabled
+            && (self.tls.certificate_path.as_os_str().is_empty()
+                || self.tls.private_key_path.as_os_str().is_empty())
+        {
+            return Err(FieldCheckError::BizError(
+                "server.grpc.tls启用时certificate_path和private_key_path不能为空".to_string(),
             ));
         }
         Ok(())
@@ -144,8 +200,13 @@ impl ServerConf {
     pub fn init_by_conf() -> Self {
         let mut server_conf = ServerConf::conf();
         if server_conf.proxy_addr.eq("http:-1") {
+            let scheme = if server_conf.http.tls.enabled {
+                "https"
+            } else {
+                "http"
+            };
             server_conf.proxy_addr = format!(
-                "http://127.0.0.1:{}/{}",
+                "{scheme}://127.0.0.1:{}/{}",
                 server_conf.http_port, server_conf.name
             );
         } else {

@@ -54,6 +54,10 @@ guard:
 server:
   grpc:
     addr: 127.0.0.1:19081 # session内部控制gRPC地址，注册到guard并用于节点间控制
+    tls:
+      enabled: false # 推荐生产启用；启用后节点上报grpcs，并要求配置证书。
+      certificate_path: ""
+      private_key_path: ""
   session:
     domain: "5101000000" #服务端sip域
     domain_id: "51010000002000000001" #服务端sip域ID

@@ -14,6 +14,8 @@ use gmv_protocol::stream::v1::{
     StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamUnitResponse,
     stream_control_client::StreamControlClient,
 };
+use std::time::Duration;
+
 use tonic::transport::Channel;
 
 use crate::state::StreamNode;
@@ -26,8 +28,22 @@ async fn client(node: &StreamNode) -> GlobalResult<StreamControlClient<Channel>>
             |msg| error!("{msg}: node={}", node.name),
         ));
     }
-    StreamControlClient::connect(node.control_grpc_uri.clone())
+    let mut config = base_rpc::RpcChannelConfig::new(node.control_grpc_uri.clone());
+    if node.control_grpc_uri.starts_with("https://") {
+        config.tls = Some(base_rpc::RpcClientTlsConfig {
+            domain_name: url::Url::parse(&node.control_grpc_uri)
+                .ok()
+                .and_then(|url| url.host_str().map(ToString::to_string)),
+            ca_certificate_pem: None,
+            client_certificate_pem: None,
+            client_private_key_pem: None,
+            use_native_roots: true,
+            handshake_timeout: Duration::from_secs(5),
+        });
+    }
+    base_rpc::connect_channel(&config)
         .await
+        .map(StreamControlClient::new)
         .map_err(|err| {
             GlobalError::new_biz_error(
                 BaseErrorCode::Network.code(),

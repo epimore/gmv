@@ -44,13 +44,30 @@ use crate::state::{StreamNode, StreamNodeRegistry};
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+fn rpc_channel_config(endpoint: String) -> RpcChannelConfig {
+    let mut config = RpcChannelConfig::new(endpoint.clone());
+    if endpoint.starts_with("https://") {
+        config.tls = Some(base_rpc::RpcClientTlsConfig {
+            domain_name: url::Url::parse(&endpoint)
+                .ok()
+                .and_then(|url| url.host_str().map(ToString::to_string)),
+            ca_certificate_pem: None,
+            client_certificate_pem: None,
+            client_private_key_pem: None,
+            use_native_roots: true,
+            handshake_timeout: std::time::Duration::from_secs(5),
+        });
+    }
+    config
+}
+
 pub fn init_guard_event_sender(sender: NodeEventSender) {
     let _ = GUARD_EVENT_SENDER.set(sender);
 }
 
 async fn guard_media_client() -> GlobalResult<GuardMediaClient<Channel>> {
     let endpoint = crate::state::GuardConf::get_or_default().endpoint;
-    let channel = base_rpc::connect_channel(&RpcChannelConfig::new(endpoint.clone()))
+    let channel = base_rpc::connect_channel(&rpc_channel_config(endpoint.clone()))
         .await
         .map_err(|err| {
             GlobalError::new_biz_error(
@@ -64,7 +81,7 @@ async fn guard_media_client() -> GlobalResult<GuardMediaClient<Channel>> {
 
 async fn guard_control_client() -> GlobalResult<GuardControlClient<Channel>> {
     let endpoint = crate::state::GuardConf::get_or_default().endpoint;
-    let channel = base_rpc::connect_channel(&RpcChannelConfig::new(endpoint.clone()))
+    let channel = base_rpc::connect_channel(&rpc_channel_config(endpoint.clone()))
         .await
         .map_err(|err| {
             GlobalError::new_biz_error(
@@ -231,7 +248,9 @@ fn stream_node_from_allocation(allocation: &AllocateStreamResponse) -> GlobalRes
 fn stream_node_from_parts(node_id: &str, endpoints: Vec<Endpoint>) -> GlobalResult<StreamNode> {
     let grpc = endpoints
         .iter()
-        .find(|endpoint| endpoint.name == "grpc" || endpoint.scheme == "grpc")
+        .find(|endpoint| {
+            endpoint.name == "grpc" || matches!(endpoint.scheme.as_str(), "grpc" | "grpcs")
+        })
         .ok_or_else(|| missing_stream_endpoint(node_id, "grpc"))?;
     let rtp = endpoints
         .iter()
@@ -239,13 +258,19 @@ fn stream_node_from_parts(node_id: &str, endpoints: Vec<Endpoint>) -> GlobalResu
         .ok_or_else(|| missing_stream_endpoint(node_id, "rtp"))?;
     let http = endpoints
         .iter()
-        .find(|endpoint| endpoint.name == "http" || endpoint.scheme == "http")
+        .find(|endpoint| {
+            endpoint.name == "http" || matches!(endpoint.scheme.as_str(), "http" | "https")
+        })
         .unwrap_or(grpc);
     Ok(StreamNode {
         name: node_id.to_string(),
         local_ip: parse_ipv4(node_id, "http", &http.host)?,
         local_port: u16::try_from(http.port).unwrap_or(u16::MAX),
-        control_grpc_uri: format!("http://{}:{}", grpc.host, grpc.port),
+        control_grpc_uri: base_rpc::rpc_endpoint_uri(
+            grpc.scheme == "grpcs",
+            &grpc.host,
+            u16::try_from(grpc.port).unwrap_or(u16::MAX),
+        ),
         pub_ip: parse_ipv4(node_id, "rtp", &rtp.host)?,
         pub_port: u16::try_from(rtp.port).unwrap_or(u16::MAX),
     })
@@ -391,9 +416,7 @@ pub struct SessionGuardNode {
 impl SessionGuardNode {
     pub fn new(node_id: impl Into<String>, instance_id: impl Into<String>, http_port: u32) -> Self {
         Self {
-            guard_channel: RpcChannelConfig::new(
-                crate::state::GuardConf::get_or_default().endpoint,
-            ),
+            guard_channel: rpc_channel_config(crate::state::GuardConf::get_or_default().endpoint),
             identity: NodeIdentity {
                 node_id: node_id.into(),
                 instance_id: instance_id.into(),

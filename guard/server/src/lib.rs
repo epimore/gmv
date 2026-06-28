@@ -1,4 +1,5 @@
 pub mod api;
+pub mod app;
 pub mod app_config;
 pub mod auth;
 pub mod bus;
@@ -16,3 +17,7 @@ pub mod runtime;
 pub mod store;
 pub mod ui;
 pub mod webhook;
+
+pub fn run() {
+    base::daemon::run::<app::AppInfo, _>();
+}

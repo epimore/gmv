@@ -154,11 +154,26 @@ impl StreamGuardNode {
         host: impl Into<String>,
         guard_endpoint: impl Into<String>,
         http_port: u32,
+        http_tls: bool,
         rtp_port: u32,
     ) -> Self {
         let host = host.into();
+        let guard_endpoint = guard_endpoint.into();
+        let mut guard_channel = RpcChannelConfig::new(guard_endpoint.clone());
+        if guard_endpoint.starts_with("https://") {
+            guard_channel.tls = Some(base_rpc::RpcClientTlsConfig {
+                domain_name: url::Url::parse(&guard_endpoint)
+                    .ok()
+                    .and_then(|url| url.host_str().map(ToString::to_string)),
+                ca_certificate_pem: None,
+                client_certificate_pem: None,
+                client_private_key_pem: None,
+                use_native_roots: true,
+                handshake_timeout: std::time::Duration::from_secs(5),
+            });
+        }
         Self {
-            guard_channel: RpcChannelConfig::new(guard_endpoint.into()),
+            guard_channel,
             identity: NodeIdentity {
                 node_id: node_id.into(),
                 instance_id: instance_id.into(),
@@ -167,7 +182,12 @@ impl StreamGuardNode {
             software_version: env!("CARGO_PKG_VERSION").to_string(),
             started_at_epoch_ms: 0,
             endpoints: vec![
-                endpoint("http", "http", &host, http_port),
+                endpoint(
+                    "http",
+                    if http_tls { "https" } else { "http" },
+                    &host,
+                    http_port,
+                ),
                 endpoint("rtp", "rtp", &host, rtp_port),
             ],
             capabilities: vec![
@@ -849,6 +869,7 @@ mod tests {
             "127.0.0.1",
             "http://127.0.0.1:18080",
             18080,
+            false,
             30000,
         );
         let register = node.register_request(NodeResourceSnapshot {
@@ -924,6 +945,7 @@ mod tests {
             "127.0.0.1",
             "http://127.0.0.1:18080",
             18080,
+            false,
             30000,
         );
         let mut control = StreamControlAdapter::new(

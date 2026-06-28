@@ -25,10 +25,12 @@ futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 rsmpeg = { version = "0.14.2", default-features = false, features = ["link_system_ffmpeg"] }
 axum = { version = "0.8", features = ["ws"] }
+axum-server = { workspace = true, features = ["tls-rustls"] }
 rtp-types = "0.1"
 socket2 = "0.6"
 
 # 共享依赖
 parking_lot.workspace = true
+url.workspace = true
 crossbeam-channel.workspace = true
 log = "0.4.28"

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use gmv_protocol::avai::v1::avai_control_client::AvaiControlClient;
 use gmv_protocol::avai::v1::{AiTaskState, CancelTaskRequest, CreateTaskRequest};
 use gmv_protocol::common::v1::{
@@ -181,11 +183,7 @@ impl BusinessControl {
         let session = self.select_node(NodeKind::Session, kind.session_capability())?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
-            SessionControlClient::connect(session_grpc)
-                .await
-                .map_err(|error| {
-                    GuardError::Conflict(format!("connect session RPC failed: {error}"))
-                })?;
+            SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
         let operation = OperationRef {
             operation_id: operation_id.to_string(),
             idempotency_key: operation_id.to_string(),
@@ -269,11 +267,7 @@ impl BusinessControl {
         let session = self.select_any_session()?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
-            SessionControlClient::connect(session_grpc)
-                .await
-                .map_err(|error| {
-                    GuardError::Conflict(format!("connect session RPC failed: {error}"))
-                })?;
+            SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
         let response = session_client
             .stop_device_stream(StopDeviceStreamRequest {
                 operation: Some(OperationRef {
@@ -320,11 +314,7 @@ impl BusinessControl {
         let session = self.select_node(NodeKind::Session, "device.ptz")?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
-            SessionControlClient::connect(session_grpc)
-                .await
-                .map_err(|error| {
-                    GuardError::Conflict(format!("connect session RPC failed: {error}"))
-                })?;
+            SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
         let response = session_client
             .control_ptz(ControlPtzRequest {
                 operation: Some(OperationRef {
@@ -392,9 +382,7 @@ impl BusinessControl {
         })?;
 
         let avai_grpc = grpc_uri(&avai)?;
-        let mut avai_client = AvaiControlClient::connect(avai_grpc)
-            .await
-            .map_err(|error| GuardError::Conflict(format!("connect avai RPC failed: {error}")))?;
+        let mut avai_client = AvaiControlClient::new(connect_rpc(&avai_grpc, "avai").await?);
         let response = avai_client
             .create_task(CreateTaskRequest {
                 operation: Some(OperationRef {
@@ -461,9 +449,7 @@ impl BusinessControl {
             .get_node(&route.node_id)
             .ok_or_else(|| GuardError::NotFound(format!("node {}", route.node_id)))?;
         let avai_grpc = grpc_uri(&avai)?;
-        let mut avai_client = AvaiControlClient::connect(avai_grpc)
-            .await
-            .map_err(|error| GuardError::Conflict(format!("connect avai RPC failed: {error}")))?;
+        let mut avai_client = AvaiControlClient::new(connect_rpc(&avai_grpc, "avai").await?);
         let response = avai_client
             .cancel_task(CancelTaskRequest {
                 operation: Some(OperationRef {
@@ -538,6 +524,25 @@ impl BusinessControl {
             .min_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id))
             .ok_or_else(|| GuardError::NotFound(format!("no {:?} node for {capability}", kind)))
     }
+}
+
+async fn connect_rpc(uri: &str, name: &str) -> GuardResult<tonic::transport::Channel> {
+    let mut config = base_rpc::RpcChannelConfig::new(uri.to_string());
+    if uri.starts_with("https://") {
+        config.tls = Some(base_rpc::RpcClientTlsConfig {
+            domain_name: url::Url::parse(uri)
+                .ok()
+                .and_then(|url| url.host_str().map(ToString::to_string)),
+            ca_certificate_pem: None,
+            client_certificate_pem: None,
+            client_private_key_pem: None,
+            use_native_roots: true,
+            handshake_timeout: Duration::from_secs(5),
+        });
+    }
+    base_rpc::connect_channel(&config)
+        .await
+        .map_err(|error| GuardError::Conflict(format!("connect {name} RPC failed: {error}")))
 }
 
 fn grpc_uri(node: &NodeRecord) -> GuardResult<String> {

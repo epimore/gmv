@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -71,6 +71,7 @@ impl WebServerConfig {
 
 pub async fn serve(
     config: WebServerConfig,
+    listener: StdTcpListener,
     api: crate::api::v2::ApiV2,
     outbox: crate::outbox::OutboxRepository,
     users: Vec<UserAccount>,
@@ -109,16 +110,13 @@ pub async fn serve(
             tls.private_key_path,
         )
         .await?;
-        axum_server::bind_rustls(config.bind_addr, rustls)
-            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+        axum_server::from_tcp_rustls(listener, rustls)?
+            .serve(app.into_make_service())
             .await?;
     } else {
-        let listener = base::tokio::net::TcpListener::bind(config.bind_addr).await?;
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await?;
+        axum_server::from_tcp(listener)?
+            .serve(app.into_make_service())
+            .await?;
     }
     Ok(())
 }

@@ -38,6 +38,10 @@ impl GuardAppConfig {
         Self::conf()
     }
 
+    pub fn current() -> Self {
+        Self::conf()
+    }
+
     pub fn validate(&self) -> GuardResult<()> {
         self.http.validate()?;
         self.grpc.validate()?;

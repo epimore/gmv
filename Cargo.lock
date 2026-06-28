@@ -384,6 +384,7 @@ version = "0.1.0"
 dependencies = [
  "base",
  "thiserror 2.0.18",
+ "tokio",
  "tonic",
 ]
 
@@ -1390,6 +1391,7 @@ name = "gmv-stream"
 version = "2.1.0-release"
 dependencies = [
  "axum",
+ "axum-server",
  "base",
  "base_rpc",
  "crossbeam-channel",
@@ -1405,6 +1407,7 @@ dependencies = [
  "socket2 0.6.4",
  "tokio-stream",
  "tonic",
+ "url",
 ]
 
 [[package]]
