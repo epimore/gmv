@@ -77,6 +77,7 @@ pub async fn serve(
     users: Vec<UserAccount>,
     user_repository: crate::store::persistent::UserRepository,
     media_repository: crate::store::persistent::MediaRepository,
+    gb_repository: crate::store::persistent::GbRepository,
     event_forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
@@ -100,6 +101,7 @@ pub async fn serve(
             users: Some(user_repository),
             media: config.picture_upload.clone(),
             media_files: Some(media_repository),
+            gb28181: Some(gb_repository),
             event_forwarder,
         },
         config.ui_dist_dir.clone(),

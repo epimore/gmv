@@ -3,7 +3,9 @@ use base_db::sqlx::MySqlPool;
 use crate::core::{GuardError, GuardResult};
 use crate::store::migration::MYSQL_MIGRATIONS;
 use crate::store::model::{
-    EventRecord, GmvRecordInsert, MediaFileInsert, OutboxRecord, OutboxRow, RecordFileInsert,
+    EventRecord, GbChannelImageRecord, GbChannelImageRow, GbChannelRecord, GbChannelRow,
+    GbDeviceRecord, GbDeviceRow, GmvRecordInsert, MediaFileInsert, OutboxRecord, OutboxRow,
+    RecordFileInsert, gb_channel_from_row, gb_channel_image_from_row, gb_device_from_row,
     outbox_from_row,
 };
 
@@ -175,6 +177,193 @@ impl MysqlStore {
             .bind(&file.note)
             .bind(file.is_del)
             .bind(&file.create_time)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    pub async fn list_gb_devices(&self) -> GuardResult<Vec<GbDeviceRecord>> {
+        let rows = base_db::sqlx::query_as::<_, GbDeviceRow>("SELECT device_id,session_node_id,alias,transport,device_type,manufacturer,model,firmware,gb_version,local_addr,register_time,online_expire_time,status,camera_in_count,camera_off_count,created_at_ms,updated_at_ms FROM gmv_gb28181_device ORDER BY device_id")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(rows.into_iter().map(gb_device_from_row).collect())
+    }
+
+    pub async fn get_gb_device(&self, device_id: &str) -> GuardResult<Option<GbDeviceRecord>> {
+        let row = base_db::sqlx::query_as::<_, GbDeviceRow>("SELECT device_id,session_node_id,alias,transport,device_type,manufacturer,model,firmware,gb_version,local_addr,register_time,online_expire_time,status,camera_in_count,camera_off_count,created_at_ms,updated_at_ms FROM gmv_gb28181_device WHERE device_id=?")
+            .bind(device_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(row.map(gb_device_from_row))
+    }
+
+    pub async fn upsert_gb_device(&self, device: &GbDeviceRecord) -> GuardResult<()> {
+        let mut tx = self.pool.begin().await.map_err(database_error)?;
+        base_db::sqlx::query("DELETE FROM gmv_gb28181_device WHERE device_id=?")
+            .bind(&device.device_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        base_db::sqlx::query("INSERT INTO gmv_gb28181_device(device_id,session_node_id,alias,transport,device_type,manufacturer,model,firmware,gb_version,local_addr,register_time,online_expire_time,status,camera_in_count,camera_off_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(&device.device_id)
+            .bind(&device.session_node_id)
+            .bind(&device.alias)
+            .bind(&device.transport)
+            .bind(&device.device_type)
+            .bind(&device.manufacturer)
+            .bind(&device.model)
+            .bind(&device.firmware)
+            .bind(&device.gb_version)
+            .bind(&device.local_addr)
+            .bind(&device.register_time)
+            .bind(&device.online_expire_time)
+            .bind(&device.status)
+            .bind(device.camera_in_count)
+            .bind(device.camera_off_count)
+            .bind(device.created_at_ms)
+            .bind(device.updated_at_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        Ok(())
+    }
+
+    pub async fn delete_gb_device(&self, device_id: &str) -> GuardResult<bool> {
+        let mut tx = self.pool.begin().await.map_err(database_error)?;
+        base_db::sqlx::query("DELETE FROM gmv_gb28181_channel_image WHERE device_id=?")
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        base_db::sqlx::query("DELETE FROM gmv_gb28181_channel WHERE device_id=?")
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        let result = base_db::sqlx::query("DELETE FROM gmv_gb28181_device WHERE device_id=?")
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn list_gb_channels(&self, device_id: &str) -> GuardResult<Vec<GbChannelRecord>> {
+        let rows = base_db::sqlx::query_as::<_, GbChannelRow>("SELECT device_id,channel_id,name,manufacturer,model,owner,status,civil_code,address,parent_id,ip_address,port,longitude,latitude,ptz_type,alias_name,pic_url,snapshot,over_pic_id,ptz_enable,talk_enable,audio_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,created_at_ms,updated_at_ms FROM gmv_gb28181_channel WHERE device_id=? ORDER BY sort_no,channel_id")
+            .bind(device_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(rows.into_iter().map(gb_channel_from_row).collect())
+    }
+
+    pub async fn get_gb_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<Option<GbChannelRecord>> {
+        let row = base_db::sqlx::query_as::<_, GbChannelRow>("SELECT device_id,channel_id,name,manufacturer,model,owner,status,civil_code,address,parent_id,ip_address,port,longitude,latitude,ptz_type,alias_name,pic_url,snapshot,over_pic_id,ptz_enable,talk_enable,audio_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,created_at_ms,updated_at_ms FROM gmv_gb28181_channel WHERE device_id=? AND channel_id=?")
+            .bind(device_id)
+            .bind(channel_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(row.map(gb_channel_from_row))
+    }
+
+    pub async fn upsert_gb_channel(&self, channel: &GbChannelRecord) -> GuardResult<()> {
+        let mut tx = self.pool.begin().await.map_err(database_error)?;
+        base_db::sqlx::query("DELETE FROM gmv_gb28181_channel WHERE device_id=? AND channel_id=?")
+            .bind(&channel.device_id)
+            .bind(&channel.channel_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        base_db::sqlx::query("INSERT INTO gmv_gb28181_channel(device_id,channel_id,name,manufacturer,model,owner,status,civil_code,address,parent_id,ip_address,port,longitude,latitude,ptz_type,alias_name,pic_url,snapshot,over_pic_id,ptz_enable,talk_enable,audio_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(&channel.device_id)
+            .bind(&channel.channel_id)
+            .bind(&channel.name)
+            .bind(&channel.manufacturer)
+            .bind(&channel.model)
+            .bind(&channel.owner)
+            .bind(&channel.status)
+            .bind(&channel.civil_code)
+            .bind(&channel.address)
+            .bind(&channel.parent_id)
+            .bind(&channel.ip_address)
+            .bind(channel.port)
+            .bind(&channel.longitude)
+            .bind(&channel.latitude)
+            .bind(&channel.ptz_type)
+            .bind(&channel.alias_name)
+            .bind(&channel.pic_url)
+            .bind(channel.snapshot)
+            .bind(&channel.over_pic_id)
+            .bind(channel.ptz_enable)
+            .bind(channel.talk_enable)
+            .bind(channel.audio_enable)
+            .bind(channel.record_enable)
+            .bind(channel.playback_enable)
+            .bind(channel.alarm_enable)
+            .bind(channel.biz_enable)
+            .bind(channel.sort_no)
+            .bind(channel.created_at_ms)
+            .bind(channel.updated_at_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        Ok(())
+    }
+
+    pub async fn delete_gb_channel(&self, device_id: &str, channel_id: &str) -> GuardResult<bool> {
+        let mut tx = self.pool.begin().await.map_err(database_error)?;
+        base_db::sqlx::query(
+            "DELETE FROM gmv_gb28181_channel_image WHERE device_id=? AND channel_id=?",
+        )
+        .bind(device_id)
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        let result = base_db::sqlx::query(
+            "DELETE FROM gmv_gb28181_channel WHERE device_id=? AND channel_id=?",
+        )
+        .bind(device_id)
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn list_gb_channel_images(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<Vec<GbChannelImageRecord>> {
+        let rows = base_db::sqlx::query_as::<_, GbChannelImageRow>("SELECT image_id,device_id,channel_id,image_url,created_at_ms FROM gmv_gb28181_channel_image WHERE device_id=? AND channel_id=? ORDER BY created_at_ms DESC,image_id")
+            .bind(device_id)
+            .bind(channel_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(rows.into_iter().map(gb_channel_image_from_row).collect())
+    }
+
+    pub async fn insert_gb_channel_image(&self, image: &GbChannelImageRecord) -> GuardResult<()> {
+        base_db::sqlx::query("INSERT INTO gmv_gb28181_channel_image(image_id,device_id,channel_id,image_url,created_at_ms) VALUES (?,?,?,?,?)")
+            .bind(&image.image_id)
+            .bind(&image.device_id)
+            .bind(&image.channel_id)
+            .bind(&image.image_url)
+            .bind(image.created_at_ms)
             .execute(&self.pool)
             .await
             .map_err(database_error)?;

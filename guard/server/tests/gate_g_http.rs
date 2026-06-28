@@ -57,6 +57,7 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             users: None,
             media: Default::default(),
             media_files: None,
+            gb28181: None,
             event_forwarder: None,
         }),
         store,

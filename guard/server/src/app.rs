@@ -114,6 +114,7 @@ pub async fn start_guard(
         users,
         user_repository,
         persistent.media_repository(),
+        persistent.gb_repository(),
         event_forwarder.clone(),
     );
     let rpc = node_rpc::serve(

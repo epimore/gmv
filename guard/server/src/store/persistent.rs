@@ -9,10 +9,99 @@ use crate::auth::{Role, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
 use crate::outbox::OutboxRepository;
 use crate::store::{
-    model::{GmvRecordInsert, MediaFileInsert, RecordFileInsert},
+    model::{
+        GbChannelImageRecord, GbChannelRecord, GbDeviceRecord, GmvRecordInsert, MediaFileInsert,
+        RecordFileInsert,
+    },
     mysql::MysqlStore,
     sqlite::SqliteStore,
 };
+
+#[derive(Debug, Clone)]
+pub enum GbRepository {
+    Mysql(MysqlStore),
+    Sqlite(SqliteStore),
+}
+
+impl GbRepository {
+    pub async fn list_devices(&self) -> GuardResult<Vec<GbDeviceRecord>> {
+        match self {
+            Self::Mysql(store) => store.list_gb_devices().await,
+            Self::Sqlite(store) => store.list_gb_devices().await,
+        }
+    }
+
+    pub async fn get_device(&self, device_id: &str) -> GuardResult<Option<GbDeviceRecord>> {
+        match self {
+            Self::Mysql(store) => store.get_gb_device(device_id).await,
+            Self::Sqlite(store) => store.get_gb_device(device_id).await,
+        }
+    }
+
+    pub async fn upsert_device(&self, device: &GbDeviceRecord) -> GuardResult<()> {
+        match self {
+            Self::Mysql(store) => store.upsert_gb_device(device).await,
+            Self::Sqlite(store) => store.upsert_gb_device(device).await,
+        }
+    }
+
+    pub async fn delete_device(&self, device_id: &str) -> GuardResult<bool> {
+        match self {
+            Self::Mysql(store) => store.delete_gb_device(device_id).await,
+            Self::Sqlite(store) => store.delete_gb_device(device_id).await,
+        }
+    }
+
+    pub async fn list_channels(&self, device_id: &str) -> GuardResult<Vec<GbChannelRecord>> {
+        match self {
+            Self::Mysql(store) => store.list_gb_channels(device_id).await,
+            Self::Sqlite(store) => store.list_gb_channels(device_id).await,
+        }
+    }
+
+    pub async fn get_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<Option<GbChannelRecord>> {
+        match self {
+            Self::Mysql(store) => store.get_gb_channel(device_id, channel_id).await,
+            Self::Sqlite(store) => store.get_gb_channel(device_id, channel_id).await,
+        }
+    }
+
+    pub async fn upsert_channel(&self, channel: &GbChannelRecord) -> GuardResult<()> {
+        match self {
+            Self::Mysql(store) => store.upsert_gb_channel(channel).await,
+            Self::Sqlite(store) => store.upsert_gb_channel(channel).await,
+        }
+    }
+
+    pub async fn delete_channel(&self, device_id: &str, channel_id: &str) -> GuardResult<bool> {
+        match self {
+            Self::Mysql(store) => store.delete_gb_channel(device_id, channel_id).await,
+            Self::Sqlite(store) => store.delete_gb_channel(device_id, channel_id).await,
+        }
+    }
+
+    pub async fn list_channel_images(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<Vec<GbChannelImageRecord>> {
+        match self {
+            Self::Mysql(store) => store.list_gb_channel_images(device_id, channel_id).await,
+            Self::Sqlite(store) => store.list_gb_channel_images(device_id, channel_id).await,
+        }
+    }
+
+    pub async fn insert_channel_image(&self, image: &GbChannelImageRecord) -> GuardResult<()> {
+        match self {
+            Self::Mysql(store) => store.insert_gb_channel_image(image).await,
+            Self::Sqlite(store) => store.insert_gb_channel_image(image).await,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum UserRepository {
@@ -218,6 +307,13 @@ impl PersistentStore {
         match self {
             Self::Mysql(store) => MediaRepository::Mysql(store.clone()),
             Self::Sqlite(store) => MediaRepository::Sqlite(store.clone()),
+        }
+    }
+
+    pub fn gb_repository(&self) -> GbRepository {
+        match self {
+            Self::Mysql(store) => GbRepository::Mysql(store.clone()),
+            Self::Sqlite(store) => GbRepository::Sqlite(store.clone()),
         }
     }
 }

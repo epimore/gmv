@@ -174,6 +174,7 @@ guard:
                 users: Some(persistent.user_repository()),
                 media: Default::default(),
                 media_files: Some(persistent.media_repository()),
+                gb28181: None,
                 event_forwarder: None,
             });
 

@@ -71,3 +71,26 @@ export const cancelAiTask = (taskId: string) => request<AiTaskSummary>('/ai/task
 export const runtimeStatus = () => request<RuntimeStatus>('/runtime/status');
 export const healthLive = () => requestAt<HealthInfo>('/health/live');
 export const healthReady = () => requestAt<HealthInfo>('/health/ready');
+
+
+export interface GbDeviceInfo { device_id: string; session_node_id: string; alias: string; transport: string; device_type: string; manufacturer: string; model: string; firmware: string; gb_version: string; local_addr: string; register_time: string; online_expire_time: string; status: string; camera_in_count: number; camera_off_count: number; channel_count: number; created_at_ms: number; updated_at_ms: number }
+export interface GbDevicePayload { device_id: string; session_node_id?: string; alias?: string; transport?: string; device_type?: string; manufacturer?: string; model?: string; firmware?: string; gb_version?: string; local_addr?: string; register_time?: string; online_expire_time?: string; status?: string; camera_in_count?: number; camera_off_count?: number }
+export interface GbChannelInfo { device_id: string; channel_id: string; name: string; manufacturer: string; model: string; owner: string; status: string; civil_code: string; address: string; parent_id: string; ip_address: string; port: number; longitude: string; latitude: string; ptz_type: string; alias_name: string; pic_url: string; snapshot: number; over_pic_id: string; ptz_enable: number; talk_enable: number; audio_enable: number; record_enable: number; playback_enable: number; alarm_enable: number; biz_enable: number; sort_no: number; created_at_ms: number; updated_at_ms: number }
+export interface GbChannelPayload { channel_id: string; name?: string; manufacturer?: string; model?: string; owner?: string; status?: string; civil_code?: string; address?: string; parent_id?: string; ip_address?: string; port?: number; longitude?: string; latitude?: string; ptz_type?: string; alias_name?: string; pic_url?: string; snapshot?: number; over_pic_id?: string; ptz_enable?: number; talk_enable?: number; audio_enable?: number; record_enable?: number; playback_enable?: number; alarm_enable?: number; biz_enable?: number; sort_no?: number }
+export interface GbChannelImageInfo { image_id: string; device_id: string; channel_id: string; image_url: string; created_at_ms: number }
+export interface GbStreamPayload { request_id: string; token?: string; start_time_sec?: number; end_time_sec?: number; trans_mode?: string; output_type?: string }
+
+const gbPath = (value: string) => encodeURIComponent(value);
+export const listGbDevices = () => request<GbDeviceInfo[]>('/gb28181/devices');
+export const createGbDevice = (payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices', { method: 'POST', body: JSON.stringify(payload) });
+export const updateGbDevice = (deviceId: string, payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices/' + gbPath(deviceId), { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteGbDevice = (deviceId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId), { method: 'DELETE' });
+export const listGbChannels = (deviceId: string) => request<GbChannelInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels');
+export const createGbChannel = (deviceId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels', { method: 'POST', body: JSON.stringify(payload) });
+export const updateGbChannel = (deviceId: string, channelId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteGbChannel = (deviceId: string, channelId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'DELETE' });
+export const listGbChannelImages = (deviceId: string, channelId: string) => request<GbChannelImageInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/images');
+export const startGbPreview = (deviceId: string, channelId: string, payload: GbStreamPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/preview', { method: 'POST', body: JSON.stringify(payload) });
+export const startGbPlayback = (deviceId: string, channelId: string, payload: GbStreamPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/playback', { method: 'POST', body: JSON.stringify(payload) });
+export const sendGbPtz = (deviceId: string, channelId: string) => request<{ accepted: boolean; count: number }>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/ptz', { method: 'POST', body: '{}' });
+export const takeGbSnapshot = (deviceId: string, channelId: string) => request<{ accepted: boolean }>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/snapshot', { method: 'POST', body: '{}' });

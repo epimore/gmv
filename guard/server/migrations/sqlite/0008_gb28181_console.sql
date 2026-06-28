@@ -1,0 +1,60 @@
+CREATE TABLE IF NOT EXISTS gmv_gb28181_device (
+  device_id VARCHAR(64) NOT NULL PRIMARY KEY,
+  session_node_id VARCHAR(128) NOT NULL,
+  alias VARCHAR(255) NOT NULL,
+  transport VARCHAR(32) NOT NULL,
+  device_type VARCHAR(64) NOT NULL,
+  manufacturer VARCHAR(128) NOT NULL,
+  model VARCHAR(128) NOT NULL,
+  firmware VARCHAR(128) NOT NULL,
+  gb_version VARCHAR(32) NOT NULL,
+  local_addr VARCHAR(255) NOT NULL,
+  register_time VARCHAR(64) NOT NULL,
+  online_expire_time VARCHAR(64) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  camera_in_count BIGINT NOT NULL,
+  camera_off_count BIGINT NOT NULL,
+  created_at_ms BIGINT NOT NULL,
+  updated_at_ms BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gmv_gb28181_channel (
+  device_id VARCHAR(64) NOT NULL,
+  channel_id VARCHAR(64) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  manufacturer VARCHAR(128) NOT NULL,
+  model VARCHAR(128) NOT NULL,
+  owner VARCHAR(128) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  civil_code VARCHAR(64) NOT NULL,
+  address VARCHAR(255) NOT NULL,
+  parent_id VARCHAR(64) NOT NULL,
+  ip_address VARCHAR(64) NOT NULL,
+  port BIGINT NOT NULL,
+  longitude VARCHAR(64) NOT NULL,
+  latitude VARCHAR(64) NOT NULL,
+  ptz_type VARCHAR(64) NOT NULL,
+  alias_name VARCHAR(255) NOT NULL,
+  pic_url TEXT NOT NULL,
+  snapshot BIGINT NOT NULL,
+  over_pic_id VARCHAR(128) NOT NULL,
+  ptz_enable BIGINT NOT NULL,
+  talk_enable BIGINT NOT NULL,
+  audio_enable BIGINT NOT NULL,
+  record_enable BIGINT NOT NULL,
+  playback_enable BIGINT NOT NULL,
+  alarm_enable BIGINT NOT NULL,
+  biz_enable BIGINT NOT NULL,
+  sort_no BIGINT NOT NULL,
+  created_at_ms BIGINT NOT NULL,
+  updated_at_ms BIGINT NOT NULL,
+  PRIMARY KEY (device_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS gmv_gb28181_channel_image (
+  image_id VARCHAR(128) NOT NULL PRIMARY KEY,
+  device_id VARCHAR(64) NOT NULL,
+  channel_id VARCHAR(64) NOT NULL,
+  image_url TEXT NOT NULL,
+  created_at_ms BIGINT NOT NULL
+);

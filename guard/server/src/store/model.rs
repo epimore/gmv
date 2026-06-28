@@ -1,3 +1,5 @@
+use base_db::sqlx;
+
 use crate::core::{
     ConnectionState, HealthState, LeaseState, NodeIdentity, RouteState, SchedulingState,
 };
@@ -241,4 +243,196 @@ pub struct RecordFileInsert {
     pub dir_path: String,
     pub abs_path: Option<String>,
     pub now: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GbDeviceRecord {
+    pub device_id: String,
+    pub session_node_id: String,
+    pub alias: String,
+    pub transport: String,
+    pub device_type: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub firmware: String,
+    pub gb_version: String,
+    pub local_addr: String,
+    pub register_time: String,
+    pub online_expire_time: String,
+    pub status: String,
+    pub camera_in_count: i64,
+    pub camera_off_count: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GbChannelRecord {
+    pub device_id: String,
+    pub channel_id: String,
+    pub name: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub owner: String,
+    pub status: String,
+    pub civil_code: String,
+    pub address: String,
+    pub parent_id: String,
+    pub ip_address: String,
+    pub port: i64,
+    pub longitude: String,
+    pub latitude: String,
+    pub ptz_type: String,
+    pub alias_name: String,
+    pub pic_url: String,
+    pub snapshot: i64,
+    pub over_pic_id: String,
+    pub ptz_enable: i64,
+    pub talk_enable: i64,
+    pub audio_enable: i64,
+    pub record_enable: i64,
+    pub playback_enable: i64,
+    pub alarm_enable: i64,
+    pub biz_enable: i64,
+    pub sort_no: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GbChannelImageRecord {
+    pub image_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub image_url: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct GbDeviceRow {
+    pub device_id: String,
+    pub session_node_id: String,
+    pub alias: String,
+    pub transport: String,
+    pub device_type: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub firmware: String,
+    pub gb_version: String,
+    pub local_addr: String,
+    pub register_time: String,
+    pub online_expire_time: String,
+    pub status: String,
+    pub camera_in_count: i64,
+    pub camera_off_count: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct GbChannelRow {
+    pub device_id: String,
+    pub channel_id: String,
+    pub name: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub owner: String,
+    pub status: String,
+    pub civil_code: String,
+    pub address: String,
+    pub parent_id: String,
+    pub ip_address: String,
+    pub port: i64,
+    pub longitude: String,
+    pub latitude: String,
+    pub ptz_type: String,
+    pub alias_name: String,
+    pub pic_url: String,
+    pub snapshot: i64,
+    pub over_pic_id: String,
+    pub ptz_enable: i64,
+    pub talk_enable: i64,
+    pub audio_enable: i64,
+    pub record_enable: i64,
+    pub playback_enable: i64,
+    pub alarm_enable: i64,
+    pub biz_enable: i64,
+    pub sort_no: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct GbChannelImageRow {
+    pub image_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub image_url: String,
+    pub created_at_ms: i64,
+}
+
+pub(crate) fn gb_device_from_row(row: GbDeviceRow) -> GbDeviceRecord {
+    GbDeviceRecord {
+        device_id: row.device_id,
+        session_node_id: row.session_node_id,
+        alias: row.alias,
+        transport: row.transport,
+        device_type: row.device_type,
+        manufacturer: row.manufacturer,
+        model: row.model,
+        firmware: row.firmware,
+        gb_version: row.gb_version,
+        local_addr: row.local_addr,
+        register_time: row.register_time,
+        online_expire_time: row.online_expire_time,
+        status: row.status,
+        camera_in_count: row.camera_in_count,
+        camera_off_count: row.camera_off_count,
+        created_at_ms: row.created_at_ms,
+        updated_at_ms: row.updated_at_ms,
+    }
+}
+
+pub(crate) fn gb_channel_from_row(row: GbChannelRow) -> GbChannelRecord {
+    GbChannelRecord {
+        device_id: row.device_id,
+        channel_id: row.channel_id,
+        name: row.name,
+        manufacturer: row.manufacturer,
+        model: row.model,
+        owner: row.owner,
+        status: row.status,
+        civil_code: row.civil_code,
+        address: row.address,
+        parent_id: row.parent_id,
+        ip_address: row.ip_address,
+        port: row.port,
+        longitude: row.longitude,
+        latitude: row.latitude,
+        ptz_type: row.ptz_type,
+        alias_name: row.alias_name,
+        pic_url: row.pic_url,
+        snapshot: row.snapshot,
+        over_pic_id: row.over_pic_id,
+        ptz_enable: row.ptz_enable,
+        talk_enable: row.talk_enable,
+        audio_enable: row.audio_enable,
+        record_enable: row.record_enable,
+        playback_enable: row.playback_enable,
+        alarm_enable: row.alarm_enable,
+        biz_enable: row.biz_enable,
+        sort_no: row.sort_no,
+        created_at_ms: row.created_at_ms,
+        updated_at_ms: row.updated_at_ms,
+    }
+}
+
+pub(crate) fn gb_channel_image_from_row(row: GbChannelImageRow) -> GbChannelImageRecord {
+    GbChannelImageRecord {
+        image_id: row.image_id,
+        device_id: row.device_id,
+        channel_id: row.channel_id,
+        image_url: row.image_url,
+        created_at_ms: row.created_at_ms,
+    }
 }

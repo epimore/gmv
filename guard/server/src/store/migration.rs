@@ -9,12 +9,14 @@ pub const SQLITE_0005: &str = include_str!("../../migrations/sqlite/0005_guard_s
 pub const SQLITE_0006: &str = include_str!("../../migrations/sqlite/0006_guard_user_profile.sql");
 pub const MYSQL_0007: &str = include_str!("../../migrations/mysql/0007_gmv_media_file.sql");
 pub const SQLITE_0007: &str = include_str!("../../migrations/sqlite/0007_gmv_media_file.sql");
+pub const MYSQL_0008: &str = include_str!("../../migrations/mysql/0008_gb28181_console.sql");
+pub const SQLITE_0008: &str = include_str!("../../migrations/sqlite/0008_gb28181_console.sql");
 
 pub const SQLITE_0001: &str = include_str!("../../migrations/sqlite/0001_guard_core.sql");
 pub const MYSQL_0002: &str = include_str!("../../migrations/mysql/0002_guard_outbox.sql");
 pub const SQLITE_0002: &str = include_str!("../../migrations/sqlite/0002_guard_outbox.sql");
 
-pub fn migration_pairs() -> [(&'static str, &'static str); 7] {
+pub fn migration_pairs() -> [(&'static str, &'static str); 8] {
     [
         (MYSQL_0001, SQLITE_0001),
         (MYSQL_0002, SQLITE_0002),
@@ -23,6 +25,7 @@ pub fn migration_pairs() -> [(&'static str, &'static str); 7] {
         (MYSQL_0005, SQLITE_0005),
         (MYSQL_0006, SQLITE_0006),
         (MYSQL_0007, SQLITE_0007),
+        (MYSQL_0008, SQLITE_0008),
     ]
 }
 
@@ -62,6 +65,11 @@ pub const MIGRATIONS: &[base_db::migration::Migration] = &[
         name: "gmv_media_file",
         sql: SQLITE_0007,
     },
+    base_db::migration::Migration {
+        version: 8,
+        name: "gb28181_console",
+        sql: SQLITE_0008,
+    },
 ];
 
 pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
@@ -99,5 +107,10 @@ pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
         version: 7,
         name: "gmv_media_file",
         sql: MYSQL_0007,
+    },
+    base_db::migration::Migration {
+        version: 8,
+        name: "gb28181_console",
+        sql: MYSQL_0008,
     },
 ];

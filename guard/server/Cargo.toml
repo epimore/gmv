@@ -19,6 +19,7 @@ thiserror = "2"
 uuid = { version = "1.23", features = ["v4", "v7"] }
 base = { path = "../../../pigs/base" }
 base_db = { path = "../../../pigs/base_db", default-features = false, features = ["mysql", "sqlite-bundled"] }
+sqlx = { version = "0.9", default-features = false, features = ["derive"] }
 base_rpc = { path = "../../../pigs/base_rpc" }
 tonic = "0.14"
 tokio-stream = "0.1"
