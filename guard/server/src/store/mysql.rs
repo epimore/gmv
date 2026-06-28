@@ -184,72 +184,69 @@ impl MysqlStore {
     }
 
     pub async fn list_gb_devices(&self) -> GuardResult<Vec<GbDeviceRecord>> {
-        let rows = base_db::sqlx::query_as::<_, GbDeviceRow>("SELECT device_id,session_node_id,alias,transport,device_type,manufacturer,model,firmware,gb_version,local_addr,register_time,online_expire_time,status,camera_in_count,camera_off_count,created_at_ms,updated_at_ms FROM gmv_gb28181_device ORDER BY device_id")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(database_error)?;
+        let rows = base_db::sqlx::query_as::<_, GbDeviceRow>(
+            "SELECT DEVICE_ID AS device_id,'' AS session_node_id,DOMAIN_ID AS domain_id,DOMAIN AS domain,longitude,latitude,address,PWD AS pwd,COALESCE(PWD_CHECK,1) AS pwd_check,ALIAS AS alias,COALESCE(STATUS,1) AS status,COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec,COALESCE(DEL,0) AS del,CREATE_TIME AS create_time,tenant_id,sys_org_code,create_by,update_by,update_time FROM GMV_OAUTH WHERE COALESCE(DEL,0)=0 ORDER BY CREATE_TIME DESC,DEVICE_ID",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?;
         Ok(rows.into_iter().map(gb_device_from_row).collect())
     }
 
     pub async fn get_gb_device(&self, device_id: &str) -> GuardResult<Option<GbDeviceRecord>> {
-        let row = base_db::sqlx::query_as::<_, GbDeviceRow>("SELECT device_id,session_node_id,alias,transport,device_type,manufacturer,model,firmware,gb_version,local_addr,register_time,online_expire_time,status,camera_in_count,camera_off_count,created_at_ms,updated_at_ms FROM gmv_gb28181_device WHERE device_id=?")
-            .bind(device_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(database_error)?;
+        let row = base_db::sqlx::query_as::<_, GbDeviceRow>(
+            "SELECT DEVICE_ID AS device_id,'' AS session_node_id,DOMAIN_ID AS domain_id,DOMAIN AS domain,longitude,latitude,address,PWD AS pwd,COALESCE(PWD_CHECK,1) AS pwd_check,ALIAS AS alias,COALESCE(STATUS,1) AS status,COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec,COALESCE(DEL,0) AS del,CREATE_TIME AS create_time,tenant_id,sys_org_code,create_by,update_by,update_time FROM GMV_OAUTH WHERE DEVICE_ID=?",
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(database_error)?;
         Ok(row.map(gb_device_from_row))
     }
 
     pub async fn upsert_gb_device(&self, device: &GbDeviceRecord) -> GuardResult<()> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
-        base_db::sqlx::query("DELETE FROM gmv_gb28181_device WHERE device_id=?")
+        base_db::sqlx::query("DELETE FROM GMV_OAUTH WHERE DEVICE_ID=?")
             .bind(&device.device_id)
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
-        base_db::sqlx::query("INSERT INTO gmv_gb28181_device(device_id,session_node_id,alias,transport,device_type,manufacturer,model,firmware,gb_version,local_addr,register_time,online_expire_time,status,camera_in_count,camera_off_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-            .bind(&device.device_id)
-            .bind(&device.session_node_id)
-            .bind(&device.alias)
-            .bind(&device.transport)
-            .bind(&device.device_type)
-            .bind(&device.manufacturer)
-            .bind(&device.model)
-            .bind(&device.firmware)
-            .bind(&device.gb_version)
-            .bind(&device.local_addr)
-            .bind(&device.register_time)
-            .bind(&device.online_expire_time)
-            .bind(&device.status)
-            .bind(device.camera_in_count)
-            .bind(device.camera_off_count)
-            .bind(device.created_at_ms)
-            .bind(device.updated_at_ms)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
+        base_db::sqlx::query(
+            "INSERT INTO GMV_OAUTH(DEVICE_ID,DOMAIN_ID,DOMAIN,longitude,latitude,address,PWD,PWD_CHECK,ALIAS,STATUS,HEARTBEAT_SEC,DEL,CREATE_TIME,tenant_id,sys_org_code,create_by,update_by,update_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(&device.device_id)
+        .bind(&device.domain_id)
+        .bind(&device.domain)
+        .bind(&device.longitude)
+        .bind(&device.latitude)
+        .bind(&device.address)
+        .bind(&device.pwd)
+        .bind(device.pwd_check)
+        .bind(&device.alias)
+        .bind(device.status)
+        .bind(device.heartbeat_sec)
+        .bind(device.del)
+        .bind(&device.create_time)
+        .bind(&device.tenant_id)
+        .bind(&device.sys_org_code)
+        .bind(&device.create_by)
+        .bind(&device.update_by)
+        .bind(&device.update_time)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         Ok(())
     }
 
     pub async fn delete_gb_device(&self, device_id: &str) -> GuardResult<bool> {
-        let mut tx = self.pool.begin().await.map_err(database_error)?;
-        base_db::sqlx::query("DELETE FROM gmv_gb28181_channel_image WHERE device_id=?")
-            .bind(device_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
-        base_db::sqlx::query("DELETE FROM gmv_gb28181_channel WHERE device_id=?")
-            .bind(device_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
-        let result = base_db::sqlx::query("DELETE FROM gmv_gb28181_device WHERE device_id=?")
-            .bind(device_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
-        tx.commit().await.map_err(database_error)?;
+        let result = base_db::sqlx::query(
+            "UPDATE GMV_OAUTH SET STATUS=0,DEL=1,update_time=CURRENT_TIMESTAMP WHERE DEVICE_ID=? AND COALESCE(DEL,0)=0",
+        )
+        .bind(device_id)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?;
         Ok(result.rows_affected() > 0)
     }
 

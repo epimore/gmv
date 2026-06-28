@@ -94,7 +94,7 @@ impl GmvOauth {
                 .get(device_id)
                 .cloned());
         }
-        let res = db::fetch_optional_as!(GmvOauth, "select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec from GMV_OAUTH where device_id=? and DEL=0 and STATUS=1", device_id)
+        let res = db::fetch_optional_as!(GmvOauth, "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec from GMV_OAUTH where device_id=? and COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1", device_id)
             .hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
@@ -120,8 +120,8 @@ impl GmvOauth {
         match db::backend() {
             db::SessionDatabaseBackend::Mysql => {
                 let mut builder = sqlx::QueryBuilder::<MySql>::new(
-                    "select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec \
-             from GMV_OAUTH where DEL=0 and STATUS=1 and device_id in (",
+                    "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec \
+             from GMV_OAUTH where COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1 and device_id in (",
                 );
                 let mut separated = builder.separated(", ");
                 for device_id in device_ids {
@@ -136,8 +136,8 @@ impl GmvOauth {
             }
             db::SessionDatabaseBackend::Sqlite => {
                 let mut builder = sqlx::QueryBuilder::<Sqlite>::new(
-                    "select device_id,domain_id,domain,pwd,pwd_check,alias,status,heartbeat_sec \
-             from GMV_OAUTH where DEL=0 and STATUS=1 and device_id in (",
+                    "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec \
+             from GMV_OAUTH where COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1 and device_id in (",
                 );
                 let mut separated = builder.separated(", ");
                 for device_id in device_ids {
@@ -183,8 +183,8 @@ impl GmvDevice {
         }
         let res = db::fetch_optional_as!(
             Self,
-            r#"select device_id,transport,register_expires,
-        register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version
+            r#"select device_id,COALESCE(transport,'UDP') AS transport,COALESCE(register_expires,3600) AS register_expires,
+        COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time,online_expire_time,COALESCE(local_addr,'') AS local_addr,COALESCE(contact_uri,'') AS contact_uri,COALESCE(enable_lr,0) AS enable_lr,gb_version
         from GMV_DEVICE where device_id=?"#,
             device_id,
         )
@@ -531,8 +531,8 @@ impl DeviceStatus {
     pub async fn get_device_status(device_id: &String) -> GlobalResult<Option<DeviceStatus>> {
         let res = db::fetch_optional_as!(
             DeviceStatus,
-            "SELECT o.HEARTBEAT_SEC heartbeat,o.STATUS enable,d.REGISTER_EXPIRES expires,
-            d.ONLINE_EXPIRE_TIME online_expire_time,d.CONTACT_URI contact_uri,d.ENABLE_LR lr
+            "SELECT COALESCE(o.HEARTBEAT_SEC,60) heartbeat,COALESCE(o.STATUS,1) enable,COALESCE(d.REGISTER_EXPIRES,0) expires,
+            d.ONLINE_EXPIRE_TIME online_expire_time,COALESCE(d.CONTACT_URI,'') contact_uri,COALESCE(d.ENABLE_LR,0) lr
             FROM GMV_OAUTH o INNER JOIN GMV_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
             device_id,
         )

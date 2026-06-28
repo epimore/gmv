@@ -367,6 +367,7 @@ struct NodeResponse {
     pending_leases: u32,
     host_metrics: HostMetricsResponse,
     business_metrics: std::collections::HashMap<String, String>,
+    config: std::collections::HashMap<String, String>,
     zone: Option<String>,
     last_seen_at_ms: i64,
     generation: u64,
@@ -430,6 +431,7 @@ impl From<NodeRecord> for NodeResponse {
             pending_leases: node.pending_leases,
             host_metrics: node.host_metrics.into(),
             business_metrics: node.business_metrics,
+            config: node.config,
             zone: node.zone,
             last_seen_at_ms: node.last_seen_at_ms,
             generation: node.generation,
@@ -1349,56 +1351,71 @@ struct StartAiRequest {
 struct GbDeviceResponse {
     device_id: String,
     session_node_id: String,
-    alias: String,
-    transport: String,
-    device_type: String,
-    manufacturer: String,
-    model: String,
-    firmware: String,
-    gb_version: String,
-    local_addr: String,
-    register_time: String,
-    online_expire_time: String,
-    status: String,
-    camera_in_count: i64,
-    camera_off_count: i64,
+    domain_id: String,
+    domain: String,
+    longitude: Option<String>,
+    latitude: Option<String>,
+    address: Option<String>,
+    pwd: Option<String>,
+    pwd_check: i64,
+    alias: Option<String>,
+    status: i64,
+    heartbeat_sec: i64,
+    del: i64,
+    create_time: Option<String>,
+    tenant_id: Option<String>,
+    sys_org_code: Option<String>,
+    create_by: Option<String>,
+    update_by: Option<String>,
+    update_time: Option<String>,
     channel_count: usize,
-    created_at_ms: i64,
-    updated_at_ms: i64,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 struct GbDeviceRequest {
+    #[serde(default)]
     device_id: String,
     #[serde(default)]
     session_node_id: String,
     #[serde(default)]
+    domain_id: String,
+    #[serde(default)]
+    domain: String,
+    #[serde(default)]
+    longitude: String,
+    #[serde(default)]
+    latitude: String,
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    pwd: String,
+    #[serde(default = "default_pwd_check")]
+    pwd_check: i64,
+    #[serde(default)]
     alias: String,
+    #[serde(default = "default_enabled_status")]
+    status: i64,
+    #[serde(default = "default_heartbeat_sec")]
+    heartbeat_sec: i64,
     #[serde(default)]
-    transport: String,
+    tenant_id: String,
     #[serde(default)]
-    device_type: String,
+    sys_org_code: String,
     #[serde(default)]
-    manufacturer: String,
+    create_by: String,
     #[serde(default)]
-    model: String,
-    #[serde(default)]
-    firmware: String,
-    #[serde(default)]
-    gb_version: String,
-    #[serde(default)]
-    local_addr: String,
-    #[serde(default)]
-    register_time: String,
-    #[serde(default)]
-    online_expire_time: String,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    camera_in_count: i64,
-    #[serde(default)]
-    camera_off_count: i64,
+    update_by: String,
+}
+
+fn default_pwd_check() -> i64 {
+    1
+}
+fn default_enabled_status() -> i64 {
+    1
+}
+fn default_heartbeat_sec() -> i64 {
+    60
 }
 
 #[derive(Debug, base::serde::Serialize)]
@@ -1529,22 +1546,24 @@ fn gb_device_response(record: GbDeviceRecord, channel_count: usize) -> GbDeviceR
     GbDeviceResponse {
         device_id: record.device_id,
         session_node_id: record.session_node_id,
+        domain_id: record.domain_id,
+        domain: record.domain,
+        longitude: record.longitude,
+        latitude: record.latitude,
+        address: record.address,
+        pwd: record.pwd,
+        pwd_check: record.pwd_check,
         alias: record.alias,
-        transport: record.transport,
-        device_type: record.device_type,
-        manufacturer: record.manufacturer,
-        model: record.model,
-        firmware: record.firmware,
-        gb_version: record.gb_version,
-        local_addr: record.local_addr,
-        register_time: record.register_time,
-        online_expire_time: record.online_expire_time,
         status: record.status,
-        camera_in_count: record.camera_in_count,
-        camera_off_count: record.camera_off_count,
+        heartbeat_sec: record.heartbeat_sec,
+        del: record.del,
+        create_time: record.create_time,
+        tenant_id: record.tenant_id,
+        sys_org_code: record.sys_org_code,
+        create_by: record.create_by,
+        update_by: record.update_by,
+        update_time: record.update_time,
         channel_count,
-        created_at_ms: record.created_at_ms,
-        updated_at_ms: record.updated_at_ms,
     }
 }
 
@@ -1653,12 +1672,14 @@ async fn create_gb_device(
 ) -> Result<(StatusCode, Json<GbDeviceResponse>), HttpError> {
     require_write(&state.auth, &headers, Role::Operator)?;
     let repository = require_gb_repository(&state)?;
-    let device_id = request.device_id.trim().to_string();
-    if device_id.is_empty() {
-        return Err(HttpError::bad_request("device_id is required"));
+    validate_gb_device_request(&request)?;
+    let now = http_now_ms()?.to_string();
+    let devices = repository.list_devices().await?;
+    let device_id = gb_request_device_id(&request, &devices);
+    if repository.get_device(&device_id).await?.is_some() {
+        return Err(GuardError::DuplicateEvent(format!("GB28181 device {device_id}")).into());
     }
-    let now_ms = http_now_ms()?;
-    let record = gb_device_record(device_id, request, now_ms, now_ms);
+    let record = gb_device_record(device_id, request, Some(now.clone()), Some(now));
     repository.upsert_device(&record).await?;
     Ok((StatusCode::CREATED, Json(gb_device_response(record, 0))))
 }
@@ -1670,47 +1691,94 @@ async fn update_gb_device(
     Json(request): Json<GbDeviceRequest>,
 ) -> Result<Json<GbDeviceResponse>, HttpError> {
     require_write(&state.auth, &headers, Role::Operator)?;
+    validate_gb_device_request(&request)?;
     let repository = require_gb_repository(&state)?;
     let device_id = device_id.trim().to_string();
     if device_id.is_empty() {
         return Err(HttpError::bad_request("device_id is required"));
     }
-    let now_ms = http_now_ms()?;
-    let created_at_ms = repository
+    let existing = repository
         .get_device(&device_id)
         .await?
-        .map(|device| device.created_at_ms)
-        .unwrap_or(now_ms);
-    let record = gb_device_record(device_id, request, created_at_ms, now_ms);
+        .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
+    let now = http_now_ms()?.to_string();
+    let record = gb_device_record(device_id, request, existing.create_time, Some(now));
     repository.upsert_device(&record).await?;
     let channel_count = repository.list_channels(&record.device_id).await?.len();
     Ok(Json(gb_device_response(record, channel_count)))
 }
 
+fn validate_gb_device_request(request: &GbDeviceRequest) -> Result<(), HttpError> {
+    if request.session_node_id.trim().is_empty() {
+        return Err(HttpError::bad_request("session_node_id is required"));
+    }
+    if request.domain_id.trim().is_empty() {
+        return Err(HttpError::bad_request("domain_id is required"));
+    }
+    if request.domain.trim().is_empty() {
+        return Err(HttpError::bad_request("domain is required"));
+    }
+    Ok(())
+}
+
+fn gb_request_device_id(request: &GbDeviceRequest, devices: &[GbDeviceRecord]) -> String {
+    let explicit = request.device_id.trim();
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    let domain_id = request.domain_id.trim();
+    let domain_prefix = domain_id.chars().take(11).collect::<String>();
+    let prefix = if domain_prefix.len() == 11 {
+        format!("{domain_prefix}1")
+    } else {
+        "340200000021".to_string()
+    };
+    let max_suffix = devices
+        .iter()
+        .filter_map(|device| device.device_id.strip_prefix(&prefix))
+        .filter_map(|suffix| suffix.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    let next = (max_suffix + 1).min(99_999_999);
+    format!("{prefix}{next:08}")
+}
+
+fn optional_string(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
 fn gb_device_record(
     device_id: String,
     request: GbDeviceRequest,
-    created_at_ms: i64,
-    updated_at_ms: i64,
+    create_time: Option<String>,
+    update_time: Option<String>,
 ) -> GbDeviceRecord {
+    let heartbeat_sec = if request.heartbeat_sec < 5 {
+        60
+    } else {
+        request.heartbeat_sec
+    };
     GbDeviceRecord {
         device_id,
         session_node_id: request.session_node_id.trim().to_string(),
-        alias: non_empty_or(request.alias, "未命名设备"),
-        transport: non_empty_or(request.transport, "UDP"),
-        device_type: non_empty_or(request.device_type, "GB28181"),
-        manufacturer: request.manufacturer.trim().to_string(),
-        model: request.model.trim().to_string(),
-        firmware: request.firmware.trim().to_string(),
-        gb_version: non_empty_or(request.gb_version, "GB/T 28181-2016"),
-        local_addr: request.local_addr.trim().to_string(),
-        register_time: request.register_time.trim().to_string(),
-        online_expire_time: request.online_expire_time.trim().to_string(),
-        status: non_empty_or(request.status, "UNKNOWN"),
-        camera_in_count: request.camera_in_count,
-        camera_off_count: request.camera_off_count,
-        created_at_ms,
-        updated_at_ms,
+        domain_id: request.domain_id.trim().to_string(),
+        domain: request.domain.trim().to_string(),
+        longitude: optional_string(request.longitude),
+        latitude: optional_string(request.latitude),
+        address: optional_string(request.address),
+        pwd: optional_string(request.pwd),
+        pwd_check: request.pwd_check,
+        alias: optional_string(request.alias),
+        status: request.status,
+        heartbeat_sec,
+        del: 0,
+        create_time,
+        tenant_id: optional_string(request.tenant_id),
+        sys_org_code: optional_string(request.sys_org_code),
+        create_by: optional_string(request.create_by),
+        update_by: optional_string(request.update_by),
+        update_time,
     }
 }
 
@@ -2454,5 +2522,63 @@ impl IntoResponse for HttpError {
             }),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod gb28181_tests {
+    use super::*;
+
+    fn request(domain_id: &str) -> GbDeviceRequest {
+        GbDeviceRequest {
+            device_id: String::new(),
+            session_node_id: "session-1".to_string(),
+            domain_id: domain_id.to_string(),
+            domain: "5101000000".to_string(),
+            longitude: String::new(),
+            latitude: String::new(),
+            address: String::new(),
+            pwd: String::new(),
+            pwd_check: 1,
+            alias: String::new(),
+            status: 1,
+            heartbeat_sec: 60,
+            tenant_id: String::new(),
+            sys_org_code: String::new(),
+            create_by: String::new(),
+            update_by: String::new(),
+        }
+    }
+
+    #[test]
+    fn gb_device_id_starts_from_domain_prefix_and_incremental_suffix() {
+        let request = request("51010000002000000001");
+        assert_eq!(gb_request_device_id(&request, &[]), "51010000002100000001");
+
+        let existing = GbDeviceRecord {
+            device_id: "51010000002100000001".to_string(),
+            session_node_id: "session-1".to_string(),
+            domain_id: "51010000002000000001".to_string(),
+            domain: "5101000000".to_string(),
+            longitude: None,
+            latitude: None,
+            address: None,
+            pwd: None,
+            pwd_check: 1,
+            alias: None,
+            status: 1,
+            heartbeat_sec: 60,
+            del: 0,
+            create_time: None,
+            tenant_id: None,
+            sys_org_code: None,
+            create_by: None,
+            update_by: None,
+            update_time: None,
+        };
+        assert_eq!(
+            gb_request_device_id(&request, &[existing]),
+            "51010000002100000002"
+        );
     }
 }

@@ -5,11 +5,11 @@ import { useAuthStore } from '@/stores/auth';
 
 export const menuRoutes = [
   { path: '/dashboard', label: '总览', icon: '总', group: '控制台' },
-  { path: '/nodes', label: '节点', icon: '节', group: '资源' },
-  { path: '/devices', label: '设备', icon: '设', group: '资源' },
   { path: '/gb28181', label: 'GB28181', icon: '国', group: '设备' },
+  { path: '/onvif', label: 'ONVIF', icon: '网', group: '设备' },
   { path: '/streams', label: '流媒体', icon: '流', group: '业务' },
   { path: '/ai', label: '智能分析', icon: '智', group: '业务' },
+  { path: '/nodes', label: '节点', icon: '节', group: '资源' },
   { path: '/allocations', label: '调度与租约', icon: '调', group: '治理' },
   { path: '/events', label: '事件中心', icon: '事', group: '治理' },
   { path: '/integrations', label: '集成', icon: '集', group: '外部' },
@@ -25,11 +25,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
     children: [
       { path: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '总览' } },
-      { path: 'nodes', component: () => import('@/views/NodesView.vue'), meta: { title: '节点' } },
       { path: 'devices', component: () => import('@/views/DevicesView.vue'), meta: { title: '设备' } },
       { path: 'gb28181', component: () => import('@/views/Gb28181View.vue'), meta: { title: 'GB28181' } },
+      { path: 'onvif', component: () => import('@/views/OnvifView.vue'), meta: { title: 'ONVIF' } },
       { path: 'streams', component: () => import('@/views/StreamsView.vue'), meta: { title: '流媒体' } },
       { path: 'ai', component: () => import('@/views/AiView.vue'), meta: { title: '智能分析' } },
+      { path: 'nodes', component: () => import('@/views/NodesView.vue'), meta: { title: '节点' } },
       { path: 'allocations', component: () => import('@/views/AllocationsView.vue'), meta: { title: '调度与租约' } },
       { path: 'events', component: () => import('@/views/EventsView.vue'), meta: { title: '事件中心' } },
       { path: 'integrations', component: () => import('@/views/IntegrationsView.vue'), meta: { title: '集成' } },

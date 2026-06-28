@@ -117,12 +117,7 @@ pub fn prefix(domain_id: &str, kind: SsrcKind) -> GlobalResult<String> {
 }
 
 async fn validate_sequence(seq_name: &str) -> GlobalResult<()> {
-    let row: Option<(i64, i64, i32, Option<String>, Option<i32>)> = db::fetch_optional_as!(
-        (i64, i64, i32, Option<String>, Option<i32>),
-        "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=?",
-        seq_name,
-    )
-    .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
+    let row = fetch_sequence_row(seq_name, false).await?;
     let Some((init_value, current_value, increment_value, prefix_code, code_length)) = row else {
         return Err(invalid_sequence(seq_name, "row is missing"));
     };
@@ -134,6 +129,42 @@ async fn validate_sequence(seq_name: &str) -> GlobalResult<()> {
         prefix_code.as_deref(),
         code_length,
     )
+}
+
+async fn fetch_sequence_row(
+    seq_name: &str,
+    lock: bool,
+) -> GlobalResult<Option<(i64, i64, i32, Option<String>, Option<i32>)>> {
+    match db::backend() {
+        db::SessionDatabaseBackend::Mysql => {
+            let sql = if lock {
+                "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=? FOR UPDATE"
+            } else {
+                "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=?"
+            };
+            let row: Option<(u64, u64, i32, Option<String>, Option<i32>)> =
+                db::fetch_optional_as!((u64, u64, i32, Option<String>, Option<i32>), sql, seq_name,)
+                    .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
+            row.map(|(init_value, current_value, increment_value, prefix_code, code_length)| {
+                Ok((
+                    i64::try_from(init_value)
+                        .map_err(|_| invalid_sequence(seq_name, "init_value exceeds i64"))?,
+                    i64::try_from(current_value)
+                        .map_err(|_| invalid_sequence(seq_name, "current_value exceeds i64"))?,
+                    increment_value,
+                    prefix_code,
+                    code_length,
+                ))
+            })
+            .transpose()
+        }
+        db::SessionDatabaseBackend::Sqlite => db::fetch_optional_as!(
+            (i64, i64, i32, Option<String>, Option<i32>),
+            "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=?",
+            seq_name,
+        )
+        .hand_log(|msg| error!("{msg}: seq_name={seq_name}")),
+    }
 }
 
 fn validate_sequence_row(
@@ -156,17 +187,7 @@ fn validate_sequence_row(
 }
 
 async fn take_next_value(seq_name: &str) -> GlobalResult<u16> {
-    let sql = match db::backend() {
-        db::SessionDatabaseBackend::Mysql => {
-            "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=? FOR UPDATE"
-        }
-        db::SessionDatabaseBackend::Sqlite => {
-            "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM C_SEQ_CODE WHERE seq_name=?"
-        }
-    };
-    let row: Option<(i64, i64, i32, Option<String>, Option<i32>)> =
-        db::fetch_optional_as!((i64, i64, i32, Option<String>, Option<i32>), sql, seq_name,)
-            .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
+    let row = fetch_sequence_row(seq_name, true).await?;
     let current = current_sequence_value(seq_name, row.as_ref())?;
     let next = next_sequence_value(seq_name, row.as_ref())?;
     db::execute!(
