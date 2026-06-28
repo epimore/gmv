@@ -6,3 +6,10 @@
 **/playwright-report
 **/data/*.db
 **/data/*.db-*
+
+/docs/
+/tmp/
+/third_party/
+/logs/
+/.*
+!/.gitignore
