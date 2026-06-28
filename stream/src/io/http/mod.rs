@@ -32,6 +32,9 @@ pub async fn run(
     _tx: Sender<u32>,
     cancel_token: CancellationToken,
 ) -> GlobalResult<()> {
+    std_http_listener
+        .set_nonblocking(true)
+        .hand_log(|msg| error!("{msg}"))?;
     let app = Router::new().merge(out::routes()).merge(api::routes());
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();

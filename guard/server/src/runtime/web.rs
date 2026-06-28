@@ -104,6 +104,7 @@ pub async fn serve(
         },
         config.ui_dist_dir.clone(),
     );
+    listener.set_nonblocking(true)?;
     if let Some(tls) = config.tls {
         let rustls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
             tls.certificate_path,
