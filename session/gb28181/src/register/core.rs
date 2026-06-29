@@ -12,7 +12,6 @@ use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
 
-use crate::gb::SessionConf;
 use crate::gb::sip::NativeSipRuntimeHandle;
 use crate::register::event::{self, Event};
 pub(crate) use crate::register::network::{DeviceSession, Network};
@@ -25,8 +24,6 @@ use crate::storage::entity::{GmvDevice, GmvOauth};
 static REGISTER: OnceCell<Register> = OnceCell::new();
 
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
-pub const SERVER_HEART_SECOND: u64 = 60;
-pub const SERVER_HEART_EXPIRE: Duration = Duration::from_secs(SERVER_HEART_SECOND);
 const MAX_DEVICE_RECOVERY_CONCURRENCY: usize = 64;
 
 #[derive(Clone, Hash, Eq, PartialEq)]
@@ -38,7 +35,6 @@ pub enum TimeScheduleKey {
     TalkClosing(Arc<str>, u64),
     CatalogSubscription(Arc<str>, u64),
     OutSession(u64),
-    ServerHeart(Arc<str>),
 }
 
 pub struct Register {
@@ -46,7 +42,6 @@ pub struct Register {
 }
 
 pub struct Inner {
-    pub server_conf: SessionConf,
     pub event_tx: Sender<Event>,
     pub io_map: Network,
     recovering_devices: DashMap<Arc<str>, ()>,
@@ -58,7 +53,7 @@ impl Register {
         REGISTER.get().expect("Register not initialized")
     }
 
-    pub fn init(server_conf: SessionConf, cancel_token: CancellationToken) -> GlobalResult<()> {
+    pub fn init(cancel_token: CancellationToken) -> GlobalResult<()> {
         if REGISTER.get().is_some() {
             return Ok(());
         }
@@ -66,7 +61,6 @@ impl Register {
         let (event_tx, event_rx) = mpsc::channel(256);
         TimeScheduler::init();
         let inner = Arc::new(Inner {
-            server_conf,
             event_tx,
             io_map: Network {
                 session: Default::default(),
@@ -447,13 +441,6 @@ impl Register {
                 runtime.close_transport(&session.association, 1);
             }
         }
-    }
-
-    pub async fn server_keep_heart_update_db(domain_id: Arc<str>) -> GlobalResult<()> {
-        let update_res = Self::get().inner.server_conf.heart_to_db().await;
-        Self::scheduler()
-            .insert_register(TimeScheduleKey::ServerHeart(domain_id), SERVER_HEART_EXPIRE)?;
-        update_res
     }
 }
 

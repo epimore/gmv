@@ -66,6 +66,13 @@ server:
     wan_ip: 192.168.0.22  # 公网IP
     lan_port: 25600  #lan端口
     wan_port: 25600  #wan端口
+  pics:
+    push_url: http://127.0.0.1:18567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
+    storage_path: ./pics/raw
+    storage_format: jpeg
+    num: 1
+    interval: 1
+    max_upload_bytes: 10485760
   alarm:
     enable: false #是否开启告警事件上报guard，默认false
     priority: 4 #告警等级 1-4,默认最低4

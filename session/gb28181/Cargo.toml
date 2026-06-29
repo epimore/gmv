@@ -19,7 +19,7 @@ sqlx = { version = "0.9", default-features = false }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"
 sdp-types = "0.1"
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 
 # 共享依赖（自动继承版本）
 anyhow.workspace = true

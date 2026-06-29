@@ -26,7 +26,6 @@ pub struct WebServerConfig {
     pub max_failed_attempts: usize,
     pub local_admin_username: String,
     pub local_admin_login_only: bool,
-    pub picture_upload: crate::app_config::PictureUploadConfig,
 }
 
 impl WebServerConfig {
@@ -46,7 +45,6 @@ impl WebServerConfig {
             max_failed_attempts: http.max_failed_attempts,
             local_admin_username: config.bootstrap.admin.username.clone(),
             local_admin_login_only: config.bootstrap.admin.local_login_only,
-            picture_upload: config.media.picture_upload.clone(),
         };
         result.validate()?;
         Ok(result)
@@ -69,6 +67,7 @@ impl WebServerConfig {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     config: WebServerConfig,
     listener: StdTcpListener,
@@ -76,8 +75,6 @@ pub async fn serve(
     outbox: crate::outbox::OutboxRepository,
     users: Vec<UserAccount>,
     user_repository: crate::store::persistent::UserRepository,
-    media_repository: crate::store::persistent::MediaRepository,
-    gb_repository: crate::store::persistent::GbRepository,
     event_forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
@@ -99,9 +96,6 @@ pub async fn serve(
             auth,
             outbox,
             users: Some(user_repository),
-            media: config.picture_upload.clone(),
-            media_files: Some(media_repository),
-            gb28181: Some(gb_repository),
             event_forwarder,
         },
         config.ui_dist_dir.clone(),
@@ -142,7 +136,6 @@ mod tests {
             max_failed_attempts: 5,
             local_admin_username: "admin".to_string(),
             local_admin_login_only: true,
-            picture_upload: crate::app_config::PictureUploadConfig::default(),
         }
     }
 

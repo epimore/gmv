@@ -90,11 +90,6 @@ guard:
       pass: "zaq12345" # 空库首次启动前必须设置；已有用户后可留空，避免长期保存 bootstrap 密码。
       local_login_only: false # 仅从配置文件读取；修改后需重启 guard 生效。
 
-  media:
-    picture_upload:
-      storage_path: ./pics/raw
-      max_upload_bytes: 10485760
-      max_session_age_sec: 300
 
   integrations:
     mqtt:

@@ -3,21 +3,11 @@ use crate::core::GuardResult;
 use crate::store::InMemoryGuardStore;
 use crate::store::model::EventRecord;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventQuery {
     pub cursor: CursorQuery,
     pub topic_prefix: Option<String>,
     pub min_priority: Option<u8>,
-}
-
-impl Default for EventQuery {
-    fn default() -> Self {
-        Self {
-            cursor: CursorQuery::default(),
-            topic_prefix: None,
-            min_priority: None,
-        }
-    }
 }
 
 pub type EventPage = CursorPage<EventRecord>;

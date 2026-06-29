@@ -1,9 +1,7 @@
 use crate::register::core::Register;
-use crate::register::core::SERVER_HEART_SECOND;
-use crate::storage::{db, db_task};
+use crate::storage::db_task;
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
-use base::chrono::Local;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::net;
@@ -14,7 +12,6 @@ use gmv_pjsip::SipRuntimeSockets;
 use regex::Regex;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
-use std::sync::Arc;
 
 pub mod sip;
 
@@ -43,50 +40,6 @@ impl CheckFromConf for SessionConf {
     }
 }
 impl SessionConf {
-    async fn heart_server() {
-        let conf = SessionConf::get_session_by_conf();
-        let _ = conf.init_to_db().await;
-        let _ = Register::server_keep_heart_update_db(Arc::from(conf.domain_id)).await;
-    }
-    pub async fn heart_to_db(&self) -> GlobalResult<()> {
-        let _ = db::execute!(
-            r#"update GB_SERVER set heart_time=? where domain_id=?"#,
-            Local::now().naive_local(),
-            &self.domain_id,
-        )
-        .hand_log(|msg| error!("{msg}"))?;
-        Ok(())
-    }
-    async fn init_to_db(&self) -> GlobalResult<()> {
-        let sql = match db::backend() {
-            db::SessionDatabaseBackend::Mysql => {
-                r#"insert into GB_SERVER (domain_id,domain,sip_ip,
-        sip_port,http_source,status,heart_time,heart_cycle) values (?,?,?,?,?,?,?,?)
-        ON DUPLICATE KEY UPDATE domain=VALUES(domain),sip_ip=VALUES(sip_ip),
-        sip_port=VALUES(sip_port),http_source=VALUES(http_source),status=VALUES(status),heart_time=VALUES(heart_time),heart_cycle=VALUES(heart_cycle)"#
-            }
-            db::SessionDatabaseBackend::Sqlite => {
-                r#"insert into GB_SERVER (domain_id,domain,sip_ip,
-        sip_port,http_source,status,heart_time,heart_cycle) values (?,?,?,?,?,?,?,?)
-        ON CONFLICT(domain_id) DO UPDATE SET domain=excluded.domain,sip_ip=excluded.sip_ip,
-        sip_port=excluded.sip_port,http_source=excluded.http_source,status=excluded.status,heart_time=excluded.heart_time,heart_cycle=excluded.heart_cycle"#
-            }
-        };
-        db::execute!(
-            sql,
-            &self.domain_id,
-            &self.domain,
-            self.wan_ip.to_string(),
-            i64::from(self.wan_port),
-            &self.http_source,
-            1_i64,
-            Local::now().naive_local(),
-            SERVER_HEART_SECOND as i64,
-        )
-        .hand_log(|msg| error!("{msg}"))?;
-        Ok(())
-    }
-
     pub fn get_session_by_conf() -> Self {
         SessionConf::conf()
     }
@@ -126,10 +79,9 @@ impl SessionConf {
         )?;
         let native_runtime = native_service.handle();
         native_runtime.install_global()?;
-        Register::init(session_conf.clone(), cancel_token.child_token())?;
+        Register::init(cancel_token.child_token())?;
         let handle = Handle::current();
         handle.spawn(crate::service::dialog_recovery::run_startup_recovery());
-        handle.spawn(SessionConf::heart_server());
         handle.spawn(sip::auth::run_cleanup_task(cancel_token.child_token()));
         handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));
         let native_shutdown = cancel_token.child_token();

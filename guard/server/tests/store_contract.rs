@@ -46,6 +46,17 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         sqlite_all.push_str(sqlite);
     }
     for table in [
+        "GMV_FILE_INFO",
+        "GMV_RECORD",
+        "GMV_DEVICE_PTZ_PRESET",
+        "GMV_OAUTH",
+        "gmv_gb28181_channel",
+        "gmv_gb28181_channel_image",
+    ] {
+        assert!(!mysql_all.contains(table), "mysql should not own {table}");
+        assert!(!sqlite_all.contains(table), "sqlite should not own {table}");
+    }
+    for table in [
         "guard_node",
         "guard_lease",
         "guard_route",
@@ -57,9 +68,6 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         "guard_ui_session",
         "guard_integration",
         "guard_system_setting",
-        "GMV_FILE_INFO",
-        "GMV_RECORD",
-        "GMV_DEVICE_PTZ_PRESET",
     ] {
         assert!(mysql_all.contains(table), "mysql missing {table}");
         assert!(sqlite_all.contains(table), "sqlite missing {table}");

@@ -11,6 +11,11 @@ service SessionControl {
   rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
+  rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
+  rpc GetGbDevice(GetGbDeviceRequest) returns (GetGbDeviceResponse);
+  rpc ListGbChannels(ListGbChannelsRequest) returns (ListGbChannelsResponse);
+  rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
+  rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
 }
 
 service SessionHook {
@@ -80,4 +85,107 @@ message ControlPtzRequest {
 message ControlPtzResponse {
   bool accepted = 1;
   gmv.common.v1.ErrorDetail error = 2;
+}
+
+message ListGbDevicesRequest {}
+
+message GetGbDeviceRequest {
+  string device_id = 1;
+}
+
+message ListGbDevicesResponse {
+  repeated GbDevice devices = 1;
+}
+
+message GetGbDeviceResponse {
+  GbDevice device = 1;
+}
+
+message GbDevice {
+  string device_id = 1;
+  string session_node_id = 2;
+  string domain_id = 3;
+  string domain = 4;
+  string longitude = 5;
+  string latitude = 6;
+  string address = 7;
+  string pwd = 8;
+  int64 pwd_check = 9;
+  string alias = 10;
+  int64 status = 11;
+  int64 heartbeat_sec = 12;
+  int64 del = 13;
+  string create_time = 14;
+  string tenant_id = 15;
+  string sys_org_code = 16;
+  string create_by = 17;
+  string update_by = 18;
+  string update_time = 19;
+  uint32 channel_count = 20;
+}
+
+message ListGbChannelsRequest {
+  string device_id = 1;
+}
+
+message GetGbChannelRequest {
+  string device_id = 1;
+  string channel_id = 2;
+}
+
+message ListGbChannelsResponse {
+  repeated GbChannel channels = 1;
+}
+
+message GetGbChannelResponse {
+  GbChannel channel = 1;
+}
+
+message GbChannel {
+  string device_id = 1;
+  string channel_id = 2;
+  string name = 3;
+  string manufacturer = 4;
+  string model = 5;
+  string owner = 6;
+  string status = 7;
+  string civil_code = 8;
+  string address = 9;
+  string parent_id = 10;
+  string ip_address = 11;
+  int64 port = 12;
+  string longitude = 13;
+  string latitude = 14;
+  string ptz_type = 15;
+  string alias_name = 16;
+  string pic_url = 17;
+  int64 snapshot = 18;
+  string over_pic_id = 19;
+  int64 ptz_enable = 20;
+  int64 talk_enable = 21;
+  int64 audio_enable = 22;
+  int64 record_enable = 23;
+  int64 playback_enable = 24;
+  int64 alarm_enable = 25;
+  int64 biz_enable = 26;
+  int64 sort_no = 27;
+  int64 created_at_ms = 28;
+  int64 updated_at_ms = 29;
+}
+
+message ListGbChannelImagesRequest {
+  string device_id = 1;
+  string channel_id = 2;
+}
+
+message ListGbChannelImagesResponse {
+  repeated GbChannelImage images = 1;
+}
+
+message GbChannelImage {
+  string image_id = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string image_url = 4;
+  int64 created_at_ms = 5;
 }

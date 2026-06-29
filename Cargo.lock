@@ -1315,6 +1315,7 @@ dependencies = [
  "reqwest",
  "rumqttc",
  "rust-embed",
+ "sqlx",
  "thiserror 2.0.18",
  "tokio-stream",
  "tonic",

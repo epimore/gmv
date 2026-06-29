@@ -90,6 +90,13 @@ impl CheckFromConf for ServerConf {
                 "server.http.tls启用时certificate_path和private_key_path不能为空".to_string(),
             ));
         }
+        if self.proxy_addr != default_proxy_addr()
+            && !(self.proxy_addr.starts_with("http://") || self.proxy_addr.starts_with("https://"))
+        {
+            return Err(FieldCheckError::BizError(
+                "server.proxy_addr必须是http或https地址".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -210,7 +217,7 @@ impl ServerConf {
                 server_conf.http_port, server_conf.name
             );
         } else {
-            server_conf.proxy_addr = format!("{}/{}", server_conf.proxy_addr, server_conf.name);
+            server_conf.proxy_addr = server_conf.proxy_addr.trim_end_matches('/').to_string();
         }
         server_conf
     }

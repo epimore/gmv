@@ -27,8 +27,6 @@ pub struct GuardAppConfig {
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
     #[serde(default)]
-    pub media: MediaConfig,
-    #[serde(default)]
     pub integrations: IntegrationsConfig,
 }
 
@@ -49,7 +47,6 @@ impl GuardAppConfig {
         self.registry.validate()?;
         self.database.validate()?;
         self.bootstrap.validate()?;
-        self.media.validate()?;
         self.integrations.validate()
     }
 }
@@ -153,18 +150,13 @@ impl InternalCommConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(crate = "base::serde", rename_all = "lowercase")]
 pub enum InternalCommMode {
     Http,
     Dual,
+    #[default]
     Rpc,
-}
-
-impl Default for InternalCommMode {
-    fn default() -> Self {
-        Self::Rpc
-    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -567,76 +559,6 @@ impl BootstrapAdminConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(crate = "base::serde")]
-pub struct MediaConfig {
-    #[serde(default)]
-    pub picture_upload: PictureUploadConfig,
-}
-
-impl Default for MediaConfig {
-    fn default() -> Self {
-        Self {
-            picture_upload: PictureUploadConfig::default(),
-        }
-    }
-}
-
-impl MediaConfig {
-    fn validate(&self) -> GuardResult<()> {
-        self.picture_upload.validate()
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(crate = "base::serde")]
-pub struct PictureUploadConfig {
-    #[serde(default = "default_picture_storage_path")]
-    pub storage_path: PathBuf,
-    #[serde(default = "default_picture_max_upload_bytes")]
-    pub max_upload_bytes: usize,
-    #[serde(default = "default_picture_max_session_age_sec")]
-    pub max_session_age_sec: u64,
-}
-
-impl Default for PictureUploadConfig {
-    fn default() -> Self {
-        Self {
-            storage_path: default_picture_storage_path(),
-            max_upload_bytes: default_picture_max_upload_bytes(),
-            max_session_age_sec: default_picture_max_session_age_sec(),
-        }
-    }
-}
-
-impl PictureUploadConfig {
-    fn validate(&self) -> GuardResult<()> {
-        if self.storage_path.as_os_str().is_empty() {
-            return Err(GuardError::InvalidConfig(
-                "guard.media.picture_upload.storage_path is required".to_string(),
-            ));
-        }
-        if self.max_upload_bytes == 0 || self.max_session_age_sec == 0 {
-            return Err(GuardError::InvalidConfig(
-                "guard.media.picture_upload limits must be positive".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-fn default_picture_storage_path() -> PathBuf {
-    PathBuf::from("./pics/raw")
-}
-
-fn default_picture_max_upload_bytes() -> usize {
-    10 * 1024 * 1024
-}
-
-fn default_picture_max_session_age_sec() -> u64 {
-    300
-}
-
 #[derive(Clone, Default, Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct IntegrationsConfig {
@@ -921,7 +843,6 @@ mod tests {
             registry: RegistryConfig::default(),
             database: DatabaseConfig::default(),
             bootstrap: BootstrapConfig::default(),
-            media: MediaConfig::default(),
             integrations: IntegrationsConfig::default(),
         };
         config.validate().unwrap();

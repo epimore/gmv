@@ -113,8 +113,6 @@ pub async fn start_guard(
         persistent.outbox_repository(),
         users,
         user_repository,
-        persistent.media_repository(),
-        persistent.gb_repository(),
         event_forwarder.clone(),
     );
     let rpc = node_rpc::serve(
@@ -123,7 +121,6 @@ pub async fn start_guard(
         registry,
         api_store.clone(),
         event_forwarder,
-        persistent.media_repository(),
     );
     base::tokio::try_join!(web, rpc).map(|_| ())
 }

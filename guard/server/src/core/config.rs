@@ -132,8 +132,10 @@ mod tests {
 
     #[test]
     fn tls_can_be_disabled_explicitly() {
-        let mut config = GuardConfig::default();
-        config.bind_host = "0.0.0.0".to_string();
+        let mut config = GuardConfig {
+            bind_host: "0.0.0.0".to_string(),
+            ..GuardConfig::default()
+        };
         config.tls.enabled = false;
         config.validate().unwrap();
     }

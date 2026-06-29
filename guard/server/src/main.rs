@@ -44,8 +44,8 @@ fn crypto_command(args: &[String], action: CryptoAction) -> Result<(), Box<dyn s
         }
     };
     let output = match action {
-        CryptoAction::Encrypt => default_encrypt(&input),
-        CryptoAction::Decrypt => default_decrypt(&input),
+        CryptoAction::Encrypt => default_encrypt(input),
+        CryptoAction::Decrypt => default_decrypt(input),
     }
     .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
     println!("{output}");

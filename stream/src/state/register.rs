@@ -629,7 +629,8 @@ impl Register {
         proxy_addr: String,
         stream_id: String,
     ) -> BaseStreamInfo {
-        let rtp_info = Self::build_rtp_info(meta, server_name, proxy_addr);
+        let play_url = format!("{}/play/{}", proxy_addr.trim_end_matches('/'), stream_id);
+        let rtp_info = Self::build_rtp_info(meta, server_name, play_url);
         BaseStreamInfo::new(rtp_info, stream_id, meta.register_ts)
     }
 

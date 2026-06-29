@@ -9,7 +9,6 @@ use gmv_protocol::common::v1::{
     NodeKind as ProtoNodeKind,
 };
 use gmv_protocol::guard::v1::guard_control_server::GuardControlServer;
-use gmv_protocol::guard::v1::guard_media_server::GuardMediaServer;
 use gmv_protocol::guard::v1::guard_node_control_server::{
     GuardNodeControl, GuardNodeControlServer,
 };
@@ -25,10 +24,8 @@ use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind};
 use crate::registry::{HeartbeatReport, RegisterDecision, RegisterRequest, RegistryService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
 use crate::runtime::event_forwarder::EventForwarder;
-use crate::runtime::media_rpc::GuardMediaRpc;
 use crate::store::InMemoryGuardStore;
 use crate::store::model::{EndpointModeRecord, EndpointRecord, EventRecord, HostMetricsRecord};
-use crate::store::persistent::MediaRepository;
 
 #[derive(Debug, Clone)]
 pub struct NodeRpcConfig {
@@ -186,7 +183,6 @@ pub async fn serve(
     registry: RegistryService,
     store: InMemoryGuardStore,
     forwarder: Option<EventForwarder>,
-    media_repository: MediaRepository,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let node_service = GuardNodeRpc::new(
         registry,
@@ -196,7 +192,6 @@ pub async fn serve(
         forwarder,
     );
     let control_service = crate::runtime::control_rpc::GuardControlRpc::new(store);
-    let media_service = GuardMediaRpc::new(media_repository);
     let mut server_config = base_rpc::RpcServerConfig::default();
     if let Some(tls) = config.tls {
         server_config.tls = Some(base_rpc::load_server_tls_from_files(
@@ -211,7 +206,6 @@ pub async fn serve(
     base_rpc::build_server(&server_config)?
         .add_service(GuardNodeControlServer::new(node_service))
         .add_service(GuardControlServer::new(control_service))
-        .add_service(GuardMediaServer::new(media_service))
         .serve_with_incoming(incoming)
         .await?;
     Ok(())
@@ -303,12 +297,10 @@ async fn apply_event(
         priority,
         payload: payload.clone(),
     })?;
-    if inserted {
-        if let Some(forwarder) = forwarder {
-            forwarder
-                .forward(event_id.clone(), topic.clone(), payload)
-                .await?;
-        }
+    if inserted && let Some(forwarder) = forwarder {
+        forwarder
+            .forward(event_id.clone(), topic.clone(), payload)
+            .await?;
     }
     base::log::info!(
         "guard node event stored: event_id={}, topic={}, priority={}, payload_bytes={}",

@@ -7,7 +7,6 @@ pub mod core;
 pub mod gateway;
 pub mod job;
 pub mod lease;
-pub mod media;
 pub mod mqttc;
 pub mod operation;
 pub mod outbox;

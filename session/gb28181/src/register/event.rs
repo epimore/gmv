@@ -19,7 +19,6 @@ const MAX_WORKER_POOL: usize = 128;
 #[derive(Clone, Eq, PartialEq)]
 pub enum Event {
     DeviceOffline(Arc<str>),
-    ServerHeart(Arc<str>),
     RefreshCatalogSubscription(Arc<str>, u64),
     OutSession(u64),
 }
@@ -74,9 +73,6 @@ async fn hand_event(event: Event) {
             db_task::submit(DbTask::ExpireDeviceOnline {
                 device_id: device_id.to_string(),
             });
-        }
-        Event::ServerHeart(domain_id) => {
-            let _ = Register::server_keep_heart_update_db(domain_id).await;
         }
         Event::RefreshCatalogSubscription(device_id, generation) => {
             let _ = subscription::refresh_catalog_subscription(device_id, generation)
@@ -169,12 +165,6 @@ async fn on_time_schedule(
                 let _ = inner
                     .event_tx
                     .try_send(Event::RefreshCatalogSubscription(device_id, generation))
-                    .hand_log(|msg| error!("{msg}"));
-            }
-            ScheduleKey::Register(TimeScheduleKey::ServerHeart(domain_id)) => {
-                let _ = inner
-                    .event_tx
-                    .try_send(Event::ServerHeart(domain_id))
                     .hand_log(|msg| error!("{msg}"));
             }
             ScheduleKey::Register(TimeScheduleKey::OutSession(_)) => {}

@@ -20,14 +20,16 @@ use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
 };
 use gmv_protocol::guard::v1::{
-    AllocateStreamRequest, AllocateStreamResponse, EventPriority, FinishRecordRequest,
-    LeaseRequest, NodeEvent, NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
-    QueryNodeRequest, QueryRunningRecordRequest, RecordMutationResponse, RegisterNodeRequest,
-    ResourceReport, ResourceState, StartRecordRequest, guard_control_client::GuardControlClient,
-    guard_media_client::GuardMediaClient, node_to_guard_message,
+    AllocateStreamRequest, AllocateStreamResponse, EventPriority, LeaseRequest, NodeEvent,
+    NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage, QueryNodeRequest,
+    RegisterNodeRequest, ResourceReport, ResourceState, guard_control_client::GuardControlClient,
+    node_to_guard_message,
 };
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState,
+    ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState, GbChannel,
+    GbChannelImage, GbDevice, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest,
+    GetGbDeviceResponse, ListGbChannelImagesRequest, ListGbChannelImagesResponse,
+    ListGbChannelsRequest, ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse,
     SessionHookRequest, SessionHookResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
     session_control_server::SessionControl, session_hook_server::SessionHook,
 };
@@ -63,20 +65,6 @@ fn rpc_channel_config(endpoint: String) -> RpcChannelConfig {
 
 pub fn init_guard_event_sender(sender: NodeEventSender) {
     let _ = GUARD_EVENT_SENDER.set(sender);
-}
-
-async fn guard_media_client() -> GlobalResult<GuardMediaClient<Channel>> {
-    let endpoint = crate::state::GuardConf::get_or_default().endpoint;
-    let channel = base_rpc::connect_channel(&rpc_channel_config(endpoint.clone()))
-        .await
-        .map_err(|err| {
-            GlobalError::new_biz_error(
-                BaseErrorCode::Network.code(),
-                "connect guard media rpc failed",
-                |msg| log_error!("{msg}: endpoint={endpoint}, err={err:?}"),
-            )
-        })?;
-    Ok(GuardMediaClient::new(channel))
 }
 
 async fn guard_control_client() -> GlobalResult<GuardControlClient<Channel>> {
@@ -297,16 +285,7 @@ fn parse_ipv4(node_id: &str, endpoint: &str, host: &str) -> GlobalResult<std::ne
 }
 
 pub async fn guard_record_running(device_id: &str, channel_id: &str) -> GlobalResult<bool> {
-    let mut client = guard_media_client().await?;
-    let response = client
-        .query_running_record(QueryRunningRecordRequest {
-            device_id: device_id.to_string(),
-            channel_id: channel_id.to_string(),
-        })
-        .await
-        .hand_log(|msg| log_error!("{msg}"))?
-        .into_inner();
-    Ok(response.exists)
+    crate::storage::recording::running_record_exists(device_id, channel_id).await
 }
 
 pub async fn guard_record_started(
@@ -318,22 +297,16 @@ pub async fn guard_record_started(
     speed: u32,
     stream_app_name: &str,
 ) -> GlobalResult<()> {
-    let mut client = guard_media_client().await?;
-    let response = client
-        .start_record(StartRecordRequest {
-            biz_id: biz_id.to_string(),
-            device_id: device_id.to_string(),
-            channel_id: channel_id.to_string(),
-            user_id: String::new(),
-            st_epoch_sec,
-            et_epoch_sec,
-            speed,
-            stream_app_name: stream_app_name.to_string(),
-        })
-        .await
-        .hand_log(|msg| log_error!("{msg}"))?
-        .into_inner();
-    ensure_record_mutation(response, "start_record")
+    crate::storage::recording::start_record(crate::storage::recording::RecordStart {
+        biz_id,
+        device_id,
+        channel_id,
+        st_epoch_sec,
+        et_epoch_sec,
+        speed,
+        stream_app_name,
+    })
+    .await
 }
 
 pub async fn guard_record_finished(
@@ -344,37 +317,25 @@ pub async fn guard_record_finished(
     dir_path: &str,
     abs_path: &str,
 ) -> GlobalResult<()> {
-    let mut client = guard_media_client().await?;
-    let response = client
-        .finish_record(FinishRecordRequest {
-            biz_id: biz_id.to_string(),
+    let finished =
+        crate::storage::recording::finish_record(crate::storage::recording::RecordFinish {
+            biz_id,
             file_size,
             record_duration_sec,
-            file_format: file_format.to_string(),
-            dir_path: dir_path.to_string(),
-            abs_path: abs_path.to_string(),
+            file_format,
+            dir_path,
+            abs_path,
         })
-        .await
-        .hand_log(|msg| log_error!("{msg}"))?
-        .into_inner();
-    ensure_record_mutation(response, "finish_record")
-}
-
-fn ensure_record_mutation(response: RecordMutationResponse, action: &str) -> GlobalResult<()> {
-    if response.accepted && response.error.is_none() {
-        return Ok(());
+        .await?;
+    if finished {
+        Ok(())
+    } else {
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "record not found",
+            |msg| log_error!("{msg}: biz_id={biz_id}"),
+        ))
     }
-    let message = response
-        .error
-        .as_ref()
-        .map(|error| error.message.as_str())
-        .filter(|message| !message.is_empty())
-        .unwrap_or("guard media rpc failed");
-    Err(GlobalError::new_biz_error(
-        BaseErrorCode::Internal.code(),
-        message,
-        |msg| log_error!("guard media rpc {action} failed: {msg}"),
-    ))
 }
 
 pub fn publish_guard_event(topic: &str, payload: impl Into<Vec<u8>>) {
@@ -609,6 +570,88 @@ impl SessionControl for SessionControlRpc {
             },
         };
         Ok(tonic::Response::new(response))
+    }
+
+    async fn list_gb_devices(
+        &self,
+        _request: tonic::Request<ListGbDevicesRequest>,
+    ) -> Result<tonic::Response<ListGbDevicesResponse>, tonic::Status> {
+        let session_node_id = self.session_node_id()?;
+        let devices = crate::storage::guard_query::GbDeviceView::list()
+            .await
+            .map_err(storage_status)?
+            .into_iter()
+            .map(|device| gb_device_proto(device, &session_node_id))
+            .collect();
+        Ok(tonic::Response::new(ListGbDevicesResponse { devices }))
+    }
+
+    async fn get_gb_device(
+        &self,
+        request: tonic::Request<GetGbDeviceRequest>,
+    ) -> Result<tonic::Response<GetGbDeviceResponse>, tonic::Status> {
+        let session_node_id = self.session_node_id()?;
+        let request = request.into_inner();
+        let device = crate::storage::guard_query::GbDeviceView::get(&request.device_id)
+            .await
+            .map_err(storage_status)?
+            .map(|device| gb_device_proto(device, &session_node_id));
+        Ok(tonic::Response::new(GetGbDeviceResponse { device }))
+    }
+
+    async fn list_gb_channels(
+        &self,
+        request: tonic::Request<ListGbChannelsRequest>,
+    ) -> Result<tonic::Response<ListGbChannelsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let channels = crate::storage::guard_query::GbChannelView::list(&request.device_id)
+            .await
+            .map_err(storage_status)?
+            .into_iter()
+            .map(gb_channel_proto)
+            .collect();
+        Ok(tonic::Response::new(ListGbChannelsResponse { channels }))
+    }
+
+    async fn get_gb_channel(
+        &self,
+        request: tonic::Request<GetGbChannelRequest>,
+    ) -> Result<tonic::Response<GetGbChannelResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let channel = crate::storage::guard_query::GbChannelView::get(
+            &request.device_id,
+            &request.channel_id,
+        )
+        .await
+        .map_err(storage_status)?
+        .map(gb_channel_proto);
+        Ok(tonic::Response::new(GetGbChannelResponse { channel }))
+    }
+
+    async fn list_gb_channel_images(
+        &self,
+        request: tonic::Request<ListGbChannelImagesRequest>,
+    ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let images = crate::storage::guard_query::GbChannelImageView::list(
+            &request.device_id,
+            &request.channel_id,
+        )
+        .await
+        .map_err(storage_status)?
+        .into_iter()
+        .map(gb_channel_image_proto)
+        .collect();
+        Ok(tonic::Response::new(ListGbChannelImagesResponse { images }))
+    }
+}
+
+impl SessionControlRpc {
+    fn session_node_id(&self) -> Result<String, tonic::Status> {
+        self.inner
+            .lock()
+            .map_err(|_| tonic::Status::internal("session control lock poisoned"))
+            .map(|control| control.identity.node_id.clone())
     }
 }
 
@@ -1056,6 +1099,94 @@ fn device_response(
         error,
         endpoint: String::new(),
     }
+}
+
+fn gb_device_proto(
+    row: crate::storage::guard_query::GbDeviceView,
+    session_node_id: &str,
+) -> GbDevice {
+    GbDevice {
+        device_id: row.device_id,
+        session_node_id: session_node_id.to_string(),
+        domain_id: row.domain_id,
+        domain: row.domain,
+        longitude: row.longitude.unwrap_or_default(),
+        latitude: row.latitude.unwrap_or_default(),
+        address: row.address.unwrap_or_default(),
+        pwd: row.pwd.unwrap_or_default(),
+        pwd_check: row.pwd_check,
+        alias: row.alias.unwrap_or_default(),
+        status: row.status,
+        heartbeat_sec: row.heartbeat_sec,
+        del: row.del,
+        create_time: datetime_string(row.create_time),
+        tenant_id: row.tenant_id.unwrap_or_default(),
+        sys_org_code: row.sys_org_code.unwrap_or_default(),
+        create_by: row.create_by.unwrap_or_default(),
+        update_by: row.update_by.unwrap_or_default(),
+        update_time: datetime_string(row.update_time),
+        channel_count: row.channel_count.try_into().unwrap_or(u32::MAX),
+    }
+}
+
+fn gb_channel_proto(row: crate::storage::guard_query::GbChannelView) -> GbChannel {
+    GbChannel {
+        device_id: row.device_id,
+        channel_id: row.channel_id,
+        name: row.name,
+        manufacturer: row.manufacturer,
+        model: row.model,
+        owner: row.owner,
+        status: row.status,
+        civil_code: row.civil_code,
+        address: row.address,
+        parent_id: row.parent_id,
+        ip_address: row.ip_address,
+        port: row.port,
+        longitude: row.longitude,
+        latitude: row.latitude,
+        ptz_type: row.ptz_type,
+        alias_name: row.alias_name,
+        pic_url: row.pic_url,
+        snapshot: row.snapshot,
+        over_pic_id: row.over_pic_id,
+        ptz_enable: row.ptz_enable,
+        talk_enable: row.talk_enable,
+        audio_enable: row.audio_enable,
+        record_enable: row.record_enable,
+        playback_enable: row.playback_enable,
+        alarm_enable: row.alarm_enable,
+        biz_enable: row.biz_enable,
+        sort_no: row.sort_no,
+        created_at_ms: datetime_ms(row.created_at),
+        updated_at_ms: datetime_ms(row.updated_at),
+    }
+}
+
+fn gb_channel_image_proto(row: crate::storage::guard_query::GbChannelImageView) -> GbChannelImage {
+    GbChannelImage {
+        image_id: row.image_id,
+        device_id: row.device_id,
+        channel_id: row.channel_id,
+        image_url: row.image_url,
+        created_at_ms: datetime_ms(row.created_at),
+    }
+}
+
+fn datetime_string(value: Option<base::chrono::NaiveDateTime>) -> String {
+    value
+        .map(|value| value.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+fn datetime_ms(value: Option<base::chrono::NaiveDateTime>) -> i64 {
+    value
+        .map(|value| value.and_utc().timestamp_millis())
+        .unwrap_or_default()
+}
+
+fn storage_status(error: GlobalError) -> tonic::Status {
+    tonic::Status::internal(error.to_string())
 }
 
 fn stream_response(stream_id: String, endpoint: String) -> DeviceStreamResponse {

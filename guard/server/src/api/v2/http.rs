@@ -1,7 +1,4 @@
-use axum::body::Bytes;
-use axum::extract::{
-    ConnectInfo, FromRequest, FromRequestParts, Multipart, Path, Query, Request, State,
-};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ORIGIN, REFERRER_POLICY,
     SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
@@ -11,7 +8,9 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use std::collections::HashMap;
+use gmv_protocol::session::v1::{
+    GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
+};
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -24,20 +23,17 @@ use crate::api::v2::model::{
 };
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
-use crate::app_config::PictureUploadConfig;
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{AuthState, Role, UiSession, UserProfile, hash_password as hash_ui_password};
 use crate::core::{GuardError, HealthState, LeaseState, RouteState};
 use crate::job::{SystemJobRecord, SystemJobRequest, SystemJobStatus, SystemJobType};
-use crate::media::{PictureUploadResult, save_picture_upload};
 use crate::operation::{OperationRecord, OperationRequest, OperationStatus};
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
 use crate::store::model::{
-    EventRecord, GbChannelImageRecord, GbChannelRecord, GbDeviceRecord, LeaseRecord, NodeRecord,
-    OutboxDestinationKind, OutboxRecord, OutboxState,
+    EventRecord, LeaseRecord, NodeRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
 };
-use crate::store::persistent::{GbRepository, MediaRepository, UserRepository};
+use crate::store::persistent::UserRepository;
 
 const CSRF_HEADER: &str = "x-csrf-token";
 
@@ -47,9 +43,6 @@ pub struct HttpState {
     pub auth: AuthState,
     pub outbox: OutboxRepository,
     pub users: Option<UserRepository>,
-    pub media: PictureUploadConfig,
-    pub media_files: Option<MediaRepository>,
-    pub gb28181: Option<GbRepository>,
     pub event_forwarder: Option<EventForwarder>,
 }
 
@@ -81,24 +74,13 @@ pub fn router(state: HttpState) -> Router {
         .route("/users", get(list_users).post(create_user))
         .route("/users/{username}", post(update_user))
         .route("/integrations/outbox", get(outbox_records))
-        .route("/edge/upload/picture/{token}", post(upload_picture))
         .route("/integrations/outbox/{outbox_id}/retry", post(retry_outbox))
-        .route("/gb28181/devices", get(gb_devices).post(create_gb_device))
-        .route(
-            "/gb28181/devices/{device_id}",
-            get(gb_device)
-                .put(update_gb_device)
-                .delete(delete_gb_device),
-        )
-        .route(
-            "/gb28181/devices/{device_id}/channels",
-            get(gb_channels).post(create_gb_channel),
-        )
+        .route("/gb28181/devices", get(gb_devices))
+        .route("/gb28181/devices/{device_id}", get(gb_device))
+        .route("/gb28181/devices/{device_id}/channels", get(gb_channels))
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}",
-            get(gb_channel)
-                .put(update_gb_channel)
-                .delete(delete_gb_channel),
+            get(gb_channel),
         )
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/preview",
@@ -111,10 +93,6 @@ pub fn router(state: HttpState) -> Router {
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/ptz",
             post(gb_ptz),
-        )
-        .route(
-            "/gb28181/devices/{device_id}/channels/{channel_id}/snapshot",
-            post(gb_snapshot),
         )
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/images",
@@ -1119,113 +1097,6 @@ impl From<OutboxRecord> for OutboxResponse {
     }
 }
 
-async fn upload_picture(
-    State(state): State<HttpState>,
-    Path(token): Path<String>,
-    headers: HeaderMap,
-    Query(params): Query<HashMap<String, String>>,
-    request: Request,
-) -> Result<Json<PictureUploadResult>, HttpError> {
-    let repository = state
-        .media_files
-        .as_ref()
-        .ok_or_else(|| HttpError::internal("media repository is unavailable"))?;
-    let session_id = params
-        .get("SessionID")
-        .or_else(|| params.get("session_id"))
-        .ok_or_else(|| HttpError {
-            status: StatusCode::BAD_REQUEST,
-            code: "invalid_upload",
-            message: "SessionID is required".to_string(),
-        })?;
-    let file_id = params
-        .iter()
-        .find(|(key, _)| key.to_ascii_lowercase().ends_with("fileid"))
-        .map(|(_, value)| value.as_str());
-    let content_type = headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    let result = if content_type.starts_with("multipart/form-data") {
-        let (bytes, field_content_type) = read_multipart_image(request).await?;
-        save_picture_upload(
-            &state.media,
-            repository,
-            &token,
-            session_id,
-            file_id,
-            &field_content_type,
-            bytes,
-        )
-        .await?
-    } else if content_type.starts_with("image/") {
-        let bytes = Bytes::from_request(request, &())
-            .await
-            .map_err(|error| HttpError::bad_request(format!("invalid upload body: {error}")))?;
-        save_picture_upload(
-            &state.media,
-            repository,
-            &token,
-            session_id,
-            file_id,
-            &content_type,
-            bytes,
-        )
-        .await?
-    } else {
-        return Err(HttpError::bad_request(
-            "Unsupported Content-Type. Use multipart/form-data or image/*",
-        ));
-    };
-    publish_picture_event(&state, &result).await?;
-    Ok(Json(result))
-}
-
-async fn read_multipart_image(request: Request) -> Result<(Bytes, String), HttpError> {
-    let mut multipart = Multipart::from_request(request, &())
-        .await
-        .map_err(|error| HttpError::bad_request(format!("invalid multipart body: {error}")))?;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|error| HttpError::bad_request(format!("invalid multipart field: {error}")))?
-    {
-        let content_type = field.content_type().unwrap_or_default().to_string();
-        if !content_type.starts_with("image/") {
-            continue;
-        }
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|error| HttpError::bad_request(format!("invalid image field: {error}")))?;
-        return Ok((bytes, content_type));
-    }
-    Err(HttpError::bad_request("multipart image field is required"))
-}
-
-async fn publish_picture_event(
-    state: &HttpState,
-    result: &PictureUploadResult,
-) -> Result<(), HttpError> {
-    let event_id = format!("picture-uploaded-{}", result.session_id);
-    let topic = "guard.picture.uploaded".to_string();
-    let payload = base::serde_json::to_vec(result)
-        .map_err(|_| HttpError::internal("encode picture upload event failed"))?;
-    let inserted = state.api.store().insert_event_once(EventRecord {
-        event_id: event_id.clone(),
-        topic: topic.clone(),
-        priority: 2,
-        payload: payload.clone(),
-    })?;
-    if inserted {
-        if let Some(forwarder) = &state.event_forwarder {
-            forwarder.forward(event_id, topic, payload).await?;
-        }
-    }
-    Ok(())
-}
-
 async fn outbox_records(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1247,7 +1118,6 @@ async fn outbox_records(
             .collect(),
     ))
 }
-
 async fn retry_outbox(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1371,53 +1241,6 @@ struct GbDeviceResponse {
     channel_count: usize,
 }
 
-#[derive(Debug, base::serde::Deserialize)]
-#[serde(crate = "base::serde")]
-struct GbDeviceRequest {
-    #[serde(default)]
-    device_id: String,
-    #[serde(default)]
-    session_node_id: String,
-    #[serde(default)]
-    domain_id: String,
-    #[serde(default)]
-    domain: String,
-    #[serde(default)]
-    longitude: String,
-    #[serde(default)]
-    latitude: String,
-    #[serde(default)]
-    address: String,
-    #[serde(default)]
-    pwd: String,
-    #[serde(default = "default_pwd_check")]
-    pwd_check: i64,
-    #[serde(default)]
-    alias: String,
-    #[serde(default = "default_enabled_status")]
-    status: i64,
-    #[serde(default = "default_heartbeat_sec")]
-    heartbeat_sec: i64,
-    #[serde(default)]
-    tenant_id: String,
-    #[serde(default)]
-    sys_org_code: String,
-    #[serde(default)]
-    create_by: String,
-    #[serde(default)]
-    update_by: String,
-}
-
-fn default_pwd_check() -> i64 {
-    1
-}
-fn default_enabled_status() -> i64 {
-    1
-}
-fn default_heartbeat_sec() -> i64 {
-    60
-}
-
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct GbChannelResponse {
@@ -1452,62 +1275,6 @@ struct GbChannelResponse {
     updated_at_ms: i64,
 }
 
-#[derive(Debug, base::serde::Deserialize)]
-#[serde(crate = "base::serde")]
-struct GbChannelRequest {
-    channel_id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    manufacturer: String,
-    #[serde(default)]
-    model: String,
-    #[serde(default)]
-    owner: String,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    civil_code: String,
-    #[serde(default)]
-    address: String,
-    #[serde(default)]
-    parent_id: String,
-    #[serde(default)]
-    ip_address: String,
-    #[serde(default)]
-    port: i64,
-    #[serde(default)]
-    longitude: String,
-    #[serde(default)]
-    latitude: String,
-    #[serde(default)]
-    ptz_type: String,
-    #[serde(default)]
-    alias_name: String,
-    #[serde(default)]
-    pic_url: String,
-    #[serde(default)]
-    snapshot: i64,
-    #[serde(default)]
-    over_pic_id: String,
-    #[serde(default)]
-    ptz_enable: i64,
-    #[serde(default)]
-    talk_enable: i64,
-    #[serde(default)]
-    audio_enable: i64,
-    #[serde(default)]
-    record_enable: i64,
-    #[serde(default)]
-    playback_enable: i64,
-    #[serde(default)]
-    alarm_enable: i64,
-    #[serde(default)]
-    biz_enable: i64,
-    #[serde(default)]
-    sort_no: i64,
-}
-
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct GbChannelImageResponse {
@@ -1534,40 +1301,36 @@ struct GbStreamRequest {
     output_type: String,
 }
 
-fn require_gb_repository(state: &HttpState) -> Result<&GbRepository, HttpError> {
-    state.gb28181.as_ref().ok_or_else(|| HttpError {
-        status: StatusCode::NOT_IMPLEMENTED,
-        code: "gb28181_store_disabled",
-        message: "GB28181 repository is disabled".to_string(),
-    })
+fn empty_to_none(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
-fn gb_device_response(record: GbDeviceRecord, channel_count: usize) -> GbDeviceResponse {
+fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
     GbDeviceResponse {
         device_id: record.device_id,
         session_node_id: record.session_node_id,
         domain_id: record.domain_id,
         domain: record.domain,
-        longitude: record.longitude,
-        latitude: record.latitude,
-        address: record.address,
-        pwd: record.pwd,
+        longitude: empty_to_none(record.longitude),
+        latitude: empty_to_none(record.latitude),
+        address: empty_to_none(record.address),
+        pwd: empty_to_none(record.pwd),
         pwd_check: record.pwd_check,
-        alias: record.alias,
+        alias: empty_to_none(record.alias),
         status: record.status,
         heartbeat_sec: record.heartbeat_sec,
         del: record.del,
-        create_time: record.create_time,
-        tenant_id: record.tenant_id,
-        sys_org_code: record.sys_org_code,
-        create_by: record.create_by,
-        update_by: record.update_by,
-        update_time: record.update_time,
-        channel_count,
+        create_time: empty_to_none(record.create_time),
+        tenant_id: empty_to_none(record.tenant_id),
+        sys_org_code: empty_to_none(record.sys_org_code),
+        create_by: empty_to_none(record.create_by),
+        update_by: empty_to_none(record.update_by),
+        update_time: empty_to_none(record.update_time),
+        channel_count: record.channel_count as usize,
     }
 }
 
-fn gb_channel_response(record: GbChannelRecord) -> GbChannelResponse {
+fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
     GbChannelResponse {
         device_id: record.device_id,
         channel_id: record.channel_id,
@@ -1601,22 +1364,13 @@ fn gb_channel_response(record: GbChannelRecord) -> GbChannelResponse {
     }
 }
 
-fn gb_channel_image_response(record: GbChannelImageRecord) -> GbChannelImageResponse {
+fn gb_channel_image_response(record: RpcGbChannelImage) -> GbChannelImageResponse {
     GbChannelImageResponse {
         image_id: record.image_id,
         device_id: record.device_id,
         channel_id: record.channel_id,
         image_url: record.image_url,
         created_at_ms: record.created_at_ms,
-    }
-}
-
-fn non_empty_or(value: String, default: &str) -> String {
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        default.to_string()
-    } else {
-        value
     }
 }
 
@@ -1641,13 +1395,10 @@ async fn gb_devices(
     headers: HeaderMap,
 ) -> Result<Json<Vec<GbDeviceResponse>>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let repository = require_gb_repository(&state)?;
-    let mut responses = Vec::new();
-    for device in repository.list_devices().await? {
-        let channel_count = repository.list_channels(&device.device_id).await?.len();
-        responses.push(gb_device_response(device, channel_count));
-    }
-    Ok(Json(responses))
+    let devices = BusinessControl::new(state.api.store())
+        .list_gb_devices()
+        .await?;
+    Ok(Json(devices.into_iter().map(gb_device_response).collect()))
 }
 
 async fn gb_device(
@@ -1656,142 +1407,11 @@ async fn gb_device(
     Path(device_id): Path<String>,
 ) -> Result<Json<GbDeviceResponse>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let repository = require_gb_repository(&state)?;
-    let device = repository
-        .get_device(&device_id)
+    let device = BusinessControl::new(state.api.store())
+        .get_gb_device(&device_id)
         .await?
         .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
-    let channel_count = repository.list_channels(&device.device_id).await?.len();
-    Ok(Json(gb_device_response(device, channel_count)))
-}
-
-async fn create_gb_device(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Json(request): Json<GbDeviceRequest>,
-) -> Result<(StatusCode, Json<GbDeviceResponse>), HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    let repository = require_gb_repository(&state)?;
-    validate_gb_device_request(&request)?;
-    let now = http_now_ms()?.to_string();
-    let devices = repository.list_devices().await?;
-    let device_id = gb_request_device_id(&request, &devices);
-    if repository.get_device(&device_id).await?.is_some() {
-        return Err(GuardError::DuplicateEvent(format!("GB28181 device {device_id}")).into());
-    }
-    let record = gb_device_record(device_id, request, Some(now.clone()), Some(now));
-    repository.upsert_device(&record).await?;
-    Ok((StatusCode::CREATED, Json(gb_device_response(record, 0))))
-}
-
-async fn update_gb_device(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path(device_id): Path<String>,
-    Json(request): Json<GbDeviceRequest>,
-) -> Result<Json<GbDeviceResponse>, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    validate_gb_device_request(&request)?;
-    let repository = require_gb_repository(&state)?;
-    let device_id = device_id.trim().to_string();
-    if device_id.is_empty() {
-        return Err(HttpError::bad_request("device_id is required"));
-    }
-    let existing = repository
-        .get_device(&device_id)
-        .await?
-        .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
-    let now = http_now_ms()?.to_string();
-    let record = gb_device_record(device_id, request, existing.create_time, Some(now));
-    repository.upsert_device(&record).await?;
-    let channel_count = repository.list_channels(&record.device_id).await?.len();
-    Ok(Json(gb_device_response(record, channel_count)))
-}
-
-fn validate_gb_device_request(request: &GbDeviceRequest) -> Result<(), HttpError> {
-    if request.session_node_id.trim().is_empty() {
-        return Err(HttpError::bad_request("session_node_id is required"));
-    }
-    if request.domain_id.trim().is_empty() {
-        return Err(HttpError::bad_request("domain_id is required"));
-    }
-    if request.domain.trim().is_empty() {
-        return Err(HttpError::bad_request("domain is required"));
-    }
-    Ok(())
-}
-
-fn gb_request_device_id(request: &GbDeviceRequest, devices: &[GbDeviceRecord]) -> String {
-    let explicit = request.device_id.trim();
-    if !explicit.is_empty() {
-        return explicit.to_string();
-    }
-    let domain_id = request.domain_id.trim();
-    let domain_prefix = domain_id.chars().take(11).collect::<String>();
-    let prefix = if domain_prefix.len() == 11 {
-        format!("{domain_prefix}1")
-    } else {
-        "340200000021".to_string()
-    };
-    let max_suffix = devices
-        .iter()
-        .filter_map(|device| device.device_id.strip_prefix(&prefix))
-        .filter_map(|suffix| suffix.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0);
-    let next = (max_suffix + 1).min(99_999_999);
-    format!("{prefix}{next:08}")
-}
-
-fn optional_string(value: String) -> Option<String> {
-    let value = value.trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
-}
-
-fn gb_device_record(
-    device_id: String,
-    request: GbDeviceRequest,
-    create_time: Option<String>,
-    update_time: Option<String>,
-) -> GbDeviceRecord {
-    let heartbeat_sec = if request.heartbeat_sec < 5 {
-        60
-    } else {
-        request.heartbeat_sec
-    };
-    GbDeviceRecord {
-        device_id,
-        session_node_id: request.session_node_id.trim().to_string(),
-        domain_id: request.domain_id.trim().to_string(),
-        domain: request.domain.trim().to_string(),
-        longitude: optional_string(request.longitude),
-        latitude: optional_string(request.latitude),
-        address: optional_string(request.address),
-        pwd: optional_string(request.pwd),
-        pwd_check: request.pwd_check,
-        alias: optional_string(request.alias),
-        status: request.status,
-        heartbeat_sec,
-        del: 0,
-        create_time,
-        tenant_id: optional_string(request.tenant_id),
-        sys_org_code: optional_string(request.sys_org_code),
-        create_by: optional_string(request.create_by),
-        update_by: optional_string(request.update_by),
-        update_time,
-    }
-}
-
-async fn delete_gb_device(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path(device_id): Path<String>,
-) -> Result<StatusCode, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    require_gb_repository(&state)?
-        .delete_device(&device_id)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(gb_device_response(device)))
 }
 
 async fn gb_channels(
@@ -1800,8 +1420,8 @@ async fn gb_channels(
     Path(device_id): Path<String>,
 ) -> Result<Json<Vec<GbChannelResponse>>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let channels = require_gb_repository(&state)?
-        .list_channels(&device_id)
+    let channels = BusinessControl::new(state.api.store())
+        .list_gb_channels(&device_id)
         .await?;
     Ok(Json(
         channels.into_iter().map(gb_channel_response).collect(),
@@ -1814,109 +1434,11 @@ async fn gb_channel(
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<GbChannelResponse>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let channel = require_gb_repository(&state)?
-        .get_channel(&device_id, &channel_id)
+    let channel = BusinessControl::new(state.api.store())
+        .get_gb_channel(&device_id, &channel_id)
         .await?
         .ok_or_else(|| GuardError::NotFound(format!("GB28181 channel {device_id}/{channel_id}")))?;
     Ok(Json(gb_channel_response(channel)))
-}
-
-async fn create_gb_channel(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path(device_id): Path<String>,
-    Json(request): Json<GbChannelRequest>,
-) -> Result<(StatusCode, Json<GbChannelResponse>), HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    let repository = require_gb_repository(&state)?;
-    let channel_id = request.channel_id.trim().to_string();
-    if device_id.trim().is_empty() || channel_id.is_empty() {
-        return Err(HttpError::bad_request(
-            "device_id and channel_id are required",
-        ));
-    }
-    let now_ms = http_now_ms()?;
-    let record = gb_channel_record(device_id, channel_id, request, now_ms, now_ms);
-    repository.upsert_channel(&record).await?;
-    Ok((StatusCode::CREATED, Json(gb_channel_response(record))))
-}
-
-async fn update_gb_channel(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path((device_id, channel_id)): Path<(String, String)>,
-    Json(request): Json<GbChannelRequest>,
-) -> Result<Json<GbChannelResponse>, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    let repository = require_gb_repository(&state)?;
-    let device_id = device_id.trim().to_string();
-    let channel_id = channel_id.trim().to_string();
-    if device_id.is_empty() || channel_id.is_empty() {
-        return Err(HttpError::bad_request(
-            "device_id and channel_id are required",
-        ));
-    }
-    let now_ms = http_now_ms()?;
-    let created_at_ms = repository
-        .get_channel(&device_id, &channel_id)
-        .await?
-        .map(|channel| channel.created_at_ms)
-        .unwrap_or(now_ms);
-    let record = gb_channel_record(device_id, channel_id, request, created_at_ms, now_ms);
-    repository.upsert_channel(&record).await?;
-    Ok(Json(gb_channel_response(record)))
-}
-
-fn gb_channel_record(
-    device_id: String,
-    channel_id: String,
-    request: GbChannelRequest,
-    created_at_ms: i64,
-    updated_at_ms: i64,
-) -> GbChannelRecord {
-    GbChannelRecord {
-        device_id,
-        channel_id,
-        name: non_empty_or(request.name, "未命名通道"),
-        manufacturer: request.manufacturer.trim().to_string(),
-        model: request.model.trim().to_string(),
-        owner: request.owner.trim().to_string(),
-        status: non_empty_or(request.status, "UNKNOWN"),
-        civil_code: request.civil_code.trim().to_string(),
-        address: request.address.trim().to_string(),
-        parent_id: request.parent_id.trim().to_string(),
-        ip_address: request.ip_address.trim().to_string(),
-        port: request.port,
-        longitude: request.longitude.trim().to_string(),
-        latitude: request.latitude.trim().to_string(),
-        ptz_type: request.ptz_type.trim().to_string(),
-        alias_name: request.alias_name.trim().to_string(),
-        pic_url: request.pic_url.trim().to_string(),
-        snapshot: request.snapshot,
-        over_pic_id: request.over_pic_id.trim().to_string(),
-        ptz_enable: request.ptz_enable,
-        talk_enable: request.talk_enable,
-        audio_enable: request.audio_enable,
-        record_enable: request.record_enable,
-        playback_enable: request.playback_enable,
-        alarm_enable: request.alarm_enable,
-        biz_enable: request.biz_enable,
-        sort_no: request.sort_no,
-        created_at_ms,
-        updated_at_ms,
-    }
-}
-
-async fn delete_gb_channel(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path((device_id, channel_id)): Path<(String, String)>,
-) -> Result<StatusCode, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    require_gb_repository(&state)?
-        .delete_channel(&device_id, &channel_id)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn gb_channel_images(
@@ -1925,8 +1447,8 @@ async fn gb_channel_images(
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<Vec<GbChannelImageResponse>>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let images = require_gb_repository(&state)?
-        .list_channel_images(&device_id, &channel_id)
+    let images = BusinessControl::new(state.api.store())
+        .list_gb_channel_images(&device_id, &channel_id)
         .await?;
     Ok(Json(
         images.into_iter().map(gb_channel_image_response).collect(),
@@ -2007,25 +1529,34 @@ async fn gb_ptz(
     }
 }
 
-async fn gb_snapshot(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path((_device_id, _channel_id)): Path<(String, String)>,
-) -> Result<Json<base::serde_json::Value>, HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
-    Err(HttpError {
-        status: StatusCode::NOT_IMPLEMENTED,
-        code: "snapshot_not_ready",
-        message: "GB28181 snapshot RPC is not available yet".to_string(),
-    })
-}
-
 async fn devices(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<DeviceSummary>>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    Ok(Json(Vec::new()))
+    let control = BusinessControl::new(state.api.store());
+    let devices = control.list_gb_devices().await?;
+    let mut summaries = Vec::with_capacity(devices.len());
+    for device in devices {
+        let channels = control
+            .list_gb_channels(&device.device_id)
+            .await?
+            .into_iter()
+            .map(|channel| channel.channel_id)
+            .collect();
+        summaries.push(DeviceSummary {
+            device_id: device.device_id,
+            name: if device.alias.is_empty() {
+                device.domain
+            } else {
+                device.alias
+            },
+            session_node_id: device.session_node_id,
+            channels,
+            online: device.status != 0 && device.del == 0,
+        });
+    }
+    Ok(Json(summaries))
 }
 
 async fn preview(
@@ -2470,6 +2001,7 @@ impl HttpError {
         }
     }
 
+    #[allow(dead_code)]
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -2522,63 +2054,5 @@ impl IntoResponse for HttpError {
             }),
         )
             .into_response()
-    }
-}
-
-#[cfg(test)]
-mod gb28181_tests {
-    use super::*;
-
-    fn request(domain_id: &str) -> GbDeviceRequest {
-        GbDeviceRequest {
-            device_id: String::new(),
-            session_node_id: "session-1".to_string(),
-            domain_id: domain_id.to_string(),
-            domain: "5101000000".to_string(),
-            longitude: String::new(),
-            latitude: String::new(),
-            address: String::new(),
-            pwd: String::new(),
-            pwd_check: 1,
-            alias: String::new(),
-            status: 1,
-            heartbeat_sec: 60,
-            tenant_id: String::new(),
-            sys_org_code: String::new(),
-            create_by: String::new(),
-            update_by: String::new(),
-        }
-    }
-
-    #[test]
-    fn gb_device_id_starts_from_domain_prefix_and_incremental_suffix() {
-        let request = request("51010000002000000001");
-        assert_eq!(gb_request_device_id(&request, &[]), "51010000002100000001");
-
-        let existing = GbDeviceRecord {
-            device_id: "51010000002100000001".to_string(),
-            session_node_id: "session-1".to_string(),
-            domain_id: "51010000002000000001".to_string(),
-            domain: "5101000000".to_string(),
-            longitude: None,
-            latitude: None,
-            address: None,
-            pwd: None,
-            pwd_check: 1,
-            alias: None,
-            status: 1,
-            heartbeat_sec: 60,
-            del: 0,
-            create_time: None,
-            tenant_id: None,
-            sys_org_code: None,
-            create_by: None,
-            update_by: None,
-            update_time: None,
-        };
-        assert_eq!(
-            gb_request_device_id(&request, &[existing]),
-            "51010000002100000002"
-        );
     }
 }

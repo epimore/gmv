@@ -5,45 +5,6 @@ package gmv.guard.v1;
 import "common/v1/types.proto";
 
 
-service GuardMedia {
-  rpc QueryRunningRecord(QueryRunningRecordRequest) returns (QueryRunningRecordResponse);
-  rpc StartRecord(StartRecordRequest) returns (RecordMutationResponse);
-  rpc FinishRecord(FinishRecordRequest) returns (RecordMutationResponse);
-}
-
-message QueryRunningRecordRequest {
-  string device_id = 1;
-  string channel_id = 2;
-}
-
-message QueryRunningRecordResponse {
-  bool exists = 1;
-}
-
-message StartRecordRequest {
-  string biz_id = 1;
-  string device_id = 2;
-  string channel_id = 3;
-  string user_id = 4;
-  int64 st_epoch_sec = 5;
-  int64 et_epoch_sec = 6;
-  uint32 speed = 7;
-  string stream_app_name = 8;
-}
-
-message FinishRecordRequest {
-  string biz_id = 1;
-  uint64 file_size = 2;
-  uint64 record_duration_sec = 3;
-  string file_format = 4;
-  string dir_path = 5;
-  string abs_path = 6;
-}
-
-message RecordMutationResponse {
-  bool accepted = 1;
-  gmv.common.v1.ErrorDetail error = 2;
-}
 
 service GuardControl {
   rpc AllocateStream(AllocateStreamRequest) returns (AllocateStreamResponse);

@@ -73,16 +73,17 @@ fn node_reporter_registers_and_updates_host_metrics_over_grpc() {
 
             base::tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
-                    if let Some(node) = store.get_node("stream-test") {
-                        if node.sequence > 0 && node.host_metrics.memory_total_bytes > 0 {
-                            assert_eq!(
-                                node.business_metrics
-                                    .get("receiving_streams")
-                                    .map(String::as_str),
-                                Some("3")
-                            );
-                            break;
-                        }
+                    if let Some(node) = store.get_node("stream-test")
+                        && node.sequence > 0
+                        && node.host_metrics.memory_total_bytes > 0
+                    {
+                        assert_eq!(
+                            node.business_metrics
+                                .get("receiving_streams")
+                                .map(String::as_str),
+                            Some("3")
+                        );
+                        break;
                     }
                     base::tokio::time::sleep(Duration::from_millis(20)).await;
                 }

@@ -10,7 +10,10 @@ use gmv_protocol::common::v1::PageResponse;
 use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState,
-    StartDeviceStreamRequest, StopDeviceStreamRequest,
+    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, StartDeviceStreamRequest,
+    StopDeviceStreamRequest,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -363,6 +366,47 @@ impl SessionControl for FakeSession {
         Ok(tonic::Response::new(ControlPtzResponse {
             accepted: true,
             error: None,
+        }))
+    }
+
+    async fn list_gb_devices(
+        &self,
+        _request: tonic::Request<ListGbDevicesRequest>,
+    ) -> Result<tonic::Response<ListGbDevicesResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ListGbDevicesResponse {
+            devices: vec![],
+        }))
+    }
+
+    async fn get_gb_device(
+        &self,
+        _request: tonic::Request<GetGbDeviceRequest>,
+    ) -> Result<tonic::Response<GetGbDeviceResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetGbDeviceResponse { device: None }))
+    }
+
+    async fn list_gb_channels(
+        &self,
+        _request: tonic::Request<ListGbChannelsRequest>,
+    ) -> Result<tonic::Response<ListGbChannelsResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ListGbChannelsResponse {
+            channels: vec![],
+        }))
+    }
+
+    async fn get_gb_channel(
+        &self,
+        _request: tonic::Request<GetGbChannelRequest>,
+    ) -> Result<tonic::Response<GetGbChannelResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetGbChannelResponse { channel: None }))
+    }
+
+    async fn list_gb_channel_images(
+        &self,
+        _request: tonic::Request<ListGbChannelImagesRequest>,
+    ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ListGbChannelImagesResponse {
+            images: vec![],
         }))
     }
 }

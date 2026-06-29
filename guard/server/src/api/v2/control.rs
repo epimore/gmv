@@ -7,7 +7,9 @@ use gmv_protocol::common::v1::{
 };
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, DeviceStreamState, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    ControlPtzRequest, DeviceStreamState, GbChannel, GbChannelImage, GbDevice, GetGbChannelRequest,
+    GetGbDeviceRequest, ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest,
+    StartDeviceStreamRequest, StopDeviceStreamRequest,
 };
 
 use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
@@ -42,6 +44,115 @@ pub struct DeviceStreamOptions {
 impl BusinessControl {
     pub fn new(store: InMemoryGuardStore) -> Self {
         Self { store }
+    }
+
+    pub async fn list_gb_devices(&self) -> GuardResult<Vec<GbDevice>> {
+        let mut devices = Vec::new();
+        for session in self.session_nodes() {
+            let mut client = self.session_client(&session).await?;
+            let mut response = client
+                .list_gb_devices(ListGbDevicesRequest {})
+                .await
+                .map_err(session_rpc_error)?
+                .into_inner();
+            for device in &mut response.devices {
+                if device.session_node_id.is_empty() {
+                    device.session_node_id = session.identity.node_id.clone();
+                }
+            }
+            devices.extend(response.devices);
+        }
+        devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
+        Ok(devices)
+    }
+
+    pub async fn get_gb_device(&self, device_id: &str) -> GuardResult<Option<GbDevice>> {
+        for session in self.session_nodes() {
+            let mut client = self.session_client(&session).await?;
+            let response = client
+                .get_gb_device(GetGbDeviceRequest {
+                    device_id: device_id.to_string(),
+                })
+                .await
+                .map_err(session_rpc_error)?
+                .into_inner();
+            if let Some(mut device) = response.device {
+                if device.session_node_id.is_empty() {
+                    device.session_node_id = session.identity.node_id;
+                }
+                return Ok(Some(device));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn list_gb_channels(&self, device_id: &str) -> GuardResult<Vec<GbChannel>> {
+        let mut channels = Vec::new();
+        for session in self.session_nodes() {
+            let mut client = self.session_client(&session).await?;
+            channels.extend(
+                client
+                    .list_gb_channels(ListGbChannelsRequest {
+                        device_id: device_id.to_string(),
+                    })
+                    .await
+                    .map_err(session_rpc_error)?
+                    .into_inner()
+                    .channels,
+            );
+        }
+        channels.sort_by(|left, right| {
+            left.sort_no
+                .cmp(&right.sort_no)
+                .then_with(|| left.channel_id.cmp(&right.channel_id))
+        });
+        Ok(channels)
+    }
+
+    pub async fn get_gb_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<Option<GbChannel>> {
+        for session in self.session_nodes() {
+            let mut client = self.session_client(&session).await?;
+            let response = client
+                .get_gb_channel(GetGbChannelRequest {
+                    device_id: device_id.to_string(),
+                    channel_id: channel_id.to_string(),
+                })
+                .await
+                .map_err(session_rpc_error)?
+                .into_inner();
+            if response.channel.is_some() {
+                return Ok(response.channel);
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn list_gb_channel_images(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<Vec<GbChannelImage>> {
+        let mut images = Vec::new();
+        for session in self.session_nodes() {
+            let mut client = self.session_client(&session).await?;
+            images.extend(
+                client
+                    .list_gb_channel_images(ListGbChannelImagesRequest {
+                        device_id: device_id.to_string(),
+                        channel_id: channel_id.to_string(),
+                    })
+                    .await
+                    .map_err(session_rpc_error)?
+                    .into_inner()
+                    .images,
+            );
+        }
+        images.sort_by_key(|image| std::cmp::Reverse(image.created_at_ms));
+        Ok(images)
     }
 
     pub async fn start_live(
@@ -291,11 +402,10 @@ impl BusinessControl {
             .routes()
             .into_iter()
             .find(|route| route.resource_id == stream_id && route.state != RouteState::Closed)
+            && let Some(mut stored_route) = self.store.get_route(&route.route_id)
         {
-            if let Some(mut stored_route) = self.store.get_route(&route.route_id) {
-                stored_route.state = RouteState::Closed;
-                self.store.upsert_route(stored_route);
-            }
+            stored_route.state = RouteState::Closed;
+            self.store.upsert_route(stored_route);
         }
         Ok(StreamSummary {
             stream_id: stream_id.to_string(),
@@ -499,7 +609,15 @@ impl BusinessControl {
     }
 
     fn select_any_session(&self) -> GuardResult<NodeRecord> {
-        self.store
+        self.session_nodes()
+            .into_iter()
+            .next()
+            .ok_or_else(|| GuardError::NotFound("no connected session node".to_string()))
+    }
+
+    fn session_nodes(&self) -> Vec<NodeRecord> {
+        let mut nodes = self
+            .store
             .nodes()
             .into_iter()
             .filter(|node| {
@@ -507,8 +625,19 @@ impl BusinessControl {
                     && node.connection == ConnectionState::Connected
                     && node.scheduling == SchedulingState::Enabled
             })
-            .min_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id))
-            .ok_or_else(|| GuardError::NotFound("no connected session node".to_string()))
+            .collect::<Vec<_>>();
+        nodes.sort_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id));
+        nodes
+    }
+
+    async fn session_client(
+        &self,
+        session: &NodeRecord,
+    ) -> GuardResult<SessionControlClient<tonic::transport::Channel>> {
+        let session_grpc = grpc_uri(session)?;
+        Ok(SessionControlClient::new(
+            connect_rpc(&session_grpc, "session").await?,
+        ))
     }
 
     fn select_node(&self, kind: NodeKind, capability: &str) -> GuardResult<NodeRecord> {
@@ -543,6 +672,10 @@ async fn connect_rpc(uri: &str, name: &str) -> GuardResult<tonic::transport::Cha
     base_rpc::connect_channel(&config)
         .await
         .map_err(|error| GuardError::Conflict(format!("connect {name} RPC failed: {error}")))
+}
+
+fn session_rpc_error(error: tonic::Status) -> GuardError {
+    GuardError::Conflict(format!("session RPC failed: {error}"))
 }
 
 fn grpc_uri(node: &NodeRecord) -> GuardResult<String> {

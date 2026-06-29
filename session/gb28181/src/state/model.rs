@@ -124,7 +124,7 @@ impl StreamInfo {
         proxy_addr: String,
         out_kind: Option<OutputKind>,
     ) -> GlobalResult<Self> {
-        let mut url = format!("{}/play/{}", proxy_addr, stream_id);
+        let mut url = proxy_addr.trim_end_matches('/').to_string();
         match out_kind {
             None | Some(OutputKind::DashFmp4(_)) => {
                 url = format!("{}.fmp4", url);

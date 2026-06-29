@@ -101,6 +101,7 @@ pub fn mysql_pool() -> &'static MySqlPool {
 }
 
 const SQLITE_0001: &str = include_str!("../../migrations/sqlite/0001_gb28181_core.sql");
+const MYSQL_0001: &str = include_str!("../../migrations/mysql/0001_gb28181_core.sql");
 
 const SQLITE_MIGRATIONS: &[base_db::migration::Migration] = &[base_db::migration::Migration {
     version: 1,
@@ -108,9 +109,19 @@ const SQLITE_MIGRATIONS: &[base_db::migration::Migration] = &[base_db::migration
     sql: SQLITE_0001,
 }];
 
+const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[base_db::migration::Migration {
+    version: 1,
+    name: "gb28181_core",
+    sql: MYSQL_0001,
+}];
+
 pub async fn initialize() -> GlobalResult<()> {
     match backend() {
-        SessionDatabaseBackend::Mysql => Ok(()),
+        SessionDatabaseBackend::Mysql => {
+            base_db::migration::run_mysql_migrations(mysql_pool(), MYSQL_MIGRATIONS)
+                .await
+                .hand_log(|msg| error!("{msg}"))
+        }
         SessionDatabaseBackend::Sqlite => {
             base_db::migration::run_sqlite_migrations(sqlite_pool(), SQLITE_MIGRATIONS)
                 .await
@@ -118,7 +129,6 @@ pub async fn initialize() -> GlobalResult<()> {
         }
     }
 }
-
 macro_rules! execute {
     ($sql:expr $(, $bind:expr)* $(,)?) => {{
         match $crate::storage::db::backend() {

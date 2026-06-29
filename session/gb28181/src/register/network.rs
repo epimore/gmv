@@ -216,8 +216,6 @@ impl Network {
             self.net_device_map.remove(&ds.association);
         }
     }
-
-    //todo 更新设备状态
 }
 pub struct DeviceSession {
     pub gb_version: Option<String>,
