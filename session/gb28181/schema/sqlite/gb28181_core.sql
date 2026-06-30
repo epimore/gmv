@@ -1,3 +1,4 @@
+-- seq_name uses domain_id:LIVE or domain_id:BACK; prefix_code keeps the numeric SSRC prefix.
 CREATE TABLE IF NOT EXISTS GB28181_SEQ_CODE (
     seq_id INTEGER PRIMARY KEY AUTOINCREMENT,
     seq_name VARCHAR(64) NOT NULL UNIQUE,

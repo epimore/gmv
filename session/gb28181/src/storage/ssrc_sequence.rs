@@ -29,6 +29,13 @@ impl SsrcKind {
         }
     }
 
+    fn sequence_suffix(self) -> &'static str {
+        match self {
+            Self::Realtime => "LIVE",
+            Self::History => "BACK",
+        }
+    }
+
     fn remark(self) -> &'static str {
         match self {
             Self::Realtime => "SIP域实时SSRC",
@@ -41,16 +48,26 @@ pub struct SsrcSequence;
 
 impl SsrcSequence {
     pub async fn initialize(domain_id: &str) -> GlobalResult<()> {
-        let realtime = prefix(domain_id, SsrcKind::Realtime)?;
-        let history = prefix(domain_id, SsrcKind::History)?;
+        let sequences = [
+            (
+                sequence_name(domain_id, SsrcKind::Realtime)?,
+                prefix(domain_id, SsrcKind::Realtime)?,
+                SsrcKind::Realtime,
+            ),
+            (
+                sequence_name(domain_id, SsrcKind::History)?,
+                prefix(domain_id, SsrcKind::History)?,
+                SsrcKind::History,
+            ),
+        ];
 
         #[cfg(test)]
         if crate::storage::entity::test_storage_enabled() {
-            let _ = (realtime, history);
+            let _ = sequences;
             return Ok(());
         }
 
-        for (seq_name, kind) in [(realtime, SsrcKind::Realtime), (history, SsrcKind::History)] {
+        for (seq_name, ssrc_prefix, kind) in sequences {
             let sql = match db::backend() {
                 db::SessionDatabaseBackend::Mysql => {
                     "INSERT IGNORE INTO GB28181_SEQ_CODE (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date)VALUES (?,1,1,1,?,4,?,?)"
@@ -62,18 +79,19 @@ impl SsrcSequence {
             db::execute!(
                 sql,
                 &seq_name,
-                &seq_name,
+                &ssrc_prefix,
                 kind.remark(),
                 Local::now().naive_local(),
             )
             .hand_log(|msg| error!("{msg}: seq_name={seq_name}"))?;
-            validate_sequence(&seq_name).await?;
+            validate_sequence(&seq_name, &ssrc_prefix).await?;
         }
         Ok(())
     }
 
     pub async fn allocate(domain_id: &str, kind: SsrcKind) -> GlobalResult<String> {
-        let seq_name = prefix(domain_id, kind)?;
+        let seq_name = sequence_name(domain_id, kind)?;
+        let ssrc_prefix = prefix(domain_id, kind)?;
 
         #[cfg(test)]
         if crate::storage::entity::test_storage_enabled() {
@@ -81,12 +99,12 @@ impl SsrcSequence {
                 SsrcKind::Realtime => &TEST_REALTIME_SEQUENCE,
                 SsrcKind::History => &TEST_HISTORY_SEQUENCE,
             };
-            return Ok(format!("{seq_name}{:04}", next_test_value(sequence)));
+            return Ok(format!("{ssrc_prefix}{:04}", next_test_value(sequence)));
         }
 
         for _ in 0..SSRC_SEQUENCE_MAX {
-            let value = take_next_value(&seq_name).await?;
-            let ssrc = format!("{seq_name}{value:04}");
+            let value = take_next_value(&seq_name, &ssrc_prefix).await?;
+            let ssrc = format!("{ssrc_prefix}{value:04}");
             let numeric_ssrc = ssrc
                 .parse::<u32>()
                 .map_err(|_| invalid_sequence(&seq_name, "formatted SSRC is invalid"))?;
@@ -106,23 +124,34 @@ impl SsrcSequence {
 }
 
 pub fn prefix(domain_id: &str, kind: SsrcKind) -> GlobalResult<String> {
-    if domain_id.len() != 20 || !domain_id.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(GlobalError::new_biz_error(
-            BaseErrorCode::InvalidRequest.code(),
-            "Invalid session domain_id",
-            |msg| error!("{msg}: expected 20 decimal digits, value={domain_id}"),
-        ));
-    }
+    validate_domain_id(domain_id)?;
     Ok(format!("{}{}", kind.marker(), &domain_id[3..8]))
 }
 
-async fn validate_sequence(seq_name: &str) -> GlobalResult<()> {
+pub fn sequence_name(domain_id: &str, kind: SsrcKind) -> GlobalResult<String> {
+    validate_domain_id(domain_id)?;
+    Ok(format!("{}:{}", domain_id, kind.sequence_suffix()))
+}
+
+fn validate_domain_id(domain_id: &str) -> GlobalResult<()> {
+    if domain_id.len() == 20 && domain_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(());
+    }
+    Err(GlobalError::new_biz_error(
+        BaseErrorCode::InvalidRequest.code(),
+        "Invalid session domain_id",
+        |msg| error!("{msg}: expected 20 decimal digits, value={domain_id}"),
+    ))
+}
+
+async fn validate_sequence(seq_name: &str, ssrc_prefix: &str) -> GlobalResult<()> {
     let row = fetch_sequence_row(seq_name, false).await?;
     let Some((init_value, current_value, increment_value, prefix_code, code_length)) = row else {
         return Err(invalid_sequence(seq_name, "row is missing"));
     };
     validate_sequence_row(
         seq_name,
+        ssrc_prefix,
         init_value,
         current_value,
         increment_value,
@@ -169,6 +198,7 @@ async fn fetch_sequence_row(
 
 fn validate_sequence_row(
     seq_name: &str,
+    ssrc_prefix: &str,
     init_value: i64,
     current_value: i64,
     increment_value: i32,
@@ -178,7 +208,7 @@ fn validate_sequence_row(
     if init_value != 1
         || !(1..=i64::from(SSRC_SEQUENCE_MAX)).contains(&current_value)
         || increment_value != 1
-        || prefix_code != Some(seq_name)
+        || prefix_code != Some(ssrc_prefix)
         || code_length != Some(SSRC_CODE_LENGTH)
     {
         return Err(invalid_sequence(seq_name, "metadata is incompatible"));
@@ -186,10 +216,10 @@ fn validate_sequence_row(
     Ok(())
 }
 
-async fn take_next_value(seq_name: &str) -> GlobalResult<u16> {
+async fn take_next_value(seq_name: &str, ssrc_prefix: &str) -> GlobalResult<u16> {
     let row = fetch_sequence_row(seq_name, true).await?;
     let current = current_sequence_value(seq_name, row.as_ref())?;
-    let next = next_sequence_value(seq_name, row.as_ref())?;
+    let next = next_sequence_value(seq_name, ssrc_prefix, row.as_ref())?;
     db::execute!(
         "UPDATE GB28181_SEQ_CODE SET current_value=? WHERE seq_name=?",
         next,
@@ -201,6 +231,7 @@ async fn take_next_value(seq_name: &str) -> GlobalResult<u16> {
 
 fn next_sequence_value(
     seq_name: &str,
+    ssrc_prefix: &str,
     row: Option<&(i64, i64, i32, Option<String>, Option<i32>)>,
 ) -> GlobalResult<i64> {
     let Some((init_value, current_value, increment_value, prefix_code, code_length)) = row else {
@@ -208,6 +239,7 @@ fn next_sequence_value(
     };
     validate_sequence_row(
         seq_name,
+        ssrc_prefix,
         *init_value,
         *current_value,
         *increment_value,
@@ -266,7 +298,7 @@ fn next_test_value(sequence: &AtomicU16) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{SsrcKind, next_test_value, prefix};
+    use super::{SsrcKind, next_test_value, prefix, sequence_name};
     use std::sync::atomic::AtomicU16;
 
     #[test]
@@ -282,9 +314,23 @@ mod tests {
     }
 
     #[test]
-    fn prefix_rejects_invalid_domain_id() {
+    fn sequence_name_uses_domain_id_and_business_kind() {
+        assert_eq!(
+            sequence_name("51010000002000000001", SsrcKind::Realtime).unwrap(),
+            "51010000002000000001:LIVE"
+        );
+        assert_eq!(
+            sequence_name("51010000002000000001", SsrcKind::History).unwrap(),
+            "51010000002000000001:BACK"
+        );
+    }
+
+    #[test]
+    fn sequence_name_and_prefix_reject_invalid_domain_id() {
         assert!(prefix("340200", SsrcKind::Realtime).is_err());
+        assert!(sequence_name("340200", SsrcKind::Realtime).is_err());
         assert!(prefix("3402000000200000000x", SsrcKind::Realtime).is_err());
+        assert!(sequence_name("3402000000200000000x", SsrcKind::Realtime).is_err());
     }
 
     #[test]

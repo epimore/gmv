@@ -3,11 +3,11 @@
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS `GB28181_SEQ_CODE`  (
   `seq_id` bigint(16) UNSIGNED ZEROFILL NOT NULL AUTO_INCREMENT COMMENT '序列标识',
-  `seq_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '序列的名字，唯一',
+  `seq_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '序列的名字，唯一，格式domain_id:LIVE或domain_id:BACK',
   `init_value` bigint UNSIGNED NOT NULL COMMENT '初始值',
   `current_value` bigint UNSIGNED NOT NULL COMMENT '当前的值',
   `increment_value` int NOT NULL DEFAULT 1 COMMENT '步长，默认为1',
-  `prefix_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '前置编码',
+  `prefix_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'SSRC数字前缀',
   `code_lenth` int NULL DEFAULT NULL COMMENT '编码长度(不含前置)，中间以0填充',
   `remark` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '备注',
   `create_date` datetime NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '创建时间',
