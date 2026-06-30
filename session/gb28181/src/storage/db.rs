@@ -100,33 +100,21 @@ pub fn mysql_pool() -> &'static MySqlPool {
     mysqlx::get_conn_by_pool()
 }
 
-const SQLITE_0001: &str = include_str!("../../migrations/sqlite/0001_gb28181_core.sql");
-const MYSQL_0001: &str = include_str!("../../migrations/mysql/0001_gb28181_core.sql");
-
-const SQLITE_MIGRATIONS: &[base_db::migration::Migration] = &[base_db::migration::Migration {
-    version: 1,
-    name: "gb28181_core",
-    sql: SQLITE_0001,
-}];
-
-const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[base_db::migration::Migration {
-    version: 1,
-    name: "gb28181_core",
-    sql: MYSQL_0001,
-}];
+const SQLITE_SCHEMA: &str = include_str!("../../schema/sqlite/gb28181_core.sql");
+const MYSQL_SCHEMA: &str = include_str!("../../schema/mysql/gb28181_core.sql");
 
 pub async fn initialize() -> GlobalResult<()> {
     match backend() {
-        SessionDatabaseBackend::Mysql => {
-            base_db::migration::run_mysql_migrations(mysql_pool(), MYSQL_MIGRATIONS)
-                .await
-                .hand_log(|msg| error!("{msg}"))
-        }
-        SessionDatabaseBackend::Sqlite => {
-            base_db::migration::run_sqlite_migrations(sqlite_pool(), SQLITE_MIGRATIONS)
-                .await
-                .hand_log(|msg| error!("{msg}"))
-        }
+        SessionDatabaseBackend::Mysql => base_db::sqlx::raw_sql(MYSQL_SCHEMA)
+            .execute(mysql_pool())
+            .await
+            .map(|_| ())
+            .hand_log(|msg| error!("{msg}")),
+        SessionDatabaseBackend::Sqlite => base_db::sqlx::raw_sql(SQLITE_SCHEMA)
+            .execute(sqlite_pool())
+            .await
+            .map(|_| ())
+            .hand_log(|msg| error!("{msg}")),
     }
 }
 macro_rules! execute {

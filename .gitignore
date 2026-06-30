@@ -13,3 +13,5 @@
 /logs/
 /.*
 !/.gitignore
+
+/AGENTS.md

@@ -280,14 +280,14 @@ impl AvaiControlAdapter {
         } else {
             FrameReference::decode(&request.payload)
         };
-        if let Some(frame) = &frame {
-            if frame.expires_at_epoch_ms <= now_ms {
-                return create_response(
-                    &request.task_id,
-                    AiTaskState::Failed,
-                    Some(error("frame_expired", "frame reference has expired")),
-                );
-            }
+        if let Some(frame) = &frame
+            && frame.expires_at_epoch_ms <= now_ms
+        {
+            return create_response(
+                &request.task_id,
+                AiTaskState::Failed,
+                Some(error("frame_expired", "frame reference has expired")),
+            );
         }
         let _ = (request.task_type, request.route_id, frame);
         create_response(

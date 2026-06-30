@@ -12,8 +12,15 @@ fn main() -> io::Result<()> {
         proto_root.join("avai/v1/control.proto"),
     ];
 
+    println!("cargo:rerun-if-changed=build.rs");
     for proto in &protos {
         println!("cargo:rerun-if-changed={}", proto.display());
+    }
+    for entry in proto_root.read_dir()? {
+        let entry = entry?;
+        if entry.path().is_dir() {
+            println!("cargo:rerun-if-changed={}", entry.path().display());
+        }
     }
 
     let protoc = protoc_bin_vendored::protoc_bin_path().map_err(vendored_error)?;
