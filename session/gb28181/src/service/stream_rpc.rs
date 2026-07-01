@@ -14,7 +14,7 @@ use gmv_protocol::stream::v1::{
     StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamUnitResponse,
     stream_control_client::StreamControlClient,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tonic::transport::Channel;
 
@@ -41,10 +41,30 @@ async fn client(node: &StreamNode) -> GlobalResult<StreamControlClient<Channel>>
             handshake_timeout: Duration::from_secs(5),
         });
     }
+    let started = Instant::now();
+    base::log::debug!(
+        "session rpc client outbound: service=stream_control, node={}, endpoint={}",
+        node.name,
+        node.control_grpc_uri
+    );
     base_rpc::connect_channel(&config)
         .await
-        .map(StreamControlClient::new)
+        .map(|channel| {
+            base::log::debug!(
+                "session rpc client inbound: service=stream_control, node={}, endpoint={}, status=ok, elapsed_ms={}",
+                node.name,
+                node.control_grpc_uri,
+                started.elapsed().as_millis()
+            );
+            StreamControlClient::new(channel)
+        })
         .map_err(|err| {
+            base::log::debug!(
+                "session rpc client inbound: service=stream_control, node={}, endpoint={}, status=error, elapsed_ms={}, err={err:?}",
+                node.name,
+                node.control_grpc_uri,
+                started.elapsed().as_millis()
+            );
             GlobalError::new_biz_error(
                 BaseErrorCode::Network.code(),
                 "connect stream control rpc failed",
@@ -104,8 +124,14 @@ fn error_detail(error: ErrorDetail, action: &str) -> GlobalError {
 
 pub async fn init_media(node: &StreamNode, value: &MediaConfig) -> GlobalResult<()> {
     let mut client = client(node).await?;
+    let request = request(value)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.init_media, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .init_media(request(value)?)
+        .init_media(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -114,8 +140,14 @@ pub async fn init_media(node: &StreamNode, value: &MediaConfig) -> GlobalResult<
 
 pub async fn init_media_ext(node: &StreamNode, value: &MediaMap) -> GlobalResult<()> {
     let mut client = client(node).await?;
+    let request = request(value)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.init_media_ext, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .init_media_ext(request(value)?)
+        .init_media_ext(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -124,8 +156,14 @@ pub async fn init_media_ext(node: &StreamNode, value: &MediaMap) -> GlobalResult
 
 pub async fn stream_online(node: &StreamNode, value: &StreamKey) -> GlobalResult<bool> {
     let mut client = client(node).await?;
+    let request = request(value)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.stream_online, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .stream_online(request(value)?)
+        .stream_online(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -137,8 +175,14 @@ pub async fn record_info(
     value: &StreamInfoQo,
 ) -> GlobalResult<StreamRecordInfo> {
     let mut client = client(node).await?;
+    let request = request(value)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.record_info, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .record_info(request(value)?)
+        .record_info(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -147,8 +191,14 @@ pub async fn record_info(
 
 pub async fn close_output(node: &StreamNode, value: &StreamInfoQo) -> GlobalResult<()> {
     let mut client = client(node).await?;
+    let request = request(value)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.close_output_by_ssrc, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .close_output_by_ssrc(request(value)?)
+        .close_output_by_ssrc(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -157,8 +207,14 @@ pub async fn close_output(node: &StreamNode, value: &StreamInfoQo) -> GlobalResu
 
 pub async fn talk_open(node: &StreamNode, value: &TalkOpenReq) -> GlobalResult<TalkOpenResp> {
     let mut client = client(node).await?;
+    let request = request(value)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.talk_open, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .talk_open(request(value)?)
+        .talk_open(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -167,8 +223,14 @@ pub async fn talk_open(node: &StreamNode, value: &TalkOpenReq) -> GlobalResult<T
 
 pub async fn talk_answer(node: &StreamNode, value: &TalkAnswerReq) -> GlobalResult<()> {
     let mut client = client(node).await?;
+    let request = request(value)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.talk_answer, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .talk_answer(request(value)?)
+        .talk_answer(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -180,8 +242,14 @@ pub async fn talk_close(node: &StreamNode, talk_id: &str) -> GlobalResult<()> {
         talk_id: talk_id.to_string(),
     };
     let mut client = client(node).await?;
+    let request = self::request(&request)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.talk_close, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .talk_close(self::request(&request)?)
+        .talk_close(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();
@@ -193,8 +261,14 @@ pub async fn talk_online(node: &StreamNode, talk_id: &str) -> GlobalResult<bool>
         talk_id: talk_id.to_string(),
     };
     let mut client = client(node).await?;
+    let request = self::request(&request)?;
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.talk_online, node={}, req: payload_bytes={}",
+        node.name,
+        request.payload_json.len()
+    );
     let response = client
-        .talk_online(self::request(&request)?)
+        .talk_online(request)
         .await
         .hand_log(|msg| error!("{msg}"))?
         .into_inner();

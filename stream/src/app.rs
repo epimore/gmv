@@ -111,6 +111,8 @@ impl
                 labels: HashMap::new(),
             });
             let control_identity = node.identity.clone();
+            let control_node_id = control_identity.node_id.clone();
+            let control_addr = grpc.addr;
             let receive_endpoint = Endpoint {
                 name: "rtp".to_string(),
                 scheme: "rtp".to_string(),
@@ -122,6 +124,12 @@ impl
             let control_cancel = network_rt.cancel.clone();
             let control_media_tx = tx.clone();
             base::tokio::spawn(async move {
+                base::log::debug!(
+                    "stream rpc service inbound: node_id={}, bind_addr={}, tls={}",
+                    control_node_id,
+                    control_addr,
+                    grpc.tls.enabled
+                );
                 let rpc = StreamControlRpc::new(
                     StreamControlAdapter::new(control_identity, receive_endpoint)
                         .with_media_tx(control_media_tx),
@@ -164,6 +172,12 @@ impl
                     .await
                 {
                     error!("stream control RPC server stopped with error: {err}");
+                } else {
+                    base::log::debug!(
+                        "stream rpc service outbound: node_id={}, bind_addr={}",
+                        control_node_id,
+                        control_addr
+                    );
                 }
             });
             let mut reporter = NodeReporterConfig::new(

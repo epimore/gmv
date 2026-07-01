@@ -4,7 +4,7 @@ use crate::registry::RegistryService;
 
 pub fn spawn(registry: RegistryService, timeout_ms: u64) -> base::tokio::task::JoinHandle<()> {
     base::tokio::spawn(async move {
-        let interval_ms = (timeout_ms / 2).clamp(500, 5_000);
+        let interval_ms = 1_000;
         let mut interval = base::tokio::time::interval(Duration::from_millis(interval_ms));
         loop {
             interval.tick().await;
@@ -52,7 +52,7 @@ mod tests {
                     })
                     .unwrap();
                 let handle = spawn(registry, 10);
-                base::tokio::time::sleep(Duration::from_millis(650)).await;
+                base::tokio::time::sleep(Duration::from_millis(1_100)).await;
                 handle.abort();
                 let node = store.get_node("stream-expire").unwrap();
                 assert_eq!(node.connection, ConnectionState::Disconnected);

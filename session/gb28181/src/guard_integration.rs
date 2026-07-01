@@ -2,11 +2,12 @@ use std::{
     collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock},
+    time::Instant,
 };
 
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error as log_error, info, warn};
+use base::log::{debug, error as log_error, info, warn};
 use base::serde::de::DeserializeOwned;
 use base_rpc::RpcChannelConfig;
 use gmv_domain::info::format::{CMaf, Flv};
@@ -71,15 +72,25 @@ pub fn init_guard_event_sender(sender: NodeEventSender) {
 
 async fn guard_control_client() -> GlobalResult<GuardControlClient<Channel>> {
     let endpoint = crate::state::GuardConf::get_or_default().endpoint;
+    let started = Instant::now();
+    base::log::debug!("session rpc client outbound: service=guard_control, endpoint={endpoint}");
     let channel = base_rpc::connect_channel(&rpc_channel_config(endpoint.clone()))
         .await
         .map_err(|err| {
+            base::log::debug!(
+                "session rpc client inbound: service=guard_control, endpoint={endpoint}, status=error, elapsed_ms={}, err={err:?}",
+                started.elapsed().as_millis()
+            );
             GlobalError::new_biz_error(
                 BaseErrorCode::Network.code(),
                 "connect guard control rpc failed",
                 |msg| log_error!("{msg}: endpoint={endpoint}, err={err:?}"),
             )
         })?;
+    base::log::debug!(
+        "session rpc client inbound: service=guard_control, endpoint={endpoint}, status=ok, elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
     Ok(GuardControlClient::new(channel))
 }
 
@@ -417,7 +428,7 @@ impl SessionGuardNode {
             host_metrics: None,
             capacity: 100,
             zone: String::new(),
-            takeover: false,
+            takeover: cfg!(debug_assertions),
             config: self.config_summary(),
         }
     }
@@ -530,6 +541,7 @@ impl SessionControl for SessionControlRpc {
         request: tonic::Request<StopDeviceStreamRequest>,
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         let request = request.into_inner();
+        debug!("session_control.stop_device_stream, req:{request:?}");
         let stopped = if crate::state::session::Cache::talk_map_get(&request.stream_id).is_some() {
             api_serv::talk_stop(
                 TalkStopModel {
@@ -560,6 +572,7 @@ impl SessionControl for SessionControlRpc {
         request: tonic::Request<ControlPtzRequest>,
     ) -> Result<tonic::Response<ControlPtzResponse>, tonic::Status> {
         let request = request.into_inner();
+        debug!("session_control.control_ptz, req:{request:?}");
         let model = ptz_model(&request);
         let response = match api_serv::ptz(model, String::new()).await {
             Ok(_) => ControlPtzResponse {
@@ -578,6 +591,7 @@ impl SessionControl for SessionControlRpc {
         &self,
         _request: tonic::Request<GetSessionConfigRequest>,
     ) -> Result<tonic::Response<GetSessionConfigResponse>, tonic::Status> {
+        debug!("session_control.get_session_config, req:<empty>");
         let conf = crate::gb::SessionConf::get_session_by_conf();
         Ok(tonic::Response::new(GetSessionConfigResponse {
             domain: conf.domain,
@@ -591,6 +605,7 @@ impl SessionControl for SessionControlRpc {
         &self,
         _request: tonic::Request<ListGbDevicesRequest>,
     ) -> Result<tonic::Response<ListGbDevicesResponse>, tonic::Status> {
+        debug!("session_control.list_gb_devices, req:<empty>");
         let session_node_id = self.session_node_id()?;
         let devices = crate::storage::guard_query::GbDeviceView::list()
             .await
@@ -607,6 +622,7 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<GetGbDeviceResponse>, tonic::Status> {
         let session_node_id = self.session_node_id()?;
         let request = request.into_inner();
+        debug!("session_control.get_gb_device, req:{request:?}");
         let device = crate::storage::guard_query::GbDeviceView::get(&request.device_id)
             .await
             .map_err(storage_status)?
@@ -620,6 +636,33 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<CreateGbDeviceResponse>, tonic::Status> {
         let session_node_id = self.session_node_id()?;
         let request = request.into_inner();
+        if let Some(device) = request.device.as_ref() {
+            debug!(
+                "session_control.create_gb_device, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
+                device.device_id,
+                device.session_node_id,
+                device.domain_id,
+                device.domain,
+                device.longitude,
+                device.latitude,
+                device.address,
+                if device.pwd.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+                device.pwd_check,
+                device.alias,
+                device.status,
+                device.heartbeat_sec,
+                device.tenant_id,
+                device.sys_org_code,
+                device.create_by,
+                device.update_by
+            );
+        } else {
+            debug!("session_control.create_gb_device, req: device=<none>");
+        }
         let device = request
             .device
             .ok_or_else(|| tonic::Status::invalid_argument("device is required"))?;
@@ -636,6 +679,7 @@ impl SessionControl for SessionControlRpc {
         request: tonic::Request<ListGbChannelsRequest>,
     ) -> Result<tonic::Response<ListGbChannelsResponse>, tonic::Status> {
         let request = request.into_inner();
+        debug!("session_control.list_gb_channels, req:{request:?}");
         let channels = crate::storage::guard_query::GbChannelView::list(&request.device_id)
             .await
             .map_err(storage_status)?
@@ -650,6 +694,7 @@ impl SessionControl for SessionControlRpc {
         request: tonic::Request<GetGbChannelRequest>,
     ) -> Result<tonic::Response<GetGbChannelResponse>, tonic::Status> {
         let request = request.into_inner();
+        debug!("session_control.get_gb_channel, req:{request:?}");
         let channel = crate::storage::guard_query::GbChannelView::get(
             &request.device_id,
             &request.channel_id,
@@ -665,6 +710,7 @@ impl SessionControl for SessionControlRpc {
         request: tonic::Request<ListGbChannelImagesRequest>,
     ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
         let request = request.into_inner();
+        debug!("session_control.list_gb_channel_images, req:{request:?}");
         let images = crate::storage::guard_query::GbChannelImageView::list(
             &request.device_id,
             &request.channel_id,
@@ -694,6 +740,26 @@ impl SessionControlRpc {
         stream_type: &str,
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         let request = request.into_inner();
+        debug!(
+            "session_control.start_{stream_type}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
+            request.operation,
+            request.device_id,
+            request.channel_id,
+            if request.token.is_empty() {
+                "<empty>"
+            } else {
+                "<redacted>"
+            },
+            request.start_time_sec,
+            request.end_time_sec,
+            request.trans_mode,
+            request.output_type,
+            request.talk_codec,
+            request.talk_sample_rate,
+            request.talk_channel_count,
+            request.talk_frame_duration_ms,
+            request.expected_session
+        );
         {
             let control = self
                 .inner

@@ -84,11 +84,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let reporter_task = NodeReporter::spawn(reporter, cancel.clone());
         let address: SocketAddr = format!("0.0.0.0:{}", server.grpc_port).parse()?;
         let shutdown = cancel.clone();
+        base::log::debug!(
+            "avai rpc service inbound: node_id={}, bind_addr={}",
+            node.identity.node_id,
+            address
+        );
         let server = tonic::transport::Server::builder()
             .add_service(AvaiControlServer::new(rpc))
             .serve_with_shutdown(address, async move { shutdown.cancelled().await });
         base::tokio::select! {
-            result = server => result?,
+            result = server => {
+                result?;
+                base::log::debug!("avai rpc service outbound: bind_addr={address}");
+            },
             _ = base::tokio::signal::ctrl_c() => cancel.cancel(),
         }
         cancel.cancel();

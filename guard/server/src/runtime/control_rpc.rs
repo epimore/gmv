@@ -1,3 +1,4 @@
+use base::log::debug;
 use gmv_protocol::common::v1::{
     Endpoint as ProtoEndpoint, EndpointMode as ProtoEndpointMode, NodeIdentity as ProtoIdentity,
     NodeKind as ProtoNodeKind, ResourceRef,
@@ -37,6 +38,7 @@ impl GuardControl for GuardControlRpc {
         request: Request<AllocateStreamRequest>,
     ) -> Result<Response<AllocateStreamResponse>, Status> {
         let request = request.into_inner();
+        debug!("guard_control.allocate_stream, req:{request:?}");
         let operation = request
             .operation
             .as_ref()
@@ -104,21 +106,27 @@ impl GuardControl for GuardControlRpc {
         &self,
         request: Request<ProtoLeaseRequest>,
     ) -> Result<Response<LeaseResponse>, Status> {
-        self.transition_lease(request.into_inner(), LeaseTransition::Confirm)
+        let request = request.into_inner();
+        debug!("guard_control.confirm_lease, req:{request:?}");
+        self.transition_lease(request, LeaseTransition::Confirm)
     }
 
     async fn fail_lease(
         &self,
         request: Request<ProtoLeaseRequest>,
     ) -> Result<Response<LeaseResponse>, Status> {
-        self.transition_lease(request.into_inner(), LeaseTransition::Fail)
+        let request = request.into_inner();
+        debug!("guard_control.fail_lease, req:{request:?}");
+        self.transition_lease(request, LeaseTransition::Fail)
     }
 
     async fn release_lease(
         &self,
         request: Request<ProtoLeaseRequest>,
     ) -> Result<Response<LeaseResponse>, Status> {
-        self.transition_lease(request.into_inner(), LeaseTransition::Release)
+        let request = request.into_inner();
+        debug!("guard_control.release_lease, req:{request:?}");
+        self.transition_lease(request, LeaseTransition::Release)
     }
 
     async fn query_node(
@@ -126,6 +134,7 @@ impl GuardControl for GuardControlRpc {
         request: Request<QueryNodeRequest>,
     ) -> Result<Response<QueryNodeResponse>, Status> {
         let request = request.into_inner();
+        debug!("guard_control.query_node, req:{request:?}");
         let node = self
             .store
             .get_node(&request.node_id)
@@ -141,6 +150,17 @@ impl GuardControl for GuardControlRpc {
         request: Request<CheckPlaybackRequest>,
     ) -> Result<Response<CheckPlaybackResponse>, Status> {
         let request = request.into_inner();
+        debug!(
+            "guard_control.check_playback, req: stream_id={}, token={}, remote_addr={}, output_type={}",
+            request.stream_id,
+            if request.token.is_empty() {
+                "<empty>"
+            } else {
+                "<redacted>"
+            },
+            request.remote_addr,
+            request.output_type
+        );
         if request.stream_id.is_empty() || request.token.is_empty() {
             return Ok(Response::new(CheckPlaybackResponse {
                 accepted: false,
@@ -169,6 +189,7 @@ impl GuardControl for GuardControlRpc {
         request: Request<QueryRouteRequest>,
     ) -> Result<Response<QueryRouteResponse>, Status> {
         let request = request.into_inner();
+        debug!("guard_control.query_route, req:{request:?}");
         let route = self
             .store
             .get_route(&request.route_id)

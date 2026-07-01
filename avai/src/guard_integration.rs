@@ -71,7 +71,7 @@ impl AvaiGuardNode {
             host_metrics: None,
             capacity: 100,
             zone: String::new(),
-            takeover: false,
+            takeover: cfg!(debug_assertions),
             config: self.config_summary(),
         }
     }
@@ -176,12 +176,22 @@ impl AvaiControl for AvaiControlRpc {
         &self,
         request: tonic::Request<CreateTaskRequest>,
     ) -> Result<tonic::Response<CreateTaskResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "avai_control.create_task, req: operation={:?}, task_id={}, task_type={}, route_id={}, expected_avai={:?}, payload_bytes={}",
+            request.operation,
+            request.task_id,
+            request.task_type,
+            request.route_id,
+            request.expected_avai,
+            request.payload.len()
+        );
         let mut control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
         Ok(tonic::Response::new(
-            control.create_task(request.into_inner(), now_epoch_ms()),
+            control.create_task(request, now_epoch_ms()),
         ))
     }
 
@@ -189,39 +199,39 @@ impl AvaiControl for AvaiControlRpc {
         &self,
         request: tonic::Request<CancelTaskRequest>,
     ) -> Result<tonic::Response<CancelTaskResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("avai_control.cancel_task, req:{request:?}");
         let mut control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.cancel_task(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.cancel_task(request)))
     }
 
     async fn query_task(
         &self,
         request: tonic::Request<QueryTaskRequest>,
     ) -> Result<tonic::Response<QueryTaskResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("avai_control.query_task, req:{request:?}");
         let control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.query_task(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.query_task(request)))
     }
 
     async fn query_capabilities(
         &self,
         request: tonic::Request<QueryCapabilitiesRequest>,
     ) -> Result<tonic::Response<QueryCapabilitiesResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("avai_control.query_capabilities, req:{request:?}");
         let control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.query_capabilities(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.query_capabilities(request)))
     }
 }
 

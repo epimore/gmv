@@ -78,6 +78,11 @@ pub async fn serve(
     event_forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
+    base::log::debug!(
+        "guard http service inbound: bind_addr={}, tls={}",
+        config.bind_addr,
+        config.tls.is_some()
+    );
     let auth = AuthState::new(
         users,
         SessionPolicy {
@@ -115,6 +120,10 @@ pub async fn serve(
             .serve(app.into_make_service())
             .await?;
     }
+    base::log::debug!(
+        "guard http service outbound: bind_addr={}",
+        config.bind_addr
+    );
     Ok(())
 }
 

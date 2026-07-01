@@ -79,6 +79,20 @@ impl GuardNodeControl for GuardNodeRpc {
         request: Request<RegisterNodeRequest>,
     ) -> Result<Response<RegisterNodeResponse>, Status> {
         let request = request.into_inner();
+        base::log::debug!(
+            "guard_node.register_node, req: identity={:?}, software_version={}, started_at_epoch_ms={}, endpoints={:?}, capabilities={:?}, capacity={}, zone={}, takeover={}, config={:?}, has_snapshot={}, has_host_metrics={}",
+            request.identity,
+            request.software_version,
+            request.started_at_epoch_ms,
+            request.endpoints,
+            request.capabilities,
+            request.capacity,
+            request.zone,
+            request.takeover,
+            request.config,
+            request.startup_snapshot.is_some(),
+            request.host_metrics.is_some()
+        );
         let identity = identity(request.identity)?;
         let startup_snapshot = request.startup_snapshot.clone();
         let decision = self
@@ -119,6 +133,7 @@ impl GuardNodeControl for GuardNodeRpc {
         &self,
         request: Request<Streaming<NodeToGuardMessage>>,
     ) -> Result<Response<Self::OpenControlStreamStream>, Status> {
+        base::log::debug!("guard_node.open_control_stream, req:<stream>");
         let mut input = request.into_inner();
         let registry = self.registry.clone();
         let routes = self.routes.clone();
@@ -128,6 +143,34 @@ impl GuardNodeControl for GuardNodeRpc {
         base::tokio::spawn(async move {
             while let Ok(Some(message)) = input.message().await {
                 let sequence = message.sequence;
+                let identity_summary = message.identity.clone();
+                let payload_summary = match &message.payload {
+                    Some(node_to_guard_message::Payload::Heartbeat(_)) => "heartbeat".to_string(),
+                    Some(node_to_guard_message::Payload::Snapshot(snapshot)) => {
+                        format!(
+                            "snapshot(resources={}, full={})",
+                            snapshot.resources.len(),
+                            snapshot.full
+                        )
+                    }
+                    Some(node_to_guard_message::Payload::Event(event)) => {
+                        format!(
+                            "event(event_id={}, topic={}, payload_bytes={})",
+                            event.event_id,
+                            event.topic,
+                            event.payload.len()
+                        )
+                    }
+                    Some(_) => "other".to_string(),
+                    None => "none".to_string(),
+                };
+                base::log::debug!(
+                    "guard_node.open_control_stream message, req: identity={:?}, sequence={}, sent_at_epoch_ms={}, payload={}",
+                    identity_summary,
+                    sequence,
+                    message.sent_at_epoch_ms,
+                    payload_summary
+                );
                 let result = match message.payload {
                     Some(node_to_guard_message::Payload::Heartbeat(heartbeat)) => apply_heartbeat(
                         &registry,
@@ -184,6 +227,11 @@ pub async fn serve(
     store: InMemoryGuardStore,
     forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    base::log::debug!(
+        "guard rpc service inbound: bind_addr={}, tls={}",
+        config.bind_addr,
+        config.tls.is_some()
+    );
     let node_service = GuardNodeRpc::new(
         registry,
         store.clone(),
@@ -208,6 +256,7 @@ pub async fn serve(
         .add_service(GuardControlServer::new(control_service))
         .serve_with_incoming(incoming)
         .await?;
+    base::log::debug!("guard rpc service outbound: bind_addr={}", config.bind_addr);
     Ok(())
 }
 

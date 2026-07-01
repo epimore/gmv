@@ -1,18 +1,22 @@
+use axum::body::Body;
 use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ORIGIN, REFERRER_POLICY,
     SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base::log::debug;
 use gmv_protocol::session::v1::{
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
 };
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
+use std::time::Instant;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -114,6 +118,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/ai/tasks/{task_id}/cancel", post(cancel_ai_task))
         .route("/runtime/status", get(runtime_status))
         .with_state(state)
+        .layer(middleware::from_fn(debug_http_request))
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(origins))
@@ -179,6 +184,32 @@ where
 #[serde(crate = "base::serde")]
 struct HealthResponse {
     status: &'static str,
+}
+
+async fn debug_http_request(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let started = Instant::now();
+    debug!("guard http inbound: method={method}, uri={uri}");
+    let response = next.run(request).await;
+    debug!(
+        "guard http outbound: method={method}, uri={uri}, status={}, elapsed_ms={}",
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
+}
+
+fn redacted(value: &str) -> &'static str {
+    if value.is_empty() {
+        "<empty>"
+    } else {
+        "<redacted>"
+    }
+}
+
+fn redacted_option(value: Option<&String>) -> &'static str {
+    value.map(|value| redacted(value)).unwrap_or("<none>")
 }
 
 async fn health_live() -> Json<HealthResponse> {
@@ -261,6 +292,11 @@ async fn login(
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, HttpError> {
+    debug!(
+        "/api/v2/auth/login, req: username={}, password={}",
+        request.username,
+        redacted(&request.password)
+    );
     verify_origin(&state.auth, &headers)?;
     if !state
         .auth
@@ -287,6 +323,7 @@ async fn current_session(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<SessionResponse>, HttpError> {
+    debug!("/api/v2/auth/session, req:<empty>");
     Ok(Json(session_response(authenticated(
         &state.auth,
         &headers,
@@ -294,6 +331,7 @@ async fn current_session(
 }
 
 async fn logout(State(state): State<HttpState>, headers: HeaderMap) -> Result<Response, HttpError> {
+    debug!("/api/v2/auth/logout, req:<empty>");
     verify_origin(&state.auth, &headers)?;
     let (token, session) = authenticated_with_token(&state.auth, &headers)?;
     verify_csrf(&state.auth, &session, &headers)?;
@@ -319,6 +357,7 @@ async fn dashboard(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<DashboardResponse>, HttpError> {
+    debug!("/api/v2/dashboard, req:<empty>");
     let session = authenticated(&state.auth, &headers)?;
     state
         .auth
@@ -454,6 +493,7 @@ async fn nodes(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<NodeResponse>>, HttpError> {
+    debug!("/api/v2/nodes, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(
         state.api.list_nodes().into_iter().map(Into::into).collect(),
@@ -490,6 +530,7 @@ async fn leases(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<LeaseResponse>>, HttpError> {
+    debug!("/api/v2/leases, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(
         state
@@ -542,6 +583,7 @@ async fn events(
     headers: HeaderMap,
     Query(query): Query<EventHttpQuery>,
 ) -> Result<Json<EventPageResponse>, HttpError> {
+    debug!("/api/v2/events, req:{query:?}");
     let session = authenticated(&state.auth, &headers)?;
     state
         .auth
@@ -605,6 +647,7 @@ async fn start_operation(
     headers: HeaderMap,
     Json(request): Json<StartOperationRequest>,
 ) -> Result<(StatusCode, Json<OperationResponse>), HttpError> {
+    debug!("/api/v2/operations, req:{request:?}");
     verify_origin(&state.auth, &headers)?;
     let session = authenticated(&state.auth, &headers)?;
     state
@@ -628,6 +671,7 @@ async fn operations(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<OperationResponse>>, HttpError> {
+    debug!("/api/v2/operations, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(
         state
@@ -644,6 +688,7 @@ async fn operation(
     headers: HeaderMap,
     Path(operation_id): Path<String>,
 ) -> Result<Json<OperationResponse>, HttpError> {
+    debug!("/api/v2/operations/{{operation_id}}, req: operation_id={operation_id}");
     let session = authenticated(&state.auth, &headers)?;
     state
         .auth
@@ -688,6 +733,7 @@ async fn start_system_job(
     headers: HeaderMap,
     Json(request): Json<StartSystemJobRequest>,
 ) -> Result<(StatusCode, Json<SystemJobResponse>), HttpError> {
+    debug!("/api/v2/system/jobs, req:{request:?}");
     verify_origin(&state.auth, &headers)?;
     let session = authenticated(&state.auth, &headers)?;
     state
@@ -718,6 +764,7 @@ async fn system_jobs(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<SystemJobResponse>>, HttpError> {
+    debug!("/api/v2/system/jobs, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(
         state
@@ -734,6 +781,7 @@ async fn system_job(
     headers: HeaderMap,
     Path(job_id): Path<String>,
 ) -> Result<Json<SystemJobResponse>, HttpError> {
+    debug!("/api/v2/system/jobs/{{job_id}}, req: job_id={job_id}");
     let session = authenticated(&state.auth, &headers)?;
     state
         .auth
@@ -887,6 +935,7 @@ async fn current_profile(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<UserResponse>, HttpError> {
+    debug!("/api/v2/me, req:<empty>");
     let session = require_role(&state.auth, &headers, Role::Viewer)?;
     let profile = require_user_repository(&state)?
         .list_profiles()
@@ -902,6 +951,11 @@ async fn update_profile(
     headers: HeaderMap,
     Json(request): Json<UpdateProfileRequest>,
 ) -> Result<Json<UserResponse>, HttpError> {
+    debug!(
+        "/api/v2/me, req: nickname={:?}, password={}",
+        request.nickname,
+        redacted_option(request.password.as_ref())
+    );
     let session = require_write(&state.auth, &headers, Role::Viewer)?;
     let users = require_user_repository(&state)?;
     let current = users
@@ -942,6 +996,7 @@ async fn list_users(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<UserResponse>>, HttpError> {
+    debug!("/api/v2/users, req:<empty>");
     require_role(&state.auth, &headers, Role::Admin)?;
     let users = require_user_repository(&state)?.list_profiles().await?;
     Ok(Json(users.into_iter().map(user_response).collect()))
@@ -952,6 +1007,14 @@ async fn create_user(
     headers: HeaderMap,
     Json(request): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>), HttpError> {
+    debug!(
+        "/api/v2/users, req: username={}, role={}, password={}, nickname={}, enabled={}",
+        request.username,
+        request.role,
+        redacted(&request.password),
+        request.nickname,
+        request.enabled
+    );
     require_write(&state.auth, &headers, Role::Admin)?;
     let username = request.username.trim().to_string();
     let role = Role::parse(&request.role)?;
@@ -984,6 +1047,14 @@ async fn update_user(
     Path(username): Path<String>,
     Json(request): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, HttpError> {
+    debug!(
+        "/api/v2/users/{{username}}, req: username={}, role={}, password={}, nickname={:?}, enabled={}",
+        username,
+        request.role,
+        redacted_option(request.password.as_ref()),
+        request.nickname,
+        request.enabled
+    );
     require_write(&state.auth, &headers, Role::Admin)?;
     let username = username.trim().to_string();
     let role = Role::parse(&request.role)?;
@@ -1103,6 +1174,7 @@ async fn outbox_records(
     headers: HeaderMap,
     Query(query): Query<OutboxQuery>,
 ) -> Result<Json<Vec<OutboxResponse>>, HttpError> {
+    debug!("/api/v2/integrations/outbox, req:{query:?}");
     let session = authenticated(&state.auth, &headers)?;
     state
         .auth
@@ -1124,6 +1196,7 @@ async fn retry_outbox(
     headers: HeaderMap,
     Path(outbox_id): Path<String>,
 ) -> Result<Json<OutboxResponse>, HttpError> {
+    debug!("/api/v2/integrations/outbox/{{outbox_id}}/retry, req: outbox_id={outbox_id}");
     verify_origin(&state.auth, &headers)?;
     let session = authenticated(&state.auth, &headers)?;
     state
@@ -1442,6 +1515,46 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
     }
 }
 
+fn log_gb_device_request(path: &str, request: &GbDeviceRequest) {
+    debug!(
+        "{path}, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
+        request.device_id,
+        request.session_node_id,
+        request.domain_id,
+        request.domain,
+        request.longitude,
+        request.latitude,
+        request.address,
+        redacted(&request.pwd),
+        request.pwd_check,
+        request.alias,
+        request.status,
+        request.heartbeat_sec,
+        request.tenant_id,
+        request.sys_org_code,
+        request.create_by,
+        request.update_by
+    );
+}
+
+fn log_preview_request(path: &str, device_id: &str, request: &PreviewRequest) {
+    debug!(
+        "{path}, req: device_id={}, request_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}",
+        device_id,
+        request.request_id,
+        request.channel_id,
+        redacted(&request.token),
+        request.start_time_sec,
+        request.end_time_sec,
+        request.trans_mode,
+        request.output_type,
+        request.talk_codec,
+        request.talk_sample_rate,
+        request.talk_channel_count,
+        request.talk_frame_duration_ms
+    );
+}
+
 fn gb_session_config_response(record: GbSessionConfigSummary) -> GbSessionConfigResponse {
     GbSessionConfigResponse {
         domain: record.domain,
@@ -1481,6 +1594,7 @@ async fn gb_session_node_config(
     headers: HeaderMap,
     Path(node_id): Path<String>,
 ) -> Result<Json<GbSessionConfigResponse>, HttpError> {
+    debug!("/api/v2/gb28181/session-nodes/{{node_id}}/config, req: node_id={node_id}");
     require_role(&state.auth, &headers, Role::Viewer)?;
     let config = BusinessControl::new(state.api.store())
         .gb_session_config(&node_id)
@@ -1491,6 +1605,7 @@ async fn gb_devices(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<GbDeviceResponse>>, HttpError> {
+    debug!("/api/v2/gb28181/devices, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     let devices = BusinessControl::new(state.api.store())
         .list_gb_devices()
@@ -1503,6 +1618,7 @@ async fn create_gb_device(
     headers: HeaderMap,
     Json(request): Json<GbDeviceRequest>,
 ) -> Result<(StatusCode, Json<GbDeviceResponse>), HttpError> {
+    log_gb_device_request("/api/v2/gb28181/devices", &request);
     require_write(&state.auth, &headers, Role::Operator)?;
     let device = BusinessControl::new(state.api.store())
         .create_gb_device(gb_device_request(request))
@@ -1515,6 +1631,7 @@ async fn gb_device(
     headers: HeaderMap,
     Path(device_id): Path<String>,
 ) -> Result<Json<GbDeviceResponse>, HttpError> {
+    debug!("/api/v2/gb28181/devices/{{device_id}}, req: device_id={device_id}");
     require_role(&state.auth, &headers, Role::Viewer)?;
     let device = BusinessControl::new(state.api.store())
         .get_gb_device(&device_id)
@@ -1528,6 +1645,7 @@ async fn gb_channels(
     headers: HeaderMap,
     Path(device_id): Path<String>,
 ) -> Result<Json<Vec<GbChannelResponse>>, HttpError> {
+    debug!("/api/v2/gb28181/devices/{{device_id}}/channels, req: device_id={device_id}");
     require_role(&state.auth, &headers, Role::Viewer)?;
     let channels = BusinessControl::new(state.api.store())
         .list_gb_channels(&device_id)
@@ -1542,6 +1660,9 @@ async fn gb_channel(
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<GbChannelResponse>, HttpError> {
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}, req: device_id={device_id}, channel_id={channel_id}"
+    );
     require_role(&state.auth, &headers, Role::Viewer)?;
     let channel = BusinessControl::new(state.api.store())
         .get_gb_channel(&device_id, &channel_id)
@@ -1555,6 +1676,9 @@ async fn gb_channel_images(
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<Vec<GbChannelImageResponse>>, HttpError> {
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}/images, req: device_id={device_id}, channel_id={channel_id}"
+    );
     require_role(&state.auth, &headers, Role::Viewer)?;
     let images = BusinessControl::new(state.api.store())
         .list_gb_channel_images(&device_id, &channel_id)
@@ -1613,6 +1737,9 @@ async fn gb_ptz(
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}/ptz, req: device_id={device_id}, channel_id={channel_id}"
+    );
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = format!("ptz-{}", http_now_ms()?);
     state.api.start_operation(operation_request(
@@ -1642,6 +1769,7 @@ async fn devices(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<DeviceSummary>>, HttpError> {
+    debug!("/api/v2/devices, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     let control = BusinessControl::new(state.api.store());
     let devices = control.list_gb_devices().await?;
@@ -1674,6 +1802,7 @@ async fn preview(
     Path(device_id): Path<String>,
     Json(request): Json<PreviewRequest>,
 ) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
+    log_preview_request("/api/v2/devices/{device_id}/preview", &device_id, &request);
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = request.request_id.clone();
     state.api.start_operation(operation_request(
@@ -1783,6 +1912,7 @@ where
     F: FnOnce(BusinessControl, String, String, String, DeviceStreamOptions) -> Fut,
     Fut: std::future::Future<Output = Result<StreamSummary, GuardError>>,
 {
+    log_preview_request(operation_kind, &device_id, &request);
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = request.request_id.clone();
     state.api.start_operation(operation_request(
@@ -1819,6 +1949,10 @@ async fn ptz(
     Path(device_id): Path<String>,
     Json(request): Json<PtzRequest>,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
+    debug!(
+        "/api/v2/devices/{{device_id}}/ptz, req: device_id={device_id}, channel_id={}",
+        request.channel_id
+    );
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = format!("ptz-{}", http_now_ms()?);
     state.api.start_operation(operation_request(
@@ -1848,6 +1982,7 @@ async fn streams(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<StreamSummary>>, HttpError> {
+    debug!("/api/v2/streams, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(real_streams(&state)))
 }
@@ -1857,6 +1992,7 @@ async fn stop_stream(
     headers: HeaderMap,
     Path(stream_id): Path<String>,
 ) -> Result<Json<StreamSummary>, HttpError> {
+    debug!("/api/v2/streams/{{stream_id}}/stop, req: stream_id={stream_id}");
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = format!("stop-{stream_id}");
     state.api.start_operation(operation_request(
@@ -1886,6 +2022,7 @@ async fn ai_tasks(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AiTaskSummary>>, HttpError> {
+    debug!("/api/v2/ai/tasks, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(real_ai_tasks(&state)))
 }
@@ -1895,6 +2032,7 @@ async fn start_ai_task(
     headers: HeaderMap,
     Json(request): Json<StartAiRequest>,
 ) -> Result<(StatusCode, Json<AiTaskSummary>), HttpError> {
+    debug!("/api/v2/ai/tasks, req:{request:?}");
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = request.request_id.clone();
     state.api.start_operation(operation_request(
@@ -1925,6 +2063,7 @@ async fn cancel_ai_task(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> Result<Json<AiTaskSummary>, HttpError> {
+    debug!("/api/v2/ai/tasks/{{task_id}}/cancel, req: task_id={task_id}");
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = format!("cancel-{task_id}");
     state.api.start_operation(operation_request(
@@ -1954,6 +2093,7 @@ async fn runtime_status(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<RuntimeStatus>, HttpError> {
+    debug!("/api/v2/runtime/status, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(real_status(&state)))
 }

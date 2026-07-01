@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gmv_protocol::avai::v1::avai_control_client::AvaiControlClient;
 use gmv_protocol::avai::v1::{AiTaskState, CancelTaskRequest, CreateTaskRequest};
@@ -73,8 +73,13 @@ impl BusinessControl {
             )));
         }
         let mut client = self.session_client(&session).await?;
+        let request = GetSessionConfigRequest {};
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.get_session_config, node={}, req:<empty>",
+            session.identity.node_id
+        );
         let response = client
-            .get_session_config(GetSessionConfigRequest {})
+            .get_session_config(request)
             .await
             .map_err(session_rpc_error)?
             .into_inner();
@@ -89,8 +94,13 @@ impl BusinessControl {
         let mut devices = Vec::new();
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
+            let request = ListGbDevicesRequest {};
+            base::log::debug!(
+                "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:<empty>",
+                session.identity.node_id
+            );
             let mut response = client
-                .list_gb_devices(ListGbDevicesRequest {})
+                .list_gb_devices(request)
                 .await
                 .map_err(session_rpc_error)?
                 .into_inner();
@@ -124,6 +134,30 @@ impl BusinessControl {
             )));
         }
         device.session_node_id.clear();
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.create_gb_device, node={}, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
+            session.identity.node_id,
+            device.device_id,
+            device.session_node_id,
+            device.domain_id,
+            device.domain,
+            device.longitude,
+            device.latitude,
+            device.address,
+            if device.pwd.is_empty() {
+                "<empty>"
+            } else {
+                "<redacted>"
+            },
+            device.pwd_check,
+            device.alias,
+            device.status,
+            device.heartbeat_sec,
+            device.tenant_id,
+            device.sys_org_code,
+            device.create_by,
+            device.update_by
+        );
         let mut client = self.session_client(&session).await?;
         let mut response = client
             .create_gb_device(CreateGbDeviceRequest {
@@ -145,10 +179,15 @@ impl BusinessControl {
     pub async fn get_gb_device(&self, device_id: &str) -> GuardResult<Option<GbDevice>> {
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
+            let request = GetGbDeviceRequest {
+                device_id: device_id.to_string(),
+            };
+            base::log::debug!(
+                "guard rpc client outbound: method=session_control.get_gb_device, node={}, req:{request:?}",
+                session.identity.node_id
+            );
             let response = client
-                .get_gb_device(GetGbDeviceRequest {
-                    device_id: device_id.to_string(),
-                })
+                .get_gb_device(request)
                 .await
                 .map_err(session_rpc_error)?
                 .into_inner();
@@ -167,11 +206,16 @@ impl BusinessControl {
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
             channels.extend(
-                client
-                    .list_gb_channels(ListGbChannelsRequest {
+                {
+                    let request = ListGbChannelsRequest {
                         device_id: device_id.to_string(),
-                    })
-                    .await
+                    };
+                    base::log::debug!(
+                        "guard rpc client outbound: method=session_control.list_gb_channels, node={}, req:{request:?}",
+                        session.identity.node_id
+                    );
+                    client.list_gb_channels(request).await
+                }
                     .map_err(session_rpc_error)?
                     .into_inner()
                     .channels,
@@ -192,11 +236,16 @@ impl BusinessControl {
     ) -> GuardResult<Option<GbChannel>> {
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
+            let request = GetGbChannelRequest {
+                device_id: device_id.to_string(),
+                channel_id: channel_id.to_string(),
+            };
+            base::log::debug!(
+                "guard rpc client outbound: method=session_control.get_gb_channel, node={}, req:{request:?}",
+                session.identity.node_id
+            );
             let response = client
-                .get_gb_channel(GetGbChannelRequest {
-                    device_id: device_id.to_string(),
-                    channel_id: channel_id.to_string(),
-                })
+                .get_gb_channel(request)
                 .await
                 .map_err(session_rpc_error)?
                 .into_inner();
@@ -216,12 +265,17 @@ impl BusinessControl {
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
             images.extend(
-                client
-                    .list_gb_channel_images(ListGbChannelImagesRequest {
+                {
+                    let request = ListGbChannelImagesRequest {
                         device_id: device_id.to_string(),
                         channel_id: channel_id.to_string(),
-                    })
-                    .await
+                    };
+                    base::log::debug!(
+                        "guard rpc client outbound: method=session_control.list_gb_channel_images, node={}, req:{request:?}",
+                        session.identity.node_id
+                    );
+                    client.list_gb_channel_images(request).await
+                }
                     .map_err(session_rpc_error)?
                     .into_inner()
                     .images,
@@ -397,6 +451,28 @@ impl BusinessControl {
             talk_channel_count: options.talk_channel_count,
             talk_frame_duration_ms: options.talk_frame_duration_ms,
         };
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.start_{}, node={}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
+            kind.prefix(),
+            session.identity.node_id,
+            request.operation,
+            request.device_id,
+            request.channel_id,
+            if request.token.is_empty() {
+                "<empty>"
+            } else {
+                "<redacted>"
+            },
+            request.start_time_sec,
+            request.end_time_sec,
+            request.trans_mode,
+            request.output_type,
+            request.talk_codec,
+            request.talk_sample_rate,
+            request.talk_channel_count,
+            request.talk_frame_duration_ms,
+            request.expected_session
+        );
         let session_response = match kind {
             DeviceStreamKind::Live => session_client.start_live(request).await,
             DeviceStreamKind::Playback => session_client.start_playback(request).await,
@@ -455,15 +531,20 @@ impl BusinessControl {
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
             SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
+        let request = StopDeviceStreamRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("stop-{stream_id}"),
+                idempotency_key: String::new(),
+            }),
+            stream_id: stream_id.to_string(),
+            reason: "manual".to_string(),
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.stop_device_stream, node={}, req:{request:?}",
+            session.identity.node_id
+        );
         let response = session_client
-            .stop_device_stream(StopDeviceStreamRequest {
-                operation: Some(OperationRef {
-                    operation_id: format!("stop-{stream_id}"),
-                    idempotency_key: String::new(),
-                }),
-                stream_id: stream_id.to_string(),
-                reason: "manual".to_string(),
-            })
+            .stop_device_stream(request)
             .await
             .map_err(|error| GuardError::Conflict(format!("stop session stream failed: {error}")))?
             .into_inner();
@@ -501,17 +582,22 @@ impl BusinessControl {
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
             SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
+        let request = ControlPtzRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("ptz-{}", now_ms()),
+                idempotency_key: String::new(),
+            }),
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            command: "default".to_string(),
+            speed: 1,
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.control_ptz, node={}, req:{request:?}",
+            session.identity.node_id
+        );
         let response = session_client
-            .control_ptz(ControlPtzRequest {
-                operation: Some(OperationRef {
-                    operation_id: format!("ptz-{}", now_ms()),
-                    idempotency_key: String::new(),
-                }),
-                device_id: device_id.to_string(),
-                channel_id: channel_id.to_string(),
-                command: "default".to_string(),
-                speed: 1,
-            })
+            .control_ptz(request)
             .await
             .map_err(|error| GuardError::Conflict(format!("ptz RPC failed: {error}")))?
             .into_inner();
@@ -569,22 +655,33 @@ impl BusinessControl {
 
         let avai_grpc = grpc_uri(&avai)?;
         let mut avai_client = AvaiControlClient::new(connect_rpc(&avai_grpc, "avai").await?);
+        let request = CreateTaskRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            task_id: task_id.clone(),
+            task_type: capability.clone(),
+            route_id: route_id.clone(),
+            expected_avai: Some(proto_identity(&avai.identity)),
+            payload: format!(
+                "frame_ref={operation_id};stream_id={stream_id};expires_at_epoch_ms={}",
+                now_ms() + 30_000
+            )
+            .into_bytes(),
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=avai_control.create_task, node={}, req: operation={:?}, task_id={}, task_type={}, route_id={}, expected_avai={:?}, payload_bytes={}",
+            avai.identity.node_id,
+            request.operation,
+            request.task_id,
+            request.task_type,
+            request.route_id,
+            request.expected_avai,
+            request.payload.len()
+        );
         let response = avai_client
-            .create_task(CreateTaskRequest {
-                operation: Some(OperationRef {
-                    operation_id: operation_id.to_string(),
-                    idempotency_key: operation_id.to_string(),
-                }),
-                task_id: task_id.clone(),
-                task_type: capability.clone(),
-                route_id: route_id.clone(),
-                expected_avai: Some(proto_identity(&avai.identity)),
-                payload: format!(
-                    "frame_ref={operation_id};stream_id={stream_id};expires_at_epoch_ms={}",
-                    now_ms() + 30_000
-                )
-                .into_bytes(),
-            })
+            .create_task(request)
             .await
             .map_err(|error| GuardError::Conflict(format!("create avai task failed: {error}")))?
             .into_inner();
@@ -636,15 +733,20 @@ impl BusinessControl {
             .ok_or_else(|| GuardError::NotFound(format!("node {}", route.node_id)))?;
         let avai_grpc = grpc_uri(&avai)?;
         let mut avai_client = AvaiControlClient::new(connect_rpc(&avai_grpc, "avai").await?);
+        let request = CancelTaskRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("cancel-{task_id}"),
+                idempotency_key: String::new(),
+            }),
+            task_id: task_id.to_string(),
+            reason: "manual".to_string(),
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=avai_control.cancel_task, node={}, req:{request:?}",
+            avai.identity.node_id
+        );
         let response = avai_client
-            .cancel_task(CancelTaskRequest {
-                operation: Some(OperationRef {
-                    operation_id: format!("cancel-{task_id}"),
-                    idempotency_key: String::new(),
-                }),
-                task_id: task_id.to_string(),
-                reason: "manual".to_string(),
-            })
+            .cancel_task(request)
             .await
             .map_err(|error| GuardError::Conflict(format!("cancel avai task failed: {error}")))?
             .into_inner();
@@ -745,9 +847,20 @@ async fn connect_rpc(uri: &str, name: &str) -> GuardResult<tonic::transport::Cha
             handshake_timeout: Duration::from_secs(5),
         });
     }
-    base_rpc::connect_channel(&config)
-        .await
-        .map_err(|error| GuardError::Conflict(format!("connect {name} RPC failed: {error}")))
+    let started = Instant::now();
+    base::log::debug!("guard rpc client outbound: service={name}, endpoint={uri}");
+    let channel = base_rpc::connect_channel(&config).await.map_err(|error| {
+        base::log::debug!(
+            "guard rpc client inbound: service={name}, endpoint={uri}, status=error, elapsed_ms={}, err={error}",
+            started.elapsed().as_millis()
+        );
+        GuardError::Conflict(format!("connect {name} RPC failed: {error}"))
+    })?;
+    base::log::debug!(
+        "guard rpc client inbound: service={name}, endpoint={uri}, status=ok, elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    Ok(channel)
 }
 
 fn is_gb_session_node(node: &NodeRecord) -> bool {

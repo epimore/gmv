@@ -49,7 +49,7 @@ pub struct GbDeviceView {
 
 impl GbDeviceView {
     pub async fn create(request: GbDeviceCreate) -> GlobalResult<Self> {
-        let device_id = next_device_id(&request.domain_id, &request.device_id).await?;
+        let device_id = next_device_id(&request.domain, &request.device_id).await?;
         let longitude = empty_string_to_none(request.longitude);
         let latitude = empty_string_to_none(request.latitude);
         let address = empty_string_to_none(request.address);
@@ -101,14 +101,12 @@ impl GbDeviceView {
     }
 }
 
-async fn next_device_id(domain_id: &str, requested_device_id: &str) -> GlobalResult<String> {
+async fn next_device_id(domain: &str, requested_device_id: &str) -> GlobalResult<String> {
     let requested_device_id = requested_device_id.trim();
     if !requested_device_id.is_empty() {
         return Ok(requested_device_id.to_string());
     }
-    let prefix_len = domain_id.len().min(14);
-    let prefix = &domain_id[..prefix_len];
-    let suffix_width = 20usize.saturating_sub(prefix_len).max(1);
+    let prefix = device_id_prefix(domain);
     let like = format!("{prefix}%");
     let max_row: Option<(String,)> = db::fetch_optional_as!(
         (String,),
@@ -116,13 +114,25 @@ async fn next_device_id(domain_id: &str, requested_device_id: &str) -> GlobalRes
         &like,
     )
     .hand_log(|msg| error!("{msg}"))?;
-    let next = max_row
-        .as_ref()
-        .and_then(|(value,)| value.get(prefix_len..))
+    let next = next_device_id_number(&prefix, max_row.as_ref().map(|(value,)| value.as_str()));
+    Ok(format_device_id(&prefix, next))
+}
+
+fn device_id_prefix(domain: &str) -> String {
+    format!("{}1327", domain.trim())
+}
+
+fn next_device_id_number(prefix: &str, max_device_id: Option<&str>) -> u64 {
+    max_device_id
+        .and_then(|value| value.get(prefix.len()..))
         .and_then(|suffix| suffix.parse::<u64>().ok())
         .unwrap_or(0)
-        + 1;
-    Ok(format!("{prefix}{next:0suffix_width$}"))
+        + 1
+}
+
+fn format_device_id(prefix: &str, next: u64) -> String {
+    let suffix_width = 20usize.saturating_sub(prefix.len()).max(1);
+    format!("{prefix}{next:0suffix_width$}")
 }
 
 fn empty_string_to_none(value: String) -> Option<String> {
@@ -325,3 +335,25 @@ impl GbChannelImageView {
 
 const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(ID AS CHAR) AS image_id,DEVICE_ID AS device_id,CHANNEL_ID AS channel_id,COALESCE(ABS_PATH,DIR_PATH) AS image_url,CREATE_TIME AS created_at FROM GB28181_FILE_INFO WHERE DEVICE_ID=? AND CHANNEL_ID=? AND COALESCE(IS_DEL,0)=0 AND COALESCE(FILE_TYPE,0)=0 ORDER BY ID DESC LIMIT 50";
 const GB_CHANNEL_IMAGE_LIST_SQLITE: &str = "SELECT CAST(ID AS TEXT) AS image_id,DEVICE_ID AS device_id,CHANNEL_ID AS channel_id,COALESCE(ABS_PATH,DIR_PATH) AS image_url,CREATE_TIME AS created_at FROM GB28181_FILE_INFO WHERE DEVICE_ID=? AND CHANNEL_ID=? AND COALESCE(IS_DEL,0)=0 AND COALESCE(FILE_TYPE,0)=0 ORDER BY ID DESC LIMIT 50";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_device_id_uses_domain_1327_prefix() {
+        let prefix = device_id_prefix("5101000000");
+
+        assert_eq!(prefix, "51010000001327");
+        assert_eq!(format_device_id(&prefix, 1), "51010000001327000001");
+    }
+
+    #[test]
+    fn auto_device_id_increments_from_max_device_id() {
+        let prefix = device_id_prefix("5101000000");
+        let next = next_device_id_number(&prefix, Some("51010000001327000001"));
+
+        assert_eq!(next, 2);
+        assert_eq!(format_device_id(&prefix, next), "51010000001327000002");
+    }
+}

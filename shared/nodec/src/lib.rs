@@ -5,6 +5,8 @@ use std::time::Duration;
 use base::tokio::sync::mpsc;
 use base::tokio::task::JoinHandle;
 use base::tokio_util::sync::CancellationToken;
+use std::time::Instant;
+
 use base_rpc::{RpcChannelConfig, connect_channel};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
 use gmv_protocol::guard::v1::{
@@ -108,7 +110,24 @@ async fn run_connection(
     sequence: &mut u64,
     event_rx: &mut mpsc::Receiver<NodeEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let channel = connect_channel(&config.channel).await?;
+    let started = Instant::now();
+    base::log::debug!(
+        "node reporter rpc client outbound: service=guard_node_control, endpoint={}",
+        config.channel.endpoint
+    );
+    let channel = connect_channel(&config.channel).await.map_err(|error| {
+        base::log::debug!(
+            "node reporter rpc client inbound: service=guard_node_control, endpoint={}, status=error, elapsed_ms={}, err={error}",
+            config.channel.endpoint,
+            started.elapsed().as_millis()
+        );
+        error
+    })?;
+    base::log::debug!(
+        "node reporter rpc client inbound: service=guard_node_control, endpoint={}, status=ok, elapsed_ms={}",
+        config.channel.endpoint,
+        started.elapsed().as_millis()
+    );
     let mut client = GuardNodeControlClient::new(channel);
     let mut register = config.register.clone();
     register.host_metrics = collector.sample().ok().map(host_metrics);

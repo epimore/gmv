@@ -21,7 +21,7 @@ db:
       check_health: false
 
 log:
-  level: info
+  level: debug
   prefix: guard
   store_path: ./logs
 
@@ -89,7 +89,6 @@ guard:
       pass_crypto_enable: false # 密码是否加密，默认不加密。
       pass: "zaq12345" # 空库首次启动前必须设置；已有用户后可留空，避免长期保存 bootstrap 密码。
       local_login_only: false # 仅从配置文件读取；修改后需重启 guard 生效。
-
 
   integrations:
     mqtt:

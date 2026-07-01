@@ -694,10 +694,10 @@ fn default_grpc_bind_addr() -> SocketAddr {
 }
 
 fn default_heartbeat_interval_ms() -> u64 {
-    5_000
+    6_000
 }
 fn default_heartbeat_timeout_ms() -> u64 {
-    20_000
+    19_000
 }
 
 fn default_bind_addr() -> SocketAddr {

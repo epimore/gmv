@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock},
+    time::Instant,
 };
 
 use base::err::BaseErrorCode;
@@ -58,15 +59,30 @@ async fn guard_control_client() -> GlobalResult<GuardControlClient<Channel>> {
             |msg| base::log::error!("{msg}"),
         ));
     };
+    let started = Instant::now();
+    base::log::debug!(
+        "stream rpc client outbound: service=guard_control, endpoint={}",
+        channel_config.endpoint
+    );
     let channel = base_rpc::connect_channel(channel_config)
         .await
         .map_err(|err| {
+            base::log::debug!(
+                "stream rpc client inbound: service=guard_control, endpoint={}, status=error, elapsed_ms={}, err={err:?}",
+                channel_config.endpoint,
+                started.elapsed().as_millis()
+            );
             GlobalError::new_biz_error(
                 BaseErrorCode::Network.code(),
                 "connect guard control rpc failed",
                 |msg| base::log::error!("{msg}: endpoint={}, err={err:?}", channel_config.endpoint),
             )
         })?;
+    base::log::debug!(
+        "stream rpc client inbound: service=guard_control, endpoint={}, status=ok, elapsed_ms={}",
+        channel_config.endpoint,
+        started.elapsed().as_millis()
+    );
     Ok(GuardControlClient::new(channel))
 }
 
@@ -83,6 +99,17 @@ pub async fn check_playback(
             return false;
         }
     };
+    base::log::debug!(
+        "stream rpc client outbound: method=guard_control.check_playback, req: stream_id={}, token={}, remote_addr={}, output_type={}",
+        stream_id,
+        if token.is_empty() {
+            "<empty>"
+        } else {
+            "<redacted>"
+        },
+        remote_addr.unwrap_or_default(),
+        output_type
+    );
     match client
         .check_playback(tonic::Request::new(CheckPlaybackRequest {
             stream_id: stream_id.to_string(),
@@ -210,7 +237,7 @@ impl StreamGuardNode {
             host_metrics: None,
             capacity: 100,
             zone: String::new(),
-            takeover: false,
+            takeover: cfg!(debug_assertions),
             config: self.config_summary(),
         }
     }
@@ -308,77 +335,79 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StartReceiveRequest>,
     ) -> Result<tonic::Response<StartReceiveResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("stream_control.start_receive, req:{request:?}");
         let mut control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.start_receive(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.start_receive(request)))
     }
 
     async fn stop_receive(
         &self,
         request: tonic::Request<StopReceiveRequest>,
     ) -> Result<tonic::Response<StopReceiveResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("stream_control.stop_receive, req:{request:?}");
         let mut control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.stop_receive(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.stop_receive(request)))
     }
 
     async fn query_stream(
         &self,
         request: tonic::Request<QueryStreamRequest>,
     ) -> Result<tonic::Response<QueryStreamResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("stream_control.query_stream, req:{request:?}");
         let control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.query_stream(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.query_stream(request)))
     }
 
     async fn create_output(
         &self,
         request: tonic::Request<CreateOutputRequest>,
     ) -> Result<tonic::Response<CreateOutputResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("stream_control.create_output, req:{request:?}");
         let mut control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.create_output(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.create_output(request)))
     }
 
     async fn close_output(
         &self,
         request: tonic::Request<CloseOutputRequest>,
     ) -> Result<tonic::Response<CloseOutputResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("stream_control.close_output, req:{request:?}");
         let mut control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.close_output(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.close_output(request)))
     }
 
     async fn get_playback_endpoints(
         &self,
         request: tonic::Request<GetPlaybackEndpointsRequest>,
     ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!("stream_control.get_playback_endpoints, req:{request:?}");
         let control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
         Ok(tonic::Response::new(
-            control.get_playback_endpoints(request.into_inner()),
+            control.get_playback_endpoints(request),
         ))
     }
 
@@ -386,21 +415,29 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.init_media, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         let mut control = self
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.init_media(request.into_inner()),
-        ))
+        Ok(tonic::Response::new(control.init_media(request)))
     }
 
     async fn init_media_ext(
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.init_media_ext, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         Ok(tonic::Response::new(stream_unit_response(
-            decode_payload::<MediaMap>(&request.into_inner().payload_json).and_then(|value| {
+            decode_payload::<MediaMap>(&request.payload_json).and_then(|value| {
                 Register::init_media_ext(value.ssrc, value.ext).map_err(detail_from_error)
             }),
         )))
@@ -410,8 +447,13 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.stream_online, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         Ok(tonic::Response::new(
-            match decode_payload::<StreamKey>(&request.into_inner().payload_json) {
+            match decode_payload::<StreamKey>(&request.payload_json) {
                 Ok(value) => StreamBoolResponse {
                     value: Register::is_exist(value),
                     error: None,
@@ -428,18 +470,25 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
-        Ok(tonic::Response::new(
-            record_info_response(request.into_inner()).await,
-        ))
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.record_info, req: payload_bytes={}",
+            request.payload_json.len()
+        );
+        Ok(tonic::Response::new(record_info_response(request).await))
     }
 
     async fn close_output_by_ssrc(
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.close_output_by_ssrc, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         Ok(tonic::Response::new(stream_unit_response(
-            decode_payload::<StreamInfoQo>(&request.into_inner().payload_json)
-                .and_then(close_output_by_ssrc),
+            decode_payload::<StreamInfoQo>(&request.payload_json).and_then(close_output_by_ssrc),
         )))
     }
 
@@ -447,8 +496,13 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.talk_open, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         Ok(tonic::Response::new(
-            match decode_payload::<TalkOpenReq>(&request.into_inner().payload_json) {
+            match decode_payload::<TalkOpenReq>(&request.payload_json) {
                 Ok(value) => match TalkManager::open(value).await {
                     Ok(response) => json_response(&response),
                     Err(error) => StreamJsonResponse {
@@ -468,8 +522,13 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.talk_answer, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         Ok(tonic::Response::new(stream_unit_response(
-            decode_payload::<TalkAnswerReq>(&request.into_inner().payload_json)
+            decode_payload::<TalkAnswerReq>(&request.payload_json)
                 .and_then(|value| TalkManager::answer(value).map_err(detail_from_error)),
         )))
     }
@@ -478,8 +537,13 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.talk_close, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         Ok(tonic::Response::new(stream_unit_response(
-            decode_payload::<TalkCloseReq>(&request.into_inner().payload_json).map(|value| {
+            decode_payload::<TalkCloseReq>(&request.payload_json).map(|value| {
                 TalkManager::close(&value.talk_id);
             }),
         )))
@@ -489,8 +553,13 @@ impl StreamControl for StreamControlRpc {
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.talk_online, req: payload_bytes={}",
+            request.payload_json.len()
+        );
         Ok(tonic::Response::new(
-            match decode_payload::<TalkCloseReq>(&request.into_inner().payload_json) {
+            match decode_payload::<TalkCloseReq>(&request.payload_json) {
                 Ok(value) => StreamBoolResponse {
                     value: TalkManager::is_online(&value.talk_id),
                     error: None,

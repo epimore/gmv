@@ -1,21 +1,20 @@
 log:
-  level: info
+  level: debug
   prefix: session
   store_path: ./logs
   specify:
-    - crate_name: gmv_session_gb28181::gb::io$  #信令及PJSIP日志
+    - crate_name: gmv_session_gb28181::gb::io$ #信令及PJSIP日志
       level: debug #日志等级
       file_name_prefix: gb #日志文件前缀
-    - crate_name: gmv_session_gb28181::http  #请求日志
+    - crate_name: gmv_session_gb28181::http #请求日志
       level: info #日志等级
       file_name_prefix: web #日志文件前缀
-    - crate_name: sqlx  #sqlx用指全部,可sqlx::xxx
+    - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
       level: warn #日志等级
-
 
 http:
   port: 18567
-  timeout: 30000   #请求超时 单位秒
+  timeout: 30000 #请求超时 单位秒
   server_name: GMV:SESSION
   version: v0.2
 
@@ -41,12 +40,12 @@ db:
       ssl_ca_client_cert_file: path/to/client.crt #SSL 客户端证书 ssl_level:3 生效
       ssl_ca_client_key_file: path/to/client.key #SSL 客户端密钥 ssl_level:3 生效
     pool:
-      max_connections: 100  # 默认100,最大连接池值,即峰值时,操作进行排队
-      min_connections: 10   # 默认等同于max_size,最小连接池值,即空闲时也维持
-      connection_timeout: 8     # 默认8秒,获取连接超时时间(最大255)
-      max_lifetime: 1800     # 默认1800 秒,连接最大存活时间
-      idle_timeout: 60     # 默认60 秒,连接空闲回收
-      check_health: false    # 默认false,连接池维持健康测试
+      max_connections: 100 # 默认100,最大连接池值,即峰值时,操作进行排队
+      min_connections: 10 # 默认等同于max_size,最小连接池值,即空闲时也维持
+      connection_timeout: 8 # 默认8秒,获取连接超时时间(最大255)
+      max_lifetime: 1800 # 默认1800 秒,连接最大存活时间
+      idle_timeout: 60 # 默认60 秒,连接空闲回收
+      check_health: false # 默认false,连接池维持健康测试
 guard:
   endpoint: http://127.0.0.1:18080 # guard 内部gRPC地址，session向guard注册、上报事件、申请路由
   http_endpoint: http://127.0.0.1:8080 # guard 对外HTTP地址，设备图片上传URL由此生成
@@ -62,10 +61,10 @@ server:
     domain: "5101000000" #服务端sip域
     domain_id: "51010000002000000001" #服务端sip域ID
     http_source: http://127.0.0.1:18567 #服务端http接口根路径地址，暴露给三方业务访问调用，默认为本机+http端口，如有反向代理则需修改
-    lan_ip: 172.18.38.186  # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
-    wan_ip: 192.168.0.22  # 公网IP
-    lan_port: 25600  #lan端口
-    wan_port: 25600  #wan端口
+    lan_ip: 172.18.38.186 # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
+    wan_ip: 192.168.0.22 # 公网IP
+    lan_port: 25600 #lan端口
+    wan_port: 25600 #wan端口
   pics:
     push_url: http://127.0.0.1:18567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
     storage_path: ./pics/raw

@@ -115,8 +115,16 @@ impl
                 labels: HashMap::new(),
             });
             let control_identity = node.identity.clone();
+            let control_node_id = control_identity.node_id.clone();
+            let control_addr = grpc.addr;
             let control_cancel = network_rt.cancel.clone();
             base::tokio::spawn(async move {
+                base::log::debug!(
+                    "session rpc service inbound: node_id={}, bind_addr={}, tls={}",
+                    control_node_id,
+                    control_addr,
+                    grpc.tls.enabled
+                );
                 let rpc = SessionControlRpc::new(SessionControlAdapter::new(control_identity));
                 let mut server_config = base_rpc::RpcServerConfig::default();
                 if grpc.tls.enabled {
@@ -157,6 +165,12 @@ impl
                     .await
                 {
                     error!("session control RPC server stopped with error: {err}");
+                } else {
+                    base::log::debug!(
+                        "session rpc service outbound: node_id={}, bind_addr={}",
+                        control_node_id,
+                        control_addr
+                    );
                 }
             });
             let mut reporter = NodeReporterConfig::new(
