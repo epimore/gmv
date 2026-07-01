@@ -98,15 +98,24 @@
         <el-form-item label="SIP设备ID"><el-input v-model="deviceForm.device_id" :disabled="deviceReadonly || !!editingDevice"
             placeholder="新增时留空，由平台按 SIP 服务器 ID 前缀递增生成" /></el-form-item>
         <el-form-item label="Session 节点" required>
-          <el-select v-model="deviceForm.session_node_id" filterable placeholder="请选择 session 节点" style="width: 100%" :disabled="deviceReadonly"
+          <el-select v-model="deviceForm.session_node_id" filterable placeholder="请选择 session 节点" style="width: 100%" :disabled="deviceReadonly" :loading="sessionConfigLoading"
             @change="selectSessionNode">
             <el-option v-for="node in sessionNodes" :key="node.node_id"
-              :label="node.display_name + ' · ' + node.node_id" :value="node.node_id" />
+              :label="nodeLabel(node)" :value="node.node_id" :disabled="!isNodeOnline(node)">
+              <div class="node-option" :class="{ offline: !isNodeOnline(node) }">
+                <span>{{ node.display_name }}</span>
+                <span class="node-status">{{ isNodeOnline(node) ? "在线" : "离线" }}</span>
+              </div>
+            </el-option>
           </el-select>
         </el-form-item>
         <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="SIP服务器ID" required><div class="derived-value">{{ deviceForm.domain_id || "-" }}</div></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="SIP域" required><div class="derived-value">{{ deviceForm.domain || "-" }}</div></el-form-item></el-col>
+        </el-row>
+        <el-row :gutter="16">
+          <el-col :span="12"><el-form-item label="SIP服务器地址"><div class="derived-value">{{ sessionConfig.wan_ip || "-" }}</div></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="SIP服务器端口"><div class="derived-value">{{ sessionConfig.wan_port || "-" }}</div></el-form-item></el-col>
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="设备别名"><el-input v-model="deviceForm.alias" :disabled="deviceReadonly" /></el-form-item></el-col>
@@ -165,7 +174,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { createGbChannel, createGbDevice, deleteGbChannel, deleteGbDevice, listGbChannelImages, listGbChannels, listGbDevices, listNodes, sendGbPtz, startGbPlayback, startGbPreview, takeGbSnapshot, updateGbChannel, updateGbDevice, type GbChannelImageInfo, type GbChannelInfo, type GbChannelPayload, type GbDeviceInfo, type GbDevicePayload, type NodeInfo, type StreamSummary } from '@/api/client';
+import { createGbChannel, createGbDevice, deleteGbChannel, deleteGbDevice, getGbSessionNodeConfig, listGbChannelImages, listGbChannels, listGbDevices, listNodes, sendGbPtz, startGbPlayback, startGbPreview, takeGbSnapshot, updateGbChannel, updateGbDevice, type GbChannelImageInfo, type GbChannelInfo, type GbChannelPayload, type GbDeviceInfo, type GbDevicePayload, type GbSessionConfigInfo, type NodeInfo, type StreamSummary } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
 import { GmvPlayerView, type GmvPtzCommand, type GmvSource } from 'gmv-player';
@@ -184,12 +193,14 @@ const lastAction = ref('');
 const lastStream = ref<StreamSummary>();
 const deviceDialog = ref(false);
 const deviceReadonly = ref(false);
+const sessionConfigLoading = ref(false);
 const channelDialog = ref(false);
 const editingDevice = ref<GbDeviceInfo>();
 const editingChannel = ref<GbChannelInfo>();
 const deviceForm = reactive<GbDevicePayload>(emptyDevice());
 const channelForm = reactive<GbChannelPayload>(emptyChannel());
 const channelFlags = reactive({ ptz: false, playback: false, record: false });
+const sessionConfig = reactive({ wan_ip: "", wan_port: "" });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 const deviceDialogTitle = computed(() => deviceReadonly.value ? "查看接入配置" : editingDevice.value ? "编辑接入配置" : "新增接入配置");
 const playerCapabilities = {
@@ -229,7 +240,27 @@ function emptyDevice(): GbDevicePayload { return { device_id: '', alias: '', ses
 function emptyChannel(): GbChannelPayload { return { channel_id: '', name: '', status: 'UNKNOWN', address: '', longitude: '', latitude: '', ptz_enable: 0, playback_enable: 0, record_enable: 0, talk_enable: 0, audio_enable: 0, alarm_enable: 0, biz_enable: 0, snapshot: 0, sort_no: 0 }; }
 function assign<T extends object>(target: T, source: Partial<T>) { Object.assign(target, source); }
 function statusTone(status?: string) { return (status || '').toLowerCase().includes('online') ? 'ONLINE' : (status || 'UNKNOWN'); }
-async function loadSessionNodes() { const nodes = await listNodes(); sessionNodes.value = nodes.filter((node) => node.service === 'session' || node.protocol === 'gb28181' || node.capabilities.some((item) => item.includes('device.'))); }
+function isGbSessionNode(node: NodeInfo) { return node.kind === "session-gb28181" || node.service === "session-gb28181" || node.protocol === "gb28181"; }
+function isNodeOnline(node?: NodeInfo) { return !!node && node.connection === "CONNECTED" && node.scheduling === "ENABLED"; }
+function nodeLabel(node: NodeInfo) { return node.display_name + (isNodeOnline(node) ? "" : " · 离线"); }
+function clearSessionConfig(clearDomain = true) { if (clearDomain) { deviceForm.domain_id = ""; deviceForm.domain = ""; } sessionConfig.wan_ip = ""; sessionConfig.wan_port = ""; }
+function applySessionConfig(config: GbSessionConfigInfo) { deviceForm.domain_id = config.domain_id; deviceForm.domain = config.domain; sessionConfig.wan_ip = config.wan_ip; sessionConfig.wan_port = String(config.wan_port || ""); }
+async function loadSessionNodeConfig(nodeId: string, clearDomain = true, warn = true) {
+  const node = sessionNodes.value.find((item) => item.node_id === nodeId);
+  if (!isNodeOnline(node)) { clearSessionConfig(clearDomain); return false; }
+  sessionConfigLoading.value = true;
+  try {
+    applySessionConfig(await getGbSessionNodeConfig(nodeId));
+    return true;
+  } catch (error) {
+    clearSessionConfig(clearDomain);
+    if (warn) ElMessage.error(error instanceof Error ? error.message : "Session 节点配置查询失败");
+    return false;
+  } finally {
+    sessionConfigLoading.value = false;
+  }
+}
+async function loadSessionNodes() { const nodes = await listNodes(); sessionNodes.value = nodes.filter(isGbSessionNode); }
 async function loadDevices() { loading.value = true; try { await loadSessionNodes().catch(() => undefined); devices.value = await listGbDevices(); if (!selectedDevice.value && devices.value[0]) await selectDevice(devices.value[0]); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '设备加载失败'); } finally { loading.value = false; } }
 async function selectDevice(row?: GbDeviceInfo) { selectedDevice.value = row; selectedChannel.value = undefined; images.value = []; await loadChannels(); }
 function streamProtocol(endpoint: string): GmvSource["protocol"] {
@@ -258,10 +289,28 @@ async function handlePlayerPtz(command: GmvPtzCommand) {
 }
 async function loadChannels() { if (!selectedDevice.value) { channels.value = []; return; } try { channels.value = await listGbChannels(selectedDevice.value.device_id); selectedChannel.value = channels.value[0]; if (selectedChannel.value) await loadImages(selectedChannel.value); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '通道加载失败'); } }
 async function loadImages(row: GbChannelInfo) { images.value = await listGbChannelImages(row.device_id, row.channel_id).catch(() => []); }
-function applySessionNodeConfig(nodeId: string) { const node = sessionNodes.value.find((item) => item.node_id === nodeId); if (!node) return false; deviceForm.domain_id = node.config.domain_id || ""; deviceForm.domain = node.config.domain || ""; return true; }
-function selectSessionNode(nodeId: string) { applySessionNodeConfig(nodeId); }
-function openDevice(row?: GbDeviceInfo, readonly = false) { deviceReadonly.value = readonly; editingDevice.value = row; const payload: GbDevicePayload = row ? { device_id: row.device_id, session_node_id: row.session_node_id, domain_id: row.domain_id, domain: row.domain, longitude: row.longitude || "", latitude: row.latitude || "", address: row.address || "", pwd: row.pwd || "", pwd_check: row.pwd_check, alias: row.alias || "", status: row.status, heartbeat_sec: row.heartbeat_sec, tenant_id: row.tenant_id || "", sys_org_code: row.sys_org_code || "", create_by: row.create_by || "", update_by: row.update_by || "" } : emptyDevice(); assign(deviceForm, payload); if (deviceForm.session_node_id) applySessionNodeConfig(deviceForm.session_node_id); deviceDialog.value = true; }
-async function saveDevice() { const nodeId = deviceForm.session_node_id; if (!nodeId) return ElMessage.warning("Session 节点必填"); const node = sessionNodes.value.find((item) => item.node_id === nodeId); const domain_id = node?.config.domain_id || ""; const domain = node?.config.domain || ""; if (!domain_id || !domain) return ElMessage.warning("所选 Session 节点缺少 domain_id/domain 配置"); const payload = { ...deviceForm, domain_id, domain }; try { const saved = editingDevice.value ? await updateGbDevice(editingDevice.value.device_id, payload) : await createGbDevice(payload); deviceDialog.value = false; await loadDevices(); selectedDevice.value = devices.value.find((item) => item.device_id === saved.device_id); ElMessage.success("接入配置已保存"); } catch (error) { ElMessage.error(error instanceof Error ? error.message : "设备保存失败"); } }
+async function selectSessionNode(nodeId: string) { await loadSessionNodeConfig(nodeId); }
+async function openDevice(row?: GbDeviceInfo, readonly = false) { deviceReadonly.value = readonly; editingDevice.value = row; clearSessionConfig(false); const payload: GbDevicePayload = row ? { device_id: row.device_id, session_node_id: row.session_node_id, domain_id: row.domain_id, domain: row.domain, longitude: row.longitude || "", latitude: row.latitude || "", address: row.address || "", pwd: row.pwd || "", pwd_check: row.pwd_check, alias: row.alias || "", status: row.status, heartbeat_sec: row.heartbeat_sec, tenant_id: row.tenant_id || "", sys_org_code: row.sys_org_code || "", create_by: row.create_by || "", update_by: row.update_by || "" } : emptyDevice(); assign(deviceForm, payload); deviceDialog.value = true; if (deviceForm.session_node_id) await loadSessionNodeConfig(deviceForm.session_node_id, !row, false); }
+async function saveDevice() {
+  const nodeId = deviceForm.session_node_id;
+  if (!nodeId) return ElMessage.warning("Session 节点必填");
+  const node = sessionNodes.value.find((item) => item.node_id === nodeId);
+  if (!isNodeOnline(node)) return ElMessage.warning("所选 Session 节点离线，不能保存");
+  if (sessionConfigLoading.value) return ElMessage.warning("Session 节点配置正在查询");
+  const domain_id = deviceForm.domain_id || "";
+  const domain = deviceForm.domain || "";
+  if (!domain_id || !domain) return ElMessage.warning("所选 Session 节点缺少 domain_id/domain 配置");
+  const payload = { ...deviceForm, domain_id, domain };
+  try {
+    const saved = editingDevice.value ? await updateGbDevice(editingDevice.value.device_id, payload) : await createGbDevice(payload);
+    deviceDialog.value = false;
+    await loadDevices();
+    selectedDevice.value = devices.value.find((item) => item.device_id === saved.device_id);
+    ElMessage.success("接入配置已保存");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "设备保存失败");
+  }
+}
 async function removeDevice(row: GbDeviceInfo) { await ElMessageBox.confirm(`确认删除接入配置 ${row.device_id}？`, '删除确认', { type: 'warning' }); await deleteGbDevice(row.device_id); if (selectedDevice.value?.device_id === row.device_id) { selectedDevice.value = undefined; channels.value = []; } await loadDevices(); ElMessage.success('接入配置已删除'); }
 function openChannel(row?: GbChannelInfo) { if (!selectedDevice.value) return; editingChannel.value = row; assign(channelForm, row ? { ...row } : emptyChannel()); channelFlags.ptz = Number(row?.ptz_enable ?? 0) > 0; channelFlags.playback = Number(row?.playback_enable ?? 0) > 0; channelFlags.record = Number(row?.record_enable ?? 0) > 0; channelDialog.value = true; }
 async function saveChannel() { if (!selectedDevice.value || !channelForm.channel_id) return ElMessage.warning('通道 ID 必填'); const payload: GbChannelPayload = { ...channelForm, ptz_enable: channelFlags.ptz ? 1 : 0, playback_enable: channelFlags.playback ? 1 : 0, record_enable: channelFlags.record ? 1 : 0 }; try { const saved = editingChannel.value ? await updateGbChannel(selectedDevice.value.device_id, editingChannel.value.channel_id, payload) : await createGbChannel(selectedDevice.value.device_id, payload); channelDialog.value = false; await loadChannels(); selectedChannel.value = channels.value.find((item) => item.channel_id === saved.channel_id); ElMessage.success('通道已保存'); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '通道保存失败'); } }
@@ -278,6 +327,26 @@ onMounted(loadDevices);
   font-size: 12px;
 }
 
+.node-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.node-option.offline {
+  color: var(--muted);
+}
+
+.node-status {
+  font-size: 12px;
+  color: var(--cyan);
+}
+
+.node-option.offline .node-status {
+  color: var(--muted);
+}
 .derived-value {
   min-height: 32px;
   display: flex;

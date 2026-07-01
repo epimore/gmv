@@ -16,7 +16,7 @@ use std::net::{IpAddr, SocketAddr};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::api::v2::control::{BusinessControl, DeviceStreamOptions};
+use crate::api::v2::control::{BusinessControl, DeviceStreamOptions, GbSessionConfigSummary};
 use crate::api::v2::model::{
     AiTaskSummary, AiTaskSummaryState, DeviceSummary, RuntimeStatus, StreamSummary,
     StreamSummaryState,
@@ -75,7 +75,11 @@ pub fn router(state: HttpState) -> Router {
         .route("/users/{username}", post(update_user))
         .route("/integrations/outbox", get(outbox_records))
         .route("/integrations/outbox/{outbox_id}/retry", post(retry_outbox))
-        .route("/gb28181/devices", get(gb_devices))
+        .route(
+            "/gb28181/session-nodes/{node_id}/config",
+            get(gb_session_node_config),
+        )
+        .route("/gb28181/devices", get(gb_devices).post(create_gb_device))
         .route("/gb28181/devices/{device_id}", get(gb_device))
         .route("/gb28181/devices/{device_id}/channels", get(gb_channels))
         .route(
@@ -114,7 +118,7 @@ pub fn router(state: HttpState) -> Router {
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(origins))
                 .allow_credentials(true)
-                .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+                .allow_methods([Method::GET, Method::POST])
                 .allow_headers([CONTENT_TYPE, csrf_header]),
         )
         .layer(SetResponseHeaderLayer::if_not_present(
@@ -394,11 +398,12 @@ impl From<crate::store::model::HostMetricsRecord> for HostMetricsResponse {
 
 impl From<NodeRecord> for NodeResponse {
     fn from(node: NodeRecord) -> Self {
+        let service = node_service(&node);
         Self {
             node_id: node.identity.node_id.clone(),
             instance_id: node.identity.instance_id.clone(),
-            kind: format!("{:?}", node.identity.kind).to_lowercase(),
-            service: node_service(&node),
+            kind: service.clone(),
+            service,
             protocol: node_protocol(&node),
             display_name: node_display_name(&node),
             connection: format!("{:?}", node.connection).to_uppercase(),
@@ -442,11 +447,7 @@ fn node_protocol(node: &NodeRecord) -> Option<String> {
 }
 
 fn node_display_name(node: &NodeRecord) -> String {
-    node.config
-        .get("display_name")
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .unwrap_or_else(|| node.identity.node_id.clone())
+    format!("{}:{}", node_service(node), node.identity.node_id)
 }
 
 async fn nodes(
@@ -1216,6 +1217,50 @@ struct StartAiRequest {
     model: String,
 }
 
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbDeviceRequest {
+    #[serde(default)]
+    device_id: String,
+    #[serde(default)]
+    session_node_id: String,
+    #[serde(default)]
+    domain_id: String,
+    #[serde(default)]
+    domain: String,
+    #[serde(default)]
+    longitude: String,
+    #[serde(default)]
+    latitude: String,
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    pwd: String,
+    #[serde(default)]
+    pwd_check: i64,
+    #[serde(default)]
+    alias: String,
+    #[serde(default = "default_enabled_i64")]
+    status: i64,
+    #[serde(default = "default_heartbeat_sec_i64")]
+    heartbeat_sec: i64,
+    #[serde(default)]
+    tenant_id: String,
+    #[serde(default)]
+    sys_org_code: String,
+    #[serde(default)]
+    create_by: String,
+    #[serde(default)]
+    update_by: String,
+}
+
+fn default_enabled_i64() -> i64 {
+    1
+}
+fn default_heartbeat_sec_i64() -> i64 {
+    60
+}
+
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct GbDeviceResponse {
@@ -1285,6 +1330,14 @@ struct GbChannelImageResponse {
     created_at_ms: i64,
 }
 
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbSessionConfigResponse {
+    domain: String,
+    domain_id: String,
+    wan_ip: String,
+    wan_port: u32,
+}
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 struct GbStreamRequest {
@@ -1303,6 +1356,31 @@ struct GbStreamRequest {
 
 fn empty_to_none(value: String) -> Option<String> {
     if value.is_empty() { None } else { Some(value) }
+}
+
+fn gb_device_request(request: GbDeviceRequest) -> RpcGbDevice {
+    RpcGbDevice {
+        device_id: request.device_id,
+        session_node_id: request.session_node_id,
+        domain_id: request.domain_id,
+        domain: request.domain,
+        longitude: request.longitude,
+        latitude: request.latitude,
+        address: request.address,
+        pwd: request.pwd,
+        pwd_check: request.pwd_check,
+        alias: request.alias,
+        status: request.status,
+        heartbeat_sec: request.heartbeat_sec,
+        del: 0,
+        create_time: String::new(),
+        tenant_id: request.tenant_id,
+        sys_org_code: request.sys_org_code,
+        create_by: request.create_by,
+        update_by: request.update_by,
+        update_time: String::new(),
+        channel_count: 0,
+    }
 }
 
 fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
@@ -1364,6 +1442,14 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
     }
 }
 
+fn gb_session_config_response(record: GbSessionConfigSummary) -> GbSessionConfigResponse {
+    GbSessionConfigResponse {
+        domain: record.domain,
+        domain_id: record.domain_id,
+        wan_ip: record.wan_ip,
+        wan_port: record.wan_port,
+    }
+}
 fn gb_channel_image_response(record: RpcGbChannelImage) -> GbChannelImageResponse {
     GbChannelImageResponse {
         image_id: record.image_id,
@@ -1390,6 +1476,17 @@ fn gb_preview_request(channel_id: String, request: GbStreamRequest) -> PreviewRe
     }
 }
 
+async fn gb_session_node_config(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(node_id): Path<String>,
+) -> Result<Json<GbSessionConfigResponse>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let config = BusinessControl::new(state.api.store())
+        .gb_session_config(&node_id)
+        .await?;
+    Ok(Json(gb_session_config_response(config)))
+}
 async fn gb_devices(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1399,6 +1496,18 @@ async fn gb_devices(
         .list_gb_devices()
         .await?;
     Ok(Json(devices.into_iter().map(gb_device_response).collect()))
+}
+
+async fn create_gb_device(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<GbDeviceRequest>,
+) -> Result<(StatusCode, Json<GbDeviceResponse>), HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    let device = BusinessControl::new(state.api.store())
+        .create_gb_device(gb_device_request(request))
+        .await?;
+    Ok((StatusCode::CREATED, Json(gb_device_response(device))))
 }
 
 async fn gb_device(

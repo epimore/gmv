@@ -1,12 +1,70 @@
+use std::collections::HashMap;
+
 use guard::bus::{BusEvent, BusPriority, BusService};
 use guard::core::{
-    ClockClassifier, ClockState, HealthState, NodeIdentity, NodeKind, generate_instance_id,
+    ClockClassifier, ClockState, ConnectionState, HealthState, NodeIdentity, NodeKind,
+    SchedulingState, generate_instance_id,
 };
-use guard::registry::{HeartbeatReport, RegisterDecision, RegisterRequest, RegistryService};
+use guard::registry::{
+    AllowedNode, HeartbeatReport, RegisterDecision, RegisterRequest, RegistryPolicy,
+    RegistryService,
+};
 use guard::store::InMemoryGuardStore;
 
 fn identity(node_id: &str, instance_id: &str) -> NodeIdentity {
     NodeIdentity::new(node_id, instance_id, NodeKind::Stream)
+}
+
+#[test]
+fn registry_policy_seeds_offline_allowed_nodes() {
+    let store = InMemoryGuardStore::default();
+    let registry = RegistryService::with_policy(
+        store.clone(),
+        RegistryPolicy {
+            allow_unknown_nodes: false,
+            allowed_nodes: HashMap::from([(
+                "session-gb-1".to_string(),
+                AllowedNode {
+                    kind: NodeKind::Session,
+                    service: "session-gb28181".to_string(),
+                    required_capabilities: vec!["protocol.gb28181".to_string()],
+                },
+            )]),
+        },
+    );
+
+    let node = store.get_node("session-gb-1").unwrap();
+    assert_eq!(node.connection, ConnectionState::Disconnected);
+    assert_eq!(node.health, HealthState::Offline);
+    assert_eq!(node.scheduling, SchedulingState::Disabled);
+    assert_eq!(node.capacity, 0);
+    assert_eq!(
+        node.config.get("service").map(String::as_str),
+        Some("session-gb28181")
+    );
+
+    assert_eq!(
+        registry
+            .register(RegisterRequest {
+                identity: NodeIdentity::new("session-gb-1", "inst-1", NodeKind::Session),
+                capabilities: vec!["protocol.gb28181".to_string()],
+                endpoints: vec![],
+                capacity: 1,
+                host_metrics: Default::default(),
+                zone: None,
+                now_ms: 1_000,
+                takeover: false,
+                config: Default::default(),
+            })
+            .unwrap(),
+        RegisterDecision::Accepted
+    );
+    let node = store.get_node("session-gb-1").unwrap();
+    assert_eq!(node.connection, ConnectionState::Connected);
+    assert_eq!(
+        node.config.get("service").map(String::as_str),
+        Some("session-gb28181")
+    );
 }
 
 #[test]

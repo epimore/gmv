@@ -78,6 +78,80 @@ button, input { font: inherit; }
 .el-table th.el-table__cell, .el-table tr, .el-table td.el-table__cell { background: transparent !important; }
 .el-table__inner-wrapper::before { background: rgba(100, 203, 255, .13) !important; }
 .el-progress-bar__outer { background: rgba(104, 176, 255, .16); }
+.el-overlay {
+  background-color: rgba(1, 6, 16, .72) !important;
+  backdrop-filter: blur(8px);
+}
+.el-dialog {
+  --el-dialog-bg-color: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(13, 29, 58, .96), rgba(7, 16, 34, .94)) !important;
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.el-dialog__header {
+  margin-right: 0;
+  padding: 18px 20px 10px;
+  border-bottom: 1px solid rgba(100, 203, 255, .12);
+}
+.el-dialog__title {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: .03em;
+}
+.el-dialog__headerbtn .el-dialog__close { color: var(--muted); }
+.el-dialog__headerbtn:hover .el-dialog__close { color: var(--cyan); }
+.el-dialog__body {
+  padding: 18px 20px 8px;
+  color: var(--text);
+}
+.el-dialog__footer {
+  padding: 12px 20px 18px;
+  border-top: 1px solid rgba(100, 203, 255, .12);
+}
+.el-form-item__label { color: var(--muted) !important; }
+.el-form-item.is-required:not(.is-no-asterisk).asterisk-left > .el-form-item__label::before { color: var(--red); }
+.el-input__wrapper.is-focus, .el-select__wrapper.is-focused {
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 1px rgba(52, 216, 255, .18) !important;
+}
+.el-input.is-disabled .el-input__wrapper, .el-select.is-disabled .el-select__wrapper {
+  background: rgba(49, 63, 84, .72) !important;
+  border-color: rgba(120, 150, 180, .20);
+}
+.el-input.is-disabled .el-input__inner, .el-select__placeholder.is-transparent {
+  color: var(--muted) !important;
+  -webkit-text-fill-color: var(--muted) !important;
+}
+.el-input-number__decrease, .el-input-number__increase {
+  background: rgba(7, 16, 34, .95) !important;
+  border-color: rgba(105, 205, 255, .22) !important;
+  color: var(--text) !important;
+}
+.el-switch__label { color: var(--muted); }
+.el-switch__label.is-active { color: var(--cyan); }
+.el-popper.is-light, .el-select__popper.el-popper {
+  border: 1px solid var(--line) !important;
+  background: var(--surface-strong) !important;
+  color: var(--text);
+}
+.el-popper.is-light .el-popper__arrow::before {
+  border-color: var(--line) !important;
+  background: var(--surface-strong) !important;
+}
+.el-select-dropdown__item { color: var(--text); }
+.el-select-dropdown__item.hover, .el-select-dropdown__item:hover { background: rgba(52, 216, 255, .10); }
+.el-select-dropdown__item.selected {
+  color: var(--cyan);
+  font-weight: 800;
+}
+.el-select-dropdown__item.is-disabled {
+  background: transparent;
+  color: var(--faint);
+}
+
 
 .app-shell { display: grid; grid-template-columns: 256px 1fr; min-height: 100vh; position: relative; }
 .console-texture {

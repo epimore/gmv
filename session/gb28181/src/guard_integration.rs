@@ -26,12 +26,14 @@ use gmv_protocol::guard::v1::{
     node_to_guard_message,
 };
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState, GbChannel,
-    GbChannelImage, GbDevice, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest,
-    GetGbDeviceResponse, ListGbChannelImagesRequest, ListGbChannelImagesResponse,
-    ListGbChannelsRequest, ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse,
-    SessionHookRequest, SessionHookResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
-    session_control_server::SessionControl, session_hook_server::SessionHook,
+    ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
+    DeviceStreamResponse, DeviceStreamState, GbChannel, GbChannelImage, GbDevice,
+    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
+    GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
+    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
+    ListGbDevicesRequest, ListGbDevicesResponse, SessionHookRequest, SessionHookResponse,
+    StartDeviceStreamRequest, StopDeviceStreamRequest, session_control_server::SessionControl,
+    session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
@@ -572,6 +574,19 @@ impl SessionControl for SessionControlRpc {
         Ok(tonic::Response::new(response))
     }
 
+    async fn get_session_config(
+        &self,
+        _request: tonic::Request<GetSessionConfigRequest>,
+    ) -> Result<tonic::Response<GetSessionConfigResponse>, tonic::Status> {
+        let conf = crate::gb::SessionConf::get_session_by_conf();
+        Ok(tonic::Response::new(GetSessionConfigResponse {
+            domain: conf.domain,
+            domain_id: conf.domain_id,
+            wan_ip: conf.wan_ip.to_string(),
+            wan_port: u32::from(conf.wan_port),
+        }))
+    }
+
     async fn list_gb_devices(
         &self,
         _request: tonic::Request<ListGbDevicesRequest>,
@@ -597,6 +612,23 @@ impl SessionControl for SessionControlRpc {
             .map_err(storage_status)?
             .map(|device| gb_device_proto(device, &session_node_id));
         Ok(tonic::Response::new(GetGbDeviceResponse { device }))
+    }
+
+    async fn create_gb_device(
+        &self,
+        request: tonic::Request<CreateGbDeviceRequest>,
+    ) -> Result<tonic::Response<CreateGbDeviceResponse>, tonic::Status> {
+        let session_node_id = self.session_node_id()?;
+        let request = request.into_inner();
+        let device = request
+            .device
+            .ok_or_else(|| tonic::Status::invalid_argument("device is required"))?;
+        let device = crate::storage::guard_query::GbDeviceView::create(gb_device_create(device))
+            .await
+            .map_err(storage_status)?;
+        Ok(tonic::Response::new(CreateGbDeviceResponse {
+            device: Some(gb_device_proto(device, &session_node_id)),
+        }))
     }
 
     async fn list_gb_channels(
@@ -1126,6 +1158,26 @@ fn gb_device_proto(
         update_by: row.update_by.unwrap_or_default(),
         update_time: datetime_string(row.update_time),
         channel_count: row.channel_count.try_into().unwrap_or(u32::MAX),
+    }
+}
+
+fn gb_device_create(device: GbDevice) -> crate::storage::guard_query::GbDeviceCreate {
+    crate::storage::guard_query::GbDeviceCreate {
+        device_id: device.device_id,
+        domain_id: device.domain_id,
+        domain: device.domain,
+        longitude: device.longitude,
+        latitude: device.latitude,
+        address: device.address,
+        pwd: device.pwd,
+        pwd_check: device.pwd_check,
+        alias: device.alias,
+        status: device.status,
+        heartbeat_sec: device.heartbeat_sec,
+        tenant_id: device.tenant_id,
+        sys_org_code: device.sys_org_code,
+        create_by: device.create_by,
+        update_by: device.update_by,
     }
 }
 

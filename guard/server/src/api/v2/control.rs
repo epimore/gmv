@@ -7,8 +7,9 @@ use gmv_protocol::common::v1::{
 };
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, DeviceStreamState, GbChannel, GbChannelImage, GbDevice, GetGbChannelRequest,
-    GetGbDeviceRequest, ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest,
+    ControlPtzRequest, CreateGbDeviceRequest, DeviceStreamState, GbChannel, GbChannelImage,
+    GbDevice, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
+    ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest,
     StartDeviceStreamRequest, StopDeviceStreamRequest,
 };
 
@@ -29,6 +30,14 @@ pub struct BusinessControl {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct GbSessionConfigSummary {
+    pub domain: String,
+    pub domain_id: String,
+    pub wan_ip: String,
+    pub wan_port: u32,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct DeviceStreamOptions {
     pub token: String,
     pub start_time_sec: u32,
@@ -46,6 +55,36 @@ impl BusinessControl {
         Self { store }
     }
 
+    pub async fn gb_session_config(&self, node_id: &str) -> GuardResult<GbSessionConfigSummary> {
+        let session = self
+            .store
+            .get_node(node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 session node {node_id}")))?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(GuardError::Conflict(format!(
+                "GB28181 session node {node_id} is offline"
+            )));
+        }
+        let mut client = self.session_client(&session).await?;
+        let response = client
+            .get_session_config(GetSessionConfigRequest {})
+            .await
+            .map_err(session_rpc_error)?
+            .into_inner();
+        Ok(GbSessionConfigSummary {
+            domain: response.domain,
+            domain_id: response.domain_id,
+            wan_ip: response.wan_ip,
+            wan_port: response.wan_port,
+        })
+    }
     pub async fn list_gb_devices(&self) -> GuardResult<Vec<GbDevice>> {
         let mut devices = Vec::new();
         for session in self.session_nodes() {
@@ -64,6 +103,43 @@ impl BusinessControl {
         }
         devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
         Ok(devices)
+    }
+
+    pub async fn create_gb_device(&self, mut device: GbDevice) -> GuardResult<GbDevice> {
+        let node_id = device.session_node_id.clone();
+        let session = self
+            .store
+            .get_node(&node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 session node {node_id}")))?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(GuardError::Conflict(format!(
+                "GB28181 session node {node_id} is offline"
+            )));
+        }
+        device.session_node_id.clear();
+        let mut client = self.session_client(&session).await?;
+        let mut response = client
+            .create_gb_device(CreateGbDeviceRequest {
+                device: Some(device),
+            })
+            .await
+            .map_err(session_rpc_error)?
+            .into_inner()
+            .device
+            .ok_or_else(|| {
+                GuardError::Conflict("session returned empty GB28181 device".to_string())
+            })?;
+        if response.session_node_id.is_empty() {
+            response.session_node_id = session.identity.node_id;
+        }
+        Ok(response)
     }
 
     pub async fn get_gb_device(&self, device_id: &str) -> GuardResult<Option<GbDevice>> {
@@ -674,6 +750,15 @@ async fn connect_rpc(uri: &str, name: &str) -> GuardResult<tonic::transport::Cha
         .map_err(|error| GuardError::Conflict(format!("connect {name} RPC failed: {error}")))
 }
 
+fn is_gb_session_node(node: &NodeRecord) -> bool {
+    node.identity.kind == NodeKind::Session
+        && (node.config.get("service").map(String::as_str) == Some("session-gb28181")
+            || node.config.get("protocol").map(String::as_str) == Some("gb28181")
+            || node
+                .capabilities
+                .iter()
+                .any(|item| item == "protocol.gb28181"))
+}
 fn session_rpc_error(error: tonic::Status) -> GuardError {
     GuardError::Conflict(format!("session RPC failed: {error}"))
 }

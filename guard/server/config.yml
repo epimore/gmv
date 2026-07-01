@@ -56,10 +56,10 @@ guard:
   registry:
     allow_unknown_nodes: true # false时仅允许allowed_nodes中声明的节点注册
     allowed_nodes: []
-    # - id: s1
-    #   kind: stream # session | stream | avai
+    # - id: session-gb-1
+    #   kind: session-gb28181 # session-gb28181 | session-onvif | stream | avai
     #   required_capabilities:
-    #     - live
+    #     - protocol.gb28181
 
   database:
     backend: sqlite # sqlite | mysql

@@ -28,9 +28,11 @@ let unauthorizedHandler: (() => void) | undefined;
 export function setUnauthorizedHandler(handler: () => void): void { unauthorizedHandler = handler; }
 
 async function requestAt<T>(url: string, init: RequestInit = {}, redirectOnUnauthorized = true): Promise<T> {
+  const method = (init.method ?? 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'POST') throw new Error('HTTP method is not allowed: ' + method);
   const headers = new Headers(init.headers);
   if (init.body) headers.set('content-type', 'application/json');
-  if (csrfToken && init.method && init.method !== 'GET') headers.set('x-csrf-token', csrfToken);
+  if (csrfToken && method === 'POST') headers.set('x-csrf-token', csrfToken);
   const response = await fetch(url, { ...init, headers, credentials: 'include' });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'HTTP ' + response.status }));
@@ -73,6 +75,7 @@ export const healthLive = () => requestAt<HealthInfo>('/health/live');
 export const healthReady = () => requestAt<HealthInfo>('/health/ready');
 
 
+export interface GbSessionConfigInfo { domain: string; domain_id: string; wan_ip: string; wan_port: number }
 export interface GbDeviceInfo { device_id: string; session_node_id: string; domain_id: string; domain: string; longitude: string | null; latitude: string | null; address: string | null; pwd: string | null; pwd_check: number; alias: string | null; status: number; heartbeat_sec: number; del: number; create_time: string | null; tenant_id: string | null; sys_org_code: string | null; create_by: string | null; update_by: string | null; update_time: string | null; channel_count: number }
 export interface GbDevicePayload { device_id?: string; session_node_id?: string; domain_id?: string; domain?: string; longitude?: string; latitude?: string; address?: string; pwd?: string; pwd_check?: number; alias?: string; status?: number; heartbeat_sec?: number; tenant_id?: string; sys_org_code?: string; create_by?: string; update_by?: string }
 export interface GbChannelInfo { device_id: string; channel_id: string; name: string; manufacturer: string; model: string; owner: string; status: string; civil_code: string; address: string; parent_id: string; ip_address: string; port: number; longitude: string; latitude: string; ptz_type: string; alias_name: string; pic_url: string; snapshot: number; over_pic_id: string; ptz_enable: number; talk_enable: number; audio_enable: number; record_enable: number; playback_enable: number; alarm_enable: number; biz_enable: number; sort_no: number; created_at_ms: number; updated_at_ms: number }
@@ -81,14 +84,15 @@ export interface GbChannelImageInfo { image_id: string; device_id: string; chann
 export interface GbStreamPayload { request_id: string; token?: string; start_time_sec?: number; end_time_sec?: number; trans_mode?: string; output_type?: string }
 
 const gbPath = (value: string) => encodeURIComponent(value);
+export const getGbSessionNodeConfig = (nodeId: string) => request<GbSessionConfigInfo>('/gb28181/session-nodes/' + gbPath(nodeId) + '/config');
 export const listGbDevices = () => request<GbDeviceInfo[]>('/gb28181/devices');
 export const createGbDevice = (payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices', { method: 'POST', body: JSON.stringify(payload) });
-export const updateGbDevice = (deviceId: string, payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices/' + gbPath(deviceId), { method: 'PUT', body: JSON.stringify(payload) });
-export const deleteGbDevice = (deviceId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId), { method: 'DELETE' });
+export const updateGbDevice = (deviceId: string, payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices/' + gbPath(deviceId), { method: 'POST', body: JSON.stringify(payload) });
+export const deleteGbDevice = (deviceId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId) + '/delete', { method: 'POST', body: '{}' });
 export const listGbChannels = (deviceId: string) => request<GbChannelInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels');
 export const createGbChannel = (deviceId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels', { method: 'POST', body: JSON.stringify(payload) });
-export const updateGbChannel = (deviceId: string, channelId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'PUT', body: JSON.stringify(payload) });
-export const deleteGbChannel = (deviceId: string, channelId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'DELETE' });
+export const updateGbChannel = (deviceId: string, channelId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'POST', body: JSON.stringify(payload) });
+export const deleteGbChannel = (deviceId: string, channelId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/delete', { method: 'POST', body: '{}' });
 export const listGbChannelImages = (deviceId: string, channelId: string) => request<GbChannelImageInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/images');
 export const startGbPreview = (deviceId: string, channelId: string, payload: GbStreamPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/preview', { method: 'POST', body: JSON.stringify(payload) });
 export const startGbPlayback = (deviceId: string, channelId: string, payload: GbStreamPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/playback', { method: 'POST', body: JSON.stringify(payload) });

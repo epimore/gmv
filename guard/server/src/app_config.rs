@@ -186,6 +186,12 @@ impl RegistryConfig {
                     "guard.registry.allowed_nodes id and kind are required".to_string(),
                 ));
             }
+            if parse_allowed_node_kind(&node.kind).is_none() {
+                return Err(GuardError::InvalidConfig(format!(
+                    "guard.registry.allowed_nodes kind {} is invalid",
+                    node.kind
+                )));
+            }
             if !seen.insert(node.id.clone()) {
                 return Err(GuardError::InvalidConfig(format!(
                     "guard.registry.allowed_nodes duplicate id {}",
@@ -201,16 +207,12 @@ impl RegistryConfig {
             .allowed_nodes
             .iter()
             .filter_map(|node| {
-                let kind = match node.kind.as_str() {
-                    "session" => crate::core::NodeKind::Session,
-                    "stream" => crate::core::NodeKind::Stream,
-                    "avai" => crate::core::NodeKind::Avai,
-                    _ => return None,
-                };
+                let (kind, service) = parse_allowed_node_kind(&node.kind)?;
                 Some((
                     node.id.clone(),
                     crate::registry::AllowedNode {
                         kind,
+                        service: service.to_string(),
                         required_capabilities: node.required_capabilities.clone(),
                     },
                 ))
@@ -230,6 +232,16 @@ pub struct AllowedNodeConfig {
     pub kind: String,
     #[serde(default)]
     pub required_capabilities: Vec<String>,
+}
+
+fn parse_allowed_node_kind(kind: &str) -> Option<(crate::core::NodeKind, &'static str)> {
+    match kind {
+        "session-gb28181" => Some((crate::core::NodeKind::Session, "session-gb28181")),
+        "session-onvif" => Some((crate::core::NodeKind::Session, "session-onvif")),
+        "stream" => Some((crate::core::NodeKind::Stream, "stream")),
+        "avai" => Some((crate::core::NodeKind::Avai, "avai")),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Deserialize)]

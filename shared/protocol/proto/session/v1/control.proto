@@ -5,6 +5,7 @@ package gmv.session.v1;
 import "common/v1/types.proto";
 
 service SessionControl {
+  rpc GetSessionConfig(GetSessionConfigRequest) returns (GetSessionConfigResponse);
   rpc StartLive(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StartPlayback(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StartDownload(StartDeviceStreamRequest) returns (DeviceStreamResponse);
@@ -13,6 +14,7 @@ service SessionControl {
   rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
   rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
   rpc GetGbDevice(GetGbDeviceRequest) returns (GetGbDeviceResponse);
+  rpc CreateGbDevice(CreateGbDeviceRequest) returns (CreateGbDeviceResponse);
   rpc ListGbChannels(ListGbChannelsRequest) returns (ListGbChannelsResponse);
   rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
   rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
@@ -87,6 +89,15 @@ message ControlPtzResponse {
   gmv.common.v1.ErrorDetail error = 2;
 }
 
+message GetSessionConfigRequest {}
+
+message GetSessionConfigResponse {
+  string domain = 1;
+  string domain_id = 2;
+  string wan_ip = 3;
+  uint32 wan_port = 4;
+}
+
 message ListGbDevicesRequest {}
 
 message GetGbDeviceRequest {
@@ -98,6 +109,14 @@ message ListGbDevicesResponse {
 }
 
 message GetGbDeviceResponse {
+  GbDevice device = 1;
+}
+
+message CreateGbDeviceRequest {
+  GbDevice device = 1;
+}
+
+message CreateGbDeviceResponse {
   GbDevice device = 1;
 }
 

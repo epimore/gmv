@@ -109,6 +109,23 @@ async fn login(app: &axum::Router, username: &str) -> (String, String) {
 }
 
 #[test]
+fn gb28181_device_create_post_route_is_registered() {
+    run_async(async {
+        let app = test_app(InMemoryGuardStore::default());
+        let (status, _, _) = request(
+            &app,
+            Request::post("/api/v2/gb28181/devices")
+                .header(ORIGIN, ORIGIN_VALUE)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({}).to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    });
+}
+
+#[test]
 fn nodes_expose_session_protocol_and_service_metadata() {
     run_async(async {
         let store = InMemoryGuardStore::default();
@@ -144,10 +161,10 @@ fn nodes_expose_session_protocol_and_service_metadata() {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body[0]["kind"], "session");
+        assert_eq!(body[0]["kind"], "session-gb28181");
         assert_eq!(body[0]["service"], "session-gb28181");
         assert_eq!(body[0]["protocol"], "gb28181");
-        assert_eq!(body[0]["display_name"], "GB28181 会话节点 1");
+        assert_eq!(body[0]["display_name"], "session-gb28181:session-gb-1");
     });
 }
 

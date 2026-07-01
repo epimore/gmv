@@ -1,9 +1,28 @@
 use base::chrono::NaiveDateTime;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use sqlx::FromRow;
 
 use crate::storage::db;
+
+#[derive(Debug, Clone, Default)]
+pub struct GbDeviceCreate {
+    pub device_id: String,
+    pub domain_id: String,
+    pub domain: String,
+    pub longitude: String,
+    pub latitude: String,
+    pub address: String,
+    pub pwd: String,
+    pub pwd_check: i64,
+    pub alias: String,
+    pub status: i64,
+    pub heartbeat_sec: i64,
+    pub tenant_id: String,
+    pub sys_org_code: String,
+    pub create_by: String,
+    pub update_by: String,
+}
 
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct GbDeviceView {
@@ -29,6 +48,42 @@ pub struct GbDeviceView {
 }
 
 impl GbDeviceView {
+    pub async fn create(request: GbDeviceCreate) -> GlobalResult<Self> {
+        let device_id = next_device_id(&request.domain_id, &request.device_id).await?;
+        let longitude = empty_string_to_none(request.longitude);
+        let latitude = empty_string_to_none(request.latitude);
+        let address = empty_string_to_none(request.address);
+        let pwd = empty_string_to_none(request.pwd);
+        let alias = empty_string_to_none(request.alias);
+        let tenant_id = empty_string_to_i64(request.tenant_id);
+        let sys_org_code = empty_string_to_none(request.sys_org_code);
+        let create_by = empty_string_to_none(request.create_by);
+        let update_by = empty_string_to_none(request.update_by);
+        db::execute!(
+            r#"INSERT INTO GB28181_OAUTH (DEVICE_ID,DOMAIN_ID,DOMAIN,longitude,latitude,address,PWD,PWD_CHECK,ALIAS,STATUS,HEARTBEAT_SEC,DEL,CREATE_TIME,tenant_id,sys_org_code,create_by,update_by,update_time)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,0,CURRENT_TIMESTAMP,?,?,?,?,CURRENT_TIMESTAMP)"#,
+            &device_id,
+            &request.domain_id,
+            &request.domain,
+            longitude,
+            latitude,
+            address,
+            pwd,
+            request.pwd_check,
+            alias,
+            request.status,
+            request.heartbeat_sec,
+            tenant_id,
+            sys_org_code,
+            create_by,
+            update_by,
+        )
+        .hand_log(|msg| error!("{msg}"))?;
+        Self::get(&device_id).await?.ok_or_else(|| {
+            GlobalError::new_sys_error("created GB28181 device is missing", |msg| error!("{msg}"))
+        })
+    }
+
     pub async fn list() -> GlobalResult<Vec<Self>> {
         let sql = match db::backend() {
             db::SessionDatabaseBackend::Mysql => GB_DEVICE_LIST_MYSQL,
@@ -43,6 +98,44 @@ impl GbDeviceView {
             db::SessionDatabaseBackend::Sqlite => GB_DEVICE_GET_SQLITE,
         };
         db::fetch_optional_as!(Self, sql, device_id).hand_log(|msg| error!("{msg}"))
+    }
+}
+
+async fn next_device_id(domain_id: &str, requested_device_id: &str) -> GlobalResult<String> {
+    let requested_device_id = requested_device_id.trim();
+    if !requested_device_id.is_empty() {
+        return Ok(requested_device_id.to_string());
+    }
+    let prefix_len = domain_id.len().min(14);
+    let prefix = &domain_id[..prefix_len];
+    let suffix_width = 20usize.saturating_sub(prefix_len).max(1);
+    let like = format!("{prefix}%");
+    let max_row: Option<(String,)> = db::fetch_optional_as!(
+        (String,),
+        "SELECT DEVICE_ID FROM GB28181_OAUTH WHERE DEVICE_ID LIKE ? ORDER BY DEVICE_ID DESC LIMIT 1",
+        &like,
+    )
+    .hand_log(|msg| error!("{msg}"))?;
+    let next = max_row
+        .as_ref()
+        .and_then(|(value,)| value.get(prefix_len..))
+        .and_then(|suffix| suffix.parse::<u64>().ok())
+        .unwrap_or(0)
+        + 1;
+    Ok(format!("{prefix}{next:0suffix_width$}"))
+}
+
+fn empty_string_to_none(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+fn empty_string_to_i64(value: String) -> Option<i64> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        value.parse().ok()
     }
 }
 

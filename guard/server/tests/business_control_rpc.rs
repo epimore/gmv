@@ -9,8 +9,9 @@ use gmv_protocol::avai::v1::{
 use gmv_protocol::common::v1::PageResponse;
 use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, ControlPtzResponse, DeviceStreamResponse, DeviceStreamState,
-    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
+    ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
+    DeviceStreamResponse, DeviceStreamState, GetGbChannelRequest, GetGbChannelResponse,
+    GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
     ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, StartDeviceStreamRequest,
     StopDeviceStreamRequest,
@@ -24,13 +25,143 @@ use gmv_protocol::stream::v1::{
     StreamUnitResponse,
 };
 use guard::api::v2::control::BusinessControl;
-use guard::core::{NodeIdentity, NodeKind};
+use guard::core::{ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState};
 use guard::mqttc::{CommandAction, MqttCommandExecutor, RoutedCommand};
 use guard::operation::{OperationService, OperationStatus};
 use guard::registry::{RegisterRequest, RegistryService};
 use guard::store::InMemoryGuardStore;
-use guard::store::model::{EndpointModeRecord, EndpointRecord};
+use guard::store::model::{EndpointModeRecord, EndpointRecord, HostMetricsRecord, NodeRecord};
 
+#[test]
+fn gb28181_create_device_uses_selected_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            let registry = RegistryService::new(store.clone());
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    capacity: 8,
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let device = BusinessControl::new(store)
+                .create_gb_device(gmv_protocol::session::v1::GbDevice {
+                    session_node_id: "session-gb-online".to_string(),
+                    domain_id: "34020000002000000001".to_string(),
+                    domain: "3402000000".to_string(),
+                    alias: "front door".to_string(),
+                    status: 1,
+                    heartbeat_sec: 60,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(device.session_node_id, "session-gb-online");
+            assert_eq!(device.device_id, "34020000001320000001");
+            assert_eq!(device.alias, "front door");
+        });
+}
+
+#[test]
+fn gb28181_session_node_config_uses_rpc_and_skips_offline_nodes() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            let registry = RegistryService::new(store.clone());
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    capacity: 8,
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                    ]),
+                })
+                .unwrap();
+            store.upsert_node(NodeRecord {
+                identity: NodeIdentity::new("session-gb-offline", "offline", NodeKind::Session),
+                connection: ConnectionState::Disconnected,
+                health: HealthState::Offline,
+                scheduling: SchedulingState::Disabled,
+                endpoints: vec![],
+                capabilities: vec!["protocol.gb28181".to_string()],
+                capacity: 0,
+                pending_leases: 0,
+                host_metrics: HostMetricsRecord::default(),
+                business_metrics: HashMap::new(),
+                config: HashMap::from([
+                    ("service".to_string(), "session-gb28181".to_string()),
+                    ("protocol".to_string(), "gb28181".to_string()),
+                ]),
+                zone: None,
+                last_seen_at_ms: 0,
+                generation: 0,
+                sequence: 0,
+            });
+
+            let config = BusinessControl::new(store.clone())
+                .gb_session_config("session-gb-online")
+                .await
+                .unwrap();
+            assert_eq!(config.domain, "3402000000");
+            assert_eq!(config.domain_id, "34020000002000000001");
+            assert_eq!(config.wan_ip, "101.33.200.169");
+            assert_eq!(config.wan_port, 25600);
+
+            let error = BusinessControl::new(store)
+                .gb_session_config("session-gb-offline")
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("offline"));
+        });
+}
 #[test]
 fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() {
     base::tokio::runtime::Runtime::new()
@@ -369,6 +500,17 @@ impl SessionControl for FakeSession {
         }))
     }
 
+    async fn get_session_config(
+        &self,
+        _request: tonic::Request<GetSessionConfigRequest>,
+    ) -> Result<tonic::Response<GetSessionConfigResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetSessionConfigResponse {
+            domain: "3402000000".to_string(),
+            domain_id: "34020000002000000001".to_string(),
+            wan_ip: "101.33.200.169".to_string(),
+            wan_port: 25600,
+        }))
+    }
     async fn list_gb_devices(
         &self,
         _request: tonic::Request<ListGbDevicesRequest>,
@@ -383,6 +525,20 @@ impl SessionControl for FakeSession {
         _request: tonic::Request<GetGbDeviceRequest>,
     ) -> Result<tonic::Response<GetGbDeviceResponse>, tonic::Status> {
         Ok(tonic::Response::new(GetGbDeviceResponse { device: None }))
+    }
+
+    async fn create_gb_device(
+        &self,
+        request: tonic::Request<CreateGbDeviceRequest>,
+    ) -> Result<tonic::Response<CreateGbDeviceResponse>, tonic::Status> {
+        let mut device = request.into_inner().device.unwrap_or_default();
+        if device.device_id.is_empty() {
+            device.device_id = "34020000001320000001".to_string();
+        }
+        device.session_node_id = "session-gb-online".to_string();
+        Ok(tonic::Response::new(CreateGbDeviceResponse {
+            device: Some(device),
+        }))
     }
 
     async fn list_gb_channels(

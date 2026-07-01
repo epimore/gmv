@@ -36,6 +36,7 @@ impl Default for RegistryPolicy {
 #[derive(Debug, Clone)]
 pub struct AllowedNode {
     pub kind: NodeKind,
+    pub service: String,
     pub required_capabilities: Vec<String>,
 }
 
@@ -68,7 +69,37 @@ impl RegistryService {
     }
 
     pub fn with_policy(store: InMemoryGuardStore, policy: RegistryPolicy) -> Self {
-        Self { store, policy }
+        let service = Self { store, policy };
+        service.seed_allowed_nodes();
+        service
+    }
+
+    fn seed_allowed_nodes(&self) {
+        for (node_id, allowed) in &self.policy.allowed_nodes {
+            if self.store.get_node(node_id).is_some() {
+                continue;
+            }
+            self.store.upsert_node(NodeRecord {
+                identity: NodeIdentity::new(node_id.clone(), "offline", allowed.kind),
+                connection: ConnectionState::Disconnected,
+                health: HealthState::Offline,
+                scheduling: SchedulingState::Disabled,
+                endpoints: Vec::new(),
+                capabilities: allowed.required_capabilities.clone(),
+                capacity: 0,
+                pending_leases: 0,
+                host_metrics: HostMetricsRecord::default(),
+                business_metrics: std::collections::HashMap::new(),
+                config: std::collections::HashMap::from([(
+                    "service".to_string(),
+                    allowed.service.clone(),
+                )]),
+                zone: None,
+                last_seen_at_ms: 0,
+                generation: 0,
+                sequence: 0,
+            });
+        }
     }
 
     pub fn register(&self, request: RegisterRequest) -> GuardResult<RegisterDecision> {
@@ -82,6 +113,12 @@ impl RegistryService {
         self.validate_policy(&request)?;
         let decision = match self.store.get_node(&request.identity.node_id) {
             None => RegisterDecision::Accepted,
+            Some(existing)
+                if existing.connection == ConnectionState::Disconnected
+                    && existing.generation == 0 =>
+            {
+                RegisterDecision::Accepted
+            }
             Some(existing) if existing.identity.instance_id == request.identity.instance_id => {
                 RegisterDecision::Reconnected
             }
@@ -95,6 +132,12 @@ impl RegistryService {
             }
             Some(_) => RegisterDecision::SupersededOldInstance,
         };
+        let mut config = request.config;
+        if let Some(allowed) = self.policy.allowed_nodes.get(&request.identity.node_id) {
+            config
+                .entry("service".to_string())
+                .or_insert_with(|| allowed.service.clone());
+        }
         let record = NodeRecord {
             identity: request.identity,
             connection: ConnectionState::Connected,
@@ -106,7 +149,7 @@ impl RegistryService {
             pending_leases: 0,
             host_metrics: request.host_metrics,
             business_metrics: std::collections::HashMap::new(),
-            config: request.config,
+            config,
             zone: request.zone,
             last_seen_at_ms: request.now_ms,
             generation: 1,
@@ -174,7 +217,9 @@ impl RegistryService {
     pub fn expire_stale(&self, now_ms: i64, timeout_ms: u64) -> Vec<String> {
         let mut expired = Vec::new();
         for mut node in self.store.nodes() {
-            if now_ms.saturating_sub(node.last_seen_at_ms) > timeout_ms as i64 {
+            if node.connection == ConnectionState::Connected
+                && now_ms.saturating_sub(node.last_seen_at_ms) > timeout_ms as i64
+            {
                 node.connection = ConnectionState::Disconnected;
                 node.health = HealthState::Offline;
                 node.scheduling = SchedulingState::Disabled;
