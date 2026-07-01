@@ -10,11 +10,11 @@ use gmv_protocol::common::v1::PageResponse;
 use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
-    DeviceStreamResponse, DeviceStreamState, GetGbChannelRequest, GetGbChannelResponse,
+    DeviceStreamResponse, DeviceStreamState, GbDevice, GetGbChannelRequest, GetGbChannelResponse,
     GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
-    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, StartDeviceStreamRequest,
-    StopDeviceStreamRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, SnapshotImageRequest,
+    SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -162,6 +162,57 @@ fn gb28181_session_node_config_uses_rpc_and_skips_offline_nodes() {
             assert!(error.to_string().contains("offline"));
         });
 }
+#[test]
+fn gb28181_snapshot_image_uses_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            RegistryService::new(store.clone())
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    capacity: 8,
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let session_id = BusinessControl::new(store)
+                .snapshot_image(
+                    "snapshot-op",
+                    "34020000001320000001",
+                    "34020000001320000002",
+                    1,
+                    1,
+                )
+                .await
+                .unwrap();
+            assert_eq!(session_id, "snapshot-session");
+        });
+}
+
 #[test]
 fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() {
     base::tokio::runtime::Runtime::new()
@@ -522,9 +573,16 @@ impl SessionControl for FakeSession {
 
     async fn get_gb_device(
         &self,
-        _request: tonic::Request<GetGbDeviceRequest>,
+        request: tonic::Request<GetGbDeviceRequest>,
     ) -> Result<tonic::Response<GetGbDeviceResponse>, tonic::Status> {
-        Ok(tonic::Response::new(GetGbDeviceResponse { device: None }))
+        Ok(tonic::Response::new(GetGbDeviceResponse {
+            device: Some(GbDevice {
+                device_id: request.into_inner().device_id,
+                session_node_id: "session-gb-online".to_string(),
+                status: 1,
+                ..Default::default()
+            }),
+        }))
     }
 
     async fn create_gb_device(
@@ -563,6 +621,16 @@ impl SessionControl for FakeSession {
     ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
         Ok(tonic::Response::new(ListGbChannelImagesResponse {
             images: vec![],
+        }))
+    }
+
+    async fn snapshot_image(
+        &self,
+        _request: tonic::Request<SnapshotImageRequest>,
+    ) -> Result<tonic::Response<SnapshotImageResponse>, tonic::Status> {
+        Ok(tonic::Response::new(SnapshotImageResponse {
+            session_id: "snapshot-session".to_string(),
+            error: None,
         }))
     }
 }

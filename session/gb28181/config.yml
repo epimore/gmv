@@ -13,10 +13,8 @@ log:
       level: warn #日志等级
 
 http:
+  enabled: true
   port: 18567
-  timeout: 30000 #请求超时 单位秒
-  server_name: GMV:SESSION
-  version: v0.2
 
 db:
   backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
@@ -48,7 +46,6 @@ db:
       check_health: false # 默认false,连接池维持健康测试
 guard:
   endpoint: http://127.0.0.1:18080 # guard 内部gRPC地址，session向guard注册、上报事件、申请路由
-  http_endpoint: http://127.0.0.1:8080 # guard 对外HTTP地址，设备图片上传URL由此生成
 
 server:
   grpc:

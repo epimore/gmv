@@ -9,7 +9,7 @@ business_flow_test: all_business_http_apis_complete_the_normal_signaling_flow
 quality:
   scenario_count: 18
   packet_count: 44
-  covered_business_api_count: 20
+  covered_business_api_count: 19
   failed_scenario_ids: []
   uncovered_business_apis: []
 packets:
@@ -168,7 +168,6 @@ packets:
     source: synthetic-wire
     sha256: afe94a9c6976c2416fb40a765509472420615684983c6f48b16580c4171ec771
     business_apis:
-      - /edge/snapshot/image
       - /edge/upload/picture/{token}
   - scenario_id: snapshot-normal
     file: snapshot-normal-02-200.sip
@@ -179,7 +178,6 @@ packets:
     source: synthetic-wire
     sha256: 407cb0573353e7f23065285d8b3ffdf008c405370df803e00884e5dc36bee6e1
     business_apis:
-      - /edge/snapshot/image
       - /edge/upload/picture/{token}
   - scenario_id: live-normal
     file: live-normal-01-invite.sip

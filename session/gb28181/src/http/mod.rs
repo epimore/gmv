@@ -19,27 +19,13 @@ mod edge;
 #[serde(crate = "base::serde")]
 #[conf(prefix = "http")]
 pub struct Http {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_timeout")]
-    pub timeout: u16,
-    #[serde(default = "default_server_name")]
-    pub server_name: String,
-    #[serde(default = "default_version")]
-    pub version: String,
 }
+serde_default!(default_enabled, bool, true);
 serde_default!(default_port, u16, 8080);
-serde_default!(default_timeout, u16, 30);
-serde_default!(
-    default_server_name,
-    String,
-    env!("CARGO_PKG_NAME").to_string()
-);
-serde_default!(
-    default_version,
-    String,
-    env!("CARGO_PKG_VERSION").to_string()
-);
 impl Http {
     pub fn get_http_by_conf() -> Self {
         Http::conf()

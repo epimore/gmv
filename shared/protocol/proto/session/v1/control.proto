@@ -12,6 +12,7 @@ service SessionControl {
   rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
+  rpc SnapshotImage(SnapshotImageRequest) returns (SnapshotImageResponse);
   rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
   rpc GetGbDevice(GetGbDeviceRequest) returns (GetGbDeviceResponse);
   rpc CreateGbDevice(CreateGbDeviceRequest) returns (CreateGbDeviceResponse);
@@ -86,6 +87,19 @@ message ControlPtzRequest {
 
 message ControlPtzResponse {
   bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message SnapshotImageRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  uint32 count = 4;
+  uint32 interval = 5;
+}
+
+message SnapshotImageResponse {
+  string session_id = 1;
   gmv.common.v1.ErrorDetail error = 2;
 }
 

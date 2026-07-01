@@ -9,7 +9,7 @@ use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
     ControlPtzRequest, CreateGbDeviceRequest, DeviceStreamState, GbChannel, GbChannelImage,
     GbDevice, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
-    ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest,
+    ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest, SnapshotImageRequest,
     StartDeviceStreamRequest, StopDeviceStreamRequest,
 };
 
@@ -283,6 +283,69 @@ impl BusinessControl {
         }
         images.sort_by_key(|image| std::cmp::Reverse(image.created_at_ms));
         Ok(images)
+    }
+
+    pub async fn snapshot_image(
+        &self,
+        operation_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        count: u32,
+        interval: u32,
+    ) -> GuardResult<String> {
+        let device = self
+            .get_gb_device(device_id)
+            .await?
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
+        let node_id = device.session_node_id;
+        let session = self
+            .store
+            .get_node(&node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 session node {node_id}")))?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(GuardError::Conflict(format!(
+                "GB28181 session node {node_id} is offline"
+            )));
+        }
+        let mut client = self.session_client(&session).await?;
+        let request = SnapshotImageRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: String::new(),
+            }),
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            count,
+            interval,
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.snapshot_image, node={}, req:{request:?}",
+            session.identity.node_id
+        );
+        let response = client
+            .snapshot_image(request)
+            .await
+            .map_err(session_rpc_error)?
+            .into_inner();
+        if let Some(error) = non_empty_error(response.error) {
+            return Err(GuardError::Conflict(format!(
+                "session snapshot rejected: {} {}",
+                error.code, error.message
+            )));
+        }
+        if response.session_id.is_empty() {
+            return Err(GuardError::Conflict(
+                "session snapshot returned empty session id".to_string(),
+            ));
+        }
+        Ok(response.session_id)
     }
 
     pub async fn start_live(

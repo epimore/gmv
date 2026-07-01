@@ -104,7 +104,7 @@ pub fn router(state: HttpState) -> Router {
         )
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/images",
-            get(gb_channel_images),
+            get(gb_channel_images).post(gb_snapshot_image),
         )
         .route("/devices", get(devices))
         .route("/devices/{device_id}/preview", post(preview))
@@ -1427,6 +1427,22 @@ struct GbStreamRequest {
     output_type: String,
 }
 
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbSnapshotRequest {
+    request_id: String,
+    #[serde(default)]
+    count: Option<u8>,
+    #[serde(default)]
+    interval: Option<u8>,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbSnapshotResponse {
+    session_id: String,
+}
+
 fn empty_to_none(value: String) -> Option<String> {
     if value.is_empty() { None } else { Some(value) }
 }
@@ -1686,6 +1702,49 @@ async fn gb_channel_images(
     Ok(Json(
         images.into_iter().map(gb_channel_image_response).collect(),
     ))
+}
+
+async fn gb_snapshot_image(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id)): Path<(String, String)>,
+    Json(request): Json<GbSnapshotRequest>,
+) -> Result<(StatusCode, Json<GbSnapshotResponse>), HttpError> {
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}/images, req: device_id={device_id}, channel_id={channel_id}, body={request:?}"
+    );
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id.clone();
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "snapshot.image",
+        &session,
+        Role::Operator,
+    ))?;
+    let result = BusinessControl::new(state.api.store())
+        .snapshot_image(
+            &operation_id,
+            &device_id,
+            &channel_id,
+            request.count.map(u32::from).unwrap_or_default(),
+            request.interval.map(u32::from).unwrap_or_default(),
+        )
+        .await;
+    match result {
+        Ok(session_id) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "snapshot accepted")?;
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(GbSnapshotResponse { session_id }),
+            ))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(error.into())
+        }
+    }
 }
 
 async fn gb_preview(

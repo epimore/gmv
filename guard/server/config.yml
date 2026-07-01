@@ -24,6 +24,9 @@ log:
   level: debug
   prefix: guard
   store_path: ./logs
+  specify:
+    - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
+      level: warn #日志等级
 
 guard:
   http:

@@ -405,7 +405,7 @@ fn packet_assets() -> Vec<PacketAsset> {
         ),
         (
             "snapshot-normal",
-            &["/edge/snapshot/image", "/edge/upload/picture/{token}"][..],
+            &["/edge/upload/picture/{token}"][..],
             xml(
                 "Control",
                 "DeviceConfig",
@@ -1212,7 +1212,6 @@ fn generated_sip_corpus_is_current_and_complete() {
         "/api/rm/file",
         "/api/talk/start",
         "/api/talk/stop",
-        "/edge/snapshot/image",
         "/edge/upload/picture/{token}",
         "/hook/stream/register",
         "/hook/stream/input/timeout",

@@ -102,8 +102,6 @@ fn env_socket_addr(addr_env: &str, port_env: &str, default: &str) -> SocketAddr 
 pub struct GuardConf {
     #[serde(default = "default_guard_endpoint")]
     pub endpoint: String,
-    #[serde(default = "default_guard_http_endpoint")]
-    pub http_endpoint: String,
 }
 
 serde_default!(
@@ -111,17 +109,12 @@ serde_default!(
     String,
     "http://127.0.0.1:18080".to_string()
 );
-serde_default!(
-    default_guard_http_endpoint,
-    String,
-    "http://127.0.0.1:8080".to_string()
-);
 
 impl CheckFromConf for GuardConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
-        if self.endpoint.trim().is_empty() || self.http_endpoint.trim().is_empty() {
+        if self.endpoint.trim().is_empty() {
             return Err(FieldCheckError::BizError(
-                "guard.endpoint和guard.http_endpoint不能为空".to_string(),
+                "guard.endpoint不能为空".to_string(),
             ));
         }
         Ok(())
@@ -132,7 +125,6 @@ impl Default for GuardConf {
     fn default() -> Self {
         Self {
             endpoint: default_guard_endpoint(),
-            http_endpoint: default_guard_http_endpoint(),
         }
     }
 }
@@ -144,13 +136,6 @@ impl GuardConf {
 
     pub fn get_or_default() -> Self {
         std::panic::catch_unwind(Self::conf).unwrap_or_default()
-    }
-
-    pub fn picture_upload_url(&self) -> String {
-        format!(
-            "{}/api/v2/edge/upload/picture",
-            self.http_endpoint.trim_end_matches('/')
-        )
     }
 }
 

@@ -30,7 +30,7 @@ pub struct AppInfo {
 
 impl
     Daemon<(
-        std::net::TcpListener,
+        Option<std::net::TcpListener>,
         (Option<std::net::TcpListener>, Option<UdpSocket>),
         TcpListener,
     )> for AppInfo
@@ -42,7 +42,7 @@ impl
     fn init_privilege() -> GlobalResult<(
         Self,
         (
-            std::net::TcpListener,
+            Option<std::net::TcpListener>,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
             TcpListener,
         ),
@@ -62,7 +62,11 @@ impl
                 info!("session database backend: sqlite");
             }
         }
-        let http_listener = app_info.http.listen_http_server()?;
+        let http_listener = if app_info.http.enabled {
+            Some(app_info.http.listen_http_server()?)
+        } else {
+            None
+        };
         let tu = app_info.session_conf.listen_gb_server()?;
         let grpc = crate::state::SessionGrpcConf::get();
         let grpc_listener = TcpListener::bind(grpc.addr).map_err(|error| {
@@ -83,13 +87,14 @@ impl
     fn run_app(
         self,
         t: (
-            std::net::TcpListener,
+            Option<std::net::TcpListener>,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
             TcpListener,
         ),
     ) -> GlobalResult<()> {
         let http = self.http;
         let node_id = self.session_conf.domain_id.clone();
+        let http_enabled = http.enabled;
         let http_port = http.port;
         let grpc = crate::state::SessionGrpcConf::get();
         let started_at_epoch_ms = now_epoch_ms();
@@ -103,8 +108,11 @@ impl
                 network_rt.cancel.cancel();
                 return;
             }
-            let mut node =
-                SessionGuardNode::new(node_id, generate_instance_id(), u32::from(http_port));
+            let mut node = SessionGuardNode::new(
+                node_id,
+                generate_instance_id(),
+                http_enabled.then_some(u32::from(http_port)),
+            );
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
@@ -186,16 +194,21 @@ impl
             let (_reporter, event_sender) =
                 NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());
             init_guard_event_sender(event_sender);
-            match http.run(http_listener, network_rt.cancel.clone()).await {
-                Ok(()) => warn!(
-                    "HTTP service returned; cancellation_requested={}",
-                    network_rt.cancel.is_cancelled()
-                ),
-                Err(err) => {
-                    error!("HTTP service stopped with error: {err}");
-                    warn!("session network task is cancelling after HTTP service failure");
-                    network_rt.cancel.cancel();
+            if let Some(http_listener) = http_listener {
+                match http.run(http_listener, network_rt.cancel.clone()).await {
+                    Ok(()) => warn!(
+                        "HTTP service returned; cancellation_requested={}",
+                        network_rt.cancel.is_cancelled()
+                    ),
+                    Err(err) => {
+                        error!("HTTP service stopped with error: {err}");
+                        warn!("session network task is cancelling after HTTP service failure");
+                        network_rt.cancel.cancel();
+                    }
                 }
+            } else {
+                warn!("HTTP service disabled by configuration");
+                network_rt.cancel.cancelled().await;
             }
             warn!("session network task exited");
         });

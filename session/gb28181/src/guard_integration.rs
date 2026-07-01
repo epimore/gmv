@@ -33,16 +33,18 @@ use gmv_protocol::session::v1::{
     GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
     ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
     ListGbDevicesRequest, ListGbDevicesResponse, SessionHookRequest, SessionHookResponse,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, session_control_server::SessionControl,
-    session_hook_server::SessionHook,
+    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    session_control_server::SessionControl, session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
 };
 use tonic::transport::Channel;
 
-use crate::service::{api_serv, hook_serv, stream_close};
-use crate::state::model::{PlayBackModel, PlayLiveModel, PtzControlModel, TransMode};
+use crate::service::{api_serv, edge_serv, hook_serv, stream_close};
+use crate::state::model::{
+    DeviceChannelIdent, PlayBackModel, PlayLiveModel, PtzControlModel, SnapshotImage, TransMode,
+};
 use crate::state::session::GuardLease;
 use crate::state::{StreamNode, StreamNodeRegistry};
 
@@ -388,7 +390,22 @@ pub struct SessionGuardNode {
 }
 
 impl SessionGuardNode {
-    pub fn new(node_id: impl Into<String>, instance_id: impl Into<String>, http_port: u32) -> Self {
+    pub fn new(
+        node_id: impl Into<String>,
+        instance_id: impl Into<String>,
+        http_port: Option<u32>,
+    ) -> Self {
+        let mut endpoints = Vec::new();
+        if let Some(http_port) = http_port {
+            endpoints.push(Endpoint {
+                name: "http".to_string(),
+                scheme: "http".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: http_port,
+                mode: EndpointMode::Single as i32,
+                labels: HashMap::new(),
+            });
+        }
         Self {
             guard_channel: rpc_channel_config(crate::state::GuardConf::get_or_default().endpoint),
             identity: NodeIdentity {
@@ -398,14 +415,7 @@ impl SessionGuardNode {
             },
             software_version: env!("CARGO_PKG_VERSION").to_string(),
             started_at_epoch_ms: 0,
-            endpoints: vec![Endpoint {
-                name: "http".to_string(),
-                scheme: "http".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: http_port,
-                mode: EndpointMode::Single as i32,
-                labels: HashMap::new(),
-            }],
+            endpoints,
             capabilities: vec![
                 "device.live".to_string(),
                 "device.playback".to_string(),
@@ -599,6 +609,35 @@ impl SessionControl for SessionControlRpc {
             wan_ip: conf.wan_ip.to_string(),
             wan_port: u32::from(conf.wan_port),
         }))
+    }
+
+    async fn snapshot_image(
+        &self,
+        request: tonic::Request<SnapshotImageRequest>,
+    ) -> Result<tonic::Response<SnapshotImageResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!("session_control.snapshot_image, req:{request:?}");
+        let count = optional_u8(request.count, "snapshot count")?;
+        let interval = optional_u8(request.interval, "snapshot interval")?;
+        let info = SnapshotImage {
+            device_channel_ident: DeviceChannelIdent {
+                device_id: request.device_id,
+                channel_id: request.channel_id,
+            },
+            count,
+            interval,
+        };
+        let response = match edge_serv::snapshot_image(info).await {
+            Ok(session_id) => SnapshotImageResponse {
+                session_id,
+                error: None,
+            },
+            Err(err) => SnapshotImageResponse {
+                session_id: String::new(),
+                error: Some(error("snapshot_failed", &err.to_string())),
+            },
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn list_gb_devices(
@@ -1384,6 +1423,16 @@ fn custom_media_config(output_type: &str) -> Option<crate::state::model::CustomM
         codec: None,
         filter: Default::default(),
     })
+}
+
+fn optional_u8(value: u32, name: &str) -> Result<Option<u8>, tonic::Status> {
+    if value == 0 {
+        Ok(None)
+    } else {
+        u8::try_from(value)
+            .map(Some)
+            .map_err(|_| tonic::Status::invalid_argument(format!("{name} must fit u8")))
+    }
 }
 
 fn ptz_model(request: &ControlPtzRequest) -> PtzControlModel {

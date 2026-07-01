@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use crate::http::{get_gmv_token, res_by_error};
+use crate::http::res_by_error;
 use crate::service::edge_serv;
-use crate::state::model::SnapshotImage;
 use crate::utils::edge_token;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, Multipart, Path, Query, Request};
@@ -14,24 +13,9 @@ use base::log::{error, info};
 use gmv_domain::info::res::Resp;
 
 pub const UPLOAD_PICTURE: &str = "/upload/picture/{token}";
-pub const SNAPSHOT_IMAGE: &str = "/snapshot/image";
 
 pub fn routes() -> Router {
-    Router::new()
-        .route(UPLOAD_PICTURE, post(upload_picture))
-        .route(SNAPSHOT_IMAGE, post(snapshot_image))
-}
-
-/// 采集摄像机当前画面快照。
-async fn snapshot_image(headers: HeaderMap, Json(info): Json<SnapshotImage>) -> Json<Resp<String>> {
-    info!("snapshot_image: body = {:?}", &info);
-    match get_gmv_token(headers) {
-        Ok(_token) => match edge_serv::snapshot_image(info).await {
-            Ok(data) => Json(Resp::build_success_data(data)),
-            Err(err) => Json(res_by_error(err)),
-        },
-        Err(err) => Json(res_by_error(err)),
-    }
+    Router::new().route(UPLOAD_PICTURE, post(upload_picture))
 }
 
 /// 设备抓拍图片上传入口。
