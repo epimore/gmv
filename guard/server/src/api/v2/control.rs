@@ -7,10 +7,10 @@ use gmv_protocol::common::v1::{
 };
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, CreateGbDeviceRequest, DeviceStreamState, GbChannel, GbChannelImage,
-    GbDevice, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
+    ControlPtzRequest, CreateGbDeviceRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
+    GbChannelImage, GbDevice, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
     ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest, SnapshotImageRequest,
-    StartDeviceStreamRequest, StopDeviceStreamRequest,
+    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbDeviceRequest,
 };
 
 use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
@@ -35,6 +35,14 @@ pub struct GbSessionConfigSummary {
     pub domain_id: String,
     pub wan_ip: String,
     pub wan_port: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GbDevicePage {
+    pub devices: Vec<GbDevice>,
+    pub total: u64,
+    pub page: u32,
+    pub page_size: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -90,14 +98,37 @@ impl BusinessControl {
             wan_port: response.wan_port,
         })
     }
+
+    pub async fn first_gb_session_node_by_domain(&self) -> GuardResult<(String, String)> {
+        let mut options = Vec::new();
+        for session in self.session_nodes() {
+            if let Ok(config) = self.gb_session_config(&session.identity.node_id).await
+                && !config.domain_id.is_empty()
+            {
+                options.push((session.identity.node_id, config.domain_id));
+            }
+        }
+        options.sort_by(|left, right| left.1.cmp(&right.1));
+        options
+            .into_iter()
+            .next()
+            .ok_or_else(|| GuardError::NotFound("GB28181 session node with domain_id".to_string()))
+    }
+
     pub async fn list_gb_devices(&self) -> GuardResult<Vec<GbDevice>> {
         let mut devices = Vec::new();
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
-            let request = ListGbDevicesRequest {};
+            let request = ListGbDevicesRequest {
+                page: 0,
+                page_size: 0,
+                domain_id: String::new(),
+                device_id: String::new(),
+                device_name: String::new(),
+            };
             base::log::debug!(
-                "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:<empty>",
-                session.identity.node_id
+                "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:{request:?}",
+                session.identity.node_id,
             );
             let mut response = client
                 .list_gb_devices(request)
@@ -113,6 +144,55 @@ impl BusinessControl {
         }
         devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
         Ok(devices)
+    }
+
+    pub async fn list_gb_device_page(
+        &self,
+        session_node_id: &str,
+        domain_id: &str,
+        device_id: &str,
+        device_name: &str,
+        page: u32,
+        page_size: u32,
+    ) -> GuardResult<GbDevicePage> {
+        let session = self.store.get_node(session_node_id).ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
+        })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        let page = page.max(1);
+        let page_size = page_size.max(1);
+        let mut client = self.session_client(&session).await?;
+        let request = ListGbDevicesRequest {
+            page,
+            page_size,
+            domain_id: domain_id.to_string(),
+            device_id: device_id.to_string(),
+            device_name: device_name.to_string(),
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:{request:?}",
+            session.identity.node_id,
+        );
+        let mut response = client
+            .list_gb_devices(request)
+            .await
+            .map_err(session_rpc_error)?
+            .into_inner();
+        for device in &mut response.devices {
+            if device.session_node_id.is_empty() {
+                device.session_node_id = session.identity.node_id.clone();
+            }
+        }
+        Ok(GbDevicePage {
+            devices: response.devices,
+            total: response.total,
+            page: response.page,
+            page_size: response.page_size,
+        })
     }
 
     pub async fn create_gb_device(&self, mut device: GbDevice) -> GuardResult<GbDevice> {
@@ -174,6 +254,97 @@ impl BusinessControl {
             response.session_node_id = session.identity.node_id;
         }
         Ok(response)
+    }
+
+    pub async fn update_gb_device(&self, mut device: GbDevice) -> GuardResult<GbDevice> {
+        let node_id = device.session_node_id.clone();
+        let session = self
+            .store
+            .get_node(&node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 session node {node_id}")))?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(GuardError::Conflict(format!(
+                "GB28181 session node {node_id} is offline"
+            )));
+        }
+        device.session_node_id.clear();
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.update_gb_device, node={}, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
+            session.identity.node_id,
+            device.device_id,
+            device.session_node_id,
+            device.domain_id,
+            device.domain,
+            device.longitude,
+            device.latitude,
+            device.address,
+            if device.pwd.is_empty() {
+                "<empty>"
+            } else {
+                "<redacted>"
+            },
+            device.pwd_check,
+            device.alias,
+            device.status,
+            device.heartbeat_sec,
+            device.tenant_id,
+            device.sys_org_code,
+            device.create_by,
+            device.update_by
+        );
+        let mut client = self.session_client(&session).await?;
+        let mut response = client
+            .update_gb_device(UpdateGbDeviceRequest {
+                device: Some(device),
+            })
+            .await
+            .map_err(session_rpc_error)?
+            .into_inner()
+            .device
+            .ok_or_else(|| {
+                GuardError::Conflict("session returned empty GB28181 device".to_string())
+            })?;
+        if response.session_node_id.is_empty() {
+            response.session_node_id = session.identity.node_id;
+        }
+        Ok(response)
+    }
+
+    pub async fn delete_gb_device(
+        &self,
+        session_node_id: &str,
+        device_id: &str,
+        domain_id: &str,
+    ) -> GuardResult<()> {
+        let session = self.store.get_node(session_node_id).ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
+        })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        let request = DeleteGbDeviceRequest {
+            device_id: device_id.to_string(),
+            domain_id: domain_id.to_string(),
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.delete_gb_device, node={}, req:{request:?}",
+            session.identity.node_id,
+        );
+        let mut client = self.session_client(&session).await?;
+        client
+            .delete_gb_device(request)
+            .await
+            .map_err(session_rpc_error)?;
+        Ok(())
     }
 
     pub async fn get_gb_device(&self, device_id: &str) -> GuardResult<Option<GbDevice>> {

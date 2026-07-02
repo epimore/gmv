@@ -16,6 +16,8 @@ service SessionControl {
   rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
   rpc GetGbDevice(GetGbDeviceRequest) returns (GetGbDeviceResponse);
   rpc CreateGbDevice(CreateGbDeviceRequest) returns (CreateGbDeviceResponse);
+  rpc UpdateGbDevice(UpdateGbDeviceRequest) returns (UpdateGbDeviceResponse);
+  rpc DeleteGbDevice(DeleteGbDeviceRequest) returns (DeleteGbDeviceResponse);
   rpc ListGbChannels(ListGbChannelsRequest) returns (ListGbChannelsResponse);
   rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
   rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
@@ -112,7 +114,13 @@ message GetSessionConfigResponse {
   uint32 wan_port = 4;
 }
 
-message ListGbDevicesRequest {}
+message ListGbDevicesRequest {
+  uint32 page = 1;
+  uint32 page_size = 2;
+  string domain_id = 3;
+  string device_id = 4;
+  string device_name = 5;
+}
 
 message GetGbDeviceRequest {
   string device_id = 1;
@@ -120,6 +128,9 @@ message GetGbDeviceRequest {
 
 message ListGbDevicesResponse {
   repeated GbDevice devices = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
 }
 
 message GetGbDeviceResponse {
@@ -132,6 +143,23 @@ message CreateGbDeviceRequest {
 
 message CreateGbDeviceResponse {
   GbDevice device = 1;
+}
+
+message UpdateGbDeviceRequest {
+  GbDevice device = 1;
+}
+
+message UpdateGbDeviceResponse {
+  GbDevice device = 1;
+}
+
+message DeleteGbDeviceRequest {
+  string device_id = 1;
+  string domain_id = 2;
+}
+
+message DeleteGbDeviceResponse {
+  bool deleted = 1;
 }
 
 message GbDevice {
@@ -154,7 +182,6 @@ message GbDevice {
   string create_by = 17;
   string update_by = 18;
   string update_time = 19;
-  uint32 channel_count = 20;
 }
 
 message ListGbChannelsRequest {

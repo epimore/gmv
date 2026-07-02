@@ -12,6 +12,8 @@ const routes = [
   ['/dashboard', '总览'],
   ['/nodes', '节点'],
   ['/devices', '设备'],
+  ['/gb28181/register', '注册管理'],
+  ['/gb28181/monitor', '监控信息'],
   ['/streams', '流媒体'],
   ['/ai', '智能分析'],
   ['/allocations', '调度与租约'],
@@ -57,6 +59,12 @@ async function mockAuth(page: Page, initiallyAuthenticated = false) {
       contentType: 'application/json',
       body: JSON.stringify({ ...session, enabled: true, created_at_ms: 0, updated_at_ms: 0 }),
     });
+  });
+  await page.route('**/api/v2/nodes', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
+  });
+  await page.route('**/api/v2/gb28181/devices**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], total: 0, page: 1, page_size: 20 }) });
   });
 }
 

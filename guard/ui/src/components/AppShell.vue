@@ -12,10 +12,18 @@
       <nav>
         <template v-for="group in groups" :key="group">
           <div class="nav-group">{{ group }}</div>
-          <RouterLink v-for="item in grouped[group]" :key="item.path" class="nav-item" :to="item.path">
-            <span class="nav-icon">{{ item.icon }}</span>
-            <span class="nav-label">{{ item.label }}</span>
-          </RouterLink>
+          <template v-for="item in grouped[group]" :key="item.path">
+            <RouterLink class="nav-item" :class="{ 'has-children': item.children?.length, 'is-section-active': item.children?.some((child) => route.path.startsWith(child.path)) }" :to="item.path">
+              <span class="nav-icon">{{ item.icon }}</span>
+              <span class="nav-label">{{ item.label }}</span>
+            </RouterLink>
+            <div v-if="item.children?.length" class="nav-children">
+              <RouterLink v-for="child in item.children" :key="child.path" class="nav-item nav-child" :to="child.path">
+                <span class="nav-icon">{{ child.icon }}</span>
+                <span class="nav-label">{{ child.label }}</span>
+              </RouterLink>
+            </div>
+          </template>
         </template>
       </nav>
       <div class="sidebar-footer">

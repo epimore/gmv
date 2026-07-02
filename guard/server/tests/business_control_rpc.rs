@@ -10,11 +10,13 @@ use gmv_protocol::common::v1::PageResponse;
 use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
-    DeviceStreamResponse, DeviceStreamState, GbDevice, GetGbChannelRequest, GetGbChannelResponse,
-    GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
-    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
-    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, SnapshotImageRequest,
-    SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
+    GbDevice, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
+    GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
+    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
+    ListGbDevicesRequest, ListGbDevicesResponse, SnapshotImageRequest, SnapshotImageResponse,
+    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbDeviceRequest,
+    UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -568,6 +570,9 @@ impl SessionControl for FakeSession {
     ) -> Result<tonic::Response<ListGbDevicesResponse>, tonic::Status> {
         Ok(tonic::Response::new(ListGbDevicesResponse {
             devices: vec![],
+            total: 0,
+            page: 1,
+            page_size: 0,
         }))
     }
 
@@ -596,6 +601,26 @@ impl SessionControl for FakeSession {
         device.session_node_id = "session-gb-online".to_string();
         Ok(tonic::Response::new(CreateGbDeviceResponse {
             device: Some(device),
+        }))
+    }
+
+    async fn update_gb_device(
+        &self,
+        request: tonic::Request<UpdateGbDeviceRequest>,
+    ) -> Result<tonic::Response<UpdateGbDeviceResponse>, tonic::Status> {
+        let mut device = request.into_inner().device.unwrap_or_default();
+        device.session_node_id = "session-gb-online".to_string();
+        Ok(tonic::Response::new(UpdateGbDeviceResponse {
+            device: Some(device),
+        }))
+    }
+
+    async fn delete_gb_device(
+        &self,
+        _request: tonic::Request<DeleteGbDeviceRequest>,
+    ) -> Result<tonic::Response<DeleteGbDeviceResponse>, tonic::Status> {
+        Ok(tonic::Response::new(DeleteGbDeviceResponse {
+            deleted: true,
         }))
     }
 

@@ -20,7 +20,9 @@ use std::time::Instant;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::api::v2::control::{BusinessControl, DeviceStreamOptions, GbSessionConfigSummary};
+use crate::api::v2::control::{
+    BusinessControl, DeviceStreamOptions, GbDevicePage, GbSessionConfigSummary,
+};
 use crate::api::v2::model::{
     AiTaskSummary, AiTaskSummaryState, DeviceSummary, RuntimeStatus, StreamSummary,
     StreamSummaryState,
@@ -40,6 +42,8 @@ use crate::store::model::{
 use crate::store::persistent::UserRepository;
 
 const CSRF_HEADER: &str = "x-csrf-token";
+const DEFAULT_GB_DEVICE_PAGE_SIZE: u32 = 20;
+const MAX_GB_DEVICE_PAGE_SIZE: u32 = 500;
 
 #[derive(Debug, Clone)]
 pub struct HttpState {
@@ -84,7 +88,14 @@ pub fn router(state: HttpState) -> Router {
             get(gb_session_node_config),
         )
         .route("/gb28181/devices", get(gb_devices).post(create_gb_device))
-        .route("/gb28181/devices/{device_id}", get(gb_device))
+        .route(
+            "/gb28181/devices/{device_id}",
+            get(gb_device).post(update_gb_device),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/delete",
+            post(delete_gb_device),
+        )
         .route("/gb28181/devices/{device_id}/channels", get(gb_channels))
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}",
@@ -1334,6 +1345,24 @@ fn default_heartbeat_sec_i64() -> i64 {
     60
 }
 
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbDeviceListQuery {
+    page: Option<u32>,
+    page_size: Option<u32>,
+    session_node_id: Option<String>,
+    domain_id: Option<String>,
+    device_id: Option<String>,
+    device_name: Option<String>,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbDeviceDeleteRequest {
+    session_node_id: String,
+    domain_id: String,
+}
+
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct GbDeviceResponse {
@@ -1356,7 +1385,15 @@ struct GbDeviceResponse {
     create_by: Option<String>,
     update_by: Option<String>,
     update_time: Option<String>,
-    channel_count: usize,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbDevicePageResponse {
+    items: Vec<GbDeviceResponse>,
+    total: u64,
+    page: u32,
+    page_size: u32,
 }
 
 #[derive(Debug, base::serde::Serialize)]
@@ -1468,7 +1505,6 @@ fn gb_device_request(request: GbDeviceRequest) -> RpcGbDevice {
         create_by: request.create_by,
         update_by: request.update_by,
         update_time: String::new(),
-        channel_count: 0,
     }
 }
 
@@ -1493,7 +1529,15 @@ fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
         create_by: empty_to_none(record.create_by),
         update_by: empty_to_none(record.update_by),
         update_time: empty_to_none(record.update_time),
-        channel_count: record.channel_count as usize,
+    }
+}
+
+fn gb_device_page_response(page: GbDevicePage) -> GbDevicePageResponse {
+    GbDevicePageResponse {
+        items: page.devices.into_iter().map(gb_device_response).collect(),
+        total: page.total,
+        page: page.page,
+        page_size: page.page_size,
     }
 }
 
@@ -1620,13 +1664,60 @@ async fn gb_session_node_config(
 async fn gb_devices(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<GbDeviceResponse>>, HttpError> {
-    debug!("/api/v2/gb28181/devices, req:<empty>");
+    Query(query): Query<GbDeviceListQuery>,
+) -> Result<Json<GbDevicePageResponse>, HttpError> {
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_GB_DEVICE_PAGE_SIZE)
+        .clamp(1, MAX_GB_DEVICE_PAGE_SIZE);
+    let query_session_node_id = query
+        .session_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let query_domain_id = query
+        .domain_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let device_id = query
+        .device_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    let device_name = query
+        .device_name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let devices = BusinessControl::new(state.api.store())
-        .list_gb_devices()
+    let control = BusinessControl::new(state.api.store());
+    let (session_node_id, domain_id) = match (query_session_node_id, query_domain_id) {
+        (Some(session_node_id), Some(domain_id)) => {
+            (session_node_id.to_string(), domain_id.to_string())
+        }
+        (None, None) => control.first_gb_session_node_by_domain().await?,
+        _ => {
+            return Err(HttpError::bad_request(
+                "session_node_id and domain_id must be provided together",
+            ));
+        }
+    };
+    debug!(
+        "/api/v2/gb28181/devices, req: session_node_id={session_node_id}, domain_id={domain_id}, device_id={device_id}, device_name={device_name}, page={page}, page_size={page_size}"
+    );
+    let devices = control
+        .list_gb_device_page(
+            &session_node_id,
+            &domain_id,
+            device_id,
+            device_name,
+            page,
+            page_size,
+        )
         .await?;
-    Ok(Json(devices.into_iter().map(gb_device_response).collect()))
+    Ok(Json(gb_device_page_response(devices)))
 }
 
 async fn create_gb_device(
@@ -1654,6 +1745,43 @@ async fn gb_device(
         .await?
         .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
     Ok(Json(gb_device_response(device)))
+}
+
+async fn update_gb_device(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Json(mut request): Json<GbDeviceRequest>,
+) -> Result<Json<GbDeviceResponse>, HttpError> {
+    request.device_id = device_id.clone();
+    log_gb_device_request("/api/v2/gb28181/devices/{device_id}", &request);
+    require_write(&state.auth, &headers, Role::Operator)?;
+    let device = BusinessControl::new(state.api.store())
+        .update_gb_device(gb_device_request(request))
+        .await?;
+    Ok(Json(gb_device_response(device)))
+}
+
+async fn delete_gb_device(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Json(request): Json<GbDeviceDeleteRequest>,
+) -> Result<StatusCode, HttpError> {
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/delete, req: device_id={device_id}, session_node_id={}, domain_id={}",
+        request.session_node_id, request.domain_id
+    );
+    require_write(&state.auth, &headers, Role::Operator)?;
+    if request.session_node_id.trim().is_empty() || request.domain_id.trim().is_empty() {
+        return Err(HttpError::bad_request(
+            "session_node_id and domain_id are required",
+        ));
+    }
+    BusinessControl::new(state.api.store())
+        .delete_gb_device(&request.session_node_id, &device_id, &request.domain_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn gb_channels(

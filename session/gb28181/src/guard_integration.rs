@@ -28,12 +28,13 @@ use gmv_protocol::guard::v1::{
 };
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
-    DeviceStreamResponse, DeviceStreamState, GbChannel, GbChannelImage, GbDevice,
-    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
-    GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
-    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
-    ListGbDevicesRequest, ListGbDevicesResponse, SessionHookRequest, SessionHookResponse,
-    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
+    GbChannel, GbChannelImage, GbDevice, GetGbChannelRequest, GetGbChannelResponse,
+    GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, SessionHookRequest,
+    SessionHookResponse, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
+    StopDeviceStreamRequest, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
     session_control_server::SessionControl, session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
@@ -642,17 +643,52 @@ impl SessionControl for SessionControlRpc {
 
     async fn list_gb_devices(
         &self,
-        _request: tonic::Request<ListGbDevicesRequest>,
+        request: tonic::Request<ListGbDevicesRequest>,
     ) -> Result<tonic::Response<ListGbDevicesResponse>, tonic::Status> {
-        debug!("session_control.list_gb_devices, req:<empty>");
+        let request = request.into_inner();
+        debug!("session_control.list_gb_devices, req:{request:?}");
         let session_node_id = self.session_node_id()?;
-        let devices = crate::storage::guard_query::GbDeviceView::list()
+        let domain_id = request.domain_id.trim().to_string();
+        let device_id = request.device_id.trim().to_string();
+        let device_name = request.device_name.trim().to_string();
+        let total = if domain_id.is_empty() {
+            crate::storage::guard_query::GbDeviceView::count().await
+        } else {
+            crate::storage::guard_query::GbDeviceView::count_by_domain(
+                &domain_id,
+                &device_id,
+                &device_name,
+            )
             .await
-            .map_err(storage_status)?
-            .into_iter()
-            .map(|device| gb_device_proto(device, &session_node_id))
-            .collect();
-        Ok(tonic::Response::new(ListGbDevicesResponse { devices }))
+        }
+        .map_err(storage_status)?;
+        let page = request.page.max(1);
+        let devices = if request.page_size == 0 {
+            crate::storage::guard_query::GbDeviceView::list().await
+        } else if !domain_id.is_empty() {
+            let offset = page.saturating_sub(1).saturating_mul(request.page_size);
+            crate::storage::guard_query::GbDeviceView::list_page_by_domain(
+                &domain_id,
+                &device_id,
+                &device_name,
+                offset,
+                request.page_size,
+            )
+            .await
+        } else {
+            let offset = page.saturating_sub(1).saturating_mul(request.page_size);
+            crate::storage::guard_query::GbDeviceView::list_page(offset, request.page_size).await
+        }
+        .map_err(storage_status)?
+        .into_iter()
+        .map(|device| gb_device_proto(device, &session_node_id))
+        .collect();
+        Ok(tonic::Response::new(ListGbDevicesResponse {
+            devices,
+            total,
+            page,
+            page_size: request.page_size,
+        }))
     }
 
     async fn get_gb_device(
@@ -711,6 +747,75 @@ impl SessionControl for SessionControlRpc {
         Ok(tonic::Response::new(CreateGbDeviceResponse {
             device: Some(gb_device_proto(device, &session_node_id)),
         }))
+    }
+
+    async fn update_gb_device(
+        &self,
+        request: tonic::Request<UpdateGbDeviceRequest>,
+    ) -> Result<tonic::Response<UpdateGbDeviceResponse>, tonic::Status> {
+        let session_node_id = self.session_node_id()?;
+        let request = request.into_inner();
+        if let Some(device) = request.device.as_ref() {
+            debug!(
+                "session_control.update_gb_device, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
+                device.device_id,
+                device.session_node_id,
+                device.domain_id,
+                device.domain,
+                device.longitude,
+                device.latitude,
+                device.address,
+                if device.pwd.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+                device.pwd_check,
+                device.alias,
+                device.status,
+                device.heartbeat_sec,
+                device.tenant_id,
+                device.sys_org_code,
+                device.create_by,
+                device.update_by
+            );
+        } else {
+            debug!("session_control.update_gb_device, req: device=<none>");
+        }
+        let device = request
+            .device
+            .ok_or_else(|| tonic::Status::invalid_argument("device is required"))?;
+        let device = crate::storage::guard_query::GbDeviceView::update(gb_device_create(device))
+            .await
+            .map_err(storage_status)?
+            .ok_or_else(|| tonic::Status::not_found("GB28181 device"))?;
+        Ok(tonic::Response::new(UpdateGbDeviceResponse {
+            device: Some(gb_device_proto(device, &session_node_id)),
+        }))
+    }
+
+    async fn delete_gb_device(
+        &self,
+        request: tonic::Request<DeleteGbDeviceRequest>,
+    ) -> Result<tonic::Response<DeleteGbDeviceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!("session_control.delete_gb_device, req:{request:?}");
+        if request.domain_id.trim().is_empty() {
+            return Err(tonic::Status::invalid_argument("domain_id is required"));
+        }
+        let deleted = crate::storage::guard_query::GbDeviceView::delete(
+            &request.device_id,
+            &request.domain_id,
+        )
+        .await
+        .map_err(storage_status)?;
+        if !deleted {
+            return Err(tonic::Status::not_found(format!(
+                "GB28181 device {}",
+                request.device_id
+            )));
+        }
+        Ok(tonic::Response::new(DeleteGbDeviceResponse { deleted }))
     }
 
     async fn list_gb_channels(
@@ -1262,7 +1367,6 @@ fn gb_device_proto(
         create_by: row.create_by.unwrap_or_default(),
         update_by: row.update_by.unwrap_or_default(),
         update_time: datetime_string(row.update_time),
-        channel_count: row.channel_count.try_into().unwrap_or(u32::MAX),
     }
 }
 

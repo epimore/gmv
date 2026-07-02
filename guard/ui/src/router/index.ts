@@ -3,9 +3,26 @@ import AppShell from '@/components/AppShell.vue';
 import { pinia } from '@/stores';
 import { useAuthStore } from '@/stores/auth';
 
-export const menuRoutes = [
+export interface MenuRouteItem {
+  path: string;
+  label: string;
+  icon: string;
+  group: string;
+  children?: Array<Omit<MenuRouteItem, 'group' | 'children'>>;
+}
+
+export const menuRoutes: MenuRouteItem[] = [
   { path: '/dashboard', label: '总览', icon: '总', group: '控制台' },
-  { path: '/gb28181', label: 'GB28181', icon: '国', group: '设备' },
+  {
+    path: '/gb28181/register',
+    label: 'GB28181',
+    icon: '国',
+    group: '设备',
+    children: [
+      { path: '/gb28181/register', label: '注册管理', icon: '注' },
+      { path: '/gb28181/monitor', label: '监控信息', icon: '监' },
+    ],
+  },
   { path: '/onvif', label: 'ONVIF', icon: '网', group: '设备' },
   { path: '/streams', label: '流媒体', icon: '流', group: '业务' },
   { path: '/ai', label: '智能分析', icon: '智', group: '业务' },
@@ -14,7 +31,7 @@ export const menuRoutes = [
   { path: '/events', label: '事件中心', icon: '事', group: '治理' },
   { path: '/integrations', label: '集成', icon: '集', group: '外部' },
   { path: '/system', label: '系统', icon: '系', group: '外部' },
-] as const;
+];
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { title: '登录' } },
@@ -26,7 +43,9 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '总览' } },
       { path: 'devices', component: () => import('@/views/DevicesView.vue'), meta: { title: '设备' } },
-      { path: 'gb28181', component: () => import('@/views/Gb28181View.vue'), meta: { title: 'GB28181' } },
+      { path: 'gb28181', redirect: '/gb28181/register' },
+      { path: 'gb28181/register', component: () => import('@/views/Gb28181View.vue'), meta: { title: '注册管理' } },
+      { path: 'gb28181/monitor', component: () => import('@/views/Gb28181MonitorView.vue'), meta: { title: '监控信息' } },
       { path: 'onvif', component: () => import('@/views/OnvifView.vue'), meta: { title: 'ONVIF' } },
       { path: 'streams', component: () => import('@/views/StreamsView.vue'), meta: { title: '流媒体' } },
       { path: 'ai', component: () => import('@/views/AiView.vue'), meta: { title: '智能分析' } },

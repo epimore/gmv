@@ -44,7 +44,6 @@ pub struct GbDeviceView {
     pub create_by: Option<String>,
     pub update_by: Option<String>,
     pub update_time: Option<NaiveDateTime>,
-    pub channel_count: i64,
 }
 
 impl GbDeviceView {
@@ -84,6 +83,39 @@ impl GbDeviceView {
         })
     }
 
+    pub async fn update(request: GbDeviceCreate) -> GlobalResult<Option<Self>> {
+        let longitude = empty_string_to_none(request.longitude);
+        let latitude = empty_string_to_none(request.latitude);
+        let address = empty_string_to_none(request.address);
+        let pwd = empty_string_to_none(request.pwd);
+        let alias = empty_string_to_none(request.alias);
+        let tenant_id = empty_string_to_i64(request.tenant_id);
+        let sys_org_code = empty_string_to_none(request.sys_org_code);
+        let update_by = empty_string_to_none(request.update_by);
+        let affected = db::execute!(
+            r#"UPDATE GB28181_OAUTH SET DOMAIN_ID=?,DOMAIN=?,longitude=?,latitude=?,address=?,PWD=?,PWD_CHECK=?,ALIAS=?,STATUS=?,HEARTBEAT_SEC=?,tenant_id=?,sys_org_code=?,update_by=?,update_time=CURRENT_TIMESTAMP WHERE COALESCE(DEL,0)=0 AND DEVICE_ID=?"#,
+            &request.domain_id,
+            &request.domain,
+            longitude,
+            latitude,
+            address,
+            pwd,
+            request.pwd_check,
+            alias,
+            request.status,
+            request.heartbeat_sec,
+            tenant_id,
+            sys_org_code,
+            update_by,
+            &request.device_id,
+        )
+        .hand_log(|msg| error!("{msg}"))?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        Self::get(&request.device_id).await
+    }
+
     pub async fn list() -> GlobalResult<Vec<Self>> {
         let sql = match db::backend() {
             db::SessionDatabaseBackend::Mysql => GB_DEVICE_LIST_MYSQL,
@@ -92,12 +124,90 @@ impl GbDeviceView {
         db::fetch_all_as!(Self, sql).hand_log(|msg| error!("{msg}"))
     }
 
+    pub async fn list_page(offset: u32, limit: u32) -> GlobalResult<Vec<Self>> {
+        let sql = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => GB_DEVICE_LIST_PAGE_MYSQL,
+            db::SessionDatabaseBackend::Sqlite => GB_DEVICE_LIST_PAGE_SQLITE,
+        };
+        db::fetch_all_as!(Self, sql, limit, offset).hand_log(|msg| error!("{msg}"))
+    }
+
+    pub async fn list_page_by_domain(
+        domain_id: &str,
+        device_id: &str,
+        device_name: &str,
+        offset: u32,
+        limit: u32,
+    ) -> GlobalResult<Vec<Self>> {
+        let sql = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_MYSQL,
+            db::SessionDatabaseBackend::Sqlite => GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_SQLITE,
+        };
+        let device_id = device_id.trim();
+        let device_name = device_name.trim();
+        let device_name_like = format!("%{device_name}%");
+        db::fetch_all_as!(
+            Self,
+            sql,
+            domain_id,
+            device_id,
+            device_id,
+            device_name,
+            &device_name_like,
+            limit,
+            offset
+        )
+        .hand_log(|msg| error!("{msg}"))
+    }
+    pub async fn count() -> GlobalResult<u64> {
+        let row: Option<(i64,)> = db::fetch_optional_as!(
+            (i64,),
+            "SELECT COUNT(*) FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0",
+        )
+        .hand_log(|msg| error!("{msg}"))?;
+        Ok(row
+            .and_then(|(count,)| u64::try_from(count).ok())
+            .unwrap_or_default())
+    }
+
+    pub async fn count_by_domain(
+        domain_id: &str,
+        device_id: &str,
+        device_name: &str,
+    ) -> GlobalResult<u64> {
+        let device_id = device_id.trim();
+        let device_name = device_name.trim();
+        let device_name_like = format!("%{device_name}%");
+        let row: Option<(i64,)> = db::fetch_optional_as!(
+            (i64,),
+            "SELECT COUNT(*) FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 AND o.DOMAIN_ID=? AND (?='' OR o.DEVICE_ID=?) AND (?='' OR o.ALIAS LIKE ?)",
+            domain_id,
+            device_id,
+            device_id,
+            device_name,
+            &device_name_like,
+        )
+        .hand_log(|msg| error!("{msg}"))?;
+        Ok(row
+            .and_then(|(count,)| u64::try_from(count).ok())
+            .unwrap_or_default())
+    }
     pub async fn get(device_id: &str) -> GlobalResult<Option<Self>> {
         let sql = match db::backend() {
             db::SessionDatabaseBackend::Mysql => GB_DEVICE_GET_MYSQL,
             db::SessionDatabaseBackend::Sqlite => GB_DEVICE_GET_SQLITE,
         };
         db::fetch_optional_as!(Self, sql, device_id).hand_log(|msg| error!("{msg}"))
+    }
+
+    pub async fn delete(device_id: &str, domain_id: &str) -> GlobalResult<bool> {
+        let affected = db::execute!(
+            "UPDATE GB28181_OAUTH SET DEL=1,update_time=CURRENT_TIMESTAMP WHERE COALESCE(DEL,0)=0 AND DEVICE_ID=? AND DOMAIN_ID=?",
+            device_id,
+            domain_id,
+        )
+        .hand_log(|msg| error!("{msg}"))?;
+        Ok(affected > 0)
     }
 }
 
@@ -167,8 +277,7 @@ const GB_DEVICE_COLUMNS_MYSQL: &str = r#"
     o.sys_org_code AS sys_org_code,
     o.create_by AS create_by,
     o.update_by AS update_by,
-    o.update_time AS update_time,
-    (SELECT COUNT(*) FROM GB28181_DEVICE_CHANNEL c WHERE c.DEVICE_ID=o.DEVICE_ID) AS channel_count
+    o.update_time AS update_time
 "#;
 const GB_DEVICE_COLUMNS_SQLITE: &str = r#"
     o.DEVICE_ID AS device_id,
@@ -188,13 +297,16 @@ const GB_DEVICE_COLUMNS_SQLITE: &str = r#"
     o.sys_org_code AS sys_org_code,
     o.create_by AS create_by,
     o.update_by AS update_by,
-    o.update_time AS update_time,
-    (SELECT COUNT(*) FROM GB28181_DEVICE_CHANNEL c WHERE c.DEVICE_ID=o.DEVICE_ID) AS channel_count
+    o.update_time AS update_time
 "#;
-const GB_DEVICE_LIST_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    (SELECT COUNT(*) FROM GB28181_DEVICE_CHANNEL c WHERE c.DEVICE_ID=o.DEVICE_ID) AS channel_count\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 ORDER BY o.DEVICE_ID";
-const GB_DEVICE_GET_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    (SELECT COUNT(*) FROM GB28181_DEVICE_CHANNEL c WHERE c.DEVICE_ID=o.DEVICE_ID) AS channel_count\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 AND o.DEVICE_ID=?";
-const GB_DEVICE_LIST_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    (SELECT COUNT(*) FROM GB28181_DEVICE_CHANNEL c WHERE c.DEVICE_ID=o.DEVICE_ID) AS channel_count\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 ORDER BY o.DEVICE_ID";
-const GB_DEVICE_GET_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    (SELECT COUNT(*) FROM GB28181_DEVICE_CHANNEL c WHERE c.DEVICE_ID=o.DEVICE_ID) AS channel_count\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 AND o.DEVICE_ID=?";
+const GB_DEVICE_LIST_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 ORDER BY o.DEVICE_ID";
+const GB_DEVICE_GET_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 AND o.DEVICE_ID=?";
+const GB_DEVICE_LIST_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 ORDER BY o.DEVICE_ID";
+const GB_DEVICE_GET_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 AND o.DEVICE_ID=?";
+const GB_DEVICE_LIST_PAGE_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
+const GB_DEVICE_LIST_PAGE_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
+const GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 AND o.DOMAIN_ID=? AND (?='' OR o.DEVICE_ID=?) AND (?='' OR o.ALIAS LIKE ?) ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
+const GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time\n FROM GB28181_OAUTH o WHERE COALESCE(o.DEL,0)=0 AND o.DOMAIN_ID=? AND (?='' OR o.DEVICE_ID=?) AND (?='' OR o.ALIAS LIKE ?) ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
 
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct GbChannelView {
