@@ -76,7 +76,7 @@ export const healthReady = () => requestAt<HealthInfo>('/health/ready');
 
 
 export interface GbSessionConfigInfo { domain: string; domain_id: string; wan_ip: string; wan_port: number }
-export interface GbDeviceInfo { device_id: string; session_node_id: string; domain_id: string; domain: string; longitude: string | null; latitude: string | null; address: string | null; pwd: string | null; pwd_check: number; alias: string | null; status: number; heartbeat_sec: number; del: number; create_time: string | null; tenant_id: string | null; sys_org_code: string | null; create_by: string | null; update_by: string | null; update_time: string | null }
+export interface GbDeviceInfo { device_id: string; session_node_id: string; domain_id: string; domain: string; longitude: string | null; latitude: string | null; address: string | null; pwd: string | null; pwd_check: number; alias: string | null; status: number; heartbeat_sec: number; del: number; create_time: string | null; tenant_id: string | null; sys_org_code: string | null; create_by: string | null; update_by: string | null; update_time: string | null; monitor_status: number; device_type: string | null; manufacturer: string | null; model: string | null; firmware: string | null; gb_version: string | null; max_camera: number; camera_in_count: number; camera_off_count: number; register_time: string | null }
 export interface GbDevicePage { items: GbDeviceInfo[]; total: number; page: number; page_size: number }
 export interface GbDevicePayload { device_id?: string; session_node_id?: string; domain_id?: string; domain?: string; longitude?: string; latitude?: string; address?: string; pwd?: string; pwd_check?: number; alias?: string; status?: number; heartbeat_sec?: number; tenant_id?: string; sys_org_code?: string; create_by?: string; update_by?: string }
 export interface GbChannelInfo { device_id: string; channel_id: string; name: string; manufacturer: string; model: string; owner: string; status: string; civil_code: string; address: string; parent_id: string; ip_address: string; port: number; longitude: string; latitude: string; ptz_type: string; alias_name: string; pic_url: string; snapshot: number; over_pic_id: string; ptz_enable: number; talk_enable: number; audio_enable: number; record_enable: number; playback_enable: number; alarm_enable: number; biz_enable: number; sort_no: number; created_at_ms: number; updated_at_ms: number }
@@ -86,8 +86,8 @@ export interface GbStreamPayload { request_id: string; token?: string; start_tim
 
 const gbPath = (value: string) => encodeURIComponent(value);
 export const getGbSessionNodeConfig = (nodeId: string) => request<GbSessionConfigInfo>('/gb28181/session-nodes/' + gbPath(nodeId) + '/config');
-export const listGbDevicePage = (page = 1, pageSize = 20, sessionNodeId = '', domainId = '', deviceId = '', deviceName = '') => {
-  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize), session_node_id: sessionNodeId, domain_id: domainId, device_id: deviceId, device_name: deviceName });
+export const listGbDevicePage = (page = 1, pageSize = 20, sessionNodeId = '', domainId = '', deviceId = '', deviceName = '', registeredOnly = false) => {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize), session_node_id: sessionNodeId, domain_id: domainId, device_id: deviceId, device_name: deviceName, registered_only: String(registeredOnly) });
   return request<GbDevicePage>('/gb28181/devices?' + query);
 };
 export async function listGbDevices(pageSize = 500, sessionNodeId = '', domainId = '') {

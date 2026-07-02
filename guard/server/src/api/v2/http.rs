@@ -1354,6 +1354,7 @@ struct GbDeviceListQuery {
     domain_id: Option<String>,
     device_id: Option<String>,
     device_name: Option<String>,
+    registered_only: Option<bool>,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -1385,6 +1386,16 @@ struct GbDeviceResponse {
     create_by: Option<String>,
     update_by: Option<String>,
     update_time: Option<String>,
+    monitor_status: i64,
+    device_type: Option<String>,
+    manufacturer: Option<String>,
+    model: Option<String>,
+    firmware: Option<String>,
+    gb_version: Option<String>,
+    max_camera: i64,
+    camera_in_count: i64,
+    camera_off_count: i64,
+    register_time: Option<String>,
 }
 
 #[derive(Debug, base::serde::Serialize)]
@@ -1505,6 +1516,16 @@ fn gb_device_request(request: GbDeviceRequest) -> RpcGbDevice {
         create_by: request.create_by,
         update_by: request.update_by,
         update_time: String::new(),
+        monitor_status: 0,
+        device_type: String::new(),
+        manufacturer: String::new(),
+        model: String::new(),
+        firmware: String::new(),
+        gb_version: String::new(),
+        max_camera: 0,
+        camera_in_count: 0,
+        camera_off_count: 0,
+        register_time: String::new(),
     }
 }
 
@@ -1529,6 +1550,16 @@ fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
         create_by: empty_to_none(record.create_by),
         update_by: empty_to_none(record.update_by),
         update_time: empty_to_none(record.update_time),
+        monitor_status: record.monitor_status,
+        device_type: empty_to_none(record.device_type),
+        manufacturer: empty_to_none(record.manufacturer),
+        model: empty_to_none(record.model),
+        firmware: empty_to_none(record.firmware),
+        gb_version: empty_to_none(record.gb_version),
+        max_camera: record.max_camera,
+        camera_in_count: record.camera_in_count,
+        camera_off_count: record.camera_off_count,
+        register_time: empty_to_none(record.register_time),
     }
 }
 
@@ -1691,6 +1722,7 @@ async fn gb_devices(
         .as_deref()
         .map(str::trim)
         .unwrap_or_default();
+    let registered_only = query.registered_only.unwrap_or(false);
     require_role(&state.auth, &headers, Role::Viewer)?;
     let control = BusinessControl::new(state.api.store());
     let (session_node_id, domain_id) = match (query_session_node_id, query_domain_id) {
@@ -1705,7 +1737,7 @@ async fn gb_devices(
         }
     };
     debug!(
-        "/api/v2/gb28181/devices, req: session_node_id={session_node_id}, domain_id={domain_id}, device_id={device_id}, device_name={device_name}, page={page}, page_size={page_size}"
+        "/api/v2/gb28181/devices, req: session_node_id={session_node_id}, domain_id={domain_id}, device_id={device_id}, device_name={device_name}, registered_only={registered_only}, page={page}, page_size={page_size}"
     );
     let devices = control
         .list_gb_device_page(
@@ -1713,6 +1745,7 @@ async fn gb_devices(
             &domain_id,
             device_id,
             device_name,
+            registered_only,
             page,
             page_size,
         )

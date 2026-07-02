@@ -120,6 +120,7 @@ message ListGbDevicesRequest {
   string domain_id = 3;
   string device_id = 4;
   string device_name = 5;
+  bool registered_only = 6;
 }
 
 message GetGbDeviceRequest {
@@ -182,6 +183,16 @@ message GbDevice {
   string create_by = 17;
   string update_by = 18;
   string update_time = 19;
+  int64 monitor_status = 20;
+  string device_type = 21;
+  string manufacturer = 22;
+  string model = 23;
+  string firmware = 24;
+  string gb_version = 25;
+  int64 max_camera = 26;
+  int64 camera_in_count = 27;
+  int64 camera_off_count = 28;
+  string register_time = 29;
 }
 
 message ListGbChannelsRequest {

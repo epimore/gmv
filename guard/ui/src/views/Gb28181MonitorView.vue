@@ -2,24 +2,54 @@
   <div v-if="!selectedDevice" class="page-grid" v-loading="loading">
     <GlassPanel class="span-12" title="监控信息" subtitle="按设备查看在线状态和注册时间">
       <div class="toolbar">
-        <el-input v-model="keyword" style="width: 260px" clearable placeholder="搜索设备 ID / 名称" />
+        <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 320px"
+          :loading="listNodeLoading" @change="handleListNodeChange">
+          <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
+            :value="option.node.node_id">
+            <div class="node-option">
+              <span>{{ option.config.domain_id }}</span>
+              <span class="node-status">{{ option.node.display_name }}</span>
+            </div>
+          </el-option>
+        </el-select>
+        <el-input v-model="deviceName" style="width: 220px" clearable placeholder="设备名称" @clear="queryDevices" />
+        <el-button type="primary" :loading="loading" @click="queryDevices">查询</el-button>
+        <el-button :loading="loading" @click="resetDevices">重置</el-button>
         <el-button :loading="loading" @click="loadDevices">刷新</el-button>
       </div>
-      <el-table :data="filteredDevices" height="620" empty-text="暂无监控设备">
-        <el-table-column type="index" label="序号" width="64" />
+      <el-table :data="devices" height="620" empty-text="暂无监控设备">
+        <el-table-column type="index" :index="tableIndex" label="序号" width="64" />
         <el-table-column prop="device_id" label="设备 ID" min-width="190" show-overflow-tooltip />
         <el-table-column label="设备名称" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">{{ displayDeviceName(row) }}</template>
         </el-table-column>
-        <el-table-column prop="domain_id" label="SIP服务器ID" min-width="190" show-overflow-tooltip />
-        <el-table-column prop="domain" label="SIP域" min-width="120" show-overflow-tooltip />
+        <el-table-column label="类型" width="70">
+          <template #default="{ row }">{{ emptyText(row.device_type) }}</template>
+        </el-table-column>
+        <el-table-column label="厂家" min-width="95" show-overflow-tooltip>
+          <template #default="{ row }">{{ emptyText(row.manufacturer) }}</template>
+        </el-table-column>
+        <el-table-column label="型号" min-width="100" show-overflow-tooltip>
+          <template #default="{ row }">{{ emptyText(row.model) }}</template>
+        </el-table-column>
+        <el-table-column label="固件版本" min-width="100" show-overflow-tooltip>
+          <template #default="{ row }">{{ emptyText(row.firmware) }}</template>
+        </el-table-column>
+        <el-table-column label="国标版本" width="100">
+          <template #default="{ row }">{{ emptyText(row.gb_version) }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <StatusPill :label="row.status === 1 ? '在线' : '离线'" :tone="row.status === 1 ? 'ONLINE' : 'OFFLINE'" />
+            <StatusPill :label="row.monitor_status === 1 ? '在线' : '离线'" :tone="row.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
           </template>
         </el-table-column>
+        <el-table-column label="路数" width="70">
+          <template #default="{ row }">{{ countText(row.max_camera) }}</template>
+        </el-table-column>
+        <el-table-column prop="camera_in_count" label="接入" width="70" />
+        <el-table-column prop="camera_off_count" label="离线" width="70" />
         <el-table-column label="注册时间" min-width="170" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.create_time || '-' }}</template>
+          <template #default="{ row }">{{ row.register_time || '-' }}</template>
         </el-table-column>
         <el-table-column label="操作" width="110" fixed="right">
           <template #default="{ row }">
@@ -27,6 +57,11 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-bar">
+        <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :total="total"
+          :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next, jumper"
+          @current-change="loadDevices" @size-change="handlePageSizeChange" />
+      </div>
     </GlassPanel>
   </div>
 
@@ -34,7 +69,7 @@
     <GlassPanel class="span-12" title="通道监控" :subtitle="selectedDevice.device_id">
       <div class="monitor-head">
         <div class="device-summary">
-          <StatusPill :label="selectedDevice.status === 1 ? '在线' : '离线'" :tone="selectedDevice.status === 1 ? 'ONLINE' : 'OFFLINE'" />
+          <StatusPill :label="selectedDevice.monitor_status === 1 ? '在线' : '离线'" :tone="selectedDevice.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
           <strong>{{ displayDeviceName(selectedDevice) }}</strong>
           <span>Session {{ selectedDevice.session_node_id || '-' }}</span>
         </div>
@@ -144,9 +179,11 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import {
+  getGbSessionNodeConfig,
   listGbChannelImages,
   listGbChannels,
-  listGbDevices,
+  listGbDevicePage,
+  listNodes,
   sendGbPtz,
   startGbPlayback,
   startGbPreview,
@@ -156,6 +193,8 @@ import {
   type GbChannelInfo,
   type GbChannelPayload,
   type GbDeviceInfo,
+  type GbSessionConfigInfo,
+  type NodeInfo,
   type StreamSummary,
 } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
@@ -168,10 +207,17 @@ const loading = ref(false);
 const channelLoading = ref(false);
 const imageLoading = ref(false);
 const configSaving = ref(false);
-const keyword = ref('');
+const listNodeLoading = ref(false);
+const deviceName = ref('');
 const devices = ref<GbDeviceInfo[]>([]);
 const channels = ref<GbChannelInfo[]>([]);
 const images = ref<GbChannelImageInfo[]>([]);
+const sessionNodes = ref<NodeInfo[]>([]);
+const sessionNodeOptions = ref<SessionNodeOption[]>([]);
+const selectedListNodeId = ref('');
+const page = ref(1);
+const pageSize = ref(20);
+const total = ref(0);
 const selectedDevice = ref<GbDeviceInfo>();
 const selectedChannel = ref<GbChannelInfo>();
 const lastStream = ref<StreamSummary>();
@@ -183,6 +229,8 @@ const configDrawer = ref(false);
 const snapshotLoading = reactive<Record<string, boolean>>({});
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
+
+type SessionNodeOption = { node: NodeInfo; config: GbSessionConfigInfo };
 
 const confOptions = [
   { label: '启用', value: 1 },
@@ -203,10 +251,7 @@ const playerCapabilities = {
   streamSwitch: false,
   aiOverlay: false,
 };
-const filteredDevices = computed(() => devices.value.filter((item) => {
-  const key = keyword.value.trim();
-  return !key || item.device_id.includes(key) || (item.alias || '').includes(key) || item.domain_id.includes(key);
-}));
+const selectedListNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedListNodeId.value));
 const sortedChannels = computed(() => [...channels.value].sort((left, right) => {
   const sortNo = Number(left.sort_no || 0) - Number(right.sort_no || 0);
   return sortNo || displayChannelName(left).localeCompare(displayChannelName(right), 'zh-Hans-CN');
@@ -235,6 +280,12 @@ const playerSources = computed<GmvSource[]>(() => {
 
 function displayDeviceName(device: GbDeviceInfo) { return device.alias || device.device_id; }
 function displayChannelName(channel: GbChannelInfo) { return channel.alias_name || channel.name || channel.channel_id; }
+function tableIndex(index: number) { return (page.value - 1) * pageSize.value + index + 1; }
+function emptyText(value: unknown) { return value === undefined || value === null || value === '' ? '-' : String(value); }
+function countText(value: unknown) { const count = Number(value || 0); return count > 0 ? String(count) : '-'; }
+function isGbSessionNode(node: NodeInfo) { return node.kind === 'session-gb28181' || node.service === 'session-gb28181' || node.protocol === 'gb28181'; }
+function isNodeOnline(node?: NodeInfo) { return !!node && node.connection === 'CONNECTED' && node.scheduling === 'ENABLED'; }
+function listNodeLabel(option: SessionNodeOption) { return `${option.config.domain_id} · ${option.node.display_name}`; }
 function confValue(value: unknown, defaultValue = 2) { return value === undefined || value === null ? defaultValue : Number(value); }
 function confEnabled(value: unknown) { return confValue(value) === 1; }
 function bizEnabled(channel: GbChannelInfo) { return confValue(channel.biz_enable, 1) === 1; }
@@ -261,16 +312,59 @@ function formatTime(value: number) {
   return new Date(value).toLocaleString();
 }
 
+async function loadSessionNodes() {
+  const nodes = (await listNodes()).filter(isGbSessionNode);
+  sessionNodes.value = nodes;
+  listNodeLoading.value = true;
+  try {
+    const options = (await Promise.all(nodes.filter(isNodeOnline).map(async (node) => {
+      try {
+        return { node, config: await getGbSessionNodeConfig(node.node_id) };
+      } catch {
+        return undefined;
+      }
+    }))).filter((item): item is SessionNodeOption => !!item && !!item.config.domain_id);
+    sessionNodeOptions.value = options.sort((left, right) => left.config.domain_id.localeCompare(right.config.domain_id));
+    if (!selectedListNodeId.value || !sessionNodeOptions.value.some((item) => item.node.node_id === selectedListNodeId.value)) {
+      selectedListNodeId.value = sessionNodeOptions.value[0]?.node.node_id || '';
+    }
+  } finally {
+    listNodeLoading.value = false;
+  }
+}
 async function loadDevices() {
   loading.value = true;
   try {
-    devices.value = await listGbDevices();
+    await loadSessionNodes();
+    const option = selectedListNodeOption.value;
+    if (!option) {
+      devices.value = [];
+      total.value = 0;
+      return;
+    }
+    const result = await listGbDevicePage(
+      page.value,
+      pageSize.value,
+      option.node.node_id,
+      option.config.domain_id,
+      '',
+      deviceName.value,
+      true,
+    );
+    devices.value = result.items;
+    total.value = result.total;
+    page.value = result.page;
+    pageSize.value = result.page_size;
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '设备列表加载失败');
   } finally {
     loading.value = false;
   }
 }
+async function queryDevices() { page.value = 1; await loadDevices(); }
+async function resetDevices() { deviceName.value = ''; page.value = 1; await loadDevices(); }
+async function handlePageSizeChange() { page.value = 1; await loadDevices(); }
+async function handleListNodeChange() { page.value = 1; await loadDevices(); }
 async function openChannels(device: GbDeviceInfo) {
   selectedDevice.value = device;
   selectedChannel.value = undefined;
@@ -393,6 +487,25 @@ onMounted(loadDevices);
 </script>
 
 <style scoped>
+.node-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.node-status {
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 14px;
+}
+
 .monitor-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -21,7 +21,6 @@ pub mod sip;
 pub struct SessionConf {
     pub domain: String,
     pub domain_id: String,
-    pub http_source: String,
     pub lan_ip: Ipv4Addr,
     pub wan_ip: Ipv4Addr,
     pub lan_port: u16,

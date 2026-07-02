@@ -651,33 +651,41 @@ impl SessionControl for SessionControlRpc {
         let domain_id = request.domain_id.trim().to_string();
         let device_id = request.device_id.trim().to_string();
         let device_name = request.device_name.trim().to_string();
+        let registered_only = request.registered_only;
         let total = if domain_id.is_empty() {
-            crate::storage::guard_query::GbDeviceView::count().await
+            crate::storage::guard_query::GbDeviceView::count(registered_only).await
         } else {
             crate::storage::guard_query::GbDeviceView::count_by_domain(
                 &domain_id,
                 &device_id,
                 &device_name,
+                registered_only,
             )
             .await
         }
         .map_err(storage_status)?;
         let page = request.page.max(1);
         let devices = if request.page_size == 0 {
-            crate::storage::guard_query::GbDeviceView::list().await
+            crate::storage::guard_query::GbDeviceView::list(registered_only).await
         } else if !domain_id.is_empty() {
             let offset = page.saturating_sub(1).saturating_mul(request.page_size);
             crate::storage::guard_query::GbDeviceView::list_page_by_domain(
                 &domain_id,
                 &device_id,
                 &device_name,
+                registered_only,
                 offset,
                 request.page_size,
             )
             .await
         } else {
             let offset = page.saturating_sub(1).saturating_mul(request.page_size);
-            crate::storage::guard_query::GbDeviceView::list_page(offset, request.page_size).await
+            crate::storage::guard_query::GbDeviceView::list_page(
+                registered_only,
+                offset,
+                request.page_size,
+            )
+            .await
         }
         .map_err(storage_status)?
         .into_iter()
@@ -1367,6 +1375,16 @@ fn gb_device_proto(
         create_by: row.create_by.unwrap_or_default(),
         update_by: row.update_by.unwrap_or_default(),
         update_time: datetime_string(row.update_time),
+        monitor_status: row.monitor_status,
+        device_type: row.device_type.unwrap_or_default(),
+        manufacturer: row.manufacturer.unwrap_or_default(),
+        model: row.model.unwrap_or_default(),
+        firmware: row.firmware.unwrap_or_default(),
+        gb_version: row.gb_version.unwrap_or_default(),
+        max_camera: row.max_camera,
+        camera_in_count: row.camera_in_count,
+        camera_off_count: row.camera_off_count,
+        register_time: datetime_string(row.register_time),
     }
 }
 
