@@ -20,6 +20,7 @@ service SessionControl {
   rpc DeleteGbDevice(DeleteGbDeviceRequest) returns (DeleteGbDeviceResponse);
   rpc ListGbChannels(ListGbChannelsRequest) returns (ListGbChannelsResponse);
   rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
+  rpc UpdateGbChannel(UpdateGbChannelRequest) returns (UpdateGbChannelResponse);
   rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
 }
 
@@ -209,6 +210,14 @@ message ListGbChannelsResponse {
 }
 
 message GetGbChannelResponse {
+  GbChannel channel = 1;
+}
+
+message UpdateGbChannelRequest {
+  GbChannel channel = 1;
+}
+
+message UpdateGbChannelResponse {
   GbChannel channel = 1;
 }
 

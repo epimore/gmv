@@ -420,6 +420,103 @@ impl GbChannelView {
         };
         db::fetch_optional_as!(Self, sql, device_id, channel_id).hand_log(|msg| error!("{msg}"))
     }
+
+    pub async fn update_config(channel: GbChannelConfigUpdate) -> GlobalResult<Option<Self>> {
+        if Self::get(&channel.device_id, &channel.channel_id)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        match db::backend() {
+            db::SessionDatabaseBackend::Mysql => {
+                db::execute!(
+                    r#"INSERT INTO GB28181_DEVICE_CHANNEL_CONF
+                    (DEVICE_ID,CHANNEL_ID,ALIAS_NAME,PTZ_ENABLE,TALK_ENABLE,AUDIO_ENABLE,SNAPSHOT_ENABLE,RECORD_ENABLE,PLAYBACK_ENABLE,ALARM_ENABLE,BIZ_ENABLE,SORT_NO,over_pic_id,CREATE_TIME,UPDATE_TIME)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                    ON DUPLICATE KEY UPDATE
+                    ALIAS_NAME=VALUES(ALIAS_NAME),
+                    PTZ_ENABLE=VALUES(PTZ_ENABLE),
+                    TALK_ENABLE=VALUES(TALK_ENABLE),
+                    AUDIO_ENABLE=VALUES(AUDIO_ENABLE),
+                    SNAPSHOT_ENABLE=VALUES(SNAPSHOT_ENABLE),
+                    RECORD_ENABLE=VALUES(RECORD_ENABLE),
+                    PLAYBACK_ENABLE=VALUES(PLAYBACK_ENABLE),
+                    ALARM_ENABLE=VALUES(ALARM_ENABLE),
+                    BIZ_ENABLE=VALUES(BIZ_ENABLE),
+                    SORT_NO=VALUES(SORT_NO),
+                    over_pic_id=VALUES(over_pic_id),
+                    UPDATE_TIME=CURRENT_TIMESTAMP"#,
+                    &channel.device_id,
+                    &channel.channel_id,
+                    empty_string_to_none(channel.alias_name),
+                    channel.ptz_enable,
+                    channel.talk_enable,
+                    channel.audio_enable,
+                    channel.snapshot,
+                    channel.record_enable,
+                    channel.playback_enable,
+                    channel.alarm_enable,
+                    channel.biz_enable,
+                    channel.sort_no,
+                    empty_string_to_i64(channel.over_pic_id),
+                )
+                .hand_log(|msg| error!("{msg}"))?;
+            }
+            db::SessionDatabaseBackend::Sqlite => {
+                db::execute!(
+                    r#"INSERT INTO GB28181_DEVICE_CHANNEL_CONF
+                    (DEVICE_ID,CHANNEL_ID,ALIAS_NAME,PTZ_ENABLE,TALK_ENABLE,AUDIO_ENABLE,SNAPSHOT_ENABLE,RECORD_ENABLE,PLAYBACK_ENABLE,ALARM_ENABLE,BIZ_ENABLE,SORT_NO,over_pic_id,CREATE_TIME,UPDATE_TIME)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                    ON CONFLICT(DEVICE_ID, CHANNEL_ID) DO UPDATE SET
+                    ALIAS_NAME=excluded.ALIAS_NAME,
+                    PTZ_ENABLE=excluded.PTZ_ENABLE,
+                    TALK_ENABLE=excluded.TALK_ENABLE,
+                    AUDIO_ENABLE=excluded.AUDIO_ENABLE,
+                    SNAPSHOT_ENABLE=excluded.SNAPSHOT_ENABLE,
+                    RECORD_ENABLE=excluded.RECORD_ENABLE,
+                    PLAYBACK_ENABLE=excluded.PLAYBACK_ENABLE,
+                    ALARM_ENABLE=excluded.ALARM_ENABLE,
+                    BIZ_ENABLE=excluded.BIZ_ENABLE,
+                    SORT_NO=excluded.SORT_NO,
+                    over_pic_id=excluded.over_pic_id,
+                    UPDATE_TIME=CURRENT_TIMESTAMP"#,
+                    &channel.device_id,
+                    &channel.channel_id,
+                    empty_string_to_none(channel.alias_name),
+                    channel.ptz_enable,
+                    channel.talk_enable,
+                    channel.audio_enable,
+                    channel.snapshot,
+                    channel.record_enable,
+                    channel.playback_enable,
+                    channel.alarm_enable,
+                    channel.biz_enable,
+                    channel.sort_no,
+                    empty_string_to_i64(channel.over_pic_id),
+                )
+                .hand_log(|msg| error!("{msg}"))?;
+            }
+        }
+        Self::get(&channel.device_id, &channel.channel_id).await
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GbChannelConfigUpdate {
+    pub device_id: String,
+    pub channel_id: String,
+    pub alias_name: String,
+    pub snapshot: i64,
+    pub over_pic_id: String,
+    pub ptz_enable: i64,
+    pub talk_enable: i64,
+    pub audio_enable: i64,
+    pub record_enable: i64,
+    pub playback_enable: i64,
+    pub alarm_enable: i64,
+    pub biz_enable: i64,
+    pub sort_no: i64,
 }
 
 const GB_CHANNEL_COLUMNS_MYSQL: &str = r#"

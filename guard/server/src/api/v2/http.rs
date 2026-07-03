@@ -99,7 +99,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/gb28181/devices/{device_id}/channels", get(gb_channels))
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}",
-            get(gb_channel),
+            get(gb_channel).post(update_gb_channel),
         )
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/preview",
@@ -1441,6 +1441,33 @@ struct GbChannelResponse {
     updated_at_ms: i64,
 }
 
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbChannelRequest {
+    #[serde(default)]
+    alias_name: String,
+    #[serde(default)]
+    snapshot: i64,
+    #[serde(default)]
+    over_pic_id: String,
+    #[serde(default)]
+    ptz_enable: i64,
+    #[serde(default)]
+    talk_enable: i64,
+    #[serde(default)]
+    audio_enable: i64,
+    #[serde(default)]
+    record_enable: i64,
+    #[serde(default)]
+    playback_enable: i64,
+    #[serde(default)]
+    alarm_enable: i64,
+    #[serde(default = "default_biz_enable")]
+    biz_enable: i64,
+    #[serde(default)]
+    sort_no: i64,
+}
+
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct GbChannelImageResponse {
@@ -1489,6 +1516,10 @@ struct GbSnapshotRequest {
 #[serde(crate = "base::serde")]
 struct GbSnapshotResponse {
     session_id: String,
+}
+
+fn default_biz_enable() -> i64 {
+    1
 }
 
 fn empty_to_none(value: String) -> Option<String> {
@@ -1603,6 +1634,29 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
         sort_no: record.sort_no,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+fn gb_channel_request(
+    device_id: String,
+    channel_id: String,
+    request: GbChannelRequest,
+) -> RpcGbChannel {
+    RpcGbChannel {
+        device_id,
+        channel_id,
+        alias_name: request.alias_name,
+        snapshot: request.snapshot,
+        over_pic_id: request.over_pic_id,
+        ptz_enable: request.ptz_enable,
+        talk_enable: request.talk_enable,
+        audio_enable: request.audio_enable,
+        record_enable: request.record_enable,
+        playback_enable: request.playback_enable,
+        alarm_enable: request.alarm_enable,
+        biz_enable: request.biz_enable,
+        sort_no: request.sort_no,
+        ..Default::default()
     }
 }
 
@@ -1845,6 +1899,22 @@ async fn gb_channel(
         .get_gb_channel(&device_id, &channel_id)
         .await?
         .ok_or_else(|| GuardError::NotFound(format!("GB28181 channel {device_id}/{channel_id}")))?;
+    Ok(Json(gb_channel_response(channel)))
+}
+
+async fn update_gb_channel(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id)): Path<(String, String)>,
+    Json(request): Json<GbChannelRequest>,
+) -> Result<Json<GbChannelResponse>, HttpError> {
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}, req: device_id={device_id}, channel_id={channel_id}, body={request:?}"
+    );
+    require_write(&state.auth, &headers, Role::Operator)?;
+    let channel = BusinessControl::new(state.api.store())
+        .update_gb_channel(gb_channel_request(device_id, channel_id, request))
+        .await?;
     Ok(Json(gb_channel_response(channel)))
 }
 

@@ -10,7 +10,8 @@ use gmv_protocol::session::v1::{
     ControlPtzRequest, CreateGbDeviceRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
     GbChannelImage, GbDevice, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
     ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest, SnapshotImageRequest,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbDeviceRequest,
+    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbDeviceRequest,
 };
 
 use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
@@ -429,6 +430,51 @@ impl BusinessControl {
             }
         }
         Ok(None)
+    }
+
+    pub async fn update_gb_channel(&self, channel: GbChannel) -> GuardResult<GbChannel> {
+        let device_id = channel.device_id.clone();
+        let channel_id = channel.channel_id.clone();
+        let device = self
+            .get_gb_device(&device_id)
+            .await?
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
+        let node_id = device.session_node_id;
+        let session = self
+            .store
+            .get_node(&node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 session node {node_id}")))?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(GuardError::Conflict(format!(
+                "GB28181 session node {node_id} is offline"
+            )));
+        }
+        let request = UpdateGbChannelRequest {
+            channel: Some(channel),
+        };
+        base::log::debug!(
+            "guard rpc client outbound: method=session_control.update_gb_channel, node={}, req: device_id={}, channel_id={}",
+            session.identity.node_id,
+            device_id,
+            channel_id,
+        );
+        let mut client = self.session_client(&session).await?;
+        client
+            .update_gb_channel(request)
+            .await
+            .map_err(session_rpc_error)?
+            .into_inner()
+            .channel
+            .ok_or_else(|| {
+                GuardError::Conflict("session returned empty GB28181 channel".to_string())
+            })
     }
 
     pub async fn list_gb_channel_images(

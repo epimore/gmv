@@ -34,8 +34,9 @@ use gmv_protocol::session::v1::{
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
     ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, SessionHookRequest,
     SessionHookResponse, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
-    StopDeviceStreamRequest, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
-    session_control_server::SessionControl, session_hook_server::SessionHook,
+    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
+    UpdateGbDeviceRequest, UpdateGbDeviceResponse, session_control_server::SessionControl,
+    session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
@@ -857,6 +858,45 @@ impl SessionControl for SessionControlRpc {
         Ok(tonic::Response::new(GetGbChannelResponse { channel }))
     }
 
+    async fn update_gb_channel(
+        &self,
+        request: tonic::Request<UpdateGbChannelRequest>,
+    ) -> Result<tonic::Response<UpdateGbChannelResponse>, tonic::Status> {
+        let request = request.into_inner();
+        if let Some(channel) = request.channel.as_ref() {
+            debug!(
+                "session_control.update_gb_channel, req: device_id={}, channel_id={}, alias_name={}, snapshot={}, over_pic_id={}, ptz_enable={}, talk_enable={}, audio_enable={}, record_enable={}, playback_enable={}, alarm_enable={}, biz_enable={}, sort_no={}",
+                channel.device_id,
+                channel.channel_id,
+                channel.alias_name,
+                channel.snapshot,
+                channel.over_pic_id,
+                channel.ptz_enable,
+                channel.talk_enable,
+                channel.audio_enable,
+                channel.record_enable,
+                channel.playback_enable,
+                channel.alarm_enable,
+                channel.biz_enable,
+                channel.sort_no,
+            );
+        } else {
+            debug!("session_control.update_gb_channel, req: channel=<none>");
+        }
+        let channel = request
+            .channel
+            .ok_or_else(|| tonic::Status::invalid_argument("channel is required"))?;
+        let channel = crate::storage::guard_query::GbChannelView::update_config(
+            gb_channel_config_update(channel),
+        )
+        .await
+        .map_err(storage_status)?
+        .ok_or_else(|| tonic::Status::not_found("GB28181 channel"))?;
+        Ok(tonic::Response::new(UpdateGbChannelResponse {
+            channel: Some(gb_channel_proto(channel)),
+        }))
+    }
+
     async fn list_gb_channel_images(
         &self,
         request: tonic::Request<ListGbChannelImagesRequest>,
@@ -1439,6 +1479,26 @@ fn gb_channel_proto(row: crate::storage::guard_query::GbChannelView) -> GbChanne
         sort_no: row.sort_no,
         created_at_ms: datetime_ms(row.created_at),
         updated_at_ms: datetime_ms(row.updated_at),
+    }
+}
+
+fn gb_channel_config_update(
+    channel: GbChannel,
+) -> crate::storage::guard_query::GbChannelConfigUpdate {
+    crate::storage::guard_query::GbChannelConfigUpdate {
+        device_id: channel.device_id,
+        channel_id: channel.channel_id,
+        alias_name: channel.alias_name,
+        snapshot: channel.snapshot,
+        over_pic_id: channel.over_pic_id,
+        ptz_enable: channel.ptz_enable,
+        talk_enable: channel.talk_enable,
+        audio_enable: channel.audio_enable,
+        record_enable: channel.record_enable,
+        playback_enable: channel.playback_enable,
+        alarm_enable: channel.alarm_enable,
+        biz_enable: channel.biz_enable,
+        sort_no: channel.sort_no,
     }
 }
 

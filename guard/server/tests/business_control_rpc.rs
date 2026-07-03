@@ -11,12 +11,12 @@ use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionC
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
     DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
-    GbDevice, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
-    GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
-    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
-    ListGbDevicesRequest, ListGbDevicesResponse, SnapshotImageRequest, SnapshotImageResponse,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbDeviceRequest,
-    UpdateGbDeviceResponse,
+    GbChannel, GbDevice, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest,
+    GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, SnapshotImageRequest,
+    SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -212,6 +212,67 @@ fn gb28181_snapshot_image_uses_session_rpc() {
                 .await
                 .unwrap();
             assert_eq!(session_id, "snapshot-session");
+        });
+}
+
+#[test]
+fn gb28181_update_channel_uses_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            RegistryService::new(store.clone())
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    capacity: 8,
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let channel = BusinessControl::new(store)
+                .update_gb_channel(GbChannel {
+                    device_id: "34020000001320000001".to_string(),
+                    channel_id: "34020000001320000002".to_string(),
+                    alias_name: "front".to_string(),
+                    snapshot: 1,
+                    ptz_enable: 1,
+                    talk_enable: 2,
+                    audio_enable: 2,
+                    record_enable: 0,
+                    playback_enable: 1,
+                    alarm_enable: 0,
+                    biz_enable: 1,
+                    sort_no: 7,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(channel.channel_id, "34020000001320000002");
+            assert_eq!(channel.alias_name, "front");
+            assert_eq!(channel.sort_no, 7);
         });
 }
 
@@ -638,6 +699,15 @@ impl SessionControl for FakeSession {
         _request: tonic::Request<GetGbChannelRequest>,
     ) -> Result<tonic::Response<GetGbChannelResponse>, tonic::Status> {
         Ok(tonic::Response::new(GetGbChannelResponse { channel: None }))
+    }
+
+    async fn update_gb_channel(
+        &self,
+        request: tonic::Request<UpdateGbChannelRequest>,
+    ) -> Result<tonic::Response<UpdateGbChannelResponse>, tonic::Status> {
+        Ok(tonic::Response::new(UpdateGbChannelResponse {
+            channel: request.into_inner().channel,
+        }))
     }
 
     async fn list_gb_channel_images(
