@@ -2,7 +2,7 @@
   <div class="page-grid" v-loading="loading">
     <GlassPanel class="span-12">
       <div class="toolbar">
-        <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 320px"
+        <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 420px"
           :loading="listNodeLoading" @change="handleListNodeChange">
           <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
             :value="option.node.node_id" :disabled="option.disabled">
@@ -29,7 +29,8 @@
           </template></el-table-column>
         <el-table-column label="密钥" width="80"><template #default="{ row }">{{ row.pwd_check === 1 ? '开启' : '关闭'
             }}</template></el-table-column>
-        <el-table-column label="心跳周期" width="100"><template #default="{ row }">{{ row.heartbeat_sec }} 秒</template></el-table-column>
+        <el-table-column label="心跳周期" width="100"><template #default="{ row }">{{ row.heartbeat_sec }}
+            秒</template></el-table-column>
         <el-table-column label="创建时间" min-width="170" show-overflow-tooltip>
           <template #default="{ row }">{{ row.create_time || '-' }}</template>
         </el-table-column>
@@ -42,27 +43,21 @@
         </el-table-column>
       </el-table>
       <div class="pagination-bar">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          :total="total"
-          :page-sizes="[10, 20, 50, 100]"
-          layout="total, sizes, prev, pager, next, jumper"
-          @current-change="loadDevices"
-          @size-change="handlePageSizeChange"
-        />
+        <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :total="total"
+          :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next, jumper" @current-change="loadDevices"
+          @size-change="handlePageSizeChange" />
       </div>
     </GlassPanel>
 
     <el-dialog v-model="deviceDialog" :title="deviceDialogTitle" width="820px">
       <el-form :model="deviceForm" label-width="130px">
-        <el-form-item label="SIP设备ID"><el-input v-model="deviceForm.device_id" :disabled="deviceReadonly || !!editingDevice"
-            placeholder="新增时留空，由平台按 SIP 服务器 ID 前缀递增生成" /></el-form-item>
+        <el-form-item label="SIP设备ID"><el-input v-model="deviceForm.device_id"
+            :disabled="deviceReadonly || !!editingDevice" placeholder="新增时留空，由平台按 SIP 服务器 ID 前缀递增生成" /></el-form-item>
         <el-form-item label="Session 节点" required>
-          <el-select v-model="deviceForm.session_node_id" filterable placeholder="请选择 session 节点" style="width: 100%" :disabled="deviceReadonly" :loading="sessionConfigLoading"
-            @change="selectSessionNode">
-            <el-option v-for="node in sessionNodes" :key="node.node_id"
-              :label="nodeLabel(node)" :value="node.node_id" :disabled="!isNodeOnline(node)">
+          <el-select v-model="deviceForm.session_node_id" filterable placeholder="请选择 session 节点" style="width: 100%"
+            :disabled="deviceReadonly" :loading="sessionConfigLoading" @change="selectSessionNode">
+            <el-option v-for="node in sessionNodes" :key="node.node_id" :label="nodeLabel(node)" :value="node.node_id"
+              :disabled="!isNodeOnline(node)">
               <div class="node-option" :class="{ offline: !isNodeOnline(node) }">
                 <span>{{ nodeKindLabel(node) }} · {{ node.node_id }}</span>
                 <span class="node-status">{{ isNodeOnline(node) ? "在线" : "离线" }}</span>
@@ -71,33 +66,46 @@
           </el-select>
         </el-form-item>
         <el-row :gutter="16">
-          <el-col :span="12"><el-form-item label="SIP服务器ID" required><div class="derived-value">{{ deviceForm.domain_id || "-" }}</div></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="SIP域" required><div class="derived-value">{{ deviceForm.domain || "-" }}</div></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="SIP服务器ID" required>
+              <div class="derived-value">{{ deviceForm.domain_id || "-" }}</div>
+            </el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="SIP域" required>
+              <div class="derived-value">{{ deviceForm.domain || "-" }}</div>
+            </el-form-item></el-col>
         </el-row>
         <el-row :gutter="16">
-          <el-col :span="12"><el-form-item label="SIP服务器地址"><div class="derived-value">{{ sessionConfig.wan_ip || "-" }}</div></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="SIP服务器端口"><div class="derived-value">{{ sessionConfig.wan_port || "-" }}</div></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="SIP服务器地址">
+              <div class="derived-value">{{ sessionConfig.wan_ip || "-" }}</div>
+            </el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="SIP服务器端口">
+              <div class="derived-value">{{ sessionConfig.wan_port || "-" }}</div>
+            </el-form-item></el-col>
         </el-row>
         <el-row :gutter="16">
-          <el-col :span="12"><el-form-item label="设备别名"><el-input v-model="deviceForm.alias" :disabled="deviceReadonly" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="设备别名"><el-input v-model="deviceForm.alias"
+                :disabled="deviceReadonly" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="状态"><el-switch v-model="deviceForm.status" :active-value="1"
-                :inactive-value="0" active-text="启用" inactive-text="停用" :disabled="deviceReadonly" /></el-form-item></el-col>
+                :inactive-value="0" active-text="启用" inactive-text="停用"
+                :disabled="deviceReadonly" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="密钥认证"><el-switch v-model="deviceForm.pwd_check" :active-value="1"
-                :inactive-value="0" active-text="开启" inactive-text="关闭" :disabled="deviceReadonly" /></el-form-item></el-col>
+                :inactive-value="0" active-text="开启" inactive-text="关闭"
+                :disabled="deviceReadonly" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="密钥"><el-input v-model="deviceForm.pwd"
                 :disabled="deviceReadonly || deviceForm.pwd_check !== 1" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="心跳周期(秒)"><el-input-number v-model="deviceForm.heartbeat_sec" :min="5"
                 :max="255" style="width: 100%" :disabled="deviceReadonly" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="地址"><el-input v-model="deviceForm.address" :disabled="deviceReadonly" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="地址"><el-input v-model="deviceForm.address"
+                :disabled="deviceReadonly" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="16">
-          <el-col :span="12"><el-form-item label="经度"><el-input
-                v-model="deviceForm.longitude" :disabled="deviceReadonly" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="纬度"><el-input v-model="deviceForm.latitude" :disabled="deviceReadonly" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="经度"><el-input v-model="deviceForm.longitude"
+                :disabled="deviceReadonly" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="纬度"><el-input v-model="deviceForm.latitude"
+                :disabled="deviceReadonly" /></el-form-item></el-col>
         </el-row>
         <!-- <el-row :gutter="16">
           <el-col :span="8"><el-form-item label="tenant_id"><el-input
@@ -108,8 +116,8 @@
                 v-model="deviceForm.create_by" /></el-form-item></el-col>
         </el-row> -->
       </el-form>
-      <template #footer><el-button @click="deviceDialog = false">取消</el-button><el-button v-if="!deviceReadonly" type="primary"
-          :disabled="!canOperate" @click="saveDevice">保存</el-button></template>
+      <template #footer><el-button @click="deviceDialog = false">取消</el-button><el-button v-if="!deviceReadonly"
+          type="primary" :disabled="!canOperate" @click="saveDevice">保存</el-button></template>
     </el-dialog>
 
   </div>
@@ -267,5 +275,4 @@ onMounted(loadDevices);
   color: var(--text);
   word-break: break-all;
 }
-
 </style>
