@@ -253,7 +253,7 @@ impl Register {
         let mut session = DeviceSession::build(
             device.contact_uri,
             association,
-            oauth.heartbeat_sec,
+            oauth.heartbeat_sec_u8()?,
             Duration::from_secs(remaining),
         );
         session.set_gb_version(device.gb_version);

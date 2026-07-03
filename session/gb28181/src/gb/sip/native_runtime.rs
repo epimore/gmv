@@ -887,7 +887,7 @@ mod tests {
             domain_id: "34020000002000000001".into(),
             domain: "3402000000".into(),
             pwd: pwd.map(ToOwned::to_owned),
-            pwd_check,
+            pwd_check: i64::from(pwd_check),
             alias: None,
             status: 1,
             heartbeat_sec: 60,

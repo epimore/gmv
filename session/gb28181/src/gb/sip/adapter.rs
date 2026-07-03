@@ -120,7 +120,7 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
         })?;
     let association = base_association_from_pjsip(&event.association);
     let expires = event.expires.max(1);
-    let heartbeat_sec = oauth.heartbeat_sec;
+    let heartbeat_sec = oauth.heartbeat_sec_u8()?;
     let mut session = DeviceSession::build(
         event.contact.clone().unwrap_or_default(),
         association.clone(),

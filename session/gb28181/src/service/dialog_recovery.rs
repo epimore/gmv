@@ -259,7 +259,7 @@ async fn ensure_udp_device_session(session: &SipDialogSession) -> GlobalResult<(
     let mut device_session = DeviceSession::build(
         device.contact_uri,
         association,
-        oauth.heartbeat_sec,
+        oauth.heartbeat_sec_u8()?,
         Duration::from_secs(remaining),
     );
     device_session.set_gb_version(device.gb_version);

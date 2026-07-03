@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::storage::db;
 use base::chrono::{Local, NaiveDateTime};
 use base::constructor::New;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde::{Deserialize, Serialize};
 use base::serde_default;
@@ -74,16 +75,33 @@ pub struct GmvOauth {
     pub domain: String,
     pub pwd: Option<String>,
     //0-false,1-true
-    pub pwd_check: u8,
+    pub pwd_check: i64,
     pub alias: Option<String>,
     //0-停用,1-启用
-    pub status: u8,
+    pub status: i64,
     // 默认60
     #[serde(default = "default_heartbeat_sec")]
-    pub heartbeat_sec: u8,
+    pub heartbeat_sec: i64,
 }
-serde_default!(default_heartbeat_sec, u8, 60);
+serde_default!(default_heartbeat_sec, i64, 60);
 impl GmvOauth {
+    pub fn heartbeat_sec_u8(&self) -> GlobalResult<u8> {
+        if self.heartbeat_sec <= 0 {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "heartbeat_sec must be greater than zero",
+                |msg| error!("{msg}"),
+            ));
+        }
+        u8::try_from(self.heartbeat_sec).map_err(|_| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "heartbeat_sec must fit u8",
+                |msg| error!("{msg}"),
+            )
+        })
+    }
+
     pub async fn read_gmv_oauth_by_device_id(device_id: &str) -> GlobalResult<Option<GmvOauth>> {
         #[cfg(test)]
         if use_test_storage() {
