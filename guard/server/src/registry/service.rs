@@ -37,7 +37,6 @@ impl Default for RegistryPolicy {
 pub struct AllowedNode {
     pub kind: NodeKind,
     pub service: String,
-    pub required_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +84,7 @@ impl RegistryService {
                 health: HealthState::Offline,
                 scheduling: SchedulingState::Disabled,
                 endpoints: Vec::new(),
-                capabilities: allowed.required_capabilities.clone(),
+                capabilities: Vec::new(),
                 capacity: 0,
                 pending_leases: 0,
                 host_metrics: HostMetricsRecord::default(),
@@ -174,14 +173,6 @@ impl RegistryService {
                 "node {} kind mismatch",
                 request.identity.node_id
             )));
-        }
-        for capability in &allowed.required_capabilities {
-            if !request.capabilities.iter().any(|value| value == capability) {
-                return Err(GuardError::InvalidConfig(format!(
-                    "node {} missing required capability {}",
-                    request.identity.node_id, capability
-                )));
-            }
         }
         Ok(())
     }

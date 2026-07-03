@@ -27,7 +27,6 @@ fn registry_policy_seeds_offline_allowed_nodes() {
                 AllowedNode {
                     kind: NodeKind::Session,
                     service: "session-gb28181".to_string(),
-                    required_capabilities: vec!["protocol.gb28181".to_string()],
                 },
             )]),
         },

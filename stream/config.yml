@@ -7,7 +7,7 @@ guard:
   endpoint: http://127.0.0.1:18080 # guard内部gRPC地址，stream向guard注册、上报事件
 
 server:
-  name: s1 #服务标识身份,流媒体集群唯一标识
+  name: s1 #服务标识身份,流媒体集群唯一标识，guard注册时节点ID
   host: 127.0.0.1 #注册到guard的本节点访问地址；分布式部署时配置为节点内网或业务可达地址
   rtp_port: 18568 #监听rtp媒体流端口;
   rtcp_port: 18569 #监听rtcp媒体流端口;  暂未实现

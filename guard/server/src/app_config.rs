@@ -213,7 +213,6 @@ impl RegistryConfig {
                     crate::registry::AllowedNode {
                         kind,
                         service: service.to_string(),
-                        required_capabilities: node.required_capabilities.clone(),
                     },
                 ))
             })
@@ -230,12 +229,11 @@ impl RegistryConfig {
 pub struct AllowedNodeConfig {
     pub id: String,
     pub kind: String,
-    #[serde(default)]
-    pub required_capabilities: Vec<String>,
 }
 
 fn parse_allowed_node_kind(kind: &str) -> Option<(crate::core::NodeKind, &'static str)> {
-    match kind {
+    let normalized = kind.trim().to_ascii_lowercase();
+    match normalized.as_str() {
         "session-gb28181" => Some((crate::core::NodeKind::Session, "session-gb28181")),
         "session-onvif" => Some((crate::core::NodeKind::Session, "session-onvif")),
         "stream" => Some((crate::core::NodeKind::Stream, "stream")),
@@ -860,6 +858,23 @@ mod tests {
         config.validate().unwrap();
         config.internal_comm.mode = InternalCommMode::Dual;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn allowed_node_kind_accepts_uppercase_canonical_values() {
+        let config = RegistryConfig {
+            allow_unknown_nodes: false,
+            allowed_nodes: vec![AllowedNodeConfig {
+                id: "session-gb-1".to_string(),
+                kind: "SESSION-GB28181".to_string(),
+            }],
+        };
+
+        config.validate().unwrap();
+        let policy = config.to_policy();
+        let node = policy.allowed_nodes.get("session-gb-1").unwrap();
+        assert_eq!(node.kind, crate::core::NodeKind::Session);
+        assert_eq!(node.service, "session-gb28181");
     }
 
     #[test]

@@ -5,10 +5,10 @@
         <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 320px"
           :loading="listNodeLoading" @change="handleListNodeChange">
           <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
-            :value="option.node.node_id">
-            <div class="node-option">
-              <span>{{ option.config.domain_id }}</span>
-              <span class="node-status">{{ option.node.display_name }}</span>
+            :value="option.node.node_id" :disabled="option.disabled">
+            <div class="node-option" :class="{ offline: option.disabled }">
+              <span>{{ option.kindLabel }} · {{ option.node.node_id }}</span>
+              <span class="node-status">{{ option.statusLabel }}</span>
             </div>
           </el-option>
         </el-select>
@@ -64,7 +64,7 @@
             <el-option v-for="node in sessionNodes" :key="node.node_id"
               :label="nodeLabel(node)" :value="node.node_id" :disabled="!isNodeOnline(node)">
               <div class="node-option" :class="{ offline: !isNodeOnline(node) }">
-                <span>{{ node.display_name }}</span>
+                <span>{{ nodeKindLabel(node) }} · {{ node.node_id }}</span>
                 <span class="node-status">{{ isNodeOnline(node) ? "在线" : "离线" }}</span>
               </div>
             </el-option>
@@ -145,14 +145,21 @@ const canOperate = computed(() => auth.session?.role === 'operator' || auth.sess
 const deviceDialogTitle = computed(() => deviceReadonly.value ? "查看注册配置" : editingDevice.value ? "编辑注册配置" : "新增注册配置");
 const selectedListNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedListNodeId.value));
 
-type SessionNodeOption = { node: NodeInfo; config: GbSessionConfigInfo };
+type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
 
 function emptyDevice(): GbDevicePayload { return { device_id: '', alias: '', session_node_id: '', domain_id: '', domain: '', pwd_check: 1, pwd: '', status: 1, heartbeat_sec: 60, address: '', longitude: '', latitude: '', tenant_id: '', sys_org_code: '', create_by: '' }; }
 function assign<T extends object>(target: T, source: Partial<T>) { Object.assign(target, source); }
-function isGbSessionNode(node: NodeInfo) { return node.kind === "session-gb28181" || node.service === "session-gb28181" || node.protocol === "gb28181"; }
+function normalizeKind(value?: string | null) { return (value || '').trim().toLowerCase(); }
+function nodeKindLabel(node: NodeInfo) { return (node.kind || node.service || node.config?.service || 'node').toUpperCase(); }
+function nodeStatusLabel(disabled: boolean) { return disabled ? "离线" : "在线"; }
+function buildSessionNodeOption(node: NodeInfo, config?: GbSessionConfigInfo): SessionNodeOption {
+  const disabled = !isNodeOnline(node) || !config?.domain_id;
+  return { node, config, disabled, kindLabel: nodeKindLabel(node), statusLabel: nodeStatusLabel(disabled) };
+}
+function isGbSessionNode(node: NodeInfo) { return normalizeKind(node.kind) === "session-gb28181" || normalizeKind(node.service) === "session-gb28181" || normalizeKind(node.protocol) === "gb28181"; }
 function isNodeOnline(node?: NodeInfo) { return !!node && node.connection === "CONNECTED" && node.scheduling === "ENABLED"; }
-function nodeLabel(node: NodeInfo) { return node.display_name + (isNodeOnline(node) ? "" : " · 离线"); }
-function listNodeLabel(option: SessionNodeOption) { return `${option.config.domain_id} · ${option.node.display_name}`; }
+function nodeLabel(node: NodeInfo) { return `${nodeKindLabel(node)} · ${node.node_id} · ${isNodeOnline(node) ? "在线" : "离线"}`; }
+function listNodeLabel(option: SessionNodeOption) { return `${option.kindLabel} · ${option.node.node_id} · ${option.statusLabel}`; }
 function clearSessionConfig(clearDomain = true) { if (clearDomain) { deviceForm.domain_id = ""; deviceForm.domain = ""; } sessionConfig.wan_ip = ""; sessionConfig.wan_port = ""; }
 function applySessionConfig(config: GbSessionConfigInfo) { deviceForm.domain_id = config.domain_id; deviceForm.domain = config.domain; sessionConfig.wan_ip = config.wan_ip; sessionConfig.wan_port = String(config.wan_port || ""); }
 async function loadSessionNodeConfig(nodeId: string, clearDomain = true, warn = true) {
@@ -175,22 +182,23 @@ async function loadSessionNodes() {
   sessionNodes.value = nodes;
   listNodeLoading.value = true;
   try {
-    const options = (await Promise.all(nodes.filter(isNodeOnline).map(async (node) => {
+    const options = await Promise.all(nodes.map(async (node) => {
+      if (!isNodeOnline(node)) return buildSessionNodeOption(node);
       try {
-        return { node, config: await getGbSessionNodeConfig(node.node_id) };
+        return buildSessionNodeOption(node, await getGbSessionNodeConfig(node.node_id));
       } catch {
-        return undefined;
+        return buildSessionNodeOption(node);
       }
-    }))).filter((item): item is SessionNodeOption => !!item && !!item.config.domain_id);
-    sessionNodeOptions.value = options.sort((left, right) => left.config.domain_id.localeCompare(right.config.domain_id));
-    if (!selectedListNodeId.value || !sessionNodeOptions.value.some((item) => item.node.node_id === selectedListNodeId.value)) {
-      selectedListNodeId.value = sessionNodeOptions.value[0]?.node.node_id || '';
+    }));
+    sessionNodeOptions.value = options.sort((left, right) => Number(left.disabled) - Number(right.disabled) || left.node.node_id.localeCompare(right.node.node_id));
+    if (!selectedListNodeId.value || !sessionNodeOptions.value.some((item) => item.node.node_id === selectedListNodeId.value && !item.disabled)) {
+      selectedListNodeId.value = sessionNodeOptions.value.find((item) => !item.disabled)?.node.node_id || '';
     }
   } finally {
     listNodeLoading.value = false;
   }
 }
-async function loadDevices() { loading.value = true; try { await loadSessionNodes(); const option = selectedListNodeOption.value; if (!option) { devices.value = []; total.value = 0; return; } const result = await listGbDevicePage(page.value, pageSize.value, option.node.node_id, option.config.domain_id, deviceId.value, deviceName.value); devices.value = result.items; total.value = result.total; page.value = result.page; pageSize.value = result.page_size; } catch (error) { ElMessage.error(error instanceof Error ? error.message : '设备加载失败'); } finally { loading.value = false; } }
+async function loadDevices() { loading.value = true; try { await loadSessionNodes(); const option = selectedListNodeOption.value; if (!option || option.disabled || !option.config?.domain_id) { devices.value = []; total.value = 0; return; } const result = await listGbDevicePage(page.value, pageSize.value, option.node.node_id, option.config.domain_id, deviceId.value, deviceName.value); devices.value = result.items; total.value = result.total; page.value = result.page; pageSize.value = result.page_size; } catch (error) { ElMessage.error(error instanceof Error ? error.message : '设备加载失败'); } finally { loading.value = false; } }
 async function queryDevices() { page.value = 1; await loadDevices(); }
 async function resetDevices() { deviceId.value = ''; deviceName.value = ''; page.value = 1; await loadDevices(); }
 async function handlePageSizeChange() { page.value = 1; await loadDevices(); }

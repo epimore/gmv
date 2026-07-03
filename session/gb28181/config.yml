@@ -56,7 +56,7 @@ server:
       private_key_path: ""
   session:
     domain: "5101000000" #服务端sip域
-    domain_id: "51010000002000000001" #服务端sip域ID
+    domain_id: "51010000002000000001" #服务端sip域ID,guard注册时节点ID
     lan_ip: 172.18.38.186 # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
     wan_ip: 192.168.0.22 # 公网IP
     lan_port: 25600 #lan端口
