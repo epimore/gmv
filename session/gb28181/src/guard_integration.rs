@@ -1630,7 +1630,7 @@ mod tests {
 
     #[test]
     fn session_builds_guard_and_stream_requests_then_records_running_stream() {
-        let node = SessionGuardNode::new("session-1", "inst-1", 18081);
+        let node = SessionGuardNode::new("session-1", "inst-1", Some(18081));
         let register = node.register_request(NodeResourceSnapshot {
             resources: vec![],
             full: true,
@@ -1708,7 +1708,7 @@ mod tests {
 
     #[test]
     fn session_rejects_stale_instance_and_keeps_autonomy_event_for_guard_loss() {
-        let node = SessionGuardNode::new("session-1", "inst-1", 18081);
+        let node = SessionGuardNode::new("session-1", "inst-1", Some(18081));
         let mut control = SessionControlAdapter::new(node.identity.clone());
         let stale = NodeIdentity {
             node_id: "session-1".to_string(),

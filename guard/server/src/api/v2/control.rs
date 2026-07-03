@@ -147,6 +147,7 @@ impl BusinessControl {
         Ok(devices)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_gb_device_page(
         &self,
         session_node_id: &str,
