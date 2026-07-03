@@ -2,7 +2,7 @@
   <div v-if="!selectedDevice" class="page-grid" v-loading="loading">
     <GlassPanel class="span-12" title="监控信息" subtitle="按设备查看在线状态和注册时间">
       <div class="toolbar">
-        <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 320px"
+        <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 420px"
           :loading="listNodeLoading" @change="handleListNodeChange">
           <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
             :value="option.node.node_id" :disabled="option.disabled">
@@ -19,57 +19,91 @@
       </div>
       <el-table :data="devices" height="620" empty-text="暂无监控设备">
         <el-table-column type="index" :index="tableIndex" label="序号" width="64" />
-        <el-table-column prop="device_id" label="设备 ID" min-width="190" show-overflow-tooltip />
+        <el-table-column prop="device_id" label="设备 ID" min-width="200" show-overflow-tooltip />
         <el-table-column label="设备名称" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">{{ displayDeviceName(row) }}</template>
         </el-table-column>
-        <el-table-column label="类型" width="70">
-          <template #default="{ row }">{{ emptyText(row.device_type) }}</template>
-        </el-table-column>
-        <el-table-column label="厂家" min-width="95" show-overflow-tooltip>
-          <template #default="{ row }">{{ emptyText(row.manufacturer) }}</template>
-        </el-table-column>
-        <el-table-column label="型号" min-width="100" show-overflow-tooltip>
-          <template #default="{ row }">{{ emptyText(row.model) }}</template>
-        </el-table-column>
-        <el-table-column label="固件版本" min-width="100" show-overflow-tooltip>
-          <template #default="{ row }">{{ emptyText(row.firmware) }}</template>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <StatusPill :label="row.monitor_status === 1 ? '在线' : '离线'"
+              :tone="row.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
+          </template>
         </el-table-column>
         <el-table-column label="国标版本" width="100">
           <template #default="{ row }">{{ emptyText(row.gb_version) }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <StatusPill :label="row.monitor_status === 1 ? '在线' : '离线'" :tone="row.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
-          </template>
-        </el-table-column>
-        <el-table-column label="路数" width="70">
-          <template #default="{ row }">{{ countText(row.max_camera) }}</template>
-        </el-table-column>
-        <el-table-column prop="camera_in_count" label="接入" width="70" />
-        <el-table-column prop="camera_off_count" label="离线" width="70" />
         <el-table-column label="注册时间" min-width="170" show-overflow-tooltip>
           <template #default="{ row }">{{ row.register_time || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="110" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
+            <el-button link @click="openDeviceDetail(row)">查看</el-button>
             <el-button type="primary" link @click="openChannels(row)">相机</el-button>
           </template>
         </el-table-column>
       </el-table>
       <div class="pagination-bar">
         <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :total="total"
-          :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next, jumper"
-          @current-change="loadDevices" @size-change="handlePageSizeChange" />
+          :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next, jumper" @current-change="loadDevices"
+          @size-change="handlePageSizeChange" />
       </div>
     </GlassPanel>
+
+    <el-drawer v-model="deviceDetailDrawer" :title="deviceDetailTitle" size="520px" class="device-detail-drawer"
+      destroy-on-close>
+      <div v-if="detailDevice" class="device-detail">
+        <div class="detail-row">
+          <div class="detail-item wide"><span>设备 ID</span><b>{{ detailDevice.device_id }}</b></div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-item wide"><span>设备名称</span><b>{{ displayDeviceName(detailDevice) }}</b></div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-item wide"><span>注册时间</span><b>{{ detailDevice.register_time || '-' }}</b></div>
+        </div>
+        <div class="detail-row two">
+          <div class="detail-item"><span>类型</span><b>{{ emptyText(detailDevice.device_type) }}</b></div>
+          <div class="detail-item"><span>国标版本</span><b>{{ emptyText(detailDevice.gb_version) }}</b></div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-item wide">
+            <span>状态</span>
+            <b>
+              <StatusPill :label="detailDevice.monitor_status === 1 ? '在线' : '离线'"
+                :tone="detailDevice.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
+            </b>
+          </div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-item wide"><span>路数</span><b>{{ countText(detailDevice.max_camera) }}</b></div>
+        </div>
+        <div class="detail-row two">
+          <div class="detail-item"><span>（接入）在线</span><b>{{ detailDevice.camera_in_count }}</b></div>
+          <div class="detail-item"><span>离线</span><b>{{ detailDevice.camera_off_count }}</b></div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-item wide"><span>型号</span><b>{{ emptyText(detailDevice.model) }}</b></div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-item wide"><span>固件版本</span><b>{{ emptyText(detailDevice.firmware) }}</b></div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-item wide"><span>厂家</span><b>{{ emptyText(detailDevice.manufacturer) }}</b></div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="deviceDetailDrawer = false">关闭</el-button>
+        <el-button v-if="detailDevice" type="primary" @click="openChannelsFromDetail">相机</el-button>
+      </template>
+    </el-drawer>
   </div>
 
   <div v-else class="page-grid">
     <GlassPanel class="span-12" title="通道监控" :subtitle="selectedDevice.device_id">
       <div class="monitor-head">
         <div class="device-summary">
-          <StatusPill :label="selectedDevice.monitor_status === 1 ? '在线' : '离线'" :tone="selectedDevice.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
+          <StatusPill :label="selectedDevice.monitor_status === 1 ? '在线' : '离线'"
+            :tone="selectedDevice.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
           <strong>{{ displayDeviceName(selectedDevice) }}</strong>
           <span>Session {{ selectedDevice.session_node_id || '-' }}</span>
         </div>
@@ -86,7 +120,8 @@
         <el-button :loading="imageLoading" @click="selectedChannel && loadImages(selectedChannel)">刷新图集</el-button>
       </div>
       <div v-if="images.length" class="image-grid">
-        <a v-for="image in images" :key="image.image_id" class="image-card" :href="image.image_url" target="_blank" rel="noreferrer">
+        <a v-for="image in images" :key="image.image_id" class="image-card" :href="image.image_url" target="_blank"
+          rel="noreferrer">
           <div class="image-preview">
             <img v-if="image.image_url" :src="image.image_url" :alt="image.image_id" />
             <span v-else>暂无图片</span>
@@ -124,7 +159,8 @@
             <footer class="channel-actions">
               <el-button :disabled="!canPlayLive(channel)" @click="startPlay('preview', channel)">实时直播</el-button>
               <el-button :disabled="!canPlayback(channel)" @click="startPlay('playback', channel)">历史回放</el-button>
-              <el-button :disabled="!canSnapshot(channel)" :loading="snapshotLoading[channel.channel_id]" @click="snapshot(channel)">抓拍</el-button>
+              <el-button :disabled="!canSnapshot(channel)" :loading="snapshotLoading[channel.channel_id]"
+                @click="snapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">抓拍图集</el-button>
               <el-button :disabled="!canOperate" @click="openConfig(channel)">配置</el-button>
             </footer>
@@ -156,14 +192,23 @@
         <el-form-item label="名称"><el-input v-model="configForm.name" disabled /></el-form-item>
         <el-form-item label="别名"><el-input v-model="configForm.alias_name" maxlength="16" clearable /></el-form-item>
         <el-form-item label="排序"><el-input-number v-model="configForm.sort_no" :min="0" :max="999999" /></el-form-item>
-        <el-form-item label="云台控制"><el-select v-model="configForm.ptz_enable"><el-option v-for="option in confOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="语音对讲"><el-select v-model="configForm.talk_enable"><el-option v-for="option in confOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="音频"><el-select v-model="configForm.audio_enable"><el-option v-for="option in confOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="抓拍"><el-select v-model="configForm.snapshot"><el-option v-for="option in confOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="录像"><el-select v-model="configForm.record_enable"><el-option v-for="option in confOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="回放"><el-select v-model="configForm.playback_enable"><el-option v-for="option in confOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="告警"><el-select v-model="configForm.alarm_enable"><el-option v-for="option in confOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="业务启用"><el-select v-model="configForm.biz_enable"><el-option v-for="option in bizOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="云台控制"><el-select v-model="configForm.ptz_enable"><el-option v-for="option in confOptions"
+              :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="语音对讲"><el-select v-model="configForm.talk_enable"><el-option v-for="option in confOptions"
+              :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="音频"><el-select v-model="configForm.audio_enable"><el-option v-for="option in confOptions"
+              :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="抓拍"><el-select v-model="configForm.snapshot"><el-option v-for="option in confOptions"
+              :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="录像"><el-select v-model="configForm.record_enable"><el-option v-for="option in confOptions"
+              :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="回放"><el-select v-model="configForm.playback_enable"><el-option
+              v-for="option in confOptions" :key="option.value" :label="option.label"
+              :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="告警"><el-select v-model="configForm.alarm_enable"><el-option v-for="option in confOptions"
+              :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
+        <el-form-item label="业务启用"><el-select v-model="configForm.biz_enable"><el-option v-for="option in bizOptions"
+              :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
       </el-form>
       <template #footer>
         <div class="drawer-footer">
@@ -220,9 +265,11 @@ const pageSize = ref(20);
 const total = ref(0);
 const selectedDevice = ref<GbDeviceInfo>();
 const selectedChannel = ref<GbChannelInfo>();
+const detailDevice = ref<GbDeviceInfo>();
 const lastStream = ref<StreamSummary>();
 const lastAction = ref('');
 const showImages = ref(false);
+const deviceDetailDrawer = ref(false);
 const coverDialog = ref(false);
 const coverUrl = ref('');
 const configDrawer = ref(false);
@@ -257,6 +304,7 @@ const sortedChannels = computed(() => [...channels.value].sort((left, right) => 
   return sortNo || displayChannelName(left).localeCompare(displayChannelName(right), 'zh-Hans-CN');
 }));
 const selectedChannelTitle = computed(() => selectedChannel.value ? displayChannelName(selectedChannel.value) : '未选择通道');
+const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
 const playerSubtitle = computed(() => lastStream.value?.endpoint || '选择在线通道后播放');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerOsd = computed(() => [
@@ -373,6 +421,16 @@ async function queryDevices() { page.value = 1; await loadDevices(); }
 async function resetDevices() { deviceName.value = ''; page.value = 1; await loadDevices(); }
 async function handlePageSizeChange() { page.value = 1; await loadDevices(); }
 async function handleListNodeChange() { page.value = 1; await loadDevices(); }
+function openDeviceDetail(device: GbDeviceInfo) {
+  detailDevice.value = device;
+  deviceDetailDrawer.value = true;
+}
+async function openChannelsFromDetail() {
+  if (!detailDevice.value) return;
+  const device = detailDevice.value;
+  deviceDetailDrawer.value = false;
+  await openChannels(device);
+}
 async function openChannels(device: GbDeviceInfo) {
   selectedDevice.value = device;
   selectedChannel.value = undefined;
@@ -721,6 +779,83 @@ onMounted(loadDevices);
   background: #02050a;
 }
 
+.device-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.detail-row.two {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.detail-item {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(100, 203, 255, .16);
+  border-radius: 8px;
+  background: rgba(3, 10, 24, .36);
+}
+
+.detail-item.wide {
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.detail-item span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.detail-item b {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+:deep(.device-detail-drawer) {
+  border-left: 1px solid var(--line);
+  background: linear-gradient(145deg, rgba(13, 29, 58, .98), rgba(7, 16, 34, .96)) !important;
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+:deep(.device-detail-drawer .el-drawer__header) {
+  margin-bottom: 0;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(100, 203, 255, .12);
+  color: var(--text);
+}
+
+:deep(.device-detail-drawer .el-drawer__title) {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+:deep(.device-detail-drawer .el-drawer__body) {
+  padding: 18px 20px;
+}
+
+:deep(.device-detail-drawer .el-drawer__footer) {
+  padding: 12px 20px 18px;
+  border-top: 1px solid rgba(100, 203, 255, .12);
+}
+
 .config-form :deep(.el-select),
 .config-form :deep(.el-input-number) {
   width: 100%;
@@ -748,6 +883,10 @@ onMounted(loadDevices);
 
   .channel-actions {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .detail-row.two {
+    grid-template-columns: 1fr;
   }
 }
 </style>

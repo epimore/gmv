@@ -22,8 +22,8 @@
         <el-table-column prop="device_id" label="SIP设备ID" min-width="190" />
         <el-table-column label="设备名称" min-width="140"><template #default="{ row }">{{ row.alias || '-'
             }}</template></el-table-column>
-        <el-table-column prop="domain_id" label="SIP服务器ID" min-width="190" />
-        <el-table-column prop="domain" label="SIP域" min-width="110" />
+        <!-- <el-table-column prop="domain_id" label="SIP服务器ID" min-width="190" />
+        <el-table-column prop="domain" label="SIP域" min-width="110" /> -->
         <el-table-column label="状态" width="90"><template #default="{ row }">
             <StatusPill :label="row.status === 1 ? '启用' : '停用'" :tone="row.status === 1 ? 'ONLINE' : 'OFFLINE'" />
           </template></el-table-column>
