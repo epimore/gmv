@@ -19,8 +19,6 @@ pub struct GuardAppConfig {
     #[serde(default)]
     pub grpc: GrpcConfig,
     #[serde(default)]
-    pub internal_comm: InternalCommConfig,
-    #[serde(default)]
     pub registry: RegistryConfig,
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -43,7 +41,6 @@ impl GuardAppConfig {
     pub fn validate(&self) -> GuardResult<()> {
         self.http.validate()?;
         self.grpc.validate()?;
-        self.internal_comm.validate()?;
         self.registry.validate()?;
         self.database.validate()?;
         self.bootstrap.validate()?;
@@ -126,44 +123,9 @@ impl Default for GrpcTlsConfig {
 
 #[derive(Clone, Deserialize)]
 #[serde(crate = "base::serde")]
-pub struct InternalCommConfig {
-    #[serde(default)]
-    pub mode: InternalCommMode,
-}
-
-impl Default for InternalCommConfig {
-    fn default() -> Self {
-        Self {
-            mode: InternalCommMode::Rpc,
-        }
-    }
-}
-
-impl InternalCommConfig {
-    fn validate(&self) -> GuardResult<()> {
-        if self.mode != InternalCommMode::Rpc {
-            return Err(GuardError::InvalidConfig(
-                "guard.internal_comm.mode must be rpc after Phase 6 cutover".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(crate = "base::serde", rename_all = "lowercase")]
-pub enum InternalCommMode {
-    Http,
-    Dual,
-    #[default]
-    Rpc,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(crate = "base::serde")]
 pub struct RegistryConfig {
-    #[serde(default = "default_true")]
-    pub allow_unknown_nodes: bool,
+    #[serde(default)]
+    pub node_check_enabled: bool,
     #[serde(default)]
     pub allowed_nodes: Vec<AllowedNodeConfig>,
 }
@@ -171,7 +133,7 @@ pub struct RegistryConfig {
 impl Default for RegistryConfig {
     fn default() -> Self {
         Self {
-            allow_unknown_nodes: true,
+            node_check_enabled: false,
             allowed_nodes: Vec::new(),
         }
     }
@@ -218,7 +180,7 @@ impl RegistryConfig {
             })
             .collect();
         crate::registry::RegistryPolicy {
-            allow_unknown_nodes: self.allow_unknown_nodes,
+            node_check_enabled: self.node_check_enabled,
             allowed_nodes,
         }
     }
@@ -832,38 +794,9 @@ mod tests {
     }
 
     #[test]
-    fn internal_comm_mode_is_rpc_after_phase6_cutover() {
-        let mut config = GuardAppConfig {
-            http: HttpConfig {
-                tls: HttpTlsConfig {
-                    enabled: true,
-                    certificate_path: "cert.pem".into(),
-                    private_key_path: "key.pem".into(),
-                },
-                ..HttpConfig::default()
-            },
-            grpc: GrpcConfig {
-                tls: GrpcTlsConfig {
-                    enabled: false,
-                    ..GrpcTlsConfig::default()
-                },
-                ..GrpcConfig::default()
-            },
-            internal_comm: InternalCommConfig::default(),
-            registry: RegistryConfig::default(),
-            database: DatabaseConfig::default(),
-            bootstrap: BootstrapConfig::default(),
-            integrations: IntegrationsConfig::default(),
-        };
-        config.validate().unwrap();
-        config.internal_comm.mode = InternalCommMode::Dual;
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
     fn allowed_node_kind_accepts_uppercase_canonical_values() {
         let config = RegistryConfig {
-            allow_unknown_nodes: false,
+            node_check_enabled: true,
             allowed_nodes: vec![AllowedNodeConfig {
                 id: "session-gb-1".to_string(),
                 kind: "SESSION-GB28181".to_string(),

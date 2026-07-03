@@ -53,11 +53,8 @@ guard:
       certificate_path: ""
       private_key_path: ""
 
-  internal_comm:
-    mode: rpc # http | dual | rpc；Phase 6 后固定为 rpc，内部控制不再依赖 HTTP。
-
   registry:
-    allow_unknown_nodes: true # false时仅允许allowed_nodes中声明的节点注册
+    node_check_enabled: true # true时仅允许allowed_nodes中声明的节点注册
     allowed_nodes:
       - id: "51010000002000000001"
         kind: SESSION-GB28181 # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI

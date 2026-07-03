@@ -21,7 +21,7 @@ fn registry_policy_seeds_offline_allowed_nodes() {
     let registry = RegistryService::with_policy(
         store.clone(),
         RegistryPolicy {
-            allow_unknown_nodes: false,
+            node_check_enabled: true,
             allowed_nodes: HashMap::from([(
                 "session-gb-1".to_string(),
                 AllowedNode {
@@ -63,6 +63,42 @@ fn registry_policy_seeds_offline_allowed_nodes() {
     assert_eq!(
         node.config.get("service").map(String::as_str),
         Some("session-gb28181")
+    );
+}
+
+#[test]
+fn registry_policy_does_not_seed_allowed_nodes_when_node_check_is_disabled() {
+    let store = InMemoryGuardStore::default();
+    let registry = RegistryService::with_policy(
+        store.clone(),
+        RegistryPolicy {
+            node_check_enabled: false,
+            allowed_nodes: HashMap::from([(
+                "session-gb-1".to_string(),
+                AllowedNode {
+                    kind: NodeKind::Session,
+                    service: "session-gb28181".to_string(),
+                },
+            )]),
+        },
+    );
+
+    assert!(store.get_node("session-gb-1").is_none());
+    assert_eq!(
+        registry
+            .register(RegisterRequest {
+                identity: NodeIdentity::new("session-gb-2", "inst-1", NodeKind::Session),
+                capabilities: vec!["protocol.gb28181".to_string()],
+                endpoints: vec![],
+                capacity: 1,
+                host_metrics: Default::default(),
+                zone: None,
+                now_ms: 1_000,
+                takeover: false,
+                config: Default::default(),
+            })
+            .unwrap(),
+        RegisterDecision::Accepted
     );
 }
 

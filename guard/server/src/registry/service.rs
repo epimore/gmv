@@ -20,14 +20,14 @@ pub struct RegisterRequest {
 
 #[derive(Debug, Clone)]
 pub struct RegistryPolicy {
-    pub allow_unknown_nodes: bool,
+    pub node_check_enabled: bool,
     pub allowed_nodes: std::collections::HashMap<String, AllowedNode>,
 }
 
 impl Default for RegistryPolicy {
     fn default() -> Self {
         Self {
-            allow_unknown_nodes: true,
+            node_check_enabled: false,
             allowed_nodes: std::collections::HashMap::new(),
         }
     }
@@ -69,7 +69,9 @@ impl RegistryService {
 
     pub fn with_policy(store: InMemoryGuardStore, policy: RegistryPolicy) -> Self {
         let service = Self { store, policy };
-        service.seed_allowed_nodes();
+        if service.policy.node_check_enabled {
+            service.seed_allowed_nodes();
+        }
         service
     }
 
@@ -132,10 +134,12 @@ impl RegistryService {
             Some(_) => RegisterDecision::SupersededOldInstance,
         };
         let mut config = request.config;
-        if let Some(allowed) = self.policy.allowed_nodes.get(&request.identity.node_id) {
-            config
-                .entry("service".to_string())
-                .or_insert_with(|| allowed.service.clone());
+        if self.policy.node_check_enabled {
+            if let Some(allowed) = self.policy.allowed_nodes.get(&request.identity.node_id) {
+                config
+                    .entry("service".to_string())
+                    .or_insert_with(|| allowed.service.clone());
+            }
         }
         let record = NodeRecord {
             identity: request.identity,
@@ -159,10 +163,10 @@ impl RegistryService {
     }
 
     fn validate_policy(&self, request: &RegisterRequest) -> GuardResult<()> {
+        if !self.policy.node_check_enabled {
+            return Ok(());
+        }
         let Some(allowed) = self.policy.allowed_nodes.get(&request.identity.node_id) else {
-            if self.policy.allow_unknown_nodes {
-                return Ok(());
-            }
             return Err(GuardError::InvalidIdentity(format!(
                 "node {} is not allowed",
                 request.identity.node_id
