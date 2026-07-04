@@ -54,11 +54,11 @@ guard:
       private_key_path: ""
 
   registry:
-    node_check_enabled: false # true时仅允许allowed_nodes中声明的节点注册
+    node_check_enabled: true # true时仅允许allowed_nodes中声明的节点注册
     allowed_nodes:
       - id: "51010000002000000001"
         kind: SESSION-GB28181 # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI
-      - id: "51010000002000000002"
+      - id: "34020000002000000001"
         kind: SESSION-GB28181 # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI
       - id: "s1"
         kind: STREAM # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI

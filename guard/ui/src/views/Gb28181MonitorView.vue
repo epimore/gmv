@@ -16,7 +16,7 @@
         <el-button type="primary" :loading="loading" @click="queryDevices">查询</el-button>
         <el-button :loading="loading" @click="resetDevices">重置</el-button>
         <el-button :loading="loading" @click="loadDevices">刷新</el-button>
-        <el-button type="primary" plain @click="openMultiView">通道树多画面</el-button>
+        <el-button type="primary" plain @click="openMultiView">多画面工作台</el-button>
       </div>
       <el-table :data="devices" height="620" empty-text="暂无监控设备">
         <el-table-column type="index" :index="tableIndex" label="序号" width="64" />
@@ -100,7 +100,7 @@
   </div>
 
   <div v-else-if="!selectedDevice" class="page-grid">
-    <GlassPanel class="span-12" title="通道树多画面" subtitle="选择当前 Session 节点下的设备通道组成宫格">
+    <GlassPanel class="span-12">
       <div class="monitor-head">
         <div class="device-summary">
           <strong>多画面工作台</strong>
@@ -114,14 +114,12 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-4" title="信令节点" subtitle="先选择节点，再查询设备">
+    <GlassPanel class="span-4" title="信令节点" subtitle="选择节点后加载设备">
       <div v-loading="listNodeLoading" class="tree-node-list">
         <button v-for="option in sessionNodeOptions" :key="option.node.node_id" type="button" class="tree-node"
           :class="{ active: selectedMultiNodeId === option.node.node_id, offline: option.disabled }"
           :disabled="option.disabled" @click="selectMultiNode(option.node.node_id)">
-          <span>{{ option.kindLabel }}</span>
-          <b>{{ option.node.node_id }}</b>
-          <small>{{ option.statusLabel }}</small>
+          <span>{{ option.kindLabel }} · {{ option.node.node_id }} · {{ option.statusLabel }}</span>
         </button>
         <el-empty v-if="!sessionNodeOptions.length" description="暂无信令节点" />
       </div>
@@ -165,7 +163,7 @@
               <div v-if="treeChannelLoading[device.device_id]" class="tree-loading">通道加载中...</div>
             </div>
           </article>
-          <el-empty v-if="!treeLoading && !treeDevices.length" description="查询设备后选择通道" />
+          <el-empty v-if="!treeLoading && !treeDevices.length" description="暂无设备" />
         </div>
       </div>
       <el-empty v-else description="请选择信令节点" />
@@ -553,6 +551,7 @@ async function selectMultiNode(nodeId: string) {
   await stopAllMultiStreams();
   selectedMultiNodeId.value = nodeId;
   clearTreeDeviceState();
+  await queryTreeDevices();
 }
 async function queryTreeDevices() {
   const option = selectedMultiNodeOption.value;
@@ -581,6 +580,7 @@ async function queryTreeDevices() {
 }
 async function resetTreeDevices() {
   clearTreeDeviceState();
+  if (selectedMultiNodeOption.value) await queryTreeDevices();
 }
 function collapseMultiTree() {
   selectedMultiNodeId.value = '';
@@ -1090,10 +1090,9 @@ onBeforeUnmount(() => {
 }
 
 .tree-node {
-  display: grid;
-  gap: 5px;
+  display: block;
   width: 100%;
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid rgba(100, 203, 255, .16);
   border-radius: 8px;
   background: rgba(3, 10, 24, .36);
@@ -1112,8 +1111,6 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
-.tree-node span,
-.tree-node small,
 .tree-device header span,
 .tree-channel-label small,
 .tree-loading {
@@ -1121,9 +1118,10 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.tree-node b,
+.tree-node span,
 .tree-device header b,
 .tree-channel-label b {
+  display: block;
   overflow-wrap: anywhere;
 }
 
