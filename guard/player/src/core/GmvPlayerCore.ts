@@ -15,6 +15,8 @@ export class GmvPlayerCore {
   private activeSource?: GmvSource;
   private reconnectRetry = 0;
   private destroyed = false;
+  private loadVersion = 0;
+  private readonly videoCleanups: Array<() => void> = [];
 
   constructor(private readonly options: GmvPlayerCoreOptions) {
     this.video = options.video;
@@ -33,6 +35,7 @@ export class GmvPlayerCore {
   }
 
   async load(sources = this.sources): Promise<void> {
+    const version = ++this.loadVersion;
     this.sources = sources;
     this.destroyCurrentEngine();
     this.destroyed = false;
@@ -45,14 +48,21 @@ export class GmvPlayerCore {
     }
 
     for (const source of candidates) {
+      if (this.destroyed || version !== this.loadVersion) return;
       try {
-        await this.attachSource(source);
+        const engine = await this.attachSource(source);
+        if (this.destroyed || version !== this.loadVersion) {
+          engine.destroy();
+          return;
+        }
+        this.engine = engine;
         this.activeSource = source;
         this.reconnectRetry = 0;
         this.bus.emit('sourceChanged', { source });
         if (this.options.autoplay) await this.play();
         return;
       } catch (error) {
+        if (this.destroyed || version !== this.loadVersion) return;
         this.destroyCurrentEngine();
         this.emitError(GmvErrorCode.StreamOpenFailed, error instanceof Error ? error.message : '播放源打开失败', source);
         if (this.options.fallback === false) return;
@@ -83,27 +93,35 @@ export class GmvPlayerCore {
 
     this.reconnectRetry += 1;
     this.bus.emit('reconnecting', { retry: this.reconnectRetry, reason });
+    const version = this.loadVersion;
     await this.delay((this.options.reconnect?.baseDelayMs ?? 800) * this.reconnectRetry);
+    if (this.destroyed || version !== this.loadVersion) return;
     await this.load([this.activeSource]);
+    if (this.destroyed) return;
     this.bus.emit('reconnected', undefined);
   }
 
   destroy(): void {
     this.destroyed = true;
+    this.loadVersion += 1;
     this.destroyCurrentEngine();
+    while (this.videoCleanups.length) this.videoCleanups.pop()?.();
+    this.video.pause();
     this.video.removeAttribute('src');
+    this.video.load();
     this.bus.emit('destroyed', undefined);
     this.bus.clear();
   }
 
-  private async attachSource(source: GmvSource): Promise<void> {
+  private async attachSource(source: GmvSource): Promise<GmvEngine> {
     const factory = this.engines[source.protocol];
     if (!factory) {
       throw new Error(`${GmvErrorCode.UnsupportedProtocol}: ${source.protocol}`);
     }
 
-    this.engine = factory();
-    await this.engine.attach(this.video, source);
+    const engine = factory();
+    await engine.attach(this.video, source);
+    return engine;
   }
 
   private pickCandidates(sources: GmvSource[]): GmvSource[] {
@@ -113,19 +131,31 @@ export class GmvPlayerCore {
   }
 
   private bindVideoEvents(): void {
-    this.video.addEventListener('playing', () => {
+    const onPlaying = () => {
       this.bus.emit('playing', undefined);
       this.emitStats();
-    });
-    this.video.addEventListener('pause', () => this.bus.emit('paused', undefined));
-    this.video.addEventListener('stalled', () => {
+    };
+    const onPause = () => this.bus.emit('paused', undefined);
+    const onStalled = () => {
+      if (this.destroyed) return;
       this.bus.emit('stalled', undefined);
       void this.reconnect('stalled');
-    });
-    this.video.addEventListener('error', () => {
+    };
+    const onError = () => {
+      if (this.destroyed) return;
       this.emitError(GmvErrorCode.StreamReadFailed, this.video.error?.message ?? 'video error', this.activeSource);
       void this.reconnect('video-error');
-    });
+    };
+    this.video.addEventListener('playing', onPlaying);
+    this.video.addEventListener('pause', onPause);
+    this.video.addEventListener('stalled', onStalled);
+    this.video.addEventListener('error', onError);
+    this.videoCleanups.push(
+      () => this.video.removeEventListener('playing', onPlaying),
+      () => this.video.removeEventListener('pause', onPause),
+      () => this.video.removeEventListener('stalled', onStalled),
+      () => this.video.removeEventListener('error', onError),
+    );
   }
 
   private emitStats(): void {

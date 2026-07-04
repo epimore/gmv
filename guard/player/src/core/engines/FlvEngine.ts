@@ -48,8 +48,20 @@ export class FlvEngine extends BaseEngine {
   }
 
   destroy(): void {
-    this.player?.destroy();
+    try {
+      this.player?.pause?.();
+      this.player?.unload?.();
+      this.player?.detachMediaElement?.();
+      this.player?.destroy?.();
+    } catch {
+      // mpegts.js may throw while tearing down a failed live stream; destroy should stay idempotent.
+    }
     this.player = undefined;
+    if (this.video) {
+      this.video.pause();
+      this.video.removeAttribute('src');
+      this.video.load();
+    }
     this.video = undefined;
   }
 }

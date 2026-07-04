@@ -1,5 +1,5 @@
 <template>
-  <section class="gmv-player" :class="'is-' + viewState">
+  <section class="gmv-player" :class="['is-' + viewState, { 'controls-hidden': !controlsVisible }]">
     <video ref="videoRef" class="gmv-video" playsinline muted></video>
 
     <div class="gmv-layer osd-layer">
@@ -40,61 +40,64 @@
       <button type="button" @click="reconnect">重连</button>
     </div>
 
-    <aside class="ptz-panel" v-if="capabilities.ptz !== false">
+    <aside class="ptz-panel" v-if="controlsVisible">
       <div class="ptz-grid">
-        <button type="button" title="左上" @pointerdown="ptz('leftUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↖</button>
-        <button type="button" title="上" @pointerdown="ptz('up')" @pointerup="ptzStop" @pointerleave="ptzStop">↑</button>
-        <button type="button" title="右上" @pointerdown="ptz('rightUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↗</button>
-        <button type="button" title="左" @pointerdown="ptz('left')" @pointerup="ptzStop" @pointerleave="ptzStop">←</button>
-        <button type="button" title="停止" @click="ptzStop">■</button>
-        <button type="button" title="右" @pointerdown="ptz('right')" @pointerup="ptzStop" @pointerleave="ptzStop">→</button>
-        <button type="button" title="左下" @pointerdown="ptz('leftDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↙</button>
-        <button type="button" title="下" @pointerdown="ptz('down')" @pointerup="ptzStop" @pointerleave="ptzStop">↓</button>
-        <button type="button" title="右下" @pointerdown="ptz('rightDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↘</button>
+        <button type="button" title="左上" :disabled="capabilities.ptz === false" @pointerdown="ptz('leftUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↖</button>
+        <button type="button" title="上" :disabled="capabilities.ptz === false" @pointerdown="ptz('up')" @pointerup="ptzStop" @pointerleave="ptzStop">↑</button>
+        <button type="button" title="右上" :disabled="capabilities.ptz === false" @pointerdown="ptz('rightUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↗</button>
+        <button type="button" title="左" :disabled="capabilities.ptz === false" @pointerdown="ptz('left')" @pointerup="ptzStop" @pointerleave="ptzStop">←</button>
+        <button type="button" title="停止" :disabled="capabilities.ptz === false" @click="ptzStop">■</button>
+        <button type="button" title="右" :disabled="capabilities.ptz === false" @pointerdown="ptz('right')" @pointerup="ptzStop" @pointerleave="ptzStop">→</button>
+        <button type="button" title="左下" :disabled="capabilities.ptz === false" @pointerdown="ptz('leftDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↙</button>
+        <button type="button" title="下" :disabled="capabilities.ptz === false" @pointerdown="ptz('down')" @pointerup="ptzStop" @pointerleave="ptzStop">↓</button>
+        <button type="button" title="右下" :disabled="capabilities.ptz === false" @pointerdown="ptz('rightDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↘</button>
       </div>
       <label>
         速度
         <input v-model.number="ptzSpeed" min="1" max="255" type="range" />
       </label>
       <div class="lens-row">
-        <button type="button" @click="ptz('zoomIn')">变倍+</button>
-        <button type="button" @click="ptz('zoomOut')">变倍-</button>
+        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('zoomIn')">变倍+</button>
+        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('zoomOut')">变倍-</button>
       </div>
       <div class="lens-row">
-        <button type="button" @click="ptz('focusNear')">聚焦近</button>
-        <button type="button" @click="ptz('focusFar')">聚焦远</button>
+        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('focusNear')">聚焦近</button>
+        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('focusFar')">聚焦远</button>
       </div>
     </aside>
 
     <footer class="control-bar">
       <button type="button" @click="togglePlay">{{ viewState === 'playing' ? '暂停' : '播放' }}</button>
-      <button type="button" :disabled="capabilities.snapshot === false" @click="emit('snapshot', basePayload)">抓拍</button>
-      <button type="button" :disabled="capabilities.record === false" @click="toggleRecord">{{ recording ? '停录像' : '录像' }}</button>
-      <button type="button" :disabled="capabilities.talk === false" @click="toggleTalk">{{ talking ? '停对讲' : '对讲' }}</button>
+      <template v-if="controlsVisible">
+        <button type="button" :disabled="capabilities.audio === false" @click="toggleAudio">{{ audioEnabled ? '静音' : '声音' }}</button>
+        <button type="button" :disabled="capabilities.snapshot === false" @click="emit('snapshot', basePayload)">抓拍</button>
+        <button type="button" :disabled="capabilities.record === false" @click="toggleRecord">{{ recording ? '停录像' : '录像' }}</button>
+        <button type="button" :disabled="capabilities.talk === false" @click="toggleTalk">{{ talking ? '停对讲' : '对讲' }}</button>
 
-      <select :value="selectedSourceUrl" :disabled="capabilities.streamSwitch === false" @change="switchSource">
-        <option v-for="source in sources" :key="source.url" :value="source.url">
-          {{ source.label || source.protocol + ':' + (source.codec || 'auto') }}
-        </option>
-      </select>
+        <select :value="selectedSourceUrl" :disabled="capabilities.streamSwitch === false" @change="switchSource">
+          <option v-for="source in sources" :key="source.url" :value="source.url">
+            {{ source.label || source.protocol + ':' + (source.codec || 'auto') }}
+          </option>
+        </select>
 
-      <select v-model="playbackRate" :disabled="capabilities.playback === false" @change="setPlaybackRate">
-        <option :value="0.5">0.5x</option>
-        <option :value="1">1x</option>
-        <option :value="2">2x</option>
-        <option :value="4">4x</option>
-      </select>
+        <select v-model="playbackRate" :disabled="capabilities.playback === false" @change="setPlaybackRate">
+          <option :value="0.5">0.5x</option>
+          <option :value="1">1x</option>
+          <option :value="2">2x</option>
+          <option :value="4">4x</option>
+        </select>
 
-      <label class="timeline" :class="{ disabled: capabilities.playback === false }">
-        <span>回放</span>
-        <input v-model.number="seekMs" type="range" min="0" max="86400000" step="1000" :disabled="capabilities.playback === false" @change="emit('playbackSeek', { timeMs: seekMs })" />
-      </label>
+        <label class="timeline" :class="{ disabled: capabilities.playback === false }">
+          <span>回放</span>
+          <input v-model.number="seekMs" type="range" min="0" max="86400000" step="1000" :disabled="capabilities.playback === false" @change="emit('playbackSeek', { timeMs: seekMs })" />
+        </label>
 
-      <div class="preset-box" v-if="capabilities.presets !== false">
-        <input v-model="presetId" placeholder="预置点" />
-        <button type="button" @click="emit('presetCall', { presetId })">调用</button>
-        <button type="button" @click="emit('presetSet', { presetId })">设置</button>
-      </div>
+        <div class="preset-box" v-if="capabilities.presets !== false">
+          <input v-model="presetId" placeholder="预置点" />
+          <button type="button" @click="emit('presetCall', { presetId })">调用</button>
+          <button type="button" @click="emit('presetSet', { presetId })">设置</button>
+        </div>
+      </template>
     </footer>
   </section>
 </template>
@@ -115,12 +118,14 @@ const props = withDefaults(
     osd?: GmvOsdItem[];
     aiBoxes?: GmvAiBox[];
     capabilities?: GmvViewCapabilities;
+    controlsVisible?: boolean;
   }>(),
   {
     status: 'idle',
     osd: () => [],
     aiBoxes: () => [],
     capabilities: () => ({}),
+    controlsVisible: true,
   },
 );
 
@@ -144,6 +149,7 @@ const viewState = ref<GmvDeviceStatus>('idle');
 const lastError = ref('');
 const recording = ref(false);
 const talking = ref(false);
+const audioEnabled = ref(false);
 const ptzSpeed = ref(64);
 const playbackRate = ref(1);
 const seekMs = ref(0);
@@ -186,7 +192,7 @@ async function mountPlayer() {
     video: videoRef.value,
     sources: props.sources,
     autoplay: true,
-    muted: true,
+    muted: !audioEnabled.value,
     fallback: true,
   });
   player.value = core;
@@ -224,6 +230,12 @@ function toggleRecord() {
   }
 }
 
+function toggleAudio() {
+  if (props.capabilities.audio === false) return;
+  audioEnabled.value = !audioEnabled.value;
+  if (videoRef.value) videoRef.value.muted = !audioEnabled.value;
+}
+
 function toggleTalk() {
   talking.value = !talking.value;
   if (talking.value) {
@@ -234,10 +246,12 @@ function toggleTalk() {
 }
 
 function ptz(action: GmvPtzCommand['action']) {
+  if (props.capabilities.ptz === false) return;
   emit('ptz', { action, speed: ptzSpeed.value });
 }
 
 function ptzStop() {
+  if (props.capabilities.ptz === false) return;
   emit('ptz', { action: 'stop', speed: ptzSpeed.value });
 }
 

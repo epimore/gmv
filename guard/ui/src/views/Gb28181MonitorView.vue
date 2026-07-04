@@ -275,10 +275,14 @@
     <el-dialog v-model="playerDialog" :title="playerDialogTitle" width="960px" class="monitor-player-dialog"
       destroy-on-close @close="stopCurrentStream">
       <div v-if="playerSources.length" class="monitor-player">
+        <div class="monitor-player-toolbar">
+          <span>{{ selectedChannelTitle }}</span>
+          <el-switch v-model="playerControlsVisible" inline-prompt active-text="显示" inactive-text="隐藏" />
+        </div>
         <GmvPlayerView :sources="playerSources" :device-id="selectedChannel?.device_id"
           :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
-          :osd="playerOsd" :capabilities="playerCapabilities" @snapshot="selectedChannel && snapshot(selectedChannel)"
-          @ptz="handlePlayerPtz" />
+          :osd="playerOsd" :capabilities="playerCapabilities" :controls-visible="playerControlsVisible"
+          @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz" />
       </div>
       <el-empty v-else description="选择在线通道后播放" />
     </el-dialog>
@@ -343,7 +347,7 @@ import {
 } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { GmvMultiGrid, GmvPlayerView, type GmvPtzCommand, type GmvSource } from 'gmv-player';
+import { GmvMultiGrid, GmvPlayerView, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
@@ -383,6 +387,7 @@ const deviceDetailDrawer = ref(false);
 const coverDialog = ref(false);
 const coverUrl = ref('');
 const playerDialog = ref(false);
+const playerControlsVisible = ref(true);
 const configDrawer = ref(false);
 const snapshotLoading = reactive<Record<string, boolean>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
@@ -392,6 +397,7 @@ const selectedTreeChannelItems = ref<SelectedChannelRef[]>([]);
 const draggingTreeChannelIndex = ref<number>();
 const multiCells = ref<MultiViewCell[]>([]);
 const multiGridSize = ref(4);
+let stopCurrentStreamTask: Promise<void> | undefined;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 
@@ -427,12 +433,13 @@ const bizOptions = [
   { label: '启用', value: 1 },
   { label: '禁用', value: 0 },
 ];
-const playerCapabilities = {
+const multiPlayerCapabilities: GmvViewCapabilities = {
   ptz: true,
   presets: false,
   snapshot: true,
   record: false,
   playback: true,
+  audio: false,
   talk: false,
   streamSwitch: false,
   aiOverlay: false,
@@ -459,6 +466,20 @@ const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · '
 const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
 const multiPlayerSubtitle = computed(() => multiCells.value.length ? `运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '选择通道后播放');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
+const playerCapabilities = computed<GmvViewCapabilities>(() => {
+  const channel = selectedChannel.value;
+  return {
+    ptz: channel ? canPtz(channel) : false,
+    presets: false,
+    snapshot: channel ? canSnapshot(channel) : false,
+    record: false,
+    playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
+    audio: channel ? canAudio(channel) : false,
+    talk: false,
+    streamSwitch: false,
+    aiOverlay: false,
+  };
+});
 const playerOsd = computed(() => [
   { id: 'channel', text: selectedChannelTitle.value, x: 3, y: 5 },
   { id: 'mode', text: lastAction.value || 'monitor', x: 3, y: 12 },
@@ -472,8 +493,8 @@ const playerSources = computed<GmvSource[]>(() => {
     codec: 'h265',
     url: endpoint,
     mimeCodec: protocol === 'fmp4' ? 'video/mp4; codecs="hvc1.1.6.L123.B0, mp4a.40.2"' : undefined,
-    hasAudio: false,
-    label: '默认静音',
+    hasAudio: selectedChannel.value ? canAudio(selectedChannel.value) : false,
+    label: selectedChannel.value && canAudio(selectedChannel.value) ? '默认音视频' : '默认静音',
     priority: 1,
   }];
 });
@@ -488,7 +509,7 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => ({
     { id: 'channel', text: cell.title, x: 3, y: 5 },
     { id: 'mode', text: '实时直播', x: 3, y: 12 },
   ],
-  capabilities: playerCapabilities,
+  capabilities: multiPlayerCapabilities,
 })));
 
 function displayDeviceName(device: GbDeviceInfo) { return device.alias || device.device_id; }
@@ -520,6 +541,8 @@ function confText(value: unknown, defaultValue: number, label: string) {
 function canPlayLive(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel); }
 function canPlayback(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.playback_enable); }
 function canSnapshot(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.snapshot); }
+function canPtz(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.ptz_enable); }
+function canAudio(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.audio_enable); }
 function canViewImages(channel: GbChannelInfo) { return bizEnabled(channel); }
 function streamProtocol(endpoint: string): GmvSource['protocol'] {
   const path = endpoint.split('?')[0].toLowerCase();
@@ -769,11 +792,17 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
   }
 }
 async function stopCurrentStream() {
-  const stream = lastStream.value;
-  playerDialog.value = false;
-  lastStream.value = undefined;
-  lastAction.value = '';
-  if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
+  if (stopCurrentStreamTask) return stopCurrentStreamTask;
+  stopCurrentStreamTask = (async () => {
+    const stream = lastStream.value;
+    playerDialog.value = false;
+    lastStream.value = undefined;
+    lastAction.value = '';
+    if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
+  })().finally(() => {
+    stopCurrentStreamTask = undefined;
+  });
+  return stopCurrentStreamTask;
 }
 async function focusChannelInMultiView(channel: GbChannelInfo) {
   const device = selectedDevice.value;
@@ -1159,20 +1188,42 @@ onBeforeUnmount(() => {
 }
 
 .monitor-player {
-  height: min(62vh, 560px);
-  min-height: 480px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: 560px;
   overflow: hidden;
   border: 1px solid rgba(100, 203, 255, .18);
   border-radius: 8px;
   background: #02050a;
+  padding: 10px;
+}
+
+.monitor-player-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  color: var(--muted);
+}
+
+.monitor-player-toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .monitor-player :deep(.gmv-player) {
   position: relative;
   width: 100%;
   height: 100%;
-  min-height: 480px;
+  min-height: 500px;
   overflow: hidden;
+  border: 1px solid rgba(100, 203, 255, .18);
+  border-radius: 8px;
   background: #02050a;
   color: var(--text);
 }
@@ -1183,6 +1234,138 @@ onBeforeUnmount(() => {
   display: block;
   object-fit: contain;
   background: #02050a;
+}
+
+.monitor-player :deep(.player-topbar) {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, .72), transparent);
+}
+
+.monitor-player :deep(.player-topbar strong) {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.monitor-player :deep(.player-topbar span) {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.monitor-player :deep(.status-strip) {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.monitor-player :deep(.status-strip b) {
+  color: var(--green);
+}
+
+.monitor-player :deep(.reconnect-banner) {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  right: 12px;
+  z-index: 3;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(244, 180, 0, .45);
+  border-radius: 6px;
+  background: rgba(52, 33, 9, .82);
+}
+
+.monitor-player :deep(.ptz-panel) {
+  position: absolute;
+  top: 74px;
+  right: 12px;
+  z-index: 4;
+  width: 156px;
+  padding: 10px;
+  border: 1px solid rgba(100, 203, 255, .22);
+  border-radius: 8px;
+  background: rgba(3, 10, 24, .86);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .32);
+}
+
+.monitor-player :deep(.ptz-grid) {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.monitor-player :deep(.ptz-grid button) {
+  aspect-ratio: 1;
+  border-radius: 5px;
+}
+
+.monitor-player :deep(.ptz-panel label) {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.monitor-player :deep(.lens-row) {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.monitor-player :deep(.control-bar) {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, .78), transparent);
+}
+
+.monitor-player :deep(.control-bar button),
+.monitor-player :deep(.control-bar select),
+.monitor-player :deep(.preset-box input) {
+  height: 32px;
+  border: 1px solid rgba(100, 203, 255, .2);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--text);
+  padding: 0 9px;
+}
+
+.monitor-player :deep(.timeline) {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 130px;
+  color: var(--muted);
+}
+
+.monitor-player :deep(.timeline input) {
+  width: 100%;
+}
+
+.monitor-player :deep(.timeline.disabled) {
+  opacity: .45;
+}
+
+.monitor-player :deep(.preset-box) {
+  display: flex;
+  gap: 5px;
 }
 
 .tree-device-list,
