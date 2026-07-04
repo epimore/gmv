@@ -54,7 +54,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 import { menuRoutes } from '@/router';
@@ -78,6 +78,14 @@ const grouped = computed(() =>
   ),
 );
 
+onMounted(() => {
+  polling.start();
+});
+
+onUnmounted(() => {
+  polling.stop();
+});
+
 async function advancePolling() {
   try { await polling.advance(); }
   catch (error) { ElMessage.error(error instanceof Error ? error.message : '事件拉取失败'); }
@@ -86,6 +94,7 @@ async function advancePolling() {
 async function signOut() {
   loggingOut.value = true;
   try {
+    polling.stop();
     await auth.signOut();
     await router.replace('/login');
   } finally {

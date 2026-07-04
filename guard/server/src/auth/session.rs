@@ -151,6 +151,31 @@ impl AuthState {
         Ok(session)
     }
 
+    pub fn renew_session(&self, token: &str) -> GuardResult<UiSession> {
+        let now_ms = now_ms()?;
+        let mut sessions = self.sessions.lock();
+        let expired = match sessions.get(token) {
+            Some(session) if session.expires_at_ms <= now_ms => true,
+            Some(_) => false,
+            None => {
+                return Err(GuardError::InvalidIdentity(
+                    "invalid UI session".to_string(),
+                ));
+            }
+        };
+        if expired {
+            sessions.remove(token);
+            return Err(GuardError::InvalidIdentity(
+                "expired UI session".to_string(),
+            ));
+        }
+        let session = sessions
+            .get_mut(token)
+            .expect("validated UI session must exist");
+        session.expires_at_ms = now_ms + self.policy.session_ttl.as_millis() as u64;
+        Ok(session.clone())
+    }
+
     pub fn logout(&self, token: &str) {
         self.sessions.lock().remove(token);
     }
@@ -162,6 +187,16 @@ impl AuthState {
             ));
         }
         Ok(())
+    }
+
+    pub fn require_session_token_role(
+        &self,
+        token: &str,
+        required: Role,
+    ) -> GuardResult<UiSession> {
+        let session = self.session(token)?;
+        self.require_role(&session, required)?;
+        Ok(session)
     }
 
     pub fn verify_csrf(&self, session: &UiSession, candidate: Option<&str>) -> GuardResult<()> {
@@ -287,5 +322,53 @@ mod tests {
         auth.verify_origin(Some("https://gmv.example.com")).unwrap();
         assert!(auth.verify_origin(Some("http://127.0.0.1:5173")).is_err());
         assert!(auth.verify_origin(None).is_err());
+    }
+
+    #[test]
+    fn renew_session_extends_existing_session() {
+        let auth = AuthState::new(
+            [],
+            SessionPolicy {
+                session_ttl: Duration::from_secs(60),
+                ..SessionPolicy::default()
+            },
+        );
+        let original_expires_at_ms = now_ms().unwrap() + 1_000;
+        auth.sessions.lock().insert(
+            "token-1".to_string(),
+            UiSession {
+                username: "viewer".to_string(),
+                role: Role::Viewer,
+                nickname: String::new(),
+                csrf_token: "csrf-1".to_string(),
+                expires_at_ms: original_expires_at_ms,
+            },
+        );
+
+        let renewed = auth.renew_session("token-1").unwrap();
+
+        assert!(renewed.expires_at_ms > original_expires_at_ms);
+        assert_eq!(
+            auth.session("token-1").unwrap().expires_at_ms,
+            renewed.expires_at_ms
+        );
+    }
+
+    #[test]
+    fn renew_session_rejects_and_removes_expired_session() {
+        let auth = AuthState::new([], SessionPolicy::default());
+        auth.sessions.lock().insert(
+            "token-1".to_string(),
+            UiSession {
+                username: "viewer".to_string(),
+                role: Role::Viewer,
+                nickname: String::new(),
+                csrf_token: "csrf-1".to_string(),
+                expires_at_ms: 0,
+            },
+        );
+
+        assert!(auth.renew_session("token-1").is_err());
+        assert!(!auth.sessions.lock().contains_key("token-1"));
     }
 }

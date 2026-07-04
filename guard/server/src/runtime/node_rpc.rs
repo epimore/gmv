@@ -20,6 +20,7 @@ use gmv_protocol::guard::v1::{
 };
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::auth::AuthState;
 use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind};
 use crate::registry::{HeartbeatReport, RegisterDecision, RegisterRequest, RegistryService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
@@ -225,6 +226,7 @@ pub async fn serve(
     listener: StdTcpListener,
     registry: RegistryService,
     store: InMemoryGuardStore,
+    auth: AuthState,
     forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     base::log::debug!(
@@ -239,7 +241,7 @@ pub async fn serve(
         config.heartbeat_timeout_ms,
         forwarder,
     );
-    let control_service = crate::runtime::control_rpc::GuardControlRpc::new(store);
+    let control_service = crate::runtime::control_rpc::GuardControlRpc::with_auth(store, auth);
     let mut server_config = base_rpc::RpcServerConfig::default();
     if let Some(tls) = config.tls {
         server_config.tls = Some(base_rpc::load_server_tls_from_files(

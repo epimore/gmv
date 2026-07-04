@@ -196,6 +196,9 @@ fn session_security_headers_csrf_and_operation_rbac() {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["role"], "operator");
+        let renewed_cookie = headers.get(SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(renewed_cookie.starts_with("gmv_session="));
+        assert!(renewed_cookie.contains("Max-Age=3600"));
         assert!(headers.contains_key(CONTENT_SECURITY_POLICY));
 
         let operation = json!({

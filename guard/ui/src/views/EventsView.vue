@@ -20,7 +20,7 @@
         <div class="kv-item"><span>event_id</span><b class="code">{{ selected?.event_id || '-' }}</b></div>
         <div class="kv-item"><span>next cursor</span><b class="code">{{ nextCursor || '-' }}</b></div>
         <div class="kv-item"><span>优先级</span><b>{{ selected?.priorityLabel || '-' }}</b></div>
-        <div class="kv-item"><span>轮询</span><b>{{ paused ? '已暂停' : '手动/3s' }}</b></div>
+        <div class="kv-item"><span>轮询</span><b>{{ paused ? '已暂停' : '手动/5s' }}</b></div>
       </div>
       <div class="toolbar" style="margin-top: 16px;">
         <el-button :disabled="!selected" @click="copyId">复制 ID</el-button>
@@ -36,14 +36,16 @@ import { ElMessage } from 'element-plus';
 import { pollEvents, startOperation, type EventItem } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import { useAuthStore } from '@/stores/auth';
+import { usePollingStore } from '@/stores/polling';
 const auth = useAuthStore(); const loading = ref(false); const paused = ref(false); const afterId = ref(''); const nextCursor = ref(''); const minPriority = ref(0); const topicPrefix = ref('');
+const polling = usePollingStore();
 const rows = ref<Array<EventItem & { priorityLabel: string; message: string }>>([]); const selected = ref<(typeof rows.value)[number]>();
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 let timer: number | undefined;
 function message(payload: string) { try { const value = JSON.parse(payload); return value.message ?? value.state ?? payload; } catch { return payload; } }
-async function load() { if (paused.value) return; loading.value = true; try { const page = await pollEvents(afterId.value || undefined, 100, minPriority.value || undefined, topicPrefix.value || undefined); rows.value = page.items.map((item) => ({ ...item, priorityLabel: 'P' + item.priority, message: message(item.payload) })).reverse(); nextCursor.value = page.next_after_id ?? ''; if (page.next_after_id) afterId.value = page.next_after_id; } catch (error) { ElMessage.error(error instanceof Error ? error.message : '事件加载失败'); } finally { loading.value = false; } }
+async function load() { if (paused.value || loading.value) return; loading.value = true; try { const page = await pollEvents(afterId.value || undefined, 100, minPriority.value || undefined, topicPrefix.value || undefined); rows.value = page.items.map((item) => ({ ...item, priorityLabel: 'P' + item.priority, message: message(item.payload) })).reverse(); nextCursor.value = page.next_after_id ?? ''; if (page.next_after_id) afterId.value = page.next_after_id; } catch (error) { ElMessage.error(error instanceof Error ? error.message : '事件加载失败'); } finally { loading.value = false; } }
 async function copyId() { if (!selected.value) return; await navigator.clipboard.writeText(selected.value.event_id); ElMessage.success('事件 ID 已复制'); }
 async function createOperation() { if (!selected.value) return; try { await startOperation('event.handle'); ElMessage.success('处理操作已提交'); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '提交失败'); } }
-onMounted(() => { void load(); timer = window.setInterval(() => { if (!paused.value) void load(); }, 3000); });
-onBeforeUnmount(() => { if (timer) window.clearInterval(timer); });
+onMounted(() => { polling.stop(); void load(); timer = window.setInterval(() => { if (!paused.value) void load(); }, polling.intervalMs); });
+onBeforeUnmount(() => { if (timer) window.clearInterval(timer); polling.start(); });
 </script>

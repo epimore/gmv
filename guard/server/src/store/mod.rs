@@ -12,7 +12,10 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::core::{GuardError, GuardResult};
-use model::{EventRecord, LeaseRecord, NodeRecord, OutboxRecord, OutboxState, RouteRecord};
+use model::{
+    EventRecord, LeaseRecord, NodeRecord, OutboxRecord, OutboxState, PlaybackTicketRecord,
+    RouteRecord,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryGuardStore {
@@ -28,6 +31,7 @@ struct StoreInner {
     idempotency_keys: HashSet<String>,
     outbox: HashMap<String, OutboxRecord>,
     command_ids: HashMap<String, i64>,
+    playback_tickets: HashMap<String, PlaybackTicketRecord>,
 }
 
 impl InMemoryGuardStore {
@@ -99,6 +103,30 @@ impl InMemoryGuardStore {
 
     pub fn routes(&self) -> Vec<RouteRecord> {
         self.inner.read().routes.values().cloned().collect()
+    }
+
+    pub fn upsert_playback_ticket(&self, ticket: PlaybackTicketRecord) {
+        self.inner
+            .write()
+            .playback_tickets
+            .insert(ticket.token.clone(), ticket);
+    }
+
+    pub fn get_playback_ticket(&self, token: &str) -> Option<PlaybackTicketRecord> {
+        self.inner.read().playback_tickets.get(token).cloned()
+    }
+
+    pub fn revoke_playback_token(&self, token: &str) {
+        self.inner.write().playback_tickets.remove(token);
+    }
+
+    pub fn revoke_playback_tickets_for_stream(&self, stream_id: &str) -> usize {
+        let mut inner = self.inner.write();
+        let before = inner.playback_tickets.len();
+        inner
+            .playback_tickets
+            .retain(|_, ticket| ticket.stream_id != stream_id);
+        before - inner.playback_tickets.len()
     }
 
     pub fn insert_event_once(&self, event: EventRecord) -> GuardResult<bool> {

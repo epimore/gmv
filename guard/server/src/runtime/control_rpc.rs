@@ -13,21 +13,33 @@ use gmv_protocol::guard::v1::{
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
+use crate::auth::{AuthState, UserAccount};
 use crate::core::{GuardError, LeaseState, NodeIdentity, NodeKind, RouteState};
 use crate::gateway::{AllocationRequest, AllocationService};
 use crate::lease::{LeaseRequest, LeaseService};
 use crate::route::RouteService;
 use crate::store::InMemoryGuardStore;
-use crate::store::model::{EndpointModeRecord, EndpointRecord, RouteRecord};
+use crate::store::model::{EndpointModeRecord, EndpointRecord, PLAYBACK_TOKEN_TTL_MS, RouteRecord};
 
 #[derive(Debug, Clone)]
 pub struct GuardControlRpc {
     store: InMemoryGuardStore,
+    auth: AuthState,
 }
 
 impl GuardControlRpc {
     pub fn new(store: InMemoryGuardStore) -> Self {
-        Self { store }
+        Self::with_auth(
+            store,
+            AuthState::new(
+                std::iter::empty::<UserAccount>(),
+                crate::auth::SessionPolicy::default(),
+            ),
+        )
+    }
+
+    pub fn with_auth(store: InMemoryGuardStore, auth: AuthState) -> Self {
+        Self { store, auth }
     }
 }
 
@@ -164,23 +176,74 @@ impl GuardControl for GuardControlRpc {
         if request.stream_id.is_empty() || request.token.is_empty() {
             return Ok(Response::new(CheckPlaybackResponse {
                 accepted: false,
-                error: Some(gmv_protocol::common::v1::ErrorDetail {
-                    code: "invalid_playback".to_string(),
-                    message: "stream_id and token are required".to_string(),
-                    metadata: Default::default(),
-                }),
+                error: Some(error_detail(
+                    "invalid_playback",
+                    "stream_id and token are required",
+                )),
             }));
         }
-        let accepted = self.store.leases().into_iter().any(|lease| {
+        let Some(mut ticket) = self.store.get_playback_ticket(&request.token) else {
+            return Ok(reject_playback(
+                "invalid_playback_token",
+                "playback token is not valid",
+            ));
+        };
+        if ticket.stream_id != request.stream_id {
+            return Ok(reject_playback(
+                "playback_stream_mismatch",
+                "playback token does not match stream",
+            ));
+        }
+        if self
+            .auth
+            .require_session_token_role(&ticket.ui_session_token, ticket.required_role)
+            .is_err()
+        {
+            self.store.revoke_playback_token(&request.token);
+            return Ok(reject_playback(
+                "ui_session_inactive",
+                "UI session is not active",
+            ));
+        }
+        let lease = if ticket.lease_id.is_empty() {
+            self.store
+                .leases()
+                .into_iter()
+                .find(|lease| lease.resource_id == request.stream_id)
+        } else {
+            self.store.get_lease(&ticket.lease_id)
+        };
+        if !lease.as_ref().is_some_and(|lease| {
             lease.resource_id == request.stream_id && lease.state == LeaseState::Confirmed
-        });
+        }) {
+            self.store.revoke_playback_token(&request.token);
+            return Ok(reject_playback(
+                "stream_not_active",
+                "stream has no confirmed lease",
+            ));
+        }
+        let route = if ticket.route_id.is_empty() {
+            self.store
+                .routes()
+                .into_iter()
+                .find(|route| route.resource_id == request.stream_id)
+        } else {
+            self.store.get_route(&ticket.route_id)
+        };
+        if !route.as_ref().is_some_and(|route| {
+            route.resource_id == request.stream_id && route.state != RouteState::Closed
+        }) {
+            self.store.revoke_playback_token(&request.token);
+            return Ok(reject_playback(
+                "stream_not_active",
+                "stream route is closed",
+            ));
+        }
+        ticket.expires_at_ms = now_ms() + PLAYBACK_TOKEN_TTL_MS;
+        self.store.upsert_playback_ticket(ticket);
         Ok(Response::new(CheckPlaybackResponse {
-            accepted,
-            error: (!accepted).then(|| gmv_protocol::common::v1::ErrorDetail {
-                code: "stream_not_active".to_string(),
-                message: "stream has no confirmed lease".to_string(),
-                metadata: Default::default(),
-            }),
+            accepted: true,
+            error: None,
         }))
     }
 
@@ -297,6 +360,21 @@ fn status(error: GuardError) -> Status {
         GuardError::NotFound(message) => Status::not_found(message),
         GuardError::Capacity(message) => Status::resource_exhausted(message),
         other => Status::invalid_argument(other.to_string()),
+    }
+}
+
+fn reject_playback(code: &str, message: &str) -> Response<CheckPlaybackResponse> {
+    Response::new(CheckPlaybackResponse {
+        accepted: false,
+        error: Some(error_detail(code, message)),
+    })
+}
+
+fn error_detail(code: &str, message: &str) -> gmv_protocol::common::v1::ErrorDetail {
+    gmv_protocol::common::v1::ErrorDetail {
+        code: code.to_string(),
+        message: message.to_string(),
+        metadata: Default::default(),
     }
 }
 

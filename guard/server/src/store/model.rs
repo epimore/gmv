@@ -1,6 +1,9 @@
+use crate::auth::Role;
 use crate::core::{
     ConnectionState, HealthState, LeaseState, NodeIdentity, RouteState, SchedulingState,
 };
+
+pub const PLAYBACK_TOKEN_TTL_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostMetricsRecord {
@@ -77,6 +80,18 @@ pub struct RouteRecord {
     pub desired_generation: u64,
     pub observed_generation: u64,
     pub observed_sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaybackTicketRecord {
+    pub token: String,
+    pub stream_id: String,
+    pub lease_id: String,
+    pub route_id: String,
+    pub username: String,
+    pub ui_session_token: String,
+    pub required_role: Role,
+    pub expires_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

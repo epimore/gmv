@@ -14,7 +14,7 @@ log:
 
 http:
   enabled: true
-  port: 18567
+  port: 28567
 
 db:
   backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
@@ -58,11 +58,11 @@ server:
     domain: "3402000000" #服务端sip域 5101000000 3402000000
     domain_id: "34020000002000000001" #服务端sip域ID,guard注册时节点ID 51010000002000000001 34020000002000000001
     lan_ip: 172.18.38.186 # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
-    wan_ip: 192.168.0.22 # 公网IP
-    lan_port: 25600 #lan端口
-    wan_port: 25600 #wan端口
+    wan_ip: 192.168.0.9 # 公网IP
+    lan_port: 35600 #lan端口
+    wan_port: 35600 #wan端口
   pics:
-    push_url: http://127.0.0.1:18567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
+    push_url: http://127.0.0.1:28567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
     storage_path: ./pics/raw
     storage_format: jpeg
     num: 1

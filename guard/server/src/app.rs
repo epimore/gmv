@@ -11,7 +11,7 @@ use base::tokio_util::sync::CancellationToken;
 
 use crate::api::v2::ApiV2;
 use crate::app_config::GuardAppConfig;
-use crate::auth::Secret;
+use crate::auth::{AuthState, Secret, SessionPolicy};
 use crate::core::{GuardError, GuardResult};
 use crate::job::SystemJobService;
 use crate::mqttc::{
@@ -86,6 +86,18 @@ pub async fn start_guard(
     let users = persistent.load_users().await?;
     let user_repository = persistent.user_repository();
     let store = InMemoryGuardStore::default();
+    let auth = AuthState::new(
+        users,
+        SessionPolicy {
+            allowed_origins: web_config.allowed_origins.clone(),
+            secure_cookie: web_config.tls.is_some(),
+            session_ttl: web_config.session_ttl,
+            login_window: web_config.login_window,
+            max_failed_attempts: web_config.max_failed_attempts,
+            local_admin_username: Some(web_config.local_admin_username.clone()),
+            local_admin_login_only: web_config.local_admin_login_only,
+        },
+    );
     let registry =
         crate::registry::RegistryService::with_policy(store.clone(), config.registry.to_policy());
     let api_store = store.clone();
@@ -110,8 +122,8 @@ pub async fn start_guard(
         web_config,
         listeners.web,
         api,
+        auth.clone(),
         persistent.outbox_repository(),
-        users,
         user_repository,
         event_forwarder.clone(),
     );
@@ -120,6 +132,7 @@ pub async fn start_guard(
         listeners.rpc,
         registry,
         api_store.clone(),
+        auth,
         event_forwarder,
     );
     base::tokio::try_join!(web, rpc).map(|_| ())

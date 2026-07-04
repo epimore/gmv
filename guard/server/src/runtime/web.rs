@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::api::v2::http::HttpState;
 use crate::app_config::GuardAppConfig;
-use crate::auth::{AuthState, SessionPolicy, UserAccount};
+use crate::auth::AuthState;
 use crate::core::{GuardError, GuardResult};
 use crate::runtime::application_router;
 use crate::runtime::event_forwarder::EventForwarder;
@@ -72,8 +72,8 @@ pub async fn serve(
     config: WebServerConfig,
     listener: StdTcpListener,
     api: crate::api::v2::ApiV2,
+    auth: AuthState,
     outbox: crate::outbox::OutboxRepository,
-    users: Vec<UserAccount>,
     user_repository: crate::store::persistent::UserRepository,
     event_forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -82,18 +82,6 @@ pub async fn serve(
         "guard http service inbound: bind_addr={}, tls={}",
         config.bind_addr,
         config.tls.is_some()
-    );
-    let auth = AuthState::new(
-        users,
-        SessionPolicy {
-            allowed_origins: config.allowed_origins.clone(),
-            secure_cookie: config.tls.is_some(),
-            session_ttl: config.session_ttl,
-            login_window: config.login_window,
-            max_failed_attempts: config.max_failed_attempts,
-            local_admin_username: Some(config.local_admin_username.clone()),
-            local_admin_login_only: config.local_admin_login_only,
-        },
     );
     let app = application_router(
         HttpState {

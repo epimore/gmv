@@ -19,6 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
+use uuid::Uuid;
 
 use crate::api::v2::control::{
     BusinessControl, DeviceStreamOptions, GbDevicePage, GbSessionConfigSummary,
@@ -38,6 +39,7 @@ use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
 use crate::store::model::{
     EventRecord, LeaseRecord, NodeRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
+    PLAYBACK_TOKEN_TTL_MS, PlaybackTicketRecord,
 };
 use crate::store::persistent::UserRepository;
 
@@ -56,6 +58,7 @@ pub struct HttpState {
 
 pub fn router(state: HttpState) -> Router {
     let root_state = state.clone();
+    let session_renew_auth = state.auth.clone();
     let origins = state
         .auth
         .allowed_origins()
@@ -129,6 +132,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/ai/tasks/{task_id}/cancel", post(cancel_ai_task))
         .route("/runtime/status", get(runtime_status))
         .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            session_renew_auth,
+            renew_ui_session,
+        ))
         .layer(middleware::from_fn(debug_http_request))
         .layer(
             CorsLayer::new()
@@ -208,6 +215,30 @@ async fn debug_http_request(request: Request<Body>, next: Next) -> Response {
         response.status().as_u16(),
         started.elapsed().as_millis()
     );
+    response
+}
+
+async fn renew_ui_session(
+    State(auth): State<AuthState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let token = request
+        .headers()
+        .get(COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookie| cookie_value(cookie, SESSION_COOKIE));
+    let may_renew = request.method() != Method::OPTIONS;
+    let mut response = next.run(request).await;
+    if may_renew && response.status().is_success() && !response.headers().contains_key(SET_COOKIE) {
+        if let Some(token) = token {
+            if auth.renew_session(&token).is_ok() {
+                if let Ok(cookie) = HeaderValue::from_str(&auth.session_cookie(&token)) {
+                    response.headers_mut().insert(SET_COOKIE, cookie);
+                }
+            }
+        }
+    }
     response
 }
 
@@ -333,12 +364,20 @@ async fn login(
 async fn current_session(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<SessionResponse>, HttpError> {
+) -> Result<Response, HttpError> {
     debug!("/api/v2/auth/session, req:<empty>");
-    Ok(Json(session_response(authenticated(
-        &state.auth,
-        &headers,
-    )?)))
+    let (token, _) = authenticated_with_token(&state.auth, &headers)?;
+    let session = state
+        .auth
+        .renew_session(&token)
+        .map_err(HttpError::from_auth)?;
+    let mut response = Json(session_response(session)).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&state.auth.session_cookie(&token))
+            .map_err(|_| HttpError::internal("invalid session cookie"))?,
+    );
+    Ok(response)
 }
 
 async fn logout(State(state): State<HttpState>, headers: HeaderMap) -> Result<Response, HttpError> {
@@ -1287,6 +1326,40 @@ fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
     }
 }
 
+fn issue_playback_ticket(
+    state: &HttpState,
+    mut stream: StreamSummary,
+    ui_session_token: &str,
+    session: &UiSession,
+    required_role: Role,
+) -> Result<StreamSummary, HttpError> {
+    if stream.endpoint.is_empty() || stream.state != StreamSummaryState::Running {
+        return Ok(stream);
+    }
+    let token = Uuid::new_v4().to_string();
+    let now_ms = http_now_ms()?;
+    state
+        .api
+        .store()
+        .upsert_playback_ticket(PlaybackTicketRecord {
+            token: token.clone(),
+            stream_id: stream.stream_id.clone(),
+            lease_id: stream.lease_id.clone(),
+            route_id: stream.route_id.clone(),
+            username: session.username.clone(),
+            ui_session_token: ui_session_token.to_string(),
+            required_role,
+            expires_at_ms: now_ms + PLAYBACK_TOKEN_TTL_MS,
+        });
+    stream.endpoint = endpoint_with_playback_token(&stream.endpoint, &token);
+    Ok(stream)
+}
+
+fn endpoint_with_playback_token(endpoint: &str, token: &str) -> String {
+    let separator = if endpoint.contains('?') { '&' } else { '?' };
+    format!("{endpoint}{separator}gmv-token={token}")
+}
+
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 struct PtzRequest {
@@ -2092,35 +2165,20 @@ async fn preview(
     Path(device_id): Path<String>,
     Json(request): Json<PreviewRequest>,
 ) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
-    log_preview_request("/api/v2/devices/{device_id}/preview", &device_id, &request);
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
-    let operation_id = request.request_id.clone();
-    state.api.start_operation(operation_request(
-        operation_id.clone(),
+    start_device_stream_http(
+        state,
+        headers,
+        device_id,
+        request,
         "stream.start",
-        &session,
-        Role::Operator,
-    ))?;
-    let start_result = BusinessControl::new(state.api.store())
-        .start_live_with_options(
-            &request.request_id,
-            &device_id,
-            &request.channel_id,
-            device_stream_options(&request),
-        )
-        .await;
-    match start_result {
-        Ok(stream) => {
-            state
-                .api
-                .succeed_operation(&operation_id, "stream started")?;
-            Ok((StatusCode::ACCEPTED, Json(stream)))
-        }
-        Err(error) => {
-            let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
-        }
-    }
+        "stream started",
+        |control, operation_id, device_id, channel_id, options| async move {
+            control
+                .start_live_with_options(&operation_id, &device_id, &channel_id, options)
+                .await
+        },
+    )
+    .await
 }
 
 async fn playback(
@@ -2203,7 +2261,8 @@ where
     Fut: std::future::Future<Output = Result<StreamSummary, GuardError>>,
 {
     log_preview_request(operation_kind, &device_id, &request);
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let (ui_session_token, session) =
+        require_write_with_token(&state.auth, &headers, Role::Operator)?;
     let operation_id = request.request_id.clone();
     state.api.start_operation(operation_request(
         operation_id.clone(),
@@ -2221,6 +2280,8 @@ where
     .await;
     match start_result {
         Ok(stream) => {
+            let stream =
+                issue_playback_ticket(&state, stream, &ui_session_token, &session, Role::Viewer)?;
             state
                 .api
                 .succeed_operation(&operation_id, success_message)?;
@@ -2296,6 +2357,10 @@ async fn stop_stream(
         .await;
     match stop_result {
         Ok(stream) => {
+            state
+                .api
+                .store()
+                .revoke_playback_tickets_for_stream(&stream_id);
             state
                 .api
                 .succeed_operation(&operation_id, "stream stopped")?;
@@ -2496,10 +2561,20 @@ fn require_write(
     headers: &HeaderMap,
     role: Role,
 ) -> Result<UiSession, HttpError> {
+    require_write_with_token(auth, headers, role).map(|(_, session)| session)
+}
+
+fn require_write_with_token(
+    auth: &AuthState,
+    headers: &HeaderMap,
+    role: Role,
+) -> Result<(String, UiSession), HttpError> {
     verify_origin(auth, headers)?;
-    let session = require_role(auth, headers, role)?;
+    let (token, session) = authenticated_with_token(auth, headers)?;
+    auth.require_role(&session, role)
+        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
     verify_csrf(auth, &session, headers)?;
-    Ok(session)
+    Ok((token, session))
 }
 
 #[derive(Debug, base::serde::Serialize)]

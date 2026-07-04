@@ -1,14 +1,19 @@
 use gmv_protocol::common::v1::OperationRef;
 use gmv_protocol::guard::v1::guard_control_server::GuardControl;
 use gmv_protocol::guard::v1::{
-    AllocateStreamRequest, LeaseRequest, LeaseState, QueryNodeRequest, QueryRouteRequest,
-    RouteState,
+    AllocateStreamRequest, CheckPlaybackRequest, LeaseRequest, LeaseState, QueryNodeRequest,
+    QueryRouteRequest, RouteState,
 };
-use guard::core::{NodeIdentity, NodeKind};
+use guard::auth::{AuthState, Role, SessionPolicy, UserAccount, hash_password};
+use guard::core::{
+    LeaseState as CoreLeaseState, NodeIdentity, NodeKind, RouteState as CoreRouteState,
+};
 use guard::registry::{RegisterRequest, RegistryService};
 use guard::runtime::control_rpc::GuardControlRpc;
 use guard::store::InMemoryGuardStore;
-use guard::store::model::{EndpointModeRecord, EndpointRecord};
+use guard::store::model::{
+    EndpointModeRecord, EndpointRecord, LeaseRecord, PlaybackTicketRecord, RouteRecord,
+};
 use std::collections::HashMap;
 
 #[test]
@@ -86,5 +91,127 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
                 .unwrap()
                 .into_inner();
             assert_eq!(confirmed.state, LeaseState::Confirmed as i32);
+        });
+}
+
+#[test]
+fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let store = InMemoryGuardStore::default();
+            store
+                .insert_lease(LeaseRecord {
+                    lease_id: "lease-play-1".to_string(),
+                    route_id: "route-play-1".to_string(),
+                    resource_id: "stream-play-1".to_string(),
+                    node_id: "stream-rpc-1".to_string(),
+                    instance_id: "inst-1".to_string(),
+                    idempotency_key: String::new(),
+                    state: CoreLeaseState::Confirmed,
+                    expires_at_ms: i64::MAX,
+                })
+                .unwrap();
+            store.upsert_route(RouteRecord {
+                route_id: "route-play-1".to_string(),
+                resource_id: "stream-play-1".to_string(),
+                node_id: "stream-rpc-1".to_string(),
+                instance_id: "inst-1".to_string(),
+                state: CoreRouteState::Running,
+                desired_generation: 1,
+                observed_generation: 1,
+                observed_sequence: 1,
+            });
+            let auth = AuthState::new(
+                [UserAccount::new(
+                    "operator",
+                    Role::Operator,
+                    hash_password("secret").unwrap(),
+                )],
+                SessionPolicy::default(),
+            );
+            let (ui_session_token, _) = auth.authenticate("operator", "secret").unwrap();
+            store.upsert_playback_ticket(PlaybackTicketRecord {
+                token: "play-token-1".to_string(),
+                stream_id: "stream-play-1".to_string(),
+                lease_id: "lease-play-1".to_string(),
+                route_id: "route-play-1".to_string(),
+                username: "operator".to_string(),
+                ui_session_token: ui_session_token.clone(),
+                required_role: Role::Viewer,
+                expires_at_ms: 0,
+            });
+            let service = GuardControlRpc::with_auth(store.clone(), auth.clone());
+
+            let accepted = service
+                .check_playback(tonic::Request::new(CheckPlaybackRequest {
+                    stream_id: "stream-play-1".to_string(),
+                    token: "play-token-1".to_string(),
+                    remote_addr: "127.0.0.1:30000".to_string(),
+                    output_type: "HttpFlv".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(accepted.accepted);
+            assert!(
+                store
+                    .get_playback_ticket("play-token-1")
+                    .unwrap()
+                    .expires_at_ms
+                    > 0
+            );
+
+            let mismatch = service
+                .check_playback(tonic::Request::new(CheckPlaybackRequest {
+                    stream_id: "stream-other".to_string(),
+                    token: "play-token-1".to_string(),
+                    remote_addr: String::new(),
+                    output_type: "HttpFlv".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(!mismatch.accepted);
+            assert_eq!(mismatch.error.unwrap().code, "playback_stream_mismatch");
+
+            store.revoke_playback_tickets_for_stream("stream-play-1");
+            let revoked = service
+                .check_playback(tonic::Request::new(CheckPlaybackRequest {
+                    stream_id: "stream-play-1".to_string(),
+                    token: "play-token-1".to_string(),
+                    remote_addr: String::new(),
+                    output_type: "HttpFlv".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(!revoked.accepted);
+            assert_eq!(revoked.error.unwrap().code, "invalid_playback_token");
+
+            store.upsert_playback_ticket(PlaybackTicketRecord {
+                token: "play-token-2".to_string(),
+                stream_id: "stream-play-1".to_string(),
+                lease_id: "lease-play-1".to_string(),
+                route_id: "route-play-1".to_string(),
+                username: "operator".to_string(),
+                ui_session_token,
+                required_role: Role::Viewer,
+                expires_at_ms: 0,
+            });
+            auth.revoke_user_sessions("operator");
+            let inactive_session = service
+                .check_playback(tonic::Request::new(CheckPlaybackRequest {
+                    stream_id: "stream-play-1".to_string(),
+                    token: "play-token-2".to_string(),
+                    remote_addr: String::new(),
+                    output_type: "HttpFlv".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(!inactive_session.accepted);
+            assert_eq!(inactive_session.error.unwrap().code, "ui_session_inactive");
+            assert!(store.get_playback_ticket("play-token-2").is_none());
         });
 }
