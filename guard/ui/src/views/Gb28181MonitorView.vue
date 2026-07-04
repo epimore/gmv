@@ -38,7 +38,7 @@
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link @click="openDeviceDetail(row)">查看</el-button>
+            <el-button type="primary" link @click="openDeviceDetail(row)">查看</el-button>
             <el-button type="primary" link @click="openChannels(row)">相机</el-button>
           </template>
         </el-table-column>
@@ -251,20 +251,22 @@
         <el-empty v-if="!channelLoading && !sortedChannels.length" description="暂无通道" />
       </GlassPanel>
 
-      <GlassPanel class="span-12" title="播放窗口" :subtitle="playerSubtitle">
-        <div v-if="playerSources.length" class="monitor-player">
-          <GmvPlayerView :sources="playerSources" :device-id="selectedChannel?.device_id"
-            :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
-            :osd="playerOsd" :capabilities="playerCapabilities" @snapshot="selectedChannel && snapshot(selectedChannel)"
-            @ptz="handlePlayerPtz" />
-        </div>
-        <el-empty v-else description="选择在线通道后播放" />
-      </GlassPanel>
     </template>
 
     <el-dialog v-model="coverDialog" title="封面快照" width="720px">
       <img v-if="coverUrl" class="cover-large" :src="coverUrl" alt="封面快照" />
       <el-empty v-else description="暂无封面" />
+    </el-dialog>
+
+    <el-dialog v-model="playerDialog" :title="playerDialogTitle" width="960px" class="monitor-player-dialog"
+      destroy-on-close @close="stopCurrentStream">
+      <div v-if="playerSources.length" class="monitor-player">
+        <GmvPlayerView :sources="playerSources" :device-id="selectedChannel?.device_id"
+          :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
+          :osd="playerOsd" :capabilities="playerCapabilities" @snapshot="selectedChannel && snapshot(selectedChannel)"
+          @ptz="handlePlayerPtz" />
+      </div>
+      <el-empty v-else description="选择在线通道后播放" />
     </el-dialog>
 
     <el-drawer v-model="configDrawer" title="相机业务配置" size="420px" class="camera-config-drawer" destroy-on-close>
@@ -363,6 +365,7 @@ const showImages = ref(false);
 const deviceDetailDrawer = ref(false);
 const coverDialog = ref(false);
 const coverUrl = ref('');
+const playerDialog = ref(false);
 const configDrawer = ref(false);
 const snapshotLoading = reactive<Record<string, boolean>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
@@ -430,7 +433,7 @@ const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeCh
 }));
 const selectedChannelTitle = computed(() => selectedChannel.value ? displayChannelName(selectedChannel.value) : '未选择通道');
 const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
-const playerSubtitle = computed(() => lastStream.value?.endpoint || '选择在线通道后播放');
+const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
 const multiPlayerSubtitle = computed(() => multiCells.value.length ? `运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '选择通道后播放');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerOsd = computed(() => [
@@ -669,6 +672,7 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
 }
 async function stopCurrentStream() {
   const stream = lastStream.value;
+  playerDialog.value = false;
   lastStream.value = undefined;
   lastAction.value = '';
   if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
@@ -812,6 +816,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
       ? await startGbPreview(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-preview-' + Date.now(), output_type: 'flv' })
       : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'flv' });
     lastAction.value = kind === 'preview' ? '实时直播' : '历史回放';
+    playerDialog.value = true;
     ElMessage.success(lastAction.value + '已提交');
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '播放请求失败');
@@ -1036,8 +1041,8 @@ onBeforeUnmount(() => {
 
 .channel-actions {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
   padding: 12px;
 }
 
@@ -1046,9 +1051,13 @@ onBeforeUnmount(() => {
   margin-left: 0;
 }
 
+:deep(.monitor-player-dialog .el-dialog__body) {
+  padding: 18px 20px 20px;
+}
+
 .monitor-player {
-  height: 420px;
-  min-height: 420px;
+  height: min(62vh, 560px);
+  min-height: 480px;
   overflow: hidden;
   border: 1px solid rgba(100, 203, 255, .18);
   border-radius: 8px;
@@ -1059,7 +1068,7 @@ onBeforeUnmount(() => {
   position: relative;
   width: 100%;
   height: 100%;
-  min-height: 420px;
+  min-height: 480px;
   overflow: hidden;
   background: #02050a;
   color: var(--text);

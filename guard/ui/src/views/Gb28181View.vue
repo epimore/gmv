@@ -36,7 +36,7 @@
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button link @click.stop="openDevice(row, true)">查看</el-button>
+            <el-button type="primary" link @click.stop="openDevice(row, true)">查看</el-button>
             <el-button link type="primary" :disabled="!canOperate" @click.stop="openDevice(row)">编辑</el-button>
             <el-button link type="danger" :disabled="!canOperate" @click.stop="removeDevice(row)">删除</el-button>
           </template>
