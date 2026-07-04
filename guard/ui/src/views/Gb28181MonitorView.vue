@@ -15,7 +15,7 @@
         <el-input v-model="deviceName" style="width: 220px" clearable placeholder="设备名称" @clear="queryDevices" />
         <el-button type="primary" :loading="loading" @click="queryDevices">查询</el-button>
         <el-button :loading="loading" @click="resetDevices">重置</el-button>
-        <el-button :loading="loading" @click="loadDevices">刷新</el-button>
+        <!-- <el-button :loading="loading" @click="loadDevices">刷新</el-button> -->
         <el-button type="primary" plain @click="openMultiView">多画面工作台</el-button>
       </div>
       <el-table :data="devices" height="620" empty-text="暂无监控设备">
@@ -107,6 +107,16 @@
           <span>最多 16 路实时直播</span>
         </div>
         <div class="monitor-actions">
+          <el-select v-model="selectedMultiNodeId" filterable placeholder="选择 Session 节点" class="multi-node-select"
+            :loading="listNodeLoading" @change="selectMultiNode">
+            <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
+              :value="option.node.node_id" :disabled="option.disabled">
+              <div class="node-option" :class="{ offline: option.disabled }">
+                <span>{{ option.kindLabel }} · {{ option.node.node_id }}</span>
+                <span class="node-status">{{ option.statusLabel }}</span>
+              </div>
+            </el-option>
+          </el-select>
           <el-button :loading="multiStopping" @click="collapseMultiTree">一键聚合</el-button>
           <el-button type="danger" plain :loading="multiStopping" @click="stopAllMultiStreams()">停止全部</el-button>
           <el-button type="primary" @click="backToDeviceListFromMulti">返回设备列表</el-button>
@@ -114,59 +124,65 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-4" title="信令节点" subtitle="选择节点后加载设备">
-      <div v-loading="listNodeLoading" class="tree-node-list">
-        <button v-for="option in sessionNodeOptions" :key="option.node.node_id" type="button" class="tree-node"
-          :class="{ active: selectedMultiNodeId === option.node.node_id, offline: option.disabled }"
-          :disabled="option.disabled" @click="selectMultiNode(option.node.node_id)">
-          <span>{{ option.kindLabel }} · {{ option.node.node_id }} · {{ option.statusLabel }}</span>
-        </button>
-        <el-empty v-if="!sessionNodeOptions.length" description="暂无信令节点" />
-      </div>
-    </GlassPanel>
-
-    <GlassPanel class="span-8" title="设备与通道" :subtitle="selectedMultiNodeLabel">
+    <GlassPanel class="span-5" title="设备与通道">
       <div v-if="selectedMultiNodeOption" class="tree-workbench">
         <div class="toolbar">
           <el-input v-model="treeDeviceId" style="width: 220px" clearable placeholder="设备 ID" />
           <el-input v-model="treeDeviceName" style="width: 220px" clearable placeholder="设备名称" />
-          <el-button type="primary" :loading="treeLoading" @click="queryTreeDevices">查询</el-button>
+          <el-button type="primary" :loading="treeLoading" @click="searchTreeDevices">查询</el-button>
           <el-button :loading="treeLoading" @click="resetTreeDevices">重置</el-button>
-          <el-button type="primary" plain :disabled="!selectedTreeChannelKeys.length" :loading="multiPlaying"
-            @click="playSelectedMultiChannels">播放选中</el-button>
         </div>
         <div v-loading="treeLoading" class="tree-device-list">
-          <article v-for="device in treeDevices" :key="device.device_id" class="tree-device">
-            <header>
-              <button type="button" @click="toggleTreeDevice(device)">
-                {{ expandedDeviceKeys.includes(device.device_id) ? '收起' : '展开' }}
-              </button>
-              <div>
-                <b>{{ displayDeviceName(device) }}</b>
-                <span>{{ device.device_id }}</span>
+          <el-tree class="device-channel-tree" :data="treeDeviceNodes" :props="treeProps" node-key="key" lazy
+            :load="loadTreeNode" accordion :expand-on-click-node="true" :highlight-current="false">
+            <template #default="{ data }">
+              <div v-if="data.kind === 'device'" class="tree-device-node">
+                <div class="tree-device-title">
+                  <b>{{ data.device.device_id }} · {{ data.label }}</b>
+                </div>
+                <StatusPill :label="data.device.monitor_status === 1 ? '在线' : '离线'"
+                  :tone="data.device.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
               </div>
-              <StatusPill :label="device.monitor_status === 1 ? '在线' : '离线'"
-                :tone="device.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
-            </header>
-            <div v-if="expandedDeviceKeys.includes(device.device_id)" class="tree-channel-list">
-              <el-checkbox v-for="channel in treeChannelsByDevice[device.device_id] || []" :key="channel.channel_id"
-                :model-value="selectedTreeChannelKeys.includes(channelKey(channel))" :disabled="!canPlayLive(channel)"
-                @change="(checked: boolean) => toggleTreeChannel(channel, checked)">
+              <el-checkbox v-else class="tree-channel-node" :model-value="selectedTreeChannelKeys.includes(data.key)"
+                :disabled="!canPlayLive(data.channel)" @click.stop
+                @change="(checked: boolean) => toggleTreeChannel(data.channel, checked)">
                 <span class="tree-channel-label">
-                  <b>{{ displayChannelName(channel) }}</b>
-                  <small>{{ channel.channel_id }} · {{ channelStatusText(channel) }}</small>
+                  <b>{{ data.label }}</b>
+                  <small>{{ data.channel.channel_id }} · {{ channelStatusText(data.channel) }}</small>
                 </span>
               </el-checkbox>
-              <el-empty
-                v-if="!treeChannelLoading[device.device_id] && !(treeChannelsByDevice[device.device_id] || []).length"
-                description="暂无通道" />
-              <div v-if="treeChannelLoading[device.device_id]" class="tree-loading">通道加载中...</div>
-            </div>
-          </article>
+            </template>
+          </el-tree>
           <el-empty v-if="!treeLoading && !treeDevices.length" description="暂无设备" />
+        </div>
+        <div class="pagination-bar tree-pagination">
+          <el-pagination v-model:current-page="treePage" v-model:page-size="treePageSize" :total="treeTotal"
+            :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="queryTreeDevices"
+            @size-change="handleTreePageSizeChange" />
         </div>
       </div>
       <el-empty v-else description="请选择信令节点" />
+    </GlassPanel>
+
+    <GlassPanel class="span-7" title="已选通道" :subtitle="selectedTreeChannelSubtitle">
+      <div class="selected-channel-panel">
+        <div class="selected-channel-list">
+          <article v-for="(channel, index) in selectedTreeChannels" :key="channel.device_id + ':' + channel.channel_id"
+            class="selected-channel-item" :class="{ dragging: draggingTreeChannelIndex === index }" draggable="true"
+            @dragstart="handleSelectedChannelDragStart(index)" @dragover.prevent @drop="handleSelectedChannelDrop(index)"
+            @dragend="handleSelectedChannelDragEnd">
+            <div>
+              <b>{{ index + 1 }}. {{ channel.device_id }} · {{ channel.title }}</b>
+            </div>
+            <el-button type="danger" link @click="removeTreeChannel(channel)">移除</el-button>
+          </article>
+          <el-empty v-if="!selectedTreeChannels.length" description="暂无已选通道" />
+        </div>
+        <div class="selected-channel-actions">
+          <el-button type="primary" plain :disabled="!selectedTreeChannels.length" :loading="multiPlaying"
+            @click="playSelectedMultiChannels">播放选中</el-button>
+        </div>
+      </div>
     </GlassPanel>
 
     <GlassPanel class="span-12" title="多画面播放" :subtitle="multiPlayerSubtitle">
@@ -354,6 +370,9 @@ const selectedMultiNodeId = ref('');
 const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
+const treePage = ref(1);
+const treePageSize = ref(20);
+const treeTotal = ref(0);
 const selectedDevice = ref<GbDeviceInfo>();
 const selectedChannel = ref<GbChannelInfo>();
 const detailDevice = ref<GbDeviceInfo>();
@@ -368,8 +387,9 @@ const configDrawer = ref(false);
 const snapshotLoading = reactive<Record<string, boolean>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
 const treeChannelLoading = reactive<Record<string, boolean>>({});
-const expandedDeviceKeys = ref<string[]>([]);
 const selectedTreeChannelKeys = ref<string[]>([]);
+const selectedTreeChannelItems = ref<SelectedChannelRef[]>([]);
+const draggingTreeChannelIndex = ref<number>();
 const multiCells = ref<MultiViewCell[]>([]);
 const multiGridSize = ref(4);
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
@@ -391,7 +411,12 @@ interface SelectedChannelRef {
   device_id: string;
   channel_id: string;
   title: string;
+  device_title: string;
+  status_text: string;
 }
+type TreeNodeData =
+  | { key: string; label: string; kind: 'device'; device: GbDeviceInfo; leaf: false }
+  | { key: string; label: string; kind: 'channel'; channel: GbChannelInfo; leaf: true };
 
 const confOptions = [
   { label: '启用', value: 1 },
@@ -419,16 +444,16 @@ const sortedChannels = computed(() => [...channels.value].sort((left, right) => 
   const sortNo = Number(left.sort_no || 0) - Number(right.sort_no || 0);
   return sortNo || displayChannelName(left).localeCompare(displayChannelName(right), 'zh-Hans-CN');
 }));
-const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeChannelKeys.value.flatMap((key) => {
-  const [deviceId, channelId] = key.split(':');
-  const channel = (treeChannelsByDevice[deviceId] || []).find((item) => item.channel_id === channelId);
-  if (!channel || !canPlayLive(channel)) return [];
-  return [{
-    device_id: channel.device_id,
-    channel_id: channel.channel_id,
-    title: displayChannelName(channel),
-  }];
-}));
+const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeChannelItems.value);
+const selectedTreeChannelSubtitle = computed(() => `${selectedTreeChannels.value.length}/16`);
+const treeProps = { label: 'label', isLeaf: 'leaf' };
+const treeDeviceNodes = computed<TreeNodeData[]>(() => treeDevices.value.map((device) => ({
+  key: device.device_id,
+  label: displayDeviceName(device),
+  kind: 'device',
+  device,
+  leaf: false,
+})));
 const selectedChannelTitle = computed(() => selectedChannel.value ? displayChannelName(selectedChannel.value) : '未选择通道');
 const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
 const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
@@ -521,16 +546,21 @@ function streamSources(stream?: StreamSummary): GmvSource[] {
     priority: 1,
   }];
 }
-function clearTreeChannelState() {
-  expandedDeviceKeys.value = [];
-  selectedTreeChannelKeys.value = [];
+function clearTreeLoadedChannelState() {
   for (const key of Object.keys(treeChannelsByDevice)) delete treeChannelsByDevice[key];
   for (const key of Object.keys(treeChannelLoading)) delete treeChannelLoading[key];
+}
+function clearTreeChannelState() {
+  clearTreeLoadedChannelState();
+  selectedTreeChannelKeys.value = [];
+  selectedTreeChannelItems.value = [];
 }
 function clearTreeDeviceState() {
   treeDeviceId.value = '';
   treeDeviceName.value = '';
   treeDevices.value = [];
+  treePage.value = 1;
+  treeTotal.value = 0;
   clearTreeChannelState();
 }
 async function openMultiView() {
@@ -547,24 +577,28 @@ async function backToDeviceListFromMulti() {
   await loadDevices();
 }
 async function selectMultiNode(nodeId: string) {
-  if (selectedMultiNodeId.value === nodeId) return;
   await stopAllMultiStreams();
   selectedMultiNodeId.value = nodeId;
   clearTreeDeviceState();
+  await queryTreeDevices();
+}
+async function searchTreeDevices() {
+  treePage.value = 1;
   await queryTreeDevices();
 }
 async function queryTreeDevices() {
   const option = selectedMultiNodeOption.value;
   if (!option || option.disabled || !option.config?.domain_id) {
     treeDevices.value = [];
+    treeTotal.value = 0;
     return;
   }
   treeLoading.value = true;
   try {
-    clearTreeChannelState();
+    clearTreeLoadedChannelState();
     const result = await listGbDevicePage(
-      1,
-      100,
+      treePage.value,
+      treePageSize.value,
       option.node.node_id,
       option.config.domain_id,
       treeDeviceId.value,
@@ -572,6 +606,9 @@ async function queryTreeDevices() {
       true,
     );
     treeDevices.value = result.items;
+    treeTotal.value = result.total;
+    treePage.value = result.page;
+    treePageSize.value = result.page_size;
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '设备查询失败');
   } finally {
@@ -582,18 +619,16 @@ async function resetTreeDevices() {
   clearTreeDeviceState();
   if (selectedMultiNodeOption.value) await queryTreeDevices();
 }
+async function handleTreePageSizeChange() {
+  treePage.value = 1;
+  await queryTreeDevices();
+}
 function collapseMultiTree() {
   selectedMultiNodeId.value = '';
   clearTreeDeviceState();
 }
-async function toggleTreeDevice(device: GbDeviceInfo) {
-  const index = expandedDeviceKeys.value.indexOf(device.device_id);
-  if (index >= 0) {
-    expandedDeviceKeys.value.splice(index, 1);
-    return;
-  }
-  expandedDeviceKeys.value.push(device.device_id);
-  if (treeChannelsByDevice[device.device_id]) return;
+async function loadTreeDeviceChannels(device: GbDeviceInfo) {
+  if (treeChannelsByDevice[device.device_id]) return treeChannelsByDevice[device.device_id];
   treeChannelLoading[device.device_id] = true;
   try {
     treeChannelsByDevice[device.device_id] = await listGbChannels(device.device_id);
@@ -603,14 +638,77 @@ async function toggleTreeDevice(device: GbDeviceInfo) {
   } finally {
     treeChannelLoading[device.device_id] = false;
   }
+  return treeChannelsByDevice[device.device_id];
+}
+async function loadTreeNode(node: { level: number; data?: TreeNodeData }, resolve: (data: TreeNodeData[]) => void) {
+  const data = node.data;
+  if (!data || data.kind !== 'device') {
+    resolve([]);
+    return;
+  }
+  const channels = await loadTreeDeviceChannels(data.device);
+  resolve(channels.map((channel) => ({
+    key: channelKey(channel),
+    label: displayChannelName(channel),
+    kind: 'channel',
+    channel,
+    leaf: true,
+  })));
 }
 function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
   const key = channelKey(channel);
   if (checked) {
-    if (!selectedTreeChannelKeys.value.includes(key)) selectedTreeChannelKeys.value.push(key);
+    if (selectedTreeChannelKeys.value.includes(key)) return;
+    if (selectedTreeChannelKeys.value.length >= 16) {
+      ElMessage.warning('最多选择 16 个通道');
+      return;
+    }
+    const device = treeDevices.value.find((item) => item.device_id === channel.device_id);
+    selectedTreeChannelKeys.value.push(key);
+    selectedTreeChannelItems.value.push({
+      device_id: channel.device_id,
+      channel_id: channel.channel_id,
+      title: displayChannelName(channel),
+      device_title: device ? displayDeviceName(device) : channel.device_id,
+      status_text: channelStatusText(channel),
+    });
     return;
   }
   selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
+  selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => `${item.device_id}:${item.channel_id}` !== key);
+}
+function removeTreeChannel(channel: SelectedChannelRef) {
+  selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== `${channel.device_id}:${channel.channel_id}`);
+  selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => item.device_id !== channel.device_id || item.channel_id !== channel.channel_id);
+}
+function syncSelectedTreeChannelKeys() {
+  selectedTreeChannelKeys.value = selectedTreeChannelItems.value.map((item) => `${item.device_id}:${item.channel_id}`);
+}
+function syncMultiCellsOrder() {
+  const order = new Map(selectedTreeChannelItems.value.map((item, index) => [`${item.device_id}:${item.channel_id}`, index]));
+  multiCells.value = [...multiCells.value].sort((left, right) => {
+    const leftOrder = order.get(`${left.device_id}:${left.channel_id}`) ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = order.get(`${right.device_id}:${right.channel_id}`) ?? Number.MAX_SAFE_INTEGER;
+    return leftOrder - rightOrder;
+  });
+}
+function handleSelectedChannelDragStart(index: number) {
+  draggingTreeChannelIndex.value = index;
+}
+function handleSelectedChannelDrop(targetIndex: number) {
+  const sourceIndex = draggingTreeChannelIndex.value;
+  draggingTreeChannelIndex.value = undefined;
+  if (sourceIndex === undefined || sourceIndex === targetIndex) return;
+  const items = [...selectedTreeChannelItems.value];
+  const [item] = items.splice(sourceIndex, 1);
+  if (!item) return;
+  items.splice(targetIndex, 0, item);
+  selectedTreeChannelItems.value = items;
+  syncSelectedTreeChannelKeys();
+  syncMultiCellsOrder();
+}
+function handleSelectedChannelDragEnd() {
+  draggingTreeChannelIndex.value = undefined;
 }
 async function playSelectedMultiChannels() {
   const selected = selectedTreeChannels.value;
@@ -695,7 +793,7 @@ async function focusChannelInMultiView(channel: GbChannelInfo) {
   await queryTreeDevices();
   const targetDevice = treeDevices.value.find((item) => item.device_id === device.device_id) || treeDevices.value[0];
   if (targetDevice) {
-    await toggleTreeDevice(targetDevice);
+    await loadTreeDeviceChannels(targetDevice);
     const targetChannel = (treeChannelsByDevice[targetDevice.device_id] || []).find((item) => item.channel_id === channel.channel_id);
     if (targetChannel) toggleTreeChannel(targetChannel, true);
   }
@@ -959,6 +1057,11 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.multi-node-select {
+  width: 420px;
+  max-width: 100%;
+}
+
 .channel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -1082,90 +1185,143 @@ onBeforeUnmount(() => {
   background: #02050a;
 }
 
-.tree-node-list,
 .tree-device-list,
 .tree-workbench {
   display: grid;
   gap: 12px;
 }
 
-.tree-node {
-  display: block;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid rgba(100, 203, 255, .16);
-  border-radius: 8px;
-  background: rgba(3, 10, 24, .36);
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
+.tree-device-list {
+  height: 352px;
+  align-content: start;
+  overflow: auto;
 }
 
-.tree-node.active {
-  border-color: rgba(34, 211, 238, .62);
-  background: rgba(34, 211, 238, .08);
-}
-
-.tree-node.offline {
-  color: var(--muted);
-  cursor: not-allowed;
-}
-
-.tree-device header span,
-.tree-channel-label small,
-.tree-loading {
+.tree-channel-label small {
   color: var(--muted);
   font-size: 12px;
 }
 
-.tree-node span,
-.tree-device header b,
 .tree-channel-label b {
   display: block;
   overflow-wrap: anywhere;
 }
 
-.tree-device {
-  overflow: hidden;
-  border: 1px solid rgba(100, 203, 255, .16);
-  border-radius: 8px;
-  background: rgba(3, 10, 24, .36);
+.device-channel-tree {
+  min-width: 0;
+  background: transparent;
+  color: var(--text);
 }
 
-.tree-device header {
+.device-channel-tree :deep(.el-tree-node__content) {
+  min-width: 0;
+  height: auto;
+  min-height: 42px;
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.device-channel-tree :deep(.el-tree-node__content:hover),
+.device-channel-tree :deep(.el-tree-node:focus > .el-tree-node__content) {
+  background: rgba(34, 211, 238, .07);
+}
+
+.device-channel-tree :deep(.el-tree-node__expand-icon) {
+  color: var(--muted);
+}
+
+.device-channel-tree :deep(.el-tree-node__expand-icon.expanded) {
+  color: var(--cyan);
+}
+
+.tree-device-node {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  padding: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px 8px 0;
 }
 
-.tree-device header button {
-  height: 30px;
-  border: 1px solid rgba(100, 203, 255, .22);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, .04);
-  color: var(--cyan);
-  cursor: pointer;
-}
-
-.tree-device header div,
+.tree-device-title,
 .tree-channel-label {
   display: grid;
   min-width: 0;
   gap: 4px;
 }
 
-.tree-channel-list {
-  display: grid;
-  gap: 8px;
-  padding: 0 12px 12px 48px;
+.tree-device-title b,
+.tree-channel-label b,
+.tree-channel-label small {
+  overflow-wrap: anywhere;
 }
 
-.tree-channel-list :deep(.el-checkbox) {
+.tree-channel-node {
+  width: 100%;
+  min-width: 0;
   height: auto;
-  align-items: flex-start;
+  padding: 7px 10px 7px 0;
   white-space: normal;
+}
+
+.tree-channel-node :deep(.el-checkbox__label) {
+  min-width: 0;
+  white-space: normal;
+}
+
+.tree-pagination {
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.selected-channel-panel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px;
+  min-height: 428px;
+}
+
+.selected-channel-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+  height: 352px;
+  overflow: auto;
+}
+
+.selected-channel-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(100, 203, 255, .16);
+  border-radius: 8px;
+  background: rgba(3, 10, 24, .36);
+  cursor: grab;
+  user-select: none;
+}
+
+.selected-channel-item.dragging {
+  opacity: .55;
+}
+
+.selected-channel-item b,
+.selected-channel-item span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.selected-channel-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.selected-channel-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .multi-player {
