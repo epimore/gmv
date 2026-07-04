@@ -80,6 +80,7 @@ export interface GmvViewCapabilities {
   snapshot?: boolean;
   record?: boolean;
   playback?: boolean;
+  audio?: boolean;
   talk?: boolean;
   streamSwitch?: boolean;
   aiOverlay?: boolean;

@@ -186,6 +186,37 @@ pub struct GmvDevice {
     pub gb_version: Option<String>,
 }
 
+#[derive(Debug, FromRow)]
+struct GmvDeviceRow {
+    device_id: String,
+    transport: String,
+    register_expires: i64,
+    register_time: NaiveDateTime,
+    online_expire_time: Option<NaiveDateTime>,
+    local_addr: String,
+    contact_uri: String,
+    enable_lr: i64,
+    gb_version: Option<String>,
+}
+
+impl TryFrom<GmvDeviceRow> for GmvDevice {
+    type Error = GlobalError;
+
+    fn try_from(row: GmvDeviceRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            device_id: row.device_id,
+            transport: row.transport,
+            register_expires: decode_u32(row.register_expires, "register_expires")?,
+            register_time: row.register_time,
+            online_expire_time: row.online_expire_time,
+            local_addr: row.local_addr,
+            contact_uri: row.contact_uri,
+            enable_lr: decode_u8(row.enable_lr, "enable_lr")?,
+            gb_version: row.gb_version,
+        })
+    }
+}
+
 impl GmvDevice {
     pub async fn query_gmv_device_by_device_id(
         device_id: &String,
@@ -200,13 +231,15 @@ impl GmvDevice {
                 .cloned());
         }
         let res = db::fetch_optional_as!(
-            Self,
+            GmvDeviceRow,
             r#"select device_id,COALESCE(transport,'UDP') AS transport,COALESCE(register_expires,3600) AS register_expires,
         COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time,online_expire_time,COALESCE(local_addr,'') AS local_addr,COALESCE(contact_uri,'') AS contact_uri,COALESCE(enable_lr,0) AS enable_lr,gb_version
         from GB28181_DEVICE where device_id=?"#,
             device_id,
         )
-        .hand_log(|msg| error!("{msg}"))?;
+        .hand_log(|msg| error!("{msg}"))?
+        .map(GmvDevice::try_from)
+        .transpose()?;
         Ok(res)
     }
 
@@ -586,18 +619,61 @@ pub struct DeviceStatus {
     pub contact_uri: String,
     pub lr: u8,
 }
+
+#[derive(Debug, FromRow)]
+struct DeviceStatusRow {
+    heartbeat: i64,
+    enable: i64,
+    expires: i64,
+    online_expire_time: Option<NaiveDateTime>,
+    contact_uri: String,
+    lr: i64,
+}
+
+impl TryFrom<DeviceStatusRow> for DeviceStatus {
+    type Error = GlobalError;
+
+    fn try_from(row: DeviceStatusRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            heartbeat: decode_u8(row.heartbeat, "heartbeat")?,
+            enable: decode_u8(row.enable, "enable")?,
+            expires: decode_u32(row.expires, "expires")?,
+            online_expire_time: row.online_expire_time,
+            contact_uri: row.contact_uri,
+            lr: decode_u8(row.lr, "lr")?,
+        })
+    }
+}
+
 impl DeviceStatus {
     pub async fn get_device_status(device_id: &String) -> GlobalResult<Option<DeviceStatus>> {
         let res = db::fetch_optional_as!(
-            DeviceStatus,
+            DeviceStatusRow,
             "SELECT COALESCE(o.HEARTBEAT_SEC,60) heartbeat,COALESCE(o.STATUS,1) enable,COALESCE(d.REGISTER_EXPIRES,0) expires,
             d.ONLINE_EXPIRE_TIME online_expire_time,COALESCE(d.CONTACT_URI,'') contact_uri,COALESCE(d.ENABLE_LR,0) lr
             FROM GB28181_OAUTH o INNER JOIN GB28181_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
             device_id,
         )
-        .hand_log(|msg| error!("{msg}"))?;
+        .hand_log(|msg| error!("{msg}"))?
+        .map(DeviceStatus::try_from)
+        .transpose()?;
         Ok(res)
     }
+}
+
+fn decode_u32(value: i64, field: &str) -> GlobalResult<u32> {
+    u32::try_from(value).map_err(|_| decode_range_error(field, "u32"))
+}
+
+fn decode_u8(value: i64, field: &str) -> GlobalResult<u8> {
+    u8::try_from(value).map_err(|_| decode_range_error(field, "u8"))
+}
+
+fn decode_range_error(field: &str, ty: &str) -> GlobalError {
+    let message = format!("{field} must fit {ty}");
+    GlobalError::new_biz_error(BaseErrorCode::InvalidRequest.code(), &message, |msg| {
+        error!("{msg}")
+    })
 }
 
 #[cfg(test)]
