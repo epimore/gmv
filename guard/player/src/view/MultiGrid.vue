@@ -40,7 +40,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { GmvAiBox, GmvDeviceStatus, GmvOsdItem, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
 import GmvPlayerView from './GmvPlayerView.vue';
 
@@ -56,11 +56,13 @@ export interface GmvGridCell {
   capabilities?: GmvViewCapabilities;
 }
 
-defineProps<{
+const props = defineProps<{
   cells: GmvGridCell[];
+  gridSize?: number;
 }>();
 
 const emit = defineEmits<{
+  'update:gridSize': [value: number];
   snapshot: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
   recordStart: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
   recordStop: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
@@ -74,7 +76,18 @@ const emit = defineEmits<{
 }>();
 
 const gridSizes = [1, 4, 9, 16];
-const modelGrid = ref(4);
+const localGrid = ref(props.gridSize ?? 4);
 const selectedIndex = ref(0);
+const modelGrid = computed({
+  get: () => props.gridSize ?? localGrid.value,
+  set: (value: number) => {
+    localGrid.value = value;
+    emit('update:gridSize', value);
+  },
+});
 const columnCount = computed(() => Math.sqrt(modelGrid.value));
+
+watch(() => props.gridSize, (value) => {
+  if (value) localGrid.value = value;
+});
 </script>

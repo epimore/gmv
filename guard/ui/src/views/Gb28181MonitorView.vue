@@ -1,5 +1,5 @@
 <template>
-  <div v-if="!selectedDevice" class="page-grid" v-loading="loading">
+  <div v-if="!selectedDevice && monitorMode === 'devices'" class="page-grid" v-loading="loading">
     <GlassPanel class="span-12" title="监控信息" subtitle="按设备查看在线状态和注册时间">
       <div class="toolbar">
         <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 420px"
@@ -16,6 +16,7 @@
         <el-button type="primary" :loading="loading" @click="queryDevices">查询</el-button>
         <el-button :loading="loading" @click="resetDevices">重置</el-button>
         <el-button :loading="loading" @click="loadDevices">刷新</el-button>
+        <el-button type="primary" plain @click="openMultiView">通道树多画面</el-button>
       </div>
       <el-table :data="devices" height="620" empty-text="暂无监控设备">
         <el-table-column type="index" :index="tableIndex" label="序号" width="64" />
@@ -98,6 +99,86 @@
     </el-drawer>
   </div>
 
+  <div v-else-if="!selectedDevice" class="page-grid">
+    <GlassPanel class="span-12" title="通道树多画面" subtitle="选择当前 Session 节点下的设备通道组成宫格">
+      <div class="monitor-head">
+        <div class="device-summary">
+          <strong>多画面工作台</strong>
+          <span>最多 16 路实时直播</span>
+        </div>
+        <div class="monitor-actions">
+          <el-button :loading="multiStopping" @click="collapseMultiTree">一键聚合</el-button>
+          <el-button type="danger" plain :loading="multiStopping" @click="stopAllMultiStreams()">停止全部</el-button>
+          <el-button type="primary" @click="backToDeviceListFromMulti">返回设备列表</el-button>
+        </div>
+      </div>
+    </GlassPanel>
+
+    <GlassPanel class="span-4" title="信令节点" subtitle="先选择节点，再查询设备">
+      <div v-loading="listNodeLoading" class="tree-node-list">
+        <button v-for="option in sessionNodeOptions" :key="option.node.node_id" type="button" class="tree-node"
+          :class="{ active: selectedMultiNodeId === option.node.node_id, offline: option.disabled }"
+          :disabled="option.disabled" @click="selectMultiNode(option.node.node_id)">
+          <span>{{ option.kindLabel }}</span>
+          <b>{{ option.node.node_id }}</b>
+          <small>{{ option.statusLabel }}</small>
+        </button>
+        <el-empty v-if="!sessionNodeOptions.length" description="暂无信令节点" />
+      </div>
+    </GlassPanel>
+
+    <GlassPanel class="span-8" title="设备与通道" :subtitle="selectedMultiNodeLabel">
+      <div v-if="selectedMultiNodeOption" class="tree-workbench">
+        <div class="toolbar">
+          <el-input v-model="treeDeviceId" style="width: 220px" clearable placeholder="设备 ID" />
+          <el-input v-model="treeDeviceName" style="width: 220px" clearable placeholder="设备名称" />
+          <el-button type="primary" :loading="treeLoading" @click="queryTreeDevices">查询</el-button>
+          <el-button :loading="treeLoading" @click="resetTreeDevices">重置</el-button>
+          <el-button type="primary" plain :disabled="!selectedTreeChannelKeys.length" :loading="multiPlaying"
+            @click="playSelectedMultiChannels">播放选中</el-button>
+        </div>
+        <div v-loading="treeLoading" class="tree-device-list">
+          <article v-for="device in treeDevices" :key="device.device_id" class="tree-device">
+            <header>
+              <button type="button" @click="toggleTreeDevice(device)">
+                {{ expandedDeviceKeys.includes(device.device_id) ? '收起' : '展开' }}
+              </button>
+              <div>
+                <b>{{ displayDeviceName(device) }}</b>
+                <span>{{ device.device_id }}</span>
+              </div>
+              <StatusPill :label="device.monitor_status === 1 ? '在线' : '离线'"
+                :tone="device.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
+            </header>
+            <div v-if="expandedDeviceKeys.includes(device.device_id)" class="tree-channel-list">
+              <el-checkbox v-for="channel in treeChannelsByDevice[device.device_id] || []" :key="channel.channel_id"
+                :model-value="selectedTreeChannelKeys.includes(channelKey(channel))" :disabled="!canPlayLive(channel)"
+                @change="(checked: boolean) => toggleTreeChannel(channel, checked)">
+                <span class="tree-channel-label">
+                  <b>{{ displayChannelName(channel) }}</b>
+                  <small>{{ channel.channel_id }} · {{ channelStatusText(channel) }}</small>
+                </span>
+              </el-checkbox>
+              <el-empty
+                v-if="!treeChannelLoading[device.device_id] && !(treeChannelsByDevice[device.device_id] || []).length"
+                description="暂无通道" />
+              <div v-if="treeChannelLoading[device.device_id]" class="tree-loading">通道加载中...</div>
+            </div>
+          </article>
+          <el-empty v-if="!treeLoading && !treeDevices.length" description="查询设备后选择通道" />
+        </div>
+      </div>
+      <el-empty v-else description="请选择信令节点" />
+    </GlassPanel>
+
+    <GlassPanel class="span-12" title="多画面播放" :subtitle="multiPlayerSubtitle">
+      <div class="multi-player">
+        <GmvMultiGrid v-model:grid-size="multiGridSize" :cells="multiGridCells" @snapshot="handleMultiSnapshot"
+          @ptz="handleMultiPtz" />
+      </div>
+    </GlassPanel>
+  </div>
+
   <div v-else class="page-grid">
     <GlassPanel class="span-12" title="通道监控" :subtitle="selectedDevice.device_id">
       <div class="monitor-head">
@@ -136,7 +217,7 @@
     </GlassPanel>
 
     <template v-else>
-      <GlassPanel class="span-12" title="相机列表" subtitle="与 gb28181_app 监控信息一致，从设备下钻到通道操作">
+      <GlassPanel class="span-12" title="相机列表">
         <div v-loading="channelLoading" class="channel-grid">
           <article v-for="channel in sortedChannels" :key="channel.channel_id" class="channel-card">
             <header class="channel-card-head">
@@ -150,18 +231,19 @@
               <img v-if="channel.pic_url" :src="channel.pic_url" :alt="displayChannelName(channel)" />
               <span v-else>暂无封面</span>
             </button>
-            <div class="channel-tags">
+            <!-- <div class="channel-tags">
               <span>{{ channel.ptz_type || 'PTZ -' }}</span>
               <span>{{ confText(channel.playback_enable, 2, '回放') }}</span>
               <span>{{ confText(channel.snapshot, 2, '抓拍') }}</span>
               <span>{{ confText(channel.biz_enable, 1, '业务') }}</span>
-            </div>
+            </div> -->
             <footer class="channel-actions">
-              <el-button :disabled="!canPlayLive(channel)" @click="startPlay('preview', channel)">实时直播</el-button>
-              <el-button :disabled="!canPlayback(channel)" @click="startPlay('playback', channel)">历史回放</el-button>
+              <el-button :disabled="!canPlayLive(channel)" @click="startPlay('preview', channel)">直播</el-button>
+              <el-button :disabled="!canPlayback(channel)" @click="startPlay('playback', channel)">回放</el-button>
               <el-button :disabled="!canSnapshot(channel)" :loading="snapshotLoading[channel.channel_id]"
                 @click="snapshot(channel)">抓拍</el-button>
-              <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">抓拍图集</el-button>
+              <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
+              <el-button :disabled="!canPlayLive(channel)" @click="focusChannelInMultiView(channel)">多画面</el-button>
               <el-button :disabled="!canOperate" @click="openConfig(channel)">配置</el-button>
             </footer>
           </article>
@@ -185,7 +267,7 @@
       <el-empty v-else description="暂无封面" />
     </el-dialog>
 
-    <el-drawer v-model="configDrawer" title="相机业务配置" size="420px" destroy-on-close>
+    <el-drawer v-model="configDrawer" title="相机业务配置" size="420px" class="camera-config-drawer" destroy-on-close>
       <el-form :model="configForm" label-width="110px" class="config-form">
         <el-form-item label="设备ID"><el-input v-model="configForm.device_id" disabled /></el-form-item>
         <el-form-item label="通道ID"><el-input v-model="configForm.channel_id" disabled /></el-form-item>
@@ -221,7 +303,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import {
   getGbSessionNodeConfig,
@@ -232,6 +314,7 @@ import {
   sendGbPtz,
   startGbPlayback,
   startGbPreview,
+  stopStream,
   takeGbSnapshot,
   updateGbChannel,
   type GbChannelImageInfo,
@@ -244,22 +327,30 @@ import {
 } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { GmvPlayerView, type GmvPtzCommand, type GmvSource } from 'gmv-player';
+import { GmvMultiGrid, GmvPlayerView, type GmvPtzCommand, type GmvSource } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
+const monitorMode = ref<'devices' | 'multi'>('devices');
 const loading = ref(false);
 const channelLoading = ref(false);
 const imageLoading = ref(false);
 const configSaving = ref(false);
 const listNodeLoading = ref(false);
+const treeLoading = ref(false);
+const multiPlaying = ref(false);
+const multiStopping = ref(false);
 const deviceName = ref('');
+const treeDeviceId = ref('');
+const treeDeviceName = ref('');
 const devices = ref<GbDeviceInfo[]>([]);
 const channels = ref<GbChannelInfo[]>([]);
+const treeDevices = ref<GbDeviceInfo[]>([]);
 const images = ref<GbChannelImageInfo[]>([]);
 const sessionNodes = ref<NodeInfo[]>([]);
 const sessionNodeOptions = ref<SessionNodeOption[]>([]);
 const selectedListNodeId = ref('');
+const selectedMultiNodeId = ref('');
 const page = ref(1);
 const pageSize = ref(20);
 const total = ref(0);
@@ -274,10 +365,32 @@ const coverDialog = ref(false);
 const coverUrl = ref('');
 const configDrawer = ref(false);
 const snapshotLoading = reactive<Record<string, boolean>>({});
+const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
+const treeChannelLoading = reactive<Record<string, boolean>>({});
+const expandedDeviceKeys = ref<string[]>([]);
+const selectedTreeChannelKeys = ref<string[]>([]);
+const multiCells = ref<MultiViewCell[]>([]);
+const multiGridSize = ref(4);
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 
 type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
+type MultiCellStatus = 'idle' | 'online' | 'playing' | 'offline' | 'error';
+interface MultiViewCell {
+  key: string;
+  device_id: string;
+  channel_id: string;
+  title: string;
+  stream?: StreamSummary;
+  sources: GmvSource[];
+  status: MultiCellStatus;
+  error?: string;
+}
+interface SelectedChannelRef {
+  device_id: string;
+  channel_id: string;
+  title: string;
+}
 
 const confOptions = [
   { label: '启用', value: 1 },
@@ -299,13 +412,26 @@ const playerCapabilities = {
   aiOverlay: false,
 };
 const selectedListNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedListNodeId.value));
+const selectedMultiNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedMultiNodeId.value));
+const selectedMultiNodeLabel = computed(() => selectedMultiNodeOption.value ? listNodeLabel(selectedMultiNodeOption.value) : '未选择信令节点');
 const sortedChannels = computed(() => [...channels.value].sort((left, right) => {
   const sortNo = Number(left.sort_no || 0) - Number(right.sort_no || 0);
   return sortNo || displayChannelName(left).localeCompare(displayChannelName(right), 'zh-Hans-CN');
 }));
+const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeChannelKeys.value.flatMap((key) => {
+  const [deviceId, channelId] = key.split(':');
+  const channel = (treeChannelsByDevice[deviceId] || []).find((item) => item.channel_id === channelId);
+  if (!channel || !canPlayLive(channel)) return [];
+  return [{
+    device_id: channel.device_id,
+    channel_id: channel.channel_id,
+    title: displayChannelName(channel),
+  }];
+}));
 const selectedChannelTitle = computed(() => selectedChannel.value ? displayChannelName(selectedChannel.value) : '未选择通道');
 const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
 const playerSubtitle = computed(() => lastStream.value?.endpoint || '选择在线通道后播放');
+const multiPlayerSubtitle = computed(() => multiCells.value.length ? `运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '选择通道后播放');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerOsd = computed(() => [
   { id: 'channel', text: selectedChannelTitle.value, x: 3, y: 5 },
@@ -325,6 +451,19 @@ const playerSources = computed<GmvSource[]>(() => {
     priority: 1,
   }];
 });
+const multiGridCells = computed(() => multiCells.value.map((cell) => ({
+  sources: cell.sources,
+  title: cell.error ? cell.title + ' · ' + cell.error : cell.title,
+  deviceId: cell.device_id,
+  channelId: cell.channel_id,
+  status: cell.status,
+  viewers: 1,
+  osd: [
+    { id: 'channel', text: cell.title, x: 3, y: 5 },
+    { id: 'mode', text: '实时直播', x: 3, y: 12 },
+  ],
+  capabilities: playerCapabilities,
+})));
 
 function displayDeviceName(device: GbDeviceInfo) { return device.alias || device.device_id; }
 function displayChannelName(channel: GbChannelInfo) { return channel.alias_name || channel.name || channel.channel_id; }
@@ -365,6 +504,213 @@ function streamProtocol(endpoint: string): GmvSource['protocol'] {
 function formatTime(value: number) {
   if (!value) return '-';
   return new Date(value).toLocaleString();
+}
+function channelKey(channel: GbChannelInfo) { return `${channel.device_id}:${channel.channel_id}`; }
+function streamSources(stream?: StreamSummary): GmvSource[] {
+  const endpoint = stream?.endpoint;
+  if (!endpoint) return [];
+  const protocol = streamProtocol(endpoint);
+  return [{
+    protocol,
+    codec: 'h265',
+    url: endpoint,
+    mimeCodec: protocol === 'fmp4' ? 'video/mp4; codecs="hvc1.1.6.L123.B0, mp4a.40.2"' : undefined,
+    hasAudio: false,
+    label: '默认静音',
+    priority: 1,
+  }];
+}
+function clearTreeChannelState() {
+  expandedDeviceKeys.value = [];
+  selectedTreeChannelKeys.value = [];
+  for (const key of Object.keys(treeChannelsByDevice)) delete treeChannelsByDevice[key];
+  for (const key of Object.keys(treeChannelLoading)) delete treeChannelLoading[key];
+}
+function clearTreeDeviceState() {
+  treeDeviceId.value = '';
+  treeDeviceName.value = '';
+  treeDevices.value = [];
+  clearTreeChannelState();
+}
+async function openMultiView() {
+  monitorMode.value = 'multi';
+  selectedDevice.value = undefined;
+  showImages.value = false;
+  await loadSessionNodes();
+}
+async function backToDeviceListFromMulti() {
+  await stopAllMultiStreams();
+  monitorMode.value = 'devices';
+  selectedMultiNodeId.value = '';
+  clearTreeDeviceState();
+  await loadDevices();
+}
+async function selectMultiNode(nodeId: string) {
+  if (selectedMultiNodeId.value === nodeId) return;
+  await stopAllMultiStreams();
+  selectedMultiNodeId.value = nodeId;
+  clearTreeDeviceState();
+}
+async function queryTreeDevices() {
+  const option = selectedMultiNodeOption.value;
+  if (!option || option.disabled || !option.config?.domain_id) {
+    treeDevices.value = [];
+    return;
+  }
+  treeLoading.value = true;
+  try {
+    clearTreeChannelState();
+    const result = await listGbDevicePage(
+      1,
+      100,
+      option.node.node_id,
+      option.config.domain_id,
+      treeDeviceId.value,
+      treeDeviceName.value,
+      true,
+    );
+    treeDevices.value = result.items;
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '设备查询失败');
+  } finally {
+    treeLoading.value = false;
+  }
+}
+async function resetTreeDevices() {
+  clearTreeDeviceState();
+}
+function collapseMultiTree() {
+  selectedMultiNodeId.value = '';
+  clearTreeDeviceState();
+}
+async function toggleTreeDevice(device: GbDeviceInfo) {
+  const index = expandedDeviceKeys.value.indexOf(device.device_id);
+  if (index >= 0) {
+    expandedDeviceKeys.value.splice(index, 1);
+    return;
+  }
+  expandedDeviceKeys.value.push(device.device_id);
+  if (treeChannelsByDevice[device.device_id]) return;
+  treeChannelLoading[device.device_id] = true;
+  try {
+    treeChannelsByDevice[device.device_id] = await listGbChannels(device.device_id);
+  } catch (error) {
+    treeChannelsByDevice[device.device_id] = [];
+    ElMessage.error(error instanceof Error ? error.message : '通道加载失败');
+  } finally {
+    treeChannelLoading[device.device_id] = false;
+  }
+}
+function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
+  const key = channelKey(channel);
+  if (checked) {
+    if (!selectedTreeChannelKeys.value.includes(key)) selectedTreeChannelKeys.value.push(key);
+    return;
+  }
+  selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
+}
+async function playSelectedMultiChannels() {
+  const selected = selectedTreeChannels.value;
+  if (!selected.length) {
+    ElMessage.warning('请选择可播放通道');
+    return;
+  }
+  if (selected.length > multiGridSize.value) {
+    ElMessage.warning('选中通道超过当前宫格数量，请扩大宫格或减少选择');
+    return;
+  }
+  multiPlaying.value = true;
+  try {
+    await stopAllMultiStreams({ quiet: true });
+    const cells = await Promise.all(selected.map(async (channel): Promise<MultiViewCell> => {
+      const key = `${channel.device_id}:${channel.channel_id}`;
+      try {
+        const stream = await startGbPreview(channel.device_id, channel.channel_id, {
+          request_id: 'ui-multi-preview-' + Date.now() + '-' + channel.channel_id,
+          output_type: 'flv',
+        });
+        return {
+          key,
+          device_id: channel.device_id,
+          channel_id: channel.channel_id,
+          title: channel.title,
+          stream,
+          sources: streamSources(stream),
+          status: stream.state === 'running' ? 'playing' : 'online',
+        };
+      } catch (error) {
+        return {
+          key,
+          device_id: channel.device_id,
+          channel_id: channel.channel_id,
+          title: channel.title,
+          sources: [],
+          status: 'error',
+          error: error instanceof Error ? error.message : '播放失败',
+        };
+      }
+    }));
+    multiCells.value = cells;
+  } finally {
+    multiPlaying.value = false;
+  }
+}
+async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
+  if (multiStopping.value) return;
+  const streams = multiCells.value.map((cell) => cell.stream).filter((stream): stream is StreamSummary => !!stream?.stream_id);
+  multiStopping.value = true;
+  try {
+    await Promise.allSettled(streams.map((stream) => stopStream(stream.stream_id)));
+    multiCells.value = [];
+    if (!options.quiet && streams.length) ElMessage.success('多画面已停止');
+  } finally {
+    multiStopping.value = false;
+  }
+}
+async function stopCurrentStream() {
+  const stream = lastStream.value;
+  lastStream.value = undefined;
+  lastAction.value = '';
+  if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
+}
+async function focusChannelInMultiView(channel: GbChannelInfo) {
+  const device = selectedDevice.value;
+  if (!device) return;
+  await stopCurrentStream();
+  selectedDevice.value = undefined;
+  selectedChannel.value = undefined;
+  channels.value = [];
+  images.value = [];
+  showImages.value = false;
+  monitorMode.value = 'multi';
+  await loadSessionNodes();
+  const targetNodeId = device.session_node_id || selectedListNodeId.value;
+  if (targetNodeId && selectedMultiNodeId.value !== targetNodeId) await selectMultiNode(targetNodeId);
+  treeDeviceId.value = device.device_id;
+  treeDeviceName.value = '';
+  await queryTreeDevices();
+  const targetDevice = treeDevices.value.find((item) => item.device_id === device.device_id) || treeDevices.value[0];
+  if (targetDevice) {
+    await toggleTreeDevice(targetDevice);
+    const targetChannel = (treeChannelsByDevice[targetDevice.device_id] || []).find((item) => item.channel_id === channel.channel_id);
+    if (targetChannel) toggleTreeChannel(targetChannel, true);
+  }
+  ElMessage.success('已定位到通道树');
+}
+async function handleMultiSnapshot(event: { index: number }) {
+  const cell = multiCells.value[event.index];
+  if (!cell) return;
+  const channel = (treeChannelsByDevice[cell.device_id] || []).find((item) => item.channel_id === cell.channel_id);
+  if (channel) await snapshot(channel);
+}
+async function handleMultiPtz(event: { index: number; payload: GmvPtzCommand }) {
+  const cell = multiCells.value[event.index];
+  if (!cell || event.payload.action === 'stop') return;
+  try {
+    await sendGbPtz(cell.device_id, cell.channel_id);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '云台控制失败');
+  }
 }
 
 async function loadSessionNodes() {
@@ -432,10 +778,9 @@ async function openChannelsFromDetail() {
   await openChannels(device);
 }
 async function openChannels(device: GbDeviceInfo) {
+  await stopCurrentStream();
   selectedDevice.value = device;
   selectedChannel.value = undefined;
-  lastStream.value = undefined;
-  lastAction.value = '';
   showImages.value = false;
   await reloadChannels();
 }
@@ -450,15 +795,16 @@ async function reloadChannels() {
     channelLoading.value = false;
   }
 }
-function backToDevices() {
+async function backToDevices() {
+  await stopCurrentStream();
   selectedDevice.value = undefined;
   selectedChannel.value = undefined;
   channels.value = [];
   images.value = [];
-  lastStream.value = undefined;
   showImages.value = false;
 }
 async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
+  await stopCurrentStream();
   selectedChannel.value = channel;
   showImages.value = false;
   try {
@@ -550,6 +896,10 @@ async function handlePlayerPtz(command: GmvPtzCommand) {
 }
 
 onMounted(loadDevices);
+onBeforeUnmount(() => {
+  void stopAllMultiStreams({ quiet: true });
+  void stopCurrentStream();
+});
 </script>
 
 <style scoped>
@@ -686,7 +1036,7 @@ onMounted(loadDevices);
 
 .channel-actions {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
   padding: 12px;
 }
@@ -721,6 +1071,108 @@ onMounted(loadDevices);
   display: block;
   object-fit: contain;
   background: #02050a;
+}
+
+.tree-node-list,
+.tree-device-list,
+.tree-workbench {
+  display: grid;
+  gap: 12px;
+}
+
+.tree-node {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(100, 203, 255, .16);
+  border-radius: 8px;
+  background: rgba(3, 10, 24, .36);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-node.active {
+  border-color: rgba(34, 211, 238, .62);
+  background: rgba(34, 211, 238, .08);
+}
+
+.tree-node.offline {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.tree-node span,
+.tree-node small,
+.tree-device header span,
+.tree-channel-label small,
+.tree-loading {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tree-node b,
+.tree-device header b,
+.tree-channel-label b {
+  overflow-wrap: anywhere;
+}
+
+.tree-device {
+  overflow: hidden;
+  border: 1px solid rgba(100, 203, 255, .16);
+  border-radius: 8px;
+  background: rgba(3, 10, 24, .36);
+}
+
+.tree-device header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+}
+
+.tree-device header button {
+  height: 30px;
+  border: 1px solid rgba(100, 203, 255, .22);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .04);
+  color: var(--cyan);
+  cursor: pointer;
+}
+
+.tree-device header div,
+.tree-channel-label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.tree-channel-list {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px 48px;
+}
+
+.tree-channel-list :deep(.el-checkbox) {
+  height: auto;
+  align-items: flex-start;
+  white-space: normal;
+}
+
+.multi-player {
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid rgba(100, 203, 255, .18);
+  border-radius: 8px;
+  background: #02050a;
+  padding: 12px;
+}
+
+.multi-player :deep(.multi-grid) {
+  height: 100%;
+  min-height: 596px;
 }
 
 .image-grid {
@@ -827,33 +1279,63 @@ onMounted(loadDevices);
   font-weight: 700;
 }
 
-:deep(.device-detail-drawer) {
+:deep(.device-detail-drawer),
+:deep(.camera-config-drawer) {
   border-left: 1px solid var(--line);
   background: linear-gradient(145deg, rgba(13, 29, 58, .98), rgba(7, 16, 34, .96)) !important;
   color: var(--text);
   box-shadow: var(--shadow);
 }
 
-:deep(.device-detail-drawer .el-drawer__header) {
+:deep(.device-detail-drawer .el-drawer__header),
+:deep(.camera-config-drawer .el-drawer__header) {
   margin-bottom: 0;
   padding: 18px 20px 14px;
   border-bottom: 1px solid rgba(100, 203, 255, .12);
   color: var(--text);
 }
 
-:deep(.device-detail-drawer .el-drawer__title) {
+:deep(.device-detail-drawer .el-drawer__title),
+:deep(.camera-config-drawer .el-drawer__title) {
   color: var(--text);
   font-size: 16px;
   font-weight: 800;
 }
 
-:deep(.device-detail-drawer .el-drawer__body) {
+:deep(.device-detail-drawer .el-drawer__body),
+:deep(.camera-config-drawer .el-drawer__body) {
   padding: 18px 20px;
 }
 
-:deep(.device-detail-drawer .el-drawer__footer) {
+:deep(.device-detail-drawer .el-drawer__footer),
+:deep(.camera-config-drawer .el-drawer__footer) {
   padding: 12px 20px 18px;
   border-top: 1px solid rgba(100, 203, 255, .12);
+}
+
+:deep(.camera-config-drawer .el-form-item) {
+  margin-bottom: 18px;
+}
+
+:deep(.camera-config-drawer .el-form-item__label) {
+  color: var(--muted) !important;
+  font-weight: 700;
+}
+
+:deep(.camera-config-drawer .el-input__wrapper),
+:deep(.camera-config-drawer .el-select__wrapper) {
+  background: rgba(4, 12, 28, .62) !important;
+  border-color: rgba(105, 205, 255, .22);
+}
+
+:deep(.camera-config-drawer .el-input.is-disabled .el-input__wrapper) {
+  background: rgba(9, 18, 38, .72) !important;
+  border-color: rgba(100, 203, 255, .12);
+}
+
+:deep(.camera-config-drawer .el-input.is-disabled .el-input__inner) {
+  color: var(--muted) !important;
+  -webkit-text-fill-color: var(--muted) !important;
 }
 
 .config-form :deep(.el-select),
