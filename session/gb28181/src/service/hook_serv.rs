@@ -34,6 +34,8 @@ pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
 
 pub fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRes {
     let stream_id = stream_state.base_stream_info.stream_id;
+    let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, stream_id);
+    let _ = state::session::Cache::notify_stream_wait(&key_stream_in_id, None);
     if state::session::Cache::stream_is_closing(&stream_id) {
         return InTimeoutEventRes::CloseAll;
     }

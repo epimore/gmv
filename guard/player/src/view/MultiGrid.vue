@@ -55,6 +55,7 @@ export interface GmvGridCell {
   channelId?: string;
   status?: GmvDeviceStatus;
   viewers?: number;
+  poster?: string;
   osd?: GmvOsdItem[];
   aiBoxes?: GmvAiBox[];
   capabilities?: GmvViewCapabilities;

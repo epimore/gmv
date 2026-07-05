@@ -21,6 +21,7 @@
           <option :value="true">AAC音频</option>
         </select>
         <input v-model="form.mimeCodec" placeholder="video/mp4; codecs=&quot;avc1.42E01E, mp4a.40.2&quot;" />
+        <input v-model="form.poster" placeholder="开屏封面 URL（可选）" />
         <button type="submit">加入画面</button>
       </form>
     </section>
@@ -85,6 +86,7 @@ const form = reactive({
   protocol: 'flv' as GmvProtocol,
   codec: 'h264' as GmvCodec,
   mimeCodec: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+  poster: '',
   hasAudio: false,
 });
 const logs = ref<string[]>([]);
@@ -108,6 +110,7 @@ function addSource() {
       },
     ],
     title: `测试画面 ${index + 1}`,
+    poster: form.poster.trim() || undefined,
     status: 'online',
   };
   nextCell.value = index + 1;

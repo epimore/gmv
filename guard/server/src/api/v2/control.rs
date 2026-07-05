@@ -861,7 +861,13 @@ impl BusinessControl {
         })
     }
 
-    pub async fn ptz(&self, device_id: &str, channel_id: &str) -> GuardResult<u64> {
+    pub async fn ptz(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        command: &str,
+        speed: u32,
+    ) -> GuardResult<u64> {
         let session = self.select_node(NodeKind::Session, "device.ptz")?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
@@ -873,8 +879,8 @@ impl BusinessControl {
             }),
             device_id: device_id.to_string(),
             channel_id: channel_id.to_string(),
-            command: "default".to_string(),
-            speed: 1,
+            command: command.to_string(),
+            speed,
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.control_ptz, node={}, req:{request:?}",

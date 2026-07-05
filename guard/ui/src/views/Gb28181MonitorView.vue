@@ -258,8 +258,10 @@
               <span>{{ confText(channel.biz_enable, 1, '业务') }}</span>
             </div> -->
             <footer class="channel-actions">
-              <el-button :disabled="!canPlayLive(channel)" @click="startPlay('preview', channel)">直播</el-button>
-              <el-button :disabled="!canPlayback(channel)" @click="startPlay('playback', channel)">回放</el-button>
+              <el-button :disabled="!canPlayLive(channel) || playerRequesting"
+                :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
+              <el-button :disabled="!canPlayback(channel) || playerRequesting"
+                :loading="isPlayRequesting('playback', channel)" @click="startPlay('playback', channel)">回放</el-button>
               <el-button :disabled="!canSnapshot(channel)" :loading="snapshotLoading[channel.channel_id]"
                 @click="snapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
@@ -280,15 +282,23 @@
 
     <el-dialog v-model="playerDialog" :title="playerDialogTitle" width="960px" class="monitor-player-dialog"
       destroy-on-close @close="stopCurrentStream">
-      <div v-if="playerSources.length" class="monitor-player">
+      <div v-if="selectedChannel" class="monitor-player">
         <div class="monitor-player-toolbar">
           <span>{{ selectedChannelTitle }}</span>
           <el-switch v-model="playerControlsVisible" inline-prompt active-text="显示" inactive-text="隐藏" />
         </div>
-        <GmvPlayerView :sources="playerSources" :device-id="selectedChannel?.device_id"
-          :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
-          :osd="playerOsd" :capabilities="playerCapabilities" :controls-visible="playerControlsVisible"
-          @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz" />
+        <div class="monitor-player-stage">
+          <GmvPlayerView :sources="playerSources" :device-id="selectedChannel?.device_id"
+            :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
+            :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
+            :controls-visible="playerControlsVisible"
+            @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz" />
+          <div v-if="showDefaultWaitingCover" class="player-waiting-cover" aria-hidden="true">
+            <span class="waiting-ring"></span>
+            <span class="waiting-scan"></span>
+          </div>
+          <div v-if="playerRequesting" class="player-loading-badge">播放创建中...</div>
+        </div>
       </div>
       <el-empty v-else description="选择在线通道后播放" />
     </el-dialog>
@@ -347,6 +357,7 @@ import {
   type GbChannelInfo,
   type GbChannelPayload,
   type GbDeviceInfo,
+  type GbPtzPayload,
   type GbSessionConfigInfo,
   type NodeInfo,
   type StreamSummary,
@@ -394,6 +405,8 @@ const coverDialog = ref(false);
 const coverUrl = ref('');
 const playerDialog = ref(false);
 const playerControlsVisible = ref(true);
+const playerRequesting = ref(false);
+const pendingPlayKey = ref('');
 const configDrawer = ref(false);
 const snapshotLoading = reactive<Record<string, boolean>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
@@ -404,6 +417,7 @@ const draggingTreeChannelIndex = ref<number>();
 const multiCells = ref<MultiViewCell[]>([]);
 const multiGridSize = ref(4);
 let stopCurrentStreamTask: Promise<void> | undefined;
+let playRequestSeq = 0;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 
@@ -414,6 +428,7 @@ interface MultiViewCell {
   device_id: string;
   channel_id: string;
   title: string;
+  poster?: string;
   stream?: StreamSummary;
   sources: GmvSource[];
   status: MultiCellStatus;
@@ -423,6 +438,7 @@ interface SelectedChannelRef {
   device_id: string;
   channel_id: string;
   title: string;
+  poster?: string;
   device_title: string;
   status_text: string;
 }
@@ -472,6 +488,8 @@ const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · '
 const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
 const multiPlayerSubtitle = computed(() => multiCells.value.length ? `实时直播 · 运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '实时直播 · 选择通道后播放');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
+const playerPoster = computed(() => selectedChannel.value?.pic_url || undefined);
+const showDefaultWaitingCover = computed(() => playerRequesting.value && !playerPoster.value);
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
   return {
@@ -511,6 +529,7 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => ({
   channelId: cell.channel_id,
   status: cell.status,
   viewers: 1,
+  poster: cell.poster,
   osd: [
     { id: 'channel', text: cell.title, x: 3, y: 5 },
     { id: 'mode', text: '实时直播', x: 3, y: 12 },
@@ -550,6 +569,8 @@ function canSnapshot(channel: GbChannelInfo) { return channelOnline(channel) && 
 function canPtz(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.ptz_enable); }
 function canAudio(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.audio_enable); }
 function canViewImages(channel: GbChannelInfo) { return bizEnabled(channel); }
+function playRequestKey(kind: 'preview' | 'playback', channel: GbChannelInfo) { return `${kind}:${channel.device_id}:${channel.channel_id}`; }
+function isPlayRequesting(kind: 'preview' | 'playback', channel: GbChannelInfo) { return playerRequesting.value && pendingPlayKey.value === playRequestKey(kind, channel); }
 function streamProtocol(endpoint: string): GmvSource['protocol'] {
   const path = endpoint.split('?')[0].toLowerCase();
   if (path.endsWith('.fmp4')) return 'fmp4';
@@ -698,6 +719,7 @@ function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
       device_id: channel.device_id,
       channel_id: channel.channel_id,
       title: displayChannelName(channel),
+      poster: channel.pic_url || undefined,
       device_title: device ? displayDeviceName(device) : channel.device_id,
       status_text: channelStatusText(channel),
     });
@@ -764,6 +786,7 @@ async function playSelectedMultiChannels() {
           device_id: channel.device_id,
           channel_id: channel.channel_id,
           title: channel.title,
+          poster: channel.poster,
           stream,
           sources: streamSources(stream),
           status: stream.state === 'running' ? 'playing' : 'online',
@@ -774,6 +797,7 @@ async function playSelectedMultiChannels() {
           device_id: channel.device_id,
           channel_id: channel.channel_id,
           title: channel.title,
+          poster: channel.poster,
           sources: [],
           status: 'error',
           error: error instanceof Error ? error.message : '播放失败',
@@ -797,13 +821,21 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
     multiStopping.value = false;
   }
 }
-async function stopCurrentStream() {
+async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?: boolean; cancelPending?: boolean } = {}) {
   if (stopCurrentStreamTask) return stopCurrentStreamTask;
+  const closeDialog = options.closeDialog !== false;
+  const clearAction = options.clearAction !== false;
+  const cancelPending = options.cancelPending !== false;
   stopCurrentStreamTask = (async () => {
     const stream = lastStream.value;
-    playerDialog.value = false;
+    if (cancelPending) {
+      playRequestSeq += 1;
+      playerRequesting.value = false;
+      pendingPlayKey.value = '';
+    }
+    if (closeDialog) playerDialog.value = false;
     lastStream.value = undefined;
-    lastAction.value = '';
+    if (clearAction) lastAction.value = '';
     if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
   })().finally(() => {
     stopCurrentStreamTask = undefined;
@@ -840,11 +872,69 @@ async function handleMultiSnapshot(event: { index: number }) {
   const channel = (treeChannelsByDevice[cell.device_id] || []).find((item) => item.channel_id === cell.channel_id);
   if (channel) await snapshot(channel);
 }
+
+function ptzPayload(command: GmvPtzCommand): GbPtzPayload {
+  const speed = Math.min(255, Math.max(1, Math.round(command.speed || 1)));
+  const zoomSpeed = Math.min(15, speed);
+  const payload: GbPtzPayload = { leftRight: 0, upDown: 0, inOut: 0, horizonSpeed: 0, verticalSpeed: 0, zoomSpeed: 0 };
+  switch (command.action) {
+    case 'left':
+      payload.leftRight = 1;
+      payload.horizonSpeed = speed;
+      break;
+    case 'right':
+      payload.leftRight = 2;
+      payload.horizonSpeed = speed;
+      break;
+    case 'up':
+      payload.upDown = 1;
+      payload.verticalSpeed = speed;
+      break;
+    case 'down':
+      payload.upDown = 2;
+      payload.verticalSpeed = speed;
+      break;
+    case 'leftUp':
+      payload.leftRight = 1;
+      payload.upDown = 1;
+      payload.horizonSpeed = speed;
+      payload.verticalSpeed = speed;
+      break;
+    case 'rightUp':
+      payload.leftRight = 2;
+      payload.upDown = 1;
+      payload.horizonSpeed = speed;
+      payload.verticalSpeed = speed;
+      break;
+    case 'leftDown':
+      payload.leftRight = 1;
+      payload.upDown = 2;
+      payload.horizonSpeed = speed;
+      payload.verticalSpeed = speed;
+      break;
+    case 'rightDown':
+      payload.leftRight = 2;
+      payload.upDown = 2;
+      payload.horizonSpeed = speed;
+      payload.verticalSpeed = speed;
+      break;
+    case 'zoomIn':
+      payload.inOut = 2;
+      payload.zoomSpeed = zoomSpeed;
+      break;
+    case 'zoomOut':
+      payload.inOut = 1;
+      payload.zoomSpeed = zoomSpeed;
+      break;
+  }
+  return payload;
+}
+
 async function handleMultiPtz(event: { index: number; payload: GmvPtzCommand }) {
   const cell = multiCells.value[event.index];
-  if (!cell || event.payload.action === 'stop') return;
+  if (!cell) return;
   try {
-    await sendGbPtz(cell.device_id, cell.channel_id);
+    await sendGbPtz(cell.device_id, cell.channel_id, ptzPayload(event.payload));
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '云台控制失败');
   }
@@ -941,18 +1031,34 @@ async function backToDevices() {
   showImages.value = false;
 }
 async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
-  await stopCurrentStream();
+  if (playerRequesting.value) return;
+  const action = kind === 'preview' ? '实时直播' : '历史回放';
+  const requestSeq = playRequestSeq + 1;
+  playRequestSeq = requestSeq;
   selectedChannel.value = channel;
+  lastAction.value = action;
   showImages.value = false;
+  playerDialog.value = true;
+  playerRequesting.value = true;
+  pendingPlayKey.value = playRequestKey(kind, channel);
   try {
-    lastStream.value = kind === 'preview'
+    await stopCurrentStream({ closeDialog: false, clearAction: false, cancelPending: false });
+    const stream = kind === 'preview'
       ? await startGbPreview(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-preview-' + Date.now(), output_type: 'flv' })
       : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'flv' });
-    lastAction.value = kind === 'preview' ? '实时直播' : '历史回放';
-    playerDialog.value = true;
-    ElMessage.success(lastAction.value + '已提交');
+    if (requestSeq !== playRequestSeq || !playerDialog.value) {
+      if (stream.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
+      return;
+    }
+    lastStream.value = stream;
+    ElMessage.success(action + '已提交');
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '播放请求失败');
+    if (requestSeq === playRequestSeq) ElMessage.error(error instanceof Error ? error.message : '播放请求失败');
+  } finally {
+    if (requestSeq === playRequestSeq) {
+      playerRequesting.value = false;
+      pendingPlayKey.value = '';
+    }
   }
 }
 async function snapshot(channel: GbChannelInfo) {
@@ -1025,9 +1131,9 @@ async function saveConfig() {
   }
 }
 async function handlePlayerPtz(command: GmvPtzCommand) {
-  if (!selectedChannel.value || command.action === 'stop') return;
+  if (!selectedChannel.value) return;
   try {
-    await sendGbPtz(selectedChannel.value.device_id, selectedChannel.value.channel_id);
+    await sendGbPtz(selectedChannel.value.device_id, selectedChannel.value.channel_id, ptzPayload(command));
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '云台控制失败');
   }
@@ -1229,6 +1335,82 @@ onBeforeUnmount(() => {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.monitor-player-stage {
+  position: relative;
+  min-height: 500px;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.player-waiting-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(100, 203, 255, .2), transparent 28%),
+    linear-gradient(135deg, rgba(4, 15, 25, .95), rgba(1, 6, 12, .98));
+}
+
+.waiting-ring {
+  position: relative;
+  width: 128px;
+  height: 128px;
+  border: 1px solid rgba(100, 203, 255, .24);
+  border-top-color: rgba(100, 203, 255, .86);
+  border-radius: 50%;
+  animation: waiting-spin 1.35s linear infinite;
+  box-shadow: 0 0 32px rgba(100, 203, 255, .2);
+}
+
+.waiting-ring::after {
+  content: "";
+  position: absolute;
+  inset: 32px;
+  border: 1px solid rgba(37, 211, 102, .24);
+  border-right-color: rgba(37, 211, 102, .72);
+  border-radius: 50%;
+}
+
+.waiting-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(100, 203, 255, .14) 50%, transparent 100%);
+  animation: waiting-scan 1.8s ease-in-out infinite;
+}
+
+.player-loading-badge {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 5;
+  padding: 7px 10px;
+  border: 1px solid rgba(100, 203, 255, .36);
+  border-radius: 6px;
+  background: rgba(2, 8, 16, .86);
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+@keyframes waiting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes waiting-scan {
+  0% {
+    transform: translateY(-100%);
+  }
+
+  100% {
+    transform: translateY(100%);
+  }
 }
 
 .monitor-player :deep(.gmv-player) {

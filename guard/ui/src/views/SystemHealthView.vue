@@ -3,7 +3,7 @@
     <GlassPanel class="span-7" title="调度星图" subtitle="节点容量与租约归属">
       <OrbitChart :option="topology" />
     </GlassPanel>
-    <GlassPanel class="span-5" title="待处理队列压力" subtitle="pending leases / 100 队列上限">
+    <GlassPanel class="span-5" title="任务拥堵" subtitle="pending leases / 100 队列上限">
       <OrbitChart :option="queuePressureRadar" />
     </GlassPanel>
     <GlassPanel class="span-12" title="租约生命周期" subtitle="ALLOCATED → CONFIRMED → RELEASED / EXPIRED">
@@ -12,8 +12,11 @@
         <el-table-column prop="lease_id" label="租约 ID" width="140" />
         <el-table-column prop="resource_id" label="资源" width="140" />
         <el-table-column prop="node_id" label="节点" width="130" />
-        <el-table-column label="状态" width="130"><template #default="{ row }"><StatusPill :label="row.state.toUpperCase()" :tone="row.state" /></template></el-table-column>
-        <el-table-column label="到期时间"><template #default="{ row }">{{ new Date(row.expires_at_ms).toLocaleString('zh-CN') }}</template></el-table-column>
+        <el-table-column label="状态" width="130"><template #default="{ row }">
+            <StatusPill :label="row.state.toUpperCase()" :tone="row.state" />
+          </template></el-table-column>
+        <el-table-column label="到期时间"><template #default="{ row }">{{ new
+          Date(row.expires_at_ms).toLocaleString('zh-CN') }}</template></el-table-column>
       </el-table>
     </GlassPanel>
   </div>

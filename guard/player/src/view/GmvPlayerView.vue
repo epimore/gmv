@@ -1,6 +1,6 @@
 <template>
   <section ref="playerRef" class="gmv-player" :class="['is-' + viewState, { 'controls-hidden': !controlsVisible }]">
-    <video ref="videoRef" class="gmv-video" playsinline muted></video>
+    <video ref="videoRef" class="gmv-video" playsinline muted :poster="poster || undefined"></video>
 
     <div class="gmv-layer osd-layer">
       <span
@@ -114,6 +114,7 @@ const props = withDefaults(
     title?: string;
     status?: GmvDeviceStatus;
     viewers?: number;
+    poster?: string;
     osd?: GmvOsdItem[];
     aiBoxes?: GmvAiBox[];
     capabilities?: GmvViewCapabilities;

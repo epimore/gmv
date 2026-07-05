@@ -84,8 +84,9 @@ impl MqttCommandExecutor {
             }
             CommandAction::Ptz => {
                 let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                let (ptz_command, speed) = ptz_control(&command.payload)?;
                 self.control
-                    .ptz(&command.target, &channel_id)
+                    .ptz(&command.target, &channel_id, ptz_command, speed)
                     .await
                     .map(|_| ())
             }
@@ -141,10 +142,65 @@ fn device_stream_options(payload: &Value) -> DeviceStreamOptions {
     }
 }
 
+fn ptz_control(payload: &Value) -> GuardResult<(&'static str, u32)> {
+    let left_right = required_payload_u32(payload, "leftRight")?;
+    let up_down = required_payload_u32(payload, "upDown")?;
+    let in_out = required_payload_u32(payload, "inOut")?;
+    let horizon_speed = required_payload_u32(payload, "horizonSpeed")?;
+    let vertical_speed = required_payload_u32(payload, "verticalSpeed")?;
+    let zoom_speed = required_payload_u32(payload, "zoomSpeed")?;
+    let command = match (left_right, up_down, in_out) {
+        (0, 0, 0) => "stop",
+        (1, 1, 0) => "left_up",
+        (2, 1, 0) => "right_up",
+        (1, 2, 0) => "left_down",
+        (2, 2, 0) => "right_down",
+        (1, 0, 0) => "left",
+        (2, 0, 0) => "right",
+        (0, 1, 0) => "up",
+        (0, 2, 0) => "down",
+        (0, 0, 1) => "zoom_out",
+        (0, 0, 2) => "zoom_in",
+        _ => {
+            return Err(GuardError::InvalidConfig(
+                "MQTT command payload ptz control values are invalid".to_string(),
+            ));
+        }
+    };
+    let speed = if command == "stop" {
+        1
+    } else if in_out > 0 && zoom_speed > 0 {
+        zoom_speed
+    } else {
+        let mut speed = 0;
+        if left_right > 0 {
+            speed = speed.max(horizon_speed);
+        }
+        if up_down > 0 {
+            speed = speed.max(vertical_speed);
+        }
+        if speed == 0 {
+            return Err(GuardError::InvalidConfig(
+                "MQTT command payload ptz speed is required".to_string(),
+            ));
+        }
+        speed
+    };
+    Ok((command, speed))
+}
+
 fn payload_u32(payload: &Value, key: &str) -> u32 {
     payload
         .get(key)
         .and_then(|value| value.as_u64())
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or_default()
+}
+
+fn required_payload_u32(payload: &Value, key: &str) -> GuardResult<u32> {
+    payload
+        .get(key)
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| GuardError::InvalidConfig(format!("MQTT command payload.{key} is required")))
 }

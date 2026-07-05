@@ -395,7 +395,13 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                     .stream_id,
                 "talk-op-talk-rpc"
             );
-            assert_eq!(control.ptz("device-1", "channel-1").await.unwrap(), 1);
+            assert_eq!(
+                control
+                    .ptz("device-1", "channel-1", "left_up", 64)
+                    .await
+                    .unwrap(),
+                1
+            );
             let ai_task = control
                 .start_ai("op-ai-rpc", &stream.stream_id, "vehicle")
                 .await
@@ -473,7 +479,15 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                     command_id: "mqtt-ptz-1".to_string(),
                     action: CommandAction::Ptz,
                     target: "device-2".to_string(),
-                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                    payload: base::serde_json::json!({
+                        "channel_id": "channel-2",
+                        "leftRight": 1,
+                        "upDown": 1,
+                        "inOut": 0,
+                        "horizonSpeed": 64,
+                        "verticalSpeed": 64,
+                        "zoomSpeed": 0
+                    }),
                 })
                 .await
                 .unwrap();

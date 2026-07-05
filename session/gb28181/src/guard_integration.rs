@@ -1625,8 +1625,24 @@ fn ptz_model(request: &ControlPtzRequest) -> PtzControlModel {
         "right" => model.leftRight = 2,
         "up" => model.upDown = 1,
         "down" => model.upDown = 2,
-        "zoom_out" | "out" => model.inOut = 1,
-        "zoom_in" | "in" => model.inOut = 2,
+        "left_up" => {
+            model.leftRight = 1;
+            model.upDown = 1;
+        }
+        "right_up" => {
+            model.leftRight = 2;
+            model.upDown = 1;
+        }
+        "left_down" => {
+            model.leftRight = 1;
+            model.upDown = 2;
+        }
+        "right_down" => {
+            model.leftRight = 2;
+            model.upDown = 2;
+        }
+        "zoom_out" => model.inOut = 1,
+        "zoom_in" => model.inOut = 2,
         _ => {}
     }
     model

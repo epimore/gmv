@@ -178,6 +178,7 @@ export interface GmvPlayerViewProps {
   title?: string;
   status?: GmvDeviceStatus;
   viewers?: number;
+  poster?: string;
   osd?: GmvOsdItem[];
   aiBoxes?: GmvAiBox[];
   capabilities?: GmvViewCapabilities;

@@ -1142,8 +1142,77 @@ fn endpoint_with_playback_token(endpoint: &str, token: &str) -> String {
 
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
+struct PtzControlRequest {
+    #[serde(rename = "leftRight")]
+    left_right: u32,
+    #[serde(rename = "upDown")]
+    up_down: u32,
+    #[serde(rename = "inOut")]
+    in_out: u32,
+    #[serde(rename = "horizonSpeed")]
+    horizon_speed: u32,
+    #[serde(rename = "verticalSpeed")]
+    vertical_speed: u32,
+    #[serde(rename = "zoomSpeed")]
+    zoom_speed: u32,
+}
+
+impl PtzControlRequest {
+    fn command(&self) -> Result<&'static str, HttpError> {
+        match (self.left_right, self.up_down, self.in_out) {
+            (0, 0, 0) => Ok("stop"),
+            (1, 1, 0) => Ok("left_up"),
+            (2, 1, 0) => Ok("right_up"),
+            (1, 2, 0) => Ok("left_down"),
+            (2, 2, 0) => Ok("right_down"),
+            (1, 0, 0) => Ok("left"),
+            (2, 0, 0) => Ok("right"),
+            (0, 1, 0) => Ok("up"),
+            (0, 2, 0) => Ok("down"),
+            (0, 0, 1) => Ok("zoom_out"),
+            (0, 0, 2) => Ok("zoom_in"),
+            _ => Err(HttpError::bad_request("invalid ptz control values")),
+        }
+    }
+
+    fn speed(&self, command: &str) -> Result<u32, HttpError> {
+        if command == "stop" {
+            return Ok(1);
+        }
+        if self.in_out > 0 && self.zoom_speed > 0 {
+            return Ok(self.zoom_speed);
+        }
+        let mut speed = 0;
+        if self.left_right > 0 {
+            speed = speed.max(self.horizon_speed);
+        }
+        if self.up_down > 0 {
+            speed = speed.max(self.vertical_speed);
+        }
+        if speed == 0 {
+            return Err(HttpError::bad_request("ptz speed is required"));
+        }
+        Ok(speed)
+    }
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
 struct PtzRequest {
     channel_id: String,
+    #[serde(flatten)]
+    control: PtzControlRequest,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbPtzRequest {
+    #[serde(rename = "deviceId")]
+    device_id: String,
+    #[serde(rename = "channelId")]
+    channel_id: String,
+    #[serde(flatten)]
+    control: PtzControlRequest,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -1879,9 +1948,15 @@ async fn gb_ptz(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
+    Json(request): Json<GbPtzRequest>,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
+    if request.device_id != device_id || request.channel_id != channel_id {
+        return Err(HttpError::bad_request("ptz body ids must match path ids"));
+    }
+    let command = request.control.command()?;
+    let speed = request.control.speed(command)?;
     debug!(
-        "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}/ptz, req: device_id={device_id}, channel_id={channel_id}"
+        "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}/ptz, req: device_id={device_id}, channel_id={channel_id}, command={command}, speed={speed}"
     );
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let operation_id = format!("ptz-{}", http_now_ms()?);
@@ -1892,7 +1967,7 @@ async fn gb_ptz(
         Role::Operator,
     ))?;
     let ptz_result = BusinessControl::new(state.api.store())
-        .ptz(&device_id, &channel_id)
+        .ptz(&device_id, &channel_id, command, speed)
         .await;
     match ptz_result {
         Ok(count) => {
@@ -2080,8 +2155,10 @@ async fn ptz(
     Path(device_id): Path<String>,
     Json(request): Json<PtzRequest>,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
+    let command = request.control.command()?;
+    let speed = request.control.speed(command)?;
     debug!(
-        "/api/v2/devices/{{device_id}}/ptz, req: device_id={device_id}, channel_id={}",
+        "/api/v2/devices/{{device_id}}/ptz, req: device_id={device_id}, channel_id={}, command={command}, speed={speed}",
         request.channel_id
     );
     let session = require_write(&state.auth, &headers, Role::Operator)?;
@@ -2093,7 +2170,7 @@ async fn ptz(
         Role::Operator,
     ))?;
     let ptz_result = BusinessControl::new(state.api.store())
-        .ptz(&device_id, &request.channel_id)
+        .ptz(&device_id, &request.channel_id, command, speed)
         .await;
     match ptz_result {
         Ok(count) => {
