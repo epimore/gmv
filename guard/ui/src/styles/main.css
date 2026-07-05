@@ -226,6 +226,19 @@ button, input { font: inherit; }
 .title p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
 .top-actions { display:flex; align-items:center; gap: 10px; }
 .telemetry { display:flex; align-items:center; gap: 9px; padding: 9px 12px; border: 1px solid rgba(100, 203, 255, .18); border-radius: 999px; background: rgba(9, 20, 42, .65); color: var(--muted); font-size: 12px; }
+.user-menu-trigger { display:flex; align-items:center; gap: 10px; min-height: 40px; padding: 5px 12px 5px 6px; border: 1px solid rgba(100, 203, 255, .18); border-radius: 999px; background: rgba(9, 20, 42, .65); color: var(--text); cursor: pointer; }
+.user-menu-trigger:hover { border-color: rgba(89, 217, 255, .42); background: rgba(15, 34, 70, .78); }
+.user-avatar { display:grid; place-items:center; width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, rgba(52,216,255,.95), rgba(168,117,255,.85)); color: #03101f; font-size: 13px; font-weight: 900; }
+.user-meta { display:grid; gap: 1px; text-align:left; line-height:1.1; }
+.user-meta b { max-width: 120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size: 13px; }
+.user-meta small { color: var(--muted); font-size: 11px; }
+.user-dropdown-popper.el-popper { border-color: rgba(100, 203, 255, .22); background: rgba(7, 16, 34, .96); box-shadow: var(--shadow); }
+.user-dropdown-popper .el-popper__arrow::before { border-color: rgba(100, 203, 255, .22); background: rgba(7, 16, 34, .96); }
+.user-dropdown-popper .el-dropdown-menu { min-width: 138px; padding: 6px; border: 0; background: transparent; }
+.user-dropdown-popper .el-dropdown-menu__item { border-radius: 8px; color: var(--text); font-size: 13px; }
+.user-dropdown-popper .el-dropdown-menu__item:not(.is-disabled):focus,
+.user-dropdown-popper .el-dropdown-menu__item:not(.is-disabled):hover { background: rgba(52, 216, 255, .12); color: #ffffff; }
+.user-dropdown-popper .el-dropdown-menu__item--divided { border-top-color: rgba(100, 203, 255, .14); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 16px var(--green); }
 .dot.paused { background: var(--yellow); box-shadow: 0 0 16px var(--yellow); }
 .page-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }

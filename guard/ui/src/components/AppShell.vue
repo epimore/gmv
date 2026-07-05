@@ -27,8 +27,8 @@
         </template>
       </nav>
       <div class="sidebar-footer">
-        <b>REST polling</b>
-        <span>after_id {{ polling.afterId }} · {{ polling.paused ? '已暂停' : '运行中' }}</span>
+        <b>Session keepalive</b>
+        <span>5 分钟 · {{ keepalive.running ? '运行中' : '已停止' }} · {{ keepalive.lastSync }}</span>
       </div>
     </aside>
 
@@ -39,34 +39,69 @@
           <p>GMV 控制台 · API v2</p>
         </div>
         <div class="top-actions">
-          <div class="telemetry"><span class="dot" :class="{ paused: polling.paused }" />{{ polling.paused ? '轮询暂停' : 'REST 轮询' }}</div>
-          <div class="telemetry">after_id <span class="code">{{ polling.afterId }}</span></div>
-          <div class="telemetry">next cursor <span class="code">{{ polling.nextCursor }}</span></div>
-          <div class="telemetry">{{ displayName }} · {{ auth.session?.role }}</div>
-          <el-button @click="polling.toggle()">{{ polling.paused ? '恢复' : '暂停' }}</el-button>
-          <el-button type="primary" @click="advancePolling">拉取增量</el-button>
-          <el-button :loading="loggingOut" @click="signOut">退出登录</el-button>
+          <div class="telemetry"><span class="dot" :class="{ paused: !keepalive.running }" />SESSION 保活</div>
+          <div class="telemetry">interval <span class="code">5m</span></div>
+          <div class="telemetry">last <span class="code">{{ keepalive.lastSync }}</span></div>
+          <el-button type="primary" :loading="keepalive.refreshing" @click="refreshSession">立即保活</el-button>
+          <el-dropdown trigger="click" popper-class="user-dropdown-popper" @command="handleUserCommand">
+            <button class="user-menu-trigger" type="button">
+              <span class="user-avatar">{{ userInitial }}</span>
+              <span class="user-meta"><b>{{ displayName }}</b><small>{{ auth.session?.role }}</small></span>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="profile">个人资料</el-dropdown-item>
+                <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </header>
       <RouterView />
     </main>
+
+    <el-dialog v-model="profileDialogVisible" title="个人资料" width="460px">
+      <el-form label-position="top" class="profile-form">
+        <el-form-item label="用户名">
+          <el-input :model-value="auth.session?.username" disabled />
+        </el-form-item>
+        <el-form-item label="当前角色">
+          <el-input :model-value="auth.session?.role" disabled />
+        </el-form-item>
+        <el-form-item label="昵称">
+          <el-input v-model="profileForm.nickname" placeholder="请输入显示昵称" />
+        </el-form-item>
+        <el-form-item label="新密码">
+          <el-input v-model="profileForm.password" type="password" show-password placeholder="不修改请留空" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="profileDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存个人资料</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
+import { updateProfile } from '@/api/client';
 import { menuRoutes } from '@/router';
 import { useAuthStore } from '@/stores/auth';
-import { usePollingStore } from '@/stores/polling';
+import { useSessionKeepaliveStore } from '@/stores/sessionKeepalive';
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
-const polling = usePollingStore();
+const keepalive = useSessionKeepaliveStore();
 const loggingOut = ref(false);
-const displayName = computed(() => auth.session?.nickname || auth.session?.username || '');
+const profileDialogVisible = ref(false);
+const savingProfile = ref(false);
+const profileForm = reactive({ nickname: '', password: '' });
+const displayName = computed(() => auth.session?.nickname?.trim() || auth.session?.username || '');
+const userInitial = computed(() => displayName.value.slice(0, 1).toUpperCase() || 'U');
 const groups = computed(() => [...new Set(menuRoutes.map((item) => item.group))]);
 const grouped = computed(() =>
   menuRoutes.reduce(
@@ -79,22 +114,55 @@ const grouped = computed(() =>
 );
 
 onMounted(() => {
-  polling.start();
+  keepalive.start();
 });
 
 onUnmounted(() => {
-  polling.stop();
+  keepalive.stop();
 });
 
-async function advancePolling() {
-  try { await polling.advance(); }
-  catch (error) { ElMessage.error(error instanceof Error ? error.message : '事件拉取失败'); }
+async function refreshSession() {
+  try { await keepalive.refresh(); }
+  catch (error) { ElMessage.error(error instanceof Error ? error.message : 'SESSION 保活失败'); }
+}
+
+function openProfile() {
+  profileForm.nickname = auth.session?.nickname ?? '';
+  profileForm.password = '';
+  profileDialogVisible.value = true;
+}
+
+async function saveProfile() {
+  savingProfile.value = true;
+  try {
+    const updated = await updateProfile({
+      nickname: profileForm.nickname,
+      password: profileForm.password || undefined,
+    });
+    auth.updateNickname(updated.nickname);
+    profileForm.nickname = updated.nickname;
+    profileForm.password = '';
+    profileDialogVisible.value = false;
+    ElMessage.success('个人资料已保存');
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存失败');
+  } finally {
+    savingProfile.value = false;
+  }
+}
+
+async function handleUserCommand(command: string | number | object) {
+  if (command === 'profile') {
+    openProfile();
+    return;
+  }
+  if (command === 'logout') await signOut();
 }
 
 async function signOut() {
   loggingOut.value = true;
   try {
-    polling.stop();
+    keepalive.stop();
     await auth.signOut();
     await router.replace('/login');
   } finally {

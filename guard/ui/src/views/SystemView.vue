@@ -22,28 +22,7 @@
       </el-table>
     </GlassPanel>
 
-    <GlassPanel class="span-5" title="个人资料" subtitle="维护自己的昵称与密码">
-      <el-form label-position="top" class="profile-form">
-        <el-form-item label="用户名">
-          <el-input :model-value="session?.username" disabled />
-        </el-form-item>
-        <el-form-item label="当前角色">
-          <el-input :model-value="session ? roleLabel(session.role) : ''" disabled />
-        </el-form-item>
-        <el-form-item label="昵称">
-          <el-input v-model="profileForm.nickname" placeholder="请输入显示昵称" />
-        </el-form-item>
-        <el-form-item label="新密码">
-          <el-input v-model="profileForm.password" type="password" show-password placeholder="不修改请留空" />
-        </el-form-item>
-        <div class="toolbar">
-          <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存个人资料</el-button>
-          <span class="code">guard_user</span>
-        </div>
-      </el-form>
-    </GlassPanel>
-
-    <GlassPanel class="span-7" title="用户管理" subtitle="admin 创建用户、配置角色、重置密码">
+    <GlassPanel class="span-12" title="用户管理" subtitle="admin 创建用户、配置角色、重置密码">
       <div class="toolbar">
         <el-button type="primary" :disabled="!canManageUsers" @click="openCreateUser">创建用户</el-button>
         <el-button :loading="loadingUsers" @click="loadSecurityState">刷新</el-button>
@@ -124,7 +103,6 @@ import {
   listSystemJobs,
   listUsers,
   startSystemJob,
-  updateProfile,
   updateUser,
   type SystemJobInfo,
   type UserInfo,
@@ -142,15 +120,12 @@ type UserForm = {
 };
 
 const auth = useAuthStore();
-const session = computed(() => auth.session);
-const profileForm = reactive({ nickname: '', password: '' });
 const users = ref<UserInfo[]>([]);
 const systemJobs = ref<SystemJobInfo[]>([]);
 const liveStatus = ref('检查中');
 const readyStatus = ref('检查中');
 const tlsStatus = window.location.protocol === 'https:' ? '启用' : '本地 HTTP';
 const loadingUsers = ref(false);
-const savingProfile = ref(false);
 const savingUser = ref(false);
 const runningJob = ref(false);
 const userDialogVisible = ref(false);
@@ -194,7 +169,6 @@ async function loadSecurityState() {
   try {
     const current = await currentSession();
     auth.updateSession(current);
-    profileForm.nickname = current.nickname || current.username;
     users.value = current.role === 'admin' ? await listUsers() : [await currentProfile()];
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '加载用户信息失败');
@@ -203,25 +177,6 @@ async function loadSecurityState() {
   }
 }
 
-
-async function saveProfile() {
-  savingProfile.value = true;
-  try {
-    const updated = await updateProfile({
-      nickname: profileForm.nickname,
-      password: profileForm.password || undefined,
-    });
-    auth.updateNickname(updated.nickname);
-    profileForm.nickname = updated.nickname;
-    profileForm.password = '';
-    await loadSecurityState();
-    ElMessage.success('个人资料已保存');
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存失败');
-  } finally {
-    savingProfile.value = false;
-  }
-}
 
 function openCreateUser() {
   editingUser.value = null;
