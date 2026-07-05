@@ -1,27 +1,5 @@
 <template>
   <div class="page-grid">
-    <GlassPanel class="span-5" title="系统健康" subtitle="TLS 默认、NTP/chrony、存储后端">
-      <div class="kv">
-        <div class="kv-item"><span>展示品牌</span><b>GMV</b></div>
-        <div class="kv-item"><span>后端服务</span><b>guard</b></div>
-        <div class="kv-item"><span>存储/Outbox</span><b>{{ readyStatus }}</b></div>
-        <div class="kv-item"><span>TLS</span><b>{{ tlsStatus }}</b></div>
-        <div class="kv-item"><span>进程存活</span><b>{{ liveStatus }}</b></div>
-        <div class="kv-item"><span>API</span><b>v2</b></div>
-      </div>
-    </GlassPanel>
-
-    <GlassPanel class="span-7" title="系统任务" subtitle="备份、恢复、迁移、证书和审计">
-      <el-table :data="systemJobs" height="300">
-        <el-table-column prop="job_type" label="任务" width="150" />
-        <el-table-column label="状态" width="120">
-          <template #default="{ row }"><StatusPill :label="row.status.toUpperCase()" :tone="row.status === 'failed' ? 'danger' : row.status" /></template>
-        </el-table-column>
-        <el-table-column label="进度" width="180"><template #default="{ row }"><el-progress :percentage="row.progress_percent" /></template></el-table-column>
-        <el-table-column label="说明"><template #default="{ row }">{{ row.error || row.message || '-' }}</template></el-table-column>
-      </el-table>
-    </GlassPanel>
-
     <GlassPanel class="span-12" title="用户管理" subtitle="admin 创建用户、配置角色、重置密码">
       <div class="toolbar">
         <el-button type="primary" :disabled="!canManageUsers" @click="openCreateUser">创建用户</el-button>
@@ -45,16 +23,6 @@
           </template>
         </el-table-column>
       </el-table>
-    </GlassPanel>
-
-    <GlassPanel class="span-12" title="安全操作" subtitle="危险动作需二次确认与审计">
-      <div class="toolbar">
-        <el-button :disabled="!canManageUsers" :loading="runningJob" @click="runJob('backup')">开始备份任务</el-button>
-        <el-button :disabled="!canManageUsers" :loading="runningJob" @click="runJob('migrate')">迁移检查</el-button>
-        <el-button :disabled="!canManageUsers" :loading="runningJob" @click="runJob('reconcile')">执行对账</el-button>
-        <el-button type="warning" :disabled="!canManageUsers" :loading="runningJob" @click="runJob('restore')">创建恢复任务</el-button>
-      </div>
-      <OrbitChart :option="jobChart" />
     </GlassPanel>
 
     <el-dialog v-model="userDialogVisible" :title="editingUser ? '编辑用户' : '创建用户'" width="520px">
@@ -91,20 +59,13 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import GlassPanel from '@/components/GlassPanel.vue';
-import OrbitChart from '@/components/OrbitChart.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { lineOption } from '@/data/charts';
 import {
   createUser,
   currentProfile,
-  healthLive,
-  healthReady,
   currentSession,
-  listSystemJobs,
   listUsers,
-  startSystemJob,
   updateUser,
-  type SystemJobInfo,
   type UserInfo,
 } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
@@ -121,47 +82,15 @@ type UserForm = {
 
 const auth = useAuthStore();
 const users = ref<UserInfo[]>([]);
-const systemJobs = ref<SystemJobInfo[]>([]);
-const liveStatus = ref('检查中');
-const readyStatus = ref('检查中');
-const tlsStatus = window.location.protocol === 'https:' ? '启用' : '本地 HTTP';
 const loadingUsers = ref(false);
 const savingUser = ref(false);
-const runningJob = ref(false);
 const userDialogVisible = ref(false);
 const editingUser = ref<UserInfo | null>(null);
 const userForm = reactive<UserForm>({ username: '', nickname: '', role: 'viewer', password: '', enabled: true });
 const canManageUsers = computed(() => auth.isAdmin);
-const jobChart = computed(() => lineOption('任务进度', systemJobs.value.map((job) => job.progress_percent), systemJobs.value.map((job) => job.job_type), '#a875ff'));
 
 function roleLabel(role: Role) {
   return { viewer: 'viewer 只读', operator: 'operator 操作', admin: 'admin 管理' }[role];
-}
-
-async function loadSystemState() {
-  try {
-    const [live, ready, jobs] = await Promise.all([healthLive(), healthReady(), listSystemJobs()]);
-    liveStatus.value = live.status;
-    readyStatus.value = ready.status;
-    systemJobs.value = jobs.slice().reverse();
-  } catch (error) {
-    liveStatus.value = '异常';
-    readyStatus.value = '异常';
-    ElMessage.error(error instanceof Error ? error.message : '系统状态加载失败');
-  }
-}
-
-async function runJob(jobType: SystemJobInfo['job_type']) {
-  runningJob.value = true;
-  try {
-    await startSystemJob(jobType);
-    ElMessage.success('系统任务已创建');
-    await loadSystemState();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '任务创建失败');
-  } finally {
-    runningJob.value = false;
-  }
 }
 
 async function loadSecurityState() {
@@ -176,7 +105,6 @@ async function loadSecurityState() {
     loadingUsers.value = false;
   }
 }
-
 
 function openCreateUser() {
   editingUser.value = null;
@@ -233,5 +161,5 @@ async function saveUser() {
   }
 }
 
-onMounted(() => { void Promise.all([loadSecurityState(), loadSystemState()]); });
+onMounted(() => { void loadSecurityState(); });
 </script>

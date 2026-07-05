@@ -33,8 +33,7 @@ use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{AuthState, Role, UiSession, UserProfile, hash_password as hash_ui_password};
 use crate::core::{GuardError, HealthState, LeaseState, RouteState};
-use crate::job::{SystemJobRecord, SystemJobRequest, SystemJobStatus, SystemJobType};
-use crate::operation::{OperationRecord, OperationRequest, OperationStatus};
+use crate::operation::OperationRequest;
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
 use crate::store::model::{
@@ -78,10 +77,6 @@ pub fn router(state: HttpState) -> Router {
         .route("/nodes", get(nodes))
         .route("/leases", get(leases))
         .route("/events", get(events))
-        .route("/operations", get(operations).post(start_operation))
-        .route("/operations/{operation_id}", get(operation))
-        .route("/system/jobs", get(system_jobs).post(start_system_job))
-        .route("/system/jobs/{job_id}", get(system_job))
         .route("/users", get(list_users).post(create_user))
         .route("/users/{username}", post(update_user))
         .route("/integrations/outbox", get(outbox_records))
@@ -655,191 +650,6 @@ async fn events(
     }))
 }
 
-#[derive(Debug, base::serde::Serialize)]
-#[serde(crate = "base::serde")]
-struct OperationResponse {
-    operation_id: String,
-    kind: String,
-    requested_by: String,
-    required_role: &'static str,
-    status: &'static str,
-    progress_percent: u8,
-    message: String,
-    error: Option<String>,
-}
-
-impl From<OperationRecord> for OperationResponse {
-    fn from(record: OperationRecord) -> Self {
-        Self {
-            operation_id: record.operation_id,
-            kind: record.kind,
-            requested_by: record.requested_by,
-            required_role: role_name(record.required_role),
-            status: operation_status(record.status),
-            progress_percent: record.progress_percent,
-            message: record.message,
-            error: record.error.map(|error| error.to_string()),
-        }
-    }
-}
-
-#[derive(Debug, base::serde::Deserialize)]
-#[serde(crate = "base::serde")]
-struct StartOperationRequest {
-    operation_id: String,
-    kind: String,
-    dangerous: bool,
-    confirmation: Option<String>,
-}
-
-async fn start_operation(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Json(request): Json<StartOperationRequest>,
-) -> Result<(StatusCode, Json<OperationResponse>), HttpError> {
-    debug!("/api/v2/operations, req:{request:?}");
-    verify_origin(&state.auth, &headers)?;
-    let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Operator)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
-    verify_csrf(&state.auth, &session, &headers)?;
-    let record = state.api.start_operation(OperationRequest {
-        operation_id: request.operation_id,
-        kind: request.kind,
-        requested_by: session.username,
-        caller_role: session.role,
-        required_role: Role::Operator,
-        dangerous: request.dangerous,
-        confirmation: request.confirmation,
-    })?;
-    Ok((StatusCode::ACCEPTED, Json(record.into())))
-}
-
-async fn operations(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<OperationResponse>>, HttpError> {
-    debug!("/api/v2/operations, req:<empty>");
-    require_role(&state.auth, &headers, Role::Viewer)?;
-    Ok(Json(
-        state
-            .api
-            .list_operations()
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-    ))
-}
-
-async fn operation(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path(operation_id): Path<String>,
-) -> Result<Json<OperationResponse>, HttpError> {
-    debug!("/api/v2/operations/{{operation_id}}, req: operation_id={operation_id}");
-    let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Viewer)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
-    Ok(Json(state.api.get_operation(&operation_id)?.into()))
-}
-
-#[derive(Debug, base::serde::Serialize)]
-#[serde(crate = "base::serde")]
-struct SystemJobResponse {
-    job_id: String,
-    job_type: &'static str,
-    status: &'static str,
-    progress_percent: u8,
-    message: String,
-    error: Option<String>,
-}
-
-impl From<SystemJobRecord> for SystemJobResponse {
-    fn from(record: SystemJobRecord) -> Self {
-        Self {
-            job_id: record.job_id,
-            job_type: job_type(record.job_type),
-            status: job_status(record.status),
-            progress_percent: record.progress_percent,
-            message: record.message,
-            error: record.error.map(|error| error.to_string()),
-        }
-    }
-}
-
-#[derive(Debug, base::serde::Deserialize)]
-#[serde(crate = "base::serde")]
-struct StartSystemJobRequest {
-    job_id: String,
-    job_type: String,
-}
-
-async fn start_system_job(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Json(request): Json<StartSystemJobRequest>,
-) -> Result<(StatusCode, Json<SystemJobResponse>), HttpError> {
-    debug!("/api/v2/system/jobs, req:{request:?}");
-    verify_origin(&state.auth, &headers)?;
-    let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Admin)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
-    verify_csrf(&state.auth, &session, &headers)?;
-    let job_type = match request.job_type.as_str() {
-        "backup" => SystemJobType::Backup,
-        "restore" => SystemJobType::Restore,
-        "migrate" => SystemJobType::Migrate,
-        "reconcile" => SystemJobType::Reconcile,
-        _ => {
-            return Err(GuardError::InvalidConfig(
-                "job_type must be backup, restore, migrate, or reconcile".to_string(),
-            )
-            .into());
-        }
-    };
-    let record = state.api.start_system_job(SystemJobRequest {
-        job_id: request.job_id,
-        job_type,
-    })?;
-    Ok((StatusCode::ACCEPTED, Json(record.into())))
-}
-
-async fn system_jobs(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<SystemJobResponse>>, HttpError> {
-    debug!("/api/v2/system/jobs, req:<empty>");
-    require_role(&state.auth, &headers, Role::Viewer)?;
-    Ok(Json(
-        state
-            .api
-            .list_system_jobs()
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-    ))
-}
-
-async fn system_job(
-    State(state): State<HttpState>,
-    headers: HeaderMap,
-    Path(job_id): Path<String>,
-) -> Result<Json<SystemJobResponse>, HttpError> {
-    debug!("/api/v2/system/jobs/{{job_id}}, req: job_id={job_id}");
-    let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Viewer)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
-    Ok(Json(state.api.get_system_job(&job_id)?.into()))
-}
-
 fn authenticated(auth: &AuthState, headers: &HeaderMap) -> Result<UiSession, HttpError> {
     authenticated_with_token(auth, headers).map(|(_, session)| session)
 }
@@ -901,34 +711,6 @@ fn lease_state(state: crate::core::LeaseState) -> &'static str {
         crate::core::LeaseState::Failed => "failed",
         crate::core::LeaseState::Released => "released",
         crate::core::LeaseState::Expired => "expired",
-    }
-}
-
-fn operation_status(status: OperationStatus) -> &'static str {
-    match status {
-        OperationStatus::Accepted => "accepted",
-        OperationStatus::Running => "running",
-        OperationStatus::Succeeded => "succeeded",
-        OperationStatus::Failed => "failed",
-        OperationStatus::Cancelled => "cancelled",
-    }
-}
-
-fn job_type(job_type: SystemJobType) -> &'static str {
-    match job_type {
-        SystemJobType::Backup => "backup",
-        SystemJobType::Restore => "restore",
-        SystemJobType::Migrate => "migrate",
-        SystemJobType::Reconcile => "reconcile",
-    }
-}
-
-fn job_status(status: SystemJobStatus) -> &'static str {
-    match status {
-        SystemJobStatus::Pending => "pending",
-        SystemJobStatus::Running => "running",
-        SystemJobStatus::Succeeded => "succeeded",
-        SystemJobStatus::Failed => "failed",
     }
 }
 

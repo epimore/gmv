@@ -2,7 +2,6 @@ use guard::api::v2::paths;
 use guard::api::v2::{ApiV2, CursorQuery, EventQuery};
 use guard::auth::Role;
 use guard::core::GuardError;
-use guard::job::{SystemJobRequest, SystemJobService, SystemJobStatus, SystemJobType};
 use guard::operation::{OperationRequest, OperationService, OperationStatus};
 use guard::store::InMemoryGuardStore;
 use guard::store::model::EventRecord;
@@ -35,20 +34,16 @@ fn event_cursor_polling_returns_incremental_pages() {
             .unwrap();
     }
 
-    let page = ApiV2::new(
-        store,
-        OperationService::default(),
-        SystemJobService::default(),
-    )
-    .poll_events(EventQuery {
-        cursor: CursorQuery {
-            after_id: Some("0001".to_string()),
-            limit: 1,
-        },
-        topic_prefix: None,
-        min_priority: None,
-    })
-    .unwrap();
+    let page = ApiV2::new(store, OperationService::default())
+        .poll_events(EventQuery {
+            cursor: CursorQuery {
+                after_id: Some("0001".to_string()),
+                limit: 1,
+            },
+            topic_prefix: None,
+            min_priority: None,
+        })
+        .unwrap();
 
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].event_id, "0002");
@@ -57,11 +52,7 @@ fn event_cursor_polling_returns_incremental_pages() {
 
 #[test]
 fn event_cursor_polling_validates_page_size() {
-    let api = ApiV2::new(
-        InMemoryGuardStore::default(),
-        OperationService::default(),
-        SystemJobService::default(),
-    );
+    let api = ApiV2::new(InMemoryGuardStore::default(), OperationService::default());
     let err = api
         .poll_events(EventQuery {
             cursor: CursorQuery {
@@ -126,28 +117,4 @@ fn operation_requires_role_and_confirmation_for_dangerous_actions() {
         OperationStatus::Succeeded
     );
     assert!(operations.progress("op-1", 80, "late").is_err());
-}
-
-#[test]
-fn system_job_tracks_progress_and_terminal_state() {
-    let jobs = SystemJobService::default();
-    let started = jobs
-        .start(SystemJobRequest {
-            job_id: "job-1".to_string(),
-            job_type: SystemJobType::Backup,
-        })
-        .unwrap();
-    assert_eq!(started.status, SystemJobStatus::Pending);
-    assert_eq!(
-        jobs.progress("job-1", 10, "copying").unwrap().status,
-        SystemJobStatus::Running
-    );
-    assert_eq!(
-        jobs.succeed("job-1", "done").unwrap().status,
-        SystemJobStatus::Succeeded
-    );
-    assert!(
-        jobs.fail("job-1", GuardError::Conflict("late".to_string()))
-            .is_err()
-    );
 }

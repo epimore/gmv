@@ -8,7 +8,6 @@ use guard::api::v2::ApiV2;
 use guard::api::v2::http::{HttpState, router};
 use guard::app_config::GuardAppConfig;
 use guard::auth::{AuthState, SessionPolicy};
-use guard::job::SystemJobService;
 use guard::operation::OperationService;
 use guard::store::InMemoryGuardStore;
 use guard::store::persistent::PersistentStore;
@@ -153,11 +152,7 @@ guard:
             let users = persistent.load_users().await.unwrap();
             let memory = InMemoryGuardStore::default();
             let app = router(HttpState {
-                api: ApiV2::new(
-                    memory,
-                    OperationService::default(),
-                    SystemJobService::default(),
-                ),
+                api: ApiV2::new(memory, OperationService::default()),
                 auth: AuthState::new(
                     users,
                     SessionPolicy {
@@ -258,23 +253,6 @@ guard:
             );
             let (status, viewer_cookie, viewer_csrf) = login(&app, "ops", "viewer-secret").await;
             assert_eq!(status, StatusCode::OK);
-            let (status, _, _) = call(
-                &app,
-                write_request(
-                    "/api/v2/operations",
-                    &viewer_cookie,
-                    &viewer_csrf,
-                    json!({
-                        "operation_id": "viewer-op",
-                        "kind": "stream.stop",
-                        "dangerous": false,
-                        "confirmation": null
-                    }),
-                ),
-            )
-            .await;
-            assert_eq!(status, StatusCode::FORBIDDEN);
-
             let (status, _, profile) = call(
                 &app,
                 write_request(

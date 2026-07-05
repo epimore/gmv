@@ -13,7 +13,6 @@ use crate::api::v2::ApiV2;
 use crate::app_config::GuardAppConfig;
 use crate::auth::{AuthState, Secret, SessionPolicy};
 use crate::core::{GuardError, GuardResult};
-use crate::job::SystemJobService;
 use crate::mqttc::{
     CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy, MqttRuntime,
 };
@@ -102,7 +101,7 @@ pub async fn start_guard(
         crate::registry::RegistryService::with_policy(store.clone(), config.registry.to_policy());
     let api_store = store.clone();
     let operations = OperationService::default();
-    let api = ApiV2::new(store, operations.clone(), SystemJobService::default());
+    let api = ApiV2::new(store, operations.clone());
     let rpc_config = NodeRpcConfig {
         bind_addr: config.grpc.bind_addr,
         heartbeat_interval_ms: config.grpc.heartbeat_interval_ms,

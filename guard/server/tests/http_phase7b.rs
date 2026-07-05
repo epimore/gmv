@@ -12,7 +12,6 @@ use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
 use guard::core::{
     ConnectionState, HealthState, LeaseState, NodeIdentity, NodeKind, SchedulingState,
 };
-use guard::job::SystemJobService;
 use guard::operation::OperationService;
 use guard::outbox::OutboxRepository;
 use guard::store::InMemoryGuardStore;
@@ -54,11 +53,7 @@ fn test_app(store: InMemoryGuardStore) -> axum::Router {
         },
     );
     router(HttpState {
-        api: ApiV2::new(
-            store.clone(),
-            OperationService::default(),
-            SystemJobService::default(),
-        ),
+        api: ApiV2::new(store.clone(), OperationService::default()),
         auth,
         outbox: OutboxRepository::from(store),
         users: None,
@@ -169,7 +164,7 @@ fn nodes_expose_session_protocol_and_service_metadata() {
 }
 
 #[test]
-fn session_security_headers_csrf_and_operation_rbac() {
+fn session_security_headers_and_csrf() {
     run_async(async {
         let app = test_app(InMemoryGuardStore::default());
         let (status, headers, _) = request(
@@ -201,38 +196,6 @@ fn session_security_headers_csrf_and_operation_rbac() {
         assert!(renewed_cookie.contains("Max-Age=3600"));
         assert!(headers.contains_key(CONTENT_SECURITY_POLICY));
 
-        let operation = json!({
-            "operation_id": "op-1",
-            "kind": "node.takeover",
-            "dangerous": true,
-            "confirmation": "node.takeover"
-        });
-        let (status, _, _) = request(
-            &app,
-            Request::post("/api/v2/operations")
-                .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, &cookie)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(operation.to_string()))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-
-        let (status, _, body) = request(
-            &app,
-            Request::post("/api/v2/operations")
-                .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, &cookie)
-                .header("x-csrf-token", &csrf)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(operation.to_string()))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert_eq!(body["status"], "accepted");
-
         let (status, _, _) = request(
             &app,
             Request::post("/api/v2/auth/logout")
@@ -244,107 +207,6 @@ fn session_security_headers_csrf_and_operation_rbac() {
         )
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
-    });
-}
-
-#[test]
-fn viewer_cannot_start_operation_and_only_admin_starts_system_job() {
-    run_async(async {
-        let app = test_app(InMemoryGuardStore::default());
-        let (viewer_cookie, viewer_csrf) = login(&app, "viewer").await;
-        let (status, _, _) = request(
-            &app,
-            Request::post("/api/v2/operations")
-                .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, viewer_cookie)
-                .header("x-csrf-token", viewer_csrf)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "operation_id": "op-viewer",
-                        "kind": "stream.stop",
-                        "dangerous": false,
-                        "confirmation": null
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-
-        let (operator_cookie, operator_csrf) = login(&app, "operator").await;
-        let (status, _, _) = request(
-            &app,
-            Request::post("/api/v2/operations")
-                .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, &operator_cookie)
-                .header("x-csrf-token", &operator_csrf)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "operation_id": "op-operator",
-                        "kind": "scheduler.rebalance",
-                        "dangerous": false,
-                        "confirmation": null
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-
-        let job_body = json!({ "job_id": "job-1", "job_type": "backup" }).to_string();
-        let (status, _, _) = request(
-            &app,
-            Request::post("/api/v2/system/jobs")
-                .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, &operator_cookie)
-                .header("x-csrf-token", &operator_csrf)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(job_body.clone()))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-
-        let (admin_cookie, admin_csrf) = login(&app, "admin").await;
-        let (status, _, body) = request(
-            &app,
-            Request::post("/api/v2/system/jobs")
-                .header(ORIGIN, ORIGIN_VALUE)
-                .header(COOKIE, &admin_cookie)
-                .header("x-csrf-token", &admin_csrf)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(job_body))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert_eq!(body["job_type"], "backup");
-
-        let (status, _, operations) = request(
-            &app,
-            Request::get("/api/v2/operations")
-                .header(COOKIE, &admin_cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(operations[0]["operation_id"], "op-operator");
-
-        let (status, _, jobs) = request(
-            &app,
-            Request::get("/api/v2/system/jobs")
-                .header(COOKIE, admin_cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(jobs[0]["job_id"], "job-1");
     });
 }
 

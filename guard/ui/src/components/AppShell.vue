@@ -1,60 +1,58 @@
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'is-sidebar-collapsed': menuCollapsed }">
     <div class="console-texture" />
     <aside class="sidebar">
       <RouterLink class="brand" to="/dashboard" aria-label="GMV 总览">
         <div class="brand-mark">G</div>
-        <div>
+        <div class="brand-copy">
           <div class="brand-title">GMV</div>
           <div class="brand-sub">Control Plane</div>
         </div>
       </RouterLink>
-      <nav>
-        <template v-for="group in groups" :key="group">
-          <div class="nav-group">{{ group }}</div>
-          <template v-for="item in grouped[group]" :key="item.path">
-            <RouterLink class="nav-item" :class="{ 'has-children': item.children?.length, 'is-section-active': item.children?.some((child) => route.path.startsWith(child.path)) }" :to="item.path">
-              <span class="nav-icon">{{ item.icon }}</span>
-              <span class="nav-label">{{ item.label }}</span>
-            </RouterLink>
-            <div v-if="item.children?.length" class="nav-children">
-              <RouterLink v-for="child in item.children" :key="child.path" class="nav-item nav-child" :to="child.path">
-                <span class="nav-icon">{{ child.icon }}</span>
-                <span class="nav-label">{{ child.label }}</span>
-              </RouterLink>
-            </div>
-          </template>
+      <el-menu class="sidebar-menu" :collapse="menuCollapsed" :default-active="route.path" :default-openeds="openMenus" router>
+        <template v-for="item in menuRoutes" :key="item.path">
+          <el-sub-menu v-if="item.children?.length" :index="item.path">
+            <template #title>
+              <el-icon><component :is="menuIcon(item.icon)" /></el-icon>
+              <span>{{ item.label }}</span>
+            </template>
+            <el-menu-item v-for="child in item.children" :key="child.path" :index="child.path">
+              <el-icon><component :is="menuIcon(child.icon)" /></el-icon>
+              <span>{{ child.label }}</span>
+            </el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else :index="item.path">
+            <el-icon><component :is="menuIcon(item.icon)" /></el-icon>
+            <span>{{ item.label }}</span>
+          </el-menu-item>
         </template>
-      </nav>
-      <div class="sidebar-footer">
-        <b>Session keepalive</b>
-        <span>5 分钟 · {{ keepalive.running ? '运行中' : '已停止' }} · {{ keepalive.lastSync }}</span>
-      </div>
+      </el-menu>
     </aside>
 
     <main class="main">
+      <header class="main-header">
+        <div class="main-header-left">
+          <el-button class="layout-collapse" :icon="menuCollapsed ? Expand : Fold" text @click="menuCollapsed = !menuCollapsed" />
+          <span class="welcome-text">欢迎进入 GMV 音视频AI平台</span>
+        </div>
+        <el-dropdown trigger="click" popper-class="user-dropdown-popper" @command="handleUserCommand">
+          <button class="user-menu-trigger" type="button">
+            <span class="user-avatar">{{ userInitial }}</span>
+            <span class="user-meta"><b>{{ displayName }}</b><small>{{ auth.session?.role }}</small></span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="profile">个人资料</el-dropdown-item>
+              <el-dropdown-item command="keepalive">会话保活</el-dropdown-item>
+              <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </header>
       <header class="topbar">
         <div class="title">
           <h1>{{ route.meta.title }}</h1>
           <p>GMV 控制台 · API v2</p>
-        </div>
-        <div class="top-actions">
-          <div class="telemetry"><span class="dot" :class="{ paused: !keepalive.running }" />SESSION 保活</div>
-          <div class="telemetry">interval <span class="code">5m</span></div>
-          <div class="telemetry">last <span class="code">{{ keepalive.lastSync }}</span></div>
-          <el-button type="primary" :loading="keepalive.refreshing" @click="refreshSession">立即保活</el-button>
-          <el-dropdown trigger="click" popper-class="user-dropdown-popper" @command="handleUserCommand">
-            <button class="user-menu-trigger" type="button">
-              <span class="user-avatar">{{ userInitial }}</span>
-              <span class="user-meta"><b>{{ displayName }}</b><small>{{ auth.session?.role }}</small></span>
-            </button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="profile">个人资料</el-dropdown-item>
-                <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
         </div>
       </header>
       <RouterView />
@@ -80,12 +78,34 @@
         <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存个人资料</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="keepaliveDialogVisible" title="会话保活" width="480px">
+      <div class="keepalive-summary">
+        <div class="kv-item"><span>保活状态</span><b>{{ keepalive.statusLabel }}</b></div>
+        <div class="kv-item"><span>是否启用</span><b>{{ keepalive.enabled ? '启用' : '关闭' }}</b></div>
+        <div class="kv-item"><span>心跳周期</span><b>{{ keepalive.intervalMinutes }} 分钟</b></div>
+        <div class="kv-item"><span>上次保活</span><b class="code">{{ keepalive.lastSync }}</b></div>
+      </div>
+      <el-form label-position="top" class="profile-form keepalive-form">
+        <el-form-item label="启用会话保活">
+          <el-switch v-model="keepaliveForm.enabled" active-text="启用" inactive-text="关闭" />
+        </el-form-item>
+        <el-form-item label="保活心跳周期（分钟，仅当前会话）">
+          <el-input-number v-model="keepaliveForm.intervalMinutes" :min="1" :max="60" :step="1" controls-position="right" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="keepaliveDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveKeepaliveSettings">保存设置</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
+import { Bell, CircleCheck, Connection, Cpu, DataAnalysis, Expand, Fold, HomeFilled, Link, Menu as MenuIcon, Monitor, Platform, Setting, User, VideoCamera } from '@element-plus/icons-vue';
 import { useRoute, useRouter } from 'vue-router';
 import { updateProfile } from '@/api/client';
 import { menuRoutes } from '@/router';
@@ -98,20 +118,19 @@ const auth = useAuthStore();
 const keepalive = useSessionKeepaliveStore();
 const loggingOut = ref(false);
 const profileDialogVisible = ref(false);
+const keepaliveDialogVisible = ref(false);
 const savingProfile = ref(false);
 const profileForm = reactive({ nickname: '', password: '' });
+const keepaliveForm = reactive({ enabled: true, intervalMinutes: 5 });
+const menuCollapsed = ref(false);
 const displayName = computed(() => auth.session?.nickname?.trim() || auth.session?.username || '');
 const userInitial = computed(() => displayName.value.slice(0, 1).toUpperCase() || 'U');
-const groups = computed(() => [...new Set(menuRoutes.map((item) => item.group))]);
-const grouped = computed(() =>
-  menuRoutes.reduce(
-    (acc, item) => {
-      (acc[item.group] ||= []).push(item);
-      return acc;
-    },
-    {} as Record<string, Array<(typeof menuRoutes)[number]>>,
-  ),
-);
+const openMenus = computed(() => menuRoutes.filter((item) => item.children?.some((child) => route.path.startsWith(child.path))).map((item) => item.path));
+const menuIcons = { Bell, CircleCheck, Connection, Cpu, DataAnalysis, HomeFilled, Link, Menu: MenuIcon, Monitor, Platform, Setting, User, VideoCamera };
+
+function menuIcon(name: string) {
+  return menuIcons[name as keyof typeof menuIcons] ?? MenuIcon;
+}
 
 onMounted(() => {
   keepalive.start();
@@ -121,15 +140,23 @@ onUnmounted(() => {
   keepalive.stop();
 });
 
-async function refreshSession() {
-  try { await keepalive.refresh(); }
-  catch (error) { ElMessage.error(error instanceof Error ? error.message : 'SESSION 保活失败'); }
-}
-
 function openProfile() {
   profileForm.nickname = auth.session?.nickname ?? '';
   profileForm.password = '';
   profileDialogVisible.value = true;
+}
+
+function openKeepaliveSettings() {
+  keepaliveForm.enabled = keepalive.enabled;
+  keepaliveForm.intervalMinutes = keepalive.intervalMinutes;
+  keepaliveDialogVisible.value = true;
+}
+
+function saveKeepaliveSettings() {
+  keepalive.configure(keepaliveForm.enabled, keepaliveForm.intervalMinutes);
+  keepaliveForm.intervalMinutes = keepalive.intervalMinutes;
+  keepaliveDialogVisible.value = false;
+  ElMessage.success('会话保活设置已更新');
 }
 
 async function saveProfile() {
@@ -154,6 +181,10 @@ async function saveProfile() {
 async function handleUserCommand(command: string | number | object) {
   if (command === 'profile') {
     openProfile();
+    return;
+  }
+  if (command === 'keepalive') {
+    openKeepaliveSettings();
     return;
   }
   if (command === 'logout') await signOut();

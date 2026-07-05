@@ -10,14 +10,11 @@ export interface NodeInfo { node_id: string; instance_id: string; kind: string; 
 export interface EventItem { event_id: string; topic: string; priority: number; payload: string }
 export interface EventPage { items: EventItem[]; next_after_id: string | null }
 export interface LeaseInfo { lease_id: string; route_id: string; resource_id: string; node_id: string; instance_id: string; state: 'allocated' | 'confirmed' | 'failed' | 'released' | 'expired'; expires_at_ms: number }
-export interface OperationInfo { operation_id: string; kind: string; requested_by: string; required_role: Role; status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'cancelled'; progress_percent: number; message: string; error: string | null }
-export interface SystemJobInfo { job_id: string; job_type: 'backup' | 'restore' | 'migrate' | 'reconcile'; status: 'pending' | 'running' | 'succeeded' | 'failed'; progress_percent: number; message: string; error: string | null }
 export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
 export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
 export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; state: 'running' | 'stopped' | 'failed' }
 export interface AiTaskSummary { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
 export interface RuntimeStatus { guard_available: boolean; streams: number; running_streams: number; ai_tasks: number; running_ai_tasks: number; ptz_commands: number }
-export interface HealthInfo { status: string }
 export interface CreateUserPayload { username: string; role: Role; nickname: string; password: string; enabled: boolean }
 export interface UpdateUserPayload { role: Role; nickname?: string; password?: string | null; enabled: boolean }
 export interface UpdateProfilePayload { nickname?: string; password?: string }
@@ -56,10 +53,6 @@ export const fetchDashboard = () => request<DashboardInfo>('/dashboard');
 export const listNodes = () => request<NodeInfo[]>('/nodes');
 export function pollEvents(afterId?: string, limit = 100, minPriority?: number, topicPrefix?: string): Promise<EventPage> { const query = new URLSearchParams({ limit: String(limit) }); if (afterId) query.set('after_id', afterId); if (minPriority) query.set('min_priority', String(minPriority)); if (topicPrefix) query.set('topic_prefix', topicPrefix); return request<EventPage>('/events?' + query); }
 export const listLeases = () => request<LeaseInfo[]>('/leases');
-export const listOperations = () => request<OperationInfo[]>('/operations');
-export const startOperation = (kind: string, dangerous = false) => request<OperationInfo>('/operations', { method: 'POST', body: JSON.stringify({ operation_id: 'ui-' + kind.replaceAll('.', '-') + '-' + Date.now(), kind, dangerous, confirmation: dangerous ? kind : null }) });
-export const listSystemJobs = () => request<SystemJobInfo[]>('/system/jobs');
-export const startSystemJob = (jobType: SystemJobInfo['job_type']) => request<SystemJobInfo>('/system/jobs', { method: 'POST', body: JSON.stringify({ job_id: 'ui-' + jobType + '-' + Date.now(), job_type: jobType }) });
 export const listOutbox = (limit = 100) => request<OutboxInfo[]>('/integrations/outbox?limit=' + limit);
 export const retryOutbox = (outboxId: string) => request<OutboxInfo>('/integrations/outbox/' + encodeURIComponent(outboxId) + '/retry', { method: 'POST', body: '{}' });
 export const listDevices = () => request<DeviceSummary[]>('/devices');
@@ -71,8 +64,6 @@ export const listAiTasks = () => request<AiTaskSummary[]>('/ai/tasks');
 export const startAiTask = (streamId: string, model: string, requestId: string) => request<AiTaskSummary>('/ai/tasks', { method: 'POST', body: JSON.stringify({ stream_id: streamId, model, request_id: requestId }) });
 export const cancelAiTask = (taskId: string) => request<AiTaskSummary>('/ai/tasks/' + taskId + '/cancel', { method: 'POST', body: '{}' });
 export const runtimeStatus = () => request<RuntimeStatus>('/runtime/status');
-export const healthLive = () => requestAt<HealthInfo>('/health/live');
-export const healthReady = () => requestAt<HealthInfo>('/health/ready');
 
 
 export interface GbSessionConfigInfo { domain: string; domain_id: string; wan_ip: string; wan_port: number }

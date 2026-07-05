@@ -7,30 +7,35 @@ export interface MenuRouteItem {
   path: string;
   label: string;
   icon: string;
-  group: string;
-  children?: Array<Omit<MenuRouteItem, 'group' | 'children'>>;
+  children?: Array<Omit<MenuRouteItem, 'children'>>;
 }
 
 export const menuRoutes: MenuRouteItem[] = [
-  { path: '/dashboard', label: '总览', icon: '总', group: '控制台' },
+  { path: '/dashboard', label: '总览', icon: 'HomeFilled' },
   {
     path: '/gb28181/register',
     label: 'GB28181',
-    icon: '国',
-    group: '设备',
+    icon: 'Platform',
     children: [
-      { path: '/gb28181/register', label: '注册管理', icon: '注' },
-      { path: '/gb28181/monitor', label: '监控信息', icon: '监' },
+      { path: '/gb28181/register', label: '注册管理', icon: 'CircleCheck' },
+      { path: '/gb28181/monitor', label: '监控信息', icon: 'Monitor' },
     ],
   },
-  { path: '/onvif', label: 'ONVIF', icon: '网', group: '设备' },
-  { path: '/streams', label: '流媒体', icon: '流', group: '业务' },
-  { path: '/ai', label: '智能分析', icon: '智', group: '业务' },
-  { path: '/nodes', label: '节点', icon: '节', group: '资源' },
-  { path: '/allocations', label: '调度与租约', icon: '调', group: '治理' },
-  { path: '/events', label: '事件中心', icon: '事', group: '治理' },
-  { path: '/integrations', label: '集成', icon: '集', group: '外部' },
-  { path: '/system', label: '系统', icon: '系', group: '外部' },
+  { path: '/onvif', label: 'ONVIF', icon: 'Connection' },
+  { path: '/streams', label: '流媒体', icon: 'VideoCamera' },
+  { path: '/ai', label: '智能分析', icon: 'DataAnalysis' },
+  { path: '/nodes', label: '节点', icon: 'Cpu' },
+  { path: '/events', label: '事件中心', icon: 'Bell' },
+  { path: '/integrations', label: '集成', icon: 'Link' },
+  {
+    path: '/system/health',
+    label: '系统',
+    icon: 'Setting',
+    children: [
+      { path: '/system/health', label: '系统健康', icon: 'Monitor' },
+      { path: '/system/users', label: '用户管理', icon: 'User' },
+    ],
+  },
 ];
 
 const routes: RouteRecordRaw[] = [
@@ -50,10 +55,11 @@ const routes: RouteRecordRaw[] = [
       { path: 'streams', component: () => import('@/views/StreamsView.vue'), meta: { title: '流媒体' } },
       { path: 'ai', component: () => import('@/views/AiView.vue'), meta: { title: '智能分析' } },
       { path: 'nodes', component: () => import('@/views/NodesView.vue'), meta: { title: '节点' } },
-      { path: 'allocations', component: () => import('@/views/AllocationsView.vue'), meta: { title: '调度与租约' } },
       { path: 'events', component: () => import('@/views/EventsView.vue'), meta: { title: '事件中心' } },
       { path: 'integrations', component: () => import('@/views/IntegrationsView.vue'), meta: { title: '集成' } },
-      { path: 'system', component: () => import('@/views/SystemView.vue'), meta: { title: '系统' } },
+      { path: 'system', redirect: '/system/health' },
+      { path: 'system/health', component: () => import('@/views/SystemHealthView.vue'), meta: { title: '系统健康' } },
+      { path: 'system/users', component: () => import('@/views/UserManagementView.vue'), meta: { title: '用户管理' } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

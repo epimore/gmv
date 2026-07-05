@@ -9,7 +9,6 @@ use base::serde_json::{Value, json};
 use guard::api::v2::ApiV2;
 use guard::api::v2::http::{HttpState, router};
 use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
-use guard::job::SystemJobService;
 use guard::operation::OperationService;
 use guard::outbox::OutboxRepository;
 use guard::store::InMemoryGuardStore;
@@ -47,11 +46,7 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
     );
     (
         router(HttpState {
-            api: ApiV2::new(
-                store.clone(),
-                OperationService::default(),
-                SystemJobService::default(),
-            ),
+            api: ApiV2::new(store.clone(), OperationService::default()),
             auth,
             outbox: OutboxRepository::from(store.clone()),
             users: None,

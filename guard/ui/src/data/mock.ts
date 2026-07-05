@@ -53,13 +53,6 @@ export const integrations = [
   { channel: 'Dead Letter', target: 'cmd_9a11', state: 'DEAD', retry: 8, security: 'TTL expired' },
 ];
 
-export const systemJobs = [
-  { job: 'SQLite 在线备份', state: 'READY', progress: 100, detail: 'guard.db -> backup-20260625.db' },
-  { job: 'MySQL 迁移检查', state: 'WARNING', progress: 68, detail: '等待人工确认' },
-  { job: 'TLS 证书轮转', state: 'READY', progress: 100, detail: '有效期 89 天' },
-  { job: 'NTP / chrony 校验', state: 'READY', progress: 100, detail: '最大偏差 18ms' },
-];
-
 export const lineOption = (name: string, color = '#34d8ff') => ({
   backgroundColor: 'transparent',
   grid: { left: 28, right: 18, top: 24, bottom: 26 },
