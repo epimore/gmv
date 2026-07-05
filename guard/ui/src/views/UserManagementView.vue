@@ -10,16 +10,20 @@
       <el-table :data="users" height="300" style="margin-top: 12px;">
         <el-table-column prop="username" label="用户名" min-width="130" />
         <el-table-column prop="nickname" label="昵称" min-width="140" />
-        <el-table-column label="角色" width="120">
-          <template #default="{ row }"><StatusPill :label="roleLabel(row.role)" :tone="row.role === 'admin' ? 'danger' : row.role === 'operator' ? 'info' : 'ready'" /></template>
+        <el-table-column label="角色" width="220">
+          <template #default="{ row }">
+            <StatusPill :label="roleLabel(row.role)"
+              :tone="row.role === 'admin' ? 'danger' : row.role === 'operator' ? 'info' : 'ready'" />
+          </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
-          <template #default="{ row }"><StatusPill :label="row.enabled ? '启用' : '停用'" :tone="row.enabled ? 'ready' : 'danger'" /></template>
+          <template #default="{ row }">
+            <StatusPill :label="row.enabled ? '启用' : '停用'" :tone="row.enabled ? 'ready' : 'danger'" />
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
             <el-button size="small" :disabled="!canManageUsers" @click="openEditUser(row)">编辑</el-button>
-            <el-button size="small" type="warning" :disabled="!canManageUsers" @click="resetUserPassword(row)">重置密码</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -41,7 +45,8 @@
           </el-select>
         </el-form-item>
         <el-form-item :label="editingUser ? '重置密码' : '初始密码'">
-          <el-input v-model="userForm.password" type="password" show-password :placeholder="editingUser ? '不重置请留空' : '请输入初始密码'" />
+          <el-input v-model="userForm.password" type="password" show-password
+            :placeholder="editingUser ? '不重置请留空' : '请输入初始密码'" />
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="userForm.enabled" active-text="启用" inactive-text="停用" />
@@ -124,10 +129,6 @@ function openEditUser(user: UserInfo) {
   userDialogVisible.value = true;
 }
 
-async function resetUserPassword(user: UserInfo) {
-  openEditUser(user);
-  await ElMessageBox.alert('请在弹窗中输入新密码并保存。', '重置用户密码');
-}
 
 async function saveUser() {
   if (!userForm.username.trim()) {
