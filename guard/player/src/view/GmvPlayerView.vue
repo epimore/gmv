@@ -1,5 +1,5 @@
 <template>
-  <section class="gmv-player" :class="['is-' + viewState, { 'controls-hidden': !controlsVisible }]">
+  <section ref="playerRef" class="gmv-player" :class="['is-' + viewState, { 'controls-hidden': !controlsVisible }]">
     <video ref="videoRef" class="gmv-video" playsinline muted></video>
 
     <div class="gmv-layer osd-layer">
@@ -66,38 +66,37 @@
       </div>
     </aside>
 
-    <footer class="control-bar">
+    <footer v-if="controlsVisible" class="control-bar">
       <button type="button" @click="togglePlay">{{ viewState === 'playing' ? '暂停' : '播放' }}</button>
-      <template v-if="controlsVisible">
-        <button type="button" :disabled="capabilities.audio === false" @click="toggleAudio">{{ audioEnabled ? '静音' : '声音' }}</button>
-        <button type="button" :disabled="capabilities.snapshot === false" @click="emit('snapshot', basePayload)">抓拍</button>
-        <button type="button" :disabled="capabilities.record === false" @click="toggleRecord">{{ recording ? '停录像' : '录像' }}</button>
-        <button type="button" :disabled="capabilities.talk === false" @click="toggleTalk">{{ talking ? '停对讲' : '对讲' }}</button>
+      <button type="button" :disabled="capabilities.audio === false" @click="toggleAudio">{{ audioEnabled ? '静音' : '声音' }}</button>
+      <button type="button" :disabled="capabilities.snapshot === false" @click="emit('snapshot', basePayload)">截图</button>
+      <button type="button" :disabled="!fullscreenSupported" @click="toggleFullscreen">{{ isFullscreen ? '退出全屏' : '全屏' }}</button>
+      <button type="button" :disabled="capabilities.record === false" @click="toggleRecord">{{ recording ? '停录像' : '录像' }}</button>
+      <button type="button" :disabled="capabilities.talk === false" @click="toggleTalk">{{ talking ? '停对讲' : '对讲' }}</button>
 
-        <select :value="selectedSourceUrl" :disabled="capabilities.streamSwitch === false" @change="switchSource">
-          <option v-for="source in sources" :key="source.url" :value="source.url">
-            {{ source.label || source.protocol + ':' + (source.codec || 'auto') }}
-          </option>
-        </select>
+      <select :value="selectedSourceUrl" :disabled="capabilities.streamSwitch === false" @change="switchSource">
+        <option v-for="source in sources" :key="source.url" :value="source.url">
+          {{ source.label || source.protocol + ':' + (source.codec || 'auto') }}
+        </option>
+      </select>
 
-        <select v-model="playbackRate" :disabled="capabilities.playback === false" @change="setPlaybackRate">
-          <option :value="0.5">0.5x</option>
-          <option :value="1">1x</option>
-          <option :value="2">2x</option>
-          <option :value="4">4x</option>
-        </select>
+      <select v-model="playbackRate" :disabled="capabilities.playback === false" @change="setPlaybackRate">
+        <option :value="0.5">0.5x</option>
+        <option :value="1">1x</option>
+        <option :value="2">2x</option>
+        <option :value="4">4x</option>
+      </select>
 
-        <label class="timeline" :class="{ disabled: capabilities.playback === false }">
-          <span>回放</span>
-          <input v-model.number="seekMs" type="range" min="0" max="86400000" step="1000" :disabled="capabilities.playback === false" @change="emit('playbackSeek', { timeMs: seekMs })" />
-        </label>
+      <label class="timeline" :class="{ disabled: capabilities.playback === false }">
+        <span>回放</span>
+        <input v-model.number="seekMs" type="range" min="0" max="86400000" step="1000" :disabled="capabilities.playback === false" @change="emit('playbackSeek', { timeMs: seekMs })" />
+      </label>
 
-        <div class="preset-box" v-if="capabilities.presets !== false">
-          <input v-model="presetId" placeholder="预置点" />
-          <button type="button" @click="emit('presetCall', { presetId })">调用</button>
-          <button type="button" @click="emit('presetSet', { presetId })">设置</button>
-        </div>
-      </template>
+      <div class="preset-box" v-if="capabilities.presets !== false">
+        <input v-model="presetId" placeholder="预置点" />
+        <button type="button" @click="emit('presetCall', { presetId })">调用</button>
+        <button type="button" @click="emit('presetSet', { presetId })">设置</button>
+      </div>
     </footer>
   </section>
 </template>
@@ -143,10 +142,12 @@ const emit = defineEmits<{
   reconnect: [];
 }>();
 
+const playerRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const player = ref<GmvPlayerCore>();
 const viewState = ref<GmvDeviceStatus>('idle');
 const lastError = ref('');
+const isFullscreen = ref(false);
 const recording = ref(false);
 const talking = ref(false);
 const audioEnabled = ref(false);
@@ -158,6 +159,7 @@ const selectedSourceUrl = ref('');
 const stops: Array<() => void> = [];
 
 const basePayload = computed(() => ({ deviceId: props.deviceId, channelId: props.channelId }));
+const fullscreenSupported = computed(() => typeof document !== 'undefined' && !!document.fullscreenEnabled);
 const statusLabel = computed(() => {
   if (viewState.value === 'playing') return '播放中';
   if (viewState.value === 'reconnecting') return '重连中';
@@ -168,10 +170,12 @@ const statusLabel = computed(() => {
 });
 
 onMounted(() => {
+  document.addEventListener('fullscreenchange', updateFullscreenState);
   void mountPlayer();
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', updateFullscreenState);
   destroyPlayer();
 });
 
@@ -266,6 +270,22 @@ function switchSource(event: Event) {
 
 function setPlaybackRate() {
   if (videoRef.value) videoRef.value.playbackRate = Number(playbackRate.value);
+}
+
+async function toggleFullscreen() {
+  const element = playerRef.value;
+  if (!element || !fullscreenSupported.value) return;
+
+  if (document.fullscreenElement === element) {
+    await document.exitFullscreen();
+    return;
+  }
+
+  await element.requestFullscreen();
+}
+
+function updateFullscreenState() {
+  isFullscreen.value = !!playerRef.value && document.fullscreenElement === playerRef.value;
 }
 
 function reconnect() {

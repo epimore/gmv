@@ -10,18 +10,22 @@
     </header>
 
     <div class="grid-body" :style="{ gridTemplateColumns: 'repeat(' + columnCount + ', minmax(0, 1fr))' }">
-      <button
+      <div
         v-for="(_, index) in modelGrid"
         :key="index"
-        type="button"
+        role="button"
+        tabindex="0"
         class="grid-cell"
         :class="{ selected: selectedIndex === index }"
         @click="selectedIndex = index"
         @dblclick="modelGrid = 1"
+        @keydown.enter="selectedIndex = index"
+        @keydown.space.prevent="selectedIndex = index"
       >
         <GmvPlayerView
           v-if="cells[index]?.sources.length"
           v-bind="cells[index]"
+          :controls-visible="controlsVisible"
           @snapshot="(payload) => emit('snapshot', { index, payload })"
           @record-start="(payload) => emit('recordStart', { index, payload })"
           @record-stop="(payload) => emit('recordStop', { index, payload })"
@@ -34,7 +38,7 @@
           @stream-switch="(payload) => emit('streamSwitch', { index, payload })"
         />
         <span v-else class="empty-cell">空画面 {{ index + 1 }}</span>
-      </button>
+      </div>
     </div>
   </section>
 </template>
@@ -56,10 +60,16 @@ export interface GmvGridCell {
   capabilities?: GmvViewCapabilities;
 }
 
-const props = defineProps<{
-  cells: GmvGridCell[];
-  gridSize?: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    cells: GmvGridCell[];
+    gridSize?: number;
+    controlsVisible?: boolean;
+  }>(),
+  {
+    controlsVisible: true,
+  },
+);
 
 const emit = defineEmits<{
   'update:gridSize': [value: number];
@@ -76,6 +86,7 @@ const emit = defineEmits<{
 }>();
 
 const gridSizes = [1, 4, 9, 16];
+const controlsVisible = computed(() => props.controlsVisible ?? true);
 const localGrid = ref(props.gridSize ?? 4);
 const selectedIndex = ref(0);
 const modelGrid = computed({

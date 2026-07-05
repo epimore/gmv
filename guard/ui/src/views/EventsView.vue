@@ -1,14 +1,14 @@
 <template>
-  <div class="page-grid" v-loading="loading">
+  <div class="page-grid">
     <GlassPanel class="span-8" title="事件中心" subtitle="REST cursor polling · after_id / next cursor">
       <div class="toolbar">
         <el-input v-model="afterId" style="width: 220px" placeholder="after_id（留空从头读取）" />
         <el-select v-model="minPriority" style="width: 150px"><el-option label="全部级别" :value="0" /><el-option label="P1+" :value="1" /><el-option label="P2+" :value="2" /><el-option label="P3+" :value="3" /></el-select>
         <el-input v-model="topicPrefix" style="width: 190px" placeholder="topic 前缀" />
         <el-button @click="paused = !paused">{{ paused ? '恢复轮询' : '暂停轮询' }}</el-button>
-        <el-button type="primary" :disabled="paused" @click="load">拉取事件</el-button>
+        <el-button type="primary" :disabled="paused" :loading="loading" @click="load">拉取事件</el-button>
       </div>
-      <el-table :data="rows" height="360" highlight-current-row empty-text="暂无事件" @current-change="selected = $event">
+      <el-table v-loading="loading && !rows.length" :data="rows" height="360" highlight-current-row empty-text="暂无事件" @current-change="selected = $event">
         <el-table-column prop="event_id" label="事件 ID" width="150" />
         <el-table-column prop="priorityLabel" label="级别" width="80" />
         <el-table-column prop="topic" label="主题" width="190" />

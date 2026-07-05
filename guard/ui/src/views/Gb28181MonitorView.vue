@@ -186,9 +186,15 @@
     </GlassPanel>
 
     <GlassPanel class="span-12" title="多画面播放" :subtitle="multiPlayerSubtitle">
+      <template #action>
+        <div class="player-controls-toggle">
+          <span>操作控件</span>
+          <el-switch v-model="playerControlsVisible" inline-prompt active-text="显示" inactive-text="隐藏" />
+        </div>
+      </template>
       <div class="multi-player">
-        <GmvMultiGrid v-model:grid-size="multiGridSize" :cells="multiGridCells" @snapshot="handleMultiSnapshot"
-          @ptz="handleMultiPtz" />
+        <GmvMultiGrid v-model:grid-size="multiGridSize" :cells="multiGridCells"
+          :controls-visible="playerControlsVisible" @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz" />
       </div>
     </GlassPanel>
   </div>
@@ -464,7 +470,7 @@ const treeDeviceNodes = computed<TreeNodeData[]>(() => treeDevices.value.map((de
 const selectedChannelTitle = computed(() => selectedChannel.value ? displayChannelName(selectedChannel.value) : '未选择通道');
 const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
 const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
-const multiPlayerSubtitle = computed(() => multiCells.value.length ? `运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '选择通道后播放');
+const multiPlayerSubtitle = computed(() => multiCells.value.length ? `实时直播 · 运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '实时直播 · 选择通道后播放');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
@@ -1089,6 +1095,15 @@ onBeforeUnmount(() => {
 .multi-node-select {
   width: 420px;
   max-width: 100%;
+}
+
+.player-controls-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .channel-grid {

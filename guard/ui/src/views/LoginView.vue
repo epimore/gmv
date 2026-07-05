@@ -10,7 +10,7 @@
       </div>
       <h1>登录</h1>
       <p>进入 GMV 控制台，管理节点、流媒体、智能分析与系统集成。</p>
-      <el-form label-position="top">
+      <el-form label-position="top" @submit.prevent="submit">
         <el-form-item label="用户名">
           <el-input v-model="form.username" size="large" placeholder="请输入用户名" />
         </el-form-item>
@@ -21,7 +21,7 @@
           <el-checkbox v-model="form.remember">记住此设备</el-checkbox>
           <span class="code">REST API v2</span>
         </div>
-        <el-button type="primary" size="large" style="width: 100%;" :loading="loading" @click="submit">安全登录</el-button>
+        <el-button type="primary" native-type="submit" size="large" style="width: 100%;" :loading="loading">安全登录</el-button>
       </el-form>
       <div class="kv" style="margin-top: 22px;">
         <div class="kv-item"><span>TLS</span><b>默认启用</b></div>
@@ -61,6 +61,7 @@ const loading = ref(false);
 const form = reactive({ username: '', password: '', remember: true });
 
 async function submit() {
+  if (loading.value) return;
   if (!form.username.trim() || !form.password) {
     ElMessage.warning('请输入用户名和密码');
     return;
