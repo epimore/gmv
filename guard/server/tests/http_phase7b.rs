@@ -131,7 +131,6 @@ fn nodes_expose_session_protocol_and_service_metadata() {
             scheduling: SchedulingState::Enabled,
             endpoints: vec![],
             capabilities: vec!["device.live".to_string(), "protocol.gb28181".to_string()],
-            capacity: 100,
             pending_leases: 0,
             host_metrics: Default::default(),
             business_metrics: Default::default(),

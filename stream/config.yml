@@ -2,7 +2,9 @@ log:
   level: info
   prefix: stream
   store_path: ./logs
-
+  specify:
+    - crate_name: h2 #h2日志等级
+      level: warn #日志等级
 guard:
   endpoint: http://127.0.0.1:18080 # guard内部gRPC地址，stream向guard注册、上报事件
 

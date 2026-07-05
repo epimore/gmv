@@ -3,7 +3,7 @@
     <MetricCard class="span-3" label="READY 节点" :value="readyCount" trend="健康" hint="registry" />
     <MetricCard class="span-3" label="DRAINING" :value="drainingCount" trend="维护中" hint="health" />
     <MetricCard class="span-3" label="时间异常" :value="unsyncedCount" trend="TIME_UNSYNCED" hint="调度禁用" />
-    <MetricCard class="span-3" label="总容量" :value="totalCapacity" trend="capacity" hint="上报值" />
+    <MetricCard class="span-3" label="待确认租约" :value="pendingLeaseCount" trend="pending" hint="队列压力" />
     <GlassPanel class="span-8" title="节点矩阵" subtitle="node_id / instance_id / generation 主动上报">
       <div class="toolbar"><el-button :loading="loading" @click="load">刷新</el-button></div>
       <el-table :data="nodes" height="360" highlight-current-row empty-text="暂无注册节点" @current-change="selected = $event">
@@ -56,7 +56,7 @@ const nodes = ref<NodeInfo[]>([]); const selected = ref<NodeInfo>(); const loadi
 const readyCount = computed(() => nodes.value.filter((item) => item.health === 'READY').length);
 const drainingCount = computed(() => nodes.value.filter((item) => item.health === 'DRAINING').length);
 const unsyncedCount = computed(() => nodes.value.filter((item) => item.scheduling === 'TIMEUNSYNCED' || item.scheduling === 'TIME_UNSYNCED').length);
-const totalCapacity = computed(() => nodes.value.reduce((sum, item) => sum + item.capacity, 0));
+const pendingLeaseCount = computed(() => nodes.value.reduce((sum, item) => sum + item.pending_leases, 0));
 const capacityChart = computed(() => lineOption('CPU 使用率', nodes.value.map((item) => item.host_metrics.cpu_usage_percent), nodes.value.map((item) => item.node_id), '#a875ff'));
 const businessMetrics = computed(() => selected.value ? Object.entries(selected.value.business_metrics).map(([key, value]) => key + '=' + value).join(', ') || '-' : '-');
 function formatTime(value?: number) { return value ? new Date(value).toLocaleString('zh-CN') : '-'; }

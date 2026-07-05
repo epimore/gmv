@@ -34,7 +34,6 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
                         mode: EndpointModeRecord::Single,
                         labels: HashMap::new(),
                     }],
-                    capacity: 4,
                     host_metrics: Default::default(),
                     zone: Some("z1".to_string()),
                     now_ms: 1_000,

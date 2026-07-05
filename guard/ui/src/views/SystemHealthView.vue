@@ -3,8 +3,8 @@
     <GlassPanel class="span-7" title="调度星图" subtitle="节点容量与租约归属">
       <OrbitChart :option="topology" />
     </GlassPanel>
-    <GlassPanel class="span-5" title="候选容量" subtitle="节点上报 capacity / pending leases">
-      <OrbitChart :option="capacityRadar" />
+    <GlassPanel class="span-5" title="待处理队列压力" subtitle="pending leases / 100 队列上限">
+      <OrbitChart :option="queuePressureRadar" />
     </GlassPanel>
     <GlassPanel class="span-12" title="租约生命周期" subtitle="ALLOCATED → CONFIRMED → RELEASED / EXPIRED">
       <el-table :data="leases" height="300" empty-text="暂无租约">
@@ -31,9 +31,10 @@ import { graphOption, radarOption } from '@/data/charts';
 const loading = ref(false);
 const leases = ref<LeaseInfo[]>([]);
 const nodes = ref<NodeInfo[]>([]);
+const PENDING_LEASE_LIMIT = 100;
 
-const topology = computed(() => graphOption([...nodes.value.map((node) => ({ name: node.node_id, value: node.capacity })), ...leases.value.map((lease) => ({ name: lease.lease_id, value: 1 }))], leases.value.map((lease) => ({ source: lease.node_id, target: lease.lease_id }))));
-const capacityRadar = computed(() => radarOption(nodes.value.slice(0, 5).map((node) => node.node_id), nodes.value.slice(0, 5).map((node) => node.capacity ? Math.max(0, Math.min(100, 100 - Math.round(node.pending_leases / node.capacity * 100))) : 0)));
+const topology = computed(() => graphOption([...nodes.value.map((node) => ({ name: node.node_id, value: 1 })), ...leases.value.map((lease) => ({ name: lease.lease_id, value: 1 }))], leases.value.map((lease) => ({ source: lease.node_id, target: lease.lease_id }))));
+const queuePressureRadar = computed(() => radarOption(nodes.value.slice(0, 5).map((node) => node.node_id), nodes.value.slice(0, 5).map((node) => Math.min(100, Math.round(node.pending_leases / PENDING_LEASE_LIMIT * 100)))));
 
 async function loadSystemState() {
   loading.value = true;

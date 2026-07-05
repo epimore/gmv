@@ -27,6 +27,8 @@ log:
   specify:
     - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
       level: warn #日志等级
+    - crate_name: h2 #h2日志等级
+      level: warn #日志等级
 
 guard:
   http:

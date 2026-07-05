@@ -36,7 +36,6 @@ fn registry_policy_seeds_offline_allowed_nodes() {
     assert_eq!(node.connection, ConnectionState::Disconnected);
     assert_eq!(node.health, HealthState::Offline);
     assert_eq!(node.scheduling, SchedulingState::Disabled);
-    assert_eq!(node.capacity, 0);
     assert_eq!(
         node.config.get("service").map(String::as_str),
         Some("session-gb28181")
@@ -48,7 +47,6 @@ fn registry_policy_seeds_offline_allowed_nodes() {
                 identity: NodeIdentity::new("session-gb-1", "inst-1", NodeKind::Session),
                 capabilities: vec!["protocol.gb28181".to_string()],
                 endpoints: vec![],
-                capacity: 1,
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_000,
@@ -90,7 +88,6 @@ fn registry_policy_does_not_seed_allowed_nodes_when_node_check_is_disabled() {
                 identity: NodeIdentity::new("session-gb-2", "inst-1", NodeKind::Session),
                 capabilities: vec!["protocol.gb28181".to_string()],
                 endpoints: vec![],
-                capacity: 1,
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_000,
@@ -115,7 +112,6 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: first.clone(),
                 capabilities: vec!["live".to_string()],
                 endpoints: vec![],
-                capacity: 2,
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_000,
@@ -131,7 +127,6 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: second.clone(),
                 capabilities: vec!["live".to_string()],
                 endpoints: vec![],
-                capacity: 2,
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_001,
@@ -146,7 +141,6 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: second.clone(),
                 capabilities: vec!["live".to_string()],
                 endpoints: vec![],
-                capacity: 2,
                 host_metrics: Default::default(),
                 zone: None,
                 now_ms: 1_002,

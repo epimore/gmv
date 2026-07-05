@@ -17,7 +17,7 @@ message RegisterNodeRequest {
   repeated string capabilities = 5;
   NodeResourceSnapshot startup_snapshot = 6;
   HostMetrics host_metrics = 7;
-  uint32 capacity = 8;
+  reserved 8;
   string zone = 9;
   bool takeover = 10;
   map<string, string> config = 11;

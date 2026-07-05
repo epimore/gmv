@@ -81,13 +81,12 @@ impl GuardNodeControl for GuardNodeRpc {
     ) -> Result<Response<RegisterNodeResponse>, Status> {
         let request = request.into_inner();
         base::log::debug!(
-            "guard_node.register_node, req: identity={:?}, software_version={}, started_at_epoch_ms={}, endpoints={:?}, capabilities={:?}, capacity={}, zone={}, takeover={}, config={:?}, has_snapshot={}, has_host_metrics={}",
+            "guard_node.register_node, req: identity={:?}, software_version={}, started_at_epoch_ms={}, endpoints={:?}, capabilities={:?}, zone={}, takeover={}, config={:?}, has_snapshot={}, has_host_metrics={}",
             request.identity,
             request.software_version,
             request.started_at_epoch_ms,
             request.endpoints,
             request.capabilities,
-            request.capacity,
             request.zone,
             request.takeover,
             request.config,
@@ -102,7 +101,6 @@ impl GuardNodeControl for GuardNodeRpc {
                 identity: identity.clone(),
                 capabilities: request.capabilities,
                 endpoints: endpoint_records(request.endpoints),
-                capacity: request.capacity.max(1),
                 host_metrics: host_metrics(request.host_metrics),
                 zone: (!request.zone.is_empty()).then_some(request.zone),
                 now_ms: now_ms(),

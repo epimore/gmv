@@ -10,7 +10,6 @@ pub struct RegisterRequest {
     pub identity: NodeIdentity,
     pub capabilities: Vec<String>,
     pub endpoints: Vec<EndpointRecord>,
-    pub capacity: u32,
     pub host_metrics: HostMetricsRecord,
     pub zone: Option<String>,
     pub now_ms: i64,
@@ -87,7 +86,6 @@ impl RegistryService {
                 scheduling: SchedulingState::Disabled,
                 endpoints: Vec::new(),
                 capabilities: Vec::new(),
-                capacity: 0,
                 pending_leases: 0,
                 host_metrics: HostMetricsRecord::default(),
                 business_metrics: std::collections::HashMap::new(),
@@ -105,11 +103,6 @@ impl RegistryService {
 
     pub fn register(&self, request: RegisterRequest) -> GuardResult<RegisterDecision> {
         request.identity.validate()?;
-        if request.capacity == 0 {
-            return Err(GuardError::InvalidConfig(
-                "node capacity must be positive".to_string(),
-            ));
-        }
         validate_endpoints(&request.endpoints)?;
         self.validate_policy(&request)?;
         let decision = match self.store.get_node(&request.identity.node_id) {
@@ -148,7 +141,6 @@ impl RegistryService {
             scheduling: SchedulingState::Enabled,
             endpoints: request.endpoints,
             capabilities: request.capabilities,
-            capacity: request.capacity,
             pending_leases: 0,
             host_metrics: request.host_metrics,
             business_metrics: std::collections::HashMap::new(),

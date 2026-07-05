@@ -31,7 +31,6 @@ pub struct NodeRecord {
     pub scheduling: SchedulingState,
     pub endpoints: Vec<EndpointRecord>,
     pub capabilities: Vec<String>,
-    pub capacity: u32,
     pub pending_leases: u32,
     pub host_metrics: HostMetricsRecord,
     pub business_metrics: std::collections::HashMap<String, String>,

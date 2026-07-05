@@ -43,7 +43,6 @@ mod tests {
                         identity: NodeIdentity::new("stream-expire", "inst-1", NodeKind::Stream),
                         capabilities: vec!["live".to_string()],
                         endpoints: vec![],
-                        capacity: 1,
                         host_metrics: Default::default(),
                         zone: None,
                         now_ms: now_ms() - 1_000,

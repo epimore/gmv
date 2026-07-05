@@ -235,7 +235,6 @@ impl StreamGuardNode {
             capabilities: self.capabilities.clone(),
             startup_snapshot: Some(snapshot),
             host_metrics: None,
-            capacity: 100,
             zone: String::new(),
             takeover: cfg!(debug_assertions),
             config: self.config_summary(),
@@ -252,10 +251,6 @@ impl StreamGuardNode {
             (
                 "endpoint_count".to_string(),
                 self.endpoints.len().to_string(),
-            ),
-            (
-                "capability_count".to_string(),
-                self.capabilities.len().to_string(),
             ),
         ])
     }

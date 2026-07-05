@@ -1,6 +1,6 @@
 use crate::core::{GuardError, GuardResult, NodeIdentity};
 use crate::gateway::explain::AllocationExplain;
-use crate::gateway::filter::eligible;
+use crate::gateway::filter::{PENDING_LEASE_LIMIT, eligible};
 use crate::gateway::score::ScoreBreakdown;
 use crate::store::InMemoryGuardStore;
 
@@ -41,14 +41,14 @@ impl AllocationService {
             .collect::<Vec<_>>();
         let max_remaining = candidates
             .iter()
-            .map(|node| node.capacity.saturating_sub(node.pending_leases))
+            .map(|node| PENDING_LEASE_LIMIT.saturating_sub(node.pending_leases))
             .max()
             .unwrap_or(0);
         let mut scores = candidates
             .into_iter()
             .map(|node| {
-                let remaining = node.capacity.saturating_sub(node.pending_leases);
-                let capacity_score = if max_remaining == 0 {
+                let remaining = PENDING_LEASE_LIMIT.saturating_sub(node.pending_leases);
+                let queue_score = if max_remaining == 0 {
                     0.0
                 } else {
                     remaining as f64 / max_remaining as f64
@@ -56,9 +56,9 @@ impl AllocationService {
                 let stability_score = 1.0 / (1.0 + node.generation as f64);
                 let score = ScoreBreakdown {
                     node_id: node.identity.node_id.clone(),
-                    capacity_score,
+                    queue_score,
                     stability_score,
-                    total: capacity_score * 0.8 + stability_score * 0.2,
+                    total: queue_score * 0.8 + stability_score * 0.2,
                 };
                 (score, node)
             })

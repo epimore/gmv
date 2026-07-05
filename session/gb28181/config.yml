@@ -11,6 +11,8 @@ log:
       file_name_prefix: web #日志文件前缀
     - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
       level: warn #日志等级
+    - crate_name: h2 #h2日志等级
+      level: warn #日志等级
 
 http:
   enabled: true

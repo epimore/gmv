@@ -10,19 +10,13 @@ fn stream_identity(node_id: &str, instance_id: &str) -> NodeIdentity {
     NodeIdentity::new(node_id, instance_id, NodeKind::Stream)
 }
 
-fn register_stream(
-    store: &InMemoryGuardStore,
-    node_id: &str,
-    instance_id: &str,
-    capacity: u32,
-) -> NodeIdentity {
+fn register_stream(store: &InMemoryGuardStore, node_id: &str, instance_id: &str) -> NodeIdentity {
     let identity = stream_identity(node_id, instance_id);
     RegistryService::new(store.clone())
         .register(RegisterRequest {
             identity: identity.clone(),
             capabilities: vec!["live".to_string()],
             endpoints: vec![],
-            capacity,
             host_metrics: Default::default(),
             zone: Some("z1".to_string()),
             now_ms: 1_000,
@@ -36,8 +30,8 @@ fn register_stream(
 #[test]
 fn allocation_filters_scores_and_explains_selection() {
     let store = InMemoryGuardStore::default();
-    let left = register_stream(&store, "stream-a", "inst-a", 1);
-    let right = register_stream(&store, "stream-b", "inst-b", 4);
+    let left = register_stream(&store, "stream-a", "inst-a");
+    let _right = register_stream(&store, "stream-b", "inst-b");
     let result = AllocationService::new(store)
         .allocate(AllocationRequest {
             request_id: "req-1".to_string(),
@@ -46,8 +40,8 @@ fn allocation_filters_scores_and_explains_selection() {
         })
         .unwrap();
 
-    assert_eq!(result.owner, right);
-    assert_eq!(result.explain.selected_node_id, "stream-b");
+    assert_eq!(result.owner, left);
+    assert_eq!(result.explain.selected_node_id, "stream-a");
     assert!(
         result
             .explain
@@ -60,7 +54,7 @@ fn allocation_filters_scores_and_explains_selection() {
 #[test]
 fn lease_state_machine_rejects_stale_instance_and_expires() {
     let store = InMemoryGuardStore::default();
-    let owner = register_stream(&store, "stream-a", "inst-a", 1);
+    let owner = register_stream(&store, "stream-a", "inst-a");
     let service = LeaseService::new(store.clone());
     service
         .allocate(LeaseRequest {
@@ -99,7 +93,7 @@ fn lease_state_machine_rejects_stale_instance_and_expires() {
 #[test]
 fn route_reconcile_detects_running_orphan_conflict_and_stale_snapshot() {
     let store = InMemoryGuardStore::default();
-    let owner = register_stream(&store, "stream-a", "inst-a", 2);
+    let owner = register_stream(&store, "stream-a", "inst-a");
     let routes = RouteService::new(store.clone());
     routes
         .create_allocated(RouteRecord {
