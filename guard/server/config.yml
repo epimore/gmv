@@ -21,10 +21,15 @@ db:
       check_health: false
 
 log:
-  level: debug
+  level: warn
+  stdout: true
   prefix: guard
   store_path: ./logs
   specify:
+    - crate_name: gmv_guard_server
+      level: debug
+    - crate_name: gmv_nodec
+      level: debug
     - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
       level: warn #日志等级
     - crate_name: h2 #h2日志等级

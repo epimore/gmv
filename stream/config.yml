@@ -1,8 +1,13 @@
 log:
-  level: info
+  level: warn
+  stdout: true
   prefix: stream
   store_path: ./logs
   specify:
+    - crate_name: gmv_stream
+      level: info
+    - crate_name: gmv_nodec
+      level: debug
     - crate_name: h2 #h2日志等级
       level: warn #日志等级
 guard:
@@ -31,4 +36,3 @@ server:
 stream: #输入输出默认超时回调；执行优先级：回调>监听配置>默认配置
   in_wait_timeout: 4 #u8 单位秒；输入流等待超时,需大于等于1,建议：2-8;
   out_idle_timeout: 6 #u8 单位秒；输出流闲置超时,0：立即关闭,建议：2-8；
-
