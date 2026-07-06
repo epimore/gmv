@@ -18,7 +18,7 @@ parking_lot.workspace = true
 thiserror = "2"
 uuid = { version = "1.23", features = ["v4", "v7"] }
 base = { path = "../../../pigs/base" }
-base_db = { path = "../../../pigs/base_db", default-features = false, features = ["mysql", "sqlite-bundled"] }
+base_db = { path = "../../../pigs/base_db", default-features = false }
 sqlx = { version = "0.9", default-features = false, features = ["derive"] }
 base_rpc = { path = "../../../pigs/base_rpc" }
 tonic = "0.14"
@@ -38,5 +38,8 @@ gmv-nodec = { path = "../../shared/nodec" }
 tower = { workspace = true, features = ["util"] }
 
 [features]
-default = []
+default = ["db-all"]
+db-all = ["db-mysql", "db-sqlite"]
+db-mysql = ["base_db/mysql"]
+db-sqlite = ["base_db/sqlite-bundled"]
 embed-ui = ["dep:rust-embed"]

@@ -1,32 +1,47 @@
+#[cfg(feature = "db-sqlite")]
 use std::path::Path;
 
+#[cfg(feature = "db-mysql")]
 use base_db::dbx::mysqlx::build_mysql_pool;
+#[cfg(feature = "db-sqlite")]
 use base_db::dbx::sqlitex::{SqliteConnectionConfig, build_sqlite_pool};
+#[cfg(feature = "db-mysql")]
 use base_db::sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
 
-use crate::app_config::{DatabaseBackend, GuardAppConfig, MysqlSslMode as ConfigSslMode};
+#[cfg(feature = "db-mysql")]
+use crate::app_config::MysqlSslMode as ConfigSslMode;
+use crate::app_config::{DatabaseBackend, GuardAppConfig};
 use crate::auth::{Role, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
 use crate::outbox::OutboxRepository;
-use crate::store::{mysql::MysqlStore, sqlite::SqliteStore};
+#[cfg(feature = "db-mysql")]
+use crate::store::mysql::MysqlStore;
+#[cfg(feature = "db-sqlite")]
+use crate::store::sqlite::SqliteStore;
 
 #[derive(Debug, Clone)]
 pub enum UserRepository {
+    #[cfg(feature = "db-mysql")]
     Mysql(MysqlStore),
+    #[cfg(feature = "db-sqlite")]
     Sqlite(SqliteStore),
 }
 
 impl UserRepository {
     pub async fn list_profiles(&self) -> GuardResult<Vec<UserProfile>> {
         match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.list_user_profiles().await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.list_user_profiles().await,
         }
     }
 
     pub async fn load_user(&self, username: &str) -> GuardResult<Option<UserAccount>> {
         let user = match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.load_user(username).await?,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.load_user(username).await?,
         };
         if let Some(user) = &user {
@@ -45,11 +60,13 @@ impl UserRepository {
         now_ms: i64,
     ) -> GuardResult<()> {
         match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => {
                 store
                     .upsert_user(username, role, password_hash, nickname, enabled, now_ms)
                     .await
             }
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => {
                 store
                     .upsert_user(username, role, password_hash, nickname, enabled, now_ms)
@@ -60,20 +77,25 @@ impl UserRepository {
 
     pub async fn revoke_ui_sessions(&self, username: &str) -> GuardResult<()> {
         match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.revoke_ui_sessions(username).await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.revoke_ui_sessions(username).await,
         }
     }
 }
 
 pub enum PersistentStore {
+    #[cfg(feature = "db-mysql")]
     Mysql(MysqlStore),
+    #[cfg(feature = "db-sqlite")]
     Sqlite(SqliteStore),
 }
 
 impl PersistentStore {
     pub async fn connect(config: &GuardAppConfig) -> GuardResult<Self> {
         match config.database.backend {
+            #[cfg(feature = "db-sqlite")]
             DatabaseBackend::Sqlite => {
                 ensure_parent(&config.database.sqlite.path)?;
                 let pool = build_sqlite_pool(
@@ -83,6 +105,9 @@ impl PersistentStore {
                 .map_err(database_error)?;
                 Ok(Self::Sqlite(SqliteStore::new(pool)))
             }
+            #[cfg(not(feature = "db-sqlite"))]
+            DatabaseBackend::Sqlite => Err(database_backend_not_enabled("sqlite")),
+            #[cfg(feature = "db-mysql")]
             DatabaseBackend::Mysql => {
                 let mysql = config.database.mysql.as_ref().ok_or_else(|| {
                     GuardError::InvalidConfig("guard.database.mysql is required".to_string())
@@ -105,6 +130,8 @@ impl PersistentStore {
                     .map_err(database_error)?;
                 Ok(Self::Mysql(MysqlStore::new(pool)))
             }
+            #[cfg(not(feature = "db-mysql"))]
+            DatabaseBackend::Mysql => Err(database_backend_not_enabled("mysql")),
         }
     }
 
@@ -117,11 +144,13 @@ impl PersistentStore {
             UserAccount::new(&config.bootstrap.admin.username, Role::Admin, &hash)
                 .validate_password_hash()?;
             match self {
+                #[cfg(feature = "db-mysql")]
                 Self::Mysql(store) => {
                     store
                         .bootstrap_admin(&config.bootstrap.admin.username, &hash)
                         .await?;
                 }
+                #[cfg(feature = "db-sqlite")]
                 Self::Sqlite(store) => {
                     store
                         .bootstrap_admin(&config.bootstrap.admin.username, &hash)
@@ -140,14 +169,18 @@ impl PersistentStore {
 
     pub async fn migrate(&self) -> GuardResult<()> {
         match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.migrate().await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.migrate().await,
         }
     }
 
     pub async fn load_users(&self) -> GuardResult<Vec<UserAccount>> {
         let users = match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.load_users().await?,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.load_users().await?,
         };
         for user in &users {
@@ -158,19 +191,24 @@ impl PersistentStore {
 
     pub fn user_repository(&self) -> UserRepository {
         match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => UserRepository::Mysql(store.clone()),
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => UserRepository::Sqlite(store.clone()),
         }
     }
 
     pub fn outbox_repository(&self) -> OutboxRepository {
         match self {
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => OutboxRepository::from(store.clone()),
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => OutboxRepository::from(store.clone()),
         }
     }
 }
 
+#[cfg(feature = "db-sqlite")]
 fn ensure_parent(path: &Path) -> GuardResult<()> {
     if let Some(parent) = path
         .parent()
@@ -185,4 +223,11 @@ fn ensure_parent(path: &Path) -> GuardResult<()> {
 
 fn database_error(error: impl std::fmt::Display) -> GuardError {
     GuardError::Conflict(format!("database initialization failed: {error}"))
+}
+
+#[cfg(not(all(feature = "db-mysql", feature = "db-sqlite")))]
+fn database_backend_not_enabled(backend: &str) -> GuardError {
+    GuardError::InvalidConfig(format!(
+        "guard database backend {backend} is not enabled in this binary"
+    ))
 }

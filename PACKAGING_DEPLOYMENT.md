@@ -263,6 +263,47 @@ guard encrypt <plaintext>
 guard decrypt <ciphertext>
 ```
 
+### 5.4 指定数据库后端构建
+
+Guard 默认构建同时支持 MySQL 和 SQLite bundled：
+
+```bash
+~/.cargo/bin/cargo build -p gmv-guard-server --release
+```
+
+按现场数据库裁剪二进制时，可以选择单后端构建：
+
+```bash
+# MySQL-only
+~/.cargo/bin/cargo build -p gmv-guard-server --release --no-default-features --features db-mysql
+
+# SQLite-only bundled
+~/.cargo/bin/cargo build -p gmv-guard-server --release --no-default-features --features db-sqlite
+
+# 集成 UI + 全数据库支持
+~/.cargo/bin/cargo build -p gmv-guard-server --release --features embed-ui
+
+# 集成 UI + SQLite-only bundled
+~/.cargo/bin/cargo build -p gmv-guard-server --release --no-default-features --features "embed-ui,db-sqlite"
+```
+
+选择原则：
+
+- 通用交付包使用默认全支持，现场可在 `guard.database.backend` 中选择 `sqlite` 或 `mysql`。
+- 嵌入式单机且确认只使用 SQLite 时，可使用 `db-sqlite` 减小体积。
+- 已有 MySQL 或多节点集中数据库部署时，可使用 `db-mysql`。
+- 单后端二进制不能运行另一种数据库配置；例如 `db-sqlite` 构建遇到 `backend: mysql` 会启动失败并提示未启用该后端。
+- `--no-default-features` 后必须显式指定 `db-mysql` 或 `db-sqlite`；只指定 `embed-ui` 会编译失败。
+
+当前构建机实测 release 体积如下。该数值用于估算交付包大小，实际会随目标平台、profile、strip、依赖版本变化。
+
+| 组件 | 构建特性 | 二进制 | 大小 bytes | 大小 MiB | 相对全支持 |
+| --- | --- | --- | ---: | ---: | ---: |
+| Guard | `db-all` | `target/release/guard` | 21,014,272 | 20.04 | 基准 |
+| Guard | `db-mysql` | `target/release/guard` | 17,064,184 | 16.27 | -3.77 MiB |
+| Guard | `db-sqlite` | `target/release/guard` | 17,871,048 | 17.04 | -3.00 MiB |
+| Guard | `db-all,embed-ui` | `target/release/guard` | 24,134,712 | 23.02 | +2.98 MiB |
+
 ## 6. Nginx TLS 和域名代理
 
 ### 6.1 集成部署也可以使用 Nginx
@@ -430,6 +471,16 @@ FORCE_REBUILD=1 ./session/gb28181/build_pjsip_bootstrap.sh
 ~/.cargo/bin/cargo build -p gmv-session-gb28181 --release
 ```
 
+默认构建同时支持 MySQL 和 SQLite bundled。按现场数据库裁剪二进制时：
+
+```bash
+# MySQL-only
+~/.cargo/bin/cargo build -p gmv-session-gb28181 --release --no-default-features --features db-mysql
+
+# SQLite-only bundled
+~/.cargo/bin/cargo build -p gmv-session-gb28181 --release --no-default-features --features db-sqlite
+```
+
 交付物：
 
 ```text
@@ -438,6 +489,14 @@ session/gb28181/config.yml
 ```
 
 运行设备不需要 PJSIP `dist`，只需要已链接好的二进制。若目标平台要求动态系统库，应通过 `ldd` 检查。
+
+当前构建机实测 release 体积：
+
+| 组件 | 构建特性 | 二进制 | 大小 bytes | 大小 MiB | 相对全支持 |
+| --- | --- | --- | ---: | ---: | ---: |
+| Session | `db-all` | `target/release/gmv-session-gb28181` | 23,002,968 | 21.94 | 基准 |
+| Session | `db-mysql` | `target/release/gmv-session-gb28181` | 19,829,800 | 18.91 | -3.03 MiB |
+| Session | `db-sqlite` | `target/release/gmv-session-gb28181` | 20,692,176 | 19.73 | -2.20 MiB |
 
 ### 7.3 Session 配置要点
 
@@ -941,6 +1000,13 @@ db:
 ```
 
 Session 初始化直接执行模块自有 schema SQL，不依赖 `_base_db_migrations` 账本表。
+
+数据库配置必须和二进制构建特性匹配：
+
+- 默认 `db-all` 二进制支持 `backend: sqlite` 和 `backend: mysql`。
+- `db-sqlite` 二进制只能使用 `backend: sqlite`。
+- `db-mysql` 二进制只能使用 `backend: mysql`。
+- 配错后端时，Guard 和 Session 会在启动阶段返回明确配置错误，不会自动降级或切换数据库。
 
 ### 14.3 必须持久化的目录
 

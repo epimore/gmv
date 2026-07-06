@@ -1,5 +1,8 @@
 #![allow(warnings)]
 
+#[cfg(not(any(feature = "db-mysql", feature = "db-sqlite")))]
+compile_error!("enable at least one database feature: db-mysql or db-sqlite");
+
 use crate::app::AppInfo;
 use base::daemon;
 

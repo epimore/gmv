@@ -12,7 +12,7 @@ tonic = "0.14"
 gmv-domain = { path = "../../shared/domain" }
 #base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
 base = { path = "../../../pigs/base", features = ["net"] }
-base_db = { path = "../../../pigs/base_db", default-features = false, features = ["mysql", "sqlite-bundled"] }
+base_db = { path = "../../../pigs/base_db", default-features = false }
 #gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "b86c032e" }
 gmv_pjsip = { path = "../../../gmv_pjsip" }
 sqlx = { version = "0.9", default-features = false }
@@ -30,3 +30,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[features]
+default = ["db-all"]
+db-all = ["db-mysql", "db-sqlite"]
+db-mysql = ["base_db/mysql"]
+db-sqlite = ["base_db/sqlite-bundled"]

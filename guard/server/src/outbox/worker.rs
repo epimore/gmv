@@ -8,8 +8,12 @@ use base_rpc::RetryPolicy;
 
 use crate::core::GuardResult;
 use crate::outbox::state::{mark_dead, mark_delivered, mark_retry, mark_sending};
+use crate::store::InMemoryGuardStore;
 use crate::store::model::{OutboxDestinationKind, OutboxRecord};
-use crate::store::{InMemoryGuardStore, mysql::MysqlStore, sqlite::SqliteStore};
+#[cfg(feature = "db-mysql")]
+use crate::store::mysql::MysqlStore;
+#[cfg(feature = "db-sqlite")]
+use crate::store::sqlite::SqliteStore;
 
 pub trait OutboxDelivery: Send + Sync {
     fn deliver<'a>(
@@ -53,7 +57,9 @@ impl OutboxDelivery for DeliveryRouter {
 #[derive(Debug, Clone)]
 pub enum OutboxRepository {
     Memory(InMemoryGuardStore),
+    #[cfg(feature = "db-mysql")]
     Mysql(MysqlStore),
+    #[cfg(feature = "db-sqlite")]
     Sqlite(SqliteStore),
 }
 
@@ -62,11 +68,13 @@ impl From<InMemoryGuardStore> for OutboxRepository {
         Self::Memory(store)
     }
 }
+#[cfg(feature = "db-mysql")]
 impl From<MysqlStore> for OutboxRepository {
     fn from(store: MysqlStore) -> Self {
         Self::Mysql(store)
     }
 }
+#[cfg(feature = "db-sqlite")]
 impl From<SqliteStore> for OutboxRepository {
     fn from(store: SqliteStore) -> Self {
         Self::Sqlite(store)
@@ -77,7 +85,9 @@ impl OutboxRepository {
     pub async fn insert_outbox_records(&self, records: Vec<OutboxRecord>) -> GuardResult<()> {
         match self {
             Self::Memory(store) => store.insert_outbox_records(records),
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.insert_outbox_records(&records).await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.insert_outbox_records(&records).await,
         }
     }
@@ -85,7 +95,9 @@ impl OutboxRepository {
     pub async fn list(&self, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
         match self {
             Self::Memory(store) => Ok(store.outbox_records(limit)),
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.outbox_records(limit).await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.outbox_records(limit).await,
         }
     }
@@ -93,7 +105,9 @@ impl OutboxRepository {
     pub async fn retry_dead(&self, outbox_id: &str, now_ms: i64) -> GuardResult<OutboxRecord> {
         match self {
             Self::Memory(store) => store.retry_dead_outbox(outbox_id, now_ms),
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.retry_dead_outbox(outbox_id, now_ms).await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.retry_dead_outbox(outbox_id, now_ms).await,
         }
     }
@@ -101,7 +115,9 @@ impl OutboxRepository {
     async fn due(&self, now_ms: i64, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
         match self {
             Self::Memory(store) => Ok(store.due_outbox(now_ms, limit)),
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.due_outbox(now_ms, limit).await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.due_outbox(now_ms, limit).await,
         }
     }
@@ -112,10 +128,12 @@ impl OutboxRepository {
                 store.recover_stale_sending(stale_before_ms, now_ms);
                 Ok(())
             }
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => {
                 store.recover_stale_sending(stale_before_ms, now_ms).await?;
                 Ok(())
             }
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => {
                 store.recover_stale_sending(stale_before_ms, now_ms).await?;
                 Ok(())
@@ -126,7 +144,9 @@ impl OutboxRepository {
     async fn update(&self, record: OutboxRecord) -> GuardResult<()> {
         match self {
             Self::Memory(store) => store.update_outbox(record),
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.update_outbox(&record).await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.update_outbox(&record).await,
         }
     }

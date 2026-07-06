@@ -1,22 +1,38 @@
 use std::path::PathBuf;
+#[cfg(feature = "db-sqlite")]
 use std::sync::LazyLock;
 
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde::Deserialize;
 use base::serde_default;
+#[cfg(feature = "db-sqlite")]
 use base_db::dbx::DatabasePoolConfig;
+#[cfg(feature = "db-mysql")]
 use base_db::dbx::mysqlx;
+#[cfg(feature = "db-sqlite")]
 use base_db::dbx::sqlitex::{SqliteConnectionConfig, build_sqlite_pool};
-use base_db::sqlx::{MySqlPool, SqlitePool};
+#[cfg(feature = "db-mysql")]
+use base_db::sqlx::MySqlPool;
+#[cfg(feature = "db-sqlite")]
+use base_db::sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
 pub enum SessionDatabaseBackend {
     Mysql,
     Sqlite,
+}
+
+impl SessionDatabaseBackend {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Mysql => "mysql",
+            Self::Sqlite => "sqlite",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,6 +79,16 @@ fn default_sqlite_max_connections() -> u32 {
 
 impl CheckFromConf for SessionDatabaseConfig {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
+        if self.backend == SessionDatabaseBackend::Mysql && !cfg!(feature = "db-mysql") {
+            return Err(FieldCheckError::BizError(
+                "当前二进制未启用 MySQL 数据库支持".to_string(),
+            ));
+        }
+        if self.backend == SessionDatabaseBackend::Sqlite && !cfg!(feature = "db-sqlite") {
+            return Err(FieldCheckError::BizError(
+                "当前二进制未启用 SQLite 数据库支持".to_string(),
+            ));
+        }
         if self.backend == SessionDatabaseBackend::Sqlite && self.sqlite.path.as_os_str().is_empty()
         {
             return Err(FieldCheckError::BizError(
@@ -79,6 +105,7 @@ impl SessionDatabaseConfig {
     }
 }
 
+#[cfg(feature = "db-sqlite")]
 static SQLITE_POOL: LazyLock<SqlitePool> = LazyLock::new(|| {
     let config = SessionDatabaseConfig::get();
     let mut pool = DatabasePoolConfig::default();
@@ -88,6 +115,7 @@ static SQLITE_POOL: LazyLock<SqlitePool> = LazyLock::new(|| {
         .expect("invalid session sqlite pool configuration")
 });
 
+#[cfg(feature = "db-sqlite")]
 pub fn sqlite_pool() -> &'static SqlitePool {
     &*SQLITE_POOL
 }
@@ -96,30 +124,62 @@ pub fn backend() -> SessionDatabaseBackend {
     SessionDatabaseConfig::get().backend
 }
 
+#[cfg(feature = "db-mysql")]
 pub fn mysql_pool() -> &'static MySqlPool {
     mysqlx::get_conn_by_pool()
 }
 
+#[cfg(feature = "db-sqlite")]
 const SQLITE_SCHEMA: &str = include_str!("../../schema/sqlite/gb28181_core.sql");
+#[cfg(feature = "db-mysql")]
 const MYSQL_SCHEMA: &str = include_str!("../../schema/mysql/gb28181_core.sql");
 
 pub async fn initialize() -> GlobalResult<()> {
     match backend() {
+        #[cfg(feature = "db-mysql")]
         SessionDatabaseBackend::Mysql => base_db::sqlx::raw_sql(MYSQL_SCHEMA)
             .execute(mysql_pool())
             .await
             .map(|_| ())
             .hand_log(|msg| error!("{msg}")),
+        #[cfg(not(feature = "db-mysql"))]
+        SessionDatabaseBackend::Mysql => {
+            Err(backend_not_enabled_global(SessionDatabaseBackend::Mysql))
+        }
+        #[cfg(feature = "db-sqlite")]
         SessionDatabaseBackend::Sqlite => base_db::sqlx::raw_sql(SQLITE_SCHEMA)
             .execute(sqlite_pool())
             .await
             .map(|_| ())
             .hand_log(|msg| error!("{msg}")),
+        #[cfg(not(feature = "db-sqlite"))]
+        SessionDatabaseBackend::Sqlite => {
+            Err(backend_not_enabled_global(SessionDatabaseBackend::Sqlite))
+        }
     }
 }
+
+pub(crate) fn backend_not_enabled_global(backend: SessionDatabaseBackend) -> GlobalError {
+    GlobalError::new_sys_error(
+        &format!(
+            "session database backend {} is not enabled in this binary",
+            backend.as_str()
+        ),
+        |msg| error!("{msg}"),
+    )
+}
+
+pub(crate) fn backend_not_enabled_sqlx(backend: SessionDatabaseBackend) -> base_db::sqlx::Error {
+    base_db::sqlx::Error::Protocol(format!(
+        "session database backend {} is not enabled in this binary",
+        backend.as_str()
+    ))
+}
+
 macro_rules! execute {
     ($sql:expr $(, $bind:expr)* $(,)?) => {{
         match $crate::storage::db::backend() {
+            #[cfg(feature = "db-mysql")]
             $crate::storage::db::SessionDatabaseBackend::Mysql => {
                 base_db::sqlx::query($sql)
                     $(.bind($bind))*
@@ -127,6 +187,7 @@ macro_rules! execute {
                     .await
                     .map(|result| result.rows_affected())
             }
+            #[cfg(feature = "db-sqlite")]
             $crate::storage::db::SessionDatabaseBackend::Sqlite => {
                 base_db::sqlx::query($sql)
                     $(.bind($bind))*
@@ -134,6 +195,7 @@ macro_rules! execute {
                     .await
                     .map(|result| result.rows_affected())
             }
+            backend => Err($crate::storage::db::backend_not_enabled_sqlx(backend)),
         }
     }};
 }
@@ -141,18 +203,21 @@ macro_rules! execute {
 macro_rules! fetch_optional_as {
     ($ty:ty, $sql:expr $(, $bind:expr)* $(,)?) => {{
         match $crate::storage::db::backend() {
+            #[cfg(feature = "db-mysql")]
             $crate::storage::db::SessionDatabaseBackend::Mysql => {
                 base_db::sqlx::query_as::<_, $ty>($sql)
                     $(.bind($bind))*
                     .fetch_optional($crate::storage::db::mysql_pool())
                     .await
             }
+            #[cfg(feature = "db-sqlite")]
             $crate::storage::db::SessionDatabaseBackend::Sqlite => {
                 base_db::sqlx::query_as::<_, $ty>($sql)
                     $(.bind($bind))*
                     .fetch_optional($crate::storage::db::sqlite_pool())
                     .await
             }
+            backend => Err($crate::storage::db::backend_not_enabled_sqlx(backend)),
         }
     }};
 }
@@ -160,18 +225,21 @@ macro_rules! fetch_optional_as {
 macro_rules! fetch_all_as {
     ($ty:ty, $sql:expr $(, $bind:expr)* $(,)?) => {{
         match $crate::storage::db::backend() {
+            #[cfg(feature = "db-mysql")]
             $crate::storage::db::SessionDatabaseBackend::Mysql => {
                 base_db::sqlx::query_as::<_, $ty>($sql)
                     $(.bind($bind))*
                     .fetch_all($crate::storage::db::mysql_pool())
                     .await
             }
+            #[cfg(feature = "db-sqlite")]
             $crate::storage::db::SessionDatabaseBackend::Sqlite => {
                 base_db::sqlx::query_as::<_, $ty>($sql)
                     $(.bind($bind))*
                     .fetch_all($crate::storage::db::sqlite_pool())
                     .await
             }
+            backend => Err($crate::storage::db::backend_not_enabled_sqlx(backend)),
         }
     }};
 }

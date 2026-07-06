@@ -6,7 +6,11 @@ use base::chrono::NaiveDateTime;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde_json;
-use base_db::sqlx::{self, FromRow, MySql, Sqlite};
+#[cfg(feature = "db-mysql")]
+use base_db::sqlx::MySql;
+#[cfg(feature = "db-sqlite")]
+use base_db::sqlx::Sqlite;
+use base_db::sqlx::{self, FromRow};
 
 #[cfg(test)]
 use std::collections::HashMap;
@@ -807,6 +811,7 @@ impl SipDialogSessionRepository {
         }
 
         let rows = match db::backend() {
+            #[cfg(feature = "db-mysql")]
             db::SessionDatabaseBackend::Mysql => {
                 let mut builder = sqlx::QueryBuilder::<MySql>::new(format!(
                     "SELECT {SELECT_COLUMNS} FROM GB28181_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=",
@@ -826,6 +831,7 @@ impl SipDialogSessionRepository {
                     .fetch_all(db::mysql_pool())
                     .await
             }
+            #[cfg(feature = "db-sqlite")]
             db::SessionDatabaseBackend::Sqlite => {
                 let mut builder = sqlx::QueryBuilder::<Sqlite>::new(format!(
                     "SELECT {SELECT_COLUMNS} FROM GB28181_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=",
@@ -845,6 +851,7 @@ impl SipDialogSessionRepository {
                     .fetch_all(db::sqlite_pool())
                     .await
             }
+            backend => return Err(db::backend_not_enabled_global(backend)),
         }
         .hand_log(|message| error!("{message}"))?;
         rows.into_iter().map(TryInto::try_into).collect()

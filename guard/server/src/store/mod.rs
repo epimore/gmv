@@ -1,9 +1,11 @@
 pub mod backup;
 pub mod migration;
 pub mod model;
+#[cfg(feature = "db-mysql")]
 pub mod mysql;
 pub mod persistent;
 pub mod retention;
+#[cfg(feature = "db-sqlite")]
 pub mod sqlite;
 
 use std::collections::{HashMap, HashSet};
@@ -301,6 +303,8 @@ impl InMemoryGuardStore {
 #[derive(Debug, Clone)]
 pub enum GuardStore {
     Memory(InMemoryGuardStore),
+    #[cfg(feature = "db-mysql")]
     Mysql(mysql::MysqlStore),
+    #[cfg(feature = "db-sqlite")]
     Sqlite(sqlite::SqliteStore),
 }

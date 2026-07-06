@@ -336,6 +336,16 @@ impl DatabaseConfig {
     fn validate(&self) -> GuardResult<()> {
         self.pool.validate()?;
         match self.backend {
+            DatabaseBackend::Sqlite if !cfg!(feature = "db-sqlite") => {
+                Err(GuardError::InvalidConfig(
+                    "guard database backend sqlite is not enabled in this binary".to_string(),
+                ))
+            }
+            DatabaseBackend::Mysql if !cfg!(feature = "db-mysql") => {
+                Err(GuardError::InvalidConfig(
+                    "guard database backend mysql is not enabled in this binary".to_string(),
+                ))
+            }
             DatabaseBackend::Sqlite if self.sqlite.path.as_os_str().is_empty() => Err(
                 GuardError::InvalidConfig("guard.database.sqlite.path is required".to_string()),
             ),

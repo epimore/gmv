@@ -8,7 +8,11 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde::{Deserialize, Serialize};
 use base::serde_default;
-use base_db::sqlx::{self, MySql, Sqlite};
+use base_db::sqlx;
+#[cfg(feature = "db-mysql")]
+use base_db::sqlx::MySql;
+#[cfg(feature = "db-sqlite")]
+use base_db::sqlx::Sqlite;
 use sqlx::FromRow;
 
 #[cfg(test)]
@@ -136,6 +140,7 @@ impl GmvOauth {
         }
 
         match db::backend() {
+            #[cfg(feature = "db-mysql")]
             db::SessionDatabaseBackend::Mysql => {
                 let mut builder = sqlx::QueryBuilder::<MySql>::new(
                     "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec \
@@ -152,6 +157,7 @@ impl GmvOauth {
                     .await
                     .hand_log(|msg| error!("{msg}"))
             }
+            #[cfg(feature = "db-sqlite")]
             db::SessionDatabaseBackend::Sqlite => {
                 let mut builder = sqlx::QueryBuilder::<Sqlite>::new(
                     "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec \
@@ -168,6 +174,7 @@ impl GmvOauth {
                     .await
                     .hand_log(|msg| error!("{msg}"))
             }
+            backend => Err(db::backend_not_enabled_global(backend)),
         }
     }
 }

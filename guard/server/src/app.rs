@@ -180,7 +180,9 @@ fn spawn_mqtt_runtime(
         300_000,
     )?;
     let repository = match persistent {
+        #[cfg(feature = "db-mysql")]
         PersistentStore::Mysql(store) => CommandIdRepository::from(store.clone()),
+        #[cfg(feature = "db-sqlite")]
         PersistentStore::Sqlite(store) => CommandIdRepository::from(store.clone()),
     };
     let executor = MqttCommandExecutor::new(operations, store);

@@ -56,10 +56,24 @@ impl
         };
         logger::Logger::init()?;
         match db::backend() {
+            #[cfg(feature = "db-mysql")]
             SessionDatabaseBackend::Mysql => info!("session database backend: mysql"),
+            #[cfg(not(feature = "db-mysql"))]
+            SessionDatabaseBackend::Mysql => {
+                return Err(db::backend_not_enabled_global(
+                    SessionDatabaseBackend::Mysql,
+                ));
+            }
+            #[cfg(feature = "db-sqlite")]
             SessionDatabaseBackend::Sqlite => {
                 let _ = db::sqlite_pool();
                 info!("session database backend: sqlite");
+            }
+            #[cfg(not(feature = "db-sqlite"))]
+            SessionDatabaseBackend::Sqlite => {
+                return Err(db::backend_not_enabled_global(
+                    SessionDatabaseBackend::Sqlite,
+                ));
             }
         }
         let http_listener = if app_info.http.enabled {

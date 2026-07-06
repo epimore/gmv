@@ -1,3 +1,6 @@
+#[cfg(not(any(feature = "db-mysql", feature = "db-sqlite")))]
+compile_error!("enable at least one database feature: db-mysql or db-sqlite");
+
 pub mod api;
 pub mod app;
 pub mod app_config;

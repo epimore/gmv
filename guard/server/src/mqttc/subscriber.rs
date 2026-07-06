@@ -7,7 +7,11 @@ use parking_lot::Mutex;
 
 use crate::core::{GuardError, GuardResult};
 use crate::mqttc::mapping::{CommandAction, RoutedCommand};
-use crate::store::{InMemoryGuardStore, mysql::MysqlStore, sqlite::SqliteStore};
+use crate::store::InMemoryGuardStore;
+#[cfg(feature = "db-mysql")]
+use crate::store::mysql::MysqlStore;
+#[cfg(feature = "db-sqlite")]
+use crate::store::sqlite::SqliteStore;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde", deny_unknown_fields)]
@@ -24,7 +28,9 @@ pub struct MqttCommand {
 #[derive(Debug, Clone)]
 pub enum CommandIdRepository {
     Memory(InMemoryGuardStore),
+    #[cfg(feature = "db-mysql")]
     Mysql(MysqlStore),
+    #[cfg(feature = "db-sqlite")]
     Sqlite(SqliteStore),
 }
 
@@ -33,11 +39,13 @@ impl From<InMemoryGuardStore> for CommandIdRepository {
         Self::Memory(store)
     }
 }
+#[cfg(feature = "db-mysql")]
 impl From<MysqlStore> for CommandIdRepository {
     fn from(store: MysqlStore) -> Self {
         Self::Mysql(store)
     }
 }
+#[cfg(feature = "db-sqlite")]
 impl From<SqliteStore> for CommandIdRepository {
     fn from(store: SqliteStore) -> Self {
         Self::Sqlite(store)
@@ -48,7 +56,9 @@ impl CommandIdRepository {
     async fn claim(&self, command_id: &str, expires_at_ms: i64, now_ms: i64) -> GuardResult<bool> {
         match self {
             Self::Memory(store) => Ok(store.claim_command(command_id, expires_at_ms, now_ms)),
+            #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => store.claim_command(command_id, expires_at_ms, now_ms).await,
+            #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.claim_command(command_id, expires_at_ms, now_ms).await,
         }
     }
