@@ -1,4 +1,3 @@
-use std::io::{self, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base::utils::crypto::{default_decrypt, default_encrypt};
@@ -53,10 +52,9 @@ fn crypto_command(args: &[String], action: CryptoAction) -> Result<(), Box<dyn s
 }
 
 fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let (config_path, username) = reset_admin_password_args(args)?;
+    let (config_path, username, password) = reset_admin_password_args(args)?;
     let config = GuardAppConfig::load(config_path);
     let username = username.unwrap_or_else(|| config.bootstrap.admin.username.clone());
-    let password = read_required_stdin("password")?;
     let password_hash = hash_password(&password)?;
     base::tokio::runtime::Runtime::new()?.block_on(async {
         let persistent = PersistentStore::connect(&config).await?;
@@ -85,9 +83,10 @@ fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn reset_admin_password_args(args: &[String]) -> GuardResult<(String, Option<String>)> {
+fn reset_admin_password_args(args: &[String]) -> GuardResult<(String, Option<String>, String)> {
     let mut config_path = "./config.yml".to_string();
     let mut username = None;
+    let mut password = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -103,29 +102,22 @@ fn reset_admin_password_args(args: &[String]) -> GuardResult<(String, Option<Str
                 }
                 username = Some(value);
             }
+            value if !value.is_empty() && password.is_none() => {
+                password = Some(value.to_string());
+            }
             _ => return Err(reset_usage()),
         }
         index += 1;
     }
-    Ok((config_path, username))
+    let password = password.ok_or_else(reset_usage)?;
+    Ok((config_path, username, password))
 }
 
 fn reset_usage() -> GuardError {
     GuardError::InvalidConfig(
-        "usage: guard reset-admin-password [-c|--config <path>] [-u|--username <name>]".to_string(),
+        "usage: guard reset-admin-password [-c|--config <path>] [-u|--username <name>] <password>"
+            .to_string(),
     )
-}
-
-fn read_required_stdin(label: &str) -> GuardResult<String> {
-    let mut value = String::new();
-    io::stdin()
-        .read_to_string(&mut value)
-        .map_err(|error| GuardError::InvalidConfig(format!("read {label} failed: {error}")))?;
-    let value = value.trim_end_matches(['\r', '\n']).to_string();
-    if value.is_empty() {
-        return Err(GuardError::InvalidConfig(format!("{label} is required")));
-    }
-    Ok(value)
 }
 
 fn now_ms() -> GuardResult<i64> {
