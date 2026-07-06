@@ -479,7 +479,7 @@ vue：GmvPlayerView 和人工测试页
 自研 EventBus：播放器事件系统
 ```
 
-HTTP-FLV 适配器通过动态 import 加载 mpegts.js。当前 pnpm 供应链策略会拦截 mpegts.js 的 exotic subdependency，因此 guard/player 不把它作为强安装依赖；需要验证 FLV 时，由宿主工程或部署环境显式提供 mpegts.js。
+HTTP-FLV 适配器直接依赖 mpegts.js。构建 guard/ui 或 guard/player 时，mpegts.js 会随 Vite/Rollup 进入本地 dist 产物，不需要宿主工程或部署环境额外提供运行时库。
 
 调试依赖：
 

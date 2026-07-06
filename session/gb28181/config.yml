@@ -1,84 +1,78 @@
 log:
-  level: warn
-  stdout: true
-  prefix: session
-  store_path: ./logs
-  specify:
-    - crate_name: gmv_session_gb28181::gb::io$ #信令及PJSIP日志
-      level: debug #日志等级
-      file_name_prefix: gb #日志文件前缀
-      stdout: false
-    - crate_name: gmv_session_gb28181::http #请求日志
-      level: info #日志等级
-      file_name_prefix: web #日志文件前缀
-      stdout: false
-    - crate_name: gmv_session_gb28181
-      level: debug
-    - crate_name: gmv_nodec
-      level: debug
-    - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
-      level: warn #日志等级
-    - crate_name: h2 #h2日志等级
-      level: warn #日志等级
+    level: warn
+    stdout: true
+    prefix: session
+    store_path: ./logs
+    specify:
+        - crate_name: gmv_pjsip::io$ #信令及PJSIP日志
+          level: debug #日志等级
+          file_name_prefix: gb #日志文件前缀
+          stdout: true
+        - crate_name: gmv_nodec
+          level: debug
+        - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
+          level: warn #日志等级
+        - crate_name: h2 #h2日志等级
+          level: warn #日志等级
 
 http:
-  enabled: true
-  port: 28567
+    enabled: true
+    port: 28567
 
 db:
-  backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
-  sqlite:
-    path: ./session-gb28181.db
-    max_connections: 16
-  mysql:
-    host_or_ip: 127.0.0.1
-    port: 3306
-    db_name: gmv
-    user: root
-    pass_crypto_enable: false #密码是否加密，默认不加密
-    pass: zaq12345 #密码的密文
-    attrs:
-      log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
-      log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
-      timezone: "+8:00"
-      charset: utf8mb4
-      ssl_level: 0 #加密等级,默认1,取值[0,1],0-不加密,1-可选加密：服务端支持则加密、否则不加密,2-必选加密,服务端不支持则不建立连接,3-满足2外还需验证主机名,4-满足2外还需验证CA证书
-      ssl_ca_crt_file: path/to/ca.crt #CA 证书 ssl_level:3 生效
-      ssl_ca_client_cert_file: path/to/client.crt #SSL 客户端证书 ssl_level:3 生效
-      ssl_ca_client_key_file: path/to/client.key #SSL 客户端密钥 ssl_level:3 生效
-    pool:
-      max_connections: 100 # 默认100,最大连接池值,即峰值时,操作进行排队
-      min_connections: 10 # 默认等同于max_size,最小连接池值,即空闲时也维持
-      connection_timeout: 8 # 默认8秒,获取连接超时时间(最大255)
-      max_lifetime: 1800 # 默认1800 秒,连接最大存活时间
-      idle_timeout: 60 # 默认60 秒,连接空闲回收
-      check_health: false # 默认false,连接池维持健康测试
+    backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
+    sqlite:
+        path: ./session-gb28181.db
+        max_connections: 16
+    mysql:
+        host_or_ip: 127.0.0.1
+        port: 3306
+        db_name: gmv
+        user: root
+        pass_crypto_enable: false #密码是否加密，默认不加密
+        pass: zaq12345 #密码的密文
+        attrs:
+            log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
+            log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
+            timezone: "+8:00"
+            charset: utf8mb4
+            ssl_level: 0 #加密等级,默认1,取值[0,1],0-不加密,1-可选加密：服务端支持则加密、否则不加密,2-必选加密,服务端不支持则不建立连接,3-满足2外还需验证主机名,4-满足2外还需验证CA证书
+            ssl_ca_crt_file: path/to/ca.crt #CA 证书 ssl_level:3 生效
+            ssl_ca_client_cert_file: path/to/client.crt #SSL 客户端证书 ssl_level:3 生效
+            ssl_ca_client_key_file: path/to/client.key #SSL 客户端密钥 ssl_level:3 生效
+        pool:
+            max_connections: 100 # 默认100,最大连接池值,即峰值时,操作进行排队
+            min_connections: 10 # 默认等同于max_size,最小连接池值,即空闲时也维持
+            connection_timeout: 8 # 默认8秒,获取连接超时时间(最大255)
+            max_lifetime: 1800 # 默认1800 秒,连接最大存活时间
+            idle_timeout: 60 # 默认60 秒,连接空闲回收
+            check_health: false # 默认false,连接池维持健康测试
 guard:
-  endpoint: http://127.0.0.1:18080 # guard 内部gRPC地址，session向guard注册、上报事件、申请路由
+    endpoint: http://127.0.0.1:18080 # guard 内部gRPC地址，session向guard注册、上报事件、申请路由
 
 server:
-  grpc:
-    addr: 127.0.0.1:19081 # session内部控制gRPC地址，注册到guard并用于节点间控制
-    tls:
-      enabled: false # 推荐生产启用；启用后节点上报grpcs，并要求配置证书。
-      certificate_path: ""
-      private_key_path: ""
-  session:
-    domain: "3402000000" #服务端sip域 5101000000 3402000000
-    domain_id: "34020000002000000001" #服务端sip域ID,guard注册时节点ID 51010000002000000001 34020000002000000001
-    lan_ip: 172.18.38.186 # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
-    wan_ip: 192.168.0.9 # 公网IP
-    lan_port: 35600 #lan端口
-    wan_port: 35600 #wan端口
-  pics:
-    push_url: http://127.0.0.1:28567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
-    storage_path: ./pics/raw
-    storage_format: jpeg
-    num: 1
-    interval: 1
-    max_upload_bytes: 10485760
-  alarm:
-    enable: false #是否开启告警事件上报guard，默认false
-    priority: 4 #告警等级 1-4,默认最低4
-  download:
-    storage_path: ./videos/down #云端录像下载临时存储地址；guard统一管理业务记录，session只保留本地输出路径
+    grpc:
+        addr: 127.0.0.1:19081 # session内部控制gRPC地址，注册到guard并用于节点间控制
+        tls:
+            enabled: false # 推荐生产启用；启用后节点上报grpcs，并要求配置证书。
+            certificate_path: ""
+            private_key_path: ""
+    session:
+        domain: "3402000000" #服务端sip域 5101000000 3402000000
+        domain_id: "34020000002000000001" #服务端sip域ID,guard注册时节点ID 51010000002000000001 34020000002000000001
+        lan_ip: 172.18.38.186 # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
+        wan_ip: 192.168.0.9 # 公网IP
+        lan_port: 35600 #lan端口
+        wan_port: 35600 #wan端口
+    pics:
+        push_url: http://127.0.0.1:28567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
+        storage_path: ./pics/raw
+        storage_format: jpeg
+        num: 1
+        interval: 1
+        max_upload_bytes: 10485760
+    alarm:
+        enable: false #是否开启告警事件上报guard，默认false
+        priority: 4 #告警等级 1-4,默认最低4
+    download:
+        storage_path: ./videos/down #云端录像下载临时存储地址；guard统一管理业务记录，session只保留本地输出路径

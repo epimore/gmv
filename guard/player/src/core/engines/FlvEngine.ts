@@ -1,6 +1,7 @@
 import { GmvErrorCode } from '../utils/ErrorCode';
 import type { GmvSource } from '../types';
 import { BaseEngine } from './BaseEngine';
+import mpegts from 'mpegts.js';
 
 export class FlvEngine extends BaseEngine {
   readonly protocol = 'flv' as const;
@@ -8,13 +9,6 @@ export class FlvEngine extends BaseEngine {
 
   async attach(video: HTMLVideoElement, source: GmvSource): Promise<void> {
     this.video = video;
-
-    let mpegts: any;
-    try {
-      mpegts = (await import(/* @vite-ignore */ 'mpegts.js')).default;
-    } catch {
-      throw new Error(`${GmvErrorCode.EngineLoadFailed}: mpegts.js 未安装或加载失败`);
-    }
 
     if (!mpegts.getFeatureList?.().mseLivePlayback) {
       throw new Error(`${GmvErrorCode.UnsupportedProtocol}: 当前浏览器不支持 MSE FLV 播放`);
