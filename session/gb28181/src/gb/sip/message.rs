@@ -1,5 +1,5 @@
 use base::bytes::Bytes;
-use gmv_pjsip::message::extract_tag;
+use gmv_pjsip::message::{extract_tag, extract_uri};
 use gmv_pjsip::{
     SipAssociation, SipMethod, SipRuntimeEvent, SipRuntimeEventKind, SipTransportProtocol,
 };
@@ -39,6 +39,7 @@ pub struct GbMessageEvent {
     pub kind: GbMessageKind,
     pub method: Option<SipMethod>,
     pub device_id: Option<String>,
+    pub source_device_id: Option<String>,
     pub call_id: Option<String>,
     pub cseq: Option<u32>,
     pub association: SipAssociation,
@@ -59,6 +60,7 @@ impl GbMessageEvent {
         kind: GbMessageKind,
         method: Option<SipMethod>,
         device_id: Option<String>,
+        source_device_id: Option<String>,
         call_id: Option<String>,
         cseq: Option<u32>,
         association: SipAssociation,
@@ -75,6 +77,7 @@ impl GbMessageEvent {
         let xml_sn = xml::sn(&text);
         let xml_device_id = xml::device_id(&text);
         let snapshot_session_id = snapshot_session_id_hint.or_else(|| xml::session_id(&text));
+        let source_device_id = source_device_id.or_else(|| device_id.clone());
         let kind = match xml_cmd_type.as_deref() {
             Some("Keepalive") => GbMessageKind::Keepalive,
             Some("Catalog") => GbMessageKind::Catalog,
@@ -100,7 +103,8 @@ impl GbMessageEvent {
         Self {
             kind,
             method,
-            device_id: device_id.or_else(|| xml_device_id.clone()),
+            device_id,
+            source_device_id,
             call_id,
             cseq,
             association,
@@ -139,6 +143,7 @@ impl GbMessageEvent {
             kind,
             Some(method),
             None,
+            event.from_header.as_deref().and_then(sip_user),
             event.call_id.clone(),
             event.cseq,
             association,
@@ -151,6 +156,15 @@ impl GbMessageEvent {
             None,
         ))
     }
+}
+
+fn sip_user(header: &str) -> Option<String> {
+    let uri = extract_uri(header)?;
+    let value = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))?;
+    let user = value.split('@').next()?.trim();
+    (!user.is_empty()).then(|| user.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -378,6 +392,7 @@ mod tests {
             GbMessageKind::Unknown,
             Some(SipMethod::Message),
             None,
+            None,
             Some("message-classify".into()),
             Some(1),
             association(),
@@ -390,6 +405,59 @@ mod tests {
             None,
         )
         .kind
+    }
+
+    #[test]
+    fn native_message_keeps_source_device_separate_from_xml_device() {
+        let association = association();
+        let body = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n\
+<Notify>\r\n\
+<CmdType>Alarm</CmdType>\r\n\
+<SN>1</SN>\r\n\
+<DeviceID>34020000001320000102</DeviceID>\r\n\
+</Notify>\r\n";
+        let event = gmv_pjsip::SipRuntimeEvent {
+            event_id: 1,
+            kind: gmv_pjsip::SipRuntimeEventKind::RequestReceived,
+            protocol: Some(SipTransportProtocol::Udp),
+            status_code: None,
+            pj_status: 0,
+            method: Some("MESSAGE".into()),
+            call_id: Some("alarm".into()),
+            cseq: Some(20),
+            content_type: Some(GB_XML_CONTENT_TYPE.into()),
+            body: body.as_bytes().to_vec(),
+            local_addr: Some(association.local_addr),
+            remote_addr: Some(association.remote_addr),
+            lookup_id: None,
+            device_id: None,
+            realm: None,
+            expires_seconds: None,
+            contact: None,
+            user_agent: None,
+            gb_version: None,
+            operation_id: None,
+            association_id: None,
+            from_header: Some("<sip:34020000001110000009@3402000000>".into()),
+            to_header: Some("<sip:34020000002000000001@3402000000>".into()),
+            subject: None,
+            event: None,
+            subscription_state: None,
+            dialog_snapshot: None,
+        };
+
+        let message = GbMessageEvent::from_native(&event).expect("MESSAGE should be parsed");
+
+        assert_eq!(message.kind, GbMessageKind::Alarm);
+        assert_eq!(message.device_id, None);
+        assert_eq!(
+            message.source_device_id.as_deref(),
+            Some("34020000001110000009")
+        );
+        assert_eq!(
+            message.xml_device_id.as_deref(),
+            Some("34020000001320000102")
+        );
     }
 
     #[test]

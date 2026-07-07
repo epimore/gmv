@@ -17,8 +17,9 @@ use gmv_pjsip::gb28181::xml::{
     CONTENT_TYPE_MANSRTSP, build_mansrtsp_seek_body, build_mansrtsp_speed_body,
 };
 use gmv_pjsip::{
-    SipDialogMethod, SipDialogRequest, SipDialogSnapshot, SipInviteIdentity, SipInviteResponse,
-    SipOutboundInvite, SipOutboundMessage, SipRestoredDialogRequest,
+    SipDialogMethod, SipDialogRequest, SipDialogSnapshot, SipIncomingInviteAllow,
+    SipInviteIdentity, SipInviteResponse, SipOutboundInvite, SipOutboundMessage,
+    SipRestoredDialogRequest,
 };
 
 use crate::gb::SessionConf;
@@ -337,6 +338,20 @@ pub async fn broadcast_notify_and_wait(
         source_id.clone(),
         INVITE_WAIT_TIMEOUT,
     );
+    if let Err(err) =
+        NativeSipRuntimeHandle::global()?.allow_incoming_invite(SipIncomingInviteAllow {
+            target_id: target_id.to_string(),
+            source_id: source_id.clone(),
+            remote_address: host.clone(),
+            protocol,
+            ttl: INVITE_WAIT_TIMEOUT,
+        })
+    {
+        SipRuntimeCache::global().remove_broadcast_response_waiter(&response_key);
+        reject_buffered_broadcast_invite(&mut invite_rx);
+        SipRuntimeCache::global().remove_broadcast_invite_waiter(target_id);
+        return Err(err);
+    }
     let request = CreateDeviceMessageRequest::broadcast_notify(
         target_id, host, port, protocol, sn, &source_id,
     );

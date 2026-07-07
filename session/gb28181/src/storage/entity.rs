@@ -88,6 +88,30 @@ pub struct GmvOauth {
     pub heartbeat_sec: i64,
 }
 serde_default!(default_heartbeat_sec, i64, 60);
+
+const GMV_OAUTH_SELECT_FIELDS: &str = "\
+DEVICE_ID AS device_id,\
+DOMAIN_ID AS domain_id,\
+DOMAIN AS domain,\
+PWD AS pwd,\
+COALESCE(PWD_CHECK,0) AS pwd_check,\
+ALIAS AS alias,\
+COALESCE(STATUS,1) AS status,\
+COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec";
+
+const GMV_OAUTH_SELECT_BY_DEVICE_ID: &str = "\
+select \
+DEVICE_ID AS device_id,\
+DOMAIN_ID AS domain_id,\
+DOMAIN AS domain,\
+PWD AS pwd,\
+COALESCE(PWD_CHECK,0) AS pwd_check,\
+ALIAS AS alias,\
+COALESCE(STATUS,1) AS status,\
+COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec \
+from GB28181_OAUTH \
+where DEVICE_ID=? and COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1";
+
 impl GmvOauth {
     pub fn heartbeat_sec_u8(&self) -> GlobalResult<u8> {
         if self.heartbeat_sec <= 0 {
@@ -116,7 +140,7 @@ impl GmvOauth {
                 .get(device_id)
                 .cloned());
         }
-        let res = db::fetch_optional_as!(GmvOauth, "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec from GB28181_OAUTH where device_id=? and COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1", device_id)
+        let res = db::fetch_optional_as!(GmvOauth, GMV_OAUTH_SELECT_BY_DEVICE_ID, device_id)
             .hand_log(|msg| error!("{msg}"))?;
         Ok(res)
     }
@@ -142,9 +166,10 @@ impl GmvOauth {
         match db::backend() {
             #[cfg(feature = "db-mysql")]
             db::SessionDatabaseBackend::Mysql => {
-                let mut builder = sqlx::QueryBuilder::<MySql>::new(
-                    "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec \
-             from GB28181_OAUTH where COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1 and device_id in (",
+                let mut builder = sqlx::QueryBuilder::<MySql>::new("select ");
+                builder.push(GMV_OAUTH_SELECT_FIELDS).push(
+                    " from GB28181_OAUTH where COALESCE(DEL,0)=0 \
+                         and COALESCE(STATUS,1)=1 and DEVICE_ID in (",
                 );
                 let mut separated = builder.separated(", ");
                 for device_id in device_ids {
@@ -159,9 +184,10 @@ impl GmvOauth {
             }
             #[cfg(feature = "db-sqlite")]
             db::SessionDatabaseBackend::Sqlite => {
-                let mut builder = sqlx::QueryBuilder::<Sqlite>::new(
-                    "select device_id,domain_id,domain,pwd,COALESCE(pwd_check,0) AS pwd_check,alias,COALESCE(status,1) AS status,COALESCE(heartbeat_sec,60) AS heartbeat_sec \
-             from GB28181_OAUTH where COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1 and device_id in (",
+                let mut builder = sqlx::QueryBuilder::<Sqlite>::new("select ");
+                builder.push(GMV_OAUTH_SELECT_FIELDS).push(
+                    " from GB28181_OAUTH where COALESCE(DEL,0)=0 \
+                         and COALESCE(STATUS,1)=1 and DEVICE_ID in (",
                 );
                 let mut separated = builder.separated(", ");
                 for device_id in device_ids {
@@ -734,6 +760,22 @@ mod tests {
         init_cfg(
             "/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/gb28181/config.yml".to_string(),
         );
+    }
+
+    #[test]
+    fn oauth_select_fields_alias_schema_columns_for_from_row() {
+        for field in [
+            "DEVICE_ID AS device_id",
+            "DOMAIN_ID AS domain_id",
+            "DOMAIN AS domain",
+            "PWD AS pwd",
+            "COALESCE(PWD_CHECK,0) AS pwd_check",
+            "ALIAS AS alias",
+            "COALESCE(STATUS,1) AS status",
+            "COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec",
+        ] {
+            assert!(GMV_OAUTH_SELECT_FIELDS.contains(field), "missing {field}");
+        }
     }
 
     #[test]

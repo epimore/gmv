@@ -16,9 +16,10 @@ use base::tokio::time;
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::{
     AuthAlgorithm, AuthCredential, CredentialKind, SipAuthLookupResult, SipDialogRequest,
-    SipInviteResponse, SipOutboundInvite, SipOutboundMessage, SipOutboundSubscribe,
-    SipRestoredDialogRequest, SipRuntime, SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind,
-    SipRuntimeSockets, SipTransportProtocol,
+    SipIncomingInviteAllow, SipInviteResponse, SipOutboundInvite, SipOutboundMessage,
+    SipOutboundSubscribe, SipRegisteredSource, SipRestoredDialogRequest, SipRuntime,
+    SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind, SipRuntimeSockets,
+    SipTransportProtocol,
 };
 
 use super::adapter::{GbSipEvent, apply_business_event};
@@ -63,6 +64,9 @@ enum RuntimeCommand {
     RespondInvite(SipInviteResponse),
     SendSubscribe(SipOutboundSubscribe),
     CloseTransport { association_id: u64, status: i32 },
+    AllowRegisteredSource(SipRegisteredSource),
+    RemoveRegisteredSource(String),
+    AllowIncomingInvite(SipIncomingInviteAllow),
 }
 
 #[derive(Clone)]
@@ -235,6 +239,18 @@ impl NativeSipRuntimeHandle {
                  err={err}"
             );
         }
+    }
+
+    pub fn allow_registered_source(&self, source: SipRegisteredSource) -> GlobalResult<()> {
+        self.try_send(RuntimeCommand::AllowRegisteredSource(source))
+    }
+
+    pub fn remove_registered_source(&self, device_id: String) -> GlobalResult<()> {
+        self.try_send(RuntimeCommand::RemoveRegisteredSource(device_id))
+    }
+
+    pub fn allow_incoming_invite(&self, allow: SipIncomingInviteAllow) -> GlobalResult<()> {
+        self.try_send(RuntimeCommand::AllowIncomingInvite(allow))
     }
 
     fn try_send(&self, command: RuntimeCommand) -> GlobalResult<()> {
@@ -425,6 +441,32 @@ impl NativeSipRuntimeService {
                                         "close native SIP transport failed: association_id={}, \
                                          err={err}",
                                         association_id
+                                    );
+                                }
+                            }
+                            RuntimeCommand::AllowRegisteredSource(source) => {
+                                if let Err(err) = runtime.allow_registered_source(&source) {
+                                    warn!(
+                                        "allow native SIP registered source failed: \
+                                         device_id={}, remote_address={}, err={err}",
+                                        source.device_id, source.remote_address
+                                    );
+                                }
+                            }
+                            RuntimeCommand::RemoveRegisteredSource(device_id) => {
+                                if let Err(err) = runtime.remove_registered_source(&device_id) {
+                                    warn!(
+                                        "remove native SIP registered source failed: \
+                                         device_id={device_id}, err={err}"
+                                    );
+                                }
+                            }
+                            RuntimeCommand::AllowIncomingInvite(allow) => {
+                                if let Err(err) = runtime.allow_incoming_invite(&allow) {
+                                    warn!(
+                                        "allow native SIP incoming INVITE failed: \
+                                         target_id={}, source_id={}, remote_address={}, err={err}",
+                                        allow.target_id, allow.source_id, allow.remote_address
                                     );
                                 }
                             }

@@ -183,14 +183,18 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
 
 fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
     let items = super::xml::parse_items(&event.body)?;
-    let device_id = event
+    let business_device_id = event
         .device_id
         .as_deref()
         .or(event.xml_device_id.as_deref());
+    let source_device_id = event
+        .source_device_id
+        .as_deref()
+        .or(event.device_id.as_deref());
 
     match event.kind {
         GbMessageKind::Keepalive => {
-            let Some(device_id) = device_id else {
+            let Some(device_id) = business_device_id else {
                 warn!("keepalive MESSAGE missing device id");
                 return Ok(());
             };
@@ -200,10 +204,13 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
             )?;
         }
         GbMessageKind::DeviceInfo => {
+            let Some(_) = validate_message_source(event, source_device_id)? else {
+                return Ok(());
+            };
             db_task::submit(DbTask::UpdateDeviceExtInfo(items));
         }
         GbMessageKind::Catalog => {
-            if let Some(device_id) = device_id {
+            if let Some(device_id) = validate_message_source(event, source_device_id)? {
                 if matches!(event.method.as_ref(), Some(SipMethod::Notify))
                     && !super::subscription::accept_catalog_notify(event, device_id)
                 {
@@ -222,12 +229,20 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
                 warn!("catalog MESSAGE missing device id");
             }
         }
-        GbMessageKind::Alarm => dispatch_alarm(device_id, items)?,
+        GbMessageKind::Alarm => {
+            let Some(_) = validate_message_source(event, source_device_id)? else {
+                return Ok(());
+            };
+            dispatch_alarm(business_device_id, items)?;
+        }
         GbMessageKind::MediaStatus => {
+            let Some(device_id) = validate_message_source(event, source_device_id)? else {
+                return Ok(());
+            };
             let channel_id = super::xml::value(&items, super::xml::NOTIFY_DEVICE_ID);
             let notify_type = super::xml::value(&items, super::xml::NOTIFY_TYPE);
             if notify_type.is_none_or(|value| value == "121") {
-                if let (Some(device_id), Some(channel_id)) = (device_id, channel_id) {
+                if let Some(channel_id) = channel_id {
                     for stream_id in
                         GeneralCache::stream_ids_for_media_status(device_id, channel_id)
                     {
@@ -237,6 +252,9 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
             }
         }
         GbMessageKind::Broadcast => {
+            let Some(_) = validate_message_source(event, source_device_id)? else {
+                return Ok(());
+            };
             let sn = event
                 .xml_sn
                 .as_deref()
@@ -255,6 +273,9 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
             }
         }
         GbMessageKind::UploadSnapshotFinished | GbMessageKind::Notify => {
+            let Some(_) = validate_message_source(event, source_device_id)? else {
+                return Ok(());
+            };
             if let Some(session_id) = event.snapshot_session_id.as_deref() {
                 let key = crate::service::edge_serv::rebuild_snapshot_wait_key(session_id);
                 if GeneralCache::notify_snapshot_wait(&key) {
@@ -265,6 +286,24 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn validate_message_source<'a>(
+    event: &GbMessageEvent,
+    device_id: Option<&'a str>,
+) -> GlobalResult<Option<&'a str>> {
+    let Some(device_id) = device_id else {
+        warn!(
+            "ignore SIP business message without device id: kind={:?}, call_id={:?}",
+            event.kind, event.call_id
+        );
+        return Ok(None);
+    };
+    Register::validate_registered_source(
+        device_id,
+        &base_association_from_pjsip(&event.association),
+    )?;
+    Ok(Some(device_id))
 }
 
 fn dispatch_alarm(device_id: Option<&str>, items: Vec<(String, String)>) -> GlobalResult<()> {

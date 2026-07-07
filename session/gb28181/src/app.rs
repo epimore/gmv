@@ -89,7 +89,14 @@ impl
         banner(
             Self::cli_basic().version,
             app_info.http.port,
-            app_info.session_conf.wan_port,
+            format!(
+                "{}:{}",
+                app_info.session_conf.lan_ip, app_info.session_conf.wan_port
+            ),
+            format!(
+                "{}:{}",
+                app_info.session_conf.wan_ip, app_info.session_conf.wan_port
+            ),
             |msg| info!("{msg}"),
         );
         Ok((app_info, (http_listener, tu, grpc_listener)))
@@ -241,9 +248,14 @@ impl
     }
 }
 
-fn banner<F: FnOnce(String)>(version: &str, http_port: u16, sip_port: u16, f: F) {
+fn banner<F: FnOnce(String)>(
+    version: &str,
+    http_port: u16,
+    sip_listen_addr: String,
+    sip_advertised_addr: String,
+    f: F,
+) {
     let http_addr = format!("0.0.0.0:{http_port}");
-    let sip_addr = format!("0.0.0.0:{sip_port}");
     let msg = format!(
         r#"
 ======================================================================
@@ -253,9 +265,10 @@ fn banner<F: FnOnce(String)>(version: &str, http_port: u16, sip_port: u16, f: F)
 │ Service          │ Address              │ Protocols    │  Status      │
 ├──────────────────┼──────────────────────┼──────────────┼──────────────┤
 │ Session HTTP     │ {:<20} │ HTTP         │ 🟢 Ready     │
-│ GB28181 SIP      │ {:<20} │ TCP, UDP     │ 🟢 Listening │
+│ SIP Listen       │ {:<20} │ TCP, UDP     │ 🟢 Listening │
+│ SIP Advertised   │ {:<20} │ TCP, UDP     │ 🟢 Ready     │
 └──────────────────┴──────────────────────┴──────────────┴──────────────┘"#,
-        version, http_addr, sip_addr
+        version, http_addr, sip_listen_addr, sip_advertised_addr
     );
     f(msg);
 }

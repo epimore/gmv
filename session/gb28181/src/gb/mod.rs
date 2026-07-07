@@ -11,7 +11,6 @@ use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::SipRuntimeSockets;
 use regex::Regex;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
-use std::str::FromStr;
 
 pub mod sip;
 
@@ -48,10 +47,8 @@ impl SessionConf {
     }
 
     pub fn listen_gb_server(&self) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
-        let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", self.wan_port))
-            .hand_log(|msg| error! {"{msg}"})?;
-        let res = net::listen(net::state::Protocol::ALL, socket_addr);
-        res
+        let socket_addr = SocketAddr::from((self.lan_ip, self.wan_port));
+        net::listen(net::state::Protocol::ALL, socket_addr)
     }
 
     pub async fn run(

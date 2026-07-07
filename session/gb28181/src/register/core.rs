@@ -11,6 +11,7 @@ use base::once_cell::sync::OnceCell;
 use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
+use gmv_pjsip::{SipRegisteredSource, SipTransportProtocol};
 
 use crate::gb::sip::NativeSipRuntimeHandle;
 use crate::register::event::{self, Event};
@@ -268,6 +269,7 @@ impl Register {
 
         let heartbeat_sec = ds.heartbeat_sec;
         let registration_duration = ds.registration_duration;
+        let association = ds.association.clone();
         let new_generation = arc
             .io_map
             .session
@@ -294,6 +296,7 @@ impl Register {
                             registration_duration,
                         )
                         .hand_log(|e| error!("insert device registration timer failed: {e}"))?;
+                    sync_native_registered_source(device_id.as_ref(), &association);
                     stream_close::retry_device(device_id.as_ref());
                     talk_close::retry_device(device_id.as_ref());
                     return Ok(());
@@ -332,6 +335,7 @@ impl Register {
             .hand_log(|e| error!("insert device registration timer failed: {e}"))?;
 
         arc.io_map.insert(device_id.clone(), ds);
+        sync_native_registered_source(device_id.as_ref(), &association);
         if !new_generation {
             stream_close::retry_device(device_id.as_ref());
             talk_close::retry_device(device_id.as_ref());
@@ -344,6 +348,7 @@ impl Register {
             Self::scheduler().remove_register(&TimeScheduleKey::Device3Heart(device_id.clone()));
         let _ = Self::scheduler()
             .remove_register(&TimeScheduleKey::DeviceRegistration(device_id.clone()));
+        remove_native_registered_source(device_id.as_ref());
 
         if let Some((_, session)) = inner.io_map.session.remove(device_id) {
             let generation = session.connection_generation.load(Ordering::Acquire);
@@ -431,6 +436,40 @@ impl Register {
         Self::get().inner.io_map.connected_session(device_id)
     }
 
+    pub fn validate_registered_source(
+        device_id: &str,
+        association: &Association,
+    ) -> GlobalResult<()> {
+        let session = Self::get_connected_device_session(device_id).ok_or_else(|| {
+            invalid_device_lease(
+                device_id,
+                "device is not connected for SIP business message",
+            )
+        })?;
+        if session.association.protocol != association.protocol {
+            return Err(invalid_device_lease(
+                device_id,
+                "SIP business message transport does not match registration",
+            ));
+        }
+        if matches!(association.protocol, Protocol::UDP) {
+            if session.association.remote_addr.ip() == association.remote_addr.ip() {
+                return Ok(());
+            }
+            return Err(invalid_device_lease(
+                device_id,
+                "SIP business message source IP does not match registration",
+            ));
+        }
+        if session.association == *association {
+            return Ok(());
+        }
+        Err(invalid_device_lease(
+            device_id,
+            "SIP business message association does not match registration",
+        ))
+    }
+
     pub fn has_session(device_id: &str) -> bool {
         Self::get().inner.io_map.session.contains_key(device_id)
     }
@@ -452,6 +491,33 @@ fn invalid_device_lease(device_id: &str, message: &str) -> GlobalError {
     GlobalError::new_sys_error(message, |log_message| {
         warn!("device_id={device_id}; {log_message}")
     })
+}
+
+fn sync_native_registered_source(device_id: &str, association: &Association) {
+    let protocol = match association.protocol {
+        Protocol::UDP => SipTransportProtocol::Udp,
+        Protocol::TCP => SipTransportProtocol::Tcp,
+        Protocol::ALL => return,
+    };
+    let Ok(runtime) = NativeSipRuntimeHandle::global() else {
+        return;
+    };
+    if let Err(err) = runtime.allow_registered_source(SipRegisteredSource {
+        device_id: device_id.to_string(),
+        remote_address: association.remote_addr.ip().to_string(),
+        protocol,
+    }) {
+        warn!("sync native SIP registered source failed: device_id={device_id}, err={err}");
+    }
+}
+
+fn remove_native_registered_source(device_id: &str) {
+    let Ok(runtime) = NativeSipRuntimeHandle::global() else {
+        return;
+    };
+    if let Err(err) = runtime.remove_registered_source(device_id.to_string()) {
+        warn!("remove native SIP registered source failed: device_id={device_id}, err={err}");
+    }
 }
 
 #[cfg(test)]
