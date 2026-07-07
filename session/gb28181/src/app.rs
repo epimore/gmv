@@ -65,10 +65,7 @@ impl
                 ));
             }
             #[cfg(feature = "db-sqlite")]
-            SessionDatabaseBackend::Sqlite => {
-                let _ = db::sqlite_pool();
-                info!("session database backend: sqlite");
-            }
+            SessionDatabaseBackend::Sqlite => info!("session database backend: sqlite"),
             #[cfg(not(feature = "db-sqlite"))]
             SessionDatabaseBackend::Sqlite => {
                 return Err(db::backend_not_enabled_global(
@@ -244,23 +241,21 @@ impl
     }
 }
 
-fn banner<F: FnOnce(String)>(version: &str, http_port: u16, rtp_port: u16, f: F) {
+fn banner<F: FnOnce(String)>(version: &str, http_port: u16, sip_port: u16, f: F) {
+    let http_addr = format!("0.0.0.0:{http_port}");
+    let sip_addr = format!("0.0.0.0:{sip_port}");
     let msg = format!(
         r#"
-            ___   __  __  __   __    _      ___     ___     ___     ___     ___     ___     _  _
-    o O O  / __| |  \/  | \ \ / /   (_)    / __|   | __|   / __|   / __|   |_ _|   / _ \   | \| |
-   o      | (_ | | |\/| |  \ V /     _     \__ \   | _|    \__ \   \__ \    | |   | (_) |  | .` |
-  o0__[O]  \___| |_|__|_|  _\_/_   _(_)_   |___/   |___|   |___/   |___/   |___|   \___/   |_|\_|
- [======|_|""G""|_|""M""|_|""V""|_|"":""|_|""S""|_|""E""|_|""S""|_|""S""|_|""I""|_|""O""|_|""N""|==]
-./0--000'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'"`-0-0-'
-{:>30}: {}
-┌──────────────────┬──────────────────┬──────────────┬───────────────┐
-│ Service          │ Address          │ Protocols    │  Status       │
-├──────────────────┼──────────────────┼──────────────┼───────────────┤
-│ HTTP Server      │ 0.0.0.0:{:<5}    │ HTTP         │ 🟢 Ready      │
-│ GB28181 Session  │ 0.0.0.0:{:<5}    │ TCP, UDP     │ 🟢 Listening  │
-└──────────────────┴──────────────────┴──────────────┴───────────────┘"#,
-        "Version", version, http_port, rtp_port
+======================================================================
+              [GMV:SESSION-GB28181]   Version: {}
+======================================================================
+┌──────────────────┬──────────────────────┬──────────────┬──────────────┐
+│ Service          │ Address              │ Protocols    │  Status      │
+├──────────────────┼──────────────────────┼──────────────┼──────────────┤
+│ Session HTTP     │ {:<20} │ HTTP         │ 🟢 Ready     │
+│ GB28181 SIP      │ {:<20} │ TCP, UDP     │ 🟢 Listening │
+└──────────────────┴──────────────────────┴──────────────┴──────────────┘"#,
+        version, http_addr, sip_addr
     );
     f(msg);
 }

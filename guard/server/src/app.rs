@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::warn;
+use base::log::{info, warn};
 use base::logger;
 use base::tokio_util::sync::CancellationToken;
 
@@ -62,6 +62,12 @@ impl Daemon<GuardListeners> for AppInfo {
                 config.grpc.bind_addr
             ))
         })?;
+        banner(
+            Self::cli_basic().version,
+            &web_config.bind_addr.to_string(),
+            &config.grpc.bind_addr.to_string(),
+            |msg| info!("{msg}"),
+        );
         Ok((Self { config }, GuardListeners { web, rpc }))
     }
 
@@ -227,6 +233,23 @@ fn now_ms() -> GuardResult<i64> {
         .map_err(|error| GuardError::InvalidConfig(format!("system clock before epoch: {error}")))?
         .as_millis()
         .min(i64::MAX as u128) as i64)
+}
+
+fn banner<F: FnOnce(String)>(version: &str, http_addr: &str, grpc_addr: &str, f: F) {
+    let msg = format!(
+        r#"
+======================================================================
+                [GMV:GUARD-SERVER]   Version: {}
+======================================================================
+┌──────────────────┬──────────────────────┬──────────────┬──────────────┐
+│ Service          │ Address              │ Protocols    │  Status      │
+├──────────────────┼──────────────────────┼──────────────┼──────────────┤
+│ Guard HTTP       │ {:<20} │ HTTP         │ 🟢 Ready     │
+│ Guard RPC        │ {:<20} │ gRPC         │ 🟢 Listening │
+└──────────────────┴──────────────────────┴──────────────┴──────────────┘"#,
+        version, http_addr, grpc_addr
+    );
+    f(msg);
 }
 
 fn global_error(message: String) -> GlobalError {

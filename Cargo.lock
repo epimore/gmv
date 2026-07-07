@@ -197,7 +197,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "avai"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "base",
  "base_rpc",
@@ -1292,7 +1292,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "gmv-domain"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "base",
  "paste",
@@ -1301,7 +1301,7 @@ dependencies = [
 
 [[package]]
 name = "gmv-guard-server"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "argon2",
  "axum",
@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "gmv-nodec"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "base",
  "base_rpc",
@@ -1340,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "gmv-protocol"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "prost",
  "prost-types",
@@ -1352,11 +1352,11 @@ dependencies = [
 
 [[package]]
 name = "gmv-session-core"
-version = "2.1.0-release"
+version = "2.2.0-release"
 
 [[package]]
 name = "gmv-session-gb28181"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "anyhow",
  "axum",
@@ -1382,14 +1382,14 @@ dependencies = [
 
 [[package]]
 name = "gmv-session-onvif"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "gmv-session-core",
 ]
 
 [[package]]
 name = "gmv-stream"
-version = "2.1.0-release"
+version = "2.2.0-release"
 dependencies = [
  "axum",
  "axum-server",
