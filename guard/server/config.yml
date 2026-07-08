@@ -81,7 +81,7 @@ guard:
       idle_timeout_sec: 60
       check_health: false
     sqlite:
-      path: guard/server/data/guard.db
+      path: data/guard.db
     # mysql:
     #   host: 127.0.0.1
     #   port: 3306

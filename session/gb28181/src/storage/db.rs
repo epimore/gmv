@@ -1,3 +1,5 @@
+#[cfg(feature = "db-sqlite")]
+use std::path::Path;
 use std::path::PathBuf;
 #[cfg(feature = "db-sqlite")]
 use std::sync::LazyLock;
@@ -111,6 +113,8 @@ static SQLITE_POOL: LazyLock<SqlitePool> = LazyLock::new(|| {
     let mut pool = DatabasePoolConfig::default();
     pool.max_size = config.sqlite.max_connections;
     pool.min_idle = Some(0);
+    ensure_sqlite_parent(&config.sqlite.path)
+        .expect("invalid session sqlite directory configuration");
     build_sqlite_pool(SqliteConnectionConfig::new(config.sqlite.path), pool)
         .expect("invalid session sqlite pool configuration")
 });
@@ -122,6 +126,22 @@ pub fn sqlite_pool() -> &'static SqlitePool {
 
 pub fn backend() -> SessionDatabaseBackend {
     SessionDatabaseConfig::get().backend
+}
+
+#[cfg(feature = "db-sqlite")]
+fn ensure_sqlite_parent(path: &Path) -> GlobalResult<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            GlobalError::new_sys_error(
+                &format!("create session SQLite directory failed: {error}"),
+                |msg| error!("{msg}"),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "db-mysql")]
@@ -174,6 +194,35 @@ pub(crate) fn backend_not_enabled_sqlx(backend: SessionDatabaseBackend) -> base_
         "session database backend {} is not enabled in this binary",
         backend.as_str()
     ))
+}
+
+#[cfg(all(test, feature = "db-sqlite"))]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn ensure_sqlite_parent_creates_missing_directory() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir()
+            .join("gmv-session-gb28181-sqlite-parent")
+            .join(unique.to_string())
+            .join("nested");
+        let path = dir.join("session-gb28181.db");
+
+        ensure_sqlite_parent(&path).expect("create sqlite parent");
+
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir()
+                .join("gmv-session-gb28181-sqlite-parent")
+                .join(unique.to_string()),
+        );
+    }
 }
 
 macro_rules! execute {

@@ -225,6 +225,35 @@ fn database_error(error: impl std::fmt::Display) -> GuardError {
     GuardError::Conflict(format!("database initialization failed: {error}"))
 }
 
+#[cfg(all(test, feature = "db-sqlite"))]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn ensure_parent_creates_missing_sqlite_directory() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir()
+            .join("gmv-guard-sqlite-parent")
+            .join(unique.to_string())
+            .join("nested");
+        let path = dir.join("guard.db");
+
+        ensure_parent(&path).expect("create sqlite parent");
+
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir()
+                .join("gmv-guard-sqlite-parent")
+                .join(unique.to_string()),
+        );
+    }
+}
+
 #[cfg(not(all(feature = "db-mysql", feature = "db-sqlite")))]
 fn database_backend_not_enabled(backend: &str) -> GuardError {
     GuardError::InvalidConfig(format!(
