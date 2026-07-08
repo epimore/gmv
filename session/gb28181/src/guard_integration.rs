@@ -590,7 +590,7 @@ impl SessionControl for SessionControlRpc {
             },
             Err(err) => ControlPtzResponse {
                 accepted: false,
-                error: Some(error("ptz_failed", &err.to_string())),
+                error: Some(gmv_nodec::error::global_error_detail("ptz_failed", &err)),
             },
         };
         Ok(tonic::Response::new(response))
@@ -633,7 +633,10 @@ impl SessionControl for SessionControlRpc {
             },
             Err(err) => SnapshotImageResponse {
                 session_id: String::new(),
-                error: Some(error("snapshot_failed", &err.to_string())),
+                error: Some(gmv_nodec::error::global_error_detail(
+                    "snapshot_failed",
+                    &err,
+                )),
             },
         };
         Ok(tonic::Response::new(response))
@@ -1097,7 +1100,10 @@ impl SessionHook for SessionHookRpc {
                     Err(err) => SessionHookResponse {
                         accepted: false,
                         payload_json: vec![],
-                        error: Some(error("end_record_failed", &err.to_string())),
+                        error: Some(gmv_nodec::error::global_error_detail(
+                            "end_record_failed",
+                            &err,
+                        )),
                     },
                 }
             }
@@ -1563,7 +1569,10 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
     DeviceStreamResponse {
         stream_id: String::new(),
         state: DeviceStreamState::Failed as i32,
-        error: Some(error("session_business_failed", &err.to_string())),
+        error: Some(gmv_nodec::error::global_error_detail(
+            "session_business_failed",
+            &err,
+        )),
         endpoint: String::new(),
         video_codec: String::new(),
         audio_codec: String::new(),
@@ -1678,11 +1687,7 @@ fn ptz_model(request: &ControlPtzRequest) -> PtzControlModel {
 }
 
 fn error(code: &str, message: &str) -> ErrorDetail {
-    ErrorDetail {
-        code: code.to_string(),
-        message: message.to_string(),
-        metadata: HashMap::new(),
-    }
+    gmv_nodec::error::error_detail(code, message)
 }
 
 pub fn operation(operation_id: &str) -> OperationRef {

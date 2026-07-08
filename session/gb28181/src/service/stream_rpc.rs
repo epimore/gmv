@@ -9,6 +9,7 @@ use gmv_domain::info::obj::{
     StreamInfoQo, StreamKey, StreamRecordInfo, TalkAnswerReq, TalkCloseReq, TalkOpenReq,
     TalkOpenResp,
 };
+use gmv_nodec::error as node_error;
 use gmv_protocol::common::v1::ErrorDetail;
 use gmv_protocol::stream::v1::{
     StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamUnitResponse,
@@ -112,14 +113,20 @@ fn decode_json<T: DeserializeOwned>(response: StreamJsonResponse, action: &str) 
 }
 
 fn error_detail(error: ErrorDetail, action: &str) -> GlobalError {
-    let message = if error.message.is_empty() {
-        error.code.as_str()
-    } else {
-        error.message.as_str()
-    };
-    GlobalError::new_biz_error(BaseErrorCode::Internal.code(), message, |msg| {
-        error!("stream rpc {action} failed: {msg}; code={}", error.code)
-    })
+    node_error::global_error_from_detail(
+        error,
+        BaseErrorCode::Internal.code(),
+        &format!("stream rpc {action} failed"),
+        |msg| error!("{msg}"),
+    )
+}
+
+fn rpc_status(error: tonic::Status, action: &str) -> GlobalError {
+    node_error::global_error_from_tonic_status(
+        error,
+        &format!("stream rpc {action} failed"),
+        |msg| error!("{msg}"),
+    )
 }
 
 pub async fn init_media(node: &StreamNode, value: &MediaConfig) -> GlobalResult<()> {
@@ -133,7 +140,7 @@ pub async fn init_media(node: &StreamNode, value: &MediaConfig) -> GlobalResult<
     let response = client
         .init_media(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "init_media"))?
         .into_inner();
     ensure_unit(response, "init_media")
 }
@@ -149,7 +156,7 @@ pub async fn init_media_ext(node: &StreamNode, value: &MediaMap) -> GlobalResult
     let response = client
         .init_media_ext(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "init_media_ext"))?
         .into_inner();
     ensure_unit(response, "init_media_ext")
 }
@@ -165,7 +172,7 @@ pub async fn stream_online(node: &StreamNode, value: &StreamKey) -> GlobalResult
     let response = client
         .stream_online(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "stream_online"))?
         .into_inner();
     ensure_bool(response, "stream_online")
 }
@@ -184,7 +191,7 @@ pub async fn record_info(
     let response = client
         .record_info(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "record_info"))?
         .into_inner();
     decode_json(response, "record_info")
 }
@@ -200,7 +207,7 @@ pub async fn close_output(node: &StreamNode, value: &StreamInfoQo) -> GlobalResu
     let response = client
         .close_output_by_ssrc(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "close_output"))?
         .into_inner();
     ensure_unit(response, "close_output")
 }
@@ -216,7 +223,7 @@ pub async fn talk_open(node: &StreamNode, value: &TalkOpenReq) -> GlobalResult<T
     let response = client
         .talk_open(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "talk_open"))?
         .into_inner();
     decode_json(response, "talk_open")
 }
@@ -232,7 +239,7 @@ pub async fn talk_answer(node: &StreamNode, value: &TalkAnswerReq) -> GlobalResu
     let response = client
         .talk_answer(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "talk_answer"))?
         .into_inner();
     ensure_unit(response, "talk_answer")
 }
@@ -251,7 +258,7 @@ pub async fn talk_close(node: &StreamNode, talk_id: &str) -> GlobalResult<()> {
     let response = client
         .talk_close(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "talk_close"))?
         .into_inner();
     ensure_unit(response, "talk_close")
 }
@@ -270,7 +277,7 @@ pub async fn talk_online(node: &StreamNode, talk_id: &str) -> GlobalResult<bool>
     let response = client
         .talk_online(request)
         .await
-        .hand_log(|msg| error!("{msg}"))?
+        .map_err(|error| rpc_status(error, "talk_online"))?
         .into_inner();
     ensure_bool(response, "talk_online")
 }

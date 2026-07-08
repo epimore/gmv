@@ -371,11 +371,7 @@ fn reject_playback(code: &str, message: &str) -> Response<CheckPlaybackResponse>
 }
 
 fn error_detail(code: &str, message: &str) -> gmv_protocol::common::v1::ErrorDetail {
-    gmv_protocol::common::v1::ErrorDetail {
-        code: code.to_string(),
-        message: message.to_string(),
-        metadata: Default::default(),
-    }
+    gmv_nodec::error::error_detail(code, message)
 }
 
 fn now_ms() -> i64 {

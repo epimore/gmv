@@ -16,6 +16,8 @@ use gmv_protocol::guard::v1::{
 use sys_metrics::HostMetricsCollector;
 use tokio_stream::wrappers::ReceiverStream;
 
+pub mod error;
+
 pub type BusinessMetrics = Arc<dyn Fn() -> HashMap<String, String> + Send + Sync>;
 
 #[derive(Clone)]

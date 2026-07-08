@@ -825,7 +825,7 @@ fn stream_unit_response(result: Result<(), ErrorDetail>) -> StreamUnitResponse {
 }
 
 fn detail_from_error(error_value: GlobalError) -> ErrorDetail {
-    error("stream_control_failed", &error_value.to_string())
+    gmv_nodec::error::global_error_detail("stream_control_failed", &error_value)
 }
 
 async fn record_info_response(request: StreamJsonRequest) -> StreamJsonResponse {
@@ -907,11 +907,7 @@ fn start_response(
 }
 
 fn error(code: &str, message: &str) -> ErrorDetail {
-    ErrorDetail {
-        code: code.to_string(),
-        message: message.to_string(),
-        metadata: HashMap::new(),
-    }
+    gmv_nodec::error::error_detail(code, message)
 }
 
 pub fn operation(operation_id: &str) -> OperationRef {
