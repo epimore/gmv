@@ -10,6 +10,8 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base::err;
+use base::exception::GlobalError;
 use base::log::debug;
 use gmv_protocol::session::v1::{
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
@@ -33,7 +35,7 @@ use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{AuthState, Role, UiSession, UserProfile, hash_password as hash_ui_password};
-use crate::core::{GuardError, HealthState, LeaseState, RouteState};
+use crate::core::{GmvGuardErrorCode, GuardError, HealthState, LeaseState, RouteState};
 use crate::operation::OperationRequest;
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
@@ -2471,52 +2473,55 @@ struct HttpError {
 
 impl HttpError {
     fn unauthorized() -> Self {
+        let code = GmvGuardErrorCode::Unauthorized;
         Self {
             status: StatusCode::UNAUTHORIZED,
-            code: "unauthorized".to_string(),
+            code: code.api_code().to_string(),
             message: "authentication required".to_string(),
-            user_message: Some("登录已过期，请重新登录".to_string()),
-            retryable: Some(true),
+            user_message: Some(code.out_msg().to_string()),
+            retryable: Some(code.retryable()),
             details: BTreeMap::new(),
         }
     }
 
     fn forbidden(message: impl Into<String>) -> Self {
         let message = message.into();
-        let (code, user_message, retryable) = if message == "invalid CSRF token" {
-            ("csrf_invalid", "页面会话已失效，请刷新后重试", true)
+        let code = if message == "invalid CSRF token" {
+            GmvGuardErrorCode::CsrfInvalid
         } else {
-            ("forbidden", "当前账号无权执行此操作", false)
+            GmvGuardErrorCode::Forbidden
         };
         Self {
             status: StatusCode::FORBIDDEN,
-            code: code.to_string(),
+            code: code.api_code().to_string(),
             message,
-            user_message: Some(user_message.to_string()),
-            retryable: Some(retryable),
+            user_message: Some(code.out_msg().to_string()),
+            retryable: Some(code.retryable()),
             details: BTreeMap::new(),
         }
     }
 
     fn internal(message: impl Into<String>) -> Self {
+        let code = GmvGuardErrorCode::Internal;
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: "internal".to_string(),
+            code: code.api_code().to_string(),
             message: message.into(),
-            user_message: Some("系统内部错误，请联系管理员并提供操作时间".to_string()),
-            retryable: Some(false),
+            user_message: Some(code.out_msg().to_string()),
+            retryable: Some(code.retryable()),
             details: BTreeMap::new(),
         }
     }
 
     #[allow(dead_code)]
     fn bad_request(message: impl Into<String>) -> Self {
+        let code = GmvGuardErrorCode::BadRequest;
         Self {
             status: StatusCode::BAD_REQUEST,
-            code: "bad_request".to_string(),
+            code: code.api_code().to_string(),
             message: message.into(),
-            user_message: Some("输入信息不完整或不一致，请检查后重试".to_string()),
-            retryable: Some(false),
+            user_message: Some(code.out_msg().to_string()),
+            retryable: Some(code.retryable()),
             details: BTreeMap::new(),
         }
     }
@@ -2525,10 +2530,10 @@ impl HttpError {
         match error {
             GuardError::Capacity(message) => Self {
                 status: StatusCode::TOO_MANY_REQUESTS,
-                code: "rate_limited".to_string(),
+                code: GmvGuardErrorCode::RateLimited.api_code().to_string(),
                 message,
-                user_message: Some("当前操作过于频繁，请稍后重试".to_string()),
-                retryable: Some(true),
+                user_message: Some(GmvGuardErrorCode::RateLimited.out_msg().to_string()),
+                retryable: Some(GmvGuardErrorCode::RateLimited.retryable()),
                 details: BTreeMap::new(),
             },
             GuardError::InvalidIdentity(_) => Self::unauthorized(),
@@ -2583,6 +2588,27 @@ impl From<GuardError> for HttpError {
     }
 }
 
+impl From<GlobalError> for HttpError {
+    fn from(error: GlobalError) -> Self {
+        let output = err::global_error_output(&error);
+        let guard_code = GmvGuardErrorCode::from_code(output.code);
+        let status = guard_code
+            .map(status_for_guard_error_code)
+            .unwrap_or_else(|| status_for_global_code(output.code));
+        let code = guard_code
+            .map(|code| code.api_code().to_string())
+            .unwrap_or_else(|| output.code_name.to_string());
+        Self {
+            status,
+            code,
+            message: error.to_string(),
+            user_message: Some(output.user_message.into_owned()),
+            retryable: Some(output.retryable),
+            details: BTreeMap::new(),
+        }
+    }
+}
+
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         (
@@ -2602,19 +2628,50 @@ impl IntoResponse for HttpError {
 }
 
 fn status_for_error_code(code: &str) -> StatusCode {
+    GmvGuardErrorCode::from_api_code(code)
+        .map(status_for_guard_error_code)
+        .unwrap_or(StatusCode::CONFLICT)
+}
+
+fn status_for_guard_error_code(code: GmvGuardErrorCode) -> StatusCode {
     match code {
-        "node_rpc_timeout" | "stream_input_timeout" => StatusCode::GATEWAY_TIMEOUT,
-        "node_rpc_connect_failed"
-        | "node_rpc_tls_failed"
-        | "node_rpc_unavailable"
-        | "node_unavailable"
-        | "time_unsynced" => StatusCode::SERVICE_UNAVAILABLE,
-        "node_not_found" | "node_endpoint_missing" | "not_found" => StatusCode::NOT_FOUND,
-        "capacity_exceeded" | "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
-        "bad_request" | "invalid_argument" => StatusCode::BAD_REQUEST,
-        "unauthorized" => StatusCode::UNAUTHORIZED,
-        "forbidden" | "csrf_invalid" => StatusCode::FORBIDDEN,
-        "internal" => StatusCode::INTERNAL_SERVER_ERROR,
+        GmvGuardErrorCode::NodeRpcTimeout | GmvGuardErrorCode::StreamInputTimeout => {
+            StatusCode::GATEWAY_TIMEOUT
+        }
+        GmvGuardErrorCode::NodeRpcConnectFailed
+        | GmvGuardErrorCode::NodeRpcTlsFailed
+        | GmvGuardErrorCode::NodeRpcUnavailable
+        | GmvGuardErrorCode::NodeUnavailable
+        | GmvGuardErrorCode::TimeUnsynced => StatusCode::SERVICE_UNAVAILABLE,
+        GmvGuardErrorCode::NodeNotFound
+        | GmvGuardErrorCode::NodeEndpointMissing
+        | GmvGuardErrorCode::NotFound => StatusCode::NOT_FOUND,
+        GmvGuardErrorCode::CapacityExceeded | GmvGuardErrorCode::RateLimited => {
+            StatusCode::TOO_MANY_REQUESTS
+        }
+        GmvGuardErrorCode::BadRequest | GmvGuardErrorCode::InvalidArgument => {
+            StatusCode::BAD_REQUEST
+        }
+        GmvGuardErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+        GmvGuardErrorCode::Forbidden | GmvGuardErrorCode::CsrfInvalid => StatusCode::FORBIDDEN,
+        GmvGuardErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        GmvGuardErrorCode::Conflict
+        | GmvGuardErrorCode::StaleInstance
+        | GmvGuardErrorCode::DuplicateEvent
+        | GmvGuardErrorCode::PtzRejected
+        | GmvGuardErrorCode::SnapshotRejected => StatusCode::CONFLICT,
+    }
+}
+
+fn status_for_global_code(code: u16) -> StatusCode {
+    match code {
+        1210 => StatusCode::GATEWAY_TIMEOUT,
+        1220 | 1230 => StatusCode::SERVICE_UNAVAILABLE,
+        1140 => StatusCode::NOT_FOUND,
+        1150 | 1190 => StatusCode::BAD_REQUEST,
+        1170 => StatusCode::UNAUTHORIZED,
+        1180 => StatusCode::FORBIDDEN,
+        1240 => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::CONFLICT,
     }
 }
@@ -2636,36 +2693,32 @@ fn code_for_guard_error(error: &GuardError) -> String {
 }
 
 fn user_message_for_guard_error(error: &GuardError) -> String {
-    match error {
+    let code = match error {
         GuardError::InvalidConfig(_) | GuardError::InvalidIdentity(_) => {
-            "输入信息不完整或不一致，请检查后重试"
+            GmvGuardErrorCode::BadRequest
         }
         GuardError::Conflict(message) if message.contains("offline") => {
-            "节点离线或不可调度，请等待恢复或切换节点"
+            GmvGuardErrorCode::NodeUnavailable
         }
         GuardError::Conflict(_) | GuardError::DuplicateEvent(_) | GuardError::StaleInstance(_) => {
-            "操作未完成，请检查目标资源状态后重试"
+            GmvGuardErrorCode::Conflict
         }
         GuardError::NotFound(message) if message.contains("node") => {
-            "未找到可用节点，请确认服务已启动并注册到 Guard"
+            GmvGuardErrorCode::NodeNotFound
         }
-        GuardError::NotFound(_) => "设备、通道或资源不存在，可能已被删除或离线",
-        GuardError::Capacity(_) => "当前系统繁忙，请稍后重试",
-        GuardError::TimeUnsynced(_) => "节点时间异常，请校准服务器时间",
-        GuardError::UserVisible { user_message, .. } => user_message.as_str(),
-    }
-    .to_string()
+        GuardError::NotFound(_) => GmvGuardErrorCode::NotFound,
+        GuardError::Capacity(_) => GmvGuardErrorCode::CapacityExceeded,
+        GuardError::TimeUnsynced(_) => GmvGuardErrorCode::TimeUnsynced,
+        GuardError::UserVisible { user_message, .. } => return user_message.clone(),
+    };
+    code.out_msg().to_string()
 }
 
 fn retryable_for_guard_error(error: &GuardError) -> bool {
-    matches!(
-        error,
-        GuardError::Conflict(_)
-            | GuardError::Capacity(_)
-            | GuardError::NotFound(_)
-            | GuardError::UserVisible {
-                retryable: true,
-                ..
-            }
-    )
+    match error {
+        GuardError::UserVisible { retryable, .. } => *retryable,
+        _ => GmvGuardErrorCode::from_api_code(&code_for_guard_error(error))
+            .map(|code| code.retryable())
+            .unwrap_or(false),
+    }
 }

@@ -4,6 +4,93 @@ use thiserror::Error;
 
 pub type GuardResult<T> = Result<T, GuardError>;
 
+base::define_errors! {
+    GmvGuardErrorCode {
+        BadRequest => (3000, "输入信息不完整或不一致，请检查后重试"),
+        InvalidArgument => (3001, "请求参数不完整或不符合目标节点要求"),
+        Conflict => (3002, "操作未完成，请检查目标资源状态后重试"),
+        NotFound => (3003, "设备、通道或资源不存在，可能已被删除或离线"),
+        NodeNotFound => (3004, "未找到可用节点，请确认服务已启动并注册到 Guard", retryable = true),
+        StaleInstance => (3005, "操作未完成，请检查目标资源状态后重试"),
+        CapacityExceeded => (3006, "当前系统繁忙，请稍后重试", retryable = true),
+        TimeUnsynced => (3007, "节点时间异常，请校准服务器时间"),
+        DuplicateEvent => (3008, "操作未完成，请检查目标资源状态后重试"),
+        RateLimited => (3009, "当前操作过于频繁，请稍后重试", retryable = true),
+        Unauthorized => (3010, "登录已过期，请重新登录", retryable = true),
+        Forbidden => (3011, "当前账号无权执行此操作"),
+        CsrfInvalid => (3012, "页面会话已失效，请刷新后重试", retryable = true),
+        Internal => (3013, "系统内部错误，请联系管理员并提供操作时间"),
+        NodeUnavailable => (3200, "节点离线或不可调度，请等待恢复或切换节点", retryable = true),
+        NodeEndpointMissing => (3201, "节点未上报 RPC 地址，请检查节点配置"),
+        NodeRpcTimeout => (3202, "节点响应超时，请稍后重试或检查节点负载/网络", retryable = true),
+        NodeRpcConnectFailed => (3203, "无法连接目标节点，请检查节点进程、地址和网络", retryable = true),
+        NodeRpcTlsFailed => (3204, "节点安全连接失败，请检查证书、域名或主机时间", retryable = true),
+        NodeRpcUnavailable => (3205, "无法连接目标节点，请检查节点进程、地址和网络", retryable = true),
+        StreamInputTimeout => (4000, "设备未在限定时间内推流，请检查设备网络和编码配置", retryable = true),
+        PtzRejected => (4001, "云台控制未被设备接受，请确认通道支持云台"),
+        SnapshotRejected => (4002, "抓拍请求未被设备接受，请确认设备在线且支持抓拍"),
+    }
+}
+
+impl GmvGuardErrorCode {
+    pub fn api_code(self) -> &'static str {
+        match self {
+            Self::BadRequest => "bad_request",
+            Self::InvalidArgument => "invalid_argument",
+            Self::Conflict => "conflict",
+            Self::NotFound => "not_found",
+            Self::NodeNotFound => "node_not_found",
+            Self::StaleInstance => "stale_instance",
+            Self::CapacityExceeded => "capacity_exceeded",
+            Self::TimeUnsynced => "time_unsynced",
+            Self::DuplicateEvent => "duplicate_event",
+            Self::RateLimited => "rate_limited",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden => "forbidden",
+            Self::CsrfInvalid => "csrf_invalid",
+            Self::Internal => "internal",
+            Self::NodeUnavailable => "node_unavailable",
+            Self::NodeEndpointMissing => "node_endpoint_missing",
+            Self::NodeRpcTimeout => "node_rpc_timeout",
+            Self::NodeRpcConnectFailed => "node_rpc_connect_failed",
+            Self::NodeRpcTlsFailed => "node_rpc_tls_failed",
+            Self::NodeRpcUnavailable => "node_rpc_unavailable",
+            Self::StreamInputTimeout => "stream_input_timeout",
+            Self::PtzRejected => "ptz_rejected",
+            Self::SnapshotRejected => "snapshot_rejected",
+        }
+    }
+
+    pub fn from_api_code(code: &str) -> Option<Self> {
+        match code {
+            "bad_request" => Some(Self::BadRequest),
+            "invalid_argument" => Some(Self::InvalidArgument),
+            "conflict" => Some(Self::Conflict),
+            "not_found" => Some(Self::NotFound),
+            "node_not_found" => Some(Self::NodeNotFound),
+            "stale_instance" => Some(Self::StaleInstance),
+            "capacity_exceeded" => Some(Self::CapacityExceeded),
+            "time_unsynced" => Some(Self::TimeUnsynced),
+            "duplicate_event" => Some(Self::DuplicateEvent),
+            "rate_limited" => Some(Self::RateLimited),
+            "unauthorized" => Some(Self::Unauthorized),
+            "forbidden" => Some(Self::Forbidden),
+            "csrf_invalid" => Some(Self::CsrfInvalid),
+            "internal" => Some(Self::Internal),
+            "node_unavailable" => Some(Self::NodeUnavailable),
+            "node_endpoint_missing" => Some(Self::NodeEndpointMissing),
+            "node_rpc_timeout" => Some(Self::NodeRpcTimeout),
+            "node_rpc_connect_failed" => Some(Self::NodeRpcConnectFailed),
+            "node_rpc_tls_failed" => Some(Self::NodeRpcTlsFailed),
+            "node_rpc_unavailable" => Some(Self::NodeRpcUnavailable),
+            "stream_input_timeout" => Some(Self::StreamInputTimeout),
+            "ptz_failed" | "ptz_rejected" => Some(Self::PtzRejected),
+            "snapshot_failed" | "snapshot_rejected" => Some(Self::SnapshotRejected),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum GuardError {
     #[error("invalid config: {0}")]

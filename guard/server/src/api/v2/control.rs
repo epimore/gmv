@@ -17,8 +17,8 @@ use gmv_protocol::session::v1::{
 
 use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
 use crate::core::{
-    ConnectionState, GuardError, GuardResult, LeaseState, NodeIdentity, NodeKind, RouteState,
-    SchedulingState,
+    ConnectionState, GmvGuardErrorCode, GuardError, GuardResult, LeaseState, NodeIdentity,
+    NodeKind, RouteState, SchedulingState,
 };
 use crate::gateway::{AllocationRequest, AllocationService};
 use crate::lease::{LeaseRequest, LeaseService};
@@ -1345,15 +1345,13 @@ fn remote_error(
 }
 
 fn remote_user_message(code: &str, message: &str, fallback: &str) -> String {
-    match code {
-        "stream_input_timeout" => "设备未在限定时间内推流，请检查设备网络和编码配置".to_string(),
-        "ptz_failed" | "ptz_rejected" => "云台控制未被设备接受，请确认通道支持云台".to_string(),
-        "snapshot_failed" | "snapshot_rejected" => {
-            "抓拍请求未被设备接受，请确认设备在线且支持抓拍".to_string()
-        }
-        "not_found" => "设备、通道或资源不存在，可能已被删除或离线".to_string(),
-        _ if message.trim().is_empty() => fallback.to_string(),
-        _ => format!("{fallback}：{message}"),
+    if let Some(error_code) = GmvGuardErrorCode::from_api_code(code) {
+        return error_code.out_msg().to_string();
+    }
+    if message.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        format!("{fallback}：{message}")
     }
 }
 
