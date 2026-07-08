@@ -91,6 +91,18 @@ test('未登录禁止 URL 直达，登录后恢复目标页面并可退出', asy
   await expect(page).toHaveURL((url) => url.pathname === '/login' && url.searchParams.get('redirect') === '/system');
 });
 
+test('登录页不主动恢复会话', async ({ page }) => {
+  let sessionRequests = 0;
+  await page.route('**/api/v2/auth/session', async (route) => {
+    sessionRequests += 1;
+    await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ message: 'invalid UI session' }) });
+  });
+
+  await page.goto('/login');
+  await expect(page.getByRole('heading', { name: '登录' })).toBeVisible();
+  expect(sessionRequests).toBe(0);
+});
+
 test('已登录会话可访问中文页面与移动端布局', async ({ page }) => {
   await mockAuth(page, true);
   await page.setViewportSize({ width: 390, height: 844 });

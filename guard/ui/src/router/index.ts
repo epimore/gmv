@@ -69,12 +69,12 @@ const router = createRouter({ history: createWebHistory(), routes });
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore(pinia);
-  const authenticated = auth.session ? true : await auth.restore();
 
   if (to.name === 'login') {
-    if (!authenticated) return true;
+    if (!auth.session) return true;
     return typeof to.query.redirect === 'string' ? to.query.redirect : '/dashboard';
   }
+  const authenticated = auth.session ? true : await auth.restore();
   if (to.matched.some((record) => record.meta.requiresAuth) && !authenticated) {
     return { name: 'login', query: { redirect: to.fullPath } };
   }
