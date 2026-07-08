@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
-use base::err::{BaseErrorCode, global_error_output};
+use base::err::{BaseErrorCode, ErrorOutput, error_output, global_error_output};
 use base::exception::GlobalError;
 use gmv_protocol::common::v1::ErrorDetail;
+use tonic::metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue};
 
 pub const META_GLOBAL_CODE: &str = "global_code";
 pub const META_GLOBAL_CODE_NAME: &str = "global_code_name";
 pub const META_RETRYABLE: &str = "retryable";
+pub const META_TONIC_GLOBAL_CODE: &str = "gmv-global-code";
 
 #[must_use]
 pub fn error_detail(code: impl Into<String>, message: impl Into<String>) -> ErrorDetail {
@@ -74,11 +76,36 @@ where
     } else {
         status.message().to_string()
     };
-    let code = base_code_for_tonic_status(status_code);
+    let code = metadata_value(status.metadata(), META_TONIC_GLOBAL_CODE)
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or_else(|| base_code_for_tonic_status(status_code));
     GlobalError::new_biz_error(code, &message, |args| {
         let log_line = format!("{context}: {args}; tonic_code={status_code:?}");
         op(&log_line);
     })
+}
+
+#[must_use]
+pub fn global_error_status(error: &GlobalError) -> tonic::Status {
+    let output = global_error_output(error);
+    let mut metadata = MetadataMap::new();
+    insert_metadata(
+        &mut metadata,
+        META_TONIC_GLOBAL_CODE,
+        output.code.to_string(),
+    );
+    tonic::Status::with_metadata(
+        tonic_code_for_global_error(error, output.code),
+        error.to_string(),
+        metadata,
+    )
+}
+
+pub fn global_error_output_from_tonic_status(status: &tonic::Status) -> Option<(u16, ErrorOutput)> {
+    let code = metadata_value(status.metadata(), META_TONIC_GLOBAL_CODE)?
+        .parse()
+        .ok()?;
+    error_output(code).map(|output| (code, output))
 }
 
 fn base_code_for_tonic_status(code: tonic::Code) -> u16 {
@@ -97,6 +124,37 @@ fn base_code_for_tonic_status(code: tonic::Code) -> u16 {
         tonic::Code::Unimplemented => BaseErrorCode::Unsupported.code(),
         _ => BaseErrorCode::Internal.code(),
     }
+}
+
+fn tonic_code_for_global_error(error: &GlobalError, code: u16) -> tonic::Code {
+    if matches!(error, GlobalError::SysErr(_)) {
+        return tonic::Code::Internal;
+    }
+    match code {
+        1140 => tonic::Code::NotFound,
+        1150 => tonic::Code::InvalidArgument,
+        1160 => tonic::Code::AlreadyExists,
+        1170 => tonic::Code::Unauthenticated,
+        1180 => tonic::Code::PermissionDenied,
+        1190 => tonic::Code::FailedPrecondition,
+        1200 => tonic::Code::Unimplemented,
+        1210 => tonic::Code::DeadlineExceeded,
+        1220 => tonic::Code::Unavailable,
+        1230 => tonic::Code::ResourceExhausted,
+        _ => tonic::Code::FailedPrecondition,
+    }
+}
+
+fn insert_metadata(metadata: &mut MetadataMap, key: &'static str, value: impl AsRef<str>) {
+    if let Ok(value) = MetadataValue::try_from(value.as_ref()) {
+        metadata.insert(MetadataKey::<Ascii>::from_static(key), value);
+    }
+}
+
+fn metadata_value<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'a str> {
+    metadata
+        .get(MetadataKey::<Ascii>::from_static(key))
+        .and_then(|value| value.to_str().ok())
 }
 
 #[cfg(test)]
@@ -167,5 +225,46 @@ mod tests {
         assert_eq!(error.code, BaseErrorCode::Timeout.code());
         assert_eq!(error.msg, "deadline");
         assert_eq!(logs.len(), 1);
+    }
+
+    #[test]
+    fn global_error_status_carries_metadata() {
+        let error = GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "invalid storage query",
+            |_| {},
+        );
+        let status = global_error_status(&error);
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            status
+                .metadata()
+                .get(META_TONIC_GLOBAL_CODE)
+                .and_then(|value| value.to_str().ok()),
+            Some("1150")
+        );
+        assert_eq!(
+            global_error_output_from_tonic_status(&status)
+                .map(|(code, output)| { (code, output.code_name.into_owned(), output.retryable) }),
+            Some((1150, "InvalidRequest".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn tonic_status_metadata_preferred_when_rebuilding_global_error() {
+        let source = GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "channel state invalid",
+            |_| {},
+        );
+        let status = global_error_status(&source);
+        let rebuilt = global_error_from_tonic_status(status, "storage rpc", |_| {});
+
+        let GlobalError::BizErr(error) = rebuilt else {
+            panic!("expected biz error");
+        };
+        assert_eq!(error.code, BaseErrorCode::InvalidState.code());
+        assert_eq!(error.msg, source.to_string());
     }
 }

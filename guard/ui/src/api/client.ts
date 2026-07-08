@@ -70,7 +70,6 @@ const request = <T>(path: string, init: RequestInit = {}, redirectOnUnauthorized
 
 export function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) return error.userMessage || fallback;
-  if (error instanceof Error && error.message) return error.message;
   return fallback;
 }
 

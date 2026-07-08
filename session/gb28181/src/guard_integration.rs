@@ -1546,7 +1546,7 @@ fn datetime_ms(value: Option<base::chrono::NaiveDateTime>) -> i64 {
 }
 
 fn storage_status(error: GlobalError) -> tonic::Status {
-    tonic::Status::internal(error.to_string())
+    gmv_nodec::error::global_error_status(&error)
 }
 
 fn stream_response(

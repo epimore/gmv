@@ -51,6 +51,7 @@
 import { reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
+import { errorMessage } from '@/api/client';
 import OrbitChart from '@/components/OrbitChart.vue';
 import { lineOption } from '@/data/mock';
 import { useAuthStore } from '@/stores/auth';
@@ -74,7 +75,7 @@ async function submit() {
       : '/dashboard';
     await router.push(redirect);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '登录失败');
+    ElMessage.error(errorMessage(error, '登录失败'));
   } finally {
     loading.value = false;
   }

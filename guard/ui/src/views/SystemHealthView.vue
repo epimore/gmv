@@ -25,7 +25,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { listLeases, listNodes, type LeaseInfo, type NodeInfo } from '@/api/client';
+import { errorMessage, listLeases, listNodes, type LeaseInfo, type NodeInfo } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import OrbitChart from '@/components/OrbitChart.vue';
 import StatusPill from '@/components/StatusPill.vue';
@@ -44,7 +44,7 @@ async function loadSystemState() {
   try {
     [leases.value, nodes.value] = await Promise.all([listLeases(), listNodes()]);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '调度数据加载失败');
+    ElMessage.error(errorMessage(error, '调度数据加载失败'));
   } finally {
     loading.value = false;
   }

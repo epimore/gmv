@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use gmv_nodec::error::META_GLOBAL_CODE;
 use gmv_protocol::avai::v1::avai_control_client::AvaiControlClient;
 use gmv_protocol::avai::v1::{AiTaskState, CancelTaskRequest, CreateTaskRequest};
 use gmv_protocol::common::v1::{
@@ -1287,6 +1288,24 @@ fn node_connect_error(service: &str, message: String) -> GuardError {
 }
 
 fn node_rpc_status(service: &str, action: &str, error: tonic::Status) -> GuardError {
+    if let Some((global_code, output)) =
+        gmv_nodec::error::global_error_output_from_tonic_status(&error)
+    {
+        let code = GmvGuardErrorCode::from_code(global_code)
+            .map(|code| code.api_code().to_string())
+            .unwrap_or_else(|| output.code_name.to_string());
+        let mut details = detail_pairs([("service", service), ("action", action)]);
+        details.insert("global_code".to_string(), global_code.to_string());
+        details.insert("global_code_name".to_string(), output.code_name.to_string());
+        details.insert("retryable".to_string(), output.retryable.to_string());
+        return user_error(
+            code,
+            format!("{service} RPC {action} failed: {error}"),
+            output.user_message,
+            output.retryable,
+            details,
+        );
+    }
     let code = match error.code() {
         tonic::Code::DeadlineExceeded => "node_rpc_timeout",
         tonic::Code::Unavailable => "node_rpc_unavailable",
@@ -1323,25 +1342,43 @@ fn remote_error(
     fallback_user_message: &str,
     retryable: bool,
 ) -> GuardError {
-    let code = if error.code.trim().is_empty() {
-        fallback_code
+    let remote_code = error.code;
+    let remote_message = error.message;
+    let metadata = error.metadata;
+    let registered_output = metadata
+        .get(META_GLOBAL_CODE)
+        .and_then(|value| value.parse::<u16>().ok())
+        .and_then(|code| base::err::error_output(code).map(|output| (code, output)));
+    let code = if let Some((global_code, output)) = &registered_output {
+        GmvGuardErrorCode::from_code(*global_code)
+            .map(|code| code.api_code().to_string())
+            .unwrap_or_else(|| output.code_name.to_string())
+    } else if remote_code.trim().is_empty() {
+        fallback_code.to_string()
     } else {
-        error.code.as_str()
+        remote_code.clone()
     };
-    let user_message = if error.message.trim().is_empty() {
+    let user_message = if let Some((_, output)) = &registered_output {
+        output.user_message.to_string()
+    } else if remote_message.trim().is_empty() {
         fallback_user_message.to_string()
     } else {
-        remote_user_message(code, &error.message, fallback_user_message)
+        remote_user_message(&code, &remote_message, fallback_user_message)
     };
+    let retryable = registered_output
+        .as_ref()
+        .map_or(retryable, |(_, output)| output.retryable);
     let mut details = detail_pairs([("service", service), ("action", action)]);
-    details.extend(error.metadata);
-    user_error(
-        code,
-        format!("{service} RPC {action} rejected: {}", error.message),
-        user_message,
-        retryable,
-        details,
-    )
+    if !remote_code.trim().is_empty() {
+        details.insert("remote_code".to_string(), remote_code.clone());
+    }
+    details.extend(metadata);
+    let message = if remote_message.trim().is_empty() {
+        format!("{service} RPC {action} rejected: {code}")
+    } else {
+        format!("{service} RPC {action} rejected: {remote_message}")
+    };
+    user_error(code, message, user_message, retryable, details)
 }
 
 fn remote_user_message(code: &str, message: &str, fallback: &str) -> String {
@@ -1423,5 +1460,92 @@ fn ai_capability(model: &str) -> String {
         model.to_string()
     } else {
         format!("ai.{model}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use gmv_protocol::common::v1::ErrorDetail;
+
+    use super::*;
+
+    #[test]
+    fn remote_error_uses_global_code_metadata_for_user_message() {
+        let error = ErrorDetail {
+            code: "session_business_failed".to_string(),
+            message: "stream input timeout".to_string(),
+            metadata: HashMap::from([(
+                META_GLOBAL_CODE.to_string(),
+                (GmvGuardErrorCode::StreamInputTimeout as u16).to_string(),
+            )]),
+        };
+
+        let error = remote_error(
+            "session",
+            "start_live",
+            error,
+            "stream_start_failed",
+            "视频流创建失败，请检查设备在线状态和媒体服务",
+            false,
+        );
+
+        let GuardError::UserVisible {
+            code,
+            user_message,
+            retryable,
+            details,
+            ..
+        } = error
+        else {
+            panic!("expected user-visible error");
+        };
+        assert_eq!(code, "stream_input_timeout");
+        assert_eq!(
+            user_message,
+            GmvGuardErrorCode::StreamInputTimeout.out_msg()
+        );
+        assert!(retryable);
+        assert_eq!(
+            details.get("remote_code").map(String::as_str),
+            Some("session_business_failed")
+        );
+    }
+
+    #[test]
+    fn remote_error_keeps_legacy_detail_code_without_global_metadata() {
+        let error = ErrorDetail {
+            code: "snapshot_rejected".to_string(),
+            message: "device rejected snapshot".to_string(),
+            metadata: HashMap::new(),
+        };
+
+        let error = remote_error(
+            "session",
+            "snapshot_image",
+            error,
+            "snapshot_rejected",
+            "抓拍请求未被设备接受，请确认设备在线且支持抓拍",
+            true,
+        );
+
+        let GuardError::UserVisible {
+            code,
+            user_message,
+            retryable,
+            details,
+            ..
+        } = error
+        else {
+            panic!("expected user-visible error");
+        };
+        assert_eq!(code, "snapshot_rejected");
+        assert_eq!(user_message, GmvGuardErrorCode::SnapshotRejected.out_msg());
+        assert!(retryable);
+        assert_eq!(
+            details.get("remote_code").map(String::as_str),
+            Some("snapshot_rejected")
+        );
     }
 }

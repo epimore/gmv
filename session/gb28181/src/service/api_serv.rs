@@ -147,7 +147,13 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         .canonicalize()
         .hand_log(|msg| error!("{msg}"))?
         .to_str()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "文件名错误",
+                |msg| error!("{msg}"),
+            )
+        })?
         .to_string();
 
     let down_conf = play_back_model

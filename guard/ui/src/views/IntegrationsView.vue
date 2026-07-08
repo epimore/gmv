@@ -23,11 +23,11 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'; import { ElMessage } from 'element-plus';
-import { listOutbox, retryOutbox, type OutboxInfo } from '@/api/client'; import GlassPanel from '@/components/GlassPanel.vue'; import MetricCard from '@/components/MetricCard.vue'; import OrbitChart from '@/components/OrbitChart.vue'; import StatusPill from '@/components/StatusPill.vue'; import { lineOption } from '@/data/charts'; import { useAuthStore } from '@/stores/auth';
+import { errorMessage, listOutbox, retryOutbox, type OutboxInfo } from '@/api/client'; import GlassPanel from '@/components/GlassPanel.vue'; import MetricCard from '@/components/MetricCard.vue'; import OrbitChart from '@/components/OrbitChart.vue'; import StatusPill from '@/components/StatusPill.vue'; import { lineOption } from '@/data/charts'; import { useAuthStore } from '@/stores/auth';
 const auth = useAuthStore(); const records = ref<OutboxInfo[]>([]); const loading = ref(false); const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 const mqttCount = computed(() => records.value.filter((item) => item.destination_kind === 'mqtt').length); const webhookCount = computed(() => records.value.filter((item) => item.destination_kind === 'webhook').length); const pendingCount = computed(() => records.value.filter((item) => item.state === 'pending' || item.state === 'retry_wait' || item.state === 'sending').length); const deadCount = computed(() => records.value.filter((item) => item.state === 'dead').length);
 const stateChart = computed(() => lineOption('投递状态', [pendingCount.value, records.value.filter((item) => item.state === 'delivered').length, deadCount.value], ['待投递', '已投递', '死信'], '#35f0a1'));
-async function load() { loading.value = true; try { records.value = await listOutbox(200); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '集成数据加载失败'); } finally { loading.value = false; } }
-async function retry(id: string) { try { await retryOutbox(id); ElMessage.success('已重新进入投递队列'); await load(); } catch (error) { ElMessage.error(error instanceof Error ? error.message : '重试失败'); } }
+async function load() { loading.value = true; try { records.value = await listOutbox(200); } catch (error) { ElMessage.error(errorMessage(error, '集成数据加载失败')); } finally { loading.value = false; } }
+async function retry(id: string) { try { await retryOutbox(id); ElMessage.success('已重新进入投递队列'); await load(); } catch (error) { ElMessage.error(errorMessage(error, '重试失败')); } }
 onMounted(load);
 </script>

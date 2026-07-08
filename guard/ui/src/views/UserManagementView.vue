@@ -69,6 +69,7 @@ import {
   createUser,
   currentProfile,
   currentSession,
+  errorMessage,
   listUsers,
   updateUser,
   type UserInfo,
@@ -105,7 +106,7 @@ async function loadSecurityState() {
     auth.updateSession(current);
     users.value = current.role === 'admin' ? await listUsers() : [await currentProfile()];
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '加载用户信息失败');
+    ElMessage.error(errorMessage(error, '加载用户信息失败'));
   } finally {
     loadingUsers.value = false;
   }
@@ -156,7 +157,7 @@ async function saveUser() {
     userForm.password = '';
     ElMessage.success('用户信息已保存');
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存用户失败');
+    ElMessage.error(errorMessage(error, '保存用户失败'));
   } finally {
     savingUser.value = false;
   }

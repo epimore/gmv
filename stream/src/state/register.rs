@@ -955,9 +955,9 @@ impl Register {
             inner: Arc::new(inner),
         };
         let arc = register.inner.clone();
-        REGISTER
-            .set(register)
-            .map_err(|_| GlobalError::new_sys_error("Register already initialized", |_| {}))?;
+        REGISTER.set(register).map_err(|_| {
+            GlobalError::new_sys_error("Register already initialized", |msg| error!("{msg}"))
+        })?;
         rt.rt_handle
             .spawn(event::schedule_event(arc, event_rx, rt.cancel.clone()));
         Ok(())

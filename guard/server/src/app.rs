@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{info, warn};
+use base::log::{error, info, warn};
 use base::logger;
 use base::tokio_util::sync::CancellationToken;
 
@@ -72,11 +72,19 @@ impl Daemon<GuardListeners> for AppInfo {
     }
 
     fn run_app(self, listeners: GuardListeners) -> GlobalResult<()> {
-        let runtime = base::tokio::runtime::Runtime::new()
-            .map_err(|error| GlobalError::new_sys_error(&error.to_string(), |_| {}))?;
+        let runtime = base::tokio::runtime::Runtime::new().map_err(|err| {
+            GlobalError::new_sys_error(
+                &format!("create Guard tokio runtime failed: {err}"),
+                |msg| error!("{msg}"),
+            )
+        })?;
         runtime
             .block_on(start_guard(self.config, listeners))
-            .map_err(|error| GlobalError::new_sys_error(&error.to_string(), |_| {}))?;
+            .map_err(|err| {
+                GlobalError::new_sys_error(&format!("Guard runtime failed: {err}"), |msg| {
+                    error!("{msg}")
+                })
+            })?;
         Ok(())
     }
 }
@@ -253,5 +261,5 @@ fn banner<F: FnOnce(String)>(version: &str, http_addr: &str, grpc_addr: &str, f:
 }
 
 fn global_error(message: String) -> GlobalError {
-    GlobalError::new_sys_error(&message, |_| {})
+    GlobalError::new_sys_error(&message, |msg| error!("{msg}"))
 }

@@ -17,6 +17,7 @@ use sys_metrics::HostMetricsCollector;
 use tokio_stream::wrappers::ReceiverStream;
 
 pub mod error;
+pub mod error_code;
 
 pub type BusinessMetrics = Arc<dyn Fn() -> HashMap<String, String> + Send + Sync>;
 

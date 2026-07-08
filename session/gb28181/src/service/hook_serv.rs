@@ -2,6 +2,7 @@ use std::path::Path;
 
 use base::bytes::Bytes;
 use base::chrono::{Local, TimeZone};
+use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
 use base::serde_json;
@@ -235,38 +236,38 @@ fn get_path(path_file_name: &str) -> GlobalResult<(String, String, String, Strin
     let path = Path::new(path_file_name);
     let biz_id = path
         .file_stem()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .ok_or_else(invalid_file_name_error)?
         .to_str()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .ok_or_else(invalid_file_name_error)?
         .to_string();
     let extension = path
         .extension()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .ok_or_else(invalid_file_name_error)?
         .to_str()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .ok_or_else(invalid_file_name_error)?
         .to_string();
-    let p_path = path
-        .parent()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
-    let l_path1 = p_path
-        .file_name()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
-    let p_path = p_path
-        .parent()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
-    let l_path2 = p_path
-        .file_name()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?;
+    let p_path = path.parent().ok_or_else(invalid_file_name_error)?;
+    let l_path1 = p_path.file_name().ok_or_else(invalid_file_name_error)?;
+    let p_path = p_path.parent().ok_or_else(invalid_file_name_error)?;
+    let l_path2 = p_path.file_name().ok_or_else(invalid_file_name_error)?;
     let d_path = DownloadConf::get_download_conf().storage_path;
     let dir_path = Path::new(&d_path)
         .join(l_path2)
         .join(l_path1)
         .to_str()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .ok_or_else(invalid_file_name_error)?
         .to_string();
     let abs_path = p_path
         .to_str()
-        .ok_or_else(|| GlobalError::new_sys_error("文件名错误", |msg| error!("{msg}")))?
+        .ok_or_else(invalid_file_name_error)?
         .to_string();
     Ok((abs_path, dir_path, biz_id, extension))
+}
+
+fn invalid_file_name_error() -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::InvalidRequest.code(),
+        "文件名错误",
+        |msg| error!("{msg}"),
+    )
 }

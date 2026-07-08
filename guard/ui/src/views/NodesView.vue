@@ -46,7 +46,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { listNodes, type NodeInfo } from '@/api/client';
+import { errorMessage, listNodes, type NodeInfo } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import MetricCard from '@/components/MetricCard.vue';
 import OrbitChart from '@/components/OrbitChart.vue';
@@ -63,6 +63,6 @@ function formatTime(value?: number) { return value ? new Date(value).toLocaleStr
 function memoryPercent(node: NodeInfo) { return node.host_metrics.memory_total_bytes ? Math.round(node.host_metrics.memory_used_bytes / node.host_metrics.memory_total_bytes * 100) : 0; }
 function formatBytes(value?: number) { if (!value) return '0 B'; const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return (value / 1024 ** index).toFixed(index ? 1 : 0) + ' ' + units[index]; }
 function formatRate(value: number) { return formatBytes(value) + '/s'; }
-async function load() { loading.value = true; try { nodes.value = await listNodes(); selected.value = nodes.value[0]; } catch (error) { ElMessage.error(error instanceof Error ? error.message : '节点加载失败'); } finally { loading.value = false; } }
+async function load() { loading.value = true; try { nodes.value = await listNodes(); selected.value = nodes.value[0]; } catch (error) { ElMessage.error(errorMessage(error, '节点加载失败')); } finally { loading.value = false; } }
 onMounted(load);
 </script>

@@ -457,11 +457,7 @@ fn create_response(
 }
 
 fn error(code: &str, message: &str) -> ErrorDetail {
-    ErrorDetail {
-        code: code.to_string(),
-        message: message.to_string(),
-        metadata: HashMap::new(),
-    }
+    gmv_nodec::error::error_detail(code, message)
 }
 
 pub fn operation(operation_id: &str) -> OperationRef {

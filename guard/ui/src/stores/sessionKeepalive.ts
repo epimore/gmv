@@ -1,4 +1,4 @@
-import { currentSession } from '@/api/client';
+import { currentSession, errorMessage } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { defineStore } from 'pinia';
 
@@ -59,7 +59,7 @@ export const useSessionKeepaliveStore = defineStore('sessionKeepalive', {
         this.lastSync = new Date().toLocaleTimeString('zh-CN', { hour12: false });
         this.lastError = '';
       } catch (error) {
-        this.lastError = error instanceof Error ? error.message : '会话保活失败';
+        this.lastError = errorMessage(error, '会话保活失败');
         throw error;
       } finally {
         this.refreshing = false;

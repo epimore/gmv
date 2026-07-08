@@ -107,7 +107,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Bell, CircleCheck, Connection, Cpu, DataAnalysis, Expand, Fold, HomeFilled, Link, Menu as MenuIcon, Monitor, Platform, Setting, User, VideoCamera } from '@element-plus/icons-vue';
 import { useRoute, useRouter } from 'vue-router';
-import { updateProfile } from '@/api/client';
+import { errorMessage, updateProfile } from '@/api/client';
 import { menuRoutes } from '@/router';
 import { useAuthStore } from '@/stores/auth';
 import { useSessionKeepaliveStore } from '@/stores/sessionKeepalive';
@@ -172,7 +172,7 @@ async function saveProfile() {
     profileDialogVisible.value = false;
     ElMessage.success('个人资料已保存');
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存失败');
+    ElMessage.error(errorMessage(error, '保存失败'));
   } finally {
     savingProfile.value = false;
   }

@@ -1,7 +1,7 @@
 use crate::media::context::RtpState;
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{debug, warn};
+use base::log::{debug, error, warn};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use gmv_domain::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
@@ -437,9 +437,9 @@ impl RtpPacketBuffer {
     }
 
     fn recv_packet(&self) -> GlobalResult<RtpPacket> {
-        self.packet_rx
-            .recv()
-            .map_err(|_| GlobalError::new_sys_error("rtp input channel closed", |_| {}))
+        self.packet_rx.recv().map_err(|_| {
+            GlobalError::new_sys_error("rtp input channel closed", |msg| error!("{msg}"))
+        })
     }
 
     fn enqueue_initial(&mut self, pkt: RtpPacket) {

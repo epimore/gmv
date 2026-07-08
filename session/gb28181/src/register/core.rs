@@ -75,7 +75,9 @@ impl Register {
             .set(Register {
                 inner: inner.clone(),
             })
-            .map_err(|_| GlobalError::new_sys_error("Register already initialized", |_| {}))?;
+            .map_err(|_| {
+                GlobalError::new_sys_error("Register already initialized", |msg| error!("{msg}"))
+            })?;
 
         base::tokio::spawn(event::schedule_event(inner, event_rx, cancel_token));
         Ok(())

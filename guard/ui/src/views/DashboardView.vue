@@ -30,7 +30,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { ApiError, fetchDashboard, listAiTasks, listNodes, listStreams, pollEvents, type EventItem } from '@/api/client';
+import { ApiError, errorMessage, fetchDashboard, listAiTasks, listNodes, listStreams, pollEvents, type EventItem } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import MetricCard from '@/components/MetricCard.vue';
 import OrbitChart from '@/components/OrbitChart.vue';
@@ -73,7 +73,7 @@ async function load() {
     streams.value = streamCount;
     aiTasks.value = taskCount;
     events.value = page.items.map((item) => ({ ...item, message: message(item.payload) })).reverse();
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '总览加载失败'); }
+  } catch (error) { ElMessage.error(errorMessage(error, '总览加载失败')); }
   finally { loading.value = false; }
 }
 onMounted(load);

@@ -32,14 +32,14 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { pollEvents, type EventItem } from '@/api/client';
+import { errorMessage, pollEvents, type EventItem } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 const loading = ref(false); const paused = ref(false); const afterId = ref(''); const nextCursor = ref(''); const minPriority = ref(0); const topicPrefix = ref('');
 const EVENT_POLLING_INTERVAL_MS = 5000;
 const rows = ref<Array<EventItem & { priorityLabel: string; message: string }>>([]); const selected = ref<(typeof rows.value)[number]>();
 let timer: number | undefined;
 function message(payload: string) { try { const value = JSON.parse(payload); return value.message ?? value.state ?? payload; } catch { return payload; } }
-async function load() { if (paused.value || loading.value) return; loading.value = true; try { const page = await pollEvents(afterId.value || undefined, 100, minPriority.value || undefined, topicPrefix.value || undefined); rows.value = page.items.map((item) => ({ ...item, priorityLabel: 'P' + item.priority, message: message(item.payload) })).reverse(); nextCursor.value = page.next_after_id ?? ''; if (page.next_after_id) afterId.value = page.next_after_id; } catch (error) { ElMessage.error(error instanceof Error ? error.message : '事件加载失败'); } finally { loading.value = false; } }
+async function load() { if (paused.value || loading.value) return; loading.value = true; try { const page = await pollEvents(afterId.value || undefined, 100, minPriority.value || undefined, topicPrefix.value || undefined); rows.value = page.items.map((item) => ({ ...item, priorityLabel: 'P' + item.priority, message: message(item.payload) })).reverse(); nextCursor.value = page.next_after_id ?? ''; if (page.next_after_id) afterId.value = page.next_after_id; } catch (error) { ElMessage.error(errorMessage(error, '事件加载失败')); } finally { loading.value = false; } }
 async function copyId() { if (!selected.value) return; await navigator.clipboard.writeText(selected.value.event_id); ElMessage.success('事件 ID 已复制'); }
 onMounted(() => { void load(); timer = window.setInterval(() => { if (!paused.value) void load(); }, EVENT_POLLING_INTERVAL_MS); });
 onBeforeUnmount(() => { if (timer) window.clearInterval(timer); });

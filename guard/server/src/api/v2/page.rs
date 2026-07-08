@@ -1,4 +1,5 @@
-use crate::core::{GuardError, GuardResult};
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult};
 
 pub const DEFAULT_PAGE_SIZE: usize = 100;
 pub const MAX_PAGE_SIZE: usize = 500;
@@ -19,11 +20,13 @@ impl Default for CursorQuery {
 }
 
 impl CursorQuery {
-    pub fn validate(&self) -> GuardResult<()> {
+    pub fn validate(&self) -> GlobalResult<()> {
         if self.limit == 0 || self.limit > MAX_PAGE_SIZE {
-            return Err(GuardError::InvalidConfig(format!(
-                "cursor limit must be 1..={MAX_PAGE_SIZE}"
-            )));
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                &format!("cursor limit must be 1..={MAX_PAGE_SIZE}"),
+                |msg| base::log::error!("{msg}"),
+            ));
         }
         Ok(())
     }
