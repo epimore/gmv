@@ -1,10 +1,10 @@
-use guard::api::v2::paths;
-use guard::api::v2::{ApiV2, CursorQuery, EventQuery};
-use guard::auth::Role;
-use guard::core::GuardError;
-use guard::operation::{OperationRequest, OperationService, OperationStatus};
-use guard::store::InMemoryGuardStore;
-use guard::store::model::EventRecord;
+use gmv_guard_server::api::v2::paths;
+use gmv_guard_server::api::v2::{ApiV2, CursorQuery, EventQuery};
+use gmv_guard_server::auth::Role;
+use gmv_guard_server::core::GuardError;
+use gmv_guard_server::operation::{OperationRequest, OperationService, OperationStatus};
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::EventRecord;
 
 #[test]
 fn api_v2_paths_are_rest_polling_first() {

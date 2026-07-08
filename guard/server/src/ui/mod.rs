@@ -18,10 +18,10 @@ pub fn dist_router(dist_dir: impl Into<PathBuf>) -> Router {
 
 fn secure(router: Router) -> Router {
     router
-        .layer(SetResponseHeaderLayer::if_not_present(
+        .layer(SetResponseHeaderLayer::overriding(
             CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             ),
         ))
         .layer(SetResponseHeaderLayer::if_not_present(

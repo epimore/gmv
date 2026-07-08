@@ -1,10 +1,10 @@
-use guard::core::{LeaseState, NodeIdentity, NodeKind, RouteState};
-use guard::gateway::{AllocationRequest, AllocationService};
-use guard::lease::{LeaseRequest, LeaseService};
-use guard::registry::{RegisterRequest, RegistryService};
-use guard::route::{RecoveryIssue, ResourceSnapshot, RouteService, SnapshotResource};
-use guard::store::InMemoryGuardStore;
-use guard::store::model::RouteRecord;
+use gmv_guard_server::core::{LeaseState, NodeIdentity, NodeKind, RouteState};
+use gmv_guard_server::gateway::{AllocationRequest, AllocationService};
+use gmv_guard_server::lease::{LeaseRequest, LeaseService};
+use gmv_guard_server::registry::{RegisterRequest, RegistryService};
+use gmv_guard_server::route::{RecoveryIssue, ResourceSnapshot, RouteService, SnapshotResource};
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::RouteRecord;
 
 fn stream_identity(node_id: &str, instance_id: &str) -> NodeIdentity {
     NodeIdentity::new(node_id, instance_id, NodeKind::Stream)

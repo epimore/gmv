@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use guard::mqttc::{CommandAction, MqttClientConfig, MqttCommandPolicy};
-use guard::webhook::signing;
-use guard::webhook::{WebhookClient, WebhookUrlPolicy};
+use gmv_guard_server::mqttc::{CommandAction, MqttClientConfig, MqttCommandPolicy};
+use gmv_guard_server::webhook::signing;
+use gmv_guard_server::webhook::{WebhookClient, WebhookUrlPolicy};
 
 #[test]
 fn mqtt_config_requires_complete_credentials_and_tls_is_explicit() {

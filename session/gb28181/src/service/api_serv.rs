@@ -57,7 +57,7 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
         return StreamInfo::build(stream_id, proxy_addr, output);
     }
 
-    let (stream_id, _node_name, proxy_addr) = start_invite_stream(
+    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
         device_id,
         channel_id,
         &token,
@@ -69,7 +69,7 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     )
     .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    StreamInfo::build(stream_id, proxy_addr, output)
+    StreamInfo::build_with_codecs(stream_id, proxy_addr, output, video_codec, audio_codec)
 }
 
 pub async fn download_info_by_stream_id(
@@ -161,7 +161,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
             codec: None,
             filter: Default::default(),
         });
-    let (stream_id, node_name, _proxy_addr) = start_invite_stream(
+    let (stream_id, node_name, _proxy_addr, _video_codec, _audio_codec) = start_invite_stream(
         device_id,
         channel_id,
         &token,
@@ -209,7 +209,7 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
         state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
         return StreamInfo::build(stream_id, proxy_addr, output);
     }
-    let (stream_id, _node_name, proxy_addr) = start_invite_stream(
+    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
         device_id,
         channel_id,
         &token,
@@ -221,7 +221,7 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
     )
     .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    StreamInfo::build(stream_id, proxy_addr, output)
+    StreamInfo::build_with_codecs(stream_id, proxy_addr, output, video_codec, audio_codec)
 }
 
 pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
@@ -555,7 +555,7 @@ async fn start_invite_stream(
     et: u32,
     trans_mode: Option<TransMode>,
     custom_media_config: Option<CustomMediaConfig>,
-) -> GlobalResult<(String, String, String)> {
+) -> GlobalResult<(String, String, String, Option<String>, Option<String>)> {
     let live = matches!(am, AccessMode::Live);
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, live).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
@@ -660,6 +660,8 @@ async fn start_invite_stream(
         ssrc: u32ssrc,
         ext: media_ext,
     };
+    let video_codec = normalized_codec(map.ext.video_params.codec_id.as_deref());
+    let audio_codec = normalized_codec(map.ext.audio_params.codec_id.as_deref());
     if let Err(err) = stream_rpc::init_media_ext(&stream_node, &map).await {
         let _ = sip_command::invite_stop_by_device(
             device_id,
@@ -720,7 +722,13 @@ async fn start_invite_stream(
             msc,
         );
         crate::guard_integration::confirm_stream_lease(&allocation).await?;
-        return Ok((stream_id, node_name, base_stream_info.rtp_info.proxy_addr));
+        return Ok((
+            stream_id,
+            node_name,
+            base_stream_info.rtp_info.proxy_addr,
+            video_codec,
+            audio_codec,
+        ));
     }
 
     cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
@@ -732,6 +740,16 @@ async fn start_invite_stream(
         "未接收到监控推流",
         |msg| error!("{msg}"),
     ));
+}
+
+fn normalized_codec(value: Option<&str>) -> Option<String> {
+    let codec = value?.trim().to_ascii_lowercase();
+    match codec.as_str() {
+        "" => None,
+        "h.264" | "avc" | "avc1" => Some("h264".to_string()),
+        "h.265" | "hevc" | "hev1" | "hvc1" => Some("h265".to_string()),
+        _ => Some(codec),
+    }
 }
 
 fn stream_type_for_access(am: AccessMode) -> &'static str {

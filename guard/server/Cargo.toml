@@ -5,11 +5,11 @@ edition.workspace = true
 authors.workspace = true
 
 [lib]
-name = "guard"
+name = "gmv_guard_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "guard"
+name = "gmv-guard-server"
 path = "src/main.rs"
 
 [dependencies]

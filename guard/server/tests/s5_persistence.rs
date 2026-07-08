@@ -4,8 +4,8 @@ use base_db::dbx::{
     DatabasePoolConfig,
     sqlitex::{SqliteConnectionConfig, build_sqlite_pool},
 };
-use guard::app_config::GuardAppConfig;
-use guard::store::persistent::PersistentStore;
+use gmv_guard_server::app_config::GuardAppConfig;
+use gmv_guard_server::store::persistent::PersistentStore;
 
 #[test]
 fn yaml_annotation_auto_migrates_and_bootstraps_only_once() {

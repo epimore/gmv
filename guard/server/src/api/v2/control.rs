@@ -806,6 +806,8 @@ impl BusinessControl {
             lease_id: lease.map(|lease| lease.lease_id).unwrap_or_default(),
             route_id: route.map(|route| route.route_id).unwrap_or_default(),
             endpoint: session_response.endpoint,
+            video_codec: session_response.video_codec,
+            audio_codec: session_response.audio_codec,
             state: StreamSummaryState::Running,
         })
     }
@@ -857,6 +859,8 @@ impl BusinessControl {
             lease_id: String::new(),
             route_id: String::new(),
             endpoint: String::new(),
+            video_codec: String::new(),
+            audio_codec: String::new(),
             state: StreamSummaryState::Stopped,
         })
     }

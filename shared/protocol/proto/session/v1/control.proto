@@ -69,6 +69,8 @@ message DeviceStreamResponse {
   DeviceStreamState state = 2;
   gmv.common.v1.ErrorDetail error = 3;
   string endpoint = 4;
+  string video_codec = 5;
+  string audio_codec = 6;
 }
 
 enum DeviceStreamState {

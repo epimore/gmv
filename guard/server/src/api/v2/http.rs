@@ -150,10 +150,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/metrics", get(metrics))
         .nest(paths::API_PREFIX, api)
         .with_state(root_state)
-        .layer(SetResponseHeaderLayer::if_not_present(
+        .layer(SetResponseHeaderLayer::overriding(
             CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             ),
         ))
         .layer(SetResponseHeaderLayer::if_not_present(
@@ -2332,6 +2332,8 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
                     .unwrap_or_default(),
                 route_id: route.route_id,
                 endpoint: String::new(),
+                video_codec: String::new(),
+                audio_codec: String::new(),
                 state: if route.state == RouteState::Closed {
                     StreamSummaryState::Stopped
                 } else if lease

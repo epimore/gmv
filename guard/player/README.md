@@ -155,6 +155,7 @@ Core 负责：
 - 断线重连策略。
 - 缓冲区清理。
 - 播放状态和错误事件。
+- 自动播放被浏览器拒绝时保留已 attach 的 engine，让 FLV/mpegts 仍有机会完成网络加载。
 
 Core 不负责：
 
@@ -517,8 +518,8 @@ video.js / xgplayer：可参考 UI，不作为 Core 强依赖。
 
 需要后端或业务 API 提供：
 
-- 标准化播放源信息：协议、URL、codec、mimeCodec、清晰度、码流名。
-- H.265 codec string，避免前端硬编码。
+- 标准化播放源信息：协议、URL、videoCodec、audioCodec、mimeCodec、清晰度、码流名。
+- H.264/H.265 codec string，避免前端硬编码；无法识别时由播放器按 AUTO 路径尝试。
 - HLS-fMP4 输出能力。
 - 观看人数查询或推送。
 - AI 框数据坐标系和时间戳。
@@ -565,6 +566,7 @@ pnpm -C guard/ui build
 
 - H.265 能否播放取决于浏览器、系统和硬件解码能力，前端不能保证所有环境可播。
 - `MediaSource.isTypeSupported()` 返回 true 也不代表一定可播放，必须保留 fallback。
+- FLV 首次 `video.play()` 被拒绝不等于播放源打开失败；不能因此立即销毁 `mpegts.js` engine，否则可能在发起媒体请求前中断。
 - HTTP-FLV 的 G711A/G711U 音频不由 mpegts.js 解码，遇到这类流应设置 hasAudio=false，只播放视频轨。
 - HTTP-FMP4 要求服务端 init segment 在前，后续 moof / mdat 时间戳连续。
 - 多宫格会放大 CPU、内存、网络和解码压力，默认应限制同时播放路数。

@@ -5,10 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base_rpc::RetryPolicy;
-use guard::core::{GuardError, GuardResult};
-use guard::outbox::{OutboxDelivery, OutboxWorker};
-use guard::store::InMemoryGuardStore;
-use guard::store::model::{EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState};
+use gmv_guard_server::core::{GuardError, GuardResult};
+use gmv_guard_server::outbox::{OutboxDelivery, OutboxWorker};
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::{
+    EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
+};
 use parking_lot::Mutex;
 
 struct Delivery {

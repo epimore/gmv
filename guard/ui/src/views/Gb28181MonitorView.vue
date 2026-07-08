@@ -364,7 +364,7 @@ import {
 } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { GmvMultiGrid, GmvPlayerView, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
+import { GmvMultiGrid, GmvPlayerView, type GmvCodec, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
@@ -512,13 +512,14 @@ const playerSources = computed<GmvSource[]>(() => {
   const endpoint = lastStream.value?.endpoint;
   if (!endpoint) return [];
   const protocol = streamProtocol(endpoint);
+  const codec = streamCodec(lastStream.value);
   return [{
     protocol,
-    codec: 'h265',
+    codec,
     url: endpoint,
-    mimeCodec: protocol === 'fmp4' ? 'video/mp4; codecs="hvc1.1.6.L123.B0, mp4a.40.2"' : undefined,
+    mimeCodec: fmp4MimeCodec(codec),
     hasAudio: selectedChannel.value ? canAudio(selectedChannel.value) : false,
-    label: selectedChannel.value && canAudio(selectedChannel.value) ? '默认音视频' : '默认静音',
+    label: streamSourceLabel(codec, !!selectedChannel.value && canAudio(selectedChannel.value)),
     priority: 1,
   }];
 });
@@ -577,6 +578,20 @@ function streamProtocol(endpoint: string): GmvSource['protocol'] {
   if (path.endsWith('.m3u8')) return 'hls';
   return 'flv';
 }
+function streamCodec(stream?: StreamSummary): GmvCodec | undefined {
+  const codec = (stream?.video_codec || '').trim().toLowerCase();
+  if (codec === 'h264' || codec === 'h.264' || codec === 'avc' || codec === 'avc1') return 'h264';
+  if (codec === 'h265' || codec === 'h.265' || codec === 'hevc' || codec === 'hev1' || codec === 'hvc1') return 'h265';
+  return undefined;
+}
+function fmp4MimeCodec(codec?: GmvCodec) {
+  if (codec === 'h264') return 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+  if (codec === 'h265') return 'video/mp4; codecs="hvc1.1.6.L123.B0, mp4a.40.2"';
+  return undefined;
+}
+function streamSourceLabel(codec: GmvCodec | undefined, hasAudio: boolean) {
+  return `默认${hasAudio ? '音视频' : '静音'} · ${codec?.toUpperCase() || 'AUTO'}`;
+}
 function formatTime(value: number) {
   if (!value) return '-';
   return new Date(value).toLocaleString();
@@ -586,13 +601,14 @@ function streamSources(stream?: StreamSummary): GmvSource[] {
   const endpoint = stream?.endpoint;
   if (!endpoint) return [];
   const protocol = streamProtocol(endpoint);
+  const codec = streamCodec(stream);
   return [{
     protocol,
-    codec: 'h265',
+    codec,
     url: endpoint,
-    mimeCodec: protocol === 'fmp4' ? 'video/mp4; codecs="hvc1.1.6.L123.B0, mp4a.40.2"' : undefined,
+    mimeCodec: fmp4MimeCodec(codec),
     hasAudio: false,
-    label: '默认静音',
+    label: streamSourceLabel(codec, false),
     priority: 1,
   }];
 }

@@ -1,10 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base::utils::crypto::{default_decrypt, default_encrypt};
-use guard::app_config::GuardAppConfig;
-use guard::auth::{Role, hash_password};
-use guard::core::{GuardError, GuardResult};
-use guard::store::persistent::PersistentStore;
+use gmv_guard_server::app_config::GuardAppConfig;
+use gmv_guard_server::auth::{Role, hash_password};
+use gmv_guard_server::core::{GuardError, GuardResult};
+use gmv_guard_server::store::persistent::PersistentStore;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("encrypt") => crypto_command(&args[1..], CryptoAction::Encrypt),
         Some("decrypt") => crypto_command(&args[1..], CryptoAction::Decrypt),
         _ => {
-            guard::run();
+            gmv_guard_server::run();
             Ok(())
         }
     }

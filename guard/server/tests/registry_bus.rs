@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
-use guard::bus::{BusEvent, BusPriority, BusService};
-use guard::core::{
+use gmv_guard_server::bus::{BusEvent, BusPriority, BusService};
+use gmv_guard_server::core::{
     ClockClassifier, ClockState, ConnectionState, HealthState, NodeIdentity, NodeKind,
     SchedulingState, generate_instance_id,
 };
-use guard::registry::{
+use gmv_guard_server::registry::{
     AllowedNode, HeartbeatReport, RegisterDecision, RegisterRequest, RegistryPolicy,
     RegistryService,
 };
-use guard::store::InMemoryGuardStore;
+use gmv_guard_server::store::InMemoryGuardStore;
 
 fn identity(node_id: &str, instance_id: &str) -> NodeIdentity {
     NodeIdentity::new(node_id, instance_id, NodeKind::Stream)

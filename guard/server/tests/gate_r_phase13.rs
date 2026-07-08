@@ -6,13 +6,15 @@ use axum::body::{Body, to_bytes};
 use axum::http::header::{CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
 use axum::http::{Request, StatusCode};
 use base::serde_json::{Value, json};
-use guard::api::v2::ApiV2;
-use guard::api::v2::http::{HttpState, router};
-use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
-use guard::operation::OperationService;
-use guard::outbox::OutboxRepository;
-use guard::store::InMemoryGuardStore;
-use guard::store::model::{EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState};
+use gmv_guard_server::api::v2::ApiV2;
+use gmv_guard_server::api::v2::http::{HttpState, router};
+use gmv_guard_server::auth::{AuthState, Role, SessionPolicy, UserAccount};
+use gmv_guard_server::operation::OperationService;
+use gmv_guard_server::outbox::OutboxRepository;
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::{
+    EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
+};
 use tower::ServiceExt;
 
 const ORIGIN_VALUE: &str = "http://127.0.0.1:5173";

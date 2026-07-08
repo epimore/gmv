@@ -1,6 +1,17 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
 
+use gmv_guard_server::api::v2::control::BusinessControl;
+use gmv_guard_server::core::{
+    ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState,
+};
+use gmv_guard_server::mqttc::{CommandAction, MqttCommandExecutor, RoutedCommand};
+use gmv_guard_server::operation::{OperationService, OperationStatus};
+use gmv_guard_server::registry::{RegisterRequest, RegistryService};
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::{
+    EndpointModeRecord, EndpointRecord, HostMetricsRecord, NodeRecord,
+};
 use gmv_protocol::avai::v1::avai_control_server::{AvaiControl, AvaiControlServer};
 use gmv_protocol::avai::v1::{
     AiTaskState, CancelTaskRequest, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse,
@@ -26,13 +37,6 @@ use gmv_protocol::stream::v1::{
     StopReceiveResponse, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState,
     StreamUnitResponse,
 };
-use guard::api::v2::control::BusinessControl;
-use guard::core::{ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState};
-use guard::mqttc::{CommandAction, MqttCommandExecutor, RoutedCommand};
-use guard::operation::{OperationService, OperationStatus};
-use guard::registry::{RegisterRequest, RegistryService};
-use guard::store::InMemoryGuardStore;
-use guard::store::model::{EndpointModeRecord, EndpointRecord, HostMetricsRecord, NodeRecord};
 
 #[test]
 fn gb28181_create_device_uses_selected_session_rpc() {
@@ -409,7 +413,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             assert_eq!(ai_task.task_id, "ai-op-ai-rpc");
             assert_eq!(
                 control.cancel_ai(&ai_task.task_id).await.unwrap().state,
-                guard::api::v2::model::AiTaskSummaryState::Cancelled
+                gmv_guard_server::api::v2::model::AiTaskSummaryState::Cancelled
             );
             assert_eq!(
                 control
@@ -607,6 +611,8 @@ impl SessionControl for FakeSession {
             state: DeviceStreamState::Stopped as i32,
             error: None,
             endpoint: String::new(),
+            video_codec: String::new(),
+            audio_codec: String::new(),
         }))
     }
 
@@ -895,6 +901,8 @@ fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> Devi
         state: DeviceStreamState::Running as i32,
         error: None,
         endpoint,
+        video_codec: "h264".to_string(),
+        audio_codec: String::new(),
     }
 }
 

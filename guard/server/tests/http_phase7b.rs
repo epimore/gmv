@@ -6,16 +6,16 @@ use axum::body::{Body, to_bytes};
 use axum::http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
 use axum::http::{Request, StatusCode};
 use base::serde_json::{Value, json};
-use guard::api::v2::ApiV2;
-use guard::api::v2::http::{HttpState, router};
-use guard::auth::{AuthState, Role, SessionPolicy, UserAccount};
-use guard::core::{
+use gmv_guard_server::api::v2::ApiV2;
+use gmv_guard_server::api::v2::http::{HttpState, router};
+use gmv_guard_server::auth::{AuthState, Role, SessionPolicy, UserAccount};
+use gmv_guard_server::core::{
     ConnectionState, HealthState, LeaseState, NodeIdentity, NodeKind, SchedulingState,
 };
-use guard::operation::OperationService;
-use guard::outbox::OutboxRepository;
-use guard::store::InMemoryGuardStore;
-use guard::store::model::{EventRecord, LeaseRecord, NodeRecord};
+use gmv_guard_server::operation::OperationService;
+use gmv_guard_server::outbox::OutboxRepository;
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::{EventRecord, LeaseRecord, NodeRecord};
 use tower::ServiceExt;
 
 const ORIGIN_VALUE: &str = "http://127.0.0.1:5173";
@@ -177,7 +177,14 @@ fn session_security_headers_and_csrf() {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert!(headers.contains_key(CONTENT_SECURITY_POLICY));
+        assert!(
+            headers
+                .get(CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("media-src 'self' blob:")
+        );
 
         let (cookie, csrf) = login(&app, "operator").await;
         let (status, headers, body) = request(
@@ -193,7 +200,14 @@ fn session_security_headers_and_csrf() {
         let renewed_cookie = headers.get(SET_COOKIE).unwrap().to_str().unwrap();
         assert!(renewed_cookie.starts_with("gmv_session="));
         assert!(renewed_cookie.contains("Max-Age=3600"));
-        assert!(headers.contains_key(CONTENT_SECURITY_POLICY));
+        assert!(
+            headers
+                .get(CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("media-src 'self' blob:")
+        );
 
         let (status, _, _) = request(
             &app,

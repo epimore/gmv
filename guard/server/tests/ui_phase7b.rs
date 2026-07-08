@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::body::{Body, to_bytes};
 use axum::http::header::CONTENT_SECURITY_POLICY;
 use axum::http::{Request, StatusCode};
-use guard::ui::dist_router;
+use gmv_guard_server::ui::dist_router;
 use tower::ServiceExt;
 
 fn temp_dir() -> std::path::PathBuf {
@@ -32,7 +32,15 @@ fn dist_router_serves_assets_and_spa_fallback() {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            assert!(response.headers().contains_key(CONTENT_SECURITY_POLICY));
+            assert!(
+                response
+                    .headers()
+                    .get(CONTENT_SECURITY_POLICY)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains("media-src 'self' blob:")
+            );
 
             let response = app
                 .oneshot(Request::get("/dashboard").body(Body::empty()).unwrap())

@@ -8,11 +8,13 @@ use base_db::dbx::{
     sqlitex::{SqliteConnectionConfig, build_sqlite_pool},
 };
 use base_rpc::RetryPolicy;
-use guard::core::GuardResult;
-use guard::mqttc::{CommandIdRepository, MqttCommandPolicy};
-use guard::outbox::{OutboxDelivery, OutboxWorker};
-use guard::store::model::{EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState};
-use guard::store::sqlite::SqliteStore;
+use gmv_guard_server::core::GuardResult;
+use gmv_guard_server::mqttc::{CommandIdRepository, MqttCommandPolicy};
+use gmv_guard_server::outbox::{OutboxDelivery, OutboxWorker};
+use gmv_guard_server::store::model::{
+    EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
+};
+use gmv_guard_server::store::sqlite::SqliteStore;
 
 struct Success;
 impl OutboxDelivery for Success {

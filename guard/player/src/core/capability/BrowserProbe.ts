@@ -1,4 +1,5 @@
 import type { GmvSource } from '../types';
+import mpegts from 'mpegts.js';
 
 export class BrowserProbe {
   static canUseMse(): boolean {
@@ -19,9 +20,14 @@ export class BrowserProbe {
     return MediaSource.isTypeSupported(source.mimeCodec);
   }
 
+  static canPlayFlv(): boolean {
+    return !!mpegts.getFeatureList?.().mseLivePlayback;
+  }
+
   static canTrySource(video: HTMLVideoElement, source: GmvSource): boolean {
     if (source.protocol === 'fmp4') return this.canUseFetchStream() && this.canPlayFmp4(source);
     if (source.protocol === 'hls') return this.canUseMse() || this.canNativeHls(video);
-    return this.canUseMse();
+    if (source.protocol === 'flv') return this.canPlayFlv();
+    return false;
   }
 }

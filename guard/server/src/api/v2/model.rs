@@ -27,6 +27,8 @@ pub struct StreamSummary {
     pub lease_id: String,
     pub route_id: String,
     pub endpoint: String,
+    pub video_codec: String,
+    pub audio_codec: String,
     pub state: StreamSummaryState,
 }
 

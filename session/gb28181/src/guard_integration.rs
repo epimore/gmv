@@ -568,6 +568,8 @@ impl SessionControl for SessionControlRpc {
                 state: DeviceStreamState::Stopped as i32,
                 error: None,
                 endpoint: String::new(),
+                video_codec: String::new(),
+                audio_codec: String::new(),
             },
             Err(error) => error,
         };
@@ -976,7 +978,14 @@ impl SessionControlRpc {
                 token,
             )
             .await
-            .map(|info| stream_response(info.streamId, info.url)),
+            .map(|info| {
+                stream_response(
+                    info.streamId,
+                    info.url,
+                    info.video_codec.unwrap_or_default(),
+                    info.audio_codec.unwrap_or_default(),
+                )
+            }),
             "playback" => api_serv::play_back(
                 PlayBackModel {
                     device_id: request.device_id.clone(),
@@ -989,7 +998,14 @@ impl SessionControlRpc {
                 token,
             )
             .await
-            .map(|info| stream_response(info.streamId, info.url)),
+            .map(|info| {
+                stream_response(
+                    info.streamId,
+                    info.url,
+                    info.video_codec.unwrap_or_default(),
+                    info.audio_codec.unwrap_or_default(),
+                )
+            }),
             "download" => api_serv::download(
                 PlayBackModel {
                     device_id: request.device_id.clone(),
@@ -1002,7 +1018,9 @@ impl SessionControlRpc {
                 token,
             )
             .await
-            .map(|stream_id| stream_response(stream_id, String::new())),
+            .map(|stream_id| {
+                stream_response(stream_id, String::new(), String::new(), String::new())
+            }),
             "talk" => api_serv::talk_start(
                 TalkStartModel {
                     device_id: request.device_id.clone(),
@@ -1016,7 +1034,7 @@ impl SessionControlRpc {
                 token,
             )
             .await
-            .map(|info| stream_response(info.talk_id, info.input_url)),
+            .map(|info| stream_response(info.talk_id, info.input_url, String::new(), info.codec)),
             _ => Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
                 "unsupported stream type",
@@ -1383,6 +1401,8 @@ fn device_response(
         state: state as i32,
         error,
         endpoint: String::new(),
+        video_codec: String::new(),
+        audio_codec: String::new(),
     }
 }
 
@@ -1523,12 +1543,19 @@ fn storage_status(error: GlobalError) -> tonic::Status {
     tonic::Status::internal(error.to_string())
 }
 
-fn stream_response(stream_id: String, endpoint: String) -> DeviceStreamResponse {
+fn stream_response(
+    stream_id: String,
+    endpoint: String,
+    video_codec: String,
+    audio_codec: String,
+) -> DeviceStreamResponse {
     DeviceStreamResponse {
         stream_id,
         state: DeviceStreamState::Running as i32,
         error: None,
         endpoint,
+        video_codec,
+        audio_codec,
     }
 }
 
@@ -1538,6 +1565,8 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
         state: DeviceStreamState::Failed as i32,
         error: Some(error("session_business_failed", &err.to_string())),
         endpoint: String::new(),
+        video_codec: String::new(),
+        audio_codec: String::new(),
     }
 }
 

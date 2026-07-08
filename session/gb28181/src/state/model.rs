@@ -116,6 +116,8 @@ pub struct PtzControlModel {
 pub struct StreamInfo {
     pub streamId: String,
     pub url: String,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
 }
 
 impl StreamInfo {
@@ -144,7 +146,22 @@ impl StreamInfo {
         let info = Self {
             url,
             streamId: stream_id,
+            video_codec: None,
+            audio_codec: None,
         };
+        Ok(info)
+    }
+
+    pub fn build_with_codecs(
+        stream_id: String,
+        proxy_addr: String,
+        out_kind: Option<OutputKind>,
+        video_codec: Option<String>,
+        audio_codec: Option<String>,
+    ) -> GlobalResult<Self> {
+        let mut info = Self::build(stream_id, proxy_addr, out_kind)?;
+        info.video_codec = video_codec;
+        info.audio_codec = audio_codec;
         Ok(info)
     }
 }

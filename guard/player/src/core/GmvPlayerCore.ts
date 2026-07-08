@@ -59,7 +59,14 @@ export class GmvPlayerCore {
         this.activeSource = source;
         this.reconnectRetry = 0;
         this.bus.emit('sourceChanged', { source });
-        if (this.options.autoplay) await this.play();
+        if (this.options.autoplay) {
+          try {
+            await this.play();
+          } catch (error) {
+            if (this.destroyed || version !== this.loadVersion) return;
+            this.emitError(GmvErrorCode.StreamOpenFailed, error instanceof Error ? error.message : '自动播放失败', source);
+          }
+        }
         return;
       } catch (error) {
         if (this.destroyed || version !== this.loadVersion) return;

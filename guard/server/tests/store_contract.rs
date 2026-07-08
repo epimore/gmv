@@ -1,7 +1,7 @@
-use guard::auth::{Role, Secret};
-use guard::core::GuardConfig;
-use guard::store::migration::migration_pairs;
-use guard::store::{GuardStore, InMemoryGuardStore};
+use gmv_guard_server::auth::{Role, Secret};
+use gmv_guard_server::core::GuardConfig;
+use gmv_guard_server::store::migration::migration_pairs;
+use gmv_guard_server::store::{GuardStore, InMemoryGuardStore};
 
 #[test]
 fn guard_config_and_secret_baselines_hold() {

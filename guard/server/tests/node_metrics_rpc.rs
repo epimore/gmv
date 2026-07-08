@@ -4,6 +4,9 @@ use std::time::Duration;
 
 use base::tokio_util::sync::CancellationToken;
 use base_rpc::RpcChannelConfig;
+use gmv_guard_server::registry::RegistryService;
+use gmv_guard_server::runtime::node_rpc::GuardNodeRpc;
+use gmv_guard_server::store::InMemoryGuardStore;
 use gmv_nodec::{NodeReporter, NodeReporterConfig};
 use gmv_protocol::common::v1::{NodeIdentity, NodeKind, ResourceRef};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
@@ -14,9 +17,6 @@ use gmv_protocol::guard::v1::{
     EventPriority, NodeEvent, NodeResourceSnapshot, NodeToGuardMessage, RegisterNodeRequest,
     ResourceReport, ResourceState, node_to_guard_message,
 };
-use guard::registry::RegistryService;
-use guard::runtime::node_rpc::GuardNodeRpc;
-use guard::store::InMemoryGuardStore;
 
 #[test]
 fn node_reporter_registers_and_updates_host_metrics_over_grpc() {

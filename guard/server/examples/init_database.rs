@@ -1,5 +1,5 @@
-use guard::app_config::{GuardAppConfig, config_path_from_args};
-use guard::store::persistent::PersistentStore;
+use gmv_guard_server::app_config::{GuardAppConfig, config_path_from_args};
+use gmv_guard_server::store::persistent::PersistentStore;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = GuardAppConfig::load(config_path_from_args()?);
@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let store = PersistentStore::connect(&config).await?;
         store.migrate().await?;
         store.initialize(&config).await?;
-        Ok::<(), guard::core::GuardError>(())
+        Ok::<(), gmv_guard_server::core::GuardError>(())
     })?;
     println!("guard database initialized");
     Ok(())
