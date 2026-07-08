@@ -151,6 +151,11 @@ fn gate_r_real_device_readiness_and_observability_contract() {
             )
             .await;
             assert_eq!(stream.0, StatusCode::NOT_FOUND);
+            assert_eq!(stream.2["code"], "node_not_found");
+            assert_eq!(
+                stream.2["user_message"],
+                "未找到可用节点，请确认服务已启动并注册到 Guard"
+            );
 
             let ptz = call_json(
                 &app,
@@ -158,11 +163,24 @@ fn gate_r_real_device_readiness_and_observability_contract() {
                     "/api/v2/devices/34020000001320000001/ptz",
                     &operator_cookie,
                     &operator_csrf,
-                    json!({ "channel_id": "ch-1" }),
+                    json!({
+                        "channel_id": "ch-1",
+                        "leftRight": 1,
+                        "upDown": 0,
+                        "inOut": 0,
+                        "horizonSpeed": 64,
+                        "verticalSpeed": 0,
+                        "zoomSpeed": 0
+                    }),
                 ),
             )
             .await;
             assert_eq!(ptz.0, StatusCode::NOT_FOUND);
+            assert_eq!(ptz.2["code"], "node_not_found");
+            assert_eq!(
+                ptz.2["user_message"],
+                "未找到可用节点，请确认服务已启动并注册到 Guard"
+            );
 
             let status = call_json(
                 &app,

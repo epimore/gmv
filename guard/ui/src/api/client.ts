@@ -1,7 +1,29 @@
 export type Role = 'viewer' | 'operator' | 'admin';
 export interface SessionInfo { username: string; role: Role; nickname: string; csrf_token: string; expires_at_ms: number }
+export interface ApiErrorPayload { code?: string; message?: string; user_message?: string; operation_id?: string; trace_id?: string; retryable?: boolean; details?: Record<string, string> }
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); this.name = 'ApiError'; }
+  public readonly code: string;
+  public readonly userMessage: string;
+  public readonly diagnosticMessage: string;
+  public readonly operationId?: string;
+  public readonly traceId?: string;
+  public readonly retryable?: boolean;
+  public readonly details: Record<string, string>;
+
+  constructor(public readonly status: number, payload: ApiErrorPayload | string) {
+    const data = typeof payload === 'string' ? { message: payload } : payload;
+    const diagnosticMessage = data.message || 'HTTP ' + status;
+    const userMessage = data.user_message || friendlyMessage(data.code, status) || diagnosticMessage;
+    super(userMessage);
+    this.name = 'ApiError';
+    this.code = data.code || 'http_error';
+    this.userMessage = userMessage;
+    this.diagnosticMessage = diagnosticMessage;
+    this.operationId = data.operation_id;
+    this.traceId = data.trace_id;
+    this.retryable = data.retryable;
+    this.details = data.details || {};
+  }
 }
 export interface UserInfo { username: string; role: Role; nickname: string; enabled: boolean; created_at_ms: number; updated_at_ms: number }
 export interface DashboardInfo { node_count: number; event_count: number; next_after_id: string | null }
@@ -30,16 +52,41 @@ async function requestAt<T>(url: string, init: RequestInit = {}, redirectOnUnaut
   const headers = new Headers(init.headers);
   if (init.body) headers.set('content-type', 'application/json');
   if (csrfToken && method === 'POST') headers.set('x-csrf-token', csrfToken);
-  const response = await fetch(url, { ...init, headers, credentials: 'include' });
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, headers, credentials: 'include' });
+  } catch {
+    throw new ApiError(0, { code: 'network_error', message: 'fetch failed', user_message: '无法连接 Guard 服务，请检查网络或刷新页面', retryable: true });
+  }
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'HTTP ' + response.status }));
     if (response.status === 401 && redirectOnUnauthorized) { csrfToken = ''; unauthorizedHandler?.(); }
-    throw new ApiError(response.status, error.message ?? 'HTTP ' + response.status);
+    throw new ApiError(response.status, error);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 const request = <T>(path: string, init: RequestInit = {}, redirectOnUnauthorized = true) => requestAt<T>('/api/v2' + path, init, redirectOnUnauthorized);
+
+export function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) return error.userMessage || fallback;
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
+function friendlyMessage(code: string | undefined, status: number): string {
+  if (code === 'network_error') return '无法连接 Guard 服务，请检查网络或刷新页面';
+  if (code === 'unauthorized' || status === 401) return '登录已过期，请重新登录';
+  if (code === 'forbidden' || status === 403) return '当前账号无权执行此操作';
+  if (code === 'csrf_invalid') return '页面会话已失效，请刷新后重试';
+  if (code === 'node_rpc_timeout' || status === 504) return '节点响应超时，请稍后重试或检查节点负载/网络';
+  if (code === 'node_rpc_connect_failed' || code === 'node_rpc_unavailable' || status === 503) return '无法连接目标节点，请检查节点进程、地址和网络';
+  if (code === 'node_unavailable') return '节点离线或不可调度，请等待恢复或切换节点';
+  if (code === 'node_endpoint_missing') return '节点未上报 RPC 地址，请检查节点配置';
+  if (code === 'stream_input_timeout') return '设备未在限定时间内推流，请检查设备网络和编码配置';
+  if (code === 'capacity_exceeded' || status === 429) return '当前系统繁忙，请稍后重试';
+  return '';
+}
 
 export async function login(username: string, password: string): Promise<SessionInfo> { const session = await request<SessionInfo>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }, false); csrfToken = session.csrf_token; return session; }
 export async function currentSession(redirectOnUnauthorized = true): Promise<SessionInfo> { const session = await request<SessionInfo>('/auth/session', {}, redirectOnUnauthorized); csrfToken = session.csrf_token; return session; }

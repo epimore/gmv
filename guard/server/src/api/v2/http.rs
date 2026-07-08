@@ -14,6 +14,7 @@ use base::log::debug;
 use gmv_protocol::session::v1::{
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
 };
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
@@ -929,8 +930,11 @@ fn user_response(profile: UserProfile) -> UserResponse {
 fn require_user_repository(state: &HttpState) -> Result<&UserRepository, HttpError> {
     state.users.as_ref().ok_or_else(|| HttpError {
         status: StatusCode::NOT_IMPLEMENTED,
-        code: "user_store_disabled",
+        code: "user_store_disabled".to_string(),
         message: "persistent user store is disabled".to_string(),
+        user_message: Some("用户管理未启用持久化存储".to_string()),
+        retryable: Some(false),
+        details: BTreeMap::new(),
     })
 }
 
@@ -951,8 +955,11 @@ fn password_hash(password: &str) -> Result<String, HttpError> {
     if password.is_empty() {
         return Err(HttpError {
             status: StatusCode::BAD_REQUEST,
-            code: "invalid_user",
+            code: "invalid_user".to_string(),
             message: "password is required".to_string(),
+            user_message: Some("请输入密码".to_string()),
+            retryable: Some(false),
+            details: BTreeMap::new(),
         });
     }
     hash_ui_password(password).map_err(|_| HttpError::internal("password hash failed"))
@@ -2439,38 +2446,66 @@ fn require_write_with_token(
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct ErrorResponse {
-    code: &'static str,
+    code: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retryable: Option<bool>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    details: BTreeMap<String, String>,
 }
 
 struct HttpError {
     status: StatusCode,
-    code: &'static str,
+    code: String,
     message: String,
+    user_message: Option<String>,
+    retryable: Option<bool>,
+    details: BTreeMap<String, String>,
 }
 
 impl HttpError {
     fn unauthorized() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
-            code: "unauthorized",
+            code: "unauthorized".to_string(),
             message: "authentication required".to_string(),
+            user_message: Some("登录已过期，请重新登录".to_string()),
+            retryable: Some(true),
+            details: BTreeMap::new(),
         }
     }
 
     fn forbidden(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let (code, user_message, retryable) = if message == "invalid CSRF token" {
+            ("csrf_invalid", "页面会话已失效，请刷新后重试", true)
+        } else {
+            ("forbidden", "当前账号无权执行此操作", false)
+        };
         Self {
             status: StatusCode::FORBIDDEN,
-            code: "forbidden",
-            message: message.into(),
+            code: code.to_string(),
+            message,
+            user_message: Some(user_message.to_string()),
+            retryable: Some(retryable),
+            details: BTreeMap::new(),
         }
     }
 
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            code: "internal",
+            code: "internal".to_string(),
             message: message.into(),
+            user_message: Some("系统内部错误，请联系管理员并提供操作时间".to_string()),
+            retryable: Some(false),
+            details: BTreeMap::new(),
         }
     }
 
@@ -2478,8 +2513,11 @@ impl HttpError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
-            code: "bad_request",
+            code: "bad_request".to_string(),
             message: message.into(),
+            user_message: Some("输入信息不完整或不一致，请检查后重试".to_string()),
+            retryable: Some(false),
+            details: BTreeMap::new(),
         }
     }
 
@@ -2487,8 +2525,11 @@ impl HttpError {
         match error {
             GuardError::Capacity(message) => Self {
                 status: StatusCode::TOO_MANY_REQUESTS,
-                code: "rate_limited",
+                code: "rate_limited".to_string(),
                 message,
+                user_message: Some("当前操作过于频繁，请稍后重试".to_string()),
+                retryable: Some(true),
+                details: BTreeMap::new(),
             },
             GuardError::InvalidIdentity(_) => Self::unauthorized(),
             other => other.into(),
@@ -2498,7 +2539,25 @@ impl HttpError {
 
 impl From<GuardError> for HttpError {
     fn from(error: GuardError) -> Self {
-        let status = match error {
+        if let GuardError::UserVisible {
+            code,
+            message,
+            user_message,
+            retryable,
+            details,
+        } = error
+        {
+            return Self {
+                status: status_for_error_code(&code),
+                code,
+                message,
+                user_message: Some(user_message),
+                retryable: Some(retryable),
+                details,
+            };
+        }
+
+        let status = match &error {
             GuardError::InvalidConfig(_) | GuardError::InvalidIdentity(_) => {
                 StatusCode::BAD_REQUEST
             }
@@ -2508,11 +2567,18 @@ impl From<GuardError> for HttpError {
             GuardError::NotFound(_) => StatusCode::NOT_FOUND,
             GuardError::Capacity(_) => StatusCode::TOO_MANY_REQUESTS,
             GuardError::TimeUnsynced(_) => StatusCode::SERVICE_UNAVAILABLE,
+            GuardError::UserVisible { .. } => unreachable!(),
         };
+        let code = code_for_guard_error(&error);
+        let user_message = user_message_for_guard_error(&error);
+        let retryable = retryable_for_guard_error(&error);
         Self {
             status,
-            code: "guard_error",
+            code,
             message: error.to_string(),
+            user_message: Some(user_message),
+            retryable: Some(retryable),
+            details: BTreeMap::new(),
         }
     }
 }
@@ -2524,8 +2590,82 @@ impl IntoResponse for HttpError {
             Json(ErrorResponse {
                 code: self.code,
                 message: self.message,
+                user_message: self.user_message,
+                operation_id: self.details.get("operation_id").cloned(),
+                trace_id: self.details.get("trace_id").cloned(),
+                retryable: self.retryable,
+                details: self.details,
             }),
         )
             .into_response()
     }
+}
+
+fn status_for_error_code(code: &str) -> StatusCode {
+    match code {
+        "node_rpc_timeout" | "stream_input_timeout" => StatusCode::GATEWAY_TIMEOUT,
+        "node_rpc_connect_failed"
+        | "node_rpc_tls_failed"
+        | "node_rpc_unavailable"
+        | "node_unavailable"
+        | "time_unsynced" => StatusCode::SERVICE_UNAVAILABLE,
+        "node_not_found" | "node_endpoint_missing" | "not_found" => StatusCode::NOT_FOUND,
+        "capacity_exceeded" | "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
+        "bad_request" | "invalid_argument" => StatusCode::BAD_REQUEST,
+        "unauthorized" => StatusCode::UNAUTHORIZED,
+        "forbidden" | "csrf_invalid" => StatusCode::FORBIDDEN,
+        "internal" => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::CONFLICT,
+    }
+}
+
+fn code_for_guard_error(error: &GuardError) -> String {
+    match error {
+        GuardError::InvalidConfig(_) => "bad_request",
+        GuardError::InvalidIdentity(_) => "bad_request",
+        GuardError::Conflict(_) => "conflict",
+        GuardError::NotFound(message) if message.contains("node") => "node_not_found",
+        GuardError::NotFound(_) => "not_found",
+        GuardError::StaleInstance(_) => "stale_instance",
+        GuardError::Capacity(_) => "capacity_exceeded",
+        GuardError::TimeUnsynced(_) => "time_unsynced",
+        GuardError::DuplicateEvent(_) => "duplicate_event",
+        GuardError::UserVisible { code, .. } => code.as_str(),
+    }
+    .to_string()
+}
+
+fn user_message_for_guard_error(error: &GuardError) -> String {
+    match error {
+        GuardError::InvalidConfig(_) | GuardError::InvalidIdentity(_) => {
+            "输入信息不完整或不一致，请检查后重试"
+        }
+        GuardError::Conflict(message) if message.contains("offline") => {
+            "节点离线或不可调度，请等待恢复或切换节点"
+        }
+        GuardError::Conflict(_) | GuardError::DuplicateEvent(_) | GuardError::StaleInstance(_) => {
+            "操作未完成，请检查目标资源状态后重试"
+        }
+        GuardError::NotFound(message) if message.contains("node") => {
+            "未找到可用节点，请确认服务已启动并注册到 Guard"
+        }
+        GuardError::NotFound(_) => "设备、通道或资源不存在，可能已被删除或离线",
+        GuardError::Capacity(_) => "当前系统繁忙，请稍后重试",
+        GuardError::TimeUnsynced(_) => "节点时间异常，请校准服务器时间",
+        GuardError::UserVisible { user_message, .. } => user_message.as_str(),
+    }
+    .to_string()
+}
+
+fn retryable_for_guard_error(error: &GuardError) -> bool {
+    matches!(
+        error,
+        GuardError::Conflict(_)
+            | GuardError::Capacity(_)
+            | GuardError::NotFound(_)
+            | GuardError::UserVisible {
+                retryable: true,
+                ..
+            }
+    )
 }

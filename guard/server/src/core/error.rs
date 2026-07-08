@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use thiserror::Error;
 
 pub type GuardResult<T> = Result<T, GuardError>;
@@ -20,4 +22,30 @@ pub enum GuardError {
     TimeUnsynced(String),
     #[error("duplicate event: {0}")]
     DuplicateEvent(String),
+    #[error("{message}")]
+    UserVisible {
+        code: String,
+        message: String,
+        user_message: String,
+        retryable: bool,
+        details: BTreeMap<String, String>,
+    },
+}
+
+impl GuardError {
+    pub fn user_visible(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        user_message: impl Into<String>,
+        retryable: bool,
+        details: BTreeMap<String, String>,
+    ) -> Self {
+        Self::UserVisible {
+            code: code.into(),
+            message: message.into(),
+            user_message: user_message.into(),
+            retryable,
+            details,
+        }
+    }
 }

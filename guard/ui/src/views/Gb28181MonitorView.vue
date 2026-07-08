@@ -342,6 +342,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import {
+  errorMessage,
   getGbSessionNodeConfig,
   listGbChannelImages,
   listGbChannels,
@@ -545,10 +546,11 @@ function emptyText(value: unknown) { return value === undefined || value === nul
 function countText(value: unknown) { const count = Number(value || 0); return count > 0 ? String(count) : '-'; }
 function normalizeKind(value?: string | null) { return (value || '').trim().toLowerCase(); }
 function nodeKindLabel(node: NodeInfo) { return (node.kind || node.service || node.config?.service || 'node').toUpperCase(); }
-function nodeStatusLabel(disabled: boolean) { return disabled ? '离线' : '在线'; }
-function buildSessionNodeOption(node: NodeInfo, config?: GbSessionConfigInfo): SessionNodeOption {
+function nodeStatusLabel(disabled: boolean, reason?: string) { return reason || (disabled ? '离线' : '在线'); }
+function buildSessionNodeOption(node: NodeInfo, config?: GbSessionConfigInfo, disabledReason?: string): SessionNodeOption {
   const disabled = !isNodeOnline(node) || !config?.domain_id;
-  return { node, config, disabled, kindLabel: nodeKindLabel(node), statusLabel: nodeStatusLabel(disabled) };
+  const reason = disabledReason || (isNodeOnline(node) && !config?.domain_id ? '缺少 domain 配置' : undefined);
+  return { node, config, disabled, kindLabel: nodeKindLabel(node), statusLabel: nodeStatusLabel(disabled, reason) };
 }
 function isGbSessionNode(node: NodeInfo) { return normalizeKind(node.kind) === 'session-gb28181' || normalizeKind(node.service) === 'session-gb28181' || normalizeKind(node.protocol) === 'gb28181'; }
 function isNodeOnline(node?: NodeInfo) { return !!node && node.connection === 'CONNECTED' && node.scheduling === 'ENABLED'; }
@@ -676,7 +678,7 @@ async function queryTreeDevices() {
     treePage.value = result.page;
     treePageSize.value = result.page_size;
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '设备查询失败');
+    ElMessage.error(errorMessage(error, '设备查询失败'));
   } finally {
     treeLoading.value = false;
   }
@@ -700,7 +702,7 @@ async function loadTreeDeviceChannels(device: GbDeviceInfo) {
     treeChannelsByDevice[device.device_id] = await listGbChannels(device.device_id);
   } catch (error) {
     treeChannelsByDevice[device.device_id] = [];
-    ElMessage.error(error instanceof Error ? error.message : '通道加载失败');
+    ElMessage.error(errorMessage(error, '通道加载失败'));
   } finally {
     treeChannelLoading[device.device_id] = false;
   }
@@ -816,7 +818,7 @@ async function playSelectedMultiChannels() {
           poster: channel.poster,
           sources: [],
           status: 'error',
-          error: error instanceof Error ? error.message : '播放失败',
+          error: errorMessage(error, '播放失败'),
         };
       }
     }));
@@ -952,7 +954,7 @@ async function handleMultiPtz(event: { index: number; payload: GmvPtzCommand }) 
   try {
     await sendGbPtz(cell.device_id, cell.channel_id, ptzPayload(event.payload));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '云台控制失败');
+    ElMessage.error(errorMessage(error, '云台控制失败'));
   }
 }
 
@@ -966,7 +968,7 @@ async function loadSessionNodes() {
       try {
         return buildSessionNodeOption(node, await getGbSessionNodeConfig(node.node_id));
       } catch {
-        return buildSessionNodeOption(node);
+        return buildSessionNodeOption(node, undefined, '配置查询失败');
       }
     }));
     sessionNodeOptions.value = options.sort((left, right) => Number(left.disabled) - Number(right.disabled) || left.node.node_id.localeCompare(right.node.node_id));
@@ -1001,7 +1003,7 @@ async function loadDevices() {
     page.value = result.page;
     pageSize.value = result.page_size;
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '设备列表加载失败');
+    ElMessage.error(errorMessage(error, '设备列表加载失败'));
   } finally {
     loading.value = false;
   }
@@ -1033,7 +1035,7 @@ async function reloadChannels() {
   try {
     channels.value = await listGbChannels(selectedDevice.value.device_id);
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '通道列表加载失败');
+    ElMessage.error(errorMessage(error, '通道列表加载失败'));
   } finally {
     channelLoading.value = false;
   }
@@ -1069,7 +1071,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
     lastStream.value = stream;
     ElMessage.success(action + '已提交');
   } catch (error) {
-    if (requestSeq === playRequestSeq) ElMessage.error(error instanceof Error ? error.message : '播放请求失败');
+    if (requestSeq === playRequestSeq) ElMessage.error(errorMessage(error, '播放请求失败'));
   } finally {
     if (requestSeq === playRequestSeq) {
       playerRequesting.value = false;
@@ -1086,7 +1088,7 @@ async function snapshot(channel: GbChannelInfo) {
     await loadImages(channel);
     ElMessage.success('抓拍已提交');
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '抓拍失败');
+    ElMessage.error(errorMessage(error, '抓拍失败'));
   } finally {
     snapshotLoading[channel.channel_id] = false;
   }
@@ -1097,7 +1099,7 @@ async function loadImages(channel: GbChannelInfo) {
     images.value = await listGbChannelImages(channel.device_id, channel.channel_id);
   } catch (error) {
     images.value = [];
-    ElMessage.error(error instanceof Error ? error.message : '抓拍图集加载失败');
+    ElMessage.error(errorMessage(error, '抓拍图集加载失败'));
   } finally {
     imageLoading.value = false;
   }
@@ -1141,7 +1143,7 @@ async function saveConfig() {
     await reloadChannels();
     ElMessage.success('业务配置已保存');
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '业务配置保存失败');
+    ElMessage.error(errorMessage(error, '业务配置保存失败'));
   } finally {
     configSaving.value = false;
   }
@@ -1151,7 +1153,7 @@ async function handlePlayerPtz(command: GmvPtzCommand) {
   try {
     await sendGbPtz(selectedChannel.value.device_id, selectedChannel.value.channel_id, ptzPayload(command));
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '云台控制失败');
+    ElMessage.error(errorMessage(error, '云台控制失败'));
   }
 }
 

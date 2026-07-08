@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use gmv_protocol::avai::v1::avai_control_client::AvaiControlClient;
@@ -77,9 +78,7 @@ impl BusinessControl {
         if session.connection != ConnectionState::Connected
             || session.scheduling != SchedulingState::Enabled
         {
-            return Err(GuardError::Conflict(format!(
-                "GB28181 session node {node_id} is offline"
-            )));
+            return Err(node_unavailable("session", "get_session_config", &node_id));
         }
         let mut client = self.session_client(&session).await?;
         let request = GetSessionConfigRequest {};
@@ -214,9 +213,7 @@ impl BusinessControl {
         if session.connection != ConnectionState::Connected
             || session.scheduling != SchedulingState::Enabled
         {
-            return Err(GuardError::Conflict(format!(
-                "GB28181 session node {node_id} is offline"
-            )));
+            return Err(node_unavailable("session", "create_gb_device", &node_id));
         }
         device.session_node_id.clear();
         base::log::debug!(
@@ -275,9 +272,7 @@ impl BusinessControl {
         if session.connection != ConnectionState::Connected
             || session.scheduling != SchedulingState::Enabled
         {
-            return Err(GuardError::Conflict(format!(
-                "GB28181 session node {node_id} is offline"
-            )));
+            return Err(node_unavailable("session", "update_gb_device", &node_id));
         }
         device.session_node_id.clear();
         base::log::debug!(
@@ -452,9 +447,7 @@ impl BusinessControl {
         if session.connection != ConnectionState::Connected
             || session.scheduling != SchedulingState::Enabled
         {
-            return Err(GuardError::Conflict(format!(
-                "GB28181 session node {node_id} is offline"
-            )));
+            return Err(node_unavailable("session", "update_gb_channel", &node_id));
         }
         let request = UpdateGbChannelRequest {
             channel: Some(channel),
@@ -531,9 +524,7 @@ impl BusinessControl {
         if session.connection != ConnectionState::Connected
             || session.scheduling != SchedulingState::Enabled
         {
-            return Err(GuardError::Conflict(format!(
-                "GB28181 session node {node_id} is offline"
-            )));
+            return Err(node_unavailable("session", "snapshot_image", &node_id));
         }
         let mut client = self.session_client(&session).await?;
         let request = SnapshotImageRequest {
@@ -556,10 +547,14 @@ impl BusinessControl {
             .map_err(session_rpc_error)?
             .into_inner();
         if let Some(error) = non_empty_error(response.error) {
-            return Err(GuardError::Conflict(format!(
-                "session snapshot rejected: {} {}",
-                error.code, error.message
-            )));
+            return Err(remote_error(
+                "session",
+                "snapshot_image",
+                error,
+                "snapshot_rejected",
+                "抓拍请求未被设备接受，请确认设备在线且支持抓拍",
+                true,
+            ));
         }
         if response.session_id.is_empty() {
             return Err(GuardError::Conflict(
@@ -763,17 +758,17 @@ impl BusinessControl {
             DeviceStreamKind::Download => session_client.start_download(request).await,
             DeviceStreamKind::Talk => session_client.start_talk(request).await,
         }
-        .map_err(|error| {
-            GuardError::Conflict(format!("start session {} failed: {error}", kind.prefix()))
-        })?
+        .map_err(|error| node_rpc_status("session", kind.action(), error))?
         .into_inner();
         if let Some(error) = non_empty_error(session_response.error) {
-            return Err(GuardError::Conflict(format!(
-                "session {} rejected: {} {}",
-                kind.prefix(),
-                error.code,
-                error.message
-            )));
+            return Err(remote_error(
+                "session",
+                kind.action(),
+                error,
+                "stream_start_failed",
+                "视频流创建失败，请检查设备在线状态和媒体服务",
+                true,
+            ));
         }
         if session_response.state != DeviceStreamState::Running as i32 {
             return Err(GuardError::Conflict(format!(
@@ -832,13 +827,17 @@ impl BusinessControl {
         let response = session_client
             .stop_device_stream(request)
             .await
-            .map_err(|error| GuardError::Conflict(format!("stop session stream failed: {error}")))?
+            .map_err(|error| node_rpc_status("session", "stop_device_stream", error))?
             .into_inner();
         if let Some(error) = non_empty_error(response.error) {
-            return Err(GuardError::Conflict(format!(
-                "session stop rejected: {} {}",
-                error.code, error.message
-            )));
+            return Err(remote_error(
+                "session",
+                "stop_device_stream",
+                error,
+                "stream_stop_failed",
+                "停止视频流失败，请稍后重试",
+                true,
+            ));
         }
         if let Some(route) = self
             .store
@@ -893,14 +892,31 @@ impl BusinessControl {
         let response = session_client
             .control_ptz(request)
             .await
-            .map_err(|error| GuardError::Conflict(format!("ptz RPC failed: {error}")))?
+            .map_err(|error| node_rpc_status("session", "control_ptz", error))?
             .into_inner();
         if !response.accepted {
-            let message = response
+            return Err(response
                 .error
-                .map(|error| format!("{} {}", error.code, error.message))
-                .unwrap_or_else(|| "ptz rejected".to_string());
-            return Err(GuardError::Conflict(message));
+                .filter(|error| !error.code.is_empty() || !error.message.is_empty())
+                .map(|error| {
+                    remote_error(
+                        "session",
+                        "control_ptz",
+                        error,
+                        "ptz_rejected",
+                        "云台控制未被设备接受，请确认通道支持云台",
+                        false,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    user_error(
+                        "ptz_rejected",
+                        "session ptz rejected",
+                        "云台控制未被设备接受，请确认通道支持云台",
+                        false,
+                        detail_pairs([("service", "session"), ("action", "control_ptz")]),
+                    )
+                }));
         }
         Ok(1)
     }
@@ -977,15 +993,19 @@ impl BusinessControl {
         let response = avai_client
             .create_task(request)
             .await
-            .map_err(|error| GuardError::Conflict(format!("create avai task failed: {error}")))?
+            .map_err(|error| node_rpc_status("avai", "create_task", error))?
             .into_inner();
         if let Some(error) = non_empty_error(response.error) {
             let _ =
                 LeaseService::new(self.store.clone()).fail(&lease_id, &avai.identity.instance_id);
-            return Err(GuardError::Conflict(format!(
-                "avai task rejected: {} {}",
-                error.code, error.message
-            )));
+            return Err(remote_error(
+                "avai",
+                "create_task",
+                error,
+                "avai_task_rejected",
+                "AI 任务创建失败，请检查目标节点状态后重试",
+                true,
+            ));
         }
         if response.state != AiTaskState::Running as i32 {
             return Err(GuardError::Conflict(
@@ -1042,13 +1062,17 @@ impl BusinessControl {
         let response = avai_client
             .cancel_task(request)
             .await
-            .map_err(|error| GuardError::Conflict(format!("cancel avai task failed: {error}")))?
+            .map_err(|error| node_rpc_status("avai", "cancel_task", error))?
             .into_inner();
         if let Some(error) = non_empty_error(response.error) {
-            return Err(GuardError::Conflict(format!(
-                "avai cancel rejected: {} {}",
-                error.code, error.message
-            )));
+            return Err(remote_error(
+                "avai",
+                "cancel_task",
+                error,
+                "avai_cancel_rejected",
+                "AI 任务取消失败，请检查目标节点状态后重试",
+                true,
+            ));
         }
         if response.state != AiTaskState::Cancelled as i32 {
             return Err(GuardError::Conflict(
@@ -1148,7 +1172,7 @@ async fn connect_rpc(uri: &str, name: &str) -> GuardResult<tonic::transport::Cha
             "guard rpc client inbound: service={name}, endpoint={uri}, status=error, elapsed_ms={}, err={error}",
             started.elapsed().as_millis()
         );
-        GuardError::Conflict(format!("connect {name} RPC failed: {error}"))
+        node_connect_error(name, error.to_string())
     })?;
     base::log::debug!(
         "guard rpc client inbound: service={name}, endpoint={uri}, status=ok, elapsed_ms={}",
@@ -1167,7 +1191,7 @@ fn is_gb_session_node(node: &NodeRecord) -> bool {
                 .any(|item| item == "protocol.gb28181"))
 }
 fn session_rpc_error(error: tonic::Status) -> GuardError {
-    GuardError::Conflict(format!("session RPC failed: {error}"))
+    node_rpc_status("session", "rpc", error)
 }
 
 fn grpc_uri(node: &NodeRecord) -> GuardResult<String> {
@@ -1178,7 +1202,16 @@ fn grpc_uri(node: &NodeRecord) -> GuardResult<String> {
             endpoint.name == "grpc" || matches!(endpoint.scheme.as_str(), "grpc" | "grpcs")
         })
         .ok_or_else(|| {
-            GuardError::NotFound(format!("node {} grpc endpoint", node.identity.node_id))
+            user_error(
+                "node_endpoint_missing",
+                format!("node {} grpc endpoint missing", node.identity.node_id),
+                "节点未上报 RPC 地址，请检查节点配置",
+                false,
+                detail_pairs([
+                    ("node_id", node.identity.node_id.as_str()),
+                    ("service", node_kind_name(node.identity.kind)),
+                ]),
+            )
         })?;
     let scheme = if endpoint.scheme == "grpcs" {
         "https"
@@ -1204,6 +1237,144 @@ fn non_empty_error(error: Option<ErrorDetail>) -> Option<ErrorDetail> {
     error.filter(|error| !error.code.is_empty() || !error.message.is_empty())
 }
 
+fn node_kind_name(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Session => "session",
+        NodeKind::Stream => "stream",
+        NodeKind::Avai => "avai",
+    }
+}
+
+fn node_unavailable(service: &str, action: &str, node_id: &str) -> GuardError {
+    user_error(
+        "node_unavailable",
+        format!("{service} node {node_id} is offline or disabled"),
+        "节点离线或不可调度，请等待恢复或切换节点",
+        true,
+        detail_pairs([
+            ("node_id", node_id),
+            ("service", service),
+            ("action", action),
+        ]),
+    )
+}
+
+fn node_connect_error(service: &str, message: String) -> GuardError {
+    let lower = message.to_ascii_lowercase();
+    let code = if lower.contains("deadline")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+    {
+        "node_rpc_timeout"
+    } else if lower.contains("tls") || lower.contains("certificate") || lower.contains("handshake")
+    {
+        "node_rpc_tls_failed"
+    } else {
+        "node_rpc_connect_failed"
+    };
+    let user_message = match code {
+        "node_rpc_timeout" => "节点响应超时，请稍后重试或检查节点负载/网络",
+        "node_rpc_tls_failed" => "节点安全连接失败，请检查证书、域名或主机时间",
+        _ => "无法连接目标节点，请检查节点进程、地址和网络",
+    };
+    user_error(
+        code,
+        format!("connect {service} RPC failed: {message}"),
+        user_message,
+        true,
+        detail_pairs([("service", service)]),
+    )
+}
+
+fn node_rpc_status(service: &str, action: &str, error: tonic::Status) -> GuardError {
+    let code = match error.code() {
+        tonic::Code::DeadlineExceeded => "node_rpc_timeout",
+        tonic::Code::Unavailable => "node_rpc_unavailable",
+        tonic::Code::Unauthenticated => "unauthorized",
+        tonic::Code::PermissionDenied => "forbidden",
+        tonic::Code::InvalidArgument => "bad_request",
+        _ => "node_rpc_unavailable",
+    };
+    let user_message = match code {
+        "node_rpc_timeout" => "节点响应超时，请稍后重试或检查节点负载/网络",
+        "node_rpc_unavailable" => "无法连接目标节点，请检查节点进程、地址和网络",
+        "unauthorized" => "节点认证失败，请检查服务间认证配置",
+        "forbidden" => "目标节点拒绝执行此操作，请检查节点权限配置",
+        "bad_request" => "请求参数不完整或不符合目标节点要求",
+        _ => "节点调用失败，请稍后重试",
+    };
+    user_error(
+        code,
+        format!("{service} RPC {action} failed: {error}"),
+        user_message,
+        matches!(
+            error.code(),
+            tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
+        ),
+        detail_pairs([("service", service), ("action", action)]),
+    )
+}
+
+fn remote_error(
+    service: &str,
+    action: &str,
+    error: ErrorDetail,
+    fallback_code: &str,
+    fallback_user_message: &str,
+    retryable: bool,
+) -> GuardError {
+    let code = if error.code.trim().is_empty() {
+        fallback_code
+    } else {
+        error.code.as_str()
+    };
+    let user_message = if error.message.trim().is_empty() {
+        fallback_user_message.to_string()
+    } else {
+        remote_user_message(code, &error.message, fallback_user_message)
+    };
+    let mut details = detail_pairs([("service", service), ("action", action)]);
+    details.extend(error.metadata);
+    user_error(
+        code,
+        format!("{service} RPC {action} rejected: {}", error.message),
+        user_message,
+        retryable,
+        details,
+    )
+}
+
+fn remote_user_message(code: &str, message: &str, fallback: &str) -> String {
+    match code {
+        "stream_input_timeout" => "设备未在限定时间内推流，请检查设备网络和编码配置".to_string(),
+        "ptz_failed" | "ptz_rejected" => "云台控制未被设备接受，请确认通道支持云台".to_string(),
+        "snapshot_failed" | "snapshot_rejected" => {
+            "抓拍请求未被设备接受，请确认设备在线且支持抓拍".to_string()
+        }
+        "not_found" => "设备、通道或资源不存在，可能已被删除或离线".to_string(),
+        _ if message.trim().is_empty() => fallback.to_string(),
+        _ => format!("{fallback}：{message}"),
+    }
+}
+
+fn user_error(
+    code: impl Into<String>,
+    message: impl Into<String>,
+    user_message: impl Into<String>,
+    retryable: bool,
+    details: BTreeMap<String, String>,
+) -> GuardError {
+    GuardError::user_visible(code, message, user_message, retryable, details)
+}
+
+fn detail_pairs<const N: usize>(pairs: [(&str, &str); N]) -> BTreeMap<String, String> {
+    pairs
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1227,6 +1398,15 @@ impl DeviceStreamKind {
             Self::Playback => "playback",
             Self::Download => "download",
             Self::Talk => "talk",
+        }
+    }
+
+    fn action(self) -> &'static str {
+        match self {
+            Self::Live => "start_live",
+            Self::Playback => "start_playback",
+            Self::Download => "start_download",
+            Self::Talk => "start_talk",
         }
     }
 

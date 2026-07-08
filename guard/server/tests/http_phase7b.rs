@@ -107,7 +107,7 @@ async fn login(app: &axum::Router, username: &str) -> (String, String) {
 fn gb28181_device_create_post_route_is_registered() {
     run_async(async {
         let app = test_app(InMemoryGuardStore::default());
-        let (status, _, _) = request(
+        let (status, _, body) = request(
             &app,
             Request::post("/api/v2/gb28181/devices")
                 .header(ORIGIN, ORIGIN_VALUE)
@@ -117,6 +117,8 @@ fn gb28181_device_create_post_route_is_registered() {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "unauthorized");
+        assert_eq!(body["user_message"], "登录已过期，请重新登录");
     });
 }
 
@@ -220,6 +222,21 @@ fn session_security_headers_and_csrf() {
         )
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (cookie, _) = login(&app, "operator").await;
+        let (status, _, body) = request(
+            &app,
+            Request::post("/api/v2/auth/logout")
+                .header(ORIGIN, ORIGIN_VALUE)
+                .header(COOKIE, &cookie)
+                .header("x-csrf-token", "bad-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "csrf_invalid");
+        assert_eq!(body["user_message"], "页面会话已失效，请刷新后重试");
     });
 }
 

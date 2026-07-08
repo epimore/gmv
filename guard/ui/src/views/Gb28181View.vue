@@ -126,7 +126,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { createGbDevice, deleteGbDevice, getGbSessionNodeConfig, listGbDevicePage, listNodes, updateGbDevice, type GbDeviceInfo, type GbDevicePayload, type GbSessionConfigInfo, type NodeInfo } from '@/api/client';
+import { createGbDevice, deleteGbDevice, errorMessage, getGbSessionNodeConfig, listGbDevicePage, listNodes, updateGbDevice, type GbDeviceInfo, type GbDevicePayload, type GbSessionConfigInfo, type NodeInfo } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
 import { useAuthStore } from '@/stores/auth';
@@ -159,10 +159,11 @@ function emptyDevice(): GbDevicePayload { return { device_id: '', alias: '', ses
 function assign<T extends object>(target: T, source: Partial<T>) { Object.assign(target, source); }
 function normalizeKind(value?: string | null) { return (value || '').trim().toLowerCase(); }
 function nodeKindLabel(node: NodeInfo) { return (node.kind || node.service || node.config?.service || 'node').toUpperCase(); }
-function nodeStatusLabel(disabled: boolean) { return disabled ? "离线" : "在线"; }
-function buildSessionNodeOption(node: NodeInfo, config?: GbSessionConfigInfo): SessionNodeOption {
+function nodeStatusLabel(disabled: boolean, reason?: string) { return reason || (disabled ? "离线" : "在线"); }
+function buildSessionNodeOption(node: NodeInfo, config?: GbSessionConfigInfo, disabledReason?: string): SessionNodeOption {
   const disabled = !isNodeOnline(node) || !config?.domain_id;
-  return { node, config, disabled, kindLabel: nodeKindLabel(node), statusLabel: nodeStatusLabel(disabled) };
+  const reason = disabledReason || (isNodeOnline(node) && !config?.domain_id ? '缺少 domain 配置' : undefined);
+  return { node, config, disabled, kindLabel: nodeKindLabel(node), statusLabel: nodeStatusLabel(disabled, reason) };
 }
 function isGbSessionNode(node: NodeInfo) { return normalizeKind(node.kind) === "session-gb28181" || normalizeKind(node.service) === "session-gb28181" || normalizeKind(node.protocol) === "gb28181"; }
 function isNodeOnline(node?: NodeInfo) { return !!node && node.connection === "CONNECTED" && node.scheduling === "ENABLED"; }
@@ -179,7 +180,7 @@ async function loadSessionNodeConfig(nodeId: string, clearDomain = true, warn = 
     return true;
   } catch (error) {
     clearSessionConfig(clearDomain);
-    if (warn) ElMessage.error(error instanceof Error ? error.message : "Session 节点配置查询失败");
+    if (warn) ElMessage.error(errorMessage(error, "Session 节点配置查询失败"));
     return false;
   } finally {
     sessionConfigLoading.value = false;
@@ -195,7 +196,7 @@ async function loadSessionNodes() {
       try {
         return buildSessionNodeOption(node, await getGbSessionNodeConfig(node.node_id));
       } catch {
-        return buildSessionNodeOption(node);
+        return buildSessionNodeOption(node, undefined, '配置查询失败');
       }
     }));
     sessionNodeOptions.value = options.sort((left, right) => Number(left.disabled) - Number(right.disabled) || left.node.node_id.localeCompare(right.node.node_id));
@@ -206,7 +207,7 @@ async function loadSessionNodes() {
     listNodeLoading.value = false;
   }
 }
-async function loadDevices() { loading.value = true; try { await loadSessionNodes(); const option = selectedListNodeOption.value; if (!option || option.disabled || !option.config?.domain_id) { devices.value = []; total.value = 0; return; } const result = await listGbDevicePage(page.value, pageSize.value, option.node.node_id, option.config.domain_id, deviceId.value, deviceName.value); devices.value = result.items; total.value = result.total; page.value = result.page; pageSize.value = result.page_size; } catch (error) { ElMessage.error(error instanceof Error ? error.message : '设备加载失败'); } finally { loading.value = false; } }
+async function loadDevices() { loading.value = true; try { await loadSessionNodes(); const option = selectedListNodeOption.value; if (!option || option.disabled || !option.config?.domain_id) { devices.value = []; total.value = 0; return; } const result = await listGbDevicePage(page.value, pageSize.value, option.node.node_id, option.config.domain_id, deviceId.value, deviceName.value); devices.value = result.items; total.value = result.total; page.value = result.page; pageSize.value = result.page_size; } catch (error) { ElMessage.error(errorMessage(error, '设备加载失败')); } finally { loading.value = false; } }
 async function queryDevices() { page.value = 1; await loadDevices(); }
 async function resetDevices() { deviceId.value = ''; deviceName.value = ''; page.value = 1; await loadDevices(); }
 async function handlePageSizeChange() { page.value = 1; await loadDevices(); }
@@ -229,10 +230,20 @@ async function saveDevice() {
     await loadDevices();
     ElMessage.success("注册配置已保存");
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "设备保存失败");
+    ElMessage.error(errorMessage(error, "设备保存失败"));
   }
 }
-async function removeDevice(row: GbDeviceInfo) { await ElMessageBox.confirm(`确认删除注册配置 ${row.device_id}？`, '删除确认', { type: 'warning' }); await deleteGbDevice(row.device_id, row.session_node_id, row.domain_id); if (devices.value.length === 1 && page.value > 1) page.value -= 1; await loadDevices(); ElMessage.success('注册配置已删除'); }
+async function removeDevice(row: GbDeviceInfo) {
+  await ElMessageBox.confirm(`确认删除注册配置 ${row.device_id}？`, '删除确认', { type: 'warning' });
+  try {
+    await deleteGbDevice(row.device_id, row.session_node_id, row.domain_id);
+    if (devices.value.length === 1 && page.value > 1) page.value -= 1;
+    await loadDevices();
+    ElMessage.success('注册配置已删除');
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '注册配置删除失败'));
+  }
+}
 onMounted(loadDevices);
 </script>
 
