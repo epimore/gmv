@@ -113,16 +113,37 @@ pub async fn allocate_stream_node(
     device_id: &str,
     channel_id: &str,
 ) -> GlobalResult<AllocatedStreamNode> {
+    allocate_stream_node_with_constraints(
+        operation_id,
+        stream_id,
+        stream_type,
+        device_id,
+        channel_id,
+        HashMap::new(),
+    )
+    .await
+}
+
+pub async fn allocate_stream_node_with_constraints(
+    operation_id: &str,
+    stream_id: &str,
+    stream_type: &str,
+    device_id: &str,
+    channel_id: &str,
+    extra_constraints: HashMap<String, String>,
+) -> GlobalResult<AllocatedStreamNode> {
     let mut client = guard_control_client().await?;
+    let mut constraints = HashMap::from([
+        ("device_id".to_string(), device_id.to_string()),
+        ("channel_id".to_string(), channel_id.to_string()),
+    ]);
+    constraints.extend(extra_constraints);
     let response = client
         .allocate_stream(AllocateStreamRequest {
             operation: Some(operation(operation_id)),
             stream_id: stream_id.to_string(),
             stream_type: stream_type.to_string(),
-            constraints: HashMap::from([
-                ("device_id".to_string(), device_id.to_string()),
-                ("channel_id".to_string(), channel_id.to_string()),
-            ]),
+            constraints,
         })
         .await
         .hand_log(|msg| log_error!("{msg}"))?

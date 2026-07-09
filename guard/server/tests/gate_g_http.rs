@@ -69,7 +69,12 @@ async fn call(
     let body = if bytes.is_empty() {
         Value::Null
     } else {
-        base::serde_json::from_slice(&bytes).unwrap()
+        base::serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!(
+                "expected JSON response, status={status}, body={}: {error}",
+                String::from_utf8_lossy(&bytes)
+            )
+        })
     };
     (status, headers, body)
 }
@@ -147,7 +152,15 @@ fn ui_api_requires_registered_nodes_for_device_operations() {
                     "/api/v2/devices/34020000001320000001/ptz",
                     &cookie,
                     &csrf,
-                    json!({ "channel_id": "ch-1" }),
+                    json!({
+                        "channel_id": "ch-1",
+                        "leftRight": 1,
+                        "upDown": 0,
+                        "inOut": 0,
+                        "horizonSpeed": 64,
+                        "verticalSpeed": 0,
+                        "zoomSpeed": 0
+                    }),
                 ),
             )
             .await;

@@ -65,11 +65,14 @@ impl GuardControl for GuardControlRpc {
         } else {
             operation.operation_id.clone()
         };
+        let constraints = request.constraints.clone();
         let allocation = AllocationService::new(self.store.clone())
             .allocate(AllocationRequest {
                 request_id: operation_id.clone(),
+                resource_id: request.stream_id.clone(),
                 capability: request.stream_type.clone(),
-                zone: request.constraints.get("zone").cloned(),
+                zone: constraints.get("zone").cloned(),
+                constraints: constraints.clone(),
             })
             .map_err(status)?;
         let lease_id = format!("lease-{operation_id}");
@@ -79,12 +82,14 @@ impl GuardControl for GuardControlRpc {
                 lease_id: lease_id.clone(),
                 route_id: route_id.clone(),
                 resource_id: request.stream_id.clone(),
+                stream_type: request.stream_type.clone(),
                 idempotency_key: if operation.idempotency_key.is_empty() {
                     operation_id.clone()
                 } else {
                     operation.idempotency_key.clone()
                 },
                 owner: allocation.owner.clone(),
+                constraints,
                 now_ms: now_ms(),
                 ttl_ms: 30_000,
             })

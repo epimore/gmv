@@ -172,6 +172,7 @@ pub struct StreamGuardNode {
     pub started_at_epoch_ms: i64,
     pub endpoints: Vec<Endpoint>,
     pub capabilities: Vec<String>,
+    pub host_id: String,
 }
 
 impl StreamGuardNode {
@@ -208,6 +209,7 @@ impl StreamGuardNode {
             },
             software_version: env!("CARGO_PKG_VERSION").to_string(),
             started_at_epoch_ms: 0,
+            host_id: host.clone(),
             endpoints: vec![
                 endpoint(
                     "http",
@@ -244,6 +246,7 @@ impl StreamGuardNode {
     fn config_summary(&self) -> HashMap<String, String> {
         HashMap::from([
             ("node_id".to_string(), self.identity.node_id.clone()),
+            ("host_id".to_string(), self.host_id.clone()),
             (
                 "software_version".to_string(),
                 self.software_version.clone(),

@@ -1,23 +1,14 @@
-use crate::store::model::NodeRecord;
-
-use super::filter::PENDING_LEASE_LIMIT;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoreBreakdown {
     pub node_id: String,
-    pub queue_score: f64,
-    pub stability_score: f64,
+    pub host_id: String,
+    pub active_allocated: u32,
+    pub active_confirmed: u32,
+    pub host_active: u32,
+    pub tcp_passive_talks: u32,
+    pub load_cost: f64,
+    pub tie_breaker: u64,
+    pub eligible: bool,
+    pub reason: String,
     pub total: f64,
-}
-
-pub fn score(node: &NodeRecord) -> ScoreBreakdown {
-    let remaining = PENDING_LEASE_LIMIT.saturating_sub(node.pending_leases) as f64;
-    let queue_score = remaining / PENDING_LEASE_LIMIT as f64;
-    let stability_score = 1.0 / (1.0 + node.generation as f64);
-    ScoreBreakdown {
-        node_id: node.identity.node_id.clone(),
-        queue_score,
-        stability_score,
-        total: queue_score * 0.8 + stability_score * 0.2,
-    }
 }

@@ -179,6 +179,10 @@ impl TalkManager {
         TALK_SESSIONS.contains_key(talk_id)
     }
 
+    pub fn active_session_count() -> usize {
+        TALK_SESSIONS.len()
+    }
+
     pub fn close(talk_id: &str) -> bool {
         match TALK_SESSIONS.remove(talk_id) {
             Some((_, session)) => {

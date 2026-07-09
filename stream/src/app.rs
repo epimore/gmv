@@ -1,5 +1,5 @@
 use crate::general::cfg::{GrpcConf, GuardConf, ServerConf};
-use crate::io::{http, rtp_handler};
+use crate::io::{http, rtp_handler, talk::TalkManager};
 use crate::media;
 use crate::state::register::Register;
 use base::cfg_lib::{CliBasic, default_cli_basic};
@@ -185,10 +185,16 @@ impl
                 node.register_request(NodeResourceSnapshot::default()),
             );
             reporter.business_metrics = Arc::new(|| {
-                HashMap::from([(
-                    "receiving_streams".to_string(),
-                    Register::active_stream_count().to_string(),
-                )])
+                HashMap::from([
+                    (
+                        "receiving_streams".to_string(),
+                        Register::active_stream_count().to_string(),
+                    ),
+                    (
+                        "active_talk_sessions".to_string(),
+                        TalkManager::active_session_count().to_string(),
+                    ),
+                ])
             });
             init_guard_channel(node.guard_channel.clone());
             let (_reporter, event_sender) =

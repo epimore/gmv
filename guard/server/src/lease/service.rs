@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::core::{GuardError, GuardResult, LeaseState, NodeIdentity};
 use crate::store::InMemoryGuardStore;
 use crate::store::model::LeaseRecord;
@@ -7,8 +9,10 @@ pub struct LeaseRequest {
     pub lease_id: String,
     pub route_id: String,
     pub resource_id: String,
+    pub stream_type: String,
     pub idempotency_key: String,
     pub owner: NodeIdentity,
+    pub constraints: HashMap<String, String>,
     pub now_ms: i64,
     pub ttl_ms: u64,
 }
@@ -29,9 +33,11 @@ impl LeaseService {
             lease_id: request.lease_id,
             route_id: request.route_id,
             resource_id: request.resource_id,
+            stream_type: request.stream_type,
             node_id: request.owner.node_id,
             instance_id: request.owner.instance_id,
             idempotency_key: request.idempotency_key,
+            constraints: request.constraints,
             state: LeaseState::Allocated,
             expires_at_ms: request.now_ms + request.ttl_ms as i64,
         };

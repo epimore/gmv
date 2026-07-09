@@ -1,5 +1,5 @@
 use crate::api::v2::page::{CursorPage, CursorQuery};
-use crate::core::GuardResult;
+use crate::core::{GuardError, GuardResult};
 use crate::store::InMemoryGuardStore;
 use crate::store::model::EventRecord;
 
@@ -13,7 +13,10 @@ pub struct EventQuery {
 pub type EventPage = CursorPage<EventRecord>;
 
 pub fn poll_events(store: &InMemoryGuardStore, query: EventQuery) -> GuardResult<EventPage> {
-    query.cursor.validate()?;
+    query
+        .cursor
+        .validate()
+        .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
     let limit = query.cursor.limit;
     let mut items = store.events_after(query.cursor.after_id.as_deref(), limit);
     if let Some(prefix) = query.topic_prefix {

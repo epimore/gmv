@@ -249,9 +249,11 @@ fn leases_are_exposed_to_viewers() {
                 lease_id: "lease-1".to_string(),
                 route_id: "route-1".to_string(),
                 resource_id: "stream-1".to_string(),
+                stream_type: "live".to_string(),
                 node_id: "stream-a".to_string(),
                 instance_id: "instance-a".to_string(),
                 idempotency_key: "lease-ui-1".to_string(),
+                constraints: std::collections::HashMap::new(),
                 state: LeaseState::Confirmed,
                 expires_at_ms: 10_000,
             })

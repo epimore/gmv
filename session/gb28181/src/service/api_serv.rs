@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -290,12 +291,23 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
 
     let (ssrc, talk_id) = id_builder::build_ssrc_stream_id(device_id, &channel_id, true).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
-    let allocation = crate::guard_integration::allocate_stream_node(
+    let talk_constraints = match audio.trans_mode {
+        TransMode::TcpPassive => HashMap::from([
+            ("transport".to_string(), "tcp_passive".to_string()),
+            (
+                "requires_dedicated_media_endpoint".to_string(),
+                "true".to_string(),
+            ),
+        ]),
+        TransMode::Udp | TransMode::TcpActive => HashMap::new(),
+    };
+    let allocation = crate::guard_integration::allocate_stream_node_with_constraints(
         &format!("talk-{talk_id}"),
         &talk_id,
         "talk",
         device_id,
         &channel_id,
+        talk_constraints,
     )
     .await?;
     let stream_node = allocation.node.clone();

@@ -104,9 +104,11 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
                     lease_id: "lease-play-1".to_string(),
                     route_id: "route-play-1".to_string(),
                     resource_id: "stream-play-1".to_string(),
+                    stream_type: "live".to_string(),
                     node_id: "stream-rpc-1".to_string(),
                     instance_id: "inst-1".to_string(),
                     idempotency_key: String::new(),
+                    constraints: HashMap::new(),
                     state: CoreLeaseState::Confirmed,
                     expires_at_ms: i64::MAX,
                 })

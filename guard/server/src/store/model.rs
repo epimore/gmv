@@ -3,6 +3,8 @@ use crate::core::{
     ConnectionState, HealthState, LeaseState, NodeIdentity, RouteState, SchedulingState,
 };
 
+use std::collections::HashMap;
+
 pub const PLAYBACK_TOKEN_TTL_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -62,9 +64,11 @@ pub struct LeaseRecord {
     pub lease_id: String,
     pub route_id: String,
     pub resource_id: String,
+    pub stream_type: String,
     pub node_id: String,
     pub instance_id: String,
     pub idempotency_key: String,
+    pub constraints: HashMap<String, String>,
     pub state: LeaseState,
     pub expires_at_ms: i64,
 }

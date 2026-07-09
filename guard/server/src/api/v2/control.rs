@@ -936,8 +936,10 @@ impl BusinessControl {
         let allocation =
             AllocationService::new(self.store.clone()).allocate(AllocationRequest {
                 request_id: operation_id.to_string(),
+                resource_id: task_id.clone(),
                 capability: capability.clone(),
                 zone: avai.zone.clone(),
+                constraints: std::collections::HashMap::new(),
             })?;
         if allocation.owner.node_id != avai.identity.node_id {
             return Err(GuardError::Conflict(
@@ -948,8 +950,10 @@ impl BusinessControl {
             lease_id: lease_id.clone(),
             route_id: route_id.clone(),
             resource_id: task_id.clone(),
+            stream_type: capability.clone(),
             idempotency_key: format!("ai-{operation_id}"),
             owner: avai.identity.clone(),
+            constraints: std::collections::HashMap::new(),
             now_ms: now_ms(),
             ttl_ms: 30_000,
         })?;

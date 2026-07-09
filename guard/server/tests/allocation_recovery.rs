@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use gmv_guard_server::core::{LeaseState, NodeIdentity, NodeKind, RouteState};
 use gmv_guard_server::gateway::{AllocationRequest, AllocationService};
 use gmv_guard_server::lease::{LeaseRequest, LeaseService};
@@ -11,17 +13,26 @@ fn stream_identity(node_id: &str, instance_id: &str) -> NodeIdentity {
 }
 
 fn register_stream(store: &InMemoryGuardStore, node_id: &str, instance_id: &str) -> NodeIdentity {
+    register_stream_with_config(store, node_id, instance_id, HashMap::new())
+}
+
+fn register_stream_with_config(
+    store: &InMemoryGuardStore,
+    node_id: &str,
+    instance_id: &str,
+    config: HashMap<String, String>,
+) -> NodeIdentity {
     let identity = stream_identity(node_id, instance_id);
     RegistryService::new(store.clone())
         .register(RegisterRequest {
             identity: identity.clone(),
-            capabilities: vec!["live".to_string()],
+            capabilities: vec!["live".to_string(), "talk".to_string()],
             endpoints: vec![],
             host_metrics: Default::default(),
             zone: Some("z1".to_string()),
             now_ms: 1_000,
             takeover: false,
-            config: Default::default(),
+            config,
         })
         .unwrap();
     identity
@@ -35,19 +46,143 @@ fn allocation_filters_scores_and_explains_selection() {
     let result = AllocationService::new(store)
         .allocate(AllocationRequest {
             request_id: "req-1".to_string(),
+            resource_id: "stream-req-1".to_string(),
             capability: "live".to_string(),
             zone: Some("z1".to_string()),
+            constraints: HashMap::new(),
         })
         .unwrap();
 
-    assert_eq!(result.owner, left);
-    assert_eq!(result.explain.selected_node_id, "stream-a");
+    assert!(matches!(
+        result.owner.node_id.as_str(),
+        "stream-a" | "stream-b"
+    ));
+    assert_eq!(result.explain.selected_node_id, result.owner.node_id);
     assert!(
         result
             .explain
             .scores
             .iter()
             .any(|score| score.node_id == left.node_id)
+    );
+}
+
+#[test]
+fn allocation_prefers_lower_active_lease_load() {
+    let store = InMemoryGuardStore::default();
+    let left = register_stream(&store, "stream-a", "inst-a");
+    let right = register_stream(&store, "stream-b", "inst-b");
+    let leases = LeaseService::new(store.clone());
+    leases
+        .allocate(LeaseRequest {
+            lease_id: "lease-active-a".to_string(),
+            route_id: "route-active-a".to_string(),
+            resource_id: "stream-active-a".to_string(),
+            stream_type: "live".to_string(),
+            idempotency_key: "idem-active-a".to_string(),
+            owner: left,
+            constraints: HashMap::new(),
+            now_ms: 1_000,
+            ttl_ms: 30_000,
+        })
+        .unwrap();
+    leases.confirm("lease-active-a", "inst-a").unwrap();
+
+    let result = AllocationService::new(store)
+        .allocate(AllocationRequest {
+            request_id: "req-low-load".to_string(),
+            resource_id: "stream-low-load".to_string(),
+            capability: "live".to_string(),
+            zone: Some("z1".to_string()),
+            constraints: HashMap::new(),
+        })
+        .unwrap();
+
+    assert_eq!(result.owner, right);
+    let left_score = result
+        .explain
+        .scores
+        .iter()
+        .find(|score| score.node_id == "stream-a")
+        .unwrap();
+    assert_eq!(left_score.active_confirmed, 1);
+}
+
+#[test]
+fn tcp_passive_talk_uses_distinct_stream_node() {
+    let store = InMemoryGuardStore::default();
+    let left = register_stream(&store, "stream-a", "inst-a");
+    let right = register_stream(&store, "stream-b", "inst-b");
+    let constraints = HashMap::from([
+        ("transport".to_string(), "tcp_passive".to_string()),
+        (
+            "requires_dedicated_media_endpoint".to_string(),
+            "true".to_string(),
+        ),
+    ]);
+    LeaseService::new(store.clone())
+        .allocate(LeaseRequest {
+            lease_id: "lease-talk-a".to_string(),
+            route_id: "route-talk-a".to_string(),
+            resource_id: "talk-a".to_string(),
+            stream_type: "talk".to_string(),
+            idempotency_key: "idem-talk-a".to_string(),
+            owner: left,
+            constraints: constraints.clone(),
+            now_ms: 1_000,
+            ttl_ms: 30_000,
+        })
+        .unwrap();
+
+    let result = AllocationService::new(store)
+        .allocate(AllocationRequest {
+            request_id: "req-talk-b".to_string(),
+            resource_id: "talk-b".to_string(),
+            capability: "talk".to_string(),
+            zone: Some("z1".to_string()),
+            constraints,
+        })
+        .unwrap();
+
+    assert_eq!(result.owner, right);
+    let left_score = result
+        .explain
+        .scores
+        .iter()
+        .find(|score| score.node_id == "stream-a")
+        .unwrap();
+    assert!(!left_score.eligible);
+    assert_eq!(left_score.reason, "tcp_passive_domain_busy");
+}
+
+#[test]
+fn drained_stream_node_is_not_allocated() {
+    let store = InMemoryGuardStore::default();
+    register_stream_with_config(
+        &store,
+        "stream-a",
+        "inst-a",
+        HashMap::from([("drain".to_string(), "true".to_string())]),
+    );
+    let right = register_stream(&store, "stream-b", "inst-b");
+
+    let result = AllocationService::new(store)
+        .allocate(AllocationRequest {
+            request_id: "req-drain".to_string(),
+            resource_id: "stream-drain".to_string(),
+            capability: "live".to_string(),
+            zone: Some("z1".to_string()),
+            constraints: HashMap::new(),
+        })
+        .unwrap();
+
+    assert_eq!(result.owner, right);
+    assert!(
+        result
+            .explain
+            .scores
+            .iter()
+            .all(|score| score.node_id != "stream-a")
     );
 }
 
@@ -61,8 +196,10 @@ fn lease_state_machine_rejects_stale_instance_and_expires() {
             lease_id: "lease-1".to_string(),
             route_id: "route-1".to_string(),
             resource_id: "stream-001".to_string(),
+            stream_type: "live".to_string(),
             idempotency_key: "idem-1".to_string(),
             owner: owner.clone(),
+            constraints: HashMap::new(),
             now_ms: 1_000,
             ttl_ms: 30_000,
         })
@@ -81,8 +218,10 @@ fn lease_state_machine_rejects_stale_instance_and_expires() {
             lease_id: "lease-2".to_string(),
             route_id: "route-2".to_string(),
             resource_id: "stream-002".to_string(),
+            stream_type: "live".to_string(),
             idempotency_key: "idem-2".to_string(),
             owner,
+            constraints: HashMap::new(),
             now_ms: 1_000,
             ttl_ms: 10,
         })
