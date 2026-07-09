@@ -232,6 +232,31 @@ struct GmvDeviceRow {
     gb_version: Option<String>,
 }
 
+#[cfg(test)]
+const GMV_DEVICE_SELECT_FIELDS: &str = "\
+DEVICE_ID AS device_id,\
+COALESCE(TRANSPORT,'UDP') AS transport,\
+COALESCE(REGISTER_EXPIRES,3600) AS register_expires,\
+COALESCE(REGISTER_TIME,CURRENT_TIMESTAMP) AS register_time,\
+ONLINE_EXPIRE_TIME AS online_expire_time,\
+COALESCE(LOCAL_ADDR,'') AS local_addr,\
+COALESCE(CONTACT_URI,'') AS contact_uri,\
+COALESCE(ENABLE_LR,0) AS enable_lr,\
+GB_VERSION AS gb_version";
+
+const GMV_DEVICE_SELECT_BY_DEVICE_ID: &str = "\
+select \
+DEVICE_ID AS device_id,\
+COALESCE(TRANSPORT,'UDP') AS transport,\
+COALESCE(REGISTER_EXPIRES,3600) AS register_expires,\
+COALESCE(REGISTER_TIME,CURRENT_TIMESTAMP) AS register_time,\
+ONLINE_EXPIRE_TIME AS online_expire_time,\
+COALESCE(LOCAL_ADDR,'') AS local_addr,\
+COALESCE(CONTACT_URI,'') AS contact_uri,\
+COALESCE(ENABLE_LR,0) AS enable_lr,\
+GB_VERSION AS gb_version \
+from GB28181_DEVICE where DEVICE_ID=?";
+
 impl TryFrom<GmvDeviceRow> for GmvDevice {
     type Error = GlobalError;
 
@@ -263,16 +288,10 @@ impl GmvDevice {
                 .get(device_id)
                 .cloned());
         }
-        let res = db::fetch_optional_as!(
-            GmvDeviceRow,
-            r#"select device_id,COALESCE(transport,'UDP') AS transport,COALESCE(register_expires,3600) AS register_expires,
-        COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time,online_expire_time,COALESCE(local_addr,'') AS local_addr,COALESCE(contact_uri,'') AS contact_uri,COALESCE(enable_lr,0) AS enable_lr,gb_version
-        from GB28181_DEVICE where device_id=?"#,
-            device_id,
-        )
-        .hand_log(|msg| error!("{msg}"))?
-        .map(GmvDevice::try_from)
-        .transpose()?;
+        let res = db::fetch_optional_as!(GmvDeviceRow, GMV_DEVICE_SELECT_BY_DEVICE_ID, device_id,)
+            .hand_log(|msg| error!("{msg}"))?
+            .map(GmvDevice::try_from)
+            .transpose()?;
         Ok(res)
     }
 
@@ -775,6 +794,27 @@ mod tests {
             "COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec",
         ] {
             assert!(GMV_OAUTH_SELECT_FIELDS.contains(field), "missing {field}");
+        }
+    }
+
+    #[test]
+    fn gmv_device_select_fields_alias_schema_columns_for_from_row() {
+        for field in [
+            "DEVICE_ID AS device_id",
+            "COALESCE(TRANSPORT,'UDP') AS transport",
+            "COALESCE(REGISTER_EXPIRES,3600) AS register_expires",
+            "COALESCE(REGISTER_TIME,CURRENT_TIMESTAMP) AS register_time",
+            "ONLINE_EXPIRE_TIME AS online_expire_time",
+            "COALESCE(LOCAL_ADDR,'') AS local_addr",
+            "COALESCE(CONTACT_URI,'') AS contact_uri",
+            "COALESCE(ENABLE_LR,0) AS enable_lr",
+            "GB_VERSION AS gb_version",
+        ] {
+            assert!(GMV_DEVICE_SELECT_FIELDS.contains(field), "missing {field}");
+            assert!(
+                GMV_DEVICE_SELECT_BY_DEVICE_ID.contains(field),
+                "query missing {field}"
+            );
         }
     }
 
