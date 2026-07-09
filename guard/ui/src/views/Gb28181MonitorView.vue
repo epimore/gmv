@@ -182,15 +182,18 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-12" title="多画面播放" :subtitle="multiPlayerSubtitle">
+    <GlassPanel class="span-12 multi-player-panel" :class="{ 'is-multi-fullscreen': multiFullscreen }" title="多画面播放" :subtitle="multiPlayerSubtitle">
       <template #action>
-        <div class="player-controls-toggle">
-          <span>操作控件</span>
-          <el-switch v-model="playerControlsVisible" inline-prompt active-text="显示" inactive-text="隐藏" />
+        <div class="multi-player-actions">
+          <div class="player-controls-toggle">
+            <span>操作控件</span>
+            <el-switch v-model="playerControlsVisible" inline-prompt active-text="显示" inactive-text="隐藏" />
+          </div>
+          <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏' }}</el-button>
         </div>
       </template>
       <div class="multi-player">
-        <GmvMultiGrid v-model:grid-size="multiGridSize" :cells="multiGridCells"
+        <GmvMultiGrid :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
           :controls-visible="playerControlsVisible" @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz"
           @close="handleMultiClose" @reorder="handleMultiReorder" />
         <div v-if="multiPageCount > 1" class="multi-pagination">
@@ -417,7 +420,9 @@ const selectedTreeChannelKeys = ref<string[]>([]);
 const selectedTreeChannelItems = ref<SelectedChannelRef[]>([]);
 const draggingTreeChannelIndex = ref<number>();
 const multiCells = ref<MultiViewCell[]>([]);
-const multiGridSize = ref(4);
+const multiGridSize = ref(1);
+const multiGridManual = ref(false);
+const multiFullscreen = ref(false);
 const multiPage = ref(1);
 const multiPlayVersions = reactive<Record<string, number>>({});
 let stopCurrentStreamTask: Promise<void> | undefined;
@@ -544,14 +549,33 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
   capabilities: multiPlayerCapabilities,
 })));
 
-watch([multiGridSize, () => multiCells.value.length], () => {
+watch(() => multiCells.value.length, () => {
+  applyAutoMultiGridSize();
+  clampMultiPage();
+});
+watch(multiGridSize, clampMultiPage);
+
+function clampMultiPage() {
   if (multiPage.value > multiPageCount.value) multiPage.value = multiPageCount.value;
   if (multiPage.value < 1) multiPage.value = 1;
-});
+}
 
 function displayDeviceName(device: GbDeviceInfo) { return device.alias || device.device_id; }
 function displayChannelName(channel: GbChannelInfo) { return channel.alias_name || channel.name || channel.channel_id; }
 function selectedChannelTooltip(channel: SelectedChannelRef) { return `${channel.device_title} · ${channel.title}`; }
+function autoMultiGridSize(count: number) {
+  if (count <= 1) return 1;
+  if (count <= 4) return 4;
+  if (count <= 9) return 9;
+  return 16;
+}
+function applyAutoMultiGridSize() {
+  if (!multiGridManual.value) multiGridSize.value = autoMultiGridSize(multiCells.value.length);
+}
+function handleMultiGridSizeChange(value: number) {
+  multiGridManual.value = true;
+  multiGridSize.value = value;
+}
 function tableIndex(index: number) { return (page.value - 1) * pageSize.value + index + 1; }
 function emptyText(value: unknown) { return value === undefined || value === null || value === '' ? '-' : String(value); }
 function countText(value: unknown) { const count = Number(value || 0); return count > 0 ? String(count) : '-'; }
@@ -644,12 +668,15 @@ function clearTreeDeviceState() {
 }
 async function openMultiView() {
   monitorMode.value = 'multi';
+  multiGridManual.value = false;
+  applyAutoMultiGridSize();
   selectedDevice.value = undefined;
   showImages.value = false;
   await loadSessionNodes();
 }
 async function backToDeviceListFromMulti() {
   await stopAllMultiStreams();
+  multiFullscreen.value = false;
   monitorMode.value = 'devices';
   selectedMultiNodeId.value = '';
   clearTreeDeviceState();
@@ -806,6 +833,7 @@ function upsertMultiCell(cell: MultiViewCell) {
     multiCells.value.splice(index, 1, cell);
   } else {
     multiCells.value.push(cell);
+    applyAutoMultiGridSize();
     multiPage.value = Math.ceil(multiCells.value.length / multiGridSize.value);
   }
   syncMultiCellsOrder();
@@ -874,6 +902,8 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
     multiCells.value = [];
     selectedTreeChannelKeys.value = [];
     selectedTreeChannelItems.value = [];
+    multiGridManual.value = false;
+    multiGridSize.value = 1;
     multiPage.value = 1;
     if (!options.quiet && streams.length) ElMessage.success('多画面已停止');
   } finally {
@@ -1279,6 +1309,12 @@ onBeforeUnmount(() => {
 .multi-node-select {
   width: 420px;
   max-width: 100%;
+}
+
+.multi-player-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .player-controls-toggle {
@@ -1776,6 +1812,38 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.multi-player-panel.is-multi-fullscreen {
+  position: fixed;
+  inset: 14px;
+  z-index: 3000;
+  width: auto;
+  height: calc(100vh - 28px);
+  max-height: none;
+  background: rgba(3, 10, 24, .98);
+  box-shadow: 0 0 0 1px rgba(100, 203, 255, .22), 0 24px 70px rgba(0, 0, 0, .62);
+}
+
+.multi-player-panel.is-multi-fullscreen :deep(.panel-inner) {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.multi-player-panel.is-multi-fullscreen .multi-player {
+  min-height: 0;
+  height: 100%;
+}
+
+.multi-player-panel.is-multi-fullscreen .multi-player :deep(.multi-grid) {
+  height: 100%;
+  min-height: 0;
+}
+
+.multi-player-panel.is-multi-fullscreen .multi-player :deep(.grid-body) {
+  min-height: 0;
+}
+
 .multi-player {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
@@ -1789,8 +1857,138 @@ onBeforeUnmount(() => {
 }
 
 .multi-player :deep(.multi-grid) {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
   height: 100%;
   min-height: 548px;
+}
+
+.multi-player :deep(.grid-toolbar) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.multi-player :deep(.grid-toolbar button) {
+  min-width: 40px;
+  height: 30px;
+  margin-left: 6px;
+  border-radius: 5px;
+}
+
+.multi-player :deep(.grid-toolbar button.active) {
+  background: var(--green);
+  color: #04120d;
+}
+
+.multi-player :deep(.grid-body) {
+  min-height: 0;
+  gap: 8px;
+}
+
+.multi-player :deep(.grid-cell) {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(157, 185, 210, .18);
+  border-radius: 8px;
+  background: #05090f;
+}
+
+.multi-player :deep(.grid-cell.selected) {
+  outline: 2px solid var(--cyan);
+}
+
+.multi-player :deep(.grid-cell-close) {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  width: 26px;
+  height: 26px;
+  min-width: 0;
+  border-radius: 50%;
+  background: rgba(3, 10, 24, .72);
+  color: var(--text);
+}
+
+.multi-player :deep(.player-topbar) {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, .68), transparent);
+}
+
+.multi-player :deep(.player-topbar strong) {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.multi-player :deep(.player-topbar span) {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.multi-player :deep(.status-strip) {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.multi-player :deep(.status-strip b) {
+  color: var(--green);
+}
+
+.multi-player :deep(.controls-hidden .player-topbar) {
+  display: none;
+}
+
+.multi-player :deep(.empty-cell) {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.multi-player :deep(.empty-cell b) {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.multi-player :deep(.empty-cell small) {
+  color: var(--muted);
+}
+
+.multi-player :deep(.gmv-player) {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #02050a;
+  color: var(--text);
+}
+
+.multi-player :deep(.gmv-video) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #02050a;
 }
 
 .multi-pagination {

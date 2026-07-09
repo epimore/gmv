@@ -9,7 +9,7 @@
       </div>
     </header>
 
-    <div class="grid-body" :style="{ gridTemplateColumns: 'repeat(' + columnCount + ', minmax(0, 1fr))' }">
+    <div class="grid-body" :style="gridBodyStyle">
       <div
         v-for="(_, index) in modelGrid"
         :key="index"
@@ -119,6 +119,11 @@ const modelGrid = computed({
   },
 });
 const columnCount = computed(() => Math.sqrt(modelGrid.value));
+const gridBodyStyle = computed(() => ({
+  display: 'grid',
+  gridTemplateColumns: 'repeat(' + columnCount.value + ', minmax(0, 1fr))',
+  gridTemplateRows: 'repeat(' + columnCount.value + ', minmax(0, 1fr))',
+}));
 
 watch(() => props.gridSize, (value) => {
   if (value) localGrid.value = value;
