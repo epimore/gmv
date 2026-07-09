@@ -17,11 +17,25 @@
         tabindex="0"
         class="grid-cell"
         :class="{ selected: selectedIndex === index }"
+        :draggable="!!cells[index]"
         @click="selectedIndex = index"
         @dblclick="modelGrid = 1"
+        @dragstart="handleDragStart(index)"
+        @dragover.prevent
+        @drop="handleDrop(index)"
+        @dragend="handleDragEnd"
         @keydown.enter="selectedIndex = index"
         @keydown.space.prevent="selectedIndex = index"
       >
+        <button
+          v-if="cells[index]"
+          type="button"
+          class="grid-cell-close"
+          aria-label="关闭画面"
+          @click.stop="emit('close', { index })"
+        >
+          ×
+        </button>
         <GmvPlayerView
           v-if="cells[index]?.sources.length"
           v-bind="cells[index]"
@@ -37,6 +51,10 @@
           @playback-seek="(payload) => emit('playbackSeek', { index, payload })"
           @stream-switch="(payload) => emit('streamSwitch', { index, payload })"
         />
+        <span v-else-if="cells[index]" class="empty-cell">
+          <b>{{ cells[index]?.title || '等待播放' }}</b>
+          <small>{{ cells[index]?.status === 'error' ? '播放失败' : '正在请求播放' }}</small>
+        </span>
         <span v-else class="empty-cell">空画面 {{ index + 1 }}</span>
       </div>
     </div>
@@ -84,12 +102,15 @@ const emit = defineEmits<{
   talkStop: [{ index: number }];
   playbackSeek: [{ index: number; payload: { timeMs: number } }];
   streamSwitch: [{ index: number; payload: { source: GmvSource } }];
+  close: [{ index: number }];
+  reorder: [{ sourceIndex: number; targetIndex: number }];
 }>();
 
 const gridSizes = [1, 4, 9, 16];
 const controlsVisible = computed(() => props.controlsVisible ?? true);
 const localGrid = ref(props.gridSize ?? 4);
 const selectedIndex = ref(0);
+const draggingIndex = ref<number>();
 const modelGrid = computed({
   get: () => props.gridSize ?? localGrid.value,
   set: (value: number) => {
@@ -102,4 +123,20 @@ const columnCount = computed(() => Math.sqrt(modelGrid.value));
 watch(() => props.gridSize, (value) => {
   if (value) localGrid.value = value;
 });
+
+function handleDragStart(index: number) {
+  if (!props.cells[index]) return;
+  draggingIndex.value = index;
+}
+
+function handleDrop(targetIndex: number) {
+  const sourceIndex = draggingIndex.value;
+  draggingIndex.value = undefined;
+  if (sourceIndex === undefined || sourceIndex === targetIndex || !props.cells[sourceIndex] || !props.cells[targetIndex]) return;
+  emit('reorder', { sourceIndex, targetIndex });
+}
+
+function handleDragEnd() {
+  draggingIndex.value = undefined;
+}
 </script>

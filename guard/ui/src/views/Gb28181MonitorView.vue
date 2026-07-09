@@ -117,7 +117,6 @@
               </div>
             </el-option>
           </el-select>
-          <el-button :loading="multiStopping" @click="collapseMultiTree">一键聚合</el-button>
           <el-button type="danger" plain :loading="multiStopping" @click="stopAllMultiStreams()">停止全部</el-button>
           <el-button type="primary" @click="backToDeviceListFromMulti">返回设备列表</el-button>
         </div>
@@ -172,15 +171,13 @@
             @dragstart="handleSelectedChannelDragStart(index)" @dragover.prevent @drop="handleSelectedChannelDrop(index)"
             @dragend="handleSelectedChannelDragEnd">
             <div>
-              <b>{{ index + 1 }}. {{ channel.device_id }} · {{ channel.title }}</b>
+              <el-tooltip :content="selectedChannelTooltip(channel)" placement="top">
+                <b>{{ index + 1 }}. {{ channel.device_id }} · {{ channel.channel_id }}</b>
+              </el-tooltip>
             </div>
             <el-button type="danger" link @click="removeTreeChannel(channel)">移除</el-button>
           </article>
           <el-empty v-if="!selectedTreeChannels.length" description="暂无已选通道" />
-        </div>
-        <div class="selected-channel-actions">
-          <el-button type="primary" plain :disabled="!selectedTreeChannels.length" :loading="multiPlaying"
-            @click="playSelectedMultiChannels">播放选中</el-button>
         </div>
       </div>
     </GlassPanel>
@@ -194,7 +191,12 @@
       </template>
       <div class="multi-player">
         <GmvMultiGrid v-model:grid-size="multiGridSize" :cells="multiGridCells"
-          :controls-visible="playerControlsVisible" @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz" />
+          :controls-visible="playerControlsVisible" @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz"
+          @close="handleMultiClose" @reorder="handleMultiReorder" />
+        <div v-if="multiPageCount > 1" class="multi-pagination">
+          <el-pagination v-model:current-page="multiPage" :page-size="multiGridSize" :total="multiCells.length"
+            layout="total, prev, pager, next" />
+        </div>
       </div>
     </GlassPanel>
   </div>
@@ -339,7 +341,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import {
   errorMessage,
@@ -376,7 +378,6 @@ const imageLoading = ref(false);
 const configSaving = ref(false);
 const listNodeLoading = ref(false);
 const treeLoading = ref(false);
-const multiPlaying = ref(false);
 const multiStopping = ref(false);
 const deviceName = ref('');
 const treeDeviceId = ref('');
@@ -417,13 +418,15 @@ const selectedTreeChannelItems = ref<SelectedChannelRef[]>([]);
 const draggingTreeChannelIndex = ref<number>();
 const multiCells = ref<MultiViewCell[]>([]);
 const multiGridSize = ref(4);
+const multiPage = ref(1);
+const multiPlayVersions = reactive<Record<string, number>>({});
 let stopCurrentStreamTask: Promise<void> | undefined;
 let playRequestSeq = 0;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 
 type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
-type MultiCellStatus = 'idle' | 'online' | 'playing' | 'offline' | 'error';
+type MultiCellStatus = 'idle' | 'online' | 'playing' | 'offline' | 'reconnecting' | 'error';
 interface MultiViewCell {
   key: string;
   device_id: string;
@@ -488,6 +491,8 @@ const selectedChannelTitle = computed(() => selectedChannel.value ? displayChann
 const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
 const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
 const multiPlayerSubtitle = computed(() => multiCells.value.length ? `实时直播 · 运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '实时直播 · 选择通道后播放');
+const multiPageCount = computed(() => Math.max(1, Math.ceil(multiCells.value.length / multiGridSize.value)));
+const multiVisibleStart = computed(() => (multiPage.value - 1) * multiGridSize.value);
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerPoster = computed(() => selectedChannel.value?.pic_url || undefined);
 const showDefaultWaitingCover = computed(() => playerRequesting.value && !playerPoster.value);
@@ -524,7 +529,7 @@ const playerSources = computed<GmvSource[]>(() => {
     priority: 1,
   }];
 });
-const multiGridCells = computed(() => multiCells.value.map((cell) => ({
+const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.value, multiVisibleStart.value + multiGridSize.value).map((cell) => ({
   sources: cell.sources,
   title: cell.error ? cell.title + ' · ' + cell.error : cell.title,
   deviceId: cell.device_id,
@@ -539,8 +544,14 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => ({
   capabilities: multiPlayerCapabilities,
 })));
 
+watch([multiGridSize, () => multiCells.value.length], () => {
+  if (multiPage.value > multiPageCount.value) multiPage.value = multiPageCount.value;
+  if (multiPage.value < 1) multiPage.value = 1;
+});
+
 function displayDeviceName(device: GbDeviceInfo) { return device.alias || device.device_id; }
 function displayChannelName(channel: GbChannelInfo) { return channel.alias_name || channel.name || channel.channel_id; }
+function selectedChannelTooltip(channel: SelectedChannelRef) { return `${channel.device_title} · ${channel.title}`; }
 function tableIndex(index: number) { return (page.value - 1) * pageSize.value + index + 1; }
 function emptyText(value: unknown) { return value === undefined || value === null || value === '' ? '-' : String(value); }
 function countText(value: unknown) { const count = Number(value || 0); return count > 0 ? String(count) : '-'; }
@@ -684,16 +695,13 @@ async function queryTreeDevices() {
   }
 }
 async function resetTreeDevices() {
+  await stopAllMultiStreams({ quiet: true });
   clearTreeDeviceState();
   if (selectedMultiNodeOption.value) await queryTreeDevices();
 }
 async function handleTreePageSizeChange() {
   treePage.value = 1;
   await queryTreeDevices();
-}
-function collapseMultiTree() {
-  selectedMultiNodeId.value = '';
-  clearTreeDeviceState();
 }
 async function loadTreeDeviceChannels(device: GbDeviceInfo) {
   if (treeChannelsByDevice[device.device_id]) return treeChannelsByDevice[device.device_id];
@@ -723,7 +731,7 @@ async function loadTreeNode(node: { level: number; data?: TreeNodeData }, resolv
     leaf: true,
   })));
 }
-function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
+async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
   const key = channelKey(channel);
   if (checked) {
     if (selectedTreeChannelKeys.value.includes(key)) return;
@@ -741,17 +749,25 @@ function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
       device_title: device ? displayDeviceName(device) : channel.device_id,
       status_text: channelStatusText(channel),
     });
+    await startSelectedMultiChannel(selectedTreeChannelItems.value[selectedTreeChannelItems.value.length - 1]);
     return;
   }
-  selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
-  selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => `${item.device_id}:${item.channel_id}` !== key);
+  await stopMultiCell(key);
 }
-function removeTreeChannel(channel: SelectedChannelRef) {
-  selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== `${channel.device_id}:${channel.channel_id}`);
-  selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => item.device_id !== channel.device_id || item.channel_id !== channel.channel_id);
+async function removeTreeChannel(channel: SelectedChannelRef) {
+  await stopMultiCell(selectedChannelKey(channel));
 }
 function syncSelectedTreeChannelKeys() {
   selectedTreeChannelKeys.value = selectedTreeChannelItems.value.map((item) => `${item.device_id}:${item.channel_id}`);
+}
+function syncSelectedTreeChannelsOrderFromCells() {
+  const order = new Map(multiCells.value.map((cell, index) => [cell.key, index]));
+  selectedTreeChannelItems.value = [...selectedTreeChannelItems.value].sort((left, right) => {
+    const leftOrder = order.get(selectedChannelKey(left)) ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = order.get(selectedChannelKey(right)) ?? Number.MAX_SAFE_INTEGER;
+    return leftOrder - rightOrder;
+  });
+  syncSelectedTreeChannelKeys();
 }
 function syncMultiCellsOrder() {
   const order = new Map(selectedTreeChannelItems.value.map((item, index) => [`${item.device_id}:${item.channel_id}`, index]));
@@ -779,61 +795,86 @@ function handleSelectedChannelDrop(targetIndex: number) {
 function handleSelectedChannelDragEnd() {
   draggingTreeChannelIndex.value = undefined;
 }
-async function playSelectedMultiChannels() {
-  const selected = selectedTreeChannels.value;
-  if (!selected.length) {
-    ElMessage.warning('请选择可播放通道');
-    return;
+function bumpMultiPlayVersion(key: string) {
+  multiPlayVersions[key] = (multiPlayVersions[key] || 0) + 1;
+  return multiPlayVersions[key];
+}
+function selectedChannelKey(channel: SelectedChannelRef) { return `${channel.device_id}:${channel.channel_id}`; }
+function upsertMultiCell(cell: MultiViewCell) {
+  const index = multiCells.value.findIndex((item) => item.key === cell.key);
+  if (index >= 0) {
+    multiCells.value.splice(index, 1, cell);
+  } else {
+    multiCells.value.push(cell);
+    multiPage.value = Math.ceil(multiCells.value.length / multiGridSize.value);
   }
-  if (selected.length > multiGridSize.value) {
-    ElMessage.warning('选中通道超过当前宫格数量，请扩大宫格或减少选择');
-    return;
-  }
-  multiPlaying.value = true;
+  syncMultiCellsOrder();
+}
+async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
+  if (!channel) return;
+  const key = selectedChannelKey(channel);
+  const version = bumpMultiPlayVersion(key);
+  upsertMultiCell({
+    key,
+    device_id: channel.device_id,
+    channel_id: channel.channel_id,
+    title: channel.title,
+    poster: channel.poster,
+    sources: [],
+    status: 'reconnecting',
+  });
   try {
-    await stopAllMultiStreams({ quiet: true });
-    const cells = await Promise.all(selected.map(async (channel): Promise<MultiViewCell> => {
-      const key = `${channel.device_id}:${channel.channel_id}`;
-      try {
-        const stream = await startGbPreview(channel.device_id, channel.channel_id, {
-          request_id: 'ui-multi-preview-' + Date.now() + '-' + channel.channel_id,
-          output_type: 'flv',
-        });
-        return {
-          key,
-          device_id: channel.device_id,
-          channel_id: channel.channel_id,
-          title: channel.title,
-          poster: channel.poster,
-          stream,
-          sources: streamSources(stream),
-          status: stream.state === 'running' ? 'playing' : 'online',
-        };
-      } catch (error) {
-        return {
-          key,
-          device_id: channel.device_id,
-          channel_id: channel.channel_id,
-          title: channel.title,
-          poster: channel.poster,
-          sources: [],
-          status: 'error',
-          error: errorMessage(error, '播放失败'),
-        };
-      }
-    }));
-    multiCells.value = cells;
-  } finally {
-    multiPlaying.value = false;
+    const stream = await startGbPreview(channel.device_id, channel.channel_id, {
+      request_id: 'ui-multi-preview-' + Date.now() + '-' + channel.channel_id,
+      output_type: 'flv',
+    });
+    if (multiPlayVersions[key] !== version || !selectedTreeChannelKeys.value.includes(key)) return;
+    upsertMultiCell({
+      key,
+      device_id: channel.device_id,
+      channel_id: channel.channel_id,
+      title: channel.title,
+      poster: channel.poster,
+      stream,
+      sources: streamSources(stream),
+      status: stream.state === 'running' ? 'playing' : 'online',
+    });
+  } catch (error) {
+    if (multiPlayVersions[key] !== version || !selectedTreeChannelKeys.value.includes(key)) return;
+    upsertMultiCell({
+      key,
+      device_id: channel.device_id,
+      channel_id: channel.channel_id,
+      title: channel.title,
+      poster: channel.poster,
+      sources: [],
+      status: 'error',
+      error: errorMessage(error, '播放失败'),
+    });
   }
+}
+async function stopMultiCell(key: string, options: { removeSelection?: boolean } = {}) {
+  const removeSelection = options.removeSelection !== false;
+  bumpMultiPlayVersion(key);
+  const cell = multiCells.value.find((item) => item.key === key);
+  multiCells.value = multiCells.value.filter((item) => item.key !== key);
+  if (removeSelection) {
+    selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
+    selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => selectedChannelKey(item) !== key);
+  }
+  if (cell?.stream?.stream_id) await stopStream(cell.stream.stream_id).catch(() => undefined);
 }
 async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
   if (multiStopping.value) return;
   const streams = multiCells.value.map((cell) => cell.stream).filter((stream): stream is StreamSummary => !!stream?.stream_id);
   multiStopping.value = true;
   try {
+    for (const cell of multiCells.value) bumpMultiPlayVersion(cell.key);
     await Promise.allSettled(streams.map((stream) => stopStream(stream.stream_id)));
     multiCells.value = [];
+    selectedTreeChannelKeys.value = [];
+    selectedTreeChannelItems.value = [];
+    multiPage.value = 1;
     if (!options.quiet && streams.length) ElMessage.success('多画面已停止');
   } finally {
     multiStopping.value = false;
@@ -880,15 +921,34 @@ async function focusChannelInMultiView(channel: GbChannelInfo) {
   if (targetDevice) {
     await loadTreeDeviceChannels(targetDevice);
     const targetChannel = (treeChannelsByDevice[targetDevice.device_id] || []).find((item) => item.channel_id === channel.channel_id);
-    if (targetChannel) toggleTreeChannel(targetChannel, true);
+    if (targetChannel) await toggleTreeChannel(targetChannel, true);
   }
   ElMessage.success('已定位到通道树');
 }
+function multiCellAtVisibleIndex(index: number) {
+  return multiCells.value[multiVisibleStart.value + index];
+}
 async function handleMultiSnapshot(event: { index: number }) {
-  const cell = multiCells.value[event.index];
+  const cell = multiCellAtVisibleIndex(event.index);
   if (!cell) return;
   const channel = (treeChannelsByDevice[cell.device_id] || []).find((item) => item.channel_id === cell.channel_id);
   if (channel) await snapshot(channel);
+}
+async function handleMultiClose(event: { index: number }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (!cell) return;
+  await stopMultiCell(cell.key);
+}
+function handleMultiReorder(event: { sourceIndex: number; targetIndex: number }) {
+  const sourceIndex = multiVisibleStart.value + event.sourceIndex;
+  const targetIndex = multiVisibleStart.value + event.targetIndex;
+  if (sourceIndex === targetIndex || !multiCells.value[sourceIndex] || !multiCells.value[targetIndex]) return;
+  const cells = [...multiCells.value];
+  const [cell] = cells.splice(sourceIndex, 1);
+  if (!cell) return;
+  cells.splice(targetIndex, 0, cell);
+  multiCells.value = cells;
+  syncSelectedTreeChannelsOrderFromCells();
 }
 
 function ptzPayload(command: GmvPtzCommand): GbPtzPayload {
@@ -949,7 +1009,7 @@ function ptzPayload(command: GmvPtzCommand): GbPtzPayload {
 }
 
 async function handleMultiPtz(event: { index: number; payload: GmvPtzCommand }) {
-  const cell = multiCells.value[event.index];
+  const cell = multiCellAtVisibleIndex(event.index);
   if (!cell) return;
   try {
     await sendGbPtz(cell.device_id, cell.channel_id, ptzPayload(event.payload));
@@ -1675,8 +1735,7 @@ onBeforeUnmount(() => {
 
 .selected-channel-panel {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 428px;
 }
 
@@ -1717,12 +1776,10 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.selected-channel-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
 .multi-player {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px;
   min-height: 620px;
   overflow: hidden;
   border: 1px solid rgba(100, 203, 255, .18);
@@ -1733,7 +1790,12 @@ onBeforeUnmount(() => {
 
 .multi-player :deep(.multi-grid) {
   height: 100%;
-  min-height: 596px;
+  min-height: 548px;
+}
+
+.multi-pagination {
+  display: flex;
+  justify-content: center;
 }
 
 .image-grid {
