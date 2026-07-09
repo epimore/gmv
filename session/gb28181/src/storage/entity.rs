@@ -90,27 +90,27 @@ pub struct GmvOauth {
 serde_default!(default_heartbeat_sec, i64, 60);
 
 const GMV_OAUTH_SELECT_FIELDS: &str = "\
-DEVICE_ID AS device_id,\
-DOMAIN_ID AS domain_id,\
-DOMAIN AS domain,\
-PWD AS pwd,\
-COALESCE(PWD_CHECK,0) AS pwd_check,\
-ALIAS AS alias,\
-COALESCE(STATUS,1) AS status,\
-COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec";
+device_id,\
+domain_id,\
+domain,\
+pwd,\
+COALESCE(pwd_check,0) AS pwd_check,\
+alias,\
+COALESCE(status,1) AS status,\
+COALESCE(heartbeat_sec,60) AS heartbeat_sec";
 
 const GMV_OAUTH_SELECT_BY_DEVICE_ID: &str = "\
 select \
-DEVICE_ID AS device_id,\
-DOMAIN_ID AS domain_id,\
-DOMAIN AS domain,\
-PWD AS pwd,\
-COALESCE(PWD_CHECK,0) AS pwd_check,\
-ALIAS AS alias,\
-COALESCE(STATUS,1) AS status,\
-COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec \
-from GB28181_OAUTH \
-where DEVICE_ID=? and COALESCE(DEL,0)=0 and COALESCE(STATUS,1)=1";
+device_id,\
+domain_id,\
+domain,\
+pwd,\
+COALESCE(pwd_check,0) AS pwd_check,\
+alias,\
+COALESCE(status,1) AS status,\
+COALESCE(heartbeat_sec,60) AS heartbeat_sec \
+from gb28181_oauth \
+where device_id=? and COALESCE(del,0)=0 and COALESCE(status,1)=1";
 
 impl GmvOauth {
     pub fn heartbeat_sec_u8(&self) -> GlobalResult<u8> {
@@ -168,8 +168,8 @@ impl GmvOauth {
             db::SessionDatabaseBackend::Mysql => {
                 let mut builder = sqlx::QueryBuilder::<MySql>::new("select ");
                 builder.push(GMV_OAUTH_SELECT_FIELDS).push(
-                    " from GB28181_OAUTH where COALESCE(DEL,0)=0 \
-                         and COALESCE(STATUS,1)=1 and DEVICE_ID in (",
+                    " from gb28181_oauth where COALESCE(del,0)=0 \
+                         and COALESCE(status,1)=1 and device_id in (",
                 );
                 let mut separated = builder.separated(", ");
                 for device_id in device_ids {
@@ -186,8 +186,8 @@ impl GmvOauth {
             db::SessionDatabaseBackend::Sqlite => {
                 let mut builder = sqlx::QueryBuilder::<Sqlite>::new("select ");
                 builder.push(GMV_OAUTH_SELECT_FIELDS).push(
-                    " from GB28181_OAUTH where COALESCE(DEL,0)=0 \
-                         and COALESCE(STATUS,1)=1 and DEVICE_ID in (",
+                    " from gb28181_oauth where COALESCE(del,0)=0 \
+                         and COALESCE(status,1)=1 and device_id in (",
                 );
                 let mut separated = builder.separated(", ");
                 for device_id in device_ids {
@@ -234,28 +234,28 @@ struct GmvDeviceRow {
 
 #[cfg(test)]
 const GMV_DEVICE_SELECT_FIELDS: &str = "\
-DEVICE_ID AS device_id,\
-COALESCE(TRANSPORT,'UDP') AS transport,\
-COALESCE(REGISTER_EXPIRES,3600) AS register_expires,\
-COALESCE(REGISTER_TIME,CURRENT_TIMESTAMP) AS register_time,\
-ONLINE_EXPIRE_TIME AS online_expire_time,\
-COALESCE(LOCAL_ADDR,'') AS local_addr,\
-COALESCE(CONTACT_URI,'') AS contact_uri,\
-COALESCE(ENABLE_LR,0) AS enable_lr,\
-GB_VERSION AS gb_version";
+device_id,\
+COALESCE(transport,'UDP') AS transport,\
+COALESCE(register_expires,3600) AS register_expires,\
+COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time,\
+online_expire_time,\
+COALESCE(local_addr,'') AS local_addr,\
+COALESCE(contact_uri,'') AS contact_uri,\
+COALESCE(enable_lr,0) AS enable_lr,\
+gb_version";
 
 const GMV_DEVICE_SELECT_BY_DEVICE_ID: &str = "\
 select \
-DEVICE_ID AS device_id,\
-COALESCE(TRANSPORT,'UDP') AS transport,\
-COALESCE(REGISTER_EXPIRES,3600) AS register_expires,\
-COALESCE(REGISTER_TIME,CURRENT_TIMESTAMP) AS register_time,\
-ONLINE_EXPIRE_TIME AS online_expire_time,\
-COALESCE(LOCAL_ADDR,'') AS local_addr,\
-COALESCE(CONTACT_URI,'') AS contact_uri,\
-COALESCE(ENABLE_LR,0) AS enable_lr,\
-GB_VERSION AS gb_version \
-from GB28181_DEVICE where DEVICE_ID=?";
+device_id,\
+COALESCE(transport,'UDP') AS transport,\
+COALESCE(register_expires,3600) AS register_expires,\
+COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time,\
+online_expire_time,\
+COALESCE(local_addr,'') AS local_addr,\
+COALESCE(contact_uri,'') AS contact_uri,\
+COALESCE(enable_lr,0) AS enable_lr,\
+gb_version \
+from gb28181_device where device_id=?";
 
 impl TryFrom<GmvDeviceRow> for GmvDevice {
     type Error = GlobalError;
@@ -307,14 +307,14 @@ impl GmvDevice {
         }
         let sql = match db::backend() {
             db::SessionDatabaseBackend::Mysql => {
-                r#"insert into GB28181_DEVICE (device_id,transport,register_expires,
+                r#"insert into gb28181_device (device_id,transport,register_expires,
         register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE transport=VALUES(transport),register_expires=VALUES(register_expires),
         register_time=VALUES(register_time),online_expire_time=VALUES(online_expire_time),local_addr=VALUES(local_addr),
         contact_uri=VALUES(contact_uri),enable_lr=VALUES(enable_lr),gb_version=VALUES(gb_version)"#
             }
             db::SessionDatabaseBackend::Sqlite => {
-                r#"insert into GB28181_DEVICE (device_id,transport,register_expires,
+                r#"insert into gb28181_device (device_id,transport,register_expires,
         register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?)
         ON CONFLICT(device_id) DO UPDATE SET transport=excluded.transport,register_expires=excluded.register_expires,
         register_time=excluded.register_time,online_expire_time=excluded.online_expire_time,local_addr=excluded.local_addr,
@@ -351,7 +351,7 @@ impl GmvDevice {
             return Ok(());
         }
         db::execute!(
-            "update GB28181_DEVICE set online_expire_time=? where device_id=?",
+            "update gb28181_device set online_expire_time=? where device_id=?",
             Local::now().naive_local(),
             device_id,
         )
@@ -374,14 +374,14 @@ impl GmvDevice {
         }
         match db::backend() {
             db::SessionDatabaseBackend::Mysql => db::execute!(
-                r#"update GB28181_DEVICE d
-            inner join GB28181_OAUTH o on o.DEVICE_ID=d.DEVICE_ID
+                r#"update gb28181_device d
+            inner join gb28181_oauth o on o.device_id=d.device_id
             set d.online_expire_time=timestampadd(second,o.heartbeat_sec * 3 + 1,now())
             where d.device_id=?"#,
                 device_id,
             ),
             db::SessionDatabaseBackend::Sqlite => db::execute!(
-                "UPDATE GB28181_DEVICE SET ONLINE_EXPIRE_TIME=datetime('now','localtime','+' || (SELECT HEARTBEAT_SEC * 3 + 1 FROM GB28181_OAUTH WHERE GB28181_OAUTH.DEVICE_ID=GB28181_DEVICE.DEVICE_ID) || ' seconds') WHERE DEVICE_ID=?",
+                "UPDATE gb28181_device SET online_expire_time=datetime('now','localtime','+' || (SELECT heartbeat_sec * 3 + 1 FROM gb28181_oauth WHERE gb28181_oauth.device_id=gb28181_device.device_id) || ' seconds') WHERE device_id=?",
                 device_id,
             ),
         }
@@ -409,7 +409,7 @@ impl GmvDeviceExt {
         }
         let ext = Self::build(vs);
         db::execute!(
-            "update GB28181_DEVICE set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?",
+            "update gb28181_device set device_type=?,manufacturer=?,model=?,firmware=?,max_camera=? where device_id=?",
             ext.device_type,
             ext.manufacturer,
             ext.model,
@@ -493,10 +493,10 @@ impl GmvDeviceChannel {
         for dc in &dc_ls {
             let sql = match db::backend() {
                 db::SessionDatabaseBackend::Mysql => {
-                    "INSERT INTO GB28181_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer, model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password, longitude,latitude,ptz_type,supply_light_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name),manufacturer=VALUES(manufacturer),model=VALUES(model),owner=VALUES(owner),status=VALUES(status),civil_code=VALUES(civil_code),address=VALUES(address),parental=VALUES(parental),block=VALUES(block),parent_id=VALUES(parent_id),ip_address=VALUES(ip_address),port=VALUES(port),password=VALUES(password),longitude=VALUES(longitude),latitude=VALUES(latitude),ptz_type=VALUES(ptz_type),supply_light_type=VALUES(supply_light_type)"
+                    "INSERT INTO gb28181_device_channel (device_id, channel_id, name, manufacturer, model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password, longitude,latitude,ptz_type,supply_light_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name=VALUES(name),manufacturer=VALUES(manufacturer),model=VALUES(model),owner=VALUES(owner),status=VALUES(status),civil_code=VALUES(civil_code),address=VALUES(address),parental=VALUES(parental),block=VALUES(block),parent_id=VALUES(parent_id),ip_address=VALUES(ip_address),port=VALUES(port),password=VALUES(password),longitude=VALUES(longitude),latitude=VALUES(latitude),ptz_type=VALUES(ptz_type),supply_light_type=VALUES(supply_light_type)"
                 }
                 db::SessionDatabaseBackend::Sqlite => {
-                    "INSERT INTO GB28181_DEVICE_CHANNEL (device_id, channel_id, name, manufacturer, model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password, longitude,latitude,ptz_type,supply_light_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id, channel_id) DO UPDATE SET name=excluded.name,manufacturer=excluded.manufacturer,model=excluded.model,owner=excluded.owner,status=excluded.status,civil_code=excluded.civil_code,address=excluded.address,parental=excluded.parental,block=excluded.block,parent_id=excluded.parent_id,ip_address=excluded.ip_address,port=excluded.port,password=excluded.password,longitude=excluded.longitude,latitude=excluded.latitude,ptz_type=excluded.ptz_type,supply_light_type=excluded.supply_light_type"
+                    "INSERT INTO gb28181_device_channel (device_id, channel_id, name, manufacturer, model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port,password, longitude,latitude,ptz_type,supply_light_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id, channel_id) DO UPDATE SET name=excluded.name,manufacturer=excluded.manufacturer,model=excluded.model,owner=excluded.owner,status=excluded.status,civil_code=excluded.civil_code,address=excluded.address,parental=excluded.parental,block=excluded.block,parent_id=excluded.parent_id,ip_address=excluded.ip_address,port=excluded.port,password=excluded.password,longitude=excluded.longitude,latitude=excluded.latitude,ptz_type=excluded.ptz_type,supply_light_type=excluded.supply_light_type"
                 }
             };
             db::execute!(
@@ -534,10 +534,10 @@ impl GmvDeviceChannel {
         for dc in dc_ls {
             let sql = match db::backend() {
                 db::SessionDatabaseBackend::Mysql => {
-                    "INSERT IGNORE INTO GB28181_DEVICE_CHANNEL_CONF (device_id, channel_id) VALUES (?,?)"
+                    "INSERT IGNORE INTO gb28181_device_channel_conf (device_id, channel_id) VALUES (?,?)"
                 }
                 db::SessionDatabaseBackend::Sqlite => {
-                    "INSERT INTO GB28181_DEVICE_CHANNEL_CONF (device_id, channel_id) VALUES (?,?) ON CONFLICT(device_id, channel_id) DO NOTHING"
+                    "INSERT INTO gb28181_device_channel_conf (device_id, channel_id) VALUES (?,?) ON CONFLICT(device_id, channel_id) DO NOTHING"
                 }
             };
             db::execute!(sql, &dc.device_id, &dc.channel_id).hand_log(|msg| error!("{msg}"))?;
@@ -642,7 +642,7 @@ impl GmvFileInfo {
     pub async fn insert_gmv_file_info(files: Vec<GmvFileInfo>) -> GlobalResult<()> {
         for file in files {
             db::execute!(
-                "INSERT INTO GB28181_FILE_INFO(DEVICE_ID,CHANNEL_ID,BIZ_TIME,BIZ_ID,FILE_TYPE,FILE_SIZE,FILE_NAME,FILE_FORMAT,DIR_PATH,ABS_PATH,NOTE,IS_DEL,CREATE_TIME) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO gb28181_file_info(device_id,channel_id,biz_time,biz_id,file_type,file_size,file_name,file_format,dir_path,abs_path,note,is_del,create_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 &file.device_id,
                 &file.channel_id,
                 &file.biz_time,
@@ -701,9 +701,9 @@ impl DeviceStatus {
     pub async fn get_device_status(device_id: &String) -> GlobalResult<Option<DeviceStatus>> {
         let res = db::fetch_optional_as!(
             DeviceStatusRow,
-            "SELECT COALESCE(o.HEARTBEAT_SEC,60) heartbeat,COALESCE(o.STATUS,1) enable,COALESCE(d.REGISTER_EXPIRES,0) expires,
-            d.ONLINE_EXPIRE_TIME online_expire_time,COALESCE(d.CONTACT_URI,'') contact_uri,COALESCE(d.ENABLE_LR,0) lr
-            FROM GB28181_OAUTH o INNER JOIN GB28181_DEVICE d ON o.DEVICE_ID = d.DEVICE_ID where d.device_id=?",
+            "SELECT COALESCE(o.heartbeat_sec,60) heartbeat,COALESCE(o.status,1) enable,COALESCE(d.register_expires,0) expires,
+            d.online_expire_time online_expire_time,COALESCE(d.contact_uri,'') contact_uri,COALESCE(d.enable_lr,0) lr
+            FROM gb28181_oauth o INNER JOIN gb28181_device d ON o.device_id = d.device_id where d.device_id=?",
             device_id,
         )
         .hand_log(|msg| error!("{msg}"))?
@@ -782,33 +782,33 @@ mod tests {
     }
 
     #[test]
-    fn oauth_select_fields_alias_schema_columns_for_from_row() {
+    fn oauth_select_fields_match_lowercase_schema_for_from_row() {
         for field in [
-            "DEVICE_ID AS device_id",
-            "DOMAIN_ID AS domain_id",
-            "DOMAIN AS domain",
-            "PWD AS pwd",
-            "COALESCE(PWD_CHECK,0) AS pwd_check",
-            "ALIAS AS alias",
-            "COALESCE(STATUS,1) AS status",
-            "COALESCE(HEARTBEAT_SEC,60) AS heartbeat_sec",
+            "device_id",
+            "domain_id",
+            "domain",
+            "pwd",
+            "COALESCE(pwd_check,0) AS pwd_check",
+            "alias",
+            "COALESCE(status,1) AS status",
+            "COALESCE(heartbeat_sec,60) AS heartbeat_sec",
         ] {
             assert!(GMV_OAUTH_SELECT_FIELDS.contains(field), "missing {field}");
         }
     }
 
     #[test]
-    fn gmv_device_select_fields_alias_schema_columns_for_from_row() {
+    fn gmv_device_select_fields_match_lowercase_schema_for_from_row() {
         for field in [
-            "DEVICE_ID AS device_id",
-            "COALESCE(TRANSPORT,'UDP') AS transport",
-            "COALESCE(REGISTER_EXPIRES,3600) AS register_expires",
-            "COALESCE(REGISTER_TIME,CURRENT_TIMESTAMP) AS register_time",
-            "ONLINE_EXPIRE_TIME AS online_expire_time",
-            "COALESCE(LOCAL_ADDR,'') AS local_addr",
-            "COALESCE(CONTACT_URI,'') AS contact_uri",
-            "COALESCE(ENABLE_LR,0) AS enable_lr",
-            "GB_VERSION AS gb_version",
+            "device_id",
+            "COALESCE(transport,'UDP') AS transport",
+            "COALESCE(register_expires,3600) AS register_expires",
+            "COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time",
+            "online_expire_time",
+            "COALESCE(local_addr,'') AS local_addr",
+            "COALESCE(contact_uri,'') AS contact_uri",
+            "COALESCE(enable_lr,0) AS enable_lr",
+            "gb_version",
         ] {
             assert!(GMV_DEVICE_SELECT_FIELDS.contains(field), "missing {field}");
             assert!(

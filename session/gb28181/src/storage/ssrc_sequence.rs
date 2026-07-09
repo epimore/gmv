@@ -70,10 +70,10 @@ impl SsrcSequence {
         for (seq_name, ssrc_prefix, kind) in sequences {
             let sql = match db::backend() {
                 db::SessionDatabaseBackend::Mysql => {
-                    "INSERT IGNORE INTO GB28181_SEQ_CODE (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date)VALUES (?,1,1,1,?,4,?,?)"
+                    "INSERT IGNORE INTO gb28181_seq_code (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date)VALUES (?,1,1,1,?,4,?,?)"
                 }
                 db::SessionDatabaseBackend::Sqlite => {
-                    "INSERT INTO GB28181_SEQ_CODE (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date) VALUES (?,1,1,1,?,4,?,?) ON CONFLICT(seq_name) DO NOTHING"
+                    "INSERT INTO gb28181_seq_code (seq_name,init_value,current_value,increment_value,prefix_code,code_lenth,remark,create_date) VALUES (?,1,1,1,?,4,?,?) ON CONFLICT(seq_name) DO NOTHING"
                 }
             };
             db::execute!(
@@ -167,9 +167,9 @@ async fn fetch_sequence_row(
     match db::backend() {
         db::SessionDatabaseBackend::Mysql => {
             let sql = if lock {
-                "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM GB28181_SEQ_CODE WHERE seq_name=? FOR UPDATE"
+                "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM gb28181_seq_code WHERE seq_name=? FOR UPDATE"
             } else {
-                "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM GB28181_SEQ_CODE WHERE seq_name=?"
+                "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM gb28181_seq_code WHERE seq_name=?"
             };
             let row: Option<(u64, u64, i32, Option<String>, Option<i32>)> =
                 db::fetch_optional_as!((u64, u64, i32, Option<String>, Option<i32>), sql, seq_name,)
@@ -189,7 +189,7 @@ async fn fetch_sequence_row(
         }
         db::SessionDatabaseBackend::Sqlite => db::fetch_optional_as!(
             (i64, i64, i32, Option<String>, Option<i32>),
-            "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM GB28181_SEQ_CODE WHERE seq_name=?",
+            "SELECT init_value,current_value,increment_value,prefix_code,code_lenth FROM gb28181_seq_code WHERE seq_name=?",
             seq_name,
         )
         .hand_log(|msg| error!("{msg}: seq_name={seq_name}")),
@@ -221,7 +221,7 @@ async fn take_next_value(seq_name: &str, ssrc_prefix: &str) -> GlobalResult<u16>
     let current = current_sequence_value(seq_name, row.as_ref())?;
     let next = next_sequence_value(seq_name, ssrc_prefix, row.as_ref())?;
     db::execute!(
-        "UPDATE GB28181_SEQ_CODE SET current_value=? WHERE seq_name=?",
+        "UPDATE gb28181_seq_code SET current_value=? WHERE seq_name=?",
         next,
         seq_name
     )
@@ -266,7 +266,7 @@ fn current_sequence_value(
 async fn is_active(signal_node_id: &str, ssrc: &str) -> GlobalResult<bool> {
     let row: Option<(i32,)> = db::fetch_optional_as!(
         (i32,),
-        "SELECT 1 FROM GB28181_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=? AND SSRC=? AND STATE IN ('INVITING','ESTABLISHED','TERMINATING') AND EXPIRE_AT>? LIMIT 1",
+        "SELECT 1 FROM gb28181_sip_dialog_session WHERE signal_node_id=? AND ssrc=? AND state IN ('INVITING','ESTABLISHED','TERMINATING') AND expire_at>? LIMIT 1",
         signal_node_id,
         ssrc,
         Local::now().naive_local(),

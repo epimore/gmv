@@ -38,7 +38,7 @@ struct RecordMeta {
 pub async fn running_record_exists(device_id: &str, channel_id: &str) -> GlobalResult<bool> {
     let row: Option<(i32,)> = db::fetch_optional_as!(
         (i32,),
-        "SELECT 1 FROM GB28181_RECORD WHERE STATE=0 AND DEVICE_ID=? AND CHANNEL_ID=? LIMIT 1",
+        "SELECT 1 FROM gb28181_record WHERE state=0 AND device_id=? AND channel_id=? LIMIT 1",
         device_id,
         channel_id,
     )
@@ -58,7 +58,7 @@ pub async fn start_record(record: RecordStart<'_>) -> GlobalResult<()> {
     let et = format_epoch(record.et_epoch_sec)?;
     let now = now_string();
     db::execute!(
-        "INSERT INTO GB28181_RECORD(BIZ_ID,DEVICE_ID,CHANNEL_ID,USER_ID,ST,ET,SPEED,CT,STATE,LT,STREAM_APP_NAME) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO gb28181_record(biz_id,device_id,channel_id,user_id,st,et,speed,ct,state,lt,stream_app_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         record.biz_id,
         record.device_id,
         record.channel_id,
@@ -85,10 +85,11 @@ pub async fn finish_record(file: RecordFinish<'_>) -> GlobalResult<bool> {
     }
     let Some(record) = db::fetch_optional_as!(
         RecordMeta,
-        "SELECT DEVICE_ID AS device_id,CHANNEL_ID AS channel_id,ST AS st,ET AS et FROM GB28181_RECORD WHERE BIZ_ID=?",
+        "SELECT device_id,channel_id,st,et FROM gb28181_record WHERE biz_id=?",
         file.biz_id,
     )
-    .hand_log(|msg| error!("{msg}"))? else {
+    .hand_log(|msg| error!("{msg}"))?
+    else {
         return Ok(false);
     };
     let now = now_string();
@@ -99,7 +100,7 @@ pub async fn finish_record(file: RecordFinish<'_>) -> GlobalResult<bool> {
         file.record_duration_sec,
     );
     db::execute!(
-        "UPDATE GB28181_RECORD SET STATE=?,LT=? WHERE BIZ_ID=?",
+        "UPDATE gb28181_record SET state=?,lt=? WHERE biz_id=?",
         i64::from(state),
         &now,
         file.biz_id,
@@ -109,7 +110,7 @@ pub async fn finish_record(file: RecordFinish<'_>) -> GlobalResult<bool> {
     let format = (!file.file_format.is_empty()).then_some(file.file_format);
     let abs_path = (!file.abs_path.is_empty()).then_some(file.abs_path);
     db::execute!(
-        "INSERT INTO GB28181_FILE_INFO(DEVICE_ID,CHANNEL_ID,BIZ_TIME,BIZ_ID,FILE_TYPE,FILE_SIZE,FILE_NAME,FILE_FORMAT,DIR_PATH,ABS_PATH,NOTE,IS_DEL,CREATE_TIME) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO gb28181_file_info(device_id,channel_id,biz_time,biz_id,file_type,file_size,file_name,file_format,dir_path,abs_path,note,is_del,create_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         &record.device_id,
         &record.channel_id,
         &now,

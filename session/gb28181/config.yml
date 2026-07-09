@@ -20,7 +20,7 @@ http:
     port: 28567
 
 db:
-    backend: sqlite # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
+    backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
     sqlite:
         path: ./sqlite/session-gb28181.db
         max_connections: 16

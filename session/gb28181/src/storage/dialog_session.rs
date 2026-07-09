@@ -19,19 +19,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-const INSERT_COLUMNS: &str = "STREAM_ID,DEVICE_ID,CHANNEL_ID,SESSION_TYPE,\
-SIGNAL_NODE_ID,MEDIA_NODE_ID,SSRC,CALL_ID,LOCAL_URI,REMOTE_URI,LOCAL_TAG,REMOTE_TAG,\
-LOCAL_CSEQ,REMOTE_CSEQ,CONTACT_URI,ROUTE_SET,LOCAL_SIP_ADDR,REMOTE_SIP_ADDR,TRANSPORT,\
-STATE,ESTABLISHED_AT,LAST_SEEN_AT,EXPIRE_AT,VERSION,CREATED_AT,UPDATED_AT";
-const SELECT_COLUMNS: &str = "STREAM_ID AS stream_id,DEVICE_ID AS device_id,\
-CHANNEL_ID AS channel_id,SESSION_TYPE AS session_type,SIGNAL_NODE_ID AS signal_node_id,\
-MEDIA_NODE_ID AS media_node_id,SSRC AS ssrc,CALL_ID AS call_id,LOCAL_URI AS local_uri,\
-REMOTE_URI AS remote_uri,LOCAL_TAG AS local_tag,REMOTE_TAG AS remote_tag,\
-LOCAL_CSEQ AS local_cseq,REMOTE_CSEQ AS remote_cseq,CONTACT_URI AS contact_uri,\
-ROUTE_SET AS route_set,LOCAL_SIP_ADDR AS local_sip_addr,REMOTE_SIP_ADDR AS remote_sip_addr,\
-TRANSPORT AS transport,STATE AS state,ESTABLISHED_AT AS established_at,\
-LAST_SEEN_AT AS last_seen_at,EXPIRE_AT AS expire_at,VERSION AS version,\
-CREATED_AT AS created_at,UPDATED_AT AS updated_at";
+const INSERT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,\
+signal_node_id,media_node_id,ssrc,call_id,local_uri,remote_uri,local_tag,remote_tag,\
+local_cseq,remote_cseq,contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,\
+state,established_at,last_seen_at,expire_at,version,created_at,updated_at";
+const SELECT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,signal_node_id,\
+media_node_id,ssrc,call_id,local_uri,remote_uri,local_tag,remote_tag,local_cseq,remote_cseq,\
+contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,last_seen_at,\
+expire_at,version,created_at,updated_at";
 const MAX_PAGE_SIZE: u32 = 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -357,7 +352,7 @@ impl SipDialogSessionRepository {
         let route_set = route_set_to_json(&session.route_set)?;
         db::execute!(
             sqlx::AssertSqlSafe(format!(
-                "INSERT INTO GB28181_SIP_DIALOG_SESSION ({INSERT_COLUMNS}) \
+                "INSERT INTO gb28181_sip_dialog_session ({INSERT_COLUMNS}) \
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )),
             &session.stream_id,
@@ -437,11 +432,11 @@ impl SipDialogSessionRepository {
 
         let route_set = route_set_to_json(&fields.route_set)?;
         let rows = db::execute!(
-            "UPDATE GB28181_SIP_DIALOG_SESSION SET REMOTE_TAG=?,LOCAL_CSEQ=?,REMOTE_CSEQ=?,\
-             CONTACT_URI=?,ROUTE_SET=?,LOCAL_SIP_ADDR=?,REMOTE_SIP_ADDR=?,STATE='ESTABLISHED',\
-             ESTABLISHED_AT=?,LAST_SEEN_AT=?,EXPIRE_AT=?,UPDATED_AT=?,VERSION=VERSION+1 \
-             WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? AND STATE='INVITING' AND VERSION=? \
-             AND CREATED_AT<=? AND UPDATED_AT<=?",
+            "UPDATE gb28181_sip_dialog_session SET remote_tag=?,local_cseq=?,remote_cseq=?,\
+             contact_uri=?,route_set=?,local_sip_addr=?,remote_sip_addr=?,state='ESTABLISHED',\
+             established_at=?,last_seen_at=?,expire_at=?,updated_at=?,version=version+1 \
+             WHERE stream_id=? AND signal_node_id=? AND state='INVITING' AND version=? \
+             AND created_at<=? AND updated_at<=?",
             &fields.remote_tag,
             fields.local_cseq,
             fields.remote_cseq,
@@ -504,9 +499,9 @@ impl SipDialogSessionRepository {
         }
 
         let rows = db::execute!(
-            "UPDATE GB28181_SIP_DIALOG_SESSION SET LOCAL_CSEQ=?,STATE='TERMINATING',\
-             UPDATED_AT=?,VERSION=VERSION+1 WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? \
-             AND STATE='ESTABLISHED' AND LOCAL_CSEQ=? AND VERSION=? AND UPDATED_AT<=?",
+            "UPDATE gb28181_sip_dialog_session SET local_cseq=?,state='TERMINATING',\
+             updated_at=?,version=version+1 WHERE stream_id=? AND signal_node_id=? \
+             AND state='ESTABLISHED' AND local_cseq=? AND version=? AND updated_at<=?",
             next_cseq,
             updated_at,
             stream_id,
@@ -557,8 +552,8 @@ impl SipDialogSessionRepository {
         }
 
         let rows = db::execute!(
-            "UPDATE GB28181_SIP_DIALOG_SESSION SET STATE=?,UPDATED_AT=?,VERSION=VERSION+1 \
-             WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? AND STATE=? AND VERSION=? AND UPDATED_AT<=?",
+            "UPDATE gb28181_sip_dialog_session SET state=?,updated_at=?,version=version+1 \
+             WHERE stream_id=? AND signal_node_id=? AND state=? AND version=? AND updated_at<=?",
             next_state.to_string(),
             updated_at,
             stream_id,
@@ -614,9 +609,9 @@ impl SipDialogSessionRepository {
         }
 
         let rows = db::execute!(
-            "UPDATE GB28181_SIP_DIALOG_SESSION SET LOCAL_CSEQ=?,UPDATED_AT=?,VERSION=VERSION+1 \
-             WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? AND STATE IN ('ESTABLISHED','TERMINATING') \
-             AND LOCAL_CSEQ=? AND VERSION=? AND UPDATED_AT<=?",
+            "UPDATE gb28181_sip_dialog_session SET local_cseq=?,updated_at=?,version=version+1 \
+             WHERE stream_id=? AND signal_node_id=? AND state IN ('ESTABLISHED','TERMINATING') \
+             AND local_cseq=? AND version=? AND updated_at<=?",
             next_cseq,
             updated_at,
             stream_id,
@@ -667,10 +662,10 @@ impl SipDialogSessionRepository {
         }
 
         let rows = db::execute!(
-            "UPDATE GB28181_SIP_DIALOG_SESSION SET LAST_SEEN_AT=?,EXPIRE_AT=?,UPDATED_AT=?,\
-             VERSION=VERSION+1 WHERE STREAM_ID=? AND SIGNAL_NODE_ID=? \
-             AND STATE IN ('ESTABLISHED','TERMINATING') AND VERSION=? \
-             AND LAST_SEEN_AT<=? AND UPDATED_AT<=?",
+            "UPDATE gb28181_sip_dialog_session SET last_seen_at=?,expire_at=?,updated_at=?,\
+             version=version+1 WHERE stream_id=? AND signal_node_id=? \
+             AND state IN ('ESTABLISHED','TERMINATING') AND version=? \
+             AND last_seen_at<=? AND updated_at<=?",
             last_seen_at,
             expire_at,
             last_seen_at,
@@ -697,7 +692,7 @@ impl SipDialogSessionRepository {
         let row = db::fetch_optional_as!(
             SipDialogSessionRow,
             sqlx::AssertSqlSafe(format!(
-                "SELECT {SELECT_COLUMNS} FROM GB28181_SIP_DIALOG_SESSION WHERE STREAM_ID=?"
+                "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session WHERE stream_id=?"
             )),
             stream_id,
         )
@@ -722,8 +717,8 @@ impl SipDialogSessionRepository {
         let rows = db::fetch_all_as!(
             SipDialogSessionRow,
             sqlx::AssertSqlSafe(format!(
-                "SELECT {SELECT_COLUMNS} FROM GB28181_SIP_DIALOG_SESSION \
-             WHERE CALL_ID=? ORDER BY STREAM_ID"
+                "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session \
+             WHERE call_id=? ORDER BY stream_id"
             )),
             call_id,
         )
@@ -769,7 +764,7 @@ impl SipDialogSessionRepository {
         let rows = db::fetch_all_as!(
             SipDialogSessionRow,
             sqlx::AssertSqlSafe(format!(
-                "SELECT {SELECT_COLUMNS} FROM GB28181_SIP_DIALOG_SESSION              WHERE SIGNAL_NODE_ID=? AND MEDIA_NODE_ID=? AND SSRC=?              AND SESSION_TYPE IN ('LIVE','PLAYBACK','DOWNLOAD')              AND STATE IN ('ESTABLISHED','TERMINATING')              AND CREATED_AT<=? AND EXPIRE_AT>?              ORDER BY CREATED_AT DESC LIMIT 2"
+                "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session              WHERE signal_node_id=? AND media_node_id=? AND ssrc=?              AND session_type IN ('LIVE','PLAYBACK','DOWNLOAD')              AND state IN ('ESTABLISHED','TERMINATING')              AND created_at<=? AND expire_at>?              ORDER BY created_at DESC LIMIT 2"
             )),
             signal_node_id,
             media_node_id,
@@ -814,7 +809,7 @@ impl SipDialogSessionRepository {
             #[cfg(feature = "db-mysql")]
             db::SessionDatabaseBackend::Mysql => {
                 let mut builder = sqlx::QueryBuilder::<MySql>::new(format!(
-                    "SELECT {SELECT_COLUMNS} FROM GB28181_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=",
+                    "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session WHERE signal_node_id=",
                 ));
                 builder.push_bind(signal_node_id).push(" AND STATE IN (");
                 let mut separated = builder.separated(",");
@@ -823,9 +818,9 @@ impl SipDialogSessionRepository {
                 }
                 separated.push_unseparated(")");
                 if let Some(cursor) = after_stream_id {
-                    builder.push(" AND STREAM_ID>").push_bind(cursor);
+                    builder.push(" AND stream_id>").push_bind(cursor);
                 }
-                builder.push(" ORDER BY STREAM_ID LIMIT ").push_bind(limit);
+                builder.push(" ORDER BY stream_id LIMIT ").push_bind(limit);
                 builder
                     .build_query_as::<SipDialogSessionRow>()
                     .fetch_all(db::mysql_pool())
@@ -834,7 +829,7 @@ impl SipDialogSessionRepository {
             #[cfg(feature = "db-sqlite")]
             db::SessionDatabaseBackend::Sqlite => {
                 let mut builder = sqlx::QueryBuilder::<Sqlite>::new(format!(
-                    "SELECT {SELECT_COLUMNS} FROM GB28181_SIP_DIALOG_SESSION WHERE SIGNAL_NODE_ID=",
+                    "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session WHERE signal_node_id=",
                 ));
                 builder.push_bind(signal_node_id).push(" AND STATE IN (");
                 let mut separated = builder.separated(",");
@@ -843,9 +838,9 @@ impl SipDialogSessionRepository {
                 }
                 separated.push_unseparated(")");
                 if let Some(cursor) = after_stream_id {
-                    builder.push(" AND STREAM_ID>").push_bind(cursor);
+                    builder.push(" AND stream_id>").push_bind(cursor);
                 }
-                builder.push(" ORDER BY STREAM_ID LIMIT ").push_bind(limit);
+                builder.push(" ORDER BY stream_id LIMIT ").push_bind(limit);
                 builder
                     .build_query_as::<SipDialogSessionRow>()
                     .fetch_all(db::sqlite_pool())

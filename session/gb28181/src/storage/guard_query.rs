@@ -69,7 +69,7 @@ impl GbDeviceView {
         let create_by = empty_string_to_none(request.create_by);
         let update_by = empty_string_to_none(request.update_by);
         db::execute!(
-            r#"INSERT INTO GB28181_OAUTH (DEVICE_ID,DOMAIN_ID,DOMAIN,longitude,latitude,address,PWD,PWD_CHECK,ALIAS,STATUS,HEARTBEAT_SEC,DEL,CREATE_TIME,tenant_id,sys_org_code,create_by,update_by,update_time)
+            r#"INSERT INTO gb28181_oauth (device_id,domain_id,domain,longitude,latitude,address,pwd,pwd_check,alias,status,heartbeat_sec,del,create_time,tenant_id,sys_org_code,create_by,update_by,update_time)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,0,CURRENT_TIMESTAMP,?,?,?,?,CURRENT_TIMESTAMP)"#,
             &device_id,
             &request.domain_id,
@@ -103,7 +103,7 @@ impl GbDeviceView {
         let sys_org_code = empty_string_to_none(request.sys_org_code);
         let update_by = empty_string_to_none(request.update_by);
         let affected = db::execute!(
-            r#"UPDATE GB28181_OAUTH SET DOMAIN_ID=?,DOMAIN=?,longitude=?,latitude=?,address=?,PWD=?,PWD_CHECK=?,ALIAS=?,STATUS=?,HEARTBEAT_SEC=?,tenant_id=?,sys_org_code=?,update_by=?,update_time=CURRENT_TIMESTAMP WHERE COALESCE(DEL,0)=0 AND DEVICE_ID=?"#,
+            r#"UPDATE gb28181_oauth SET domain_id=?,domain=?,longitude=?,latitude=?,address=?,pwd=?,pwd_check=?,alias=?,status=?,heartbeat_sec=?,tenant_id=?,sys_org_code=?,update_by=?,update_time=CURRENT_TIMESTAMP WHERE COALESCE(del,0)=0 AND device_id=?"#,
             &request.domain_id,
             &request.domain,
             longitude,
@@ -187,7 +187,7 @@ impl GbDeviceView {
     pub async fn count(registered_only: bool) -> GlobalResult<u64> {
         let row: Option<(i64,)> = db::fetch_optional_as!(
             (i64,),
-            "SELECT COUNT(*) FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND (?=0 OR d.REGISTER_TIME IS NOT NULL)",
+            "SELECT COUNT(*) FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND (?=0 OR d.register_time IS NOT NULL)",
             registered_only_param(registered_only),
         )
         .hand_log(|msg| error!("{msg}"))?;
@@ -208,7 +208,7 @@ impl GbDeviceView {
         let device_name_like = format!("%{device_name}%");
         let row: Option<(i64,)> = db::fetch_optional_as!(
             (i64,),
-            "SELECT COUNT(*) FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND o.DOMAIN_ID=? AND (?='' OR o.DEVICE_ID LIKE ?) AND (?='' OR o.ALIAS LIKE ?) AND (?=0 OR d.REGISTER_TIME IS NOT NULL)",
+            "SELECT COUNT(*) FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND o.domain_id=? AND (?='' OR o.device_id LIKE ?) AND (?='' OR o.alias LIKE ?) AND (?=0 OR d.register_time IS NOT NULL)",
             domain_id,
             device_id,
             &device_id_like,
@@ -231,7 +231,7 @@ impl GbDeviceView {
 
     pub async fn delete(device_id: &str, domain_id: &str) -> GlobalResult<bool> {
         let affected = db::execute!(
-            "UPDATE GB28181_OAUTH SET DEL=1,update_time=CURRENT_TIMESTAMP WHERE COALESCE(DEL,0)=0 AND DEVICE_ID=? AND DOMAIN_ID=?",
+            "UPDATE gb28181_oauth SET del=1,update_time=CURRENT_TIMESTAMP WHERE COALESCE(del,0)=0 AND device_id=? AND domain_id=?",
             device_id,
             domain_id,
         )
@@ -249,7 +249,7 @@ async fn next_device_id(domain: &str, requested_device_id: &str) -> GlobalResult
     let like = format!("{prefix}%");
     let max_row: Option<(String,)> = db::fetch_optional_as!(
         (String,),
-        "SELECT DEVICE_ID FROM GB28181_OAUTH WHERE DEVICE_ID LIKE ? ORDER BY DEVICE_ID DESC LIMIT 1",
+        "SELECT device_id FROM gb28181_oauth WHERE device_id LIKE ? ORDER BY device_id DESC LIMIT 1",
         &like,
     )
     .hand_log(|msg| error!("{msg}"))?;
@@ -293,85 +293,85 @@ fn registered_only_param(value: bool) -> i64 {
 }
 
 const GB_DEVICE_COLUMNS_MYSQL: &str = r#"
-    o.DEVICE_ID AS device_id,
-    o.DOMAIN_ID AS domain_id,
-    o.DOMAIN AS domain,
+    o.device_id AS device_id,
+    o.domain_id AS domain_id,
+    o.domain AS domain,
     CAST(o.longitude AS CHAR) AS longitude,
     CAST(o.latitude AS CHAR) AS latitude,
     o.address AS address,
-    o.PWD AS pwd,
-    COALESCE(o.PWD_CHECK,0) AS pwd_check,
-    o.ALIAS AS alias,
-    COALESCE(o.STATUS,1) AS status,
-    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,
-    COALESCE(o.DEL,0) AS del,
-    o.CREATE_TIME AS create_time,
+    o.pwd AS pwd,
+    COALESCE(o.pwd_check,0) AS pwd_check,
+    o.alias AS alias,
+    COALESCE(o.status,1) AS status,
+    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,
+    COALESCE(o.del,0) AS del,
+    o.create_time AS create_time,
     CAST(o.tenant_id AS CHAR) AS tenant_id,
     o.sys_org_code AS sys_org_code,
     o.create_by AS create_by,
     o.update_by AS update_by,
     o.update_time AS update_time,
     CASE
-        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > NOW() THEN 1
+        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > NOW() THEN 1
         ELSE 0
     END AS monitor_status,
-    d.DEVICE_TYPE AS device_type,
-    d.MANUFACTURER AS manufacturer,
-    d.MODEL AS model,
-    d.FIRMWARE AS firmware,
-    d.GB_VERSION AS gb_version,
-    COALESCE(CAST(d.MAX_CAMERA AS SIGNED),0) AS max_camera,
+    d.device_type AS device_type,
+    d.manufacturer AS manufacturer,
+    d.model AS model,
+    d.firmware AS firmware,
+    d.gb_version AS gb_version,
+    COALESCE(CAST(d.max_camera AS SIGNED),0) AS max_camera,
     COALESCE(cs.camera_in_count,0) AS camera_in_count,
     CASE
-        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR NOW() >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)
+        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)
         ELSE COALESCE(cs.camera_off_count,0)
     END AS camera_off_count,
-    d.REGISTER_TIME AS register_time
+    d.register_time AS register_time
 "#;
 const GB_DEVICE_COLUMNS_SQLITE: &str = r#"
-    o.DEVICE_ID AS device_id,
-    o.DOMAIN_ID AS domain_id,
-    o.DOMAIN AS domain,
+    o.device_id AS device_id,
+    o.domain_id AS domain_id,
+    o.domain AS domain,
     CAST(o.longitude AS TEXT) AS longitude,
     CAST(o.latitude AS TEXT) AS latitude,
     o.address AS address,
-    o.PWD AS pwd,
-    COALESCE(o.PWD_CHECK,0) AS pwd_check,
-    o.ALIAS AS alias,
-    COALESCE(o.STATUS,1) AS status,
-    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,
-    COALESCE(o.DEL,0) AS del,
-    o.CREATE_TIME AS create_time,
+    o.pwd AS pwd,
+    COALESCE(o.pwd_check,0) AS pwd_check,
+    o.alias AS alias,
+    COALESCE(o.status,1) AS status,
+    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,
+    COALESCE(o.del,0) AS del,
+    o.create_time AS create_time,
     CAST(o.tenant_id AS TEXT) AS tenant_id,
     o.sys_org_code AS sys_org_code,
     o.create_by AS create_by,
     o.update_by AS update_by,
     o.update_time AS update_time,
     CASE
-        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > CURRENT_TIMESTAMP THEN 1
+        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > CURRENT_TIMESTAMP THEN 1
         ELSE 0
     END AS monitor_status,
-    d.DEVICE_TYPE AS device_type,
-    d.MANUFACTURER AS manufacturer,
-    d.MODEL AS model,
-    d.FIRMWARE AS firmware,
-    d.GB_VERSION AS gb_version,
-    COALESCE(d.MAX_CAMERA,0) AS max_camera,
+    d.device_type AS device_type,
+    d.manufacturer AS manufacturer,
+    d.model AS model,
+    d.firmware AS firmware,
+    d.gb_version AS gb_version,
+    COALESCE(d.max_camera,0) AS max_camera,
     COALESCE(cs.camera_in_count,0) AS camera_in_count,
     CASE
-        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR CURRENT_TIMESTAMP >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)
+        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)
         ELSE COALESCE(cs.camera_off_count,0)
     END AS camera_off_count,
-    d.REGISTER_TIME AS register_time
+    d.register_time AS register_time
 "#;
-const GB_DEVICE_LIST_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(CAST(d.MAX_CAMERA AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR NOW() >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,CAST(COUNT(CHANNEL_ID) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND (?=0 OR d.REGISTER_TIME IS NOT NULL) ORDER BY o.DEVICE_ID";
-const GB_DEVICE_GET_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(CAST(d.MAX_CAMERA AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR NOW() >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,CAST(COUNT(CHANNEL_ID) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND o.DEVICE_ID=?";
-const GB_DEVICE_LIST_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(d.MAX_CAMERA,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR CURRENT_TIMESTAMP >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,COUNT(CHANNEL_ID) AS camera_in_count,SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND (?=0 OR d.REGISTER_TIME IS NOT NULL) ORDER BY o.DEVICE_ID";
-const GB_DEVICE_GET_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(d.MAX_CAMERA,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR CURRENT_TIMESTAMP >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,COUNT(CHANNEL_ID) AS camera_in_count,SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND o.DEVICE_ID=?";
-const GB_DEVICE_LIST_PAGE_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(CAST(d.MAX_CAMERA AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR NOW() >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,CAST(COUNT(CHANNEL_ID) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND (?=0 OR d.REGISTER_TIME IS NOT NULL) ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
-const GB_DEVICE_LIST_PAGE_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(d.MAX_CAMERA,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR CURRENT_TIMESTAMP >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,COUNT(CHANNEL_ID) AS camera_in_count,SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND (?=0 OR d.REGISTER_TIME IS NOT NULL) ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
-const GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_MYSQL: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(CAST(d.MAX_CAMERA AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR NOW() >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,CAST(COUNT(CHANNEL_ID) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND o.DOMAIN_ID=? AND (?='' OR o.DEVICE_ID LIKE ?) AND (?='' OR o.ALIAS LIKE ?) AND (?=0 OR d.REGISTER_TIME IS NOT NULL) ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
-const GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_SQLITE: &str = "SELECT \n    o.DEVICE_ID AS device_id,\n    o.DOMAIN_ID AS domain_id,\n    o.DOMAIN AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.PWD AS pwd,\n    COALESCE(o.PWD_CHECK,0) AS pwd_check,\n    o.ALIAS AS alias,\n    COALESCE(o.STATUS,1) AS status,\n    COALESCE(o.HEARTBEAT_SEC,60) AS heartbeat_sec,\n    COALESCE(o.DEL,0) AS del,\n    o.CREATE_TIME AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=1 AND d.ONLINE_EXPIRE_TIME IS NOT NULL AND d.ONLINE_EXPIRE_TIME > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.DEVICE_TYPE AS device_type,\n    d.MANUFACTURER AS manufacturer,\n    d.MODEL AS model,\n    d.FIRMWARE AS firmware,\n    d.GB_VERSION AS gb_version,\n    COALESCE(d.MAX_CAMERA,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR CURRENT_TIMESTAMP >= d.ONLINE_EXPIRE_TIME THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.REGISTER_TIME AS register_time\n FROM GB28181_OAUTH o LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=o.DEVICE_ID LEFT JOIN (SELECT DEVICE_ID,COUNT(CHANNEL_ID) AS camera_in_count,SUM(CASE WHEN STATUS IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM GB28181_DEVICE_CHANNEL GROUP BY DEVICE_ID) cs ON cs.DEVICE_ID=o.DEVICE_ID WHERE COALESCE(o.DEL,0)=0 AND o.DOMAIN_ID=? AND (?='' OR o.DEVICE_ID LIKE ?) AND (?='' OR o.ALIAS LIKE ?) AND (?=0 OR d.REGISTER_TIME IS NOT NULL) ORDER BY o.DEVICE_ID LIMIT ? OFFSET ?";
+const GB_DEVICE_LIST_MYSQL: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(CAST(d.max_camera AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,CAST(COUNT(channel_id) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND (?=0 OR d.register_time IS NOT NULL) ORDER BY o.device_id";
+const GB_DEVICE_GET_MYSQL: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(CAST(d.max_camera AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,CAST(COUNT(channel_id) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND o.device_id=?";
+const GB_DEVICE_LIST_SQLITE: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(d.max_camera,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,COUNT(channel_id) AS camera_in_count,SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND (?=0 OR d.register_time IS NOT NULL) ORDER BY o.device_id";
+const GB_DEVICE_GET_SQLITE: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(d.max_camera,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,COUNT(channel_id) AS camera_in_count,SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND o.device_id=?";
+const GB_DEVICE_LIST_PAGE_MYSQL: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(CAST(d.max_camera AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,CAST(COUNT(channel_id) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND (?=0 OR d.register_time IS NOT NULL) ORDER BY o.device_id LIMIT ? OFFSET ?";
+const GB_DEVICE_LIST_PAGE_SQLITE: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(d.max_camera,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,COUNT(channel_id) AS camera_in_count,SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND (?=0 OR d.register_time IS NOT NULL) ORDER BY o.device_id LIMIT ? OFFSET ?";
+const GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_MYSQL: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS CHAR) AS longitude,\n    CAST(o.latitude AS CHAR) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS CHAR) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > NOW() THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(CAST(d.max_camera AS SIGNED),0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,CAST(COUNT(channel_id) AS SIGNED) AS camera_in_count,CAST(SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS SIGNED) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND o.domain_id=? AND (?='' OR o.device_id LIKE ?) AND (?='' OR o.alias LIKE ?) AND (?=0 OR d.register_time IS NOT NULL) ORDER BY o.device_id LIMIT ? OFFSET ?";
+const GB_DEVICE_LIST_PAGE_BY_DOMAIN_FILTER_SQLITE: &str = "SELECT \n    o.device_id AS device_id,\n    o.domain_id AS domain_id,\n    o.domain AS domain,\n    CAST(o.longitude AS TEXT) AS longitude,\n    CAST(o.latitude AS TEXT) AS latitude,\n    o.address AS address,\n    o.pwd AS pwd,\n    COALESCE(o.pwd_check,0) AS pwd_check,\n    o.alias AS alias,\n    COALESCE(o.status,1) AS status,\n    COALESCE(o.heartbeat_sec,60) AS heartbeat_sec,\n    COALESCE(o.del,0) AS del,\n    o.create_time AS create_time,\n    CAST(o.tenant_id AS TEXT) AS tenant_id,\n    o.sys_org_code AS sys_org_code,\n    o.create_by AS create_by,\n    o.update_by AS update_by,\n    o.update_time AS update_time,\n    CASE\n        WHEN COALESCE(o.status,1)=1 AND d.online_expire_time IS NOT NULL AND d.online_expire_time > CURRENT_TIMESTAMP THEN 1\n        ELSE 0\n    END AS monitor_status,\n    d.device_type AS device_type,\n    d.manufacturer AS manufacturer,\n    d.model AS model,\n    d.firmware AS firmware,\n    d.gb_version AS gb_version,\n    COALESCE(d.max_camera,0) AS max_camera,\n    COALESCE(cs.camera_in_count,0) AS camera_in_count,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN COALESCE(cs.camera_in_count,0)\n        ELSE COALESCE(cs.camera_off_count,0)\n    END AS camera_off_count,\n    d.register_time AS register_time\n FROM gb28181_oauth o LEFT JOIN gb28181_device d ON d.device_id=o.device_id LEFT JOIN (SELECT device_id,COUNT(channel_id) AS camera_in_count,SUM(CASE WHEN status IN ('OFF','OFFLINE') THEN 1 ELSE 0 END) AS camera_off_count FROM gb28181_device_channel GROUP BY device_id) cs ON cs.device_id=o.device_id WHERE COALESCE(o.del,0)=0 AND o.domain_id=? AND (?='' OR o.device_id LIKE ?) AND (?='' OR o.alias LIKE ?) AND (?=0 OR d.register_time IS NOT NULL) ORDER BY o.device_id LIMIT ? OFFSET ?";
 
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct GbChannelView {
@@ -433,22 +433,22 @@ impl GbChannelView {
         match db::backend() {
             db::SessionDatabaseBackend::Mysql => {
                 db::execute!(
-                    r#"INSERT INTO GB28181_DEVICE_CHANNEL_CONF
-                    (DEVICE_ID,CHANNEL_ID,ALIAS_NAME,PTZ_ENABLE,TALK_ENABLE,AUDIO_ENABLE,SNAPSHOT_ENABLE,RECORD_ENABLE,PLAYBACK_ENABLE,ALARM_ENABLE,BIZ_ENABLE,SORT_NO,over_pic_id,CREATE_TIME,UPDATE_TIME)
+                    r#"INSERT INTO gb28181_device_channel_conf
+                    (device_id,channel_id,alias_name,ptz_enable,talk_enable,audio_enable,snapshot_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,over_pic_id,create_time,update_time)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
                     ON DUPLICATE KEY UPDATE
-                    ALIAS_NAME=VALUES(ALIAS_NAME),
-                    PTZ_ENABLE=VALUES(PTZ_ENABLE),
-                    TALK_ENABLE=VALUES(TALK_ENABLE),
-                    AUDIO_ENABLE=VALUES(AUDIO_ENABLE),
-                    SNAPSHOT_ENABLE=VALUES(SNAPSHOT_ENABLE),
-                    RECORD_ENABLE=VALUES(RECORD_ENABLE),
-                    PLAYBACK_ENABLE=VALUES(PLAYBACK_ENABLE),
-                    ALARM_ENABLE=VALUES(ALARM_ENABLE),
-                    BIZ_ENABLE=VALUES(BIZ_ENABLE),
-                    SORT_NO=VALUES(SORT_NO),
+                    alias_name=VALUES(alias_name),
+                    ptz_enable=VALUES(ptz_enable),
+                    talk_enable=VALUES(talk_enable),
+                    audio_enable=VALUES(audio_enable),
+                    snapshot_enable=VALUES(snapshot_enable),
+                    record_enable=VALUES(record_enable),
+                    playback_enable=VALUES(playback_enable),
+                    alarm_enable=VALUES(alarm_enable),
+                    biz_enable=VALUES(biz_enable),
+                    sort_no=VALUES(sort_no),
                     over_pic_id=VALUES(over_pic_id),
-                    UPDATE_TIME=CURRENT_TIMESTAMP"#,
+                    update_time=CURRENT_TIMESTAMP"#,
                     &channel.device_id,
                     &channel.channel_id,
                     empty_string_to_none(channel.alias_name),
@@ -467,22 +467,22 @@ impl GbChannelView {
             }
             db::SessionDatabaseBackend::Sqlite => {
                 db::execute!(
-                    r#"INSERT INTO GB28181_DEVICE_CHANNEL_CONF
-                    (DEVICE_ID,CHANNEL_ID,ALIAS_NAME,PTZ_ENABLE,TALK_ENABLE,AUDIO_ENABLE,SNAPSHOT_ENABLE,RECORD_ENABLE,PLAYBACK_ENABLE,ALARM_ENABLE,BIZ_ENABLE,SORT_NO,over_pic_id,CREATE_TIME,UPDATE_TIME)
+                    r#"INSERT INTO gb28181_device_channel_conf
+                    (device_id,channel_id,alias_name,ptz_enable,talk_enable,audio_enable,snapshot_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,over_pic_id,create_time,update_time)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
-                    ON CONFLICT(DEVICE_ID, CHANNEL_ID) DO UPDATE SET
-                    ALIAS_NAME=excluded.ALIAS_NAME,
-                    PTZ_ENABLE=excluded.PTZ_ENABLE,
-                    TALK_ENABLE=excluded.TALK_ENABLE,
-                    AUDIO_ENABLE=excluded.AUDIO_ENABLE,
-                    SNAPSHOT_ENABLE=excluded.SNAPSHOT_ENABLE,
-                    RECORD_ENABLE=excluded.RECORD_ENABLE,
-                    PLAYBACK_ENABLE=excluded.PLAYBACK_ENABLE,
-                    ALARM_ENABLE=excluded.ALARM_ENABLE,
-                    BIZ_ENABLE=excluded.BIZ_ENABLE,
-                    SORT_NO=excluded.SORT_NO,
+                    ON CONFLICT(device_id, channel_id) DO UPDATE SET
+                    alias_name=excluded.alias_name,
+                    ptz_enable=excluded.ptz_enable,
+                    talk_enable=excluded.talk_enable,
+                    audio_enable=excluded.audio_enable,
+                    snapshot_enable=excluded.snapshot_enable,
+                    record_enable=excluded.record_enable,
+                    playback_enable=excluded.playback_enable,
+                    alarm_enable=excluded.alarm_enable,
+                    biz_enable=excluded.biz_enable,
+                    sort_no=excluded.sort_no,
                     over_pic_id=excluded.over_pic_id,
-                    UPDATE_TIME=CURRENT_TIMESTAMP"#,
+                    update_time=CURRENT_TIMESTAMP"#,
                     &channel.device_id,
                     &channel.channel_id,
                     empty_string_to_none(channel.alias_name),
@@ -522,71 +522,71 @@ pub struct GbChannelConfigUpdate {
 }
 
 const GB_CHANNEL_COLUMNS_MYSQL: &str = r#"
-    c.DEVICE_ID AS device_id,
-    c.CHANNEL_ID AS channel_id,
-    COALESCE(c.NAME,'') AS name,
-    COALESCE(c.MANUFACTURER,'') AS manufacturer,
-    COALESCE(c.MODEL,'') AS model,
-    COALESCE(c.OWNER,'') AS owner,
-    COALESCE(c.STATUS,'UNKNOWN') AS status,
-    COALESCE(c.CIVIL_CODE,'') AS civil_code,
-    COALESCE(c.ADDRESS,'') AS address,
-    COALESCE(c.PARENT_ID,'') AS parent_id,
-    COALESCE(c.IP_ADDRESS,'') AS ip_address,
-    COALESCE(c.PORT,0) AS port,
-    COALESCE(CAST(c.LONGITUDE AS CHAR),'') AS longitude,
-    COALESCE(CAST(c.LATITUDE AS CHAR),'') AS latitude,
-    COALESCE(c.PTZ_TYPE,'') AS ptz_type,
-    COALESCE(conf.ALIAS_NAME,'') AS alias_name,
+    c.device_id AS device_id,
+    c.channel_id AS channel_id,
+    COALESCE(c.name,'') AS name,
+    COALESCE(c.manufacturer,'') AS manufacturer,
+    COALESCE(c.model,'') AS model,
+    COALESCE(c.owner,'') AS owner,
+    COALESCE(c.status,'UNKNOWN') AS status,
+    COALESCE(c.civil_code,'') AS civil_code,
+    COALESCE(c.address,'') AS address,
+    COALESCE(c.parent_id,'') AS parent_id,
+    COALESCE(c.ip_address,'') AS ip_address,
+    COALESCE(c.port,0) AS port,
+    COALESCE(CAST(c.longitude AS CHAR),'') AS longitude,
+    COALESCE(CAST(c.latitude AS CHAR),'') AS latitude,
+    COALESCE(c.ptz_type,'') AS ptz_type,
+    COALESCE(conf.alias_name,'') AS alias_name,
     '' AS pic_url,
-    COALESCE(conf.SNAPSHOT_ENABLE,0) AS snapshot,
+    COALESCE(conf.snapshot_enable,0) AS snapshot,
     COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,
-    COALESCE(conf.PTZ_ENABLE,0) AS ptz_enable,
-    COALESCE(conf.TALK_ENABLE,0) AS talk_enable,
-    COALESCE(conf.AUDIO_ENABLE,0) AS audio_enable,
-    COALESCE(conf.RECORD_ENABLE,0) AS record_enable,
-    COALESCE(conf.PLAYBACK_ENABLE,0) AS playback_enable,
-    COALESCE(conf.ALARM_ENABLE,0) AS alarm_enable,
-    COALESCE(conf.BIZ_ENABLE,0) AS biz_enable,
-    COALESCE(conf.SORT_NO,0) AS sort_no,
-    conf.CREATE_TIME AS created_at,
-    conf.UPDATE_TIME AS updated_at
+    COALESCE(conf.ptz_enable,0) AS ptz_enable,
+    COALESCE(conf.talk_enable,0) AS talk_enable,
+    COALESCE(conf.audio_enable,0) AS audio_enable,
+    COALESCE(conf.record_enable,0) AS record_enable,
+    COALESCE(conf.playback_enable,0) AS playback_enable,
+    COALESCE(conf.alarm_enable,0) AS alarm_enable,
+    COALESCE(conf.biz_enable,0) AS biz_enable,
+    COALESCE(conf.sort_no,0) AS sort_no,
+    conf.create_time AS created_at,
+    conf.update_time AS updated_at
 "#;
 const GB_CHANNEL_COLUMNS_SQLITE: &str = r#"
-    c.DEVICE_ID AS device_id,
-    c.CHANNEL_ID AS channel_id,
-    COALESCE(c.NAME,'') AS name,
-    COALESCE(c.MANUFACTURER,'') AS manufacturer,
-    COALESCE(c.MODEL,'') AS model,
-    COALESCE(c.OWNER,'') AS owner,
-    COALESCE(c.STATUS,'UNKNOWN') AS status,
-    COALESCE(c.CIVIL_CODE,'') AS civil_code,
-    COALESCE(c.ADDRESS,'') AS address,
-    COALESCE(c.PARENT_ID,'') AS parent_id,
-    COALESCE(c.IP_ADDRESS,'') AS ip_address,
-    COALESCE(c.PORT,0) AS port,
-    COALESCE(CAST(c.LONGITUDE AS TEXT),'') AS longitude,
-    COALESCE(CAST(c.LATITUDE AS TEXT),'') AS latitude,
-    COALESCE(c.PTZ_TYPE,'') AS ptz_type,
-    COALESCE(conf.ALIAS_NAME,'') AS alias_name,
+    c.device_id AS device_id,
+    c.channel_id AS channel_id,
+    COALESCE(c.name,'') AS name,
+    COALESCE(c.manufacturer,'') AS manufacturer,
+    COALESCE(c.model,'') AS model,
+    COALESCE(c.owner,'') AS owner,
+    COALESCE(c.status,'UNKNOWN') AS status,
+    COALESCE(c.civil_code,'') AS civil_code,
+    COALESCE(c.address,'') AS address,
+    COALESCE(c.parent_id,'') AS parent_id,
+    COALESCE(c.ip_address,'') AS ip_address,
+    COALESCE(c.port,0) AS port,
+    COALESCE(CAST(c.longitude AS TEXT),'') AS longitude,
+    COALESCE(CAST(c.latitude AS TEXT),'') AS latitude,
+    COALESCE(c.ptz_type,'') AS ptz_type,
+    COALESCE(conf.alias_name,'') AS alias_name,
     '' AS pic_url,
-    COALESCE(conf.SNAPSHOT_ENABLE,0) AS snapshot,
+    COALESCE(conf.snapshot_enable,0) AS snapshot,
     COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,
-    COALESCE(conf.PTZ_ENABLE,0) AS ptz_enable,
-    COALESCE(conf.TALK_ENABLE,0) AS talk_enable,
-    COALESCE(conf.AUDIO_ENABLE,0) AS audio_enable,
-    COALESCE(conf.RECORD_ENABLE,0) AS record_enable,
-    COALESCE(conf.PLAYBACK_ENABLE,0) AS playback_enable,
-    COALESCE(conf.ALARM_ENABLE,0) AS alarm_enable,
-    COALESCE(conf.BIZ_ENABLE,0) AS biz_enable,
-    COALESCE(conf.SORT_NO,0) AS sort_no,
-    conf.CREATE_TIME AS created_at,
-    conf.UPDATE_TIME AS updated_at
+    COALESCE(conf.ptz_enable,0) AS ptz_enable,
+    COALESCE(conf.talk_enable,0) AS talk_enable,
+    COALESCE(conf.audio_enable,0) AS audio_enable,
+    COALESCE(conf.record_enable,0) AS record_enable,
+    COALESCE(conf.playback_enable,0) AS playback_enable,
+    COALESCE(conf.alarm_enable,0) AS alarm_enable,
+    COALESCE(conf.biz_enable,0) AS biz_enable,
+    COALESCE(conf.sort_no,0) AS sort_no,
+    conf.create_time AS created_at,
+    conf.update_time AS updated_at
 "#;
-const GB_CHANNEL_LIST_MYSQL: &str = "SELECT \n    c.DEVICE_ID AS device_id,\n    c.CHANNEL_ID AS channel_id,\n    COALESCE(c.NAME,'') AS name,\n    COALESCE(c.MANUFACTURER,'') AS manufacturer,\n    COALESCE(c.MODEL,'') AS model,\n    COALESCE(c.OWNER,'') AS owner,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR NOW() >= d.ONLINE_EXPIRE_TIME THEN 'OFFLINE'\n        ELSE COALESCE(c.STATUS,'UNKNOWN')\n    END AS status,\n    COALESCE(c.CIVIL_CODE,'') AS civil_code,\n    COALESCE(c.ADDRESS,'') AS address,\n    COALESCE(c.PARENT_ID,'') AS parent_id,\n    COALESCE(c.IP_ADDRESS,'') AS ip_address,\n    COALESCE(c.PORT,0) AS port,\n    COALESCE(CAST(c.LONGITUDE AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.LATITUDE AS CHAR),'') AS latitude,\n    COALESCE(c.PTZ_TYPE,'') AS ptz_type,\n    COALESCE(conf.ALIAS_NAME,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.SNAPSHOT_ENABLE,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.PTZ_ENABLE,0) AS ptz_enable,\n    COALESCE(conf.TALK_ENABLE,0) AS talk_enable,\n    COALESCE(conf.AUDIO_ENABLE,0) AS audio_enable,\n    COALESCE(conf.RECORD_ENABLE,0) AS record_enable,\n    COALESCE(conf.PLAYBACK_ENABLE,0) AS playback_enable,\n    COALESCE(conf.ALARM_ENABLE,0) AS alarm_enable,\n    COALESCE(conf.BIZ_ENABLE,0) AS biz_enable,\n    COALESCE(conf.SORT_NO,0) AS sort_no,\n    conf.CREATE_TIME AS created_at,\n    conf.UPDATE_TIME AS updated_at\n FROM GB28181_DEVICE_CHANNEL c LEFT JOIN GB28181_DEVICE_CHANNEL_CONF conf ON conf.DEVICE_ID=c.DEVICE_ID AND conf.CHANNEL_ID=c.CHANNEL_ID LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=c.DEVICE_ID LEFT JOIN GB28181_OAUTH o ON o.DEVICE_ID=c.DEVICE_ID WHERE c.DEVICE_ID=? ORDER BY COALESCE(conf.SORT_NO,0),c.CHANNEL_ID";
-const GB_CHANNEL_GET_MYSQL: &str = "SELECT \n    c.DEVICE_ID AS device_id,\n    c.CHANNEL_ID AS channel_id,\n    COALESCE(c.NAME,'') AS name,\n    COALESCE(c.MANUFACTURER,'') AS manufacturer,\n    COALESCE(c.MODEL,'') AS model,\n    COALESCE(c.OWNER,'') AS owner,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR NOW() >= d.ONLINE_EXPIRE_TIME THEN 'OFFLINE'\n        ELSE COALESCE(c.STATUS,'UNKNOWN')\n    END AS status,\n    COALESCE(c.CIVIL_CODE,'') AS civil_code,\n    COALESCE(c.ADDRESS,'') AS address,\n    COALESCE(c.PARENT_ID,'') AS parent_id,\n    COALESCE(c.IP_ADDRESS,'') AS ip_address,\n    COALESCE(c.PORT,0) AS port,\n    COALESCE(CAST(c.LONGITUDE AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.LATITUDE AS CHAR),'') AS latitude,\n    COALESCE(c.PTZ_TYPE,'') AS ptz_type,\n    COALESCE(conf.ALIAS_NAME,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.SNAPSHOT_ENABLE,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.PTZ_ENABLE,0) AS ptz_enable,\n    COALESCE(conf.TALK_ENABLE,0) AS talk_enable,\n    COALESCE(conf.AUDIO_ENABLE,0) AS audio_enable,\n    COALESCE(conf.RECORD_ENABLE,0) AS record_enable,\n    COALESCE(conf.PLAYBACK_ENABLE,0) AS playback_enable,\n    COALESCE(conf.ALARM_ENABLE,0) AS alarm_enable,\n    COALESCE(conf.BIZ_ENABLE,0) AS biz_enable,\n    COALESCE(conf.SORT_NO,0) AS sort_no,\n    conf.CREATE_TIME AS created_at,\n    conf.UPDATE_TIME AS updated_at\n FROM GB28181_DEVICE_CHANNEL c LEFT JOIN GB28181_DEVICE_CHANNEL_CONF conf ON conf.DEVICE_ID=c.DEVICE_ID AND conf.CHANNEL_ID=c.CHANNEL_ID LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=c.DEVICE_ID LEFT JOIN GB28181_OAUTH o ON o.DEVICE_ID=c.DEVICE_ID WHERE c.DEVICE_ID=? AND c.CHANNEL_ID=?";
-const GB_CHANNEL_LIST_SQLITE: &str = "SELECT \n    c.DEVICE_ID AS device_id,\n    c.CHANNEL_ID AS channel_id,\n    COALESCE(c.NAME,'') AS name,\n    COALESCE(c.MANUFACTURER,'') AS manufacturer,\n    COALESCE(c.MODEL,'') AS model,\n    COALESCE(c.OWNER,'') AS owner,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR CURRENT_TIMESTAMP >= d.ONLINE_EXPIRE_TIME THEN 'OFFLINE'\n        ELSE COALESCE(c.STATUS,'UNKNOWN')\n    END AS status,\n    COALESCE(c.CIVIL_CODE,'') AS civil_code,\n    COALESCE(c.ADDRESS,'') AS address,\n    COALESCE(c.PARENT_ID,'') AS parent_id,\n    COALESCE(c.IP_ADDRESS,'') AS ip_address,\n    COALESCE(c.PORT,0) AS port,\n    COALESCE(CAST(c.LONGITUDE AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.LATITUDE AS TEXT),'') AS latitude,\n    COALESCE(c.PTZ_TYPE,'') AS ptz_type,\n    COALESCE(conf.ALIAS_NAME,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.SNAPSHOT_ENABLE,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.PTZ_ENABLE,0) AS ptz_enable,\n    COALESCE(conf.TALK_ENABLE,0) AS talk_enable,\n    COALESCE(conf.AUDIO_ENABLE,0) AS audio_enable,\n    COALESCE(conf.RECORD_ENABLE,0) AS record_enable,\n    COALESCE(conf.PLAYBACK_ENABLE,0) AS playback_enable,\n    COALESCE(conf.ALARM_ENABLE,0) AS alarm_enable,\n    COALESCE(conf.BIZ_ENABLE,0) AS biz_enable,\n    COALESCE(conf.SORT_NO,0) AS sort_no,\n    conf.CREATE_TIME AS created_at,\n    conf.UPDATE_TIME AS updated_at\n FROM GB28181_DEVICE_CHANNEL c LEFT JOIN GB28181_DEVICE_CHANNEL_CONF conf ON conf.DEVICE_ID=c.DEVICE_ID AND conf.CHANNEL_ID=c.CHANNEL_ID LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=c.DEVICE_ID LEFT JOIN GB28181_OAUTH o ON o.DEVICE_ID=c.DEVICE_ID WHERE c.DEVICE_ID=? ORDER BY COALESCE(conf.SORT_NO,0),c.CHANNEL_ID";
-const GB_CHANNEL_GET_SQLITE: &str = "SELECT \n    c.DEVICE_ID AS device_id,\n    c.CHANNEL_ID AS channel_id,\n    COALESCE(c.NAME,'') AS name,\n    COALESCE(c.MANUFACTURER,'') AS manufacturer,\n    COALESCE(c.MODEL,'') AS model,\n    COALESCE(c.OWNER,'') AS owner,\n    CASE\n        WHEN COALESCE(o.STATUS,1)=0 OR d.ONLINE_EXPIRE_TIME IS NULL OR CURRENT_TIMESTAMP >= d.ONLINE_EXPIRE_TIME THEN 'OFFLINE'\n        ELSE COALESCE(c.STATUS,'UNKNOWN')\n    END AS status,\n    COALESCE(c.CIVIL_CODE,'') AS civil_code,\n    COALESCE(c.ADDRESS,'') AS address,\n    COALESCE(c.PARENT_ID,'') AS parent_id,\n    COALESCE(c.IP_ADDRESS,'') AS ip_address,\n    COALESCE(c.PORT,0) AS port,\n    COALESCE(CAST(c.LONGITUDE AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.LATITUDE AS TEXT),'') AS latitude,\n    COALESCE(c.PTZ_TYPE,'') AS ptz_type,\n    COALESCE(conf.ALIAS_NAME,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.SNAPSHOT_ENABLE,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.PTZ_ENABLE,0) AS ptz_enable,\n    COALESCE(conf.TALK_ENABLE,0) AS talk_enable,\n    COALESCE(conf.AUDIO_ENABLE,0) AS audio_enable,\n    COALESCE(conf.RECORD_ENABLE,0) AS record_enable,\n    COALESCE(conf.PLAYBACK_ENABLE,0) AS playback_enable,\n    COALESCE(conf.ALARM_ENABLE,0) AS alarm_enable,\n    COALESCE(conf.BIZ_ENABLE,0) AS biz_enable,\n    COALESCE(conf.SORT_NO,0) AS sort_no,\n    conf.CREATE_TIME AS created_at,\n    conf.UPDATE_TIME AS updated_at\n FROM GB28181_DEVICE_CHANNEL c LEFT JOIN GB28181_DEVICE_CHANNEL_CONF conf ON conf.DEVICE_ID=c.DEVICE_ID AND conf.CHANNEL_ID=c.CHANNEL_ID LEFT JOIN GB28181_DEVICE d ON d.DEVICE_ID=c.DEVICE_ID LEFT JOIN GB28181_OAUTH o ON o.DEVICE_ID=c.DEVICE_ID WHERE c.DEVICE_ID=? AND c.CHANNEL_ID=?";
+const GB_CHANNEL_LIST_MYSQL: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.latitude AS CHAR),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? ORDER BY COALESCE(conf.sort_no,0),c.channel_id";
+const GB_CHANNEL_GET_MYSQL: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.latitude AS CHAR),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? AND c.channel_id=?";
+const GB_CHANNEL_LIST_SQLITE: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.latitude AS TEXT),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? ORDER BY COALESCE(conf.sort_no,0),c.channel_id";
+const GB_CHANNEL_GET_SQLITE: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.latitude AS TEXT),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? AND c.channel_id=?";
 
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct GbChannelImageView {
@@ -607,8 +607,8 @@ impl GbChannelImageView {
     }
 }
 
-const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(ID AS CHAR) AS image_id,DEVICE_ID AS device_id,CHANNEL_ID AS channel_id,COALESCE(ABS_PATH,DIR_PATH) AS image_url,CREATE_TIME AS created_at FROM GB28181_FILE_INFO WHERE DEVICE_ID=? AND CHANNEL_ID=? AND COALESCE(IS_DEL,0)=0 AND COALESCE(FILE_TYPE,0)=0 ORDER BY ID DESC LIMIT 50";
-const GB_CHANNEL_IMAGE_LIST_SQLITE: &str = "SELECT CAST(ID AS TEXT) AS image_id,DEVICE_ID AS device_id,CHANNEL_ID AS channel_id,COALESCE(ABS_PATH,DIR_PATH) AS image_url,CREATE_TIME AS created_at FROM GB28181_FILE_INFO WHERE DEVICE_ID=? AND CHANNEL_ID=? AND COALESCE(IS_DEL,0)=0 AND COALESCE(FILE_TYPE,0)=0 ORDER BY ID DESC LIMIT 50";
+const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,COALESCE(abs_path,dir_path) AS image_url,create_time AS created_at FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 ORDER BY id DESC LIMIT 50";
+const GB_CHANNEL_IMAGE_LIST_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,COALESCE(abs_path,dir_path) AS image_url,create_time AS created_at FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 ORDER BY id DESC LIMIT 50";
 
 #[cfg(test)]
 mod tests {

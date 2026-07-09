@@ -1,3 +1,27 @@
+-- Rebuild legacy uppercase GB28181 SQLite schema into the lowercase schema.
+-- Use only for existing preview/test SQLite databases created before the lowercase naming refactor.
+PRAGMA foreign_keys = OFF;
+BEGIN TRANSACTION;
+
+DROP TABLE IF EXISTS tmp_legacy_gb28181_seq_code;
+ALTER TABLE GB28181_SEQ_CODE RENAME TO tmp_legacy_gb28181_seq_code;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_oauth;
+ALTER TABLE GB28181_OAUTH RENAME TO tmp_legacy_gb28181_oauth;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_device;
+ALTER TABLE GB28181_DEVICE RENAME TO tmp_legacy_gb28181_device;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_device_channel;
+ALTER TABLE GB28181_DEVICE_CHANNEL RENAME TO tmp_legacy_gb28181_device_channel;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_device_channel_conf;
+ALTER TABLE GB28181_DEVICE_CHANNEL_CONF RENAME TO tmp_legacy_gb28181_device_channel_conf;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_device_ptz_preset;
+ALTER TABLE GB28181_DEVICE_PTZ_PRESET RENAME TO tmp_legacy_gb28181_device_ptz_preset;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_file_info;
+ALTER TABLE GB28181_FILE_INFO RENAME TO tmp_legacy_gb28181_file_info;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_record;
+ALTER TABLE GB28181_RECORD RENAME TO tmp_legacy_gb28181_record;
+DROP TABLE IF EXISTS tmp_legacy_gb28181_sip_dialog_session;
+ALTER TABLE GB28181_SIP_DIALOG_SESSION RENAME TO tmp_legacy_gb28181_sip_dialog_session;
+
 -- seq_name uses domain_id:LIVE or domain_id:BACK; prefix_code keeps the numeric ssrc prefix.
 CREATE TABLE IF NOT EXISTS gb28181_seq_code (
     seq_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,3 +211,43 @@ CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_owner_state_expire ON gb28181_
 CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_owner_ssrc_state_expire ON gb28181_sip_dialog_session (signal_node_id, ssrc, state, expire_at);
 CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_owner ON gb28181_sip_dialog_session (signal_node_id, state, stream_id);
 CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_ssrc ON gb28181_sip_dialog_session (signal_node_id, media_node_id, ssrc, state, expire_at);
+
+INSERT INTO gb28181_seq_code (seq_id, seq_name, init_value, current_value, increment_value, prefix_code, code_lenth, remark, create_date)
+SELECT SEQ_ID, SEQ_NAME, INIT_VALUE, CURRENT_VALUE, INCREMENT_VALUE, PREFIX_CODE, CODE_LENTH, REMARK, CREATE_DATE FROM tmp_legacy_gb28181_seq_code;
+
+INSERT INTO gb28181_oauth (device_id, domain_id, domain, longitude, latitude, address, pwd, pwd_check, alias, status, heartbeat_sec, del, create_time, tenant_id, sys_org_code, create_by, update_by, update_time)
+SELECT DEVICE_ID, DOMAIN_ID, DOMAIN, LONGITUDE, LATITUDE, ADDRESS, PWD, PWD_CHECK, ALIAS, STATUS, HEARTBEAT_SEC, DEL, CREATE_TIME, TENANT_ID, SYS_ORG_CODE, CREATE_BY, UPDATE_BY, UPDATE_TIME FROM tmp_legacy_gb28181_oauth;
+
+INSERT INTO gb28181_device (device_id, transport, register_expires, register_time, local_addr, contact_uri, enable_lr, device_type, manufacturer, model, firmware, max_camera, online_expire_time, gb_version, last_update_time, create_time, tenant_id, sys_org_code, create_by, update_by, update_time)
+SELECT DEVICE_ID, TRANSPORT, REGISTER_EXPIRES, REGISTER_TIME, LOCAL_ADDR, CONTACT_URI, ENABLE_LR, DEVICE_TYPE, MANUFACTURER, MODEL, FIRMWARE, MAX_CAMERA, ONLINE_EXPIRE_TIME, GB_VERSION, LAST_UPDATE_TIME, CREATE_TIME, TENANT_ID, SYS_ORG_CODE, CREATE_BY, UPDATE_BY, UPDATE_TIME FROM tmp_legacy_gb28181_device;
+
+INSERT INTO gb28181_device_channel (device_id, channel_id, name, manufacturer, model, owner, status, civil_code, address, parental, block, parent_id, ip_address, port, password, longitude, latitude, ptz_type, supply_light_type)
+SELECT DEVICE_ID, CHANNEL_ID, NAME, MANUFACTURER, MODEL, OWNER, STATUS, CIVIL_CODE, ADDRESS, PARENTAL, BLOCK, PARENT_ID, IP_ADDRESS, PORT, PASSWORD, LONGITUDE, LATITUDE, PTZ_TYPE, SUPPLY_LIGHT_TYPE FROM tmp_legacy_gb28181_device_channel;
+
+INSERT INTO gb28181_device_channel_conf (device_id, channel_id, alias_name, ptz_enable, talk_enable, audio_enable, snapshot_enable, record_enable, playback_enable, alarm_enable, biz_enable, sort_no, over_pic_id, create_time, update_time)
+SELECT DEVICE_ID, CHANNEL_ID, ALIAS_NAME, PTZ_ENABLE, TALK_ENABLE, AUDIO_ENABLE, SNAPSHOT_ENABLE, RECORD_ENABLE, PLAYBACK_ENABLE, ALARM_ENABLE, BIZ_ENABLE, SORT_NO, OVER_PIC_ID, CREATE_TIME, UPDATE_TIME FROM tmp_legacy_gb28181_device_channel_conf;
+
+INSERT INTO gb28181_device_ptz_preset (id, device_id, channel_id, preset_no, preset_name, enabled, sort_no, remark, create_time, update_time)
+SELECT ID, DEVICE_ID, CHANNEL_ID, PRESET_NO, PRESET_NAME, ENABLED, SORT_NO, REMARK, CREATE_TIME, UPDATE_TIME FROM tmp_legacy_gb28181_device_ptz_preset;
+
+INSERT INTO gb28181_file_info (id, device_id, channel_id, biz_time, biz_id, file_type, file_size, file_name, file_format, dir_path, abs_path, note, is_del, create_time)
+SELECT ID, DEVICE_ID, CHANNEL_ID, BIZ_TIME, BIZ_ID, FILE_TYPE, FILE_SIZE, FILE_NAME, FILE_FORMAT, DIR_PATH, ABS_PATH, NOTE, IS_DEL, CREATE_TIME FROM tmp_legacy_gb28181_file_info;
+
+INSERT INTO gb28181_record (biz_id, device_id, channel_id, user_id, st, et, speed, ct, state, lt, stream_app_name)
+SELECT BIZ_ID, DEVICE_ID, CHANNEL_ID, USER_ID, ST, ET, SPEED, CT, STATE, LT, STREAM_APP_NAME FROM tmp_legacy_gb28181_record;
+
+INSERT INTO gb28181_sip_dialog_session (stream_id, device_id, channel_id, session_type, signal_node_id, media_node_id, ssrc, call_id, local_uri, remote_uri, local_tag, remote_tag, local_cseq, remote_cseq, contact_uri, route_set, local_sip_addr, remote_sip_addr, transport, state, established_at, last_seen_at, expire_at, version, created_at, updated_at)
+SELECT STREAM_ID, DEVICE_ID, CHANNEL_ID, SESSION_TYPE, SIGNAL_NODE_ID, MEDIA_NODE_ID, SSRC, CALL_ID, LOCAL_URI, REMOTE_URI, LOCAL_TAG, REMOTE_TAG, LOCAL_CSEQ, REMOTE_CSEQ, CONTACT_URI, ROUTE_SET, LOCAL_SIP_ADDR, REMOTE_SIP_ADDR, TRANSPORT, STATE, ESTABLISHED_AT, LAST_SEEN_AT, EXPIRE_AT, VERSION, CREATED_AT, UPDATED_AT FROM tmp_legacy_gb28181_sip_dialog_session;
+
+DROP TABLE tmp_legacy_gb28181_sip_dialog_session;
+DROP TABLE tmp_legacy_gb28181_record;
+DROP TABLE tmp_legacy_gb28181_file_info;
+DROP TABLE tmp_legacy_gb28181_device_ptz_preset;
+DROP TABLE tmp_legacy_gb28181_device_channel_conf;
+DROP TABLE tmp_legacy_gb28181_device_channel;
+DROP TABLE tmp_legacy_gb28181_device;
+DROP TABLE tmp_legacy_gb28181_oauth;
+DROP TABLE tmp_legacy_gb28181_seq_code;
+
+COMMIT;
+PRAGMA foreign_keys = ON;

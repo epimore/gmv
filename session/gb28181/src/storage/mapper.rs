@@ -14,7 +14,7 @@ pub async fn get_device_channel_status(
     }
     let res: Option<(String,)> = db::fetch_optional_as!(
         (String,),
-        "SELECT COALESCE(c.STATUS,'ONLY') FROM GB28181_DEVICE d LEFT JOIN GB28181_DEVICE_CHANNEL c on d.DEVICE_ID=c.DEVICE_ID and c.CHANNEL_ID=? WHERE d.DEVICE_ID=?",
+        "SELECT COALESCE(c.status,'ONLY') FROM gb28181_device d LEFT JOIN gb28181_device_channel c on d.device_id=c.device_id and c.channel_id=? WHERE d.device_id=?",
         channel_id,
         device_id,
     )
@@ -30,14 +30,14 @@ pub async fn resolve_broadcast_target_id(
     if crate::storage::entity::test_storage_enabled() {
         return Ok(channel_id.to_string());
     }
-    // 多个语音输出子通道暂按 CHANNEL_ID 取第一条，待真实设备接入后再决定最终策略。
+    // 多个语音输出子通道暂按 channel_id 取第一条，待真实设备接入后再决定最终策略。
     let res: Option<(String, String, String)> = db::fetch_optional_as!(
         (String, String, String),
-        "SELECT a.DEVICE_ID,a.CHANNEL_ID,b.CHANNEL_ID FROM GB28181_DEVICE_CHANNEL a \
-         INNER JOIN GB28181_DEVICE_CHANNEL b \
-         ON a.DEVICE_ID=b.DEVICE_ID AND a.CHANNEL_ID=b.PARENT_ID \
-         WHERE a.DEVICE_ID=? AND a.CHANNEL_ID=? \
-         ORDER BY b.CHANNEL_ID LIMIT 1",
+        "SELECT a.device_id,a.channel_id,b.channel_id FROM gb28181_device_channel a \
+         INNER JOIN gb28181_device_channel b \
+         ON a.device_id=b.device_id AND a.channel_id=b.parent_id \
+         WHERE a.device_id=? AND a.channel_id=? \
+         ORDER BY b.channel_id LIMIT 1",
         device_id,
         channel_id,
     )

@@ -1,13 +1,13 @@
 -- ----------------------------
--- Table structure for GB28181_SEQ_CODE
+-- Table structure for gb28181_seq_code
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_SEQ_CODE`  (
+CREATE TABLE IF NOT EXISTS `gb28181_seq_code`  (
   `seq_id` bigint(16) UNSIGNED ZEROFILL NOT NULL AUTO_INCREMENT COMMENT '序列标识',
   `seq_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '序列的名字，唯一，格式domain_id:LIVE或domain_id:BACK',
   `init_value` bigint UNSIGNED NOT NULL COMMENT '初始值',
   `current_value` bigint UNSIGNED NOT NULL COMMENT '当前的值',
   `increment_value` int NOT NULL DEFAULT 1 COMMENT '步长，默认为1',
-  `prefix_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'SSRC数字前缀',
+  `prefix_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'ssrc数字前缀',
   `code_lenth` int NULL DEFAULT NULL COMMENT '编码长度(不含前置)，中间以0填充',
   `remark` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '备注',
   `create_date` datetime NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -16,203 +16,205 @@ CREATE TABLE IF NOT EXISTS `GB28181_SEQ_CODE`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 40 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '公共的序列表' ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
--- Table structure for GB28181_DEVICE
+-- Table structure for gb28181_device
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_DEVICE`  (
-  `DEVICE_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备主键ID',
-  `TRANSPORT` varchar(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '网络协议：TCP/UDP',
-  `REGISTER_EXPIRES` int UNSIGNED NULL DEFAULT NULL COMMENT '注册有效期',
-  `REGISTER_TIME` datetime NULL DEFAULT NULL COMMENT '最近注册时间',
-  `LOCAL_ADDR` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备本地地址',
-  `CONTACT_URI` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '请求地址',
-  `ENABLE_LR` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '1-是，0-否',
-  `DEVICE_TYPE` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备类型IPC/NVR/DVR...',
-  `MANUFACTURER` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '厂家名称',
-  `MODEL` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备型号',
-  `FIRMWARE` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '固件版本',
-  `MAX_CAMERA` smallint UNSIGNED NULL DEFAULT NULL COMMENT '最大相机数',
-  `ONLINE_EXPIRE_TIME` datetime NULL DEFAULT NULL COMMENT '在线过期时间',
-  `GB_VERSION` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT '2.0' COMMENT '国标版本',
-  `LAST_UPDATE_TIME` datetime NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
-  `CREATE_TIME` datetime NULL DEFAULT NULL,
-  `tenant_id` int NULL DEFAULT NULL COMMENT '租户ID',
+CREATE TABLE IF NOT EXISTS `gb28181_device`  (
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备主键id',
+  `transport` varchar(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '网络协议：TCP/UDP',
+  `register_expires` int UNSIGNED NULL DEFAULT NULL COMMENT '注册有效期',
+  `register_time` datetime NULL DEFAULT NULL COMMENT '最近注册时间',
+  `local_addr` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备本地地址',
+  `contact_uri` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '请求地址',
+  `enable_lr` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '1-是，0-否',
+  `device_type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备类型IPC/NVR/DVR...',
+  `manufacturer` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '厂家名称',
+  `model` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备型号',
+  `firmware` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '固件版本',
+  `max_camera` smallint UNSIGNED NULL DEFAULT NULL COMMENT '最大相机数',
+  `online_expire_time` datetime NULL DEFAULT NULL COMMENT '在线过期时间',
+  `gb_version` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT '2.0' COMMENT '国标版本',
+  `last_update_time` datetime NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+  `create_time` datetime NULL DEFAULT NULL,
+  `tenant_id` int NULL DEFAULT NULL COMMENT '租户id',
   `sys_org_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '机构编码',
   `create_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `update_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `update_time` datetime NULL DEFAULT NULL,
-  PRIMARY KEY (`DEVICE_ID`) USING BTREE
+  PRIMARY KEY (`device_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '设备主表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for GB28181_DEVICE_CHANNEL
+-- Table structure for gb28181_device_channel
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_DEVICE_CHANNEL`  (
-  `DEVICE_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备ID',
-  `CHANNEL_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道ID',
-  `NAME` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备名称',
-  `MANUFACTURER` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备厂商',
-  `MODEL` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备型号',
-  `OWNER` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备归属',
-  `STATUS` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT 'ON' COMMENT '设备状态ON默认/OFF/STATUS1/ONLINE/OFFLINE....',
-  `CIVIL_CODE` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '行政区域',
-  `ADDRESS` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '安装地址',
-  `PARENTAL` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '是否有子设备 1 有， 0 没有',
-  `BLOCK` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '警区',
-  `PARENT_ID` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '父设备/区域/系统 ID',
-  `IP_ADDRESS` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备/区域/系统 IP 地址',
-  `PORT` int NULL DEFAULT NULL COMMENT '设备/区域/系统端口',
-  `PASSWORD` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备口令',
-  `LONGITUDE` decimal(12, 6) NULL DEFAULT NULL COMMENT '经度',
-  `LATITUDE` decimal(12, 6) NULL DEFAULT NULL COMMENT '纬度',
-  `PTZ_TYPE` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '摄像机类型扩展，标识摄像机类型： 1-球机； 2-半球； 3-固定枪机；4-遥控枪机,5遥控半球，6多目设备拼接通道，7多目设备分割通道。',
-  `SUPPLY_LIGHT_TYPE` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '摄像机补光属性。 1-无补光、 2-红外补光、 3-白光补光。',
-  PRIMARY KEY (`DEVICE_ID`, `CHANNEL_ID`) USING BTREE
+CREATE TABLE IF NOT EXISTS `gb28181_device_channel`  (
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备id',
+  `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道id',
+  `name` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备名称',
+  `manufacturer` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备厂商',
+  `model` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备型号',
+  `owner` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备归属',
+  `status` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT 'ON' COMMENT '设备状态ON默认/OFF/STATUS1/ONLINE/OFFLINE....',
+  `civil_code` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '行政区域',
+  `address` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '安装地址',
+  `parental` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '是否有子设备 1 有， 0 没有',
+  `block` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '警区',
+  `parent_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '父设备/区域/系统 id',
+  `ip_address` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备/区域/系统 IP 地址',
+  `port` int NULL DEFAULT NULL COMMENT '设备/区域/系统端口',
+  `password` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '设备口令',
+  `longitude` decimal(12, 6) NULL DEFAULT NULL COMMENT '经度',
+  `latitude` decimal(12, 6) NULL DEFAULT NULL COMMENT '纬度',
+  `ptz_type` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '摄像机类型扩展，标识摄像机类型： 1-球机； 2-半球； 3-固定枪机；4-遥控枪机,5遥控半球，6多目设备拼接通道，7多目设备分割通道。',
+  `supply_light_type` char(1) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '摄像机补光属性。 1-无补光、 2-红外补光、 3-白光补光。',
+  PRIMARY KEY (`device_id`, `channel_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '摄像机通道信息' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for GB28181_DEVICE_CHANNEL_CONF
+-- Table structure for gb28181_device_channel_conf
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_DEVICE_CHANNEL_CONF`  (
-  `DEVICE_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备ID',
-  `CHANNEL_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道ID',
-  `ALIAS_NAME` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '业务别名',
-  `PTZ_ENABLE` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '云台控制：0-禁用，1-启用，2-设备不支持',
-  `TALK_ENABLE` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '语音对讲：0-禁用，1-启用，2-设备不支持',
-  `AUDIO_ENABLE` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '音频播放/收音：0-禁用，1-启用，2-设备不支持',
-  `SNAPSHOT_ENABLE` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '抓拍：0-禁用，1-启用，2-设备不支持',
-  `RECORD_ENABLE` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '录像：0-禁用，1-启用，2-设备不支持',
-  `PLAYBACK_ENABLE` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '录像回放：0-禁用，1-启用，2-设备不支持',
-  `ALARM_ENABLE` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '告警接收：0-禁用，1-启用，2-设备不支持',
-  `BIZ_ENABLE` tinyint UNSIGNED NULL DEFAULT 1 COMMENT '业务启用：0-禁用，1-启用',
-  `SORT_NO` int NULL DEFAULT 0 COMMENT '排序号',
-  `over_pic_id` bigint NULL DEFAULT NULL COMMENT '封面图片ID',
-  `CREATE_TIME` datetime NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `UPDATE_TIME` datetime NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (`DEVICE_ID`, `CHANNEL_ID`) USING BTREE,
-  INDEX `idx_gmv_dcc_sort`(`DEVICE_ID` ASC, `SORT_NO` ASC, `CHANNEL_ID` ASC) USING BTREE,
-  CONSTRAINT `fk_gmv_dcc_channel` FOREIGN KEY (`DEVICE_ID`, `CHANNEL_ID`) REFERENCES `GB28181_DEVICE_CHANNEL` (`DEVICE_ID`, `CHANNEL_ID`) ON DELETE CASCADE ON UPDATE RESTRICT
+CREATE TABLE IF NOT EXISTS `gb28181_device_channel_conf`  (
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备id',
+  `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道id',
+  `alias_name` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '业务别名',
+  `ptz_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '云台控制：0-禁用，1-启用，2-设备不支持',
+  `talk_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '语音对讲：0-禁用，1-启用，2-设备不支持',
+  `audio_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '音频播放/收音：0-禁用，1-启用，2-设备不支持',
+  `snapshot_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '抓拍：0-禁用，1-启用，2-设备不支持',
+  `record_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '录像：0-禁用，1-启用，2-设备不支持',
+  `playback_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '录像回放：0-禁用，1-启用，2-设备不支持',
+  `alarm_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '告警接收：0-禁用，1-启用，2-设备不支持',
+  `biz_enable` tinyint UNSIGNED NULL DEFAULT 1 COMMENT '业务启用：0-禁用，1-启用',
+  `sort_no` int NULL DEFAULT 0 COMMENT '排序号',
+  `over_pic_id` bigint NULL DEFAULT NULL COMMENT '封面图片id',
+  `create_time` datetime NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`device_id`, `channel_id`) USING BTREE,
+  INDEX `idx_gmv_dcc_sort`(`device_id` ASC, `sort_no` ASC, `channel_id` ASC) USING BTREE,
+  CONSTRAINT `fk_gmv_dcc_channel` FOREIGN KEY (`device_id`, `channel_id`) REFERENCES `gb28181_device_channel` (`device_id`, `channel_id`) ON DELETE CASCADE ON UPDATE RESTRICT
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '通道业务配置表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for GB28181_DEVICE_PTZ_PRESET
+-- Table structure for gb28181_device_ptz_preset
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_DEVICE_PTZ_PRESET`  (
-  `ID` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
-  `DEVICE_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备ID',
-  `CHANNEL_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '视频通道ID',
-  `PRESET_NO` int NOT NULL COMMENT '预置点编号，GB28181 PTZ Preset 指令使用',
-  `PRESET_NAME` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '预置点名称',
-  `ENABLED` tinyint UNSIGNED NOT NULL DEFAULT 1 COMMENT '是否启用：0-禁用，1-启用',
-  `SORT_NO` int NULL DEFAULT 0 COMMENT '排序号',
-  `REMARK` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '备注',
-  `CREATE_TIME` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `UPDATE_TIME` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (`ID`) USING BTREE,
-  UNIQUE INDEX `uk_gmv_ptz_preset`(`DEVICE_ID` ASC, `CHANNEL_ID` ASC, `PRESET_NO` ASC) USING BTREE,
-  INDEX `idx_gmv_ptz_preset_channel`(`DEVICE_ID` ASC, `CHANNEL_ID` ASC, `ENABLED` ASC, `SORT_NO` ASC) USING BTREE,
-  CONSTRAINT `fk_gmv_ptz_preset_channel` FOREIGN KEY (`DEVICE_ID`, `CHANNEL_ID`) REFERENCES `GB28181_DEVICE_CHANNEL` (`DEVICE_ID`, `CHANNEL_ID`) ON DELETE CASCADE ON UPDATE RESTRICT
+CREATE TABLE IF NOT EXISTS `gb28181_device_ptz_preset`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备id',
+  `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '视频通道id',
+  `preset_no` int NOT NULL COMMENT '预置点编号，GB28181 PTZ Preset 指令使用',
+  `preset_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '预置点名称',
+  `enabled` tinyint UNSIGNED NOT NULL DEFAULT 1 COMMENT '是否启用：0-禁用，1-启用',
+  `sort_no` int NULL DEFAULT 0 COMMENT '排序号',
+  `remark` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '备注',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_gmv_ptz_preset`(`device_id` ASC, `channel_id` ASC, `preset_no` ASC) USING BTREE,
+  INDEX `idx_gmv_ptz_preset_channel`(`device_id` ASC, `channel_id` ASC, `enabled` ASC, `sort_no` ASC) USING BTREE,
+  CONSTRAINT `fk_gmv_ptz_preset_channel` FOREIGN KEY (`device_id`, `channel_id`) REFERENCES `gb28181_device_channel` (`device_id`, `channel_id`) ON DELETE CASCADE ON UPDATE RESTRICT
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '云台预置点配置表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for GB28181_FILE_INFO
+-- Table structure for gb28181_file_info
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_FILE_INFO`  (
-  `ID` bigint NOT NULL AUTO_INCREMENT,
-  `DEVICE_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备ID',
-  `CHANNEL_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道ID',
-  `BIZ_TIME` datetime NULL DEFAULT NULL COMMENT '生成时间',
-  `BIZ_ID` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '业务ID',
-  `FILE_TYPE` int NULL DEFAULT NULL COMMENT '文件类型：0-图片，1-视频，2-音频，3-视音频，4-其他',
-  `FILE_SIZE` bigint UNSIGNED NULL DEFAULT NULL COMMENT '文件大小BYTE',
-  `FILE_NAME` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '文件名称',
-  `FILE_FORMAT` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '文件格式',
-  `DIR_PATH` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '(相对)存储路径',
-  `ABS_PATH` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '绝对路径',
-  `NOTE` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '注释',
-  `IS_DEL` int NULL DEFAULT 0 COMMENT '是否删除;1-是，0-否；默认0',
-  `CREATE_TIME` datetime NULL DEFAULT NULL COMMENT '创建时间',
-  PRIMARY KEY (`ID`) USING BTREE,
-  INDEX `dc_index`(`DEVICE_ID` ASC, `CHANNEL_ID` ASC) USING BTREE,
-  INDEX `idx_device_channel_id`(`DEVICE_ID` ASC, `CHANNEL_ID` ASC, `ID` DESC) USING BTREE
+CREATE TABLE IF NOT EXISTS `gb28181_file_info`  (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备id',
+  `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道id',
+  `biz_time` datetime NULL DEFAULT NULL COMMENT '生成时间',
+  `biz_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '业务id',
+  `file_type` int NULL DEFAULT NULL COMMENT '文件类型：0-图片，1-视频，2-音频，3-视音频，4-其他',
+  `file_size` bigint UNSIGNED NULL DEFAULT NULL COMMENT '文件大小BYTE',
+  `file_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '文件名称',
+  `file_format` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '文件格式',
+  `dir_path` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '(相对)存储路径',
+  `abs_path` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '绝对路径',
+  `note` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '注释',
+  `is_del` int NULL DEFAULT 0 COMMENT '是否删除;1-是，0-否；默认0',
+  `create_time` datetime NULL DEFAULT NULL COMMENT '创建时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `dc_index`(`device_id` ASC, `channel_id` ASC) USING BTREE,
+  INDEX `idx_device_channel_id`(`device_id` ASC, `channel_id` ASC, `id` DESC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 16866 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '文件信息' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for GB28181_OAUTH
+-- Table structure for gb28181_oauth
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_OAUTH`  (
-  `DEVICE_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '中心8行业2类型3网络1序号6',
-  `DOMAIN_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '34020000002000000001' COMMENT '设备域ID',
-  `DOMAIN` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备域',
+CREATE TABLE IF NOT EXISTS `gb28181_oauth`  (
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '中心8行业2类型3网络1序号6',
+  `domain_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '34020000002000000001' COMMENT '设备域id',
+  `domain` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备域',
   `longitude` decimal(12, 8) NULL DEFAULT NULL COMMENT '经度',
   `latitude` decimal(12, 8) NULL DEFAULT NULL COMMENT '维度',
   `address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '地址',
-  `PWD` varchar(120) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '密码',
-  `PWD_CHECK` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-不校验，1-检查',
-  `ALIAS` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '别名',
-  `STATUS` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-禁用，1-启用',
-  `HEARTBEAT_SEC` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '心跳间隔：秒',
-  `DEL` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-未删除，1-已删除',
-  `CREATE_TIME` datetime NULL DEFAULT NULL COMMENT '创建时间',
-  `tenant_id` int NULL DEFAULT NULL COMMENT '租户ID',
+  `pwd` varchar(120) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '密码',
+  `pwd_check` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-不校验，1-检查',
+  `alias` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '别名',
+  `status` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-禁用，1-启用',
+  `heartbeat_sec` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '心跳间隔：秒',
+  `del` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-未删除，1-已删除',
+  `create_time` datetime NULL DEFAULT NULL COMMENT '创建时间',
+  `tenant_id` int NULL DEFAULT NULL COMMENT '租户id',
   `sys_org_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '机构编码',
   `create_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `update_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `update_time` datetime NULL DEFAULT NULL,
-  PRIMARY KEY (`DEVICE_ID`) USING BTREE,
-  UNIQUE INDEX `DEVICE_ID`(`DEVICE_ID` ASC) USING BTREE
+  PRIMARY KEY (`device_id`) USING BTREE,
+  UNIQUE INDEX `device_id`(`device_id` ASC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '认证表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for GB28181_RECORD
+-- Table structure for gb28181_record
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_RECORD`  (
-  `BIZ_ID` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '业务ID',
-  `DEVICE_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备编号',
-  `CHANNEL_ID` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道编号',
-  `USER_ID` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '用户ID',
-  `ST` datetime NULL DEFAULT NULL COMMENT '录像开始时间',
-  `ET` datetime NULL DEFAULT NULL COMMENT '录像结束时间',
-  `SPEED` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '倍速',
-  `CT` datetime NULL DEFAULT NULL COMMENT '创建时间',
-  `STATE` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '录制状态：0=进行，1=完成，2=录制部分，3=失败',
-  `LT` datetime NULL DEFAULT NULL COMMENT '最后更新时间',
-  `STREAM_APP_NAME` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '流媒体名称',
-  PRIMARY KEY (`BIZ_ID`) USING BTREE
+CREATE TABLE IF NOT EXISTS `gb28181_record`  (
+  `biz_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '业务id',
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备编号',
+  `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道编号',
+  `user_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '用户id',
+  `st` datetime NULL DEFAULT NULL COMMENT '录像开始时间',
+  `et` datetime NULL DEFAULT NULL COMMENT '录像结束时间',
+  `speed` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '倍速',
+  `ct` datetime NULL DEFAULT NULL COMMENT '创建时间',
+  `state` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '录制状态：0=进行，1=完成，2=录制部分，3=失败',
+  `lt` datetime NULL DEFAULT NULL COMMENT '最后更新时间',
+  `stream_app_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '流媒体名称',
+  PRIMARY KEY (`biz_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '云端录像' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
--- Table structure for GB28181_SIP_DIALOG_SESSION
+-- Table structure for gb28181_sip_dialog_session
 -- ----------------------------
-CREATE TABLE IF NOT EXISTS `GB28181_SIP_DIALOG_SESSION`  (
-  `STREAM_ID` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `DEVICE_ID` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `CHANNEL_ID` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `SESSION_TYPE` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'LIVE/PLAYBACK/DOWNLOAD/TALK',
-  `SIGNAL_NODE_ID` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `MEDIA_NODE_ID` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `SSRC` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
-  `CALL_ID` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `LOCAL_URI` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `REMOTE_URI` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `LOCAL_TAG` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `REMOTE_TAG` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
-  `LOCAL_CSEQ` bigint NOT NULL DEFAULT 1,
-  `REMOTE_CSEQ` bigint NULL DEFAULT NULL,
-  `CONTACT_URI` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
-  `ROUTE_SET` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
-  `LOCAL_SIP_ADDR` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `REMOTE_SIP_ADDR` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `TRANSPORT` varchar(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'UDP/TCP/TLS',
-  `STATE` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'INVITING/ESTABLISHED/TERMINATING/TERMINATED/ORPHAN',
-  `ESTABLISHED_AT` datetime(3) NULL DEFAULT NULL,
-  `LAST_SEEN_AT` datetime(3) NOT NULL,
-  `EXPIRE_AT` datetime(3) NOT NULL,
-  `VERSION` bigint NOT NULL DEFAULT 0,
-  `CREATED_AT` datetime(3) NOT NULL,
-  `UPDATED_AT` datetime(3) NOT NULL,
-  PRIMARY KEY (`STREAM_ID`) USING BTREE,
-  INDEX `IDX_GMV_SIP_DIALOG_DEVICE_STATE`(`DEVICE_ID` ASC, `STATE` ASC) USING BTREE,
-  INDEX `IDX_GMV_SIP_DIALOG_CALL_ID`(`CALL_ID` ASC) USING BTREE,
-  INDEX `IDX_GMV_SIP_DIALOG_OWNER_STATE_EXPIRE`(`SIGNAL_NODE_ID` ASC, `STATE` ASC, `EXPIRE_AT` ASC) USING BTREE,
-  INDEX `IDX_GMV_SIP_DIALOG_OWNER_SSRC_STATE_EXPIRE`(`SIGNAL_NODE_ID` ASC, `SSRC` ASC, `STATE` ASC, `EXPIRE_AT` ASC) USING BTREE
+CREATE TABLE IF NOT EXISTS `gb28181_sip_dialog_session`  (
+  `stream_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `device_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `channel_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `session_type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'LIVE/PLAYBACK/DOWNLOAD/TALK',
+  `signal_node_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `media_node_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `ssrc` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `call_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `local_uri` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `remote_uri` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `local_tag` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `remote_tag` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `local_cseq` bigint NOT NULL DEFAULT 1,
+  `remote_cseq` bigint NULL DEFAULT NULL,
+  `contact_uri` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `route_set` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  `local_sip_addr` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `remote_sip_addr` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `transport` varchar(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'UDP/TCP/TLS',
+  `state` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'INVITING/ESTABLISHED/TERMINATING/TERMINATED/ORPHAN',
+  `established_at` datetime(3) NULL DEFAULT NULL,
+  `last_seen_at` datetime(3) NOT NULL,
+  `expire_at` datetime(3) NOT NULL,
+  `version` bigint NOT NULL DEFAULT 0,
+  `created_at` datetime(3) NOT NULL,
+  `updated_at` datetime(3) NOT NULL,
+  PRIMARY KEY (`stream_id`) USING BTREE,
+  INDEX `idx_gmv_sip_dialog_device_state`(`device_id` ASC, `state` ASC) USING BTREE,
+  INDEX `idx_gmv_sip_dialog_call_id`(`call_id` ASC) USING BTREE,
+  INDEX `idx_gmv_sip_dialog_owner_state_expire`(`signal_node_id` ASC, `state` ASC, `expire_at` ASC) USING BTREE,
+  INDEX `idx_gmv_sip_dialog_owner_ssrc_state_expire`(`signal_node_id` ASC, `ssrc` ASC, `state` ASC, `expire_at` ASC) USING BTREE,
+  INDEX `idx_gmv_sip_dialog_owner`(`signal_node_id` ASC, `state` ASC, `stream_id` ASC) USING BTREE,
+  INDEX `idx_gmv_sip_dialog_ssrc`(`signal_node_id` ASC, `media_node_id` ASC, `ssrc` ASC, `state` ASC, `expire_at` ASC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;

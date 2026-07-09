@@ -151,6 +151,12 @@ pub fn mysql_pool() -> &'static MySqlPool {
 
 #[cfg(feature = "db-sqlite")]
 const SQLITE_SCHEMA: &str = include_str!("../../schema/sqlite/gb28181_core.sql");
+#[cfg(all(test, feature = "db-sqlite"))]
+const SQLITE_LOWERCASE_EXISTING_SCHEMA: &str =
+    include_str!("../../schema/sqlite/lowercase_existing_schema.sql");
+#[cfg(all(test, feature = "db-sqlite"))]
+const SQLITE_LEGACY_UPPERCASE_SCHEMA: &str =
+    include_str!("../../schema/sqlite/fixtures/legacy_uppercase_schema.sql");
 #[cfg(feature = "db-mysql")]
 const MYSQL_SCHEMA: &str = include_str!("../../schema/mysql/gb28181_core.sql");
 
@@ -201,6 +207,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use base_db::sqlx::Row;
 
     #[test]
     fn ensure_sqlite_parent_creates_missing_directory() {
@@ -222,6 +229,155 @@ mod tests {
                 .join("gmv-session-gb28181-sqlite-parent")
                 .join(unique.to_string()),
         );
+    }
+
+    #[test]
+    fn sqlite_schema_uses_lowercase_identifiers() {
+        const LEGACY_DB_IDENTIFIERS: &[&str] = &[
+            "GB28181_",
+            "DEVICE_ID",
+            "CHANNEL_ID",
+            "ONLINE_EXPIRE_TIME",
+            "REGISTER_EXPIRES",
+            "REGISTER_TIME",
+            "LOCAL_ADDR",
+            "CONTACT_URI",
+            "ENABLE_LR",
+            "CREATE_TIME",
+            "UPDATE_TIME",
+            "HEARTBEAT_SEC",
+            "DOMAIN_ID",
+            "PWD_CHECK",
+            "BIZ_ID",
+            "STREAM_ID",
+            "CALL_ID",
+            "SIGNAL_NODE_ID",
+            "MEDIA_NODE_ID",
+        ];
+
+        for identifier in LEGACY_DB_IDENTIFIERS {
+            assert!(
+                !SQLITE_SCHEMA.contains(identifier),
+                "SQLite schema still contains legacy DB identifier {identifier}"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_lowercase_existing_schema_rebuilds_legacy_database() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let (pool, root) = temp_sqlite_pool("legacy-lowercase-migration");
+
+            base_db::sqlx::raw_sql(SQLITE_LEGACY_UPPERCASE_SCHEMA)
+                .execute(&pool)
+                .await
+                .expect("create legacy uppercase schema");
+            base_db::sqlx::raw_sql(
+                "INSERT INTO GB28181_OAUTH (DEVICE_ID, DOMAIN) VALUES ('34020000002000000001', '3402000000');
+                 INSERT INTO GB28181_DEVICE (DEVICE_ID, TRANSPORT) VALUES ('34020000002000000001', 'TCP');",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed legacy uppercase schema");
+
+            base_db::sqlx::raw_sql(SQLITE_LOWERCASE_EXISTING_SCHEMA)
+                .execute(&pool)
+                .await
+                .expect("rebuild legacy schema to lowercase");
+
+            let remaining_legacy_names: i64 = base_db::sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','index') AND name GLOB 'GB28181_*'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count legacy names");
+            assert_eq!(remaining_legacy_names, 0);
+
+            let transport: String =
+                base_db::sqlx::query_scalar("SELECT transport FROM gb28181_device WHERE device_id=?")
+                    .bind("34020000002000000001")
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read migrated device");
+            assert_eq!(transport, "TCP");
+
+            let columns = base_db::sqlx::query("SELECT name FROM pragma_table_info('gb28181_sip_dialog_session')")
+                .fetch_all(&pool)
+                .await
+                .expect("read dialog schema columns");
+            for column in columns {
+                let name: String = column.get("name");
+                assert_eq!(
+                    name,
+                    name.to_ascii_lowercase(),
+                    "dialog schema column is not lowercase"
+                );
+            }
+
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn sqlite_schema_initializes_lowercase_database() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let (pool, root) = temp_sqlite_pool("lowercase-schema-init");
+
+            base_db::sqlx::raw_sql(SQLITE_SCHEMA)
+                .execute(&pool)
+                .await
+                .expect("initialize lowercase schema");
+
+            let tables = base_db::sqlx::query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'gb28181_*' ORDER BY name",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("read lowercase tables");
+            let names: Vec<String> = tables
+                .into_iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect();
+
+            assert!(names.contains(&"gb28181_oauth".to_string()));
+            assert!(names.contains(&"gb28181_device".to_string()));
+            assert!(names.contains(&"gb28181_sip_dialog_session".to_string()));
+
+            let legacy_names: i64 = base_db::sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','index') AND name GLOB 'GB28181_*'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count legacy names");
+            assert_eq!(legacy_names, 0);
+
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(root);
+        });
+    }
+
+    fn temp_sqlite_pool(name: &str) -> (SqlitePool, std::path::PathBuf) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir()
+            .join("gmv-session-gb28181-schema")
+            .join(unique.to_string());
+        let path = root.join(format!("{name}.db"));
+        ensure_sqlite_parent(&path).expect("create sqlite test parent");
+
+        let mut pool = DatabasePoolConfig::default();
+        pool.max_size = 1;
+        pool.min_idle = Some(0);
+        (
+            build_sqlite_pool(SqliteConnectionConfig::new(path), pool)
+                .expect("create sqlite test pool"),
+            root,
+        )
     }
 }
 
