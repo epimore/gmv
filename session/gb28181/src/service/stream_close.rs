@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use base::chrono::Local;
-use base::log::{debug, error, warn};
+use base::log::{debug, error, info, warn};
 use base::tokio::time::Instant;
 
 use crate::gb::sip::command as sip_command;
@@ -82,9 +82,14 @@ async fn send_bye(command: StreamByeCommand) {
     match result {
         Ok(()) => {
             if let Some(info) = Cache::stream_close_complete(&stream_id, generation) {
-                debug!(
-                    "stream close completed: device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
-                    info.device_id, info.channel_id, info.stream_id, info.ssrc, info.call_id
+                info!(
+                    "stream close completed: stage=close_finalize, outcome=closed, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}, generation={}",
+                    info.device_id,
+                    info.channel_id,
+                    info.stream_id,
+                    info.ssrc,
+                    info.call_id,
+                    info.generation
                 );
                 release_guard_lease(info.guard_lease);
             }
@@ -119,45 +124,154 @@ fn mark_failed(
     }
 }
 
-fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
+pub(crate) fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
     if let Some(info) = Cache::stream_close_force(stream_id, generation) {
-        error!(
-            "force cleanup closing stream: device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}, generation={}, reason={}",
+        warn!(
+            "stream close forced: stage=force_finalize, outcome=forced, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}, generation={}, trigger_reason={}, last_error={}",
             info.device_id,
             info.channel_id,
             info.stream_id,
             info.ssrc,
             info.call_id,
             info.generation,
-            reason
+            reason,
+            info.last_error.as_deref().unwrap_or("none")
         );
         release_guard_lease(info.guard_lease);
         let stream_id = info.stream_id;
         base::tokio::spawn(async move {
-            let Ok(Some(session)) = SipDialogSessionRepository::find_by_stream_id(&stream_id).await
-            else {
-                return;
-            };
-            if matches!(
-                session.state,
-                DialogState::Inviting | DialogState::Established | DialogState::Terminating
-            ) {
-                let _ = SipDialogSessionRepository::cas_transition(
-                    &stream_id,
-                    &session.signal_node_id,
-                    session.version,
-                    session.state,
-                    DialogState::Orphan,
-                    Local::now().naive_local(),
-                )
-                .await;
-            }
+            finalize_durable_dialog_as_orphan("stream", &stream_id).await;
         });
+    } else {
+        debug!(
+            "ignore stale stream force cleanup: stream_id={}, generation={}",
+            stream_id, generation
+        );
+    }
+}
+
+pub(crate) async fn finalize_durable_dialog_as_orphan(resource_kind: &str, resource_id: &str) {
+    let session = match SipDialogSessionRepository::find_by_stream_id(resource_id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return,
+        Err(err) => {
+            error!(
+                "durable dialog force-finalize lookup failed: resource_kind={resource_kind}, resource_id={resource_id}, stage=dialog_lookup, outcome=failed, err={err}"
+            );
+            return;
+        }
+    };
+    if !matches!(
+        session.state,
+        DialogState::Inviting | DialogState::Established | DialogState::Terminating
+    ) {
+        debug!(
+            "durable dialog already terminal during force finalize: resource_kind={resource_kind}, resource_id={resource_id}, state={}",
+            session.state
+        );
+        return;
+    }
+    match SipDialogSessionRepository::cas_transition(
+        resource_id,
+        &session.signal_node_id,
+        session.version,
+        session.state,
+        DialogState::Orphan,
+        Local::now().naive_local(),
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => match SipDialogSessionRepository::find_by_stream_id(resource_id).await {
+            Ok(Some(current))
+                if matches!(current.state, DialogState::Orphan | DialogState::Terminated) =>
+            {
+                debug!(
+                    "durable dialog force finalize already completed: resource_kind={resource_kind}, resource_id={resource_id}, state={}",
+                    current.state
+                );
+            }
+            Ok(Some(current)) => error!(
+                "durable dialog force-finalize CAS conflict: resource_kind={resource_kind}, resource_id={resource_id}, stage=dialog_cas, outcome=conflict, expected_state={}, current_state={}",
+                session.state, current.state
+            ),
+            Ok(None) => error!(
+                "durable dialog disappeared after force-finalize CAS conflict: resource_kind={resource_kind}, resource_id={resource_id}, stage=dialog_cas, outcome=missing"
+            ),
+            Err(err) => error!(
+                "durable dialog force-finalize CAS conflict recheck failed: resource_kind={resource_kind}, resource_id={resource_id}, stage=dialog_cas_recheck, outcome=failed, err={err}"
+            ),
+        },
+        Err(err) => error!(
+            "durable dialog force finalize failed: resource_kind={resource_kind}, resource_id={resource_id}, stage=dialog_cas, outcome=failed, err={err}"
+        ),
     }
 }
 
 fn release_guard_lease(lease: Option<crate::state::session::GuardLease>) {
     if let Some(lease) = lease {
         base::tokio::spawn(crate::guard_integration::release_stream_lease(lease));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finalize_durable_dialog_as_orphan;
+    use crate::storage::dialog_session::{
+        DialogSessionType, DialogState, DialogTransport, SipDialogSession,
+        SipDialogSessionRepository, enable_dialog_test_storage,
+    };
+    use base::chrono::{Duration, Local};
+
+    #[test]
+    fn force_finalizer_marks_active_durable_dialog_orphan() {
+        base::tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                let _guard = enable_dialog_test_storage();
+                let now = Local::now().naive_local();
+                let stream_id = "force-finalizer-stream";
+                SipDialogSessionRepository::insert_inviting(&SipDialogSession {
+                    stream_id: stream_id.into(),
+                    device_id: "34020000001320000001".into(),
+                    channel_id: "34020000001320000101".into(),
+                    session_type: DialogSessionType::Live,
+                    signal_node_id: "session-1".into(),
+                    media_node_id: "media-1".into(),
+                    ssrc: Some("0100000001".into()),
+                    call_id: "force-finalizer-call".into(),
+                    local_uri: "sip:platform@127.0.0.1:5060".into(),
+                    remote_uri: "sip:device@127.0.0.1:15060".into(),
+                    local_tag: "force-finalizer-tag".into(),
+                    remote_tag: None,
+                    local_cseq: 1,
+                    remote_cseq: None,
+                    contact_uri: None,
+                    route_set: Vec::new(),
+                    local_sip_addr: "127.0.0.1:5060".into(),
+                    remote_sip_addr: "127.0.0.1:15060".into(),
+                    transport: DialogTransport::Udp,
+                    state: DialogState::Inviting,
+                    established_at: None,
+                    last_seen_at: now,
+                    expire_at: now + Duration::hours(1),
+                    version: 0,
+                    created_at: now,
+                    updated_at: now,
+                })
+                .await
+                .expect("insert dialog");
+
+                finalize_durable_dialog_as_orphan("stream", stream_id).await;
+
+                assert_eq!(
+                    SipDialogSessionRepository::find_by_stream_id(stream_id)
+                        .await
+                        .expect("find dialog")
+                        .expect("dialog")
+                        .state,
+                    DialogState::Orphan
+                );
+            });
     }
 }

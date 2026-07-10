@@ -5,7 +5,7 @@ use axum::response::Response;
 use base::cfg_lib::conf;
 use base::err::{BaseErrorCode, CodeOutErr};
 use base::exception::{BizError, GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, warn};
+use base::log::{debug, error};
 use base::serde::{Deserialize, Serialize};
 use base::serde_default;
 use base::tokio::net::TcpListener;
@@ -55,11 +55,11 @@ impl Http {
         )
         .with_graceful_shutdown(async move {
             shutdown_cancel.cancelled().await;
-            warn!("HTTP graceful shutdown requested by cancellation token");
+            debug!("HTTP graceful shutdown requested by cancellation token");
         });
         match server.await.hand_log(|msg| error!("{msg}")) {
             Ok(()) => {
-                warn!(
+                debug!(
                     "HTTP server exited; cancellation_requested={}",
                     cancel_token.is_cancelled()
                 );

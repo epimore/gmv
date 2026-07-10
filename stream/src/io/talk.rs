@@ -25,7 +25,7 @@ use gmv_domain::info::obj::{
 use parking_lot::Mutex;
 
 use crate::general::cfg::StreamConf;
-use crate::guard_integration::publish_guard_event;
+use crate::guard_integration::{GuardEventPublish, publish_guard_event};
 use crate::io::call::call_session_hook_rpc;
 use crate::state::register::Register;
 
@@ -279,7 +279,7 @@ fn close_talk_target(output_tx: &mpsc::Sender<Zip>, reason: &str, target: Option
             );
         }
         Err(TrySendError::Closed(_)) => {
-            warn!(
+            debug!(
                 "talk tcp close event dropped for closed output channel: target={}, reason={reason}",
                 target.addr
             );
@@ -414,6 +414,8 @@ async fn run_rtp_sender(
                         "send talk rtp failed: talk_id={talk_id}, target={}, protocol={}, err={err}",
                         target.addr, target.protocol
                     );
+                    close_reason = "output_error";
+                    break;
                 }
                 seq = seq.wrapping_add(1);
                 timestamp = timestamp.wrapping_add(frame_samples);
@@ -484,14 +486,16 @@ async fn notify_talk_closed(talk_id: &str, reason: &str, session_hook_endpoint: 
     } else {
         warn!("talk closed session hook endpoint missing: talk_id={talk_id}");
     }
-    publish_guard_event(
+    let published = publish_guard_event(
         "stream.talk_closed.fallback",
         format!("{event:?}").into_bytes(),
     );
-    info!(
-        "talk closed fallback event sent to guard: talk_id={}, reason={}",
-        talk_id, reason
-    );
+    if published == GuardEventPublish::Queued {
+        info!(
+            "talk closed using guard fallback: talk_id={}, reason={}",
+            talk_id, reason
+        );
+    }
 }
 
 fn build_rtp_packet(

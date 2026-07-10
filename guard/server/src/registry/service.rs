@@ -17,19 +17,10 @@ pub struct RegisterRequest {
     pub config: std::collections::HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RegistryPolicy {
     pub node_check_enabled: bool,
     pub allowed_nodes: std::collections::HashMap<String, AllowedNode>,
-}
-
-impl Default for RegistryPolicy {
-    fn default() -> Self {
-        Self {
-            node_check_enabled: false,
-            allowed_nodes: std::collections::HashMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -105,7 +96,8 @@ impl RegistryService {
         request.identity.validate()?;
         validate_endpoints(&request.endpoints)?;
         self.validate_policy(&request)?;
-        let decision = match self.store.get_node(&request.identity.node_id) {
+        let existing = self.store.get_node(&request.identity.node_id);
+        let decision = match existing.as_ref() {
             None => RegisterDecision::Accepted,
             Some(existing)
                 if existing.connection == ConnectionState::Disconnected
@@ -127,12 +119,12 @@ impl RegistryService {
             Some(_) => RegisterDecision::SupersededOldInstance,
         };
         let mut config = request.config;
-        if self.policy.node_check_enabled {
-            if let Some(allowed) = self.policy.allowed_nodes.get(&request.identity.node_id) {
-                config
-                    .entry("service".to_string())
-                    .or_insert_with(|| allowed.service.clone());
-            }
+        if self.policy.node_check_enabled
+            && let Some(allowed) = self.policy.allowed_nodes.get(&request.identity.node_id)
+        {
+            config
+                .entry("service".to_string())
+                .or_insert_with(|| allowed.service.clone());
         }
         let record = NodeRecord {
             identity: request.identity,
@@ -147,7 +139,7 @@ impl RegistryService {
             config,
             zone: request.zone,
             last_seen_at_ms: request.now_ms,
-            generation: 1,
+            generation: existing.map_or(1, |node| node.generation.saturating_add(1)),
             sequence: 0,
         };
         self.store.upsert_node(record);
@@ -215,6 +207,23 @@ impl RegistryService {
             }
         }
         expired
+    }
+
+    pub fn disconnect_if_current(&self, identity: &NodeIdentity, generation: u64) -> bool {
+        let Some(mut node) = self.store.get_node(&identity.node_id) else {
+            return false;
+        };
+        if node.identity.instance_id != identity.instance_id
+            || node.generation != generation
+            || node.connection != ConnectionState::Connected
+        {
+            return false;
+        }
+        node.connection = ConnectionState::Disconnected;
+        node.health = HealthState::Offline;
+        node.scheduling = SchedulingState::Disabled;
+        self.store.upsert_node(node);
+        true
     }
 }
 

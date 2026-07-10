@@ -4,7 +4,7 @@ use base::bytes::Bytes;
 use base::chrono::{Local, TimeZone};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, warn};
+use base::log::{debug, error, warn};
 use base::serde_json;
 use gmv_domain::info::obj::{
     InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo,
@@ -211,6 +211,7 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) -> GlobalResult<()
     let (abs_path, dir_path, biz_id, extension) = get_path(&path_file_name)?;
     crate::guard_integration::guard_record_finished(
         &biz_id,
+        stream_record_info.state,
         stream_record_info.file_size,
         u64::from(stream_record_info.timestamp),
         &extension,
@@ -224,8 +225,8 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) -> GlobalResult<()
 pub async fn talk_closed(event: TalkClosedEvent) -> bool {
     let closed = talk_close::begin(event.talk_id.clone());
     if !closed {
-        error!(
-            "talk_closed cleanup skipped: talk_id={}, reason={}",
+        debug!(
+            "ignore duplicate or late talk_closed event: outcome=duplicate_or_late, talk_id={}, reason={}",
             event.talk_id, event.reason
         );
     }

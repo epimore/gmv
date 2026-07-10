@@ -228,14 +228,14 @@ async fn renew_ui_session(
         .and_then(|cookie| cookie_value(cookie, SESSION_COOKIE));
     let may_renew = request.method() != Method::OPTIONS;
     let mut response = next.run(request).await;
-    if may_renew && response.status().is_success() && !response.headers().contains_key(SET_COOKIE) {
-        if let Some(token) = token {
-            if auth.renew_session(&token).is_ok() {
-                if let Ok(cookie) = HeaderValue::from_str(&auth.session_cookie(&token)) {
-                    response.headers_mut().insert(SET_COOKIE, cookie);
-                }
-            }
-        }
+    if may_renew
+        && response.status().is_success()
+        && !response.headers().contains_key(SET_COOKIE)
+        && let Some(token) = token
+        && auth.renew_session(&token).is_ok()
+        && let Ok(cookie) = HeaderValue::from_str(&auth.session_cookie(&token))
+    {
+        response.headers_mut().insert(SET_COOKIE, cookie);
     }
     response
 }
@@ -1904,7 +1904,7 @@ async fn gb_snapshot_image(
         }
         Err(error) => {
             let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
+            Err(HttpError::from_operation(error, &operation_id))
         }
     }
 }
@@ -1976,7 +1976,7 @@ async fn gb_ptz(
         Role::Operator,
     ))?;
     let ptz_result = BusinessControl::new(state.api.store())
-        .ptz(&device_id, &channel_id, command, speed)
+        .ptz(&operation_id, &device_id, &channel_id, command, speed)
         .await;
     match ptz_result {
         Ok(count) => {
@@ -1987,7 +1987,7 @@ async fn gb_ptz(
         }
         Err(error) => {
             let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
+            Err(HttpError::from_operation(error, &operation_id))
         }
     }
 }
@@ -2153,7 +2153,7 @@ where
         }
         Err(error) => {
             let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
+            Err(HttpError::from_operation(error, &operation_id))
         }
     }
 }
@@ -2179,7 +2179,13 @@ async fn ptz(
         Role::Operator,
     ))?;
     let ptz_result = BusinessControl::new(state.api.store())
-        .ptz(&device_id, &request.channel_id, command, speed)
+        .ptz(
+            &operation_id,
+            &device_id,
+            &request.channel_id,
+            command,
+            speed,
+        )
         .await;
     match ptz_result {
         Ok(count) => {
@@ -2190,7 +2196,7 @@ async fn ptz(
         }
         Err(error) => {
             let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
+            Err(HttpError::from_operation(error, &operation_id))
         }
     }
 }
@@ -2219,7 +2225,7 @@ async fn stop_stream(
         Role::Operator,
     ))?;
     let stop_result = BusinessControl::new(state.api.store())
-        .stop_stream(&stream_id)
+        .stop_stream(&operation_id, &stream_id)
         .await;
     match stop_result {
         Ok(stream) => {
@@ -2234,7 +2240,7 @@ async fn stop_stream(
         }
         Err(error) => {
             let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
+            Err(HttpError::from_operation(error, &operation_id))
         }
     }
 }
@@ -2274,7 +2280,7 @@ async fn start_ai_task(
         }
         Err(error) => {
             let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
+            Err(HttpError::from_operation(error, &operation_id))
         }
     }
 }
@@ -2294,7 +2300,7 @@ async fn cancel_ai_task(
         Role::Operator,
     ))?;
     let cancel_result = BusinessControl::new(state.api.store())
-        .cancel_ai(&task_id)
+        .cancel_ai(&operation_id, &task_id)
         .await;
     match cancel_result {
         Ok(task) => {
@@ -2305,7 +2311,7 @@ async fn cancel_ai_task(
         }
         Err(error) => {
             let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(error.into())
+            Err(HttpError::from_operation(error, &operation_id))
         }
     }
 }
@@ -2472,6 +2478,14 @@ struct HttpError {
 }
 
 impl HttpError {
+    fn from_operation(error: GuardError, operation_id: &str) -> Self {
+        let mut error = Self::from(error);
+        error
+            .details
+            .insert("operation_id".to_string(), operation_id.to_string());
+        error
+    }
+
     fn unauthorized() -> Self {
         let code = GmvGuardErrorCode::Unauthorized;
         Self {
@@ -2720,5 +2734,22 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
         _ => GmvGuardErrorCode::from_api_code(&code_for_guard_error(error))
             .map(|code| code.retryable())
             .unwrap_or(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GuardError, HttpError};
+
+    #[test]
+    fn operation_error_keeps_operation_id_for_http_response() {
+        let error = HttpError::from_operation(
+            GuardError::Conflict("remote rejection".to_string()),
+            "op-123",
+        );
+        assert_eq!(
+            error.details.get("operation_id").map(String::as_str),
+            Some("op-123")
+        );
     }
 }

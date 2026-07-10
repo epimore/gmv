@@ -401,7 +401,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             assert_eq!(
                 control
-                    .ptz("device-1", "channel-1", "left_up", 64)
+                    .ptz("op-ptz-rpc", "device-1", "channel-1", "left_up", 64)
                     .await
                     .unwrap(),
                 1
@@ -412,12 +412,16 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .unwrap();
             assert_eq!(ai_task.task_id, "ai-op-ai-rpc");
             assert_eq!(
-                control.cancel_ai(&ai_task.task_id).await.unwrap().state,
+                control
+                    .cancel_ai("op-ai-cancel-rpc", &ai_task.task_id)
+                    .await
+                    .unwrap()
+                    .state,
                 gmv_guard_server::api::v2::model::AiTaskSummaryState::Cancelled
             );
             assert_eq!(
                 control
-                    .stop_stream(&stream.stream_id)
+                    .stop_stream("op-stop-rpc", &stream.stream_id)
                     .await
                     .unwrap()
                     .stream_id,

@@ -37,9 +37,11 @@ impl MqttCommandExecutor {
                     .await
                     .map(|_| ())
             }
-            CommandAction::StreamStop => {
-                self.control.stop_stream(&command.target).await.map(|_| ())
-            }
+            CommandAction::StreamStop => self
+                .control
+                .stop_stream(&command.command_id, &command.target)
+                .await
+                .map(|_| ()),
             CommandAction::StreamPlayback => {
                 let device_id = payload_string(&command.payload, "device_id")
                     .unwrap_or_else(|| command.target.clone());
@@ -86,7 +88,13 @@ impl MqttCommandExecutor {
                 let channel_id = required_payload_string(&command.payload, "channel_id")?;
                 let (ptz_command, speed) = ptz_control(&command.payload)?;
                 self.control
-                    .ptz(&command.target, &channel_id, ptz_command, speed)
+                    .ptz(
+                        &command.command_id,
+                        &command.target,
+                        &channel_id,
+                        ptz_command,
+                        speed,
+                    )
                     .await
                     .map(|_| ())
             }
@@ -99,7 +107,11 @@ impl MqttCommandExecutor {
                     .await
                     .map(|_| ())
             }
-            CommandAction::AiCancel => self.control.cancel_ai(&command.target).await.map(|_| ()),
+            CommandAction::AiCancel => self
+                .control
+                .cancel_ai(&command.command_id, &command.target)
+                .await
+                .map(|_| ()),
         };
         match result {
             Ok(()) => {

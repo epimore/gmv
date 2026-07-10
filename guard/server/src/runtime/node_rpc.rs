@@ -73,6 +73,21 @@ impl GuardNodeRpc {
 
 type ControlStream = Pin<Box<dyn Stream<Item = Result<GuardToNodeMessage, Status>> + Send>>;
 
+#[derive(Debug, Clone)]
+struct ControlStreamOwner {
+    identity: NodeIdentity,
+    generation: u64,
+}
+
+#[derive(Debug)]
+enum ControlStreamEnd {
+    NormalEof,
+    RemoteEof,
+    TransportError(Status),
+    OutputReceiverDropped,
+    ApplicationError(String),
+}
+
 #[tonic::async_trait]
 impl GuardNodeControl for GuardNodeRpc {
     async fn register_node(
@@ -109,7 +124,12 @@ impl GuardNodeControl for GuardNodeRpc {
             })
             .map_err(status)?;
         if let Some(snapshot) = startup_snapshot {
-            apply_snapshot(&self.routes, identity.clone(), 1, 1, snapshot).map_err(status)?;
+            let generation = self
+                .store
+                .get_node(&identity.node_id)
+                .map_or(1, |node| node.generation);
+            apply_snapshot(&self.routes, identity.clone(), generation, 1, snapshot)
+                .map_err(status)?;
         }
         Ok(Response::new(RegisterNodeResponse {
             decision: match decision {
@@ -140,7 +160,38 @@ impl GuardNodeControl for GuardNodeRpc {
         let forwarder = self.forwarder.clone();
         let (tx, rx) = mpsc::channel(32);
         base::tokio::spawn(async move {
-            while let Ok(Some(message)) = input.message().await {
+            let mut stream_owner: Option<ControlStreamOwner> = None;
+            let end = loop {
+                let message = match input.message().await {
+                    Ok(Some(message)) => message,
+                    Ok(None) if stream_owner.is_none() => break ControlStreamEnd::NormalEof,
+                    Ok(None) => break ControlStreamEnd::RemoteEof,
+                    Err(error) => break ControlStreamEnd::TransportError(error),
+                };
+                let message_owner = match control_stream_owner(&store, message.identity.as_ref()) {
+                    Ok(owner) => owner,
+                    Err(error) => {
+                        let error_message = error.to_string();
+                        if tx.send(Err(status(error))).await.is_err() {
+                            break ControlStreamEnd::OutputReceiverDropped;
+                        }
+                        break ControlStreamEnd::ApplicationError(error_message);
+                    }
+                };
+                if let Some(owner) = stream_owner.as_ref()
+                    && (owner.identity != message_owner.identity
+                        || owner.generation != message_owner.generation)
+                {
+                    let error = GuardError::StaleInstance(
+                        "control stream identity or generation changed".to_string(),
+                    );
+                    let error_message = error.to_string();
+                    if tx.send(Err(status(error))).await.is_err() {
+                        break ControlStreamEnd::OutputReceiverDropped;
+                    }
+                    break ControlStreamEnd::ApplicationError(error_message);
+                }
+                stream_owner.get_or_insert(message_owner.clone());
                 let sequence = message.sequence;
                 let identity_summary = message.identity.clone();
                 let payload_summary = match &message.payload {
@@ -178,13 +229,13 @@ impl GuardNodeControl for GuardNodeRpc {
                         message.sent_at_epoch_ms,
                         heartbeat,
                     ),
-                    Some(node_to_guard_message::Payload::Snapshot(snapshot)) => {
-                        identity(message.identity)
-                            .map_err(|error| {
-                                GuardError::InvalidIdentity(error.message().to_string())
-                            })
-                            .and_then(|owner| apply_snapshot(&routes, owner, 1, sequence, snapshot))
-                    }
+                    Some(node_to_guard_message::Payload::Snapshot(snapshot)) => apply_snapshot(
+                        &routes,
+                        message_owner.identity,
+                        message_owner.generation,
+                        sequence,
+                        snapshot,
+                    ),
                     Some(node_to_guard_message::Payload::Event(event)) => {
                         base::log::info!(
                             "guard node event inbound: sequence={}, event_id={}, topic={}, payload_bytes={}",
@@ -198,8 +249,11 @@ impl GuardNodeControl for GuardNodeRpc {
                     _ => Ok(()),
                 };
                 if let Err(error) = result {
-                    let _ = tx.send(Err(status(error))).await;
-                    return;
+                    let error_message = error.to_string();
+                    if tx.send(Err(status(error))).await.is_err() {
+                        break ControlStreamEnd::OutputReceiverDropped;
+                    }
+                    break ControlStreamEnd::ApplicationError(error_message);
                 }
                 let ack = GuardToNodeMessage {
                     message_id: format!("ack-{sequence}"),
@@ -209,9 +263,10 @@ impl GuardNodeControl for GuardNodeRpc {
                     })),
                 };
                 if tx.send(Ok(ack)).await.is_err() {
-                    return;
+                    break ControlStreamEnd::OutputReceiverDropped;
                 }
-            }
+            };
+            finish_control_stream(&registry, &store, stream_owner.as_ref(), end);
         });
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
@@ -297,6 +352,106 @@ fn apply_heartbeat(
         host_metrics: host_metrics(heartbeat.host_metrics),
         business_metrics: heartbeat.metrics,
     })
+}
+
+fn control_stream_owner(
+    store: &InMemoryGuardStore,
+    value: Option<&ProtoIdentity>,
+) -> Result<ControlStreamOwner, GuardError> {
+    let identity = identity(value.cloned())
+        .map_err(|error| GuardError::InvalidIdentity(error.message().to_string()))?;
+    let node = store
+        .get_node(&identity.node_id)
+        .ok_or_else(|| GuardError::NotFound(format!("node {}", identity.node_id)))?;
+    if node.identity != identity {
+        return Err(GuardError::StaleInstance(format!(
+            "node {} stale instance {} current {}",
+            identity.node_id, identity.instance_id, node.identity.instance_id
+        )));
+    }
+    Ok(ControlStreamOwner {
+        identity,
+        generation: node.generation,
+    })
+}
+
+fn finish_control_stream(
+    registry: &RegistryService,
+    store: &InMemoryGuardStore,
+    owner: Option<&ControlStreamOwner>,
+    end: ControlStreamEnd,
+) {
+    let Some(owner) = owner else {
+        base::log::debug!(
+            "guard control stream ended: outcome=normal_eof, reason=no_authenticated_message"
+        );
+        return;
+    };
+    let current = store
+        .get_node(&owner.identity.node_id)
+        .is_some_and(|node| node.identity == owner.identity && node.generation == owner.generation);
+    if !current {
+        base::log::debug!(
+            "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=normal_eof, reason=stale_generation",
+            owner.identity.node_id,
+            owner.identity.instance_id,
+            owner.generation
+        );
+        return;
+    }
+    match end {
+        ControlStreamEnd::NormalEof => {
+            base::log::debug!(
+                "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=normal_eof",
+                owner.identity.node_id,
+                owner.identity.instance_id,
+                owner.generation
+            );
+        }
+        ControlStreamEnd::RemoteEof => {
+            let disconnected = registry.disconnect_if_current(&owner.identity, owner.generation);
+            base::log::warn!(
+                "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=remote_eof, reason=unexpected_remote_eof, disconnected={}",
+                owner.identity.node_id,
+                owner.identity.instance_id,
+                owner.generation,
+                disconnected
+            );
+        }
+        ControlStreamEnd::TransportError(error) => {
+            let disconnected = registry.disconnect_if_current(&owner.identity, owner.generation);
+            base::log::warn!(
+                "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=transport_error, tonic_code={:?}, reason={}, disconnected={}",
+                owner.identity.node_id,
+                owner.identity.instance_id,
+                owner.generation,
+                error.code(),
+                error.message(),
+                disconnected
+            );
+        }
+        ControlStreamEnd::OutputReceiverDropped => {
+            let disconnected = registry.disconnect_if_current(&owner.identity, owner.generation);
+            base::log::warn!(
+                "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=output_receiver_dropped, disconnected={}",
+                owner.identity.node_id,
+                owner.identity.instance_id,
+                owner.generation,
+                disconnected
+            );
+        }
+        ControlStreamEnd::ApplicationError(error) => {
+            let disconnected = registry.disconnect_if_current(&owner.identity, owner.generation);
+            base::log::warn!(
+                "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=application_error, reason={}, disconnected={}",
+                owner.identity.node_id,
+                owner.identity.instance_id,
+                owner.generation,
+                error,
+                disconnected
+            );
+        }
+    }
 }
 
 fn apply_snapshot(

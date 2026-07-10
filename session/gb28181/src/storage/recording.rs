@@ -20,6 +20,7 @@ pub struct RecordStart<'a> {
 #[derive(Debug, Clone)]
 pub struct RecordFinish<'a> {
     pub biz_id: &'a str,
+    pub reported_state: u8,
     pub file_size: u64,
     pub record_duration_sec: u64,
     pub file_format: &'a str,
@@ -94,6 +95,7 @@ pub async fn finish_record(file: RecordFinish<'_>) -> GlobalResult<bool> {
     };
     let now = now_string();
     let state = record_state(
+        file.reported_state,
         &record.st,
         &record.et,
         file.file_size,
@@ -150,7 +152,16 @@ fn format_epoch(epoch_sec: i64) -> GlobalResult<String> {
         })
 }
 
-fn record_state(st: &str, et: &str, file_size: u64, record_duration_sec: u64) -> i32 {
+fn record_state(
+    reported_state: u8,
+    st: &str,
+    et: &str,
+    file_size: u64,
+    record_duration_sec: u64,
+) -> i32 {
+    if reported_state == 2 || reported_state == 3 {
+        return i32::from(reported_state);
+    }
     if file_size == 0 || record_duration_sec == 0 {
         return 3;
     }
@@ -163,6 +174,30 @@ fn record_state(st: &str, et: &str, file_size: u64, record_duration_sec: u64) ->
         .saturating_mul(100)
         / expected;
     if percent >= 95 { 1 } else { 2 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::record_state;
+
+    const START: &str = "2026-07-10 18:00:00";
+    const END: &str = "2026-07-10 18:01:40";
+
+    #[test]
+    fn reported_partial_is_not_promoted_by_duration() {
+        assert_eq!(record_state(2, START, END, 1024, 100), 2);
+    }
+
+    #[test]
+    fn reported_failure_is_not_promoted_by_duration() {
+        assert_eq!(record_state(3, START, END, 1024, 100), 3);
+    }
+
+    #[test]
+    fn reported_complete_still_uses_duration_quality() {
+        assert_eq!(record_state(1, START, END, 1024, 100), 1);
+        assert_eq!(record_state(1, START, END, 1024, 90), 2);
+    }
 }
 
 fn record_duration(st: &str, et: &str) -> i64 {

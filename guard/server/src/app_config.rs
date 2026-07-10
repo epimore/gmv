@@ -121,22 +121,13 @@ impl Default for GrpcTlsConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Default)]
 #[serde(crate = "base::serde")]
 pub struct RegistryConfig {
     #[serde(default)]
     pub node_check_enabled: bool,
     #[serde(default)]
     pub allowed_nodes: Vec<AllowedNodeConfig>,
-}
-
-impl Default for RegistryConfig {
-    fn default() -> Self {
-        Self {
-            node_check_enabled: false,
-            allowed_nodes: Vec::new(),
-        }
-    }
 }
 
 impl RegistryConfig {

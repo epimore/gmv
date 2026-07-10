@@ -102,7 +102,7 @@ fn registry_policy_does_not_seed_allowed_nodes_when_node_check_is_disabled() {
 #[test]
 fn registry_fences_old_instances_and_sequences() {
     let store = InMemoryGuardStore::default();
-    let registry = RegistryService::new(store);
+    let registry = RegistryService::new(store.clone());
     let first = identity("stream-1", &generate_instance_id());
     let second = identity("stream-1", &generate_instance_id());
 
@@ -121,6 +121,7 @@ fn registry_fences_old_instances_and_sequences() {
             .unwrap(),
         RegisterDecision::Accepted
     );
+    let first_generation = store.get_node("stream-1").unwrap().generation;
     assert!(
         registry
             .register(RegisterRequest {
@@ -150,13 +151,33 @@ fn registry_fences_old_instances_and_sequences() {
             .unwrap(),
         RegisterDecision::SupersededOldInstance
     );
+    let second_generation = store.get_node("stream-1").unwrap().generation;
+    assert!(second_generation > first_generation);
+    assert!(!registry.disconnect_if_current(&first, first_generation));
+    assert!(registry.disconnect_if_current(&second, second_generation));
+    assert_eq!(
+        store.get_node("stream-1").unwrap().connection,
+        ConnectionState::Disconnected
+    );
+    registry
+        .register(RegisterRequest {
+            identity: second.clone(),
+            capabilities: vec!["live".to_string()],
+            endpoints: vec![],
+            host_metrics: Default::default(),
+            zone: None,
+            now_ms: 1_003,
+            takeover: false,
+            config: Default::default(),
+        })
+        .unwrap();
     assert!(
         registry
             .heartbeat(HeartbeatReport {
                 identity: first,
                 health: HealthState::Ready,
                 sequence: 1,
-                now_ms: 1_003,
+                now_ms: 1_004,
                 host_metrics: Default::default(),
                 business_metrics: Default::default(),
             })
@@ -167,7 +188,7 @@ fn registry_fences_old_instances_and_sequences() {
             identity: second.clone(),
             health: HealthState::Ready,
             sequence: 1,
-            now_ms: 1_004,
+            now_ms: 1_005,
             host_metrics: Default::default(),
             business_metrics: Default::default(),
         })
@@ -178,7 +199,7 @@ fn registry_fences_old_instances_and_sequences() {
                 identity: second,
                 health: HealthState::Ready,
                 sequence: 1,
-                now_ms: 1_005,
+                now_ms: 1_006,
                 host_metrics: Default::default(),
                 business_metrics: Default::default(),
             })

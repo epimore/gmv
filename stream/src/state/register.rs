@@ -64,6 +64,8 @@ pub struct RtpChannel {
     pub rtp_rx: crossbeam_channel::Receiver<RtpPacket>,
     pub in_has_timeout: AtomicU8, //输入流已超时n秒
     pub wait_sign_in: AtomicBool,
+    pub rtp_type: AtomicU8,
+    pub media_started: AtomicBool,
     pub stream_id: Arc<str>,
     pub miss_pkt: AtomicUsize,
 }
@@ -75,6 +77,8 @@ impl RtpChannel {
             rtp_rx,
             in_has_timeout: AtomicU8::new(0),
             wait_sign_in: AtomicBool::new(true),
+            rtp_type: AtomicU8::new(u8::MAX),
+            media_started: AtomicBool::new(false),
             stream_id,
             miss_pkt: AtomicUsize::new(0),
         }
@@ -88,7 +92,12 @@ impl RtpChannel {
         rtp_type: u8,
         origin_trans: (SocketAddr, Protocol),
     ) -> GlobalResult<crossbeam_channel::Sender<RtpPacket>> {
-        if self.wait_sign_in.load(Ordering::Relaxed) {
+        self.rtp_type.store(rtp_type, Ordering::Relaxed);
+        if self
+            .wait_sign_in
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
             Register::get()
                 .inner
                 .event_tx
@@ -102,8 +111,8 @@ impl RtpChannel {
                 ))
                 .hand_log(|msg| {
                     error!("System busy;InnerEvent: {ssrc} Stream registration send failed: {msg}")
-                })?;
-            self.wait_sign_in.store(false, Ordering::Relaxed);
+                })
+                .inspect_err(|_| self.wait_sign_in.store(true, Ordering::Release))?;
         }
         self.in_has_timeout.store(0, Ordering::Relaxed);
 
@@ -127,6 +136,19 @@ impl RtpChannel {
         }
         Ok(self.rtp_tx.clone())
     }
+}
+
+pub enum RefreshRtp {
+    Ready(crossbeam_channel::Sender<RtpPacket>),
+    UnknownSsrc,
+    Failed(GlobalError),
+}
+
+fn stream_config_ready(
+    media_ext: Option<&MediaExt>,
+    origin_trans: Option<(SocketAddr, Protocol)>,
+) -> bool {
+    media_ext.is_some() && origin_trans.is_some()
 }
 
 #[derive(Clone, Hash, Eq, PartialEq)]
@@ -669,6 +691,14 @@ impl Register {
         Self::get().inner.stream_metadata_map.len()
     }
 
+    pub fn stream_id_by_ssrc(ssrc: u32) -> Option<Arc<str>> {
+        Self::get()
+            .inner
+            .rtp_gateway_map
+            .get(&ssrc)
+            .map(|channel| channel.stream_id.clone())
+    }
+
     pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
         Self::get().inner.event_tx.clone()
     }
@@ -752,72 +782,92 @@ impl Register {
                 "SSRC不存在或已超时丢弃",
                 |msg| error!("ssrc={}; {msg}", ssrc),
             )),
-            Some(rc) => match arc.stream_metadata_map.entry(rc.stream_id.clone()) {
-                Entry::Occupied(mut occ) => {
-                    let meta = occ.get_mut();
-                    meta.media_ext = Some(media_ext);
-                    Ok(())
+            Some(rc) => {
+                let stream_id = rc.stream_id.clone();
+                let rtp_type = rc.rtp_type.load(Ordering::Acquire);
+                drop(rc);
+                match arc.stream_metadata_map.entry(stream_id.clone()) {
+                    Entry::Occupied(mut occ) => {
+                        occ.get_mut().media_ext = Some(media_ext);
+                        drop(occ);
+                        if rtp_type != u8::MAX {
+                            Self::send_stream_config(rtp_type, stream_id)?;
+                        }
+                        Ok(())
+                    }
+                    Entry::Vacant(_) => Err(GlobalError::new_biz_error(
+                        BaseErrorCode::NotFound.code(),
+                        "SSRC不存在或已超时丢弃",
+                        |msg| error!("ssrc={}; {msg}", ssrc),
+                    )),
                 }
-                Entry::Vacant(_) => Err(GlobalError::new_biz_error(
-                    BaseErrorCode::NotFound.code(),
-                    "SSRC不存在或已超时丢弃",
-                    |msg| error!("ssrc={}; {msg}", ssrc),
-                )),
-            },
+            }
         }
     }
     pub fn refresh_rtp(
         ssrc: u32,
         rtp_type: u8,
         origin_trans: (SocketAddr, Protocol),
-    ) -> Option<crossbeam_channel::Sender<RtpPacket>> {
+    ) -> RefreshRtp {
         match Self::get().inner.clone().rtp_gateway_map.get(&ssrc) {
-            None => None,
-            Some(rc) => rc.refresh(ssrc, rtp_type, origin_trans).ok(),
+            None => RefreshRtp::UnknownSsrc,
+            Some(rc) => match rc.refresh(ssrc, rtp_type, origin_trans) {
+                Ok(sender) => RefreshRtp::Ready(sender),
+                Err(error) => RefreshRtp::Failed(error),
+            },
         }
     }
 
     pub fn send_stream_config(rtp_type: u8, stream_id: Arc<str>) -> GlobalResult<()> {
         let arc = Self::get().inner.clone();
         if let Some(meta) = arc.stream_metadata_map.get(&stream_id) {
+            if !stream_config_ready(meta.media_ext.as_ref(), meta.origin_trans) {
+                return Ok(());
+            }
             if let Some(media_ext) = meta.media_ext.as_ref() {
                 if media_ext.type_code == rtp_type {
-                    if let Some(rtp_rx) = arc
-                        .rtp_gateway_map
-                        .get(&meta.ssrc)
-                        .map(|rtp_channel| rtp_channel.get_rtp_rx())
-                    {
-                        if let Ok(converter_event_rx) = meta
+                    if let Some(rtp_channel) = arc.rtp_gateway_map.get(&meta.ssrc) {
+                        if rtp_channel.media_started.swap(true, Ordering::AcqRel) {
+                            return Ok(());
+                        }
+                        let rtp_rx = rtp_channel.get_rtp_rx();
+                        let converter_event_rx = match meta
                             .mpsc_bus
                             .sub_type_channel::<ContextEvent>()
                             .hand_log(|msg| error!("{msg}"))
                         {
-                            let stream_config = StreamConfig {
-                                converter: meta.converter.clone(),
-                                media_ext: meta.media_ext.clone().unwrap(),
-                                rtp_rx,
-                                context_event_rx: converter_event_rx,
-                            };
-                            let _ = meta
-                                .mpsc_bus
-                                .try_publish(stream_config)
-                                .hand_log(|msg| error!("{msg}"));
-                            let stream_info = Self::build_base_stream_info(
-                                &meta,
-                                arc.server_conf.name.clone(),
-                                arc.server_conf.proxy_addr.clone(),
-                                stream_id.to_string(),
-                            );
-                            let info = RegisterStreamInfo {
-                                base_stream_info: stream_info,
-                                code: 200,
-                                msg: None,
-                            };
-                            let _ = arc
-                                .event_tx
-                                .try_send((Event::Out(OutEvent::StreamRegister(info)), None))
-                                .hand_log(|msg| error!("{msg}"));
-                        }
+                            Ok(receiver) => receiver,
+                            Err(error) => {
+                                rtp_channel.media_started.store(false, Ordering::Release);
+                                return Err(error);
+                            }
+                        };
+                        let stream_config = StreamConfig {
+                            converter: meta.converter.clone(),
+                            media_ext: media_ext.clone(),
+                            rtp_rx,
+                            context_event_rx: converter_event_rx,
+                        };
+                        meta.mpsc_bus
+                            .try_publish(stream_config)
+                            .hand_log(|msg| error!("{msg}"))
+                            .inspect_err(|_| {
+                                rtp_channel.media_started.store(false, Ordering::Release)
+                            })?;
+                        let stream_info = Self::build_base_stream_info(
+                            &meta,
+                            arc.server_conf.name.clone(),
+                            arc.server_conf.proxy_addr.clone(),
+                            stream_id.to_string(),
+                        );
+                        let info = RegisterStreamInfo {
+                            base_stream_info: stream_info,
+                            code: 200,
+                            msg: None,
+                        };
+                        arc.event_tx
+                            .try_send((Event::Out(OutEvent::StreamRegister(info)), None))
+                            .hand_log(|msg| error!("{msg}"))?;
                     }
                 } else {
                     let stream_info = Self::build_base_stream_info(
@@ -1173,8 +1223,15 @@ impl OutputCount {
 
 #[cfg(test)]
 mod unknown_stream_tests {
-    use super::{UNKNOWN_STREAM_COOLDOWN_MS, UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation};
+    use super::{
+        RtpChannel, UNKNOWN_STREAM_COOLDOWN_MS, UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation,
+        stream_config_ready,
+    };
+    use base::net::state::Protocol;
+    use gmv_domain::info::media_info_ext::MediaExt;
     use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     fn observation() -> UnknownStreamObservation {
         UnknownStreamObservation {
@@ -1208,5 +1265,26 @@ mod unknown_stream_tests {
     fn unknown_stream_observation_expires_after_idle_window() {
         let observation = observation();
         assert!(observation.idle_ms(1_000 + UNKNOWN_STREAM_EXPIRE_MS) >= UNKNOWN_STREAM_EXPIRE_MS);
+    }
+
+    #[test]
+    fn stream_config_waits_for_both_rtp_and_media_ext() {
+        let origin = Some((
+            "127.0.0.1:9000".parse::<SocketAddr>().unwrap(),
+            Protocol::UDP,
+        ));
+        let mut media_ext = MediaExt::default();
+        media_ext.type_code = 96;
+
+        assert!(!stream_config_ready(None, origin));
+        assert!(!stream_config_ready(Some(&media_ext), None));
+        assert!(stream_config_ready(Some(&media_ext), origin));
+    }
+
+    #[test]
+    fn media_start_is_claimed_once() {
+        let channel = RtpChannel::new(Arc::from("stream-a"));
+        assert!(!channel.media_started.swap(true, Ordering::AcqRel));
+        assert!(channel.media_started.swap(true, Ordering::AcqRel));
     }
 }

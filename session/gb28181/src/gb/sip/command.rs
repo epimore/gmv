@@ -9,7 +9,7 @@ use std::time::Duration;
 use base::chrono::{Duration as TimeDelta, Local};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, warn};
+use base::log::{debug, error, warn};
 use base::net::state::Protocol;
 use gmv_domain::info::media_info_ext::MediaExt;
 use gmv_pjsip::gb28181::sdp::build_play_sdp;
@@ -38,7 +38,8 @@ use super::invite::{
 use super::message::{CreateDeviceMessageRequest, target_uri};
 use super::native_runtime::NativeSipRuntimeHandle;
 use super::runtime_cache::{
-    BroadcastResponseKey, NativeInviteMetadata, SipRuntimeCache, recv_with_timeout,
+    BroadcastResponseKey, NativeInviteError, NativeInviteMetadata, NativeRuntimeFailure,
+    SipRuntimeCache, recv_with_timeout,
 };
 use super::{sdp, xml};
 
@@ -106,7 +107,8 @@ async fn send_native_message_on_device_and_wait(
                     )
                 },
             )
-        })?;
+        })?
+        .map_err(|failure| native_runtime_failure(device_id, operation_id, "message", failure))?;
     if (200..300).contains(&result.status) {
         return Ok(());
     }
@@ -146,19 +148,22 @@ async fn send_native_dialog_and_wait(
         SipRuntimeCache::global().remove_native_response_waiter(operation_id);
         return Err(err);
     }
-    let result = recv_with_timeout(rx, timeout).await.map_err(|reason| {
-        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
-        GlobalError::new_biz_error(
-            BaseErrorCode::Timeout.code(),
-            "device SIP dialog response timeout",
-            |msg| {
-                error!(
-                    "device_id={device_id}; call_id={call_id}; operation_id={operation_id}; \
+    let result = recv_with_timeout(rx, timeout)
+        .await
+        .map_err(|reason| {
+            SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+            GlobalError::new_biz_error(
+                BaseErrorCode::Timeout.code(),
+                "device SIP dialog response timeout",
+                |msg| {
+                    error!(
+                        "device_id={device_id}; call_id={call_id}; operation_id={operation_id}; \
                      {msg}; reason={reason}"
-                )
-            },
-        )
-    })?;
+                    )
+                },
+            )
+        })?
+        .map_err(|failure| native_runtime_failure(device_id, operation_id, "dialog", failure))?;
     if (200..300).contains(&result.status)
         || (method == SipDialogMethod::Bye && result.status == 481)
     {
@@ -206,20 +211,25 @@ async fn send_restored_dialog_and_wait(
         SipRuntimeCache::global().remove_native_response_waiter(operation_id);
         return Err(err);
     }
-    let result = recv_with_timeout(rx, timeout).await.map_err(|reason| {
-        SipRuntimeCache::global().remove_native_response_waiter(operation_id);
-        GlobalError::new_biz_error(
-            BaseErrorCode::Timeout.code(),
-            "device restored SIP dialog response timeout",
-            |msg| {
-                error!(
-                    "device_id={device_id}; call_id={}; operation_id={operation_id}; \
+    let result = recv_with_timeout(rx, timeout)
+        .await
+        .map_err(|reason| {
+            SipRuntimeCache::global().remove_native_response_waiter(operation_id);
+            GlobalError::new_biz_error(
+                BaseErrorCode::Timeout.code(),
+                "device restored SIP dialog response timeout",
+                |msg| {
+                    error!(
+                        "device_id={device_id}; call_id={}; operation_id={operation_id}; \
                      {msg}; reason={reason}",
-                    session.call_id
-                )
-            },
-        )
-    })?;
+                        session.call_id
+                    )
+                },
+            )
+        })?
+        .map_err(|failure| {
+            native_runtime_failure(device_id, operation_id, "restored_dialog", failure)
+        })?;
     if (200..300).contains(&result.status)
         || (method == SipDialogMethod::Bye && result.status == 481)
     {
@@ -296,6 +306,28 @@ fn device_not_connected(device_id: &str) -> GlobalError {
         "device is not registered or connected",
         |msg| error!("device_id={device_id}; {msg}"),
     )
+}
+
+fn native_runtime_failure(
+    device_id: &str,
+    operation_id: u64,
+    action: &str,
+    failure: NativeRuntimeFailure,
+) -> GlobalError {
+    let stopped = failure == NativeRuntimeFailure::Stopped;
+    GlobalError::new_sys_error("native SIP runtime operation failed", |msg| {
+        if stopped {
+            debug!(
+                "device_id={device_id}; operation_id={operation_id}; action={action}; \
+                 stage=native_runtime; outcome=local_cancelled; reason={failure}; {msg}"
+            );
+        } else {
+            error!(
+                "device_id={device_id}; operation_id={operation_id}; action={action}; \
+                 stage=native_runtime; outcome=failed; reason={failure}; {msg}"
+            );
+        }
+    })
 }
 
 fn format_gb_ssrc(ssrc: u32) -> String {
@@ -867,7 +899,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
                 }
             }
         }
-        Ok(Err(failure)) => {
+        Ok(Err(NativeInviteError::Response(failure))) => {
             SipRuntimeCache::global().remove_stream_indexes(&stream_id, Some(&failure.call_id));
             if failure.dialog_established {
                 rollback_established_invite(
@@ -890,6 +922,16 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
                         failure.stream_id, failure.call_id, failure.status
                     )
                 },
+            ))
+        }
+        Ok(Err(NativeInviteError::Runtime(failure))) => {
+            SipRuntimeCache::global().remove_stream_indexes(&stream_id, None);
+            mark_inviting_terminal(&stream_id, &signal_node_id, DialogState::Orphan).await;
+            Err(native_runtime_failure(
+                &device_id,
+                operation_id,
+                "invite",
+                failure,
             ))
         }
         Err(reason) => {
@@ -925,9 +967,21 @@ async fn mark_inviting_terminal(stream_id: &str, signal_node_id: &str, next_stat
     .await
     {
         Ok(true) => {}
-        Ok(false) => {
-            error!("INVITING terminal CAS lost: stream_id={stream_id}; next_state={next_state}")
-        }
+        Ok(false) => match SipDialogSessionRepository::find_by_stream_id(stream_id).await {
+            Ok(Some(current)) if current.state == next_state => debug!(
+                "INVITING terminal transition already completed: stream_id={stream_id}; state={next_state}"
+            ),
+            Ok(Some(current)) => error!(
+                "INVITING terminal CAS conflict: stream_id={stream_id}; next_state={next_state}; current_state={}",
+                current.state
+            ),
+            Ok(None) => error!(
+                "INVITING dialog missing after terminal CAS conflict: stream_id={stream_id}; next_state={next_state}"
+            ),
+            Err(err) => error!(
+                "INVITING terminal CAS conflict recheck failed: stream_id={stream_id}; next_state={next_state}; err={err}"
+            ),
+        },
         Err(err) => error!(
             "INVITING terminal persistence failed: stream_id={stream_id}; \
              next_state={next_state}; err={err}"
@@ -1200,6 +1254,15 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
         )
         .await?;
         if !persisted {
+            if SipDialogSessionRepository::find_by_stream_id(stream_id)
+                .await?
+                .is_some_and(|current| current.state == DialogState::Terminated)
+            {
+                debug!(
+                    "durable SIP dialog already terminated: stream_id={stream_id}; call_id={call_id}"
+                );
+                return Ok(());
+            }
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidState.code(),
                 "durable SIP dialog TERMINATED CAS lost",

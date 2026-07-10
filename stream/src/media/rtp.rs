@@ -1,7 +1,6 @@
 use crate::media::context::RtpState;
 use base::bytes::{Bytes, BytesMut};
-use base::exception::{GlobalError, GlobalResult};
-use base::log::{debug, error, warn};
+use base::log::{debug, warn};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use gmv_domain::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
@@ -155,6 +154,7 @@ pub struct RtpPacketBuffer {
     queue_count: usize,
     queue_window: usize,
     packet_rx: Receiver<RtpPacket>,
+    input_closed: bool,
     remaining: Bytes,
     ready_aus: VecDeque<Bytes>,
     au_buffer: BytesMut,
@@ -168,11 +168,7 @@ pub struct RtpPacketBuffer {
 }
 
 impl RtpPacketBuffer {
-    pub fn init(
-        ssrc: u32,
-        packet_rx: Receiver<RtpPacket>,
-        media_ext: &MediaExt,
-    ) -> GlobalResult<Self> {
+    pub fn init(ssrc: u32, packet_rx: Receiver<RtpPacket>, media_ext: &MediaExt) -> Self {
         let payload_kind = PayloadKind::from_media_ext(media_ext);
         let queue_window = reorder_window(payload_kind);
         let mut buffer = Self {
@@ -182,6 +178,7 @@ impl RtpPacketBuffer {
             queue_count: 0,
             queue_window,
             packet_rx,
+            input_closed: false,
             remaining: Default::default(),
             ready_aus: VecDeque::new(),
             au_buffer: BytesMut::new(),
@@ -193,16 +190,17 @@ impl RtpPacketBuffer {
             h265_fu: None,
             aac_adts: AacAdtsConfig::from_media_ext(media_ext),
         };
-        buffer.calculate_index()?;
-        Ok(buffer)
+        buffer.calculate_index();
+        buffer
     }
 
-    fn calculate_index(&mut self) -> GlobalResult<()> {
-        while self.queue_count < self.queue_window {
-            let pkt = self.recv_packet()?;
-            self.enqueue_initial(pkt);
+    fn calculate_index(&mut self) {
+        while self.queue_count < self.queue_window && !self.input_closed {
+            match self.packet_rx.recv() {
+                Ok(pkt) => self.enqueue_initial(pkt),
+                Err(_) => self.input_closed = true,
+            }
         }
-        Ok(())
     }
 
     pub fn consume_packet(
@@ -223,7 +221,8 @@ impl RtpPacketBuffer {
         }
 
         loop {
-            let input_closed = !self.reduce_packet();
+            self.reduce_packet();
+            let input_closed = self.input_closed;
             let Some((pkt, lost_before)) = self.take_next_packet(input_closed) else {
                 if input_closed && self.queue_count == 0 {
                     self.finish_access_unit(false);
@@ -426,20 +425,13 @@ impl RtpPacketBuffer {
         matches!(self.payload_kind, PayloadKind::H264 | PayloadKind::H265)
     }
 
-    fn reduce_packet(&mut self) -> bool {
-        while self.queue_count < self.queue_window {
-            let Ok(pkt) = self.recv_packet() else {
-                return false;
-            };
-            self.enqueue(pkt);
+    fn reduce_packet(&mut self) {
+        while self.queue_count < self.queue_window && !self.input_closed {
+            match self.packet_rx.recv() {
+                Ok(pkt) => self.enqueue(pkt),
+                Err(_) => self.input_closed = true,
+            }
         }
-        true
-    }
-
-    fn recv_packet(&self) -> GlobalResult<RtpPacket> {
-        self.packet_rx.recv().map_err(|_| {
-            GlobalError::new_sys_error("rtp input channel closed", |msg| error!("{msg}"))
-        })
     }
 
     fn enqueue_initial(&mut self, pkt: RtpPacket) {
@@ -620,7 +612,10 @@ impl RtpPacketBuffer {
             match self.packet_rx.recv_timeout(deadline.duration_since(now)) {
                 Ok(pkt) => self.enqueue(pkt),
                 Err(RecvTimeoutError::Timeout) => return self.has_packet(expected_seq),
-                Err(RecvTimeoutError::Disconnected) => return false,
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.input_closed = true;
+                    return false;
+                }
             }
         }
     }
@@ -956,6 +951,72 @@ fn append_adts_frame(out: &mut BytesMut, frame: &[u8], cfg: AacAdtsConfig) {
         0xfc,
     ]);
     out.extend_from_slice(frame);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::media::context::RtpState;
+
+    fn packet(seq: u16, payload: &'static [u8]) -> RtpPacket {
+        RtpPacket {
+            ssrc: 200_000_037,
+            timestamp: seq as u32,
+            marker: true,
+            seq,
+            payload: Bytes::from_static(payload),
+        }
+    }
+
+    #[test]
+    fn closed_input_drains_buffer_once_and_stays_at_eof() {
+        let (tx, rx) = crossbeam_channel::bounded(4);
+        tx.send(packet(10, b"first")).unwrap();
+        tx.send(packet(11, b"second")).unwrap();
+        drop(tx);
+
+        let mut media_ext = MediaExt::default();
+        media_ext.type_name = "PS".to_string();
+        let mut buffer = RtpPacketBuffer::init(200_000_037, rx, &media_ext);
+        let mut state = RtpState::new();
+        let mut output = [0u8; 32];
+
+        let first = buffer
+            .consume_packet(output.len(), output.as_mut_ptr(), &mut state)
+            .unwrap();
+        assert_eq!(&output[..first], b"first");
+        let second = buffer
+            .consume_packet(output.len(), output.as_mut_ptr(), &mut state)
+            .unwrap();
+        assert_eq!(&output[..second], b"second");
+
+        assert_eq!(
+            buffer.consume_packet(output.len(), output.as_mut_ptr(), &mut state),
+            None
+        );
+        assert_eq!(
+            buffer.consume_packet(output.len(), output.as_mut_ptr(), &mut state),
+            None
+        );
+        assert!(buffer.input_closed);
+        assert_eq!(buffer.queue_count, 0);
+    }
+
+    #[test]
+    fn input_closed_before_first_packet_is_clean_eof() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        drop(tx);
+
+        let mut buffer = RtpPacketBuffer::init(200_000_037, rx, &MediaExt::default());
+        let mut state = RtpState::new();
+        let mut output = [0u8; 8];
+
+        assert_eq!(
+            buffer.consume_packet(output.len(), output.as_mut_ptr(), &mut state),
+            None
+        );
+        assert!(buffer.input_closed);
+    }
 }
 
 fn aac_sample_rate_index(sample_rate: usize) -> Option<usize> {

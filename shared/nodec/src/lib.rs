@@ -54,14 +54,26 @@ pub struct NodeEventSender {
 
 impl NodeEventSender {
     pub fn try_send(&self, event: NodeEvent) -> Result<(), mpsc::error::TrySendError<NodeEvent>> {
+        let event_id = event.event_id.clone();
+        let topic = event.topic.clone();
+        let payload_bytes = event.payload.len();
+        self.tx.try_send(event)?;
         base::log::info!(
             "guard event enqueue: event_id={}, topic={}, payload_bytes={}",
-            event.event_id,
-            event.topic,
-            event.payload.len()
+            event_id,
+            topic,
+            payload_bytes
         );
-        self.tx.try_send(event)
+        Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlStreamEnd {
+    LocalCancelled,
+    RemoteEof,
+    TransportError(tonic::Code),
+    OutputReceiverDropped,
 }
 
 pub struct NodeReporter;
@@ -91,10 +103,36 @@ impl NodeReporter {
                 )
                 .await;
                 if cancel.is_cancelled() {
+                    base::log::debug!(
+                        "node reporter control stream ended: outcome=local_cancelled"
+                    );
                     break;
                 }
-                if let Err(error) = result {
-                    base::log::warn!("Guard node reporter disconnected: {error}");
+                match result {
+                    Ok(ControlStreamEnd::LocalCancelled) => {
+                        base::log::debug!(
+                            "node reporter control stream ended: outcome=local_cancelled"
+                        );
+                        break;
+                    }
+                    Ok(ControlStreamEnd::RemoteEof) => {
+                        base::log::warn!("node reporter control stream ended: outcome=remote_eof");
+                    }
+                    Ok(ControlStreamEnd::TransportError(code)) => {
+                        base::log::warn!(
+                            "node reporter control stream ended: outcome=transport_error, tonic_code={code:?}"
+                        );
+                    }
+                    Ok(ControlStreamEnd::OutputReceiverDropped) => {
+                        base::log::warn!(
+                            "node reporter control stream ended: outcome=output_receiver_dropped"
+                        );
+                    }
+                    Err(error) => {
+                        base::log::warn!(
+                            "node reporter connection failed: outcome=connection_error, error={error}"
+                        );
+                    }
                 }
                 base::tokio::select! {
                     _ = base::tokio::time::sleep(config.reconnect_delay) => {}
@@ -112,7 +150,7 @@ async fn run_connection(
     collector: &mut HostMetricsCollector,
     sequence: &mut u64,
     event_rx: &mut mpsc::Receiver<NodeEvent>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ControlStreamEnd, Box<dyn std::error::Error + Send + Sync>> {
     let started = Instant::now();
     base::log::debug!(
         "node reporter rpc client outbound: service=guard_node_control, endpoint={}",
@@ -145,7 +183,7 @@ async fn run_connection(
     let mut interval = base::tokio::time::interval(Duration::from_millis(interval_ms));
     loop {
         base::tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
+            _ = cancel.cancelled() => return Ok(ControlStreamEnd::LocalCancelled),
             _ = interval.tick() => {
                 *sequence = sequence.saturating_add(1);
                 let message = NodeToGuardMessage {
@@ -158,7 +196,9 @@ async fn run_connection(
                         host_metrics: collector.sample().ok().map(host_metrics),
                     })),
                 };
-                tx.send(message).await?;
+                if tx.send(message).await.is_err() {
+                    return Ok(ControlStreamEnd::OutputReceiverDropped);
+                }
             }
             Some(event) = event_rx.recv() => {
                 base::log::info!(
@@ -174,10 +214,22 @@ async fn run_connection(
                     sent_at_epoch_ms: now_ms(),
                     payload: Some(node_to_guard_message::Payload::Event(event)),
                 };
-                tx.send(message).await?;
+                if tx.send(message).await.is_err() {
+                    return Ok(ControlStreamEnd::OutputReceiverDropped);
+                }
             }
             response = output.message() => {
-                if response?.is_none() { return Err("Guard control stream closed".into()); }
+                match response {
+                    Ok(Some(_)) => {}
+                    Ok(None) if cancel.is_cancelled() => {
+                        return Ok(ControlStreamEnd::LocalCancelled);
+                    }
+                    Ok(None) => return Ok(ControlStreamEnd::RemoteEof),
+                    Err(_) if cancel.is_cancelled() => {
+                        return Ok(ControlStreamEnd::LocalCancelled);
+                    }
+                    Err(error) => return Ok(ControlStreamEnd::TransportError(error.code())),
+                }
             }
         }
     }
@@ -209,6 +261,37 @@ fn now_ms() -> i64 {
         .map_or(0, |duration| {
             duration.as_millis().min(i64::MAX as u128) as i64
         })
+}
+
+#[cfg(test)]
+mod event_sender_tests {
+    use super::NodeEventSender;
+    use base::tokio::sync::mpsc;
+    use gmv_protocol::guard::v1::NodeEvent;
+
+    fn event(id: &str) -> NodeEvent {
+        NodeEvent {
+            event_id: id.to_string(),
+            topic: "test.event".to_string(),
+            ..NodeEvent::default()
+        }
+    }
+
+    #[test]
+    fn event_sender_reports_full_and_closed_without_false_success() {
+        let (tx, rx) = mpsc::channel(1);
+        let sender = NodeEventSender { tx };
+        assert!(sender.try_send(event("first")).is_ok());
+        assert!(matches!(
+            sender.try_send(event("full")),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+        drop(rx);
+        assert!(matches!(
+            sender.try_send(event("closed")),
+            Err(mpsc::error::TrySendError::Closed(_))
+        ));
+    }
 }
 
 #[cfg(test)]

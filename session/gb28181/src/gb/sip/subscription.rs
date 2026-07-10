@@ -17,7 +17,8 @@ use super::command::connected_target;
 use super::message::{GB_XML_CONTENT_TYPE, GbMessageEvent, target_uri};
 use super::native_runtime::NativeSipRuntimeHandle;
 use super::runtime_cache::{
-    NativeSubscriptionMetadata, SipResponseResult, SipRuntimeCache, recv_with_timeout,
+    NativeRuntimeFailure, NativeSubscriptionMetadata, SipResponseResult, SipRuntimeCache,
+    recv_with_timeout,
 };
 use super::xml;
 
@@ -85,7 +86,8 @@ async fn subscribe_catalog_once(device_id: &str, expires: u32) -> GlobalResult<(
         .map_err(|reason| {
             SipRuntimeCache::global().remove_native_subscription_waiter(operation_id);
             subscription_timeout(device_id, operation_id, reason)
-        })?;
+        })?
+        .map_err(|failure| subscription_runtime_failure(device_id, operation_id, failure))?;
     if (200..300).contains(&response.status) {
         Ok(())
     } else {
@@ -139,6 +141,11 @@ pub async fn refresh_catalog_subscription(
             schedule_catalog_retry(device_id.clone(), generation, command.expires);
             subscription_timeout(device_id.as_ref(), operation_id, reason)
         })?;
+    let response = response.map_err(|failure| {
+        Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
+        schedule_catalog_retry(device_id.clone(), generation, command.expires);
+        subscription_runtime_failure(device_id.as_ref(), operation_id, failure)
+    })?;
     complete_refresh(device_id, command, response)
 }
 
@@ -333,6 +340,27 @@ fn subscription_timeout(device_id: &str, operation_id: u64, reason: &str) -> Glo
         "device SUBSCRIBE response timeout",
         |msg| error!("device_id={device_id}; operation_id={operation_id}; {msg}; reason={reason}"),
     )
+}
+
+fn subscription_runtime_failure(
+    device_id: &str,
+    operation_id: u64,
+    failure: NativeRuntimeFailure,
+) -> GlobalError {
+    let stopped = failure == NativeRuntimeFailure::Stopped;
+    GlobalError::new_sys_error("native SIP SUBSCRIBE failed", |msg| {
+        if stopped {
+            base::log::debug!(
+                "device_id={device_id}; operation_id={operation_id}; action=subscribe; \
+                 stage=native_runtime; outcome=local_cancelled; reason={failure}; {msg}"
+            );
+        } else {
+            error!(
+                "device_id={device_id}; operation_id={operation_id}; action=subscribe; \
+                 stage=native_runtime; outcome=failed; reason={failure}; {msg}"
+            );
+        }
+    })
 }
 
 fn subscription_rejected(device_id: &str, status: u16) -> GlobalError {

@@ -122,7 +122,6 @@ impl
         let service_task = network_rt.rt_handle.spawn(async move {
             if let Err(err) = SessionConf::run(tu, network_rt.cancel.clone()).await {
                 error!("GB28181 session initialization failed: {err}");
-                warn!("session network task is cancelling after GB28181 initialization failure");
                 network_rt.cancel.cancel();
                 return;
             }
@@ -214,13 +213,12 @@ impl
             init_guard_event_sender(event_sender);
             if let Some(http_listener) = http_listener {
                 match http.run(http_listener, network_rt.cancel.clone()).await {
-                    Ok(()) => warn!(
+                    Ok(()) => base::log::debug!(
                         "HTTP service returned; cancellation_requested={}",
                         network_rt.cancel.is_cancelled()
                     ),
                     Err(err) => {
                         error!("HTTP service stopped with error: {err}");
-                        warn!("session network task is cancelling after HTTP service failure");
                         network_rt.cancel.cancel();
                     }
                 }
@@ -228,18 +226,20 @@ impl
                 warn!("HTTP service disabled by configuration");
                 network_rt.cancel.cancelled().await;
             }
-            warn!("session network task exited");
+            base::log::debug!("session network task exited");
         });
         network_rt.rt_handle.spawn(async move {
             match service_task.await {
-                Ok(()) => warn!(
+                Ok(()) => base::log::debug!(
                     "session network task completed; cancellation_requested={}",
                     service_cancel.is_cancelled()
                 ),
-                Err(err) => warn!(
+                Err(err) if err.is_cancelled() && service_cancel.is_cancelled() => {
+                    base::log::debug!("session network task cancelled during shutdown")
+                }
+                Err(err) => error!(
                     "session network task terminated unexpectedly: cancelled={}, panic={}, err={err}",
-                    err.is_cancelled(),
-                    err.is_panic()
+                    err.is_cancelled(), err.is_panic()
                 ),
             }
         });

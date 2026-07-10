@@ -1,11 +1,11 @@
-use crate::media::context::MediaContext;
 use crate::media::context::format::MuxPacket;
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::{MediaCompletion, MediaContext, MediaRunError};
 use crate::state::msg::StreamConfig;
 use crate::state::register::Register;
 use base::bytes::Bytes;
-use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::exception::GlobalResult;
+use base::log::{debug, error};
 use base::tokio;
 use base::tokio::sync::broadcast;
 use base::tokio::sync::mpsc::Receiver;
@@ -38,11 +38,38 @@ pub async fn handle_process(mut rx: Receiver<u32>) {
     while let Some(ssrc) = rx.recv().await {
         if let Ok(mut sc_rx) = Register::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
             //此处可以不使用超时等待，统一流输入超时处理即可；输入超时-清理该ssrc所有信息，包含此处的发送句柄，完成资源释放
-            if let Ok(stream_config) = sc_rx.recv().await.hand_log(|msg| error!("{}", msg)) {
-                let _ = tokio::task::spawn_blocking(move || {
-                    let _ = MediaContext::init(ssrc, stream_config)
-                        .map(|(mut ctx, muxer_layer)| ctx.invoke(muxer_layer));
-                });
+            if let Ok(stream_config) = sc_rx.recv().await {
+                let stream_id =
+                    Register::stream_id_by_ssrc(ssrc).unwrap_or_else(|| Arc::from("unknown"));
+                drop(tokio::task::spawn_blocking(move || {
+                    let Ok((mut ctx, muxer_layer)) = MediaContext::init(ssrc, stream_config) else {
+                        return;
+                    };
+                    match ctx.invoke(muxer_layer) {
+                        Ok(MediaCompletion::Eof) => debug!(
+                            "media worker completed: stage=demux, outcome=eof, stream_id={}, ssrc={}",
+                            stream_id, ssrc
+                        ),
+                        Ok(MediaCompletion::InputClosed) => debug!(
+                            "media worker completed: stage=context, outcome=input_closed, stream_id={}, ssrc={}",
+                            stream_id, ssrc
+                        ),
+                        Err(MediaRunError::Ffmpeg {
+                            stage,
+                            code,
+                            message,
+                        }) => error!(
+                            "media worker failed: stage={}, outcome=ffmpeg_error, stream_id={}, ssrc={}, ffmpeg_code={}, reason={}",
+                            stage, stream_id, ssrc, code, message
+                        ),
+                        Err(MediaRunError::Pipeline(_)) => {}
+                    }
+                }));
+            } else {
+                debug!(
+                    "media worker setup ended: stage=stream_config, outcome=input_closed, ssrc={}",
+                    ssrc
+                );
             }
         }
     }

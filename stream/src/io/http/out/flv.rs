@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::response::Response;
 use base::bytes::Bytes;
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{debug, warn};
 use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
 use futures_util::stream;
@@ -118,15 +118,27 @@ fn flv_stream(
                     ctx.state = FlvStreamState::Live;
                     Some((Ok(first_key), ctx))
                 }
-                FlvStreamState::Live => loop {
-                    match ctx.rx.recv().await {
-                        Ok(pkt) => {
-                            return Some((Ok(pkt.data.clone()), ctx));
+                FlvStreamState::Live => {
+                    let mut waiting_keyframe = false;
+                    loop {
+                        match ctx.rx.recv().await {
+                            Ok(pkt) if waiting_keyframe && !pkt.is_key => continue,
+                            Ok(pkt) => {
+                                return Some((Ok(pkt.data.clone()), ctx));
+                            }
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                if !waiting_keyframe {
+                                    warn!(
+                                        "http flv output lagged: stage=output, outcome=wait_keyframe, ssrc={}, lost_packets={}",
+                                        ctx.ssrc, skipped
+                                    );
+                                }
+                                waiting_keyframe = true;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => return None,
                         }
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => return None,
                     }
-                },
+                }
             }
         },
     )
@@ -135,6 +147,8 @@ fn flv_stream(
 async fn get_header_rx(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::FlvHeader(tx)))?;
-    let header = rx.await.hand_log(|msg| error!("{msg}"))?;
+    let header = rx
+        .await
+        .hand_log(|msg| debug!("flv header unavailable: ssrc={ssrc}, reason={msg}"))?;
     Ok(header)
 }

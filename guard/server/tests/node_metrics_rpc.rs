@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base::tokio_util::sync::CancellationToken;
 use base_rpc::RpcChannelConfig;
+use gmv_guard_server::core::ConnectionState;
 use gmv_guard_server::registry::RegistryService;
 use gmv_guard_server::runtime::node_rpc::GuardNodeRpc;
 use gmv_guard_server::store::InMemoryGuardStore;
@@ -224,6 +225,19 @@ fn control_stream_consumes_snapshot_and_event_payloads() {
             assert_eq!(event.topic, "stream.frame.ready");
 
             drop(tx);
+            base::tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if store
+                        .get_node("stream-control")
+                        .is_some_and(|node| node.connection == ConnectionState::Disconnected)
+                    {
+                        break;
+                    }
+                    base::tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
             server_cancel.cancel();
             server.await.unwrap();
         });

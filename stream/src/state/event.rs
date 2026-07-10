@@ -1,4 +1,4 @@
-use crate::guard_integration::{check_playback, publish_guard_event};
+use crate::guard_integration::{GuardEventPublish, check_playback, publish_guard_event};
 use crate::io::call::{call_session_hook_rpc, decode_hook_payload};
 use crate::io::local::mp4::LocalStoreMp4Context;
 use crate::state::layer::output_layer::OutputLayer;
@@ -89,29 +89,31 @@ impl Event {
     async fn hand_event(
         rx: &mut Receiver<(Event, Option<Sender<EventRes>>)>,
         semaphore: Arc<Semaphore>,
-    ) {
-        if let Some((event, tx)) = rx.recv().await {
-            match event {
-                Event::Out(out) => {
-                    if let Ok(permit) = semaphore
-                        .acquire_owned()
-                        .await
-                        .hand_log(|msg| error!("{msg}"))
-                    {
-                        tokio::spawn(async move {
-                            Self::hand_out(out, tx).await;
-                            drop(permit);
-                        });
-                    }
-                }
-                Event::Active(active) => {
-                    Self::hand_active(active, tx);
-                }
-                Event::Inner(inner) => {
-                    Self::hand_inner(inner, tx);
+    ) -> bool {
+        let Some((event, tx)) = rx.recv().await else {
+            return false;
+        };
+        match event {
+            Event::Out(out) => {
+                if let Ok(permit) = semaphore
+                    .acquire_owned()
+                    .await
+                    .hand_log(|msg| error!("{msg}"))
+                {
+                    tokio::spawn(async move {
+                        Self::hand_out(out, tx).await;
+                        drop(permit);
+                    });
                 }
             }
+            Event::Active(active) => {
+                Self::hand_active(active, tx);
+            }
+            Event::Inner(inner) => {
+                Self::hand_inner(inner, tx);
+            }
         }
+        true
     }
 
     fn hand_inner(inner_event: InnerEvent, tx: Option<Sender<EventRes>>) {
@@ -170,13 +172,19 @@ impl Event {
                     Self::call_session_hook_by_stream_id(&stream_id, "stream.registered", &rsi)
                         .await;
                 if Self::accepted(response.as_ref()) {
-                    info!("stream_register event sent to session: {:?}", rsi);
-                } else {
-                    publish_guard_event(
-                        "stream.registered.fallback",
-                        format!("{rsi:?}").into_bytes(),
+                    info!(
+                        "stream_register event sent to session: outcome=accepted, stream_id={stream_id}"
                     );
-                    warn!("stream_register fallback event sent to guard: {:?}", rsi);
+                } else {
+                    let published = publish_guard_event(
+                        "stream.registered.fallback",
+                        format!("stream_id={stream_id};code={}", rsi.code).into_bytes(),
+                    );
+                    if published == GuardEventPublish::Queued {
+                        warn!(
+                            "stream_register using guard fallback: outcome=queued, stream_id={stream_id}"
+                        );
+                    }
                 }
                 if let Some(tx) = tx {
                     let result = Self::accepted(response.as_ref()).then_some(());
@@ -212,7 +220,10 @@ impl Event {
                 )
                 .await;
                 if !accepted {
-                    publish_guard_event("stream.on_play.rejected", format!("{spi:?}").into_bytes());
+                    publish_guard_event(
+                        "stream.on_play.rejected",
+                        format!("stream_id={stream_id};play_type={:?}", spi.play_type).into_bytes(),
+                    );
                 }
                 if let Some(tx) = tx {
                     let _ = tx.send(EventRes::Out(OutEventRes::OnPlay(Some(accepted))));
@@ -239,23 +250,25 @@ impl Event {
             }
             OutEvent::StreamUnknown(event) => {
                 publish_guard_event("stream.unknown", format!("{event:?}").into_bytes());
-                info!(
-                    "stream_unknown event sent to guard: media_node={}, ssrc={}",
-                    event.media_node_id, event.ssrc
-                );
             }
             OutEvent::OffPlay(spi) => {
                 let stream_id = spi.base_stream_info.stream_id.clone();
                 let response =
                     Self::call_session_hook_by_stream_id(&stream_id, "stream.off_play", &spi).await;
                 if Self::accepted(response.as_ref()) {
-                    info!("off_play event sent to session: {:?}", spi);
-                } else {
-                    publish_guard_event(
-                        "stream.off_play.fallback",
-                        format!("{spi:?}").into_bytes(),
+                    info!(
+                        "off_play event sent to session: outcome=accepted, stream_id={stream_id}"
                     );
-                    warn!("off_play fallback event sent to guard: {:?}", spi);
+                } else {
+                    let published = publish_guard_event(
+                        "stream.off_play.fallback",
+                        format!("stream_id={stream_id};play_type={:?}", spi.play_type).into_bytes(),
+                    );
+                    if published == GuardEventPublish::Queued {
+                        warn!(
+                            "off_play using guard fallback: outcome=queued, stream_id={stream_id}"
+                        );
+                    }
                 }
             }
             OutEvent::EndRecord(info) => {
@@ -270,13 +283,30 @@ impl Event {
                     }
                 };
                 if Self::accepted(response.as_ref()) {
-                    info!("end_record event sent to session: {:?}", info);
-                } else {
-                    publish_guard_event(
-                        "stream.end_record.fallback",
-                        format!("{info:?}").into_bytes(),
+                    info!(
+                        "end_record event sent to session: outcome=accepted, stream_id={}, state={}",
+                        info.stream_id.as_deref().unwrap_or("<missing>"),
+                        info.state
                     );
-                    warn!("end_record fallback event sent to guard: {:?}", info);
+                } else {
+                    let published = publish_guard_event(
+                        "stream.end_record.fallback",
+                        format!(
+                            "stream_id={};state={};file_size={};timestamp={}",
+                            info.stream_id.as_deref().unwrap_or("<missing>"),
+                            info.state,
+                            info.file_size,
+                            info.timestamp
+                        )
+                        .into_bytes(),
+                    );
+                    if published == GuardEventPublish::Queued {
+                        warn!(
+                            "end_record using guard fallback: outcome=queued, stream_id={}, state={}",
+                            info.stream_id.as_deref().unwrap_or("<missing>"),
+                            info.state
+                        );
+                    }
                 }
             }
         }
@@ -292,9 +322,28 @@ pub async fn schedule_event(
         select! {
            biased; // 按编写顺序检查分支
             _ = on_time_schedule(&inner)=>{},
-            _ = Event::hand_event(&mut event_rx,semaphore.clone()) => {}
+            open = Event::hand_event(&mut event_rx,semaphore.clone()) => {
+                if !open {
+                    break;
+                }
+            }
             _ = cancel_token.cancelled() => {break;}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_receiver_reports_closed_after_all_senders_drop() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let (tx, mut rx) = mpsc::channel(1);
+            drop(tx);
+            assert!(!Event::hand_event(&mut rx, Arc::new(Semaphore::new(1))).await);
+        });
     }
 }
 

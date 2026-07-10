@@ -86,7 +86,7 @@ impl WebhookClient {
             }
             body.extend_from_slice(&chunk);
             if body.len() == self.max_response_bytes {
-                truncated = stream.next().await.is_some();
+                truncated = response_continues(stream.next().await)?;
                 break;
             }
         }
@@ -103,6 +103,16 @@ impl WebhookClient {
             )));
         }
         Ok(result)
+    }
+}
+
+fn response_continues<T, E: std::fmt::Display>(next: Option<Result<T, E>>) -> GuardResult<bool> {
+    match next {
+        Some(Ok(_)) => Ok(true),
+        Some(Err(error)) => Err(GuardError::Conflict(format!(
+            "webhook response failed: {error}"
+        ))),
+        None => Ok(false),
     }
 }
 
@@ -128,4 +138,17 @@ fn now_ms() -> GuardResult<i64> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .map_err(|error| GuardError::InvalidConfig(format!("system clock before epoch: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_continues;
+
+    #[test]
+    fn response_limit_probe_preserves_transport_error() {
+        assert!(response_continues(Some(Ok::<_, &str>(()))).unwrap());
+        assert!(!response_continues::<(), &str>(None).unwrap());
+        let error = response_continues(Some(Err::<(), _>("broken chunk"))).unwrap_err();
+        assert!(error.to_string().contains("broken chunk"));
+    }
 }

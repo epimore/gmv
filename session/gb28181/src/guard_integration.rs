@@ -349,6 +349,7 @@ pub async fn guard_record_started(
 
 pub async fn guard_record_finished(
     biz_id: &str,
+    reported_state: u8,
     file_size: u64,
     record_duration_sec: u64,
     file_format: &str,
@@ -358,6 +359,7 @@ pub async fn guard_record_finished(
     let finished =
         crate::storage::recording::finish_record(crate::storage::recording::RecordFinish {
             biz_id,
+            reported_state,
             file_size,
             record_duration_sec,
             file_format,

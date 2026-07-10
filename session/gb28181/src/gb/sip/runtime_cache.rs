@@ -6,6 +6,7 @@
 //! APIs, such as `play_live()` waiting for INVITE 200 OK.
 
 use std::time::Duration;
+use std::{fmt, result};
 
 use base::dashmap::DashMap;
 use base::once_cell::sync::Lazy;
@@ -27,7 +28,7 @@ pub struct SipRuntimeCache {
     invite_waiters: DashMap<String, InviteWaiter>,
     bye_waiters: DashMap<String, ByeWaiter>,
     response_waiters: DashMap<SipResponseKey, ResponseWaiter>,
-    native_response_waiters: DashMap<u64, ResponseWaiter>,
+    native_response_waiters: DashMap<u64, NativeResponseWaiter>,
     native_invite_waiters: DashMap<u64, NativeInviteWaiter>,
     native_subscription_waiters: DashMap<u64, NativeSubscriptionWaiter>,
     broadcast_response_waiters: DashMap<BroadcastResponseKey, BroadcastResponseWaiter>,
@@ -78,6 +79,35 @@ pub struct SipResponseResult {
     pub metadata: SipResponseMetadata,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeRuntimeFailure {
+    SendFailed(String),
+    RuntimeFault(i32),
+    Stopped,
+}
+
+impl fmt::Display for NativeRuntimeFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SendFailed(reason) => write!(f, "native SIP send failed: {reason}"),
+            Self::RuntimeFault(status) => {
+                write!(f, "native SIP runtime fault: pj_status={status}")
+            }
+            Self::Stopped => f.write_str("native SIP runtime stopped"),
+        }
+    }
+}
+
+pub type NativeResponseOutcome = result::Result<SipResponseResult, NativeRuntimeFailure>;
+
+#[derive(Clone, Debug)]
+pub enum NativeInviteError {
+    Response(SipInviteFailure),
+    Runtime(NativeRuntimeFailure),
+}
+
+pub type NativeInviteOutcome = result::Result<GbInviteAcceptedEvent, NativeInviteError>;
+
 struct InviteWaiter {
     deadline: Instant,
     tx: oneshot::Sender<Result<GbInviteAcceptedEvent, SipInviteFailure>>,
@@ -107,6 +137,11 @@ struct ResponseWaiter {
     tx: oneshot::Sender<SipResponseResult>,
 }
 
+struct NativeResponseWaiter {
+    deadline: Instant,
+    tx: oneshot::Sender<NativeResponseOutcome>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NativeInviteMetadata {
     pub device_id: String,
@@ -118,7 +153,7 @@ pub struct NativeInviteMetadata {
 struct NativeInviteWaiter {
     deadline: Instant,
     metadata: NativeInviteMetadata,
-    tx: oneshot::Sender<Result<GbInviteAcceptedEvent, SipInviteFailure>>,
+    tx: oneshot::Sender<NativeInviteOutcome>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,7 +167,7 @@ pub struct NativeSubscriptionMetadata {
 struct NativeSubscriptionWaiter {
     deadline: Instant,
     metadata: NativeSubscriptionMetadata,
-    tx: oneshot::Sender<SipResponseResult>,
+    tx: oneshot::Sender<NativeResponseOutcome>,
 }
 
 impl SipRuntimeCache {
@@ -347,11 +382,11 @@ impl SipRuntimeCache {
         &self,
         operation_id: u64,
         ttl: Duration,
-    ) -> oneshot::Receiver<SipResponseResult> {
+    ) -> oneshot::Receiver<NativeResponseOutcome> {
         let (tx, rx) = oneshot::channel();
         self.native_response_waiters.insert(
             operation_id,
-            ResponseWaiter {
+            NativeResponseWaiter {
                 deadline: Instant::now() + ttl,
                 tx,
             },
@@ -373,9 +408,16 @@ impl SipRuntimeCache {
             .map(|(_, waiter)| {
                 waiter
                     .tx
-                    .send(SipResponseResult { status, metadata })
+                    .send(Ok(SipResponseResult { status, metadata }))
                     .is_ok()
             })
+            .unwrap_or(false)
+    }
+
+    pub fn fail_native_response(&self, operation_id: u64, failure: NativeRuntimeFailure) -> bool {
+        self.native_response_waiters
+            .remove(&operation_id)
+            .map(|(_, waiter)| waiter.tx.send(Err(failure)).is_ok())
             .unwrap_or(false)
     }
 
@@ -388,7 +430,7 @@ impl SipRuntimeCache {
         operation_id: u64,
         metadata: NativeSubscriptionMetadata,
         ttl: Duration,
-    ) -> oneshot::Receiver<SipResponseResult> {
+    ) -> oneshot::Receiver<NativeResponseOutcome> {
         let (tx, rx) = oneshot::channel();
         self.native_subscription_waiters.insert(
             operation_id,
@@ -422,12 +464,23 @@ impl SipRuntimeCache {
                 };
                 waiter
                     .tx
-                    .send(SipResponseResult {
+                    .send(Ok(SipResponseResult {
                         status,
                         metadata: response,
-                    })
+                    }))
                     .is_ok()
             })
+            .unwrap_or(false)
+    }
+
+    pub fn fail_native_subscription(
+        &self,
+        operation_id: u64,
+        failure: NativeRuntimeFailure,
+    ) -> bool {
+        self.native_subscription_waiters
+            .remove(&operation_id)
+            .map(|(_, waiter)| waiter.tx.send(Err(failure)).is_ok())
             .unwrap_or(false)
     }
 
@@ -497,7 +550,7 @@ impl SipRuntimeCache {
         operation_id: u64,
         metadata: NativeInviteMetadata,
         ttl: Duration,
-    ) -> oneshot::Receiver<Result<GbInviteAcceptedEvent, SipInviteFailure>> {
+    ) -> oneshot::Receiver<NativeInviteOutcome> {
         let (tx, rx) = oneshot::channel();
         self.native_invite_waiters.insert(
             operation_id,
@@ -526,12 +579,11 @@ impl SipRuntimeCache {
             .map(|(_, waiter)| {
                 let result = if (200..300).contains(&status) {
                     let Some(dialog_snapshot) = dialog_snapshot else {
-                        let _ = waiter.tx.send(Err(SipInviteFailure {
-                            call_id,
-                            stream_id: waiter.metadata.stream_id,
-                            status: 500,
-                            dialog_established: true,
-                        }));
+                        let _ = waiter.tx.send(Err(NativeInviteError::Runtime(
+                            NativeRuntimeFailure::SendFailed(
+                                "successful INVITE response missing dialog snapshot".to_string(),
+                            ),
+                        )));
                         return true;
                     };
                     let event = GbInviteAcceptedEvent {
@@ -548,30 +600,29 @@ impl SipRuntimeCache {
                         .insert(call_id, event.stream_id.clone());
                     Ok(event)
                 } else {
-                    Err(SipInviteFailure {
+                    Err(NativeInviteError::Response(SipInviteFailure {
                         call_id,
                         stream_id: waiter.metadata.stream_id,
                         status,
                         dialog_established: false,
-                    })
+                    }))
                 };
                 waiter.tx.send(result).is_ok()
             })
             .unwrap_or(false)
     }
 
-    pub fn fail_native_invite(&self, operation_id: u64, status: u16) -> bool {
+    pub fn fail_native_invite_runtime(
+        &self,
+        operation_id: u64,
+        failure: NativeRuntimeFailure,
+    ) -> bool {
         self.native_invite_waiters
             .remove(&operation_id)
             .map(|(_, waiter)| {
                 waiter
                     .tx
-                    .send(Err(SipInviteFailure {
-                        call_id: String::new(),
-                        stream_id: waiter.metadata.stream_id,
-                        status,
-                        dialog_established: false,
-                    }))
+                    .send(Err(NativeInviteError::Runtime(failure)))
                     .is_ok()
             })
             .unwrap_or(false)
@@ -581,7 +632,7 @@ impl SipRuntimeCache {
         self.native_invite_waiters.remove(&operation_id);
     }
 
-    pub fn fail_all_native(&self, status: u16) -> usize {
+    pub fn fail_all_native(&self, failure: NativeRuntimeFailure) -> usize {
         let response_ids = self
             .native_response_waiters
             .iter()
@@ -599,21 +650,13 @@ impl SipRuntimeCache {
             .collect::<Vec<_>>();
         let mut failed = 0;
         for operation_id in response_ids {
-            failed += usize::from(self.complete_native_response(
-                operation_id,
-                status,
-                SipResponseMetadata::default(),
-            ));
+            failed += usize::from(self.fail_native_response(operation_id, failure.clone()));
         }
         for operation_id in subscription_ids {
-            failed += usize::from(self.complete_native_subscription(
-                operation_id,
-                status,
-                SipResponseMetadata::default(),
-            ));
+            failed += usize::from(self.fail_native_subscription(operation_id, failure.clone()));
         }
         for operation_id in invite_ids {
-            failed += usize::from(self.fail_native_invite(operation_id, status));
+            failed += usize::from(self.fail_native_invite_runtime(operation_id, failure.clone()));
         }
         failed
     }
@@ -870,23 +913,51 @@ mod tests {
             ttl,
         );
 
-        assert_eq!(cache.fail_all_native(503), 3);
+        assert_eq!(cache.fail_all_native(NativeRuntimeFailure::Stopped), 3);
         assert_eq!(
-            response.try_recv().expect("response completion").status,
-            503
+            response
+                .try_recv()
+                .expect("response completion")
+                .expect_err("response runtime failure"),
+            NativeRuntimeFailure::Stopped
         );
         assert_eq!(
             subscription
                 .try_recv()
                 .expect("subscription completion")
-                .status,
-            503
+                .expect_err("subscription runtime failure"),
+            NativeRuntimeFailure::Stopped
         );
-        assert_eq!(
+        assert!(matches!(
             invite
                 .try_recv()
                 .expect("invite completion")
-                .expect_err("invite failure")
+                .expect_err("invite runtime failure"),
+            NativeInviteError::Runtime(NativeRuntimeFailure::Stopped)
+        ));
+    }
+
+    #[test]
+    fn native_runtime_fault_is_distinct_from_sip_rejection() {
+        let cache = SipRuntimeCache::default();
+        let ttl = Duration::from_secs(1);
+        let mut fault = cache.insert_native_response_waiter(11, ttl);
+        let mut response = cache.insert_native_response_waiter(12, ttl);
+
+        assert!(cache.fail_native_response(11, NativeRuntimeFailure::RuntimeFault(171_000)));
+        assert!(cache.complete_native_response(12, 503, SipResponseMetadata::default()));
+        assert_eq!(
+            fault
+                .try_recv()
+                .expect("runtime fault completion")
+                .expect_err("runtime fault"),
+            NativeRuntimeFailure::RuntimeFault(171_000)
+        );
+        assert_eq!(
+            response
+                .try_recv()
+                .expect("SIP response completion")
+                .expect("SIP response")
                 .status,
             503
         );

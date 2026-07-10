@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use base::log::{debug, error, warn};
+use base::log::{debug, info, warn};
 use base::tokio::time::Instant;
 
 use crate::gb::sip::command as sip_command;
 use crate::register::core::{Register, TimeScheduleKey};
+use crate::service::stream_close::finalize_durable_dialog_as_orphan;
 use crate::state::session::{Cache, TalkByeCommand};
 
 pub fn begin(talk_id: String) -> bool {
@@ -73,9 +74,14 @@ async fn send_bye(command: TalkByeCommand) {
     match result {
         Ok(()) => {
             if let Some(info) = Cache::talk_close_complete(&talk_id, generation) {
-                debug!(
-                    "talk close completed: device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}",
-                    info.device_id, info.channel_id, info.talk_id, info.ssrc, info.call_id
+                info!(
+                    "talk close completed: stage=close_finalize, outcome=closed, device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}, generation={}",
+                    info.device_id,
+                    info.channel_id,
+                    info.talk_id,
+                    info.ssrc,
+                    info.call_id,
+                    info.generation
                 );
                 release_guard_lease(info.guard_lease);
             }
@@ -110,19 +116,29 @@ fn mark_failed(
     }
 }
 
-fn force_cleanup(talk_id: &str, generation: u64, reason: &str) {
+pub(crate) fn force_cleanup(talk_id: &str, generation: u64, reason: &str) {
     if let Some(info) = Cache::talk_close_force(talk_id, generation) {
-        error!(
-            "force cleanup closing talk: device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}, generation={}, reason={}",
+        warn!(
+            "talk close forced: stage=force_finalize, outcome=forced, device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}, generation={}, trigger_reason={}, last_error={}",
             info.device_id,
             info.channel_id,
             info.talk_id,
             info.ssrc,
             info.call_id,
             info.generation,
-            reason
+            reason,
+            info.last_error.as_deref().unwrap_or("none")
         );
         release_guard_lease(info.guard_lease);
+        let talk_id = info.talk_id;
+        base::tokio::spawn(async move {
+            finalize_durable_dialog_as_orphan("talk", &talk_id).await;
+        });
+    } else {
+        debug!(
+            "ignore stale talk force cleanup: talk_id={}, generation={}",
+            talk_id, generation
+        );
     }
 }
 

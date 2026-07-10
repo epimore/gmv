@@ -61,6 +61,105 @@ pub struct DeviceStreamOptions {
     pub talk_frame_duration_ms: u32,
 }
 
+struct RpcEdge<'a> {
+    service: &'a str,
+    action: &'a str,
+    node_id: &'a str,
+    operation_id: &'a str,
+    resource_id: &'a str,
+    started: Instant,
+}
+
+impl<'a> RpcEdge<'a> {
+    fn new(
+        service: &'a str,
+        action: &'a str,
+        node_id: &'a str,
+        operation_id: &'a str,
+        resource_id: &'a str,
+    ) -> Self {
+        Self {
+            service,
+            action,
+            node_id,
+            operation_id,
+            resource_id,
+            started: Instant::now(),
+        }
+    }
+
+    fn success(&self) {
+        base::log::debug!(
+            "guard rpc edge result: service={}, action={}, node_id={}, operation_id={}, resource_id={}, outcome=success, elapsed_ms={}",
+            self.service,
+            self.action,
+            self.node_id,
+            self.operation_id,
+            self.resource_id,
+            self.started.elapsed().as_millis()
+        );
+    }
+
+    fn transport_error(&self, error: tonic::Status) -> GuardError {
+        let global_code = error
+            .metadata()
+            .get(META_GLOBAL_CODE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        base::log::warn!(
+            "guard rpc edge result: service={}, action={}, node_id={}, operation_id={}, resource_id={}, outcome=transport_error, elapsed_ms={}, tonic_code={:?}, global_code={}, reason={}",
+            self.service,
+            self.action,
+            self.node_id,
+            self.operation_id,
+            self.resource_id,
+            self.started.elapsed().as_millis(),
+            error.code(),
+            global_code,
+            error.message()
+        );
+        node_rpc_status(self.service, self.action, error)
+    }
+
+    fn response<T>(&self, response: Result<tonic::Response<T>, tonic::Status>) -> GuardResult<T> {
+        response
+            .map(tonic::Response::into_inner)
+            .map_err(|error| self.transport_error(error))
+    }
+
+    fn business_rejection(&self, error: &ErrorDetail) {
+        let global_code = error
+            .metadata
+            .get(META_GLOBAL_CODE)
+            .map(String::as_str)
+            .unwrap_or("");
+        base::log::warn!(
+            "guard rpc edge result: service={}, action={}, node_id={}, operation_id={}, resource_id={}, outcome=business_rejection, elapsed_ms={}, remote_code={}, global_code={}",
+            self.service,
+            self.action,
+            self.node_id,
+            self.operation_id,
+            self.resource_id,
+            self.started.elapsed().as_millis(),
+            error.code,
+            global_code
+        );
+    }
+
+    fn invalid_response(&self, reason: &str) {
+        base::log::warn!(
+            "guard rpc edge result: service={}, action={}, node_id={}, operation_id={}, resource_id={}, outcome=invalid_response, elapsed_ms={}, reason={}",
+            self.service,
+            self.action,
+            self.node_id,
+            self.operation_id,
+            self.resource_id,
+            self.started.elapsed().as_millis(),
+            reason
+        );
+    }
+}
+
 impl BusinessControl {
     pub fn new(store: InMemoryGuardStore) -> Self {
         Self { store }
@@ -79,7 +178,7 @@ impl BusinessControl {
         if session.connection != ConnectionState::Connected
             || session.scheduling != SchedulingState::Enabled
         {
-            return Err(node_unavailable("session", "get_session_config", &node_id));
+            return Err(node_unavailable("session", "get_session_config", node_id));
         }
         let mut client = self.session_client(&session).await?;
         let request = GetSessionConfigRequest {};
@@ -87,11 +186,15 @@ impl BusinessControl {
             "guard rpc client outbound: method=session_control.get_session_config, node={}, req:<empty>",
             session.identity.node_id
         );
-        let response = client
-            .get_session_config(request)
-            .await
-            .map_err(session_rpc_error)?
-            .into_inner();
+        let edge = RpcEdge::new(
+            "session",
+            "get_session_config",
+            &session.identity.node_id,
+            "",
+            "",
+        );
+        let response = edge.response(client.get_session_config(request).await)?;
+        edge.success();
         Ok(GbSessionConfigSummary {
             domain: response.domain,
             domain_id: response.domain_id,
@@ -132,11 +235,15 @@ impl BusinessControl {
                 "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:{request:?}",
                 session.identity.node_id,
             );
-            let mut response = client
-                .list_gb_devices(request)
-                .await
-                .map_err(session_rpc_error)?
-                .into_inner();
+            let edge = RpcEdge::new(
+                "session",
+                "list_gb_devices",
+                &session.identity.node_id,
+                "",
+                "",
+            );
+            let mut response = edge.response(client.list_gb_devices(request).await)?;
+            edge.success();
             for device in &mut response.devices {
                 if device.session_node_id.is_empty() {
                     device.session_node_id = session.identity.node_id.clone();
@@ -182,11 +289,15 @@ impl BusinessControl {
             "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:{request:?}",
             session.identity.node_id,
         );
-        let mut response = client
-            .list_gb_devices(request)
-            .await
-            .map_err(session_rpc_error)?
-            .into_inner();
+        let edge = RpcEdge::new(
+            "session",
+            "list_gb_devices",
+            &session.identity.node_id,
+            "",
+            device_id,
+        );
+        let mut response = edge.response(client.list_gb_devices(request).await)?;
+        edge.success();
         for device in &mut response.devices {
             if device.session_node_id.is_empty() {
                 device.session_node_id = session.identity.node_id.clone();
@@ -202,6 +313,7 @@ impl BusinessControl {
 
     pub async fn create_gb_device(&self, mut device: GbDevice) -> GuardResult<GbDevice> {
         let node_id = device.session_node_id.clone();
+        let resource_id = device.device_id.clone();
         let session = self
             .store
             .get_node(&node_id)
@@ -242,17 +354,27 @@ impl BusinessControl {
             device.update_by
         );
         let mut client = self.session_client(&session).await?;
-        let mut response = client
-            .create_gb_device(CreateGbDeviceRequest {
-                device: Some(device),
-            })
-            .await
-            .map_err(session_rpc_error)?
-            .into_inner()
-            .device
-            .ok_or_else(|| {
-                GuardError::Conflict("session returned empty GB28181 device".to_string())
-            })?;
+        let edge = RpcEdge::new(
+            "session",
+            "create_gb_device",
+            &session.identity.node_id,
+            "",
+            &resource_id,
+        );
+        let response = edge.response(
+            client
+                .create_gb_device(CreateGbDeviceRequest {
+                    device: Some(device),
+                })
+                .await,
+        )?;
+        let Some(mut response) = response.device else {
+            edge.invalid_response("empty_device");
+            return Err(GuardError::Conflict(
+                "session returned empty GB28181 device".to_string(),
+            ));
+        };
+        edge.success();
         if response.session_node_id.is_empty() {
             response.session_node_id = session.identity.node_id;
         }
@@ -261,6 +383,7 @@ impl BusinessControl {
 
     pub async fn update_gb_device(&self, mut device: GbDevice) -> GuardResult<GbDevice> {
         let node_id = device.session_node_id.clone();
+        let resource_id = device.device_id.clone();
         let session = self
             .store
             .get_node(&node_id)
@@ -301,17 +424,27 @@ impl BusinessControl {
             device.update_by
         );
         let mut client = self.session_client(&session).await?;
-        let mut response = client
-            .update_gb_device(UpdateGbDeviceRequest {
-                device: Some(device),
-            })
-            .await
-            .map_err(session_rpc_error)?
-            .into_inner()
-            .device
-            .ok_or_else(|| {
-                GuardError::Conflict("session returned empty GB28181 device".to_string())
-            })?;
+        let edge = RpcEdge::new(
+            "session",
+            "update_gb_device",
+            &session.identity.node_id,
+            "",
+            &resource_id,
+        );
+        let response = edge.response(
+            client
+                .update_gb_device(UpdateGbDeviceRequest {
+                    device: Some(device),
+                })
+                .await,
+        )?;
+        let Some(mut response) = response.device else {
+            edge.invalid_response("empty_device");
+            return Err(GuardError::Conflict(
+                "session returned empty GB28181 device".to_string(),
+            ));
+        };
+        edge.success();
         if response.session_node_id.is_empty() {
             response.session_node_id = session.identity.node_id;
         }
@@ -341,10 +474,15 @@ impl BusinessControl {
             session.identity.node_id,
         );
         let mut client = self.session_client(&session).await?;
-        client
-            .delete_gb_device(request)
-            .await
-            .map_err(session_rpc_error)?;
+        let edge = RpcEdge::new(
+            "session",
+            "delete_gb_device",
+            &session.identity.node_id,
+            "",
+            device_id,
+        );
+        edge.response(client.delete_gb_device(request).await)?;
+        edge.success();
         Ok(())
     }
 
@@ -358,11 +496,15 @@ impl BusinessControl {
                 "guard rpc client outbound: method=session_control.get_gb_device, node={}, req:{request:?}",
                 session.identity.node_id
             );
-            let response = client
-                .get_gb_device(request)
-                .await
-                .map_err(session_rpc_error)?
-                .into_inner();
+            let edge = RpcEdge::new(
+                "session",
+                "get_gb_device",
+                &session.identity.node_id,
+                "",
+                device_id,
+            );
+            let response = edge.response(client.get_gb_device(request).await)?;
+            edge.success();
             if let Some(mut device) = response.device {
                 if device.session_node_id.is_empty() {
                     device.session_node_id = session.identity.node_id;
@@ -377,21 +519,23 @@ impl BusinessControl {
         let mut channels = Vec::new();
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
-            channels.extend(
-                {
-                    let request = ListGbChannelsRequest {
-                        device_id: device_id.to_string(),
-                    };
-                    base::log::debug!(
-                        "guard rpc client outbound: method=session_control.list_gb_channels, node={}, req:{request:?}",
-                        session.identity.node_id
-                    );
-                    client.list_gb_channels(request).await
-                }
-                    .map_err(session_rpc_error)?
-                    .into_inner()
-                    .channels,
+            let request = ListGbChannelsRequest {
+                device_id: device_id.to_string(),
+            };
+            base::log::debug!(
+                "guard rpc client outbound: method=session_control.list_gb_channels, node={}, req:{request:?}",
+                session.identity.node_id
             );
+            let edge = RpcEdge::new(
+                "session",
+                "list_gb_channels",
+                &session.identity.node_id,
+                "",
+                device_id,
+            );
+            let response = edge.response(client.list_gb_channels(request).await)?;
+            edge.success();
+            channels.extend(response.channels);
         }
         channels.sort_by(|left, right| {
             left.sort_no
@@ -416,11 +560,15 @@ impl BusinessControl {
                 "guard rpc client outbound: method=session_control.get_gb_channel, node={}, req:{request:?}",
                 session.identity.node_id
             );
-            let response = client
-                .get_gb_channel(request)
-                .await
-                .map_err(session_rpc_error)?
-                .into_inner();
+            let edge = RpcEdge::new(
+                "session",
+                "get_gb_channel",
+                &session.identity.node_id,
+                "",
+                channel_id,
+            );
+            let response = edge.response(client.get_gb_channel(request).await)?;
+            edge.success();
             if response.channel.is_some() {
                 return Ok(response.channel);
             }
@@ -460,15 +608,22 @@ impl BusinessControl {
             channel_id,
         );
         let mut client = self.session_client(&session).await?;
-        client
-            .update_gb_channel(request)
-            .await
-            .map_err(session_rpc_error)?
-            .into_inner()
-            .channel
-            .ok_or_else(|| {
-                GuardError::Conflict("session returned empty GB28181 channel".to_string())
-            })
+        let edge = RpcEdge::new(
+            "session",
+            "update_gb_channel",
+            &session.identity.node_id,
+            "",
+            &channel_id,
+        );
+        let response = edge.response(client.update_gb_channel(request).await)?;
+        let Some(channel) = response.channel else {
+            edge.invalid_response("empty_channel");
+            return Err(GuardError::Conflict(
+                "session returned empty GB28181 channel".to_string(),
+            ));
+        };
+        edge.success();
+        Ok(channel)
     }
 
     pub async fn list_gb_channel_images(
@@ -479,22 +634,24 @@ impl BusinessControl {
         let mut images = Vec::new();
         for session in self.session_nodes() {
             let mut client = self.session_client(&session).await?;
-            images.extend(
-                {
-                    let request = ListGbChannelImagesRequest {
-                        device_id: device_id.to_string(),
-                        channel_id: channel_id.to_string(),
-                    };
-                    base::log::debug!(
-                        "guard rpc client outbound: method=session_control.list_gb_channel_images, node={}, req:{request:?}",
-                        session.identity.node_id
-                    );
-                    client.list_gb_channel_images(request).await
-                }
-                    .map_err(session_rpc_error)?
-                    .into_inner()
-                    .images,
+            let request = ListGbChannelImagesRequest {
+                device_id: device_id.to_string(),
+                channel_id: channel_id.to_string(),
+            };
+            base::log::debug!(
+                "guard rpc client outbound: method=session_control.list_gb_channel_images, node={}, req:{request:?}",
+                session.identity.node_id
             );
+            let edge = RpcEdge::new(
+                "session",
+                "list_gb_channel_images",
+                &session.identity.node_id,
+                "",
+                channel_id,
+            );
+            let response = edge.response(client.list_gb_channel_images(request).await)?;
+            edge.success();
+            images.extend(response.images);
         }
         images.sort_by_key(|image| std::cmp::Reverse(image.created_at_ms));
         Ok(images)
@@ -542,12 +699,16 @@ impl BusinessControl {
             "guard rpc client outbound: method=session_control.snapshot_image, node={}, req:{request:?}",
             session.identity.node_id
         );
-        let response = client
-            .snapshot_image(request)
-            .await
-            .map_err(session_rpc_error)?
-            .into_inner();
+        let edge = RpcEdge::new(
+            "session",
+            "snapshot_image",
+            &session.identity.node_id,
+            operation_id,
+            device_id,
+        );
+        let response = edge.response(client.snapshot_image(request).await)?;
         if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
             return Err(remote_error(
                 "session",
                 "snapshot_image",
@@ -558,10 +719,12 @@ impl BusinessControl {
             ));
         }
         if response.session_id.is_empty() {
+            edge.invalid_response("empty_session_id");
             return Err(GuardError::Conflict(
                 "session snapshot returned empty session id".to_string(),
             ));
         }
+        edge.success();
         Ok(response.session_id)
     }
 
@@ -753,15 +916,21 @@ impl BusinessControl {
             request.talk_frame_duration_ms,
             request.expected_session
         );
-        let session_response = match kind {
+        let edge = RpcEdge::new(
+            "session",
+            kind.action(),
+            &session.identity.node_id,
+            operation_id,
+            device_id,
+        );
+        let session_response = edge.response(match kind {
             DeviceStreamKind::Live => session_client.start_live(request).await,
             DeviceStreamKind::Playback => session_client.start_playback(request).await,
             DeviceStreamKind::Download => session_client.start_download(request).await,
             DeviceStreamKind::Talk => session_client.start_talk(request).await,
-        }
-        .map_err(|error| node_rpc_status("session", kind.action(), error))?
-        .into_inner();
+        })?;
         if let Some(error) = non_empty_error(session_response.error) {
+            edge.business_rejection(&error);
             return Err(remote_error(
                 "session",
                 kind.action(),
@@ -772,11 +941,13 @@ impl BusinessControl {
             ));
         }
         if session_response.state != DeviceStreamState::Running as i32 {
+            edge.invalid_response("stream_not_running");
             return Err(GuardError::Conflict(format!(
                 "session did not enter {} running state",
                 kind.prefix()
             )));
         }
+        edge.success();
         let lease = self
             .store
             .leases()
@@ -808,14 +979,18 @@ impl BusinessControl {
         })
     }
 
-    pub async fn stop_stream(&self, stream_id: &str) -> GuardResult<StreamSummary> {
+    pub async fn stop_stream(
+        &self,
+        operation_id: &str,
+        stream_id: &str,
+    ) -> GuardResult<StreamSummary> {
         let session = self.select_any_session()?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
             SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
         let request = StopDeviceStreamRequest {
             operation: Some(OperationRef {
-                operation_id: format!("stop-{stream_id}"),
+                operation_id: operation_id.to_string(),
                 idempotency_key: String::new(),
             }),
             stream_id: stream_id.to_string(),
@@ -825,12 +1000,16 @@ impl BusinessControl {
             "guard rpc client outbound: method=session_control.stop_device_stream, node={}, req:{request:?}",
             session.identity.node_id
         );
-        let response = session_client
-            .stop_device_stream(request)
-            .await
-            .map_err(|error| node_rpc_status("session", "stop_device_stream", error))?
-            .into_inner();
+        let edge = RpcEdge::new(
+            "session",
+            "stop_device_stream",
+            &session.identity.node_id,
+            operation_id,
+            stream_id,
+        );
+        let response = edge.response(session_client.stop_device_stream(request).await)?;
         if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
             return Err(remote_error(
                 "session",
                 "stop_device_stream",
@@ -840,6 +1019,7 @@ impl BusinessControl {
                 true,
             ));
         }
+        edge.success();
         if let Some(route) = self
             .store
             .routes()
@@ -867,6 +1047,7 @@ impl BusinessControl {
 
     pub async fn ptz(
         &self,
+        operation_id: &str,
         device_id: &str,
         channel_id: &str,
         command: &str,
@@ -878,7 +1059,7 @@ impl BusinessControl {
             SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
         let request = ControlPtzRequest {
             operation: Some(OperationRef {
-                operation_id: format!("ptz-{}", now_ms()),
+                operation_id: operation_id.to_string(),
                 idempotency_key: String::new(),
             }),
             device_id: device_id.to_string(),
@@ -890,12 +1071,20 @@ impl BusinessControl {
             "guard rpc client outbound: method=session_control.control_ptz, node={}, req:{request:?}",
             session.identity.node_id
         );
-        let response = session_client
-            .control_ptz(request)
-            .await
-            .map_err(|error| node_rpc_status("session", "control_ptz", error))?
-            .into_inner();
+        let edge = RpcEdge::new(
+            "session",
+            "control_ptz",
+            &session.identity.node_id,
+            operation_id,
+            device_id,
+        );
+        let response = edge.response(session_client.control_ptz(request).await)?;
         if !response.accepted {
+            if let Some(error) = response.error.as_ref() {
+                edge.business_rejection(error);
+            } else {
+                edge.invalid_response("ptz_not_accepted_without_error");
+            }
             return Err(response
                 .error
                 .filter(|error| !error.code.is_empty() || !error.message.is_empty())
@@ -919,6 +1108,7 @@ impl BusinessControl {
                     )
                 }));
         }
+        edge.success();
         Ok(1)
     }
 
@@ -995,12 +1185,16 @@ impl BusinessControl {
             request.expected_avai,
             request.payload.len()
         );
-        let response = avai_client
-            .create_task(request)
-            .await
-            .map_err(|error| node_rpc_status("avai", "create_task", error))?
-            .into_inner();
+        let edge = RpcEdge::new(
+            "avai",
+            "create_task",
+            &avai.identity.node_id,
+            operation_id,
+            &task_id,
+        );
+        let response = edge.response(avai_client.create_task(request).await)?;
         if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
             let _ =
                 LeaseService::new(self.store.clone()).fail(&lease_id, &avai.identity.instance_id);
             return Err(remote_error(
@@ -1013,10 +1207,12 @@ impl BusinessControl {
             ));
         }
         if response.state != AiTaskState::Running as i32 {
+            edge.invalid_response("task_not_running");
             return Err(GuardError::Conflict(
                 "avai task did not enter running state".to_string(),
             ));
         }
+        edge.success();
         LeaseService::new(self.store.clone()).confirm(&lease_id, &avai.identity.instance_id)?;
         RouteService::new(self.store.clone()).apply_snapshot(ResourceSnapshot {
             owner: avai.identity.clone(),
@@ -1039,7 +1235,7 @@ impl BusinessControl {
         })
     }
 
-    pub async fn cancel_ai(&self, task_id: &str) -> GuardResult<AiTaskSummary> {
+    pub async fn cancel_ai(&self, operation_id: &str, task_id: &str) -> GuardResult<AiTaskSummary> {
         let route = self
             .store
             .routes()
@@ -1054,7 +1250,7 @@ impl BusinessControl {
         let mut avai_client = AvaiControlClient::new(connect_rpc(&avai_grpc, "avai").await?);
         let request = CancelTaskRequest {
             operation: Some(OperationRef {
-                operation_id: format!("cancel-{task_id}"),
+                operation_id: operation_id.to_string(),
                 idempotency_key: String::new(),
             }),
             task_id: task_id.to_string(),
@@ -1064,12 +1260,16 @@ impl BusinessControl {
             "guard rpc client outbound: method=avai_control.cancel_task, node={}, req:{request:?}",
             avai.identity.node_id
         );
-        let response = avai_client
-            .cancel_task(request)
-            .await
-            .map_err(|error| node_rpc_status("avai", "cancel_task", error))?
-            .into_inner();
+        let edge = RpcEdge::new(
+            "avai",
+            "cancel_task",
+            &avai.identity.node_id,
+            operation_id,
+            task_id,
+        );
+        let response = edge.response(avai_client.cancel_task(request).await)?;
         if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
             return Err(remote_error(
                 "avai",
                 "cancel_task",
@@ -1080,10 +1280,12 @@ impl BusinessControl {
             ));
         }
         if response.state != AiTaskState::Cancelled as i32 {
+            edge.invalid_response("task_not_cancelled");
             return Err(GuardError::Conflict(
                 "avai task did not enter cancelled state".to_string(),
             ));
         }
+        edge.success();
         if let Some(mut stored_route) = self.store.get_route(&route.route_id) {
             stored_route.state = RouteState::Closed;
             self.store.upsert_route(stored_route);
@@ -1195,10 +1397,6 @@ fn is_gb_session_node(node: &NodeRecord) -> bool {
                 .iter()
                 .any(|item| item == "protocol.gb28181"))
 }
-fn session_rpc_error(error: tonic::Status) -> GuardError {
-    node_rpc_status("session", "rpc", error)
-}
-
 fn grpc_uri(node: &NodeRecord) -> GuardResult<String> {
     let endpoint = node
         .endpoints

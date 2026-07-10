@@ -6,7 +6,7 @@ use std::time::Duration;
 use base::chrono::{Local, TimeZone};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{error, warn};
+use base::log::{debug, error, info, warn};
 use base::tokio::sync::mpsc;
 use base::tokio::time::{Instant, sleep};
 use gmv_domain::info::format::{CMaf, Mp4};
@@ -462,26 +462,40 @@ pub async fn talk_stop(model: TalkStopModel, _token: String) -> GlobalResult<boo
 }
 
 pub async fn peer_dialog_terminated(call_id: String) -> bool {
-    persist_peer_dialog_terminated(&call_id).await;
+    let persisted = persist_peer_dialog_terminated(&call_id).await;
     if let Some(stream) = state::session::Cache::stream_terminated_by_call_id(&call_id) {
-        warn!(
-            "stream dialog terminated by device: device_id={}, channel_id={}, stream_id={}, \
-             ssrc={}, call_id={}",
+        info!(
+            "stream dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
             stream.device_id, stream.channel_id, stream.stream_id, stream.ssrc, stream.call_id
         );
         release_guard_lease(stream.guard_lease);
         return true;
     }
-    let Some(talk) = state::session::Cache::talk_map_remove_by_call_id(&call_id) else {
-        return false;
-    };
-    if let Ok(stream_node) =
-        crate::guard_integration::ensure_stream_node(&talk.stream_node_name).await
-    {
-        cleanup_talk_open(&stream_node, &talk.talk_id).await;
+    if let Some(talk) = state::session::Cache::talk_map_remove_by_call_id(&call_id) {
+        if let Ok(stream_node) =
+            crate::guard_integration::ensure_stream_node(&talk.stream_node_name).await
+        {
+            cleanup_talk_open(&stream_node, &talk.talk_id).await;
+        }
+        info!(
+            "talk dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}",
+            talk.device_id, talk.channel_id, talk.talk_id, talk.ssrc, talk.call_id
+        );
+        release_guard_lease(talk.guard_lease);
+        return true;
     }
-    release_guard_lease(talk.guard_lease);
-    true
+    if persisted.transitioned {
+        info!("durable dialog terminated by peer: outcome=peer_terminated, call_id={call_id}");
+        true
+    } else if persisted.matched {
+        debug!("ignore duplicate or late peer BYE: outcome=duplicate_or_late, call_id={call_id}");
+        true
+    } else if persisted.lookup_failed {
+        false
+    } else {
+        warn!("peer BYE did not match an owned dialog: outcome=unmatched, call_id={call_id}");
+        false
+    }
 }
 
 fn release_guard_lease(lease: Option<crate::state::session::GuardLease>) {
@@ -490,22 +504,35 @@ fn release_guard_lease(lease: Option<crate::state::session::GuardLease>) {
     }
 }
 
-async fn persist_peer_dialog_terminated(call_id: &str) {
+#[derive(Default)]
+struct PeerDialogPersistence {
+    matched: bool,
+    transitioned: bool,
+    lookup_failed: bool,
+}
+
+async fn persist_peer_dialog_terminated(call_id: &str) -> PeerDialogPersistence {
     let sessions = match SipDialogSessionRepository::find_by_call_id(call_id).await {
         Ok(sessions) => sessions,
         Err(err) => {
             error!("lookup peer-terminated dialog failed: call_id={call_id}; err={err}");
-            return;
+            return PeerDialogPersistence {
+                lookup_failed: true,
+                ..PeerDialogPersistence::default()
+            };
         }
     };
     let current_node_id = SessionConf::get_session_by_conf().domain_id;
+    let mut result = PeerDialogPersistence::default();
     for session in sessions {
-        if session.signal_node_id != current_node_id
-            || !matches!(
-                session.state,
-                DialogState::Established | DialogState::Terminating
-            )
-        {
+        if session.signal_node_id != current_node_id {
+            continue;
+        }
+        result.matched = true;
+        if !matches!(
+            session.state,
+            DialogState::Established | DialogState::Terminating
+        ) {
             continue;
         }
         match SipDialogSessionRepository::cas_transition(
@@ -518,17 +545,36 @@ async fn persist_peer_dialog_terminated(call_id: &str) {
         )
         .await
         {
-            Ok(true) => {}
-            Ok(false) => warn!(
-                "peer BYE TERMINATED CAS lost: stream_id={}; call_id={call_id}",
-                session.stream_id
-            ),
+            Ok(true) => result.transitioned = true,
+            Ok(false) => {
+                match SipDialogSessionRepository::find_by_stream_id(&session.stream_id).await {
+                    Ok(Some(current)) if current.state == DialogState::Terminated => {
+                        debug!(
+                            "peer BYE durable transition already completed: stream_id={}; call_id={call_id}",
+                            session.stream_id
+                        );
+                    }
+                    Ok(Some(current)) => error!(
+                        "peer BYE durable transition conflict: stream_id={}; call_id={call_id}; expected_state={}; current_state={}",
+                        session.stream_id, session.state, current.state
+                    ),
+                    Ok(None) => error!(
+                        "peer BYE durable dialog disappeared after CAS conflict: stream_id={}; call_id={call_id}",
+                        session.stream_id
+                    ),
+                    Err(err) => error!(
+                        "recheck peer BYE durable transition failed: stream_id={}; call_id={call_id}; err={err}",
+                        session.stream_id
+                    ),
+                }
+            }
             Err(err) => error!(
                 "persist peer BYE TERMINATED failed: stream_id={}; call_id={call_id}; err={err}",
                 session.stream_id
             ),
         }
     }
+    result
 }
 
 fn validate_playback_range(st: u32, et: u32) -> GlobalResult<()> {

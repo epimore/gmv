@@ -138,29 +138,45 @@ pub async fn check_playback(
     }
 }
 
-pub fn publish_guard_event(topic: &str, payload: impl Into<Vec<u8>>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardEventPublish {
+    Queued,
+    Unavailable,
+    Full,
+    Closed,
+}
+
+pub fn publish_guard_event(topic: &str, payload: impl Into<Vec<u8>>) -> GuardEventPublish {
     let payload = payload.into();
     let Some(sender) = GUARD_EVENT_SENDER.get() else {
         base::log::warn!(
             "guard event outbound skipped: topic={topic}, reason=event_sender_not_initialized, payload_bytes={}",
             payload.len()
         );
-        return;
+        return GuardEventPublish::Unavailable;
     };
     let sequence = GUARD_EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let event_id = format!("stream-event-{sequence}");
-    base::log::info!(
-        "guard event outbound: event_id={event_id}, topic={topic}, payload_bytes={}",
-        payload.len()
-    );
     let event = NodeEvent {
-        event_id,
+        event_id: event_id.clone(),
         topic: topic.to_string(),
         priority: EventPriority::P1 as i32,
         payload,
     };
-    if let Err(error) = sender.try_send(event) {
-        base::log::warn!("drop guard stream event {topic}: {error}");
+    match sender.try_send(event) {
+        Ok(()) => GuardEventPublish::Queued,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            base::log::warn!(
+                "guard event outbound failed: event_id={event_id}, topic={topic}, outcome=full"
+            );
+            GuardEventPublish::Full
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            base::log::warn!(
+                "guard event outbound failed: event_id={event_id}, topic={topic}, outcome=closed"
+            );
+            GuardEventPublish::Closed
+        }
     }
 }
 

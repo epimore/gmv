@@ -25,7 +25,14 @@ async fn upload_picture(
     Query(params): Query<HashMap<String, String>>,
     request: Request,
 ) -> Json<Resp<String>> {
-    info!("upload_picture: token = {:?}", &token);
+    info!(
+        "upload_picture: token={}, outcome=request_received",
+        if token.is_empty() {
+            "<empty>"
+        } else {
+            "<redacted>"
+        }
+    );
     match upload_picture_inner(token, headers, params, request).await {
         Ok(data) => Json(Resp::build_success_data(data)),
         Err(err) => Json(Resp::build_failed_code(

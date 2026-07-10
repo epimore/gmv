@@ -42,7 +42,7 @@ pub struct StreamRecordInfo {
     pub file_size: u64,
     ///媒体流进度时间,方便计算进度，单位秒
     pub timestamp: u32,
-    ///录制状态，0-未开始，1-进行中，2-完成,3-失败
+    ///录制状态，0-进行中，1-完成，2-部分完成，3-失败
     pub state: u8,
     //每秒录制字节数
     // pub bytes_sec: usize,

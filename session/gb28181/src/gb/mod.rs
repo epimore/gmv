@@ -65,7 +65,7 @@ impl SessionConf {
             udp: tu.1,
             tls: None,
         };
-        let (native_service, _native_events) = sip::NativeSipRuntimeService::start(
+        let native_service = sip::NativeSipRuntimeService::start(
             session_conf.wan_ip,
             session_conf.wan_port,
             session_conf.domain.clone(),

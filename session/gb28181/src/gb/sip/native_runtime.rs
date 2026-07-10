@@ -7,7 +7,7 @@ use std::time::Duration;
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{error, warn};
+use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Protocol};
 use base::tokio::runtime::Handle;
 use base::tokio::sync::mpsc;
@@ -28,7 +28,7 @@ use super::bye::GbByeEvent;
 use super::invite::GbIncomingInviteEvent;
 use super::message::GbMessageEvent;
 use super::register::GbRegisterEvent;
-use super::runtime_cache::SipRuntimeCache;
+use super::runtime_cache::{NativeRuntimeFailure, SipRuntimeCache};
 use crate::register::core::Register;
 
 const AUTH_BATCH_WINDOW: Duration = Duration::from_millis(5);
@@ -279,9 +279,8 @@ impl NativeSipRuntimeService {
         sockets: SipRuntimeSockets,
         auth_cache: Arc<DeviceAuthCache>,
         cancel: CancellationToken,
-    ) -> GlobalResult<(Self, mpsc::UnboundedReceiver<SipRuntimeEvent>)> {
+    ) -> GlobalResult<Self> {
         let (lookup_tx, lookup_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (business_tx, business_rx) = mpsc::unbounded_channel();
         let (runtime_command_tx, runtime_command_rx) =
             std_mpsc::sync_channel(RUNTIME_COMMAND_CAPACITY);
@@ -307,6 +306,7 @@ impl NativeSipRuntimeService {
         ));
 
         let runtime_cancel = service_cancel.child_token();
+        let failure_cancel = service_cancel.clone();
         let runtime_thread = thread::Builder::new()
             .name("gmv-pjsip-owner".into())
             .spawn(move || {
@@ -348,55 +348,54 @@ impl NativeSipRuntimeService {
                             }
                             RuntimeCommand::SendMessage(message) => {
                                 if let Err(err) = runtime.send_message(&message) {
-                                    warn!(
-                                        "send native SIP MESSAGE failed: operation_id={}, \
-                                         err={err}",
-                                        message.operation_id
-                                    );
-                                    SipRuntimeCache::global().complete_native_response(
+                                    if !SipRuntimeCache::global().fail_native_response(
                                         message.operation_id,
-                                        503,
-                                        Default::default(),
-                                    );
+                                        NativeRuntimeFailure::SendFailed(err.to_string()),
+                                    ) {
+                                        error!(
+                                            "native SIP MESSAGE send failed without waiter: operation_id={}, stage=runtime_send, outcome=undelivered, err={err}",
+                                            message.operation_id
+                                        );
+                                    }
                                 }
                             }
                             RuntimeCommand::SendInvite(invite) => {
                                 if let Err(err) = runtime.send_invite(&invite) {
-                                    warn!(
-                                        "send native SIP INVITE failed: operation_id={}, \
-                                         err={err}",
-                                        invite.operation_id
-                                    );
-                                    SipRuntimeCache::global()
-                                        .fail_native_invite(invite.operation_id, 503);
+                                    if !SipRuntimeCache::global().fail_native_invite_runtime(
+                                        invite.operation_id,
+                                        NativeRuntimeFailure::SendFailed(err.to_string()),
+                                    ) {
+                                        error!(
+                                            "native SIP INVITE send failed without waiter: operation_id={}, stage=runtime_send, outcome=undelivered, err={err}",
+                                            invite.operation_id
+                                        );
+                                    }
                                 }
                             }
                             RuntimeCommand::SendDialog(request) => {
                                 if let Err(err) = runtime.send_dialog_request(&request) {
-                                    warn!(
-                                        "send native SIP dialog request failed: \
-                                         operation_id={}, err={err}",
-                                        request.operation_id
-                                    );
-                                    SipRuntimeCache::global().complete_native_response(
+                                    if !SipRuntimeCache::global().fail_native_response(
                                         request.operation_id,
-                                        503,
-                                        Default::default(),
-                                    );
+                                        NativeRuntimeFailure::SendFailed(err.to_string()),
+                                    ) {
+                                        error!(
+                                            "native SIP dialog send failed without waiter: operation_id={}, stage=runtime_send, outcome=undelivered, err={err}",
+                                            request.operation_id
+                                        );
+                                    }
                                 }
                             }
                             RuntimeCommand::SendRestoredDialog(request) => {
                                 if let Err(err) = runtime.send_restored_dialog_request(&request) {
-                                    warn!(
-                                        "send restored SIP dialog request failed: \
-                                         operation_id={}, err={err}",
-                                        request.operation_id
-                                    );
-                                    SipRuntimeCache::global().complete_native_response(
+                                    if !SipRuntimeCache::global().fail_native_response(
                                         request.operation_id,
-                                        503,
-                                        Default::default(),
-                                    );
+                                        NativeRuntimeFailure::SendFailed(err.to_string()),
+                                    ) {
+                                        error!(
+                                            "restored SIP dialog send failed without waiter: operation_id={}, stage=runtime_send, outcome=undelivered, err={err}",
+                                            request.operation_id
+                                        );
+                                    }
                                 }
                             }
                             RuntimeCommand::RespondInvite(response) => {
@@ -410,21 +409,20 @@ impl NativeSipRuntimeService {
                             }
                             RuntimeCommand::SendSubscribe(subscribe) => {
                                 if let Err(err) = runtime.send_subscribe(&subscribe) {
-                                    warn!(
-                                        "send native SIP SUBSCRIBE failed: operation_id={}, \
-                                         err={err}",
-                                        subscribe.operation_id
-                                    );
-                                    if !SipRuntimeCache::global().complete_native_subscription(
+                                    let failure = NativeRuntimeFailure::SendFailed(err.to_string());
+                                    if !SipRuntimeCache::global().fail_native_subscription(
                                         subscribe.operation_id,
-                                        503,
-                                        Default::default(),
+                                        failure.clone(),
                                     ) {
-                                        SipRuntimeCache::global().complete_native_response(
+                                        if !SipRuntimeCache::global().fail_native_response(
                                             subscribe.operation_id,
-                                            503,
-                                            Default::default(),
-                                        );
+                                            failure,
+                                        ) {
+                                            error!(
+                                                "native SIP SUBSCRIBE send failed without waiter: operation_id={}, stage=runtime_send, outcome=undelivered, err={err}",
+                                                subscribe.operation_id
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -474,7 +472,17 @@ impl NativeSipRuntimeService {
                     }
 
                     if let Err(err) = runtime.poll() {
-                        warn!("native SIP owner loop exiting because runtime poll failed: {err}");
+                        error!(
+                            "native SIP runtime poll failed: stage=runtime_poll, outcome=failed, err={err}"
+                        );
+                        let failed = SipRuntimeCache::global()
+                            .fail_all_native(NativeRuntimeFailure::RuntimeFault(0));
+                        if failed > 0 {
+                            warn!(
+                                "native SIP runtime poll failure aborted waiters: count={failed}"
+                            );
+                        }
+                        failure_cancel.cancel();
                         break;
                     }
 
@@ -500,20 +508,36 @@ impl NativeSipRuntimeService {
                                 warn!("native SIP auth event missing lookup identity");
                             }
                         } else {
-                            let _ = business_tx.send(event.clone());
-                            let _ = event_tx.send(event);
+                            if business_tx.send(event).is_err() {
+                                if runtime_cancel.is_cancelled() {
+                                    debug!("native SIP business event channel closed during shutdown");
+                                } else {
+                                    error!(
+                                        "native SIP business event channel closed unexpectedly: stage=business_event_delivery, outcome=closed"
+                                    );
+                                    let failed = SipRuntimeCache::global()
+                                        .fail_all_native(NativeRuntimeFailure::Stopped);
+                                    if failed > 0 {
+                                        warn!(
+                                            "native SIP business event failure aborted waiters: count={failed}"
+                                        );
+                                    }
+                                    failure_cancel.cancel();
+                                }
+                                break;
+                            }
                         }
                     }
                 }
 
-                warn!(
-                    "native SIP owner loop exited; cancellation_requested={}",
+                debug!(
+                    "native SIP owner loop exited: cancellation_requested={}",
                     runtime_cancel.is_cancelled()
                 );
                 if let Err(err) = runtime.stop() {
                     warn!("stop native SIP runtime failed: {err}");
                 } else {
-                    warn!("native SIP runtime stopped");
+                    info!("native SIP runtime stopped");
                 }
             })
             .map_err(|err| {
@@ -538,16 +562,13 @@ impl NativeSipRuntimeService {
                 )
             })?;
 
-        Ok((
-            Self {
-                cancel: service_cancel,
-                handle,
-                auth_task,
-                event_task,
-                runtime_thread: Some(runtime_thread),
-            },
-            event_rx,
-        ))
+        Ok(Self {
+            cancel: service_cancel,
+            handle,
+            auth_task,
+            event_task,
+            runtime_thread: Some(runtime_thread),
+        })
     }
 
     pub fn send_message(&self, message: SipOutboundMessage) -> GlobalResult<()> {
@@ -563,17 +584,18 @@ impl NativeSipRuntimeService {
     }
 
     fn stop(&mut self) {
+        let Some(thread) = self.runtime_thread.take() else {
+            return;
+        };
         self.cancel.cancel();
-        warn!("native SIP runtime service shutdown requested");
-        if let Some(thread) = self.runtime_thread.take() {
-            match thread.join() {
-                Ok(()) => warn!("native SIP owner thread joined"),
-                Err(_) => warn!("native SIP owner thread panicked before join"),
-            }
+        debug!("native SIP runtime service shutdown requested");
+        match thread.join() {
+            Ok(()) => debug!("native SIP owner thread joined"),
+            Err(_) => error!("native SIP owner thread panicked before join"),
         }
-        let failed = SipRuntimeCache::global().fail_all_native(503);
+        let failed = SipRuntimeCache::global().fail_all_native(NativeRuntimeFailure::Stopped);
         if failed > 0 {
-            warn!("failed {failed} native SIP waiter(s) during runtime shutdown");
+            debug!("cancelled {failed} native SIP waiter(s) during runtime shutdown");
         }
         self.auth_task.abort();
         self.event_task.abort();
@@ -606,12 +628,16 @@ async fn run_native_business_events(
         let event = base::tokio::select! {
             event = events.recv() => event,
             _ = cancel.cancelled() => {
-                warn!("native SIP business event task exiting after cancellation");
+                debug!("native SIP business event task exiting after cancellation");
                 break;
             },
         };
         let Some(event) = event else {
-            warn!("native SIP business event task exiting because event channel closed");
+            if cancel.is_cancelled() {
+                debug!("native SIP business event channel closed during shutdown");
+            } else {
+                error!("native SIP business event channel closed unexpectedly");
+            }
             break;
         };
         if event.kind == SipRuntimeEventKind::TransportClosed {
@@ -656,18 +682,17 @@ async fn run_native_business_events(
                     }
                 }
                 SipRuntimeEventKind::RuntimeFault => {
-                    if !SipRuntimeCache::global().fail_native_invite(operation_id, 503) {
-                        if !SipRuntimeCache::global().complete_native_subscription(
-                            operation_id,
-                            503,
-                            Default::default(),
-                        ) {
-                            SipRuntimeCache::global().complete_native_response(
-                                operation_id,
-                                503,
-                                Default::default(),
-                            );
-                        }
+                    let failure = NativeRuntimeFailure::RuntimeFault(event.pj_status);
+                    let delivered = SipRuntimeCache::global()
+                        .fail_native_invite_runtime(operation_id, failure.clone())
+                        || SipRuntimeCache::global()
+                            .fail_native_subscription(operation_id, failure.clone())
+                        || SipRuntimeCache::global().fail_native_response(operation_id, failure);
+                    if !delivered {
+                        error!(
+                            "native SIP runtime fault without waiter: operation_id={operation_id}, pj_status={}, stage=runtime_event, outcome=undelivered",
+                            event.pj_status
+                        );
                     }
                 }
                 _ => {}
@@ -806,12 +831,16 @@ async fn run_auth_batches(
         let first = base::tokio::select! {
             lookup = lookups.recv() => lookup,
             _ = cancel.cancelled() => {
-                warn!("native SIP auth task exiting after cancellation");
+                debug!("native SIP auth task exiting after cancellation");
                 break;
             },
         };
         let Some(first) = first else {
-            warn!("native SIP auth task exiting because lookup channel closed");
+            if cancel.is_cancelled() {
+                debug!("native SIP auth lookup channel closed during shutdown");
+            } else {
+                error!("native SIP auth lookup channel closed unexpectedly");
+            }
             break;
         };
 
@@ -840,7 +869,11 @@ async fn run_auth_batches(
                         }))
                         .is_err()
                     {
-                        warn!("native SIP auth task exiting because runtime command queue closed");
+                        if cancel.is_cancelled() {
+                            debug!("native SIP auth command queue closed during shutdown");
+                        } else {
+                            error!("native SIP auth command queue closed unexpectedly");
+                        }
                         return;
                     }
                 }
@@ -855,7 +888,11 @@ async fn run_auth_batches(
                         }))
                         .is_err()
                     {
-                        warn!("native SIP auth task exiting because runtime command queue closed");
+                        if cancel.is_cancelled() {
+                            debug!("native SIP auth command queue closed during shutdown");
+                        } else {
+                            error!("native SIP auth command queue closed unexpectedly");
+                        }
                         return;
                     }
                 }

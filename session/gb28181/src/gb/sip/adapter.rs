@@ -71,17 +71,13 @@ pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
         }
         GbSipEvent::Bye(event) => apply_bye_event(event),
         GbSipEvent::Cancel { call_id } => {
-            warn!("SIP CANCEL received: call_id={call_id}");
+            debug!("SIP CANCEL received: outcome=peer_cancelled, call_id={call_id}");
             Ok(())
         }
     }
 }
 
 fn apply_bye_event(event: &GbByeEvent) -> GlobalResult<()> {
-    info!(
-        "SIP BYE event: call_id={}, stream_id={:?}, device_id={:?}",
-        event.call_id, event.stream_id, event.device_id
-    );
     let stream_id = event
         .stream_id
         .clone()
@@ -93,8 +89,13 @@ fn apply_bye_event(event: &GbByeEvent) -> GlobalResult<()> {
     if !waiter_completed {
         let call_id = event.call_id.clone();
         base::tokio::spawn(async move {
-            let _ = api_serv::peer_dialog_terminated(call_id).await;
+            api_serv::peer_dialog_terminated(call_id).await;
         });
+    } else {
+        debug!(
+            "SIP BYE completed pending waiter: call_id={}, outcome=expected_peer_termination",
+            event.call_id
+        );
     }
     Ok(())
 }

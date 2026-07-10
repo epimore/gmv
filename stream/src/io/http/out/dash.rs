@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::response::Response;
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{debug, warn};
 use base::tokio::sync::{broadcast, oneshot};
 use futures_util::stream;
 use gmv_domain::info::output::OutputEnum;
@@ -171,7 +171,9 @@ pub async fn segment(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
 async fn get_video_param(ssrc: u32) -> GlobalResult<MediaParam> {
     let (tx, rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::MediaParam(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+    Ok(rx
+        .await
+        .hand_log(|msg| debug!("media params unavailable: ssrc={ssrc}, reason={msg}"))?)
 }
 
 fn generate_mpd(stream_id: Arc<str>, mp: MediaParam) -> String {
@@ -291,12 +293,26 @@ fn fmp4_stream(
 async fn fmp4_next_chunk(
     mut ctx: Fmp4StreamContext,
 ) -> Option<(Result<Bytes, std::convert::Infallible>, Fmp4StreamContext)> {
+    let mut waiting_keyframe = false;
     loop {
         let pkt = match ctx.rx.recv().await {
             Ok(pkt) => pkt,
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                if !waiting_keyframe {
+                    warn!(
+                        "http fmp4 output lagged: stage=output, outcome=wait_keyframe, ssrc={}, lost_packets={}",
+                        ctx.ssrc, skipped
+                    );
+                }
+                waiting_keyframe = true;
+                continue;
+            }
             Err(broadcast::error::RecvError::Closed) => return None,
         };
+
+        if waiting_keyframe && !pkt.is_key {
+            continue;
+        }
 
         if pkt.epoch != ctx.current_epoch {
             ctx.current_epoch = pkt.epoch;
@@ -329,11 +345,15 @@ async fn fmp4_next_chunk(
 async fn get_fmp4_init(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::Fmp4Header(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+    Ok(rx
+        .await
+        .hand_log(|msg| debug!("fmp4 init unavailable: ssrc={ssrc}, reason={msg}"))?)
 }
 
 async fn get_dash_mp4_init(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::DashMp4Header(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+    Ok(rx
+        .await
+        .hand_log(|msg| debug!("dash mp4 init unavailable: ssrc={ssrc}, reason={msg}"))?)
 }

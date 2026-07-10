@@ -6,7 +6,7 @@ use crate::state::event::{Event, EventRes, OutEvent};
 use crate::state::register::Register;
 use base::bus::mpsc::TypedReceiver;
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{error, warn};
 use base::tokio;
 use base::tokio::fs;
 use base::tokio::fs::File;
@@ -56,7 +56,7 @@ impl LocalStoreMp4Context {
                         path_file_name: Some(format!("{}/mp4/{}.mp4", self.path, self.file_name)),
                         file_size: self.file_size as u64,
                         timestamp: self.ts as u32,
-                        state: 1,
+                        state: if self.state == 0 { 1 } else { self.state },
                     };
                     let _ = self
                         .record_event_tx
@@ -67,7 +67,9 @@ impl LocalStoreMp4Context {
                 Err(_) => {
                     let mut info = StreamRecordInfo::default();
                     info.stream_id = Some(self.file_name.to_string());
-                    info.state = 3;
+                    info.state = if self.state == 0 { 3 } else { self.state };
+                    info.file_size = self.file_size as u64;
+                    info.timestamp = self.ts as u32;
                     info.path_file_name = Some(format!("{}/mp4/{}.mp4", self.path, self.file_name));
                     let _ = self
                         .record_event_tx
@@ -98,9 +100,12 @@ impl LocalStoreMp4Context {
             .hand_log(|msg| error!("{msg}"))?;
 
         // 3. 处理第一个关键帧,并写入头信息
-        self.handle_first_key_frame(&mut file).await?;
+        if !self.handle_first_key_frame(&mut file).await? {
+            return Ok(());
+        }
 
         // 4. 持续接收数据包写入 + 监听录制过程信息获取事件
+        let mut inner_closed = false;
         loop {
             tokio::select! {
                 pkt_opt = self.pkt_rx.recv() => {
@@ -110,18 +115,30 @@ impl LocalStoreMp4Context {
                             self.ts = pkt.timestamp;
                             self.file_size += pkt.data.len();
                         }
-                        Err(_) => break,//发送端drop，录制结束
+                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            self.state = 2;
+                            warn!(
+                                "mp4 recording incomplete: stage=recording, outcome=lagged, stream_id={}, ssrc={}, path={}, lost_packets={}",
+                                self.file_name,
+                                self.ssrc,
+                                file_path.display(),
+                                skipped
+                            );
+                            break;
+                        }
                     }
                 }
-                inner_event_res = self.inner_event_rx.recv() => {
-                    if let Ok(inner_event) = inner_event_res {
-                        match inner_event {
+                inner_event_res = self.inner_event_rx.recv(), if !inner_closed => {
+                    match inner_event_res {
+                        Ok(inner_event) => match inner_event {
                             Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
                                 let info = StreamRecordInfo { stream_id: Some(self.file_name.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
                                 let _ = record_info_tx.send(info);
                             }
                             Mp4OutputInnerEvent::Close => {break;}
-                        }
+                        },
+                        Err(_) => inner_closed = true,
                     }
                 }
             }
@@ -129,7 +146,8 @@ impl LocalStoreMp4Context {
         Ok(())
     }
 
-    async fn handle_first_key_frame(&mut self, file: &mut File) -> GlobalResult<()> {
+    async fn handle_first_key_frame(&mut self, file: &mut File) -> GlobalResult<bool> {
+        let mut inner_closed = false;
         loop {
             tokio::select! {
                 pkt_opt = self.pkt_rx.recv() => {
@@ -146,25 +164,41 @@ impl LocalStoreMp4Context {
                                 file.write_all(&pkt.data).await.hand_log(|msg| error!("{msg}"))?;
                                 self.ts = pkt.timestamp;
                                 self.file_size += pkt.data.len();
-                                break;
+                                return Ok(true);
                             }
                         }
-                        Err(_) => break,//发送端drop，录制结束
+                        Err(broadcast::error::RecvError::Closed) => {
+                            self.state = 3;
+                            return Ok(false);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            self.state = 2;
+                            warn!(
+                                "mp4 recording incomplete: stage=first_keyframe, outcome=lagged, stream_id={}, ssrc={}, lost_packets={}",
+                                self.file_name,
+                                self.ssrc,
+                                skipped
+                            );
+                            return Ok(false);
+                        }
                     }
                 }
-                inner_event_res = self.inner_event_rx.recv() => {
-                    if let Ok(inner_event) = inner_event_res {
-                        match inner_event {
+                inner_event_res = self.inner_event_rx.recv(), if !inner_closed => {
+                    match inner_event_res {
+                        Ok(inner_event) => match inner_event {
                             Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
                                 let info = StreamRecordInfo { stream_id: Some(self.file_name.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
                                 let _ = record_info_tx.send(info);
                             }
-                            Mp4OutputInnerEvent::Close => {break;}
-                        }
+                            Mp4OutputInnerEvent::Close => {
+                                self.state = 3;
+                                return Ok(false);
+                            }
+                        },
+                        Err(_) => inner_closed = true,
                     }
                 }
             }
         }
-        Ok(())
     }
 }

@@ -1,6 +1,6 @@
 use crate::io::talk::TalkManager;
 use crate::media;
-use crate::state::register::Register;
+use crate::state::register::{RefreshRtp, Register};
 use base::bytes::{Bytes, BytesMut};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
@@ -128,11 +128,15 @@ impl RtpReader {
         protocol: Protocol,
     ) -> GlobalResult<()> {
         let ssrc = pkt.ssrc();
-        let Some(rtp_tx) = Register::refresh_rtp(ssrc, pkt.payload_type(), (remote_addr, protocol))
-        else {
-            Register::observe_unknown_rtp(ssrc, remote_addr, protocol);
-            debug!("drop rtp packet for closed channel; ssrc: {ssrc}");
-            return Ok(());
+        let rtp_tx = match Register::refresh_rtp(ssrc, pkt.payload_type(), (remote_addr, protocol))
+        {
+            RefreshRtp::Ready(sender) => sender,
+            RefreshRtp::UnknownSsrc => {
+                Register::observe_unknown_rtp(ssrc, remote_addr, protocol);
+                debug!("drop rtp packet for unknown ssrc; ssrc: {ssrc}");
+                return Ok(());
+            }
+            RefreshRtp::Failed(error) => return Err(error),
         };
 
         let packet = media::rtp::RtpPacket {

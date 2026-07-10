@@ -204,18 +204,49 @@ impl OutboxWorker {
             self.store.update(record.clone()).await?;
             if self.record_expired(&record, now_ms) {
                 mark_dead(&mut record, now_ms, "outbox record expired before delivery")?;
+                base::log::warn!(
+                    "guard outbox transition: outbox_id={}, event_id={}, outcome=dead, reason=expired, attempts={}",
+                    record.outbox_id,
+                    record.event_id,
+                    record.attempts
+                );
                 self.store.update(record).await?;
                 continue;
             }
             match self.delivery.deliver(&record).await {
-                Ok(()) => mark_delivered(&mut record, now_ms)?,
+                Ok(()) => {
+                    mark_delivered(&mut record, now_ms)?;
+                    base::log::debug!(
+                        "guard outbox transition: outbox_id={}, event_id={}, outcome=delivered, attempts={}",
+                        record.outbox_id,
+                        record.event_id,
+                        record.attempts
+                    );
+                }
                 Err(error) if self.retry.permits(record.attempts.saturating_add(1)) => {
+                    let reason = error.to_string();
                     let delay = self.retry.delay(record.attempts);
                     let next =
                         now_ms.saturating_add(delay.as_millis().min(i64::MAX as u128) as i64);
-                    mark_retry(&mut record, now_ms, next, error.to_string())?;
+                    mark_retry(&mut record, now_ms, next, reason)?;
+                    base::log::warn!(
+                        "guard outbox transition: outbox_id={}, event_id={}, outcome=retry_wait, attempts={}, next_attempt_at_ms={}, reason=delivery_failed",
+                        record.outbox_id,
+                        record.event_id,
+                        record.attempts,
+                        record.next_attempt_at_ms
+                    );
                 }
-                Err(error) => mark_dead(&mut record, now_ms, error.to_string())?,
+                Err(error) => {
+                    let reason = error.to_string();
+                    mark_dead(&mut record, now_ms, reason)?;
+                    base::log::warn!(
+                        "guard outbox transition: outbox_id={}, event_id={}, outcome=dead, attempts={}, reason=delivery_failed",
+                        record.outbox_id,
+                        record.event_id,
+                        record.attempts
+                    );
+                }
             }
             self.store.update(record).await?;
         }
