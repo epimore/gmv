@@ -104,7 +104,7 @@
       <div class="monitor-head">
         <div class="device-summary">
           <strong>多画面工作台</strong>
-          <span>最多 16 路实时直播</span>
+          <span>最多 {{ multiViewLimit }} 路实时直播</span>
         </div>
         <div class="monitor-actions">
           <el-select v-model="selectedMultiNodeId" filterable placeholder="选择 Session 节点" class="multi-node-select"
@@ -345,9 +345,11 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { onBeforeRouteLeave } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import {
   errorMessage,
+  getMediaTransport,
   getGbSessionNodeConfig,
   listGbChannelImages,
   listGbChannels,
@@ -424,9 +426,14 @@ const multiGridSize = ref(1);
 const multiGridManual = ref(false);
 const multiFullscreen = ref(false);
 const multiPage = ref(1);
+const multiViewLimit = ref(6);
 const multiPlayVersions = reactive<Record<string, number>>({});
+const multiStopTasks = new Map<string, Promise<void>>();
 let stopCurrentStreamTask: Promise<void> | undefined;
 let playRequestSeq = 0;
+let multiLifecycleVersion = 0;
+let multiVisibilityTask: Promise<void> = Promise.resolve();
+let multiViewDisposed = false;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 
@@ -483,7 +490,7 @@ const sortedChannels = computed(() => [...channels.value].sort((left, right) => 
   return sortNo || displayChannelName(left).localeCompare(displayChannelName(right), 'zh-Hans-CN');
 }));
 const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeChannelItems.value);
-const selectedTreeChannelSubtitle = computed(() => `${selectedTreeChannels.value.length}/16`);
+const selectedTreeChannelSubtitle = computed(() => `${selectedTreeChannels.value.length}/${multiViewLimit.value}`);
 const treeProps = { label: 'label', isLeaf: 'leaf' };
 const treeDeviceNodes = computed<TreeNodeData[]>(() => treeDevices.value.map((device) => ({
   key: device.device_id,
@@ -552,8 +559,15 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
 watch(() => multiCells.value.length, () => {
   applyAutoMultiGridSize();
   clampMultiPage();
+  void reconcileVisibleMultiStreams();
 });
-watch(multiGridSize, clampMultiPage);
+watch(multiGridSize, () => {
+  clampMultiPage();
+  void reconcileVisibleMultiStreams();
+});
+watch(multiPage, () => {
+  void reconcileVisibleMultiStreams();
+});
 
 function clampMultiPage() {
   if (multiPage.value > multiPageCount.value) multiPage.value = multiPageCount.value;
@@ -574,7 +588,7 @@ function applyAutoMultiGridSize() {
 }
 function handleMultiGridSizeChange(value: number) {
   multiGridManual.value = true;
-  multiGridSize.value = value;
+  multiGridSize.value = multiViewLimit.value <= 6 && value > 9 ? 9 : value;
 }
 function tableIndex(index: number) { return (page.value - 1) * pageSize.value + index + 1; }
 function emptyText(value: unknown) { return value === undefined || value === null || value === '' ? '-' : String(value); }
@@ -672,7 +686,19 @@ async function openMultiView() {
   applyAutoMultiGridSize();
   selectedDevice.value = undefined;
   showImages.value = false;
-  await loadSessionNodes();
+  await Promise.all([loadMultiViewCapability(), loadSessionNodes()]);
+}
+async function loadMultiViewCapability() {
+  try {
+    const capability = await getMediaTransport();
+    const canUseSixteenViews = window.location.protocol === 'https:'
+      && capability.scheme === 'https'
+      && capability.http_version === 'h2';
+    multiViewLimit.value = canUseSixteenViews ? Math.min(16, Math.max(1, capability.multi_view_limit)) : 6;
+  } catch {
+    multiViewLimit.value = 6;
+  }
+  if (multiGridSize.value > 9 && multiViewLimit.value <= 6) multiGridSize.value = 9;
 }
 async function backToDeviceListFromMulti() {
   await stopAllMultiStreams();
@@ -762,8 +788,8 @@ async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
   const key = channelKey(channel);
   if (checked) {
     if (selectedTreeChannelKeys.value.includes(key)) return;
-    if (selectedTreeChannelKeys.value.length >= 16) {
-      ElMessage.warning('最多选择 16 个通道');
+    if (selectedTreeChannelKeys.value.length >= multiViewLimit.value) {
+      ElMessage.warning(`当前传输能力最多选择 ${multiViewLimit.value} 个通道`);
       return;
     }
     const device = treeDevices.value.find((item) => item.device_id === channel.device_id);
@@ -841,7 +867,6 @@ function upsertMultiCell(cell: MultiViewCell) {
 async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
   if (!channel) return;
   const key = selectedChannelKey(channel);
-  const version = bumpMultiPlayVersion(key);
   upsertMultiCell({
     key,
     device_id: channel.device_id,
@@ -851,35 +876,92 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     sources: [],
     status: 'reconnecting',
   });
+  await reconcileVisibleMultiStreams();
+}
+async function startVisibleMultiCell(cell: MultiViewCell) {
+  const key = cell.key;
+  const version = bumpMultiPlayVersion(key);
   try {
-    const stream = await startGbPreview(channel.device_id, channel.channel_id, {
-      request_id: 'ui-multi-preview-' + Date.now() + '-' + channel.channel_id,
+    const stream = await startGbPreview(cell.device_id, cell.channel_id, {
+      request_id: 'ui-multi-preview-' + Date.now() + '-' + cell.channel_id,
       output_type: 'flv',
     });
-    if (multiPlayVersions[key] !== version || !selectedTreeChannelKeys.value.includes(key)) return;
+    if (multiPlayVersions[key] !== version || !isMultiCellVisible(key) || multiViewDisposed) {
+      await stopMultiStream(stream);
+      return;
+    }
     upsertMultiCell({
       key,
-      device_id: channel.device_id,
-      channel_id: channel.channel_id,
-      title: channel.title,
-      poster: channel.poster,
+      device_id: cell.device_id,
+      channel_id: cell.channel_id,
+      title: cell.title,
+      poster: cell.poster,
       stream,
       sources: streamSources(stream),
       status: stream.state === 'running' ? 'playing' : 'online',
     });
   } catch (error) {
-    if (multiPlayVersions[key] !== version || !selectedTreeChannelKeys.value.includes(key)) return;
+    if (multiPlayVersions[key] !== version || !isMultiCellVisible(key) || multiViewDisposed) return;
     upsertMultiCell({
       key,
-      device_id: channel.device_id,
-      channel_id: channel.channel_id,
-      title: channel.title,
-      poster: channel.poster,
+      device_id: cell.device_id,
+      channel_id: cell.channel_id,
+      title: cell.title,
+      poster: cell.poster,
       sources: [],
       status: 'error',
       error: errorMessage(error, '播放失败'),
     });
   }
+}
+function visibleMultiCellKeys() {
+  return new Set(multiCells.value
+    .slice(multiVisibleStart.value, multiVisibleStart.value + multiGridSize.value)
+    .map((cell) => cell.key));
+}
+function isMultiCellVisible(key: string) {
+  return selectedTreeChannelKeys.value.includes(key) && visibleMultiCellKeys().has(key);
+}
+async function stopMultiStream(stream?: StreamSummary) {
+  const streamId = stream?.stream_id;
+  if (!streamId) return;
+  const existing = multiStopTasks.get(streamId);
+  if (existing) return existing;
+  let task: Promise<void>;
+  task = stopStream(streamId).then(() => undefined).catch(() => undefined).finally(() => {
+    if (multiStopTasks.get(streamId) === task) multiStopTasks.delete(streamId);
+  });
+  multiStopTasks.set(streamId, task);
+  return task;
+}
+async function suspendMultiCell(key: string) {
+  const cell = multiCells.value.find((item) => item.key === key);
+  if (!cell?.stream) return;
+  bumpMultiPlayVersion(key);
+  upsertMultiCell({
+    ...cell,
+    stream: undefined,
+    sources: [],
+    status: cell.status === 'error' ? 'error' : 'online',
+  });
+  await stopMultiStream(cell.stream);
+}
+function reconcileVisibleMultiStreams() {
+  const lifecycleVersion = ++multiLifecycleVersion;
+  const task = multiVisibilityTask.catch(() => undefined).then(async () => {
+    if (multiViewDisposed || lifecycleVersion !== multiLifecycleVersion) return;
+    const visibleKeys = visibleMultiCellKeys();
+    for (const cell of multiCells.value) {
+      if (!visibleKeys.has(cell.key)) await suspendMultiCell(cell.key);
+    }
+    for (const key of visibleKeys) {
+      if (multiViewDisposed || lifecycleVersion !== multiLifecycleVersion) return;
+      const cell = multiCells.value.find((item) => item.key === key);
+      if (cell && !cell.stream && cell.status !== 'error') await startVisibleMultiCell(cell);
+    }
+  });
+  multiVisibilityTask = task;
+  return task;
 }
 async function stopMultiCell(key: string, options: { removeSelection?: boolean } = {}) {
   const removeSelection = options.removeSelection !== false;
@@ -890,21 +972,25 @@ async function stopMultiCell(key: string, options: { removeSelection?: boolean }
     selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
     selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => selectedChannelKey(item) !== key);
   }
-  if (cell?.stream?.stream_id) await stopStream(cell.stream.stream_id).catch(() => undefined);
+  await stopMultiStream(cell?.stream);
+  await reconcileVisibleMultiStreams();
 }
 async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
   if (multiStopping.value) return;
-  const streams = multiCells.value.map((cell) => cell.stream).filter((stream): stream is StreamSummary => !!stream?.stream_id);
+  const cells = [...multiCells.value];
+  const streams = cells.map((cell) => cell.stream).filter((stream): stream is StreamSummary => !!stream?.stream_id);
   multiStopping.value = true;
   try {
-    for (const cell of multiCells.value) bumpMultiPlayVersion(cell.key);
-    await Promise.allSettled(streams.map((stream) => stopStream(stream.stream_id)));
+    multiLifecycleVersion += 1;
+    for (const cell of cells) bumpMultiPlayVersion(cell.key);
     multiCells.value = [];
     selectedTreeChannelKeys.value = [];
     selectedTreeChannelItems.value = [];
     multiGridManual.value = false;
     multiGridSize.value = 1;
     multiPage.value = 1;
+    await Promise.allSettled(streams.map((stream) => stopMultiStream(stream)));
+    await multiVisibilityTask;
     if (!options.quiet && streams.length) ElMessage.success('多画面已停止');
   } finally {
     multiStopping.value = false;
@@ -1248,7 +1334,12 @@ async function handlePlayerPtz(command: GmvPtzCommand) {
 }
 
 onMounted(loadDevices);
+onBeforeRouteLeave(async () => {
+  multiViewDisposed = true;
+  await stopAllMultiStreams({ quiet: true });
+});
 onBeforeUnmount(() => {
+  multiViewDisposed = true;
   void stopAllMultiStreams({ quiet: true });
   void stopCurrentStream();
 });

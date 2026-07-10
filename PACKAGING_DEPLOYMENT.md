@@ -184,6 +184,8 @@ guard:
     ui_dist_dir: /opt/gmv/guard-ui/dist
     tls:
       enabled: false
+    # Nginx 已实际协商 h2 后才设为 true；否则多画面上限保持 6。
+    media_https_http2_verified: true
 ```
 
 启动：
@@ -367,12 +369,19 @@ server {
     location /s1/ {
         proxy_pass http://127.0.0.1:28570/s1/;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 }
 ```
+
+`/s1/` 的 access log 不应记录完整 `$request` 或 `$request_uri`，因为播放 token 位于 query string；请在 `http` 块使用只记录 `$uri` 的专用 `log_format`，再为该 location 配置对应 `access_log`。
 
 ### 6.2 分开部署使用 Nginx 托管 UI
 
@@ -426,9 +435,14 @@ server {
     location /s1/ {
         proxy_pass http://127.0.0.1:28570/s1/;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 }
 ```

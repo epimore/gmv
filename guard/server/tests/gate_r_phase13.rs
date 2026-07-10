@@ -53,6 +53,7 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             outbox: OutboxRepository::from(store.clone()),
             users: None,
             event_forwarder: None,
+            media_https_http2_verified: false,
         }),
         store,
     )

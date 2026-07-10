@@ -206,6 +206,8 @@ pub struct HttpConfig {
     pub ui_dist_dir: PathBuf,
     #[serde(default)]
     pub tls: HttpTlsConfig,
+    #[serde(default)]
+    pub media_https_http2_verified: bool,
     #[serde(default = "default_session_ttl_sec")]
     pub session_ttl_sec: u64,
     #[serde(default = "default_login_window_sec")]
@@ -221,6 +223,7 @@ impl Default for HttpConfig {
             origins: default_origins(),
             ui_dist_dir: default_ui_dist_dir(),
             tls: HttpTlsConfig::default(),
+            media_https_http2_verified: false,
             session_ttl_sec: default_session_ttl_sec(),
             login_window_sec: default_login_window_sec(),
             max_failed_attempts: default_max_failed_attempts(),

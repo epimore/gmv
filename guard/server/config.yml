@@ -47,6 +47,8 @@ guard:
       enabled: false
       certificate_path: ""
       private_key_path: ""
+    # 仅在 nginx/OpenResty 已验证浏览器侧 HTTPS ALPN 协商为 h2 后设为 true。
+    media_https_http2_verified: false
     session_ttl_sec: 28800
     login_window_sec: 60
     max_failed_attempts: 5

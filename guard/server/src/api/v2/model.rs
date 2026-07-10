@@ -32,6 +32,50 @@ pub struct StreamSummary {
     pub state: StreamSummaryState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct MediaTransportCapability {
+    pub scheme: String,
+    pub http_version: String,
+    pub multi_view_limit: u8,
+}
+
+impl MediaTransportCapability {
+    pub fn from_https_http2_verified(https_http2_verified: bool) -> Self {
+        if https_http2_verified {
+            Self {
+                scheme: "https".to_string(),
+                http_version: "h2".to_string(),
+                multi_view_limit: 16,
+            }
+        } else {
+            Self {
+                scheme: "http".to_string(),
+                http_version: "http/1.1".to_string(),
+                multi_view_limit: 6,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MediaTransportCapability;
+
+    #[test]
+    fn media_transport_requires_verified_https_http2_for_sixteen_views() {
+        let http = MediaTransportCapability::from_https_http2_verified(false);
+        assert_eq!(http.scheme, "http");
+        assert_eq!(http.http_version, "http/1.1");
+        assert_eq!(http.multi_view_limit, 6);
+
+        let https = MediaTransportCapability::from_https_http2_verified(true);
+        assert_eq!(https.scheme, "https");
+        assert_eq!(https.http_version, "h2");
+        assert_eq!(https.multi_view_limit, 16);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
 pub enum AiTaskSummaryState {

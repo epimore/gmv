@@ -45,7 +45,7 @@ pub async fn handler(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
                                     0,
                                 );
                             }));
-                        send_frame(ssrc, rx, on_disconnect).await
+                        send_frame(ssrc, rx, on_disconnect)
                     }
                     Err(_) => res_404(),
                 },
@@ -56,7 +56,7 @@ pub async fn handler(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
     }
 }
 
-async fn send_frame(
+fn send_frame(
     ssrc: u32,
     rx: broadcast::Receiver<Arc<MuxPacket>>,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
@@ -68,9 +68,26 @@ async fn send_frame(
 
     Response::builder()
         .header("Content-Type", "video/x-flv")
-        .header("Connection", "keep-alive")
         .body(Body::from_stream(wrapped_stream))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flv_response_omits_connection_header() {
+        let (_, rx) = broadcast::channel(1);
+
+        let response = send_frame(1, rx, None);
+
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            "video/x-flv"
+        );
+        assert!(response.headers().get("Connection").is_none());
+    }
 }
 
 enum FlvStreamState {

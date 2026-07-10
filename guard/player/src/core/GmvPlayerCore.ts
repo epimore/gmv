@@ -6,6 +6,11 @@ import type { GmvEngine, GmvEngineFactory, GmvPlayerCoreOptions, GmvPlayerEvents
 import { EventBus, type EventHandler } from './utils/EventBus';
 import { GmvErrorCode } from './utils/ErrorCode';
 
+const STALL_GRACE_MS = 5_000;
+const STALL_CHECK_INTERVAL_MS = 1_000;
+const STABLE_PLAYBACK_MS = 10_000;
+const MAX_RECONNECT_DELAY_MS = 10_000;
+
 export class GmvPlayerCore {
   private readonly bus = new EventBus<GmvPlayerEvents>();
   private readonly video: HTMLVideoElement;
@@ -14,8 +19,13 @@ export class GmvPlayerCore {
   private sources: GmvSource[];
   private activeSource?: GmvSource;
   private reconnectRetry = 0;
+  private reconnectInFlight = false;
   private destroyed = false;
   private loadVersion = 0;
+  private stallWatch?: number;
+  private stablePlaybackTimer?: number;
+  private stallCurrentTime = 0;
+  private stallBufferEnd = 0;
   private readonly videoCleanups: Array<() => void> = [];
 
   constructor(private readonly options: GmvPlayerCoreOptions) {
@@ -37,7 +47,10 @@ export class GmvPlayerCore {
   async load(sources = this.sources): Promise<void> {
     const version = ++this.loadVersion;
     this.sources = sources;
+    this.clearStallWatch();
+    this.clearStablePlaybackTimer();
     this.destroyCurrentEngine();
+    this.activeSource = undefined;
     this.destroyed = false;
     this.bus.emit('loading', undefined);
 
@@ -57,7 +70,6 @@ export class GmvPlayerCore {
         }
         this.engine = engine;
         this.activeSource = source;
-        this.reconnectRetry = 0;
         this.bus.emit('sourceChanged', { source });
         if (this.options.autoplay) {
           try {
@@ -90,7 +102,7 @@ export class GmvPlayerCore {
   }
 
   async reconnect(reason = 'manual'): Promise<void> {
-    if (!this.activeSource || this.destroyed) return;
+    if (!this.activeSource || this.destroyed || this.reconnectInFlight) return;
 
     const maxRetries = this.options.reconnect?.maxRetries ?? 3;
     if (this.reconnectRetry >= maxRetries) {
@@ -99,18 +111,31 @@ export class GmvPlayerCore {
     }
 
     this.reconnectRetry += 1;
+    const source = this.activeSource;
+    this.clearStallWatch();
+    this.clearStablePlaybackTimer();
+    this.reconnectInFlight = true;
     this.bus.emit('reconnecting', { retry: this.reconnectRetry, reason });
     const version = this.loadVersion;
-    await this.delay((this.options.reconnect?.baseDelayMs ?? 800) * this.reconnectRetry);
-    if (this.destroyed || version !== this.loadVersion) return;
-    await this.load([this.activeSource]);
-    if (this.destroyed) return;
-    this.bus.emit('reconnected', undefined);
+    const baseDelayMs = this.options.reconnect?.baseDelayMs ?? 800;
+    const delayMs = Math.min(baseDelayMs * 2 ** (this.reconnectRetry - 1), MAX_RECONNECT_DELAY_MS);
+    try {
+      await this.delay(delayMs);
+      if (this.destroyed || version !== this.loadVersion) return;
+      await this.load([source]);
+      if (this.destroyed || !this.engine) return;
+      this.bus.emit('reconnected', undefined);
+    } finally {
+      this.reconnectInFlight = false;
+    }
   }
 
   destroy(): void {
     this.destroyed = true;
     this.loadVersion += 1;
+    this.reconnectInFlight = false;
+    this.clearStallWatch();
+    this.clearStablePlaybackTimer();
     this.destroyCurrentEngine();
     while (this.videoCleanups.length) this.videoCleanups.pop()?.();
     this.video.pause();
@@ -139,17 +164,25 @@ export class GmvPlayerCore {
 
   private bindVideoEvents(): void {
     const onPlaying = () => {
+      this.clearStallWatch();
       this.bus.emit('playing', undefined);
       this.emitStats();
+      this.scheduleStablePlaybackReset();
     };
-    const onPause = () => this.bus.emit('paused', undefined);
+    const onPause = () => {
+      this.clearStallWatch();
+      this.clearStablePlaybackTimer();
+      this.bus.emit('paused', undefined);
+    };
     const onStalled = () => {
       if (this.destroyed) return;
       this.bus.emit('stalled', undefined);
-      void this.reconnect('stalled');
+      this.startStallWatch();
     };
     const onError = () => {
       if (this.destroyed) return;
+      this.clearStallWatch();
+      this.clearStablePlaybackTimer();
       this.emitError(GmvErrorCode.StreamReadFailed, this.video.error?.message ?? 'video error', this.activeSource);
       void this.reconnect('video-error');
     };
@@ -178,6 +211,59 @@ export class GmvPlayerCore {
 
   private emitError(code: string, message: string, source?: GmvSource): void {
     this.bus.emit('error', { code, message, source });
+  }
+
+  private startStallWatch(): void {
+    if (this.stallWatch || !this.activeSource) return;
+
+    const startedAt = Date.now();
+    this.stallCurrentTime = this.video.currentTime;
+    this.stallBufferEnd = this.bufferedEnd();
+    this.clearStablePlaybackTimer();
+    this.stallWatch = window.setInterval(() => {
+      if (this.destroyed || !this.activeSource) {
+        this.clearStallWatch();
+        return;
+      }
+
+      const currentTime = this.video.currentTime;
+      const bufferEnd = this.bufferedEnd();
+      if (currentTime > this.stallCurrentTime + 0.05 || bufferEnd > this.stallBufferEnd + 0.05) {
+        this.clearStallWatch();
+        return;
+      }
+
+      if (Date.now() - startedAt >= STALL_GRACE_MS) {
+        this.clearStallWatch();
+        void this.reconnect('stalled-timeout');
+      }
+    }, STALL_CHECK_INTERVAL_MS);
+  }
+
+  private scheduleStablePlaybackReset(): void {
+    if (this.stablePlaybackTimer || this.reconnectRetry === 0) return;
+
+    this.stablePlaybackTimer = window.setTimeout(() => {
+      this.stablePlaybackTimer = undefined;
+      if (!this.destroyed && !this.video.paused) this.reconnectRetry = 0;
+    }, STABLE_PLAYBACK_MS);
+  }
+
+  private clearStallWatch(): void {
+    if (this.stallWatch === undefined) return;
+    window.clearInterval(this.stallWatch);
+    this.stallWatch = undefined;
+  }
+
+  private clearStablePlaybackTimer(): void {
+    if (this.stablePlaybackTimer === undefined) return;
+    window.clearTimeout(this.stablePlaybackTimer);
+    this.stablePlaybackTimer = undefined;
+  }
+
+  private bufferedEnd(): number {
+    const buffered = this.video.buffered;
+    return buffered.length > 0 ? buffered.end(buffered.length - 1) : 0;
   }
 
   private destroyCurrentEngine(): void {

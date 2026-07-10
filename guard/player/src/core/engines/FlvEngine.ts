@@ -14,6 +14,7 @@ export class FlvEngine extends BaseEngine {
       throw new Error(`${GmvErrorCode.UnsupportedProtocol}: 当前浏览器不支持 MSE FLV 播放`);
     }
 
+    const workerSupported = typeof Worker !== 'undefined';
     this.player = mpegts.createPlayer(
       {
         type: 'flv',
@@ -23,14 +24,25 @@ export class FlvEngine extends BaseEngine {
         hasVideo: true,
       },
       {
-        enableStashBuffer: false,
-        liveBufferLatencyChasing: true,
+        enableStashBuffer: true,
+        stashInitialSize: 128 * 1024,
+        liveBufferLatencyChasing: false,
+        liveSync: true,
+        enableWorker: workerSupported,
+        enableWorkerForMSE: workerSupported && this.supportsMseWorker(),
         autoCleanupSourceBuffer: true,
       },
     );
 
     this.player.attachMediaElement(video);
     this.player.load();
+  }
+
+  private supportsMseWorker(): boolean {
+    if (typeof window === 'undefined') return false;
+    const mediaSource = window.MediaSource as (typeof MediaSource & { canConstructInDedicatedWorker?: boolean }) | undefined;
+    const managedMediaSource = (window as Window & { ManagedMediaSource?: typeof MediaSource & { canConstructInDedicatedWorker?: boolean } }).ManagedMediaSource;
+    return mediaSource?.canConstructInDedicatedWorker === true || managedMediaSource?.canConstructInDedicatedWorker === true;
   }
 
   play(): Promise<void> | void {

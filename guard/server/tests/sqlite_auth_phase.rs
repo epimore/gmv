@@ -168,6 +168,7 @@ guard:
                 outbox: persistent.outbox_repository(),
                 users: Some(persistent.user_repository()),
                 event_forwarder: None,
+                media_https_http2_verified: false,
             });
 
             let (status, admin_cookie, admin_csrf) = login(&app, "admin", "admin-secret").await;

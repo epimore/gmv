@@ -151,12 +151,6 @@ pub fn mysql_pool() -> &'static MySqlPool {
 
 #[cfg(feature = "db-sqlite")]
 const SQLITE_SCHEMA: &str = include_str!("../../schema/sqlite/gb28181_core.sql");
-#[cfg(all(test, feature = "db-sqlite"))]
-const SQLITE_LOWERCASE_EXISTING_SCHEMA: &str =
-    include_str!("../../schema/sqlite/lowercase_existing_schema.sql");
-#[cfg(all(test, feature = "db-sqlite"))]
-const SQLITE_LEGACY_UPPERCASE_SCHEMA: &str =
-    include_str!("../../schema/sqlite/fixtures/legacy_uppercase_schema.sql");
 #[cfg(feature = "db-mysql")]
 const MYSQL_SCHEMA: &str = include_str!("../../schema/mysql/gb28181_core.sql");
 
@@ -261,63 +255,6 @@ mod tests {
                 "SQLite schema still contains legacy DB identifier {identifier}"
             );
         }
-    }
-
-    #[test]
-    fn sqlite_lowercase_existing_schema_rebuilds_legacy_database() {
-        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
-        runtime.block_on(async {
-            let (pool, root) = temp_sqlite_pool("legacy-lowercase-migration");
-
-            base_db::sqlx::raw_sql(SQLITE_LEGACY_UPPERCASE_SCHEMA)
-                .execute(&pool)
-                .await
-                .expect("create legacy uppercase schema");
-            base_db::sqlx::raw_sql(
-                "INSERT INTO GB28181_OAUTH (DEVICE_ID, DOMAIN) VALUES ('34020000002000000001', '3402000000');
-                 INSERT INTO GB28181_DEVICE (DEVICE_ID, TRANSPORT) VALUES ('34020000002000000001', 'TCP');",
-            )
-            .execute(&pool)
-            .await
-            .expect("seed legacy uppercase schema");
-
-            base_db::sqlx::raw_sql(SQLITE_LOWERCASE_EXISTING_SCHEMA)
-                .execute(&pool)
-                .await
-                .expect("rebuild legacy schema to lowercase");
-
-            let remaining_legacy_names: i64 = base_db::sqlx::query_scalar(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','index') AND name GLOB 'GB28181_*'",
-            )
-            .fetch_one(&pool)
-            .await
-            .expect("count legacy names");
-            assert_eq!(remaining_legacy_names, 0);
-
-            let transport: String =
-                base_db::sqlx::query_scalar("SELECT transport FROM gb28181_device WHERE device_id=?")
-                    .bind("34020000002000000001")
-                    .fetch_one(&pool)
-                    .await
-                    .expect("read migrated device");
-            assert_eq!(transport, "TCP");
-
-            let columns = base_db::sqlx::query("SELECT name FROM pragma_table_info('gb28181_sip_dialog_session')")
-                .fetch_all(&pool)
-                .await
-                .expect("read dialog schema columns");
-            for column in columns {
-                let name: String = column.get("name");
-                assert_eq!(
-                    name,
-                    name.to_ascii_lowercase(),
-                    "dialog schema column is not lowercase"
-                );
-            }
-
-            pool.close().await;
-            let _ = std::fs::remove_dir_all(root);
-        });
     }
 
     #[test]

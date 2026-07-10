@@ -17,7 +17,6 @@ export interface GmvPlayerCoreOptions {
   sources: GmvSource[];
   autoplay?: boolean;
   muted?: boolean;
-  lowLatency?: boolean;
   fallback?: boolean;
   reconnect?: {
     maxRetries?: number;

@@ -28,8 +28,8 @@ use crate::api::v2::control::{
     BusinessControl, DeviceStreamOptions, GbDevicePage, GbSessionConfigSummary,
 };
 use crate::api::v2::model::{
-    AiTaskSummary, AiTaskSummaryState, DeviceSummary, RuntimeStatus, StreamSummary,
-    StreamSummaryState,
+    AiTaskSummary, AiTaskSummaryState, DeviceSummary, MediaTransportCapability, RuntimeStatus,
+    StreamSummary, StreamSummaryState,
 };
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
@@ -56,6 +56,7 @@ pub struct HttpState {
     pub outbox: OutboxRepository,
     pub users: Option<UserRepository>,
     pub event_forwarder: Option<EventForwarder>,
+    pub media_https_http2_verified: bool,
 }
 
 pub fn router(state: HttpState) -> Router {
@@ -77,6 +78,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/auth/logout", post(logout))
         .route("/me", get(current_profile).post(update_profile))
         .route("/dashboard", get(dashboard))
+        .route("/media/transport", get(media_transport))
         .route("/nodes", get(nodes))
         .route("/leases", get(leases))
         .route("/events", get(events))
@@ -2208,6 +2210,17 @@ async fn streams(
     debug!("/api/v2/streams, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(real_streams(&state)))
+}
+
+async fn media_transport(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<MediaTransportCapability>, HttpError> {
+    debug!("/api/v2/media/transport, req:<empty>");
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(MediaTransportCapability::from_https_http2_verified(
+        state.media_https_http2_verified,
+    )))
 }
 
 async fn stop_stream(

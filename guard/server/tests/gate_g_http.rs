@@ -53,6 +53,7 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             outbox: OutboxRepository::from(store.clone()),
             users: None,
             event_forwarder: None,
+            media_https_http2_verified: false,
         }),
         store,
     )
@@ -165,6 +166,28 @@ fn ui_api_requires_registered_nodes_for_device_operations() {
             )
             .await;
             assert_eq!(status, StatusCode::NOT_FOUND);
+        });
+}
+
+#[test]
+fn media_transport_defaults_to_http1_and_six_views() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let (app, _) = app();
+            let (cookie, _) = login(&app, "viewer").await;
+            let (status, _, body) = call(
+                &app,
+                Request::get("/api/v2/media/transport")
+                    .header(COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["scheme"], "http");
+            assert_eq!(body["http_version"], "http/1.1");
+            assert_eq!(body["multi_view_limit"], 6);
         });
 }
 
