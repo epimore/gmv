@@ -3,26 +3,33 @@
     <div class="console-texture" />
     <aside class="sidebar">
       <RouterLink class="brand" to="/dashboard" aria-label="GMV 总览">
-        <div class="brand-mark">G</div>
+        <img class="brand-mark" src="/favicon.ico" alt="" />
         <div class="brand-copy">
           <div class="brand-title">GMV</div>
           <div class="brand-sub">Control Plane</div>
         </div>
       </RouterLink>
-      <el-menu class="sidebar-menu" :collapse="menuCollapsed" :default-active="route.path" :default-openeds="openMenus" router>
+      <el-menu class="sidebar-menu" :collapse="menuCollapsed" :default-active="route.path" :default-openeds="openMenus"
+        router>
         <template v-for="item in menuRoutes" :key="item.path">
           <el-sub-menu v-if="item.children?.length" :index="item.path">
             <template #title>
-              <el-icon><component :is="menuIcon(item.icon)" /></el-icon>
+              <el-icon>
+                <component :is="menuIcon(item.icon)" />
+              </el-icon>
               <span>{{ item.label }}</span>
             </template>
             <el-menu-item v-for="child in item.children" :key="child.path" :index="child.path">
-              <el-icon><component :is="menuIcon(child.icon)" /></el-icon>
+              <el-icon>
+                <component :is="menuIcon(child.icon)" />
+              </el-icon>
               <span>{{ child.label }}</span>
             </el-menu-item>
           </el-sub-menu>
           <el-menu-item v-else :index="item.path">
-            <el-icon><component :is="menuIcon(item.icon)" /></el-icon>
+            <el-icon>
+              <component :is="menuIcon(item.icon)" />
+            </el-icon>
             <span>{{ item.label }}</span>
           </el-menu-item>
         </template>
@@ -32,7 +39,8 @@
     <main class="main">
       <header class="main-header">
         <div class="main-header-left">
-          <el-button class="layout-collapse" :icon="menuCollapsed ? Expand : Fold" text @click="menuCollapsed = !menuCollapsed" />
+          <el-button class="layout-collapse" :icon="menuCollapsed ? Expand : Fold" text
+            @click="menuCollapsed = !menuCollapsed" />
           <span class="welcome-text">欢迎进入 GMV 音视频AI平台</span>
         </div>
         <el-dropdown trigger="click" popper-class="user-dropdown-popper" @command="handleUserCommand">
@@ -91,7 +99,8 @@
           <el-switch v-model="keepaliveForm.enabled" active-text="启用" inactive-text="关闭" />
         </el-form-item>
         <el-form-item label="保活心跳周期（分钟，仅当前会话）">
-          <el-input-number v-model="keepaliveForm.intervalMinutes" :min="1" :max="60" :step="1" controls-position="right" />
+          <el-input-number v-model="keepaliveForm.intervalMinutes" :min="1" :max="60" :step="1"
+            controls-position="right" />
         </el-form-item>
       </el-form>
       <template #footer>

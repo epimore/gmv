@@ -2,14 +2,14 @@
   <main class="login-page">
     <section class="login-card">
       <div class="brand">
-        <div class="brand-mark">G</div>
+        <img class="brand-mark" src="/favicon.ico" alt="" />
         <div>
           <div class="brand-title">GMV</div>
-          <div class="brand-sub">Control Plane</div>
+          <div class="brand-sub">一个可定制的AI智能视音频监控中心</div>
         </div>
       </div>
       <h1>登录</h1>
-      <p>进入 GMV 控制台，管理节点、流媒体、智能分析与系统集成。</p>
+      <p>进入 GMV 控制台（测试/演示）。</p>
       <el-form label-position="top" @submit.prevent="submit">
         <el-form-item label="用户名">
           <el-input v-model="form.username" size="large" placeholder="请输入用户名" />
@@ -21,28 +21,18 @@
           <el-checkbox v-model="form.remember">记住此设备</el-checkbox>
           <span class="code">REST API v2</span>
         </div>
-        <el-button type="primary" native-type="submit" size="large" style="width: 100%;" :loading="loading">安全登录</el-button>
+        <el-button type="primary" native-type="submit" size="large" style="width: 100%;"
+          :loading="loading">安全登录</el-button>
       </el-form>
-      <div class="kv" style="margin-top: 22px;">
-        <div class="kv-item"><span>TLS</span><b>默认启用</b></div>
-        <div class="kv-item"><span>NTP</span><b>已校验</b></div>
-        <div class="kv-item"><span>模式</span><b>部署级</b></div>
+      <!-- <div class="kv" style="margin-top: 22px;">
+        <div class="kv-item"><span>GB28181</span><b>兼容2016/2022</b></div>
+        <div class="kv-item"><span>ONVIF</span><b>开发中</b></div>
+        <div class="kv-item"><span>流媒体</span><b>H265/H264/AAC/G711</b></div>
         <div class="kv-item"><span>审计</span><b>写操作记录</b></div>
-      </div>
+      </div> -->
     </section>
     <section class="login-visual">
-      <div class="preview-card">
-        <div class="panel-title">中间件控制台</div>
-        <div class="panel-kicker">节点、租约、事件通过 REST polling 汇聚</div>
-        <OrbitChart :option="lineOption('接入延迟')" sm />
-      </div>
-      <div class="preview-card bottom">
-        <div class="panel-title">安全基线</div>
-        <div class="kv" style="margin-top: 12px;">
-          <div class="kv-item"><span>CSRF</span><b>启用</b></div>
-          <div class="kv-item"><span>Origin</span><b>校验</b></div>
-        </div>
-      </div>
+      <img class="login-visual-image" src="/log.png" alt="GMV 音视频平台" />
     </section>
   </main>
 </template>
@@ -52,8 +42,6 @@ import { reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
 import { errorMessage } from '@/api/client';
-import OrbitChart from '@/components/OrbitChart.vue';
-import { lineOption } from '@/data/mock';
 import { useAuthStore } from '@/stores/auth';
 
 const router = useRouter();

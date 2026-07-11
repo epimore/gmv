@@ -185,8 +185,7 @@ button, input { font: inherit; }
 }
 .brand { display: grid; grid-template-columns: 38px 1fr; gap: 12px; align-items: center; height: 54px; margin-bottom: 22px; color: inherit; text-decoration: none; }
 .brand-mark {
-  display: grid; place-items: center; width: 38px; height: 38px; border-radius: 13px;
-  color: #04111f; font-weight: 900; background: linear-gradient(135deg, var(--cyan), var(--violet));
+  display: block; width: 38px; height: 38px; border-radius: 13px; object-fit: contain;
   box-shadow: 0 0 28px rgba(52, 216, 255, .38);
 }
 .brand-title { font-size: 22px; font-weight: 900; letter-spacing: .12em; }
@@ -279,10 +278,8 @@ button, input { font: inherit; }
 .login-card { width: 460px; padding: 34px; border:1px solid rgba(116,216,255,.24); border-radius: 28px; background: linear-gradient(145deg, rgba(12,28,56,.92), rgba(5,13,28,.74)); box-shadow: var(--shadow); backdrop-filter: blur(24px); }
 .login-card h1 { margin: 18px 0 6px; font-size: 34px; letter-spacing: .12em; }
 .login-card p { margin: 0 0 28px; color: var(--muted); }
-.login-visual { min-height: 560px; border:1px solid rgba(116,216,255,.16); border-radius: 34px; background: radial-gradient(circle at 60% 44%, rgba(52,216,255,.22), transparent 16%), radial-gradient(circle at 70% 52%, rgba(168,117,255,.22), transparent 22%), rgba(7,16,34,.34); position: relative; overflow:hidden; }
-.login-visual::before { content:""; position:absolute; inset: 9% 4% 8% 22%; border-radius:50%; background: url("../assets/panel-radar.svg") center / contain no-repeat; border:1px solid rgba(82,216,255,.24); box-shadow: 0 0 80px rgba(52,216,255,.16), inset 0 0 80px rgba(168,117,255,.12); transform: perspective(700px) rotateX(62deg) rotateZ(-18deg); }
-.preview-card { position:absolute; right: 44px; top: 58px; width: 310px; padding:16px; border:1px solid rgba(120,220,255,.22); border-radius:20px; background:rgba(5,14,30,.70); }
-.preview-card.bottom { top:auto; bottom:58px; right: 110px; }
+.login-visual { display:flex; align-items:center; justify-content:center; min-height: 560px; border:1px solid rgba(116,216,255,.16); border-radius: 34px; background:rgba(7,16,34,.34); overflow:hidden; }
+.login-visual-image { display:block; width:100%; height:100%; object-fit:cover; }
 @media (max-width: 900px) {
   body { min-width: 0; overflow-x: hidden; }
   .app-shell { grid-template-columns: minmax(0, 1fr); }
