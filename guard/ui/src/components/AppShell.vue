@@ -6,7 +6,7 @@
         <img class="brand-mark" src="/favicon.ico" alt="" />
         <div class="brand-copy">
           <div class="brand-title">GMV</div>
-          <div class="brand-sub">Control Plane</div>
+          <!-- <div class="brand-sub">kang9095@126.com</div> -->
         </div>
       </RouterLink>
       <el-menu class="sidebar-menu" :collapse="menuCollapsed" :default-active="route.path" :default-openeds="openMenus"

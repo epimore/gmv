@@ -25,24 +25,20 @@ export class FlvEngine extends BaseEngine {
       },
       {
         enableStashBuffer: true,
-        stashInitialSize: 128 * 1024,
+        stashInitialSize: 512 * 1024,
         liveBufferLatencyChasing: false,
         liveSync: true,
+        liveSyncTargetLatency: 1.2,
+        liveSyncMaxLatency: 2,
+        liveSyncPlaybackRate: 1.05,
         enableWorker: workerSupported,
-        enableWorkerForMSE: workerSupported && this.supportsMseWorker(),
+        enableWorkerForMSE: false,
         autoCleanupSourceBuffer: true,
       },
     );
 
     this.player.attachMediaElement(video);
     this.player.load();
-  }
-
-  private supportsMseWorker(): boolean {
-    if (typeof window === 'undefined') return false;
-    const mediaSource = window.MediaSource as (typeof MediaSource & { canConstructInDedicatedWorker?: boolean }) | undefined;
-    const managedMediaSource = (window as Window & { ManagedMediaSource?: typeof MediaSource & { canConstructInDedicatedWorker?: boolean } }).ManagedMediaSource;
-    return mediaSource?.canConstructInDedicatedWorker === true || managedMediaSource?.canConstructInDedicatedWorker === true;
   }
 
   play(): Promise<void> | void {
