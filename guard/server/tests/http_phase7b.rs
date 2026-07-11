@@ -186,7 +186,7 @@ fn session_security_headers_and_csrf() {
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .contains("media-src 'self' blob:")
+                .contains("worker-src 'self' blob:")
         );
 
         let (cookie, csrf) = login(&app, "operator").await;
@@ -209,7 +209,7 @@ fn session_security_headers_and_csrf() {
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .contains("media-src 'self' blob:")
+                .contains("worker-src 'self' blob:")
         );
 
         let (status, _, _) = request(

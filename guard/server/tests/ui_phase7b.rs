@@ -39,7 +39,7 @@ fn dist_router_serves_assets_and_spa_fallback() {
                     .unwrap()
                     .to_str()
                     .unwrap()
-                    .contains("media-src 'self' blob:")
+                    .contains("worker-src 'self' blob:")
             );
 
             let response = app
