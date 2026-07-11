@@ -1,30 +1,32 @@
 <template>
-  <div>
+  <div class="login-screen">
     <main class="login-page">
+      <div class="login-brand">
+        <img class="login-brand-mark" src="/favicon.ico" alt="" />
+        <div>
+          <div class="login-brand-title">GMV</div>
+          <div class="login-brand-sub">智能视图监控，集成 AI 能力，实时感知，精准分析</div>
+        </div>
+      </div>
+
       <section class="login-hero">
         <div class="login-visual-stage">
-          <img class="login-visual-image" src="/log.png" alt="GMV 音视频平台" />
-          <div class="login-benefits" aria-label="GMV 平台能力">
-            <div v-for="item in featureCards" :key="item.title" class="login-benefit">
-              <div class="login-benefit-icon"><el-icon>
-                  <component :is="item.icon" />
-                </el-icon></div>
-              <div><b>{{ item.title }}</b><span>{{ item.detail }}</span></div>
-            </div>
+          <img class="login-visual-image" :src="loginVisual" alt="GMV 智能视频监控平台" />
+        </div>
+        <div class="login-benefits" aria-label="GMV 平台能力">
+          <div v-for="item in featureCards" :key="item.title" class="login-benefit">
+            <div class="login-benefit-icon"><el-icon>
+                <component :is="item.icon" />
+              </el-icon></div>
+            <b>{{ item.title }}</b>
+            <span>{{ item.detail }}</span>
           </div>
         </div>
       </section>
 
       <section class="login-card">
-        <div class="brand">
-          <img class="brand-mark" src="/favicon.ico" alt="" />
-          <div>
-            <div class="brand-title">GMV</div>
-            <div class="brand-sub">视音频监控，集成AI能力，实时感知，精准分析</div>
-          </div>
-        </div>
         <div class="login-card-head">
-          <h2>登录</h2>
+          <h2>欢迎登录</h2>
           <p>进入（测试/演示）控制台</p>
         </div>
         <el-form label-position="top" @submit.prevent="submit">
@@ -64,6 +66,7 @@ import { ArrowRight, Box, Cloudy, Connection, Cpu, Grid, Lock, User } from '@ele
 import { useRouter } from 'vue-router';
 import { errorMessage } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import loginVisual from '@/assets/login-visual-v2.png';
 
 const router = useRouter();
 const auth = useAuthStore();
