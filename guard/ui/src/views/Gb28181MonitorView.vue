@@ -1027,7 +1027,7 @@ async function focusChannelInMultiView(channel: GbChannelInfo) {
   images.value = [];
   showImages.value = false;
   monitorMode.value = 'multi';
-  await loadSessionNodes();
+  await Promise.all([loadMultiViewCapability(), loadSessionNodes()]);
   const targetNodeId = device.session_node_id || selectedListNodeId.value;
   if (targetNodeId && selectedMultiNodeId.value !== targetNodeId) await selectMultiNode(targetNodeId);
   treeDeviceId.value = device.device_id;
