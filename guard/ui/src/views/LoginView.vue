@@ -26,7 +26,7 @@
 
       <section class="login-card">
         <div class="login-card-head">
-          <h2>欢迎登录</h2>
+          <h2>登录GMV</h2>
           <p>进入（测试/演示）控制台</p>
         </div>
         <el-form label-position="top" @submit.prevent="submit">
@@ -42,9 +42,7 @@
             <span class="code">REST API v2</span>
           </div>
           <el-button class="login-submit" type="primary" native-type="submit" size="large" :loading="loading">
-            安全登录 <el-icon>
-              <ArrowRight />
-            </el-icon>
+            安全登录
           </el-button>
         </el-form>
       </section>
@@ -62,7 +60,7 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { ArrowRight, Box, Cloudy, Connection, Cpu, Grid, Lock, User } from '@element-plus/icons-vue';
+import { Box, Cloudy, Connection, Cpu, Grid, Lock, User } from '@element-plus/icons-vue';
 import { useRouter } from 'vue-router';
 import { errorMessage } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
