@@ -298,10 +298,6 @@
             :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
             :controls-visible="playerControlsVisible"
             @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz" />
-          <div v-if="showDefaultWaitingCover" class="player-waiting-cover" aria-hidden="true">
-            <span class="waiting-ring"></span>
-            <span class="waiting-scan"></span>
-          </div>
           <div v-if="playerRequesting" class="player-loading-badge">播放创建中...</div>
         </div>
       </div>
@@ -507,7 +503,6 @@ const multiPageCount = computed(() => Math.max(1, Math.ceil(multiCells.value.len
 const multiVisibleStart = computed(() => (multiPage.value - 1) * multiGridSize.value);
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerPoster = computed(() => selectedChannel.value?.pic_url || undefined);
-const showDefaultWaitingCover = computed(() => playerRequesting.value && !playerPoster.value);
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
   return {
@@ -1549,45 +1544,6 @@ onBeforeUnmount(() => {
   border-radius: 8px;
 }
 
-.player-waiting-cover {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 50% 48%, rgba(100, 203, 255, .2), transparent 28%),
-    linear-gradient(135deg, rgba(4, 15, 25, .95), rgba(1, 6, 12, .98));
-}
-
-.waiting-ring {
-  position: relative;
-  width: 128px;
-  height: 128px;
-  border: 1px solid rgba(100, 203, 255, .24);
-  border-top-color: rgba(100, 203, 255, .86);
-  border-radius: 50%;
-  animation: waiting-spin 1.35s linear infinite;
-  box-shadow: 0 0 32px rgba(100, 203, 255, .2);
-}
-
-.waiting-ring::after {
-  content: "";
-  position: absolute;
-  inset: 32px;
-  border: 1px solid rgba(37, 211, 102, .24);
-  border-right-color: rgba(37, 211, 102, .72);
-  border-radius: 50%;
-}
-
-.waiting-scan {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, transparent 0%, rgba(100, 203, 255, .14) 50%, transparent 100%);
-  animation: waiting-scan 1.8s ease-in-out infinite;
-}
-
 .player-loading-badge {
   position: absolute;
   left: 16px;
@@ -1600,22 +1556,6 @@ onBeforeUnmount(() => {
   color: var(--text);
   font-size: 12px;
   letter-spacing: 0;
-}
-
-@keyframes waiting-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes waiting-scan {
-  0% {
-    transform: translateY(-100%);
-  }
-
-  100% {
-    transform: translateY(100%);
-  }
 }
 
 .monitor-player :deep(.gmv-player) {

@@ -41,7 +41,7 @@
         <div class="main-header-left">
           <el-button class="layout-collapse" :icon="menuCollapsed ? Expand : Fold" text
             @click="menuCollapsed = !menuCollapsed" />
-          <span class="welcome-text">欢迎进入 GMV 音视频AI监控平台</span>
+          <span class="welcome-text">欢迎进入 GMV 视音频AI监控平台</span>
         </div>
         <el-dropdown trigger="click" popper-class="user-dropdown-popper" @command="handleUserCommand">
           <button class="user-menu-trigger" type="button">

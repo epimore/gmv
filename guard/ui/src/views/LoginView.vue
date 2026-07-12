@@ -5,7 +5,7 @@
         <img class="login-brand-mark" src="/favicon.ico" alt="" />
         <div>
           <div class="login-brand-title">GMV</div>
-          <div class="login-brand-sub">智能视图监控，集成 AI 能力，实时感知，精准分析</div>
+          <div class="login-brand-sub">智能视音频监控，集成 AI 能力，实时感知，精准分析</div>
         </div>
       </div>
 

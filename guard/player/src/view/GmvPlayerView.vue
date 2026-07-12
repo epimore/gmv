@@ -24,6 +24,11 @@
       </span>
     </div>
 
+    <div v-if="isLoading" class="player-waiting-cover" aria-label="视频加载中" role="status">
+      <span class="waiting-ring"></span>
+      <span class="waiting-scan"></span>
+    </div>
+
     <header class="player-topbar">
       <div>
         <strong>{{ title || 'GMV Player' }}</strong>
@@ -147,6 +152,7 @@ const playerRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const player = ref<GmvPlayerCore>();
 const viewState = ref<GmvDeviceStatus>('idle');
+const isLoading = ref(false);
 const lastError = ref('');
 const isFullscreen = ref(false);
 const recording = ref(false);
@@ -202,12 +208,12 @@ async function mountPlayer() {
   });
   player.value = core;
 
-  stops.push(core.on('loading', () => { viewState.value = 'idle'; lastError.value = ''; }));
-  stops.push(core.on('playing', () => { viewState.value = 'playing'; lastError.value = ''; }));
-  stops.push(core.on('paused', () => { viewState.value = 'idle'; }));
-  stops.push(core.on('reconnecting', () => { viewState.value = 'reconnecting'; }));
+  stops.push(core.on('loading', () => { viewState.value = 'idle'; isLoading.value = true; lastError.value = ''; }));
+  stops.push(core.on('playing', () => { viewState.value = 'playing'; isLoading.value = false; lastError.value = ''; }));
+  stops.push(core.on('paused', () => { viewState.value = 'idle'; isLoading.value = false; }));
+  stops.push(core.on('reconnecting', () => { viewState.value = 'reconnecting'; isLoading.value = true; }));
   stops.push(core.on('sourceChanged', ({ source }) => { selectedSourceUrl.value = source.url; }));
-  stops.push(core.on('error', ({ message }) => { viewState.value = 'error'; lastError.value = message; }));
+  stops.push(core.on('error', ({ message }) => { viewState.value = 'error'; isLoading.value = false; lastError.value = message; }));
 
   await core.load();
 }
@@ -216,6 +222,7 @@ function destroyPlayer() {
   while (stops.length) stops.pop()?.();
   player.value?.destroy();
   player.value = undefined;
+  isLoading.value = false;
 }
 
 function togglePlay() {
@@ -303,3 +310,60 @@ function boxStyle(box: GmvAiBox) {
   };
 }
 </script>
+
+<style scoped>
+.player-waiting-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(100, 203, 255, .2), transparent 28%),
+    linear-gradient(135deg, rgba(4, 15, 25, .95), rgba(1, 6, 12, .98));
+}
+
+.waiting-ring {
+  position: relative;
+  width: 128px;
+  height: 128px;
+  border: 1px solid rgba(100, 203, 255, .24);
+  border-top-color: rgba(100, 203, 255, .86);
+  border-radius: 50%;
+  animation: waiting-spin 1.35s linear infinite;
+  box-shadow: 0 0 32px rgba(100, 203, 255, .2);
+}
+
+.waiting-ring::after {
+  content: "";
+  position: absolute;
+  inset: 32px;
+  border: 1px solid rgba(37, 211, 102, .24);
+  border-right-color: rgba(37, 211, 102, .72);
+  border-radius: 50%;
+}
+
+.waiting-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(100, 203, 255, .14) 50%, transparent 100%);
+  animation: waiting-scan 1.8s ease-in-out infinite;
+}
+
+@keyframes waiting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes waiting-scan {
+  from {
+    transform: translateY(-100%);
+  }
+
+  to {
+    transform: translateY(100%);
+  }
+}
+</style>
