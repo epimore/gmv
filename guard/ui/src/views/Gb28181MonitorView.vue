@@ -185,16 +185,12 @@
     <GlassPanel class="span-12 multi-player-panel" :class="{ 'is-multi-fullscreen': multiFullscreen }" title="多画面播放" :subtitle="multiPlayerSubtitle">
       <template #action>
         <div class="multi-player-actions">
-          <div class="player-controls-toggle">
-            <span>操作控件</span>
-            <el-switch v-model="playerControlsVisible" inline-prompt active-text="显示" inactive-text="隐藏" />
-          </div>
           <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏' }}</el-button>
         </div>
       </template>
       <div class="multi-player">
         <GmvMultiGrid :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
-          :controls-visible="playerControlsVisible" @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz"
+          @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz"
           @close="handleMultiClose" @reorder="handleMultiReorder" />
         <div v-if="multiPageCount > 1" class="multi-pagination">
           <el-pagination v-model:current-page="multiPage" :page-size="multiGridSize" :total="multiCells.length"
@@ -290,13 +286,12 @@
       <div v-if="selectedChannel" class="monitor-player">
         <div class="monitor-player-toolbar">
           <span>{{ selectedChannelTitle }}</span>
-          <el-switch v-model="playerControlsVisible" inline-prompt active-text="显示" inactive-text="隐藏" />
         </div>
         <div class="monitor-player-stage">
           <GmvPlayerView :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
             :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
-            :controls-visible="playerControlsVisible"
+            :controls="playerControls"
             @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz" />
           <div v-if="playerRequesting" class="player-loading-badge">播放创建中...</div>
         </div>
@@ -368,7 +363,7 @@ import {
 } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { GmvMultiGrid, GmvPlayerView, type GmvCodec, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
+import { GmvMultiGrid, GmvPlayerView, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
@@ -407,7 +402,6 @@ const deviceDetailDrawer = ref(false);
 const coverDialog = ref(false);
 const coverUrl = ref('');
 const playerDialog = ref(false);
-const playerControlsVisible = ref(true);
 const playerRequesting = ref(false);
 const pendingPlayKey = ref('');
 const configDrawer = ref(false);
@@ -445,6 +439,7 @@ interface MultiViewCell {
   sources: GmvSource[];
   status: MultiCellStatus;
   error?: string;
+  channel: GbChannelInfo;
 }
 interface SelectedChannelRef {
   device_id: string;
@@ -453,6 +448,7 @@ interface SelectedChannelRef {
   poster?: string;
   device_title: string;
   status_text: string;
+  channel: GbChannelInfo;
 }
 type TreeNodeData =
   | { key: string; label: string; kind: 'device'; device: GbDeviceInfo; leaf: false }
@@ -467,17 +463,6 @@ const bizOptions = [
   { label: '启用', value: 1 },
   { label: '禁用', value: 0 },
 ];
-const multiPlayerCapabilities: GmvViewCapabilities = {
-  ptz: true,
-  presets: false,
-  snapshot: true,
-  record: false,
-  playback: true,
-  audio: false,
-  talk: false,
-  streamSwitch: false,
-  aiOverlay: false,
-};
 const selectedListNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedListNodeId.value));
 const selectedMultiNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedMultiNodeId.value));
 const selectedMultiNodeLabel = computed(() => selectedMultiNodeOption.value ? listNodeLabel(selectedMultiNodeOption.value) : '未选择信令节点');
@@ -517,6 +502,17 @@ const playerCapabilities = computed<GmvViewCapabilities>(() => {
     aiOverlay: false,
   };
 });
+const playerControls = computed<GmvPlayerControlsConfig>(() => {
+  const channel = selectedChannel.value;
+  const playback = lastAction.value === '历史回放';
+  const items: GmvPlayerControlsConfig['items'] = ['play'];
+  if (channel && canAudio(channel)) items.push('audio');
+  if (channel && canSnapshot(channel)) items.push('snapshot');
+  items.push('fullscreen');
+  if (!playback && channel && canPtz(channel)) items.push('ptz');
+  if (playback && channel && canPlayback(channel)) items.push('playbackRate', 'timeline');
+  return { items, visibility: 'auto', autoHideDelayMs: 3000, playbackRates: [0.5, 1, 2, 4] };
+});
 const playerOsd = computed(() => [
   { id: 'channel', text: selectedChannelTitle.value, x: 3, y: 5 },
   { id: 'mode', text: lastAction.value || 'monitor', x: 3, y: 12 },
@@ -536,20 +532,24 @@ const playerSources = computed<GmvSource[]>(() => {
     priority: 1,
   }];
 });
-const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.value, multiVisibleStart.value + multiGridSize.value).map((cell) => ({
-  sources: cell.sources,
-  title: cell.error ? cell.title + ' · ' + cell.error : cell.title,
-  deviceId: cell.device_id,
-  channelId: cell.channel_id,
-  status: cell.status,
-  viewers: 1,
-  poster: cell.poster,
-  osd: [
-    { id: 'channel', text: cell.title, x: 3, y: 5 },
-    { id: 'mode', text: '实时直播', x: 3, y: 12 },
-  ],
-  capabilities: multiPlayerCapabilities,
-})));
+const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.value, multiVisibleStart.value + multiGridSize.value).map((cell) => {
+  const capabilities = multiCellCapabilities(cell);
+  return {
+    sources: cell.sources,
+    title: cell.error ? cell.title + ' · ' + cell.error : cell.title,
+    deviceId: cell.device_id,
+    channelId: cell.channel_id,
+    status: cell.status,
+    viewers: 1,
+    poster: cell.poster,
+    osd: [
+      { id: 'channel', text: cell.title, x: 3, y: 5 },
+      { id: 'mode', text: '实时直播', x: 3, y: 12 },
+    ],
+    capabilities,
+    controls: multiCellControls(capabilities),
+  };
+}));
 
 watch(() => multiCells.value.length, () => {
   applyAutoMultiGridSize();
@@ -616,6 +616,30 @@ function canSnapshot(channel: GbChannelInfo) { return channelOnline(channel) && 
 function canPtz(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.ptz_enable); }
 function canAudio(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.audio_enable); }
 function canViewImages(channel: GbChannelInfo) { return bizEnabled(channel); }
+function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
+  const hasAudio = cell.sources.some((source) => source.hasAudio);
+  return {
+    ptz: canPtz(cell.channel),
+    presets: false,
+    snapshot: canSnapshot(cell.channel),
+    record: false,
+    playback: false,
+    audio: hasAudio && canAudio(cell.channel),
+    talk: false,
+    streamSwitch: cell.sources.length > 1,
+    aiOverlay: false,
+  };
+}
+function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControlsConfig {
+  const items: GmvPlayerControlsConfig['items'] = ['play'];
+  if (capabilities.snapshot) items.push('snapshot');
+  items.push('fullscreen');
+  const overflowItems: GmvPlayerControlsConfig['items'] = [];
+  if (capabilities.ptz) overflowItems.push('ptz');
+  if (capabilities.audio) overflowItems.push('audio');
+  if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
+  return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000 };
+}
 function playRequestKey(kind: 'preview' | 'playback', channel: GbChannelInfo) { return `${kind}:${channel.device_id}:${channel.channel_id}`; }
 function isPlayRequesting(kind: 'preview' | 'playback', channel: GbChannelInfo) { return playerRequesting.value && pendingPlayKey.value === playRequestKey(kind, channel); }
 function streamProtocol(endpoint: string): GmvSource['protocol'] {
@@ -796,6 +820,7 @@ async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
       poster: channel.pic_url || undefined,
       device_title: device ? displayDeviceName(device) : channel.device_id,
       status_text: channelStatusText(channel),
+      channel,
     });
     await startSelectedMultiChannel(selectedTreeChannelItems.value[selectedTreeChannelItems.value.length - 1]);
     return;
@@ -870,6 +895,7 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     poster: channel.poster,
     sources: [],
     status: 'reconnecting',
+    channel: channel.channel,
   });
   await reconcileVisibleMultiStreams();
 }
@@ -886,11 +912,7 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
       return;
     }
     upsertMultiCell({
-      key,
-      device_id: cell.device_id,
-      channel_id: cell.channel_id,
-      title: cell.title,
-      poster: cell.poster,
+      ...cell,
       stream,
       sources: streamSources(stream),
       status: stream.state === 'running' ? 'playing' : 'online',
@@ -898,11 +920,7 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
   } catch (error) {
     if (multiPlayVersions[key] !== version || !isMultiCellVisible(key) || multiViewDisposed) return;
     upsertMultiCell({
-      key,
-      device_id: cell.device_id,
-      channel_id: cell.channel_id,
-      title: cell.title,
-      poster: cell.poster,
+      ...cell,
       sources: [],
       status: 'error',
       error: errorMessage(error, '播放失败'),
@@ -1403,15 +1421,6 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
-.player-controls-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 13px;
-  white-space: nowrap;
-}
-
 .channel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -1664,50 +1673,6 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr 1fr;
   gap: 5px;
   margin-top: 5px;
-}
-
-.monitor-player :deep(.control-bar) {
-  position: absolute;
-  inset: auto 0 0;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px;
-  background: linear-gradient(0deg, rgba(0, 0, 0, .78), transparent);
-}
-
-.monitor-player :deep(.control-bar button),
-.monitor-player :deep(.control-bar select),
-.monitor-player :deep(.preset-box input) {
-  height: 32px;
-  border: 1px solid rgba(100, 203, 255, .2);
-  border-radius: 5px;
-  background: rgba(255, 255, 255, .06);
-  color: var(--text);
-  padding: 0 9px;
-}
-
-.monitor-player :deep(.timeline) {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 8px;
-  min-width: 130px;
-  color: var(--muted);
-}
-
-.monitor-player :deep(.timeline input) {
-  width: 100%;
-}
-
-.monitor-player :deep(.timeline.disabled) {
-  opacity: .45;
-}
-
-.monitor-player :deep(.preset-box) {
-  display: flex;
-  gap: 5px;
 }
 
 .tree-device-list,
@@ -1976,10 +1941,6 @@ onBeforeUnmount(() => {
 
 .multi-player :deep(.status-strip b) {
   color: var(--green);
-}
-
-.multi-player :deep(.controls-hidden .player-topbar) {
-  display: none;
 }
 
 .multi-player :deep(.empty-cell) {

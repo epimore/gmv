@@ -85,6 +85,55 @@ export interface GmvViewCapabilities {
   aiOverlay?: boolean;
 }
 
+export type GmvPlayerControl =
+  | 'play'
+  | 'audio'
+  | 'snapshot'
+  | 'fullscreen'
+  | 'ptz'
+  | 'record'
+  | 'talk'
+  | 'streamSwitch'
+  | 'playbackRate'
+  | 'timeline'
+  | 'presets';
+
+export type GmvControlsVisibility = 'auto' | 'always' | 'hidden';
+
+export interface GmvPlayerControlsConfig {
+  items: GmvPlayerControl[];
+  overflowItems?: GmvPlayerControl[];
+  visibility?: GmvControlsVisibility;
+  autoHideDelayMs?: number;
+  playbackRates?: number[];
+}
+
+export interface GmvPlayerControlsState {
+  playbackState: GmvDeviceStatus;
+  audioEnabled: boolean;
+  fullscreen: boolean;
+  ptzOpen: boolean;
+  recording: boolean;
+  talking: boolean;
+  playbackRate: number;
+  seekMs: number;
+  selectedSourceUrl: string;
+}
+
+export type GmvPlayerControlAction =
+  | { type: 'play-toggle' }
+  | { type: 'audio-toggle' }
+  | { type: 'snapshot' }
+  | { type: 'fullscreen-toggle' }
+  | { type: 'ptz-toggle' }
+  | { type: 'record-toggle' }
+  | { type: 'talk-toggle' }
+  | { type: 'stream-switch'; sourceUrl: string }
+  | { type: 'rate-change'; rate: number }
+  | { type: 'seek'; timeMs: number }
+  | { type: 'preset-call'; presetId: string }
+  | { type: 'preset-set'; presetId: string };
+
 export interface GmvPtzCommand {
   action:
     | 'up'

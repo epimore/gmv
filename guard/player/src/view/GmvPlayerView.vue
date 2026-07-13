@@ -1,5 +1,12 @@
 <template>
-  <section ref="playerRef" class="gmv-player" :class="['is-' + viewState, { 'controls-hidden': !controlsVisible }]">
+  <section
+    ref="playerRef"
+    class="gmv-player"
+    :class="['is-' + viewState, { 'player-chrome-hidden': !controlsAreVisible }]"
+    @pointermove="notifyControlsActivity"
+    @pointerdown="notifyControlsActivity"
+    @pointerleave="handlePlayerPointerLeave"
+  >
     <video ref="videoRef" class="gmv-video" playsinline muted :poster="poster || undefined"></video>
 
     <div class="gmv-layer osd-layer">
@@ -45,71 +52,77 @@
       <button type="button" @click="reconnect">重连</button>
     </div>
 
-    <aside class="ptz-panel" v-if="controlsVisible">
+    <div v-if="recording" class="recording-indicator" aria-live="polite">● 录像中</div>
+
+    <aside
+      v-if="capabilities.ptz !== false && ptzOpen"
+      class="ptz-panel"
+      @pointerenter="setPtzPointerInside(true)"
+      @pointerleave="setPtzPointerInside(false)"
+      @focusin="setPtzFocusWithin(true)"
+      @focusout="handlePtzFocusOut"
+      @click.stop
+    >
       <div class="ptz-grid">
-        <button type="button" title="左上" :disabled="capabilities.ptz === false" @pointerdown="ptz('leftUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↖</button>
-        <button type="button" title="上" :disabled="capabilities.ptz === false" @pointerdown="ptz('up')" @pointerup="ptzStop" @pointerleave="ptzStop">↑</button>
-        <button type="button" title="右上" :disabled="capabilities.ptz === false" @pointerdown="ptz('rightUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↗</button>
-        <button type="button" title="左" :disabled="capabilities.ptz === false" @pointerdown="ptz('left')" @pointerup="ptzStop" @pointerleave="ptzStop">←</button>
-        <button type="button" title="停止" :disabled="capabilities.ptz === false" @click="ptzStop">■</button>
-        <button type="button" title="右" :disabled="capabilities.ptz === false" @pointerdown="ptz('right')" @pointerup="ptzStop" @pointerleave="ptzStop">→</button>
-        <button type="button" title="左下" :disabled="capabilities.ptz === false" @pointerdown="ptz('leftDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↙</button>
-        <button type="button" title="下" :disabled="capabilities.ptz === false" @pointerdown="ptz('down')" @pointerup="ptzStop" @pointerleave="ptzStop">↓</button>
-        <button type="button" title="右下" :disabled="capabilities.ptz === false" @pointerdown="ptz('rightDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↘</button>
+        <button type="button" title="左上" @pointerdown="ptz('leftUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↖</button>
+        <button type="button" title="上" @pointerdown="ptz('up')" @pointerup="ptzStop" @pointerleave="ptzStop">↑</button>
+        <button type="button" title="右上" @pointerdown="ptz('rightUp')" @pointerup="ptzStop" @pointerleave="ptzStop">↗</button>
+        <button type="button" title="左" @pointerdown="ptz('left')" @pointerup="ptzStop" @pointerleave="ptzStop">←</button>
+        <button type="button" title="停止" @click="ptzStop">■</button>
+        <button type="button" title="右" @pointerdown="ptz('right')" @pointerup="ptzStop" @pointerleave="ptzStop">→</button>
+        <button type="button" title="左下" @pointerdown="ptz('leftDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↙</button>
+        <button type="button" title="下" @pointerdown="ptz('down')" @pointerup="ptzStop" @pointerleave="ptzStop">↓</button>
+        <button type="button" title="右下" @pointerdown="ptz('rightDown')" @pointerup="ptzStop" @pointerleave="ptzStop">↘</button>
       </div>
       <label>
         速度
         <input v-model.number="ptzSpeed" min="1" max="255" type="range" />
       </label>
       <div class="lens-row">
-        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('zoomIn')">变倍+</button>
-        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('zoomOut')">变倍-</button>
+        <button type="button" @click="ptz('zoomIn')">变倍+</button>
+        <button type="button" @click="ptz('zoomOut')">变倍-</button>
       </div>
       <div class="lens-row">
-        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('focusNear')">聚焦近</button>
-        <button type="button" :disabled="capabilities.ptz === false" @click="ptz('focusFar')">聚焦远</button>
+        <button type="button" @click="ptz('focusNear')">聚焦近</button>
+        <button type="button" @click="ptz('focusFar')">聚焦远</button>
       </div>
     </aside>
 
-    <footer v-if="controlsVisible" class="control-bar">
-      <button type="button" @click="togglePlay">{{ viewState === 'playing' ? '暂停' : '播放' }}</button>
-      <button type="button" :disabled="capabilities.audio === false" @click="toggleAudio">{{ audioEnabled ? '静音' : '声音' }}</button>
-      <button type="button" :disabled="capabilities.snapshot === false" @click="emit('snapshot', basePayload)">截图</button>
-      <button type="button" :disabled="!fullscreenSupported" @click="toggleFullscreen">{{ isFullscreen ? '退出全屏' : '全屏' }}</button>
-      <button type="button" :disabled="capabilities.record === false" @click="toggleRecord">{{ recording ? '停录像' : '录像' }}</button>
-      <button type="button" :disabled="capabilities.talk === false" @click="toggleTalk">{{ talking ? '停对讲' : '对讲' }}</button>
-
-      <select :value="selectedSourceUrl" :disabled="capabilities.streamSwitch === false" @change="switchSource">
-        <option v-for="source in sources" :key="source.url" :value="source.url">
-          {{ source.label || source.protocol + ':' + (source.codec || 'auto') }}
-        </option>
-      </select>
-
-      <select v-model="playbackRate" :disabled="capabilities.playback === false" @change="setPlaybackRate">
-        <option :value="0.5">0.5x</option>
-        <option :value="1">1x</option>
-        <option :value="2">2x</option>
-        <option :value="4">4x</option>
-      </select>
-
-      <label class="timeline" :class="{ disabled: capabilities.playback === false }">
-        <span>回放</span>
-        <input v-model.number="seekMs" type="range" min="0" max="86400000" step="1000" :disabled="capabilities.playback === false" @change="emit('playbackSeek', { timeMs: seekMs })" />
-      </label>
-
-      <div class="preset-box" v-if="capabilities.presets !== false">
-        <input v-model="presetId" placeholder="预置点" />
-        <button type="button" @click="emit('presetCall', { presetId })">调用</button>
-        <button type="button" @click="emit('presetSet', { presetId })">设置</button>
-      </div>
-    </footer>
+    <PlayerControls
+      ref="controlsRef"
+      :config="effectiveControls"
+      :state="controlsState"
+      :capabilities="capabilities"
+      :sources="sources"
+      :fullscreen-supported="fullscreenSupported"
+      @action="handleControlAction"
+      @visibility-change="handleControlsVisibilityChange"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { GmvPlayerCore } from '../core/GmvPlayerCore';
-import type { GmvAiBox, GmvDeviceStatus, GmvOsdItem, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
+import type {
+  GmvAiBox,
+  GmvDeviceStatus,
+  GmvOsdItem,
+  GmvPlayerControlAction,
+  GmvPlayerControlsConfig,
+  GmvPlayerControlsState,
+  GmvPtzCommand,
+  GmvSource,
+  GmvViewCapabilities,
+} from '../core/types';
+import PlayerControls from './PlayerControls.vue';
+
+const defaultControls: GmvPlayerControlsConfig = {
+  items: ['play', 'audio', 'snapshot', 'fullscreen', 'ptz', 'record', 'talk', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
+  visibility: 'auto',
+  autoHideDelayMs: 3000,
+  playbackRates: [0.5, 1, 2, 4],
+};
 
 const props = withDefaults(
   defineProps<{
@@ -123,6 +136,8 @@ const props = withDefaults(
     osd?: GmvOsdItem[];
     aiBoxes?: GmvAiBox[];
     capabilities?: GmvViewCapabilities;
+    controls?: GmvPlayerControlsConfig;
+    /** @deprecated 请使用 controls.visibility。 */
     controlsVisible?: boolean;
   }>(),
   {
@@ -130,7 +145,7 @@ const props = withDefaults(
     osd: () => [],
     aiBoxes: () => [],
     capabilities: () => ({}),
-    controlsVisible: true,
+    controlsVisible: undefined,
   },
 );
 
@@ -151,22 +166,46 @@ const emit = defineEmits<{
 const playerRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const player = ref<GmvPlayerCore>();
+const controlsRef = ref<InstanceType<typeof PlayerControls>>();
 const viewState = ref<GmvDeviceStatus>('idle');
 const isLoading = ref(false);
 const lastError = ref('');
 const isFullscreen = ref(false);
+const ptzOpen = ref(false);
 const recording = ref(false);
 const talking = ref(false);
 const audioEnabled = ref(false);
 const ptzSpeed = ref(64);
 const playbackRate = ref(1);
 const seekMs = ref(0);
-const presetId = ref('1');
 const selectedSourceUrl = ref('');
+const controlsAreVisible = ref(true);
+const ptzPointerInside = ref(false);
+const ptzFocusWithin = ref(false);
 const stops: Array<() => void> = [];
 
 const basePayload = computed(() => ({ deviceId: props.deviceId, channelId: props.channelId }));
 const fullscreenSupported = computed(() => typeof document !== 'undefined' && !!document.fullscreenEnabled);
+const effectiveControls = computed<GmvPlayerControlsConfig>(() => ({
+  ...defaultControls,
+  ...props.controls,
+  items: props.controls?.items ?? defaultControls.items,
+  overflowItems: props.controls?.overflowItems ?? defaultControls.overflowItems,
+  visibility: props.controlsVisible === undefined
+    ? props.controls?.visibility ?? defaultControls.visibility
+    : props.controlsVisible ? 'always' : 'hidden',
+}));
+const controlsState = computed<GmvPlayerControlsState>(() => ({
+  playbackState: viewState.value,
+  audioEnabled: audioEnabled.value,
+  fullscreen: isFullscreen.value,
+  ptzOpen: ptzOpen.value,
+  recording: recording.value,
+  talking: talking.value,
+  playbackRate: playbackRate.value,
+  seekMs: seekMs.value,
+  selectedSourceUrl: selectedSourceUrl.value,
+}));
 const statusLabel = computed(() => {
   if (viewState.value === 'playing') return '播放中';
   if (viewState.value === 'reconnecting') return '重连中';
@@ -193,6 +232,10 @@ watch(
   },
   { deep: true },
 );
+
+watch(() => props.capabilities.ptz, (value) => {
+  if (value === false) closePtzPanel();
+});
 
 async function mountPlayer() {
   destroyPlayer();
@@ -267,8 +310,7 @@ function ptzStop() {
   emit('ptz', { action: 'stop', speed: ptzSpeed.value });
 }
 
-function switchSource(event: Event) {
-  const url = (event.target as HTMLSelectElement).value;
+function switchSource(url: string) {
   const source = props.sources.find((item) => item.url === url);
   if (!source) return;
   selectedSourceUrl.value = url;
@@ -276,8 +318,9 @@ function switchSource(event: Event) {
   void player.value?.switchSource(source);
 }
 
-function setPlaybackRate() {
-  if (videoRef.value) videoRef.value.playbackRate = Number(playbackRate.value);
+function setPlaybackRate(rate: number) {
+  playbackRate.value = rate;
+  if (videoRef.value) videoRef.value.playbackRate = rate;
 }
 
 async function toggleFullscreen() {
@@ -299,6 +342,104 @@ function updateFullscreenState() {
 function reconnect() {
   emit('reconnect');
   void player.value?.reconnect();
+}
+
+function notifyControlsActivity() {
+  controlsRef.value?.notifyActivity();
+}
+
+function handlePlayerPointerLeave() {
+  controlsRef.value?.notifySurfaceLeave();
+  ptzPointerInside.value = false;
+  ptzFocusWithin.value = false;
+  syncPtzInteraction();
+}
+
+function setControlsInteraction(active: boolean) {
+  controlsRef.value?.setExternalInteractionActive(active);
+}
+
+function closePtzPanel() {
+  ptzOpen.value = false;
+  ptzPointerInside.value = false;
+  ptzFocusWithin.value = false;
+  setControlsInteraction(false);
+}
+
+function togglePtzPanel() {
+  if (props.capabilities.ptz === false) return;
+  if (ptzOpen.value) {
+    closePtzPanel();
+    return;
+  }
+  ptzOpen.value = true;
+}
+
+function handleControlsVisibilityChange(visible: boolean) {
+  controlsAreVisible.value = visible;
+  if (!visible) closePtzPanel();
+}
+
+function syncPtzInteraction() {
+  setControlsInteraction(ptzPointerInside.value || ptzFocusWithin.value);
+}
+
+function setPtzPointerInside(active: boolean) {
+  ptzPointerInside.value = active;
+  syncPtzInteraction();
+}
+
+function setPtzFocusWithin(active: boolean) {
+  ptzFocusWithin.value = active;
+  syncPtzInteraction();
+}
+
+function handlePtzFocusOut(event: FocusEvent) {
+  const next = event.relatedTarget;
+  if (next instanceof Node && (event.currentTarget as HTMLElement).contains(next)) return;
+  setPtzFocusWithin(false);
+}
+
+function handleControlAction(action: GmvPlayerControlAction) {
+  switch (action.type) {
+    case 'play-toggle':
+      togglePlay();
+      break;
+    case 'audio-toggle':
+      toggleAudio();
+      break;
+    case 'snapshot':
+      emit('snapshot', basePayload.value);
+      break;
+    case 'fullscreen-toggle':
+      void toggleFullscreen();
+      break;
+    case 'ptz-toggle':
+      togglePtzPanel();
+      break;
+    case 'record-toggle':
+      toggleRecord();
+      break;
+    case 'talk-toggle':
+      toggleTalk();
+      break;
+    case 'stream-switch':
+      switchSource(action.sourceUrl);
+      break;
+    case 'rate-change':
+      setPlaybackRate(action.rate);
+      break;
+    case 'seek':
+      seekMs.value = action.timeMs;
+      emit('playbackSeek', { timeMs: action.timeMs });
+      break;
+    case 'preset-call':
+      emit('presetCall', { presetId: action.presetId });
+      break;
+    case 'preset-set':
+      emit('presetSet', { presetId: action.presetId });
+      break;
+  }
 }
 
 function boxStyle(box: GmvAiBox) {

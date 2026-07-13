@@ -39,7 +39,6 @@
         <GmvPlayerView
           v-if="cells[index]?.sources.length"
           v-bind="cells[index]"
-          :controls-visible="controlsVisible"
           @snapshot="(payload) => emit('snapshot', { index, payload })"
           @record-start="(payload) => emit('recordStart', { index, payload })"
           @record-stop="(payload) => emit('recordStop', { index, payload })"
@@ -63,7 +62,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import type { GmvAiBox, GmvDeviceStatus, GmvOsdItem, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
+import type { GmvAiBox, GmvDeviceStatus, GmvOsdItem, GmvPlayerControlsConfig, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
 import GmvPlayerView from './GmvPlayerView.vue';
 
 export interface GmvGridCell {
@@ -77,18 +76,13 @@ export interface GmvGridCell {
   osd?: GmvOsdItem[];
   aiBoxes?: GmvAiBox[];
   capabilities?: GmvViewCapabilities;
+  controls?: GmvPlayerControlsConfig;
 }
 
-const props = withDefaults(
-  defineProps<{
-    cells: GmvGridCell[];
-    gridSize?: number;
-    controlsVisible?: boolean;
-  }>(),
-  {
-    controlsVisible: true,
-  },
-);
+const props = defineProps<{
+  cells: GmvGridCell[];
+  gridSize?: number;
+}>();
 
 const emit = defineEmits<{
   'update:gridSize': [value: number];
@@ -107,7 +101,6 @@ const emit = defineEmits<{
 }>();
 
 const gridSizes = [1, 4, 9, 16];
-const controlsVisible = computed(() => props.controlsVisible ?? true);
 const localGrid = ref(props.gridSize ?? 4);
 const selectedIndex = ref(0);
 const draggingIndex = ref<number>();

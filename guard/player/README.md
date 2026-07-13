@@ -562,6 +562,54 @@ pnpm -C guard/ui build
 - 多宫格切换。
 - 全屏、OSD、AI 框、控制栏无重叠。
 
+## 操作控件配置
+
+`GmvPlayerView` 通过 `controls` 决定展示哪些操作，通过 `capabilities` 决定已展示操作当前是否可用。两者职责不同：
+
+- `controls.items`：直接展示在画面底部的主操作，数组顺序即从左到右顺序。
+- `controls.overflowItems`：点击“…”后在当前画面内竖向展示的扩展操作，数组顺序即从上到下顺序；数组为空时不展示“…”按钮。
+- `capabilities`：运行时能力。已经配置但当前不可用的操作显示为 disabled；未配置的操作不创建 DOM。
+- `controls.visibility`：`auto` 为播放中 3 秒无操作后隐藏，`always` 为始终显示，`hidden` 为不渲染。
+
+```vue
+<GmvPlayerView
+  :sources="sources"
+  :capabilities="{
+    snapshot: true,
+    audio: true,
+    ptz: true,
+    record: false,
+  }"
+  :controls="{
+    items: ['play', 'snapshot', 'fullscreen', 'ptz'],
+    overflowItems: ['audio'],
+    visibility: 'auto',
+    autoHideDelayMs: 3000,
+  }"
+  @snapshot="handleSnapshot"
+/>
+```
+
+通用 `GmvPlayerControls` 只发出类型化 `GmvPlayerControlAction`，不直接持有 `GmvPlayerCore`，也不调用业务 API。`GmvPlayerView` 负责把播放、声音、倍速和全屏 action 映射到本地播放器，把截图、录像、对讲、PTZ、预置点、回放定位和码流切换继续通过原有业务事件交给调用方。
+
+`controlsVisible` 仅保留一版兼容：`true` 映射为 `always`，`false` 映射为 `hidden`。新代码应使用 `controls.visibility`。
+
+### 自动显隐
+
+- 播放窗口发生 pointer move、点击或触碰时立即显示并重新计时。
+- 正常播放且无操作 3 秒后淡出；隐藏后不拦截画面 pointer 事件。
+- 暂停、idle、错误和重连时保持显示。
+- hover、键盘焦点、下拉选择、滑块拖动、PTZ 持续操作和“…”菜单展开期间不隐藏。
+- PTZ 面板默认关闭；点击“云台”按钮展开，再次点击关闭。
+- 自动隐藏时同时关闭 PTZ 面板；重新移动鼠标只恢复操作栏，不自动重新展开 PTZ。
+- 顶部标题、已展开的 PTZ 面板和底部操作栏同步显隐；错误、重连和录像状态独立展示。
+
+### 多画面
+
+`GmvGridCell.controls` 和 `GmvGridCell.capabilities` 均属于单个 cell。每一路应根据对应设备、通道、媒体流和业务权限独立生成配置，禁止用共享可变对象覆盖全部画面。
+
+单路全屏、截图、声音、云台及“…”扩展菜单均渲染在该路 player cell 内。多画面把具备能力的“云台”放入对应 cell 的扩展菜单；不支持 PTZ 的 cell 不展示该按钮。宫格档位、分页和整个多画面区域满屏属于容器操作，不属于单路媒体能力。
+
 ## 风险和约束
 
 - H.265 能否播放取决于浏览器、系统和硬件解码能力，前端不能保证所有环境可播。
