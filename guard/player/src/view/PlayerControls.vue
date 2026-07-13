@@ -343,10 +343,7 @@ const canAutoHide = computed(
   () =>
     visibility.value === "auto" &&
     props.state.playbackState === "playing" &&
-    !pointerInside.value &&
-    !focusWithin.value &&
-    !interactionActive.value &&
-    !overflowOpen.value,
+    !interactionActive.value,
 );
 
 watch(visible, (value) => emit("visibilityChange", value), { immediate: true });
@@ -355,7 +352,7 @@ watch(
   syncVisibility,
   { immediate: true },
 );
-watch([pointerInside, focusWithin, interactionActive, overflowOpen], () => {
+watch(interactionActive, () => {
   if (canAutoHide.value) scheduleHide();
   else clearHideTimer();
 });

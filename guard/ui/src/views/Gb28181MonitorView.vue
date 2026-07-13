@@ -1943,6 +1943,56 @@ onBeforeUnmount(() => {
   color: var(--green);
 }
 
+.multi-player :deep(.ptz-panel) {
+  position: absolute;
+  top: 52px;
+  right: 6px;
+  z-index: 5;
+  width: 132px;
+  max-height: calc(100% - 108px);
+  padding: 7px;
+  overflow: auto;
+  border: 1px solid rgba(100, 203, 255, .22);
+  border-radius: 8px;
+  background: rgba(3, 10, 24, .86);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .32);
+  opacity: .72;
+}
+
+.multi-player :deep(.ptz-grid) {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.multi-player :deep(.ptz-grid button) {
+  min-width: 0;
+  padding: 0;
+  aspect-ratio: 1;
+  border-radius: 5px;
+}
+
+.multi-player :deep(.ptz-panel label) {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.multi-player :deep(.lens-row) {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.multi-player :deep(.lens-row button) {
+  min-width: 0;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
 .multi-player :deep(.empty-cell) {
   display: grid;
   place-items: center;

@@ -89,6 +89,30 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
+  it("扩展菜单中的云台按钮可以打开当前画面的云台面板", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        capabilities: { ptz: true },
+        controls: {
+          items: ["play", "snapshot", "fullscreen"],
+          overflowItems: ["ptz"],
+          visibility: "always",
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.get('[aria-label="更多操作"]').trigger("click");
+    await wrapper.get('[aria-label="切换云台控制"]').trigger("click");
+
+    expect(wrapper.find(".overflow-menu").exists()).toBe(false);
+    expect(wrapper.find(".ptz-panel").exists()).toBe(true);
+    await wrapper.get('[aria-label="更多操作"]').trigger("click");
+    expect(wrapper.get('[aria-label="切换云台控制"]').attributes("aria-expanded")).toBe("true");
+    wrapper.unmount();
+  });
+
   it("控件超时隐藏会关闭云台且重新显示时不会自动展开", async () => {
     const wrapper = mount(GmvPlayerView, {
       props: {
@@ -210,7 +234,7 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
-  it("扩展菜单展开期间保持显示，关闭后恢复计时", async () => {
+  it("扩展菜单展开后无活动满 3000ms 会与控件一起隐藏", async () => {
     vi.useFakeTimers();
     const wrapper = mountControls({
       items: ["play"],
@@ -220,35 +244,27 @@ describe("PlayerControls", () => {
     });
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(2999);
     expect(wrapper.get(".control-bar").classes()).not.toContain("is-hidden");
     expect(wrapper.find(".overflow-menu").exists()).toBe(true);
 
-    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    await nextTick();
-    expect(wrapper.find(".overflow-menu").exists()).toBe(false);
-
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(1);
     expect(wrapper.get(".control-bar").classes()).toContain("is-hidden");
+    expect(wrapper.find(".overflow-menu").exists()).toBe(false);
     wrapper.unmount();
   });
 
-  it("hover、键盘焦点和组件卸载都会正确管理隐藏计时器", async () => {
+  it("静态悬停和按钮残留焦点不会阻止无活动超时隐藏", async () => {
     vi.useFakeTimers();
     const wrapper = mountControls({ items: ["play"], visibility: "auto", autoHideDelayMs: 3000 });
     const controls = wrapper.get(".control-bar");
 
     await controls.trigger("pointerenter");
-    await vi.advanceTimersByTimeAsync(6000);
-    expect(controls.classes()).not.toContain("is-hidden");
-
-    await controls.trigger("pointerleave");
     await wrapper.get("button").trigger("focusin");
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(2999);
     expect(controls.classes()).not.toContain("is-hidden");
 
-    await wrapper.get("button").trigger("focusout", { relatedTarget: document.body });
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(1);
     expect(controls.classes()).toContain("is-hidden");
 
     (wrapper.vm as unknown as { notifyActivity: () => void }).notifyActivity();

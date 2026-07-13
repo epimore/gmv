@@ -6,6 +6,7 @@
     @pointermove="notifyControlsActivity"
     @pointerdown="notifyControlsActivity"
     @pointerleave="handlePlayerPointerLeave"
+    @keydown="notifyControlsActivity"
   >
     <video ref="videoRef" class="gmv-video" playsinline muted :poster="poster || undefined"></video>
 
@@ -57,10 +58,10 @@
     <aside
       v-if="capabilities.ptz !== false && ptzOpen"
       class="ptz-panel"
-      @pointerenter="setPtzPointerInside(true)"
-      @pointerleave="setPtzPointerInside(false)"
-      @focusin="setPtzFocusWithin(true)"
-      @focusout="handlePtzFocusOut"
+      @pointerdown="setControlsInteraction(true)"
+      @pointerup="setControlsInteraction(false)"
+      @pointercancel="setControlsInteraction(false)"
+      @pointerleave="setControlsInteraction(false)"
       @click.stop
     >
       <div class="ptz-grid">
@@ -180,8 +181,6 @@ const playbackRate = ref(1);
 const seekMs = ref(0);
 const selectedSourceUrl = ref('');
 const controlsAreVisible = ref(true);
-const ptzPointerInside = ref(false);
-const ptzFocusWithin = ref(false);
 const stops: Array<() => void> = [];
 
 const basePayload = computed(() => ({ deviceId: props.deviceId, channelId: props.channelId }));
@@ -350,9 +349,6 @@ function notifyControlsActivity() {
 
 function handlePlayerPointerLeave() {
   controlsRef.value?.notifySurfaceLeave();
-  ptzPointerInside.value = false;
-  ptzFocusWithin.value = false;
-  syncPtzInteraction();
 }
 
 function setControlsInteraction(active: boolean) {
@@ -361,8 +357,6 @@ function setControlsInteraction(active: boolean) {
 
 function closePtzPanel() {
   ptzOpen.value = false;
-  ptzPointerInside.value = false;
-  ptzFocusWithin.value = false;
   setControlsInteraction(false);
 }
 
@@ -378,26 +372,6 @@ function togglePtzPanel() {
 function handleControlsVisibilityChange(visible: boolean) {
   controlsAreVisible.value = visible;
   if (!visible) closePtzPanel();
-}
-
-function syncPtzInteraction() {
-  setControlsInteraction(ptzPointerInside.value || ptzFocusWithin.value);
-}
-
-function setPtzPointerInside(active: boolean) {
-  ptzPointerInside.value = active;
-  syncPtzInteraction();
-}
-
-function setPtzFocusWithin(active: boolean) {
-  ptzFocusWithin.value = active;
-  syncPtzInteraction();
-}
-
-function handlePtzFocusOut(event: FocusEvent) {
-  const next = event.relatedTarget;
-  if (next instanceof Node && (event.currentTarget as HTMLElement).contains(next)) return;
-  setPtzFocusWithin(false);
 }
 
 function handleControlAction(action: GmvPlayerControlAction) {

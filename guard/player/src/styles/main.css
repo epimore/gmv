@@ -177,4 +177,13 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .source-form { grid-template-columns: 1fr 88px 88px; }
   .source-form input:first-child, .source-form input:nth-child(5), .source-form input:nth-child(6) { grid-column: 1 / -1; }
   .ptz-panel { display: none; }
+  .grid-cell .ptz-panel {
+    display: block;
+    top: 52px;
+    right: 6px;
+    width: 132px;
+    max-height: calc(100% - 108px);
+    padding: 7px;
+  }
+  .grid-cell .ptz-grid { gap: 4px; }
 }
