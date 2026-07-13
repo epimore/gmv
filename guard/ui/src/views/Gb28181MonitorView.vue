@@ -490,13 +490,14 @@ const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'pla
 const playerPoster = computed(() => selectedChannel.value?.pic_url || undefined);
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
+  const hasAudio = streamHasAudio(lastStream.value);
   return {
     ptz: channel ? canPtz(channel) : false,
     presets: false,
     snapshot: channel ? canSnapshot(channel) : false,
     record: false,
     playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
-    audio: channel ? canAudio(channel) : false,
+    audio: channel ? canAudio(channel) && hasAudio : false,
     talk: false,
     streamSwitch: false,
     aiOverlay: false,
@@ -522,13 +523,14 @@ const playerSources = computed<GmvSource[]>(() => {
   if (!endpoint) return [];
   const protocol = streamProtocol(endpoint);
   const codec = streamCodec(lastStream.value);
+  const hasAudio = streamHasAudio(lastStream.value);
   return [{
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: fmp4MimeCodec(codec),
-    hasAudio: selectedChannel.value ? canAudio(selectedChannel.value) : false,
-    label: streamSourceLabel(codec, !!selectedChannel.value && canAudio(selectedChannel.value)),
+    mimeCodec: fmp4MimeCodec(codec, hasAudio),
+    hasAudio,
+    label: streamSourceLabel(codec, hasAudio),
     priority: 1,
   }];
 });
@@ -654,9 +656,15 @@ function streamCodec(stream?: StreamSummary): GmvCodec | undefined {
   if (codec === 'h265' || codec === 'h.265' || codec === 'hevc' || codec === 'hev1' || codec === 'hvc1') return 'h265';
   return undefined;
 }
-function fmp4MimeCodec(codec?: GmvCodec) {
-  if (codec === 'h264') return 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
-  if (codec === 'h265') return 'video/mp4; codecs="hvc1.1.6.L123.B0, mp4a.40.2"';
+function streamAudioCodec(stream?: StreamSummary) {
+  const codec = (stream?.audio_codec || '').trim().toLowerCase();
+  return codec && !['none', 'unknown', 'null'].includes(codec) ? codec : undefined;
+}
+function streamHasAudio(stream?: StreamSummary) { return !!streamAudioCodec(stream); }
+function fmp4MimeCodec(codec?: GmvCodec, hasAudio = false) {
+  const audioCodec = hasAudio ? ', mp4a.40.2' : '';
+  if (codec === 'h264') return `video/mp4; codecs="avc1.42E01E${audioCodec}"`;
+  if (codec === 'h265') return `video/mp4; codecs="hvc1.1.6.L123.B0${audioCodec}"`;
   return undefined;
 }
 function streamSourceLabel(codec: GmvCodec | undefined, hasAudio: boolean) {
@@ -672,13 +680,14 @@ function streamSources(stream?: StreamSummary): GmvSource[] {
   if (!endpoint) return [];
   const protocol = streamProtocol(endpoint);
   const codec = streamCodec(stream);
+  const hasAudio = streamHasAudio(stream);
   return [{
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: fmp4MimeCodec(codec),
-    hasAudio: false,
-    label: streamSourceLabel(codec, false),
+    mimeCodec: fmp4MimeCodec(codec, hasAudio),
+    hasAudio,
+    label: streamSourceLabel(codec, hasAudio),
     priority: 1,
   }];
 }

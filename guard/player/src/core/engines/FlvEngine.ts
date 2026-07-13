@@ -15,14 +15,17 @@ export class FlvEngine extends BaseEngine {
     }
 
     const workerSupported = typeof Worker !== 'undefined';
+    const mediaDataSource: Record<string, unknown> = {
+      type: 'flv',
+      isLive: true,
+      url: source.url,
+      hasVideo: true,
+    };
+    // Never force an audio track to exist: mpegts.js waits for its metadata before dispatching video.
+    if (source.hasAudio === false) mediaDataSource.hasAudio = false;
+
     this.player = mpegts.createPlayer(
-      {
-        type: 'flv',
-        isLive: true,
-        url: source.url,
-        hasAudio: source.hasAudio !== false,
-        hasVideo: true,
-      },
+      mediaDataSource,
       {
         enableStashBuffer: true,
         stashInitialSize: 512 * 1024,

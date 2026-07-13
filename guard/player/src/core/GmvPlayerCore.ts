@@ -9,6 +9,7 @@ import { GmvErrorCode } from './utils/ErrorCode';
 const STALL_GRACE_MS = 5_000;
 const STALL_CHECK_INTERVAL_MS = 1_000;
 const STABLE_PLAYBACK_MS = 10_000;
+const STARTUP_VIDEO_GRACE_MS = 3_000;
 const MAX_RECONNECT_DELAY_MS = 10_000;
 
 export class GmvPlayerCore {
@@ -23,6 +24,7 @@ export class GmvPlayerCore {
   private destroyed = false;
   private loadVersion = 0;
   private stallWatch?: number;
+  private startupWatch?: number;
   private stablePlaybackTimer?: number;
   private stallCurrentTime = 0;
   private stallBufferEnd = 0;
@@ -48,6 +50,7 @@ export class GmvPlayerCore {
     const version = ++this.loadVersion;
     this.sources = sources;
     this.clearStallWatch();
+    this.clearStartupWatch();
     this.clearStablePlaybackTimer();
     this.destroyCurrentEngine();
     this.activeSource = undefined;
@@ -72,10 +75,12 @@ export class GmvPlayerCore {
         this.activeSource = source;
         this.bus.emit('sourceChanged', { source });
         if (this.options.autoplay) {
+          this.startStartupWatch(source, version);
           try {
             await this.play();
           } catch (error) {
             if (this.destroyed || version !== this.loadVersion) return;
+            this.clearStartupWatch();
             this.emitError(GmvErrorCode.StreamOpenFailed, error instanceof Error ? error.message : '自动播放失败', source);
           }
         }
@@ -113,6 +118,7 @@ export class GmvPlayerCore {
     this.reconnectRetry += 1;
     const source = this.activeSource;
     this.clearStallWatch();
+    this.clearStartupWatch();
     this.clearStablePlaybackTimer();
     this.reconnectInFlight = true;
     this.bus.emit('reconnecting', { retry: this.reconnectRetry, reason });
@@ -135,6 +141,7 @@ export class GmvPlayerCore {
     this.loadVersion += 1;
     this.reconnectInFlight = false;
     this.clearStallWatch();
+    this.clearStartupWatch();
     this.clearStablePlaybackTimer();
     this.destroyCurrentEngine();
     while (this.videoCleanups.length) this.videoCleanups.pop()?.();
@@ -165,12 +172,14 @@ export class GmvPlayerCore {
   private bindVideoEvents(): void {
     const onPlaying = () => {
       this.clearStallWatch();
+      this.clearStartupWatch();
       this.bus.emit('playing', undefined);
       this.emitStats();
       this.scheduleStablePlaybackReset();
     };
     const onPause = () => {
       this.clearStallWatch();
+      this.clearStartupWatch();
       this.clearStablePlaybackTimer();
       this.bus.emit('paused', undefined);
     };
@@ -182,6 +191,7 @@ export class GmvPlayerCore {
     const onError = () => {
       if (this.destroyed) return;
       this.clearStallWatch();
+      this.clearStartupWatch();
       this.clearStablePlaybackTimer();
       this.emitError(GmvErrorCode.StreamReadFailed, this.video.error?.message ?? 'video error', this.activeSource);
       void this.reconnect('video-error');
@@ -253,6 +263,28 @@ export class GmvPlayerCore {
     if (this.stallWatch === undefined) return;
     window.clearInterval(this.stallWatch);
     this.stallWatch = undefined;
+  }
+
+  private startStartupWatch(source: GmvSource, version: number): void {
+    this.clearStartupWatch();
+    this.startupWatch = window.setTimeout(() => {
+      this.startupWatch = undefined;
+      if (this.destroyed || version !== this.loadVersion || this.activeSource?.url !== source.url) return;
+
+      if (source.protocol === 'flv' && source.hasAudio !== false) {
+        this.bus.emit('reconnecting', { retry: this.reconnectRetry, reason: 'video-only-fallback' });
+        void this.load([{ ...source, hasAudio: false }]);
+        return;
+      }
+
+      this.emitError(GmvErrorCode.StreamOpenFailed, '视频启动超时', source);
+    }, STARTUP_VIDEO_GRACE_MS);
+  }
+
+  private clearStartupWatch(): void {
+    if (this.startupWatch === undefined) return;
+    window.clearTimeout(this.startupWatch);
+    this.startupWatch = undefined;
   }
 
   private clearStablePlaybackTimer(): void {
