@@ -10,10 +10,10 @@ use gmv_domain::info::obj::{
     TalkOpenResp,
 };
 use gmv_nodec::error as node_error;
-use gmv_protocol::common::v1::ErrorDetail;
+use gmv_protocol::common::v1::{EndpointMode, ErrorDetail, OperationRef};
 use gmv_protocol::stream::v1::{
-    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamUnitResponse,
-    stream_control_client::StreamControlClient,
+    CreateOutputRequest, OutputInfo, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse,
+    StreamUnitResponse, stream_control_client::StreamControlClient,
 };
 use std::time::{Duration, Instant};
 
@@ -143,6 +143,47 @@ pub async fn init_media(node: &StreamNode, value: &MediaConfig) -> GlobalResult<
         .map_err(|error| rpc_status(error, "init_media"))?
         .into_inner();
     ensure_unit(response, "init_media")
+}
+
+pub async fn create_output(
+    node: &StreamNode,
+    operation_id: &str,
+    stream_id: &str,
+    output_type: &str,
+    audio_codec: &str,
+) -> GlobalResult<OutputInfo> {
+    let mut client = client(node).await?;
+    let request = CreateOutputRequest {
+        operation: Some(OperationRef {
+            operation_id: operation_id.to_string(),
+            idempotency_key: operation_id.to_string(),
+        }),
+        stream_id: stream_id.to_string(),
+        output_type: output_type.to_string(),
+        endpoint_mode: EndpointMode::Single as i32,
+        audio_codec: audio_codec.to_string(),
+    };
+    base::log::debug!(
+        "session rpc client outbound: method=stream_control.create_output, node={}, stream_id={}, output_type={}",
+        node.name,
+        stream_id,
+        output_type
+    );
+    let response = client
+        .create_output(request)
+        .await
+        .map_err(|error| rpc_status(error, "create_output"))?
+        .into_inner();
+    if let Some(error) = response.error {
+        return Err(error_detail(error, "create_output"));
+    }
+    response.output.ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream rpc create_output returned no output",
+            |msg| error!("{msg}: stream_id={stream_id}, output_type={output_type}"),
+        )
+    })
 }
 
 pub async fn init_media_ext(node: &StreamNode, value: &MediaMap) -> GlobalResult<()> {

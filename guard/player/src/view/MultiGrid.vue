@@ -36,6 +36,18 @@
         >
           ×
         </button>
+        <label v-if="cells[index]?.outputOptions?.length" class="grid-cell-output" @click.stop @dblclick.stop>
+          <span class="sr-only">媒体输出格式</span>
+          <select
+            :value="cells[index]?.outputType"
+            :disabled="cells[index]?.outputSwitching"
+            @change="handleOutputTypeChange(index, $event)"
+          >
+            <option v-for="option in cells[index]?.outputOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
         <GmvPlayerView
           v-if="cells[index]?.sources.length"
           v-bind="cells[index]"
@@ -49,6 +61,8 @@
           @talk-stop="() => emit('talkStop', { index })"
           @playback-seek="(payload) => emit('playbackSeek', { index, payload })"
           @stream-switch="(payload) => emit('streamSwitch', { index, payload })"
+          @playing="(payload) => emit('playing', { index, payload })"
+          @playback-error="(payload) => emit('playbackError', { index, payload })"
         />
         <span v-else-if="cells[index]" class="empty-cell">
           <b>{{ cells[index]?.title || '等待播放' }}</b>
@@ -77,6 +91,9 @@ export interface GmvGridCell {
   aiBoxes?: GmvAiBox[];
   capabilities?: GmvViewCapabilities;
   controls?: GmvPlayerControlsConfig;
+  outputType?: string;
+  outputOptions?: Array<{ value: string; label: string }>;
+  outputSwitching?: boolean;
 }
 
 const props = defineProps<{
@@ -96,6 +113,9 @@ const emit = defineEmits<{
   talkStop: [{ index: number }];
   playbackSeek: [{ index: number; payload: { timeMs: number } }];
   streamSwitch: [{ index: number; payload: { source: GmvSource } }];
+  outputTypeChange: [{ index: number; outputType: string }];
+  playing: [{ index: number; payload: { source?: GmvSource } }];
+  playbackError: [{ index: number; payload: { message: string; source?: GmvSource } }];
   close: [{ index: number }];
   reorder: [{ sourceIndex: number; targetIndex: number }];
 }>();
@@ -136,5 +156,12 @@ function handleDrop(targetIndex: number) {
 
 function handleDragEnd() {
   draggingIndex.value = undefined;
+}
+
+function handleOutputTypeChange(index: number, event: Event) {
+  emit('outputTypeChange', {
+    index,
+    outputType: (event.target as HTMLSelectElement).value,
+  });
 }
 </script>

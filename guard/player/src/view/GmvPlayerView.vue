@@ -162,6 +162,8 @@ const emit = defineEmits<{
   playbackSeek: [{ timeMs: number }];
   playbackRateChange: [{ rate: number }];
   streamSwitch: [{ source: GmvSource }];
+  playing: [{ source?: GmvSource }];
+  playbackError: [{ message: string; source?: GmvSource }];
   reconnect: [];
 }>();
 
@@ -253,7 +255,12 @@ async function mountPlayer() {
   player.value = core;
 
   stops.push(core.on('loading', () => { viewState.value = 'idle'; isLoading.value = true; lastError.value = ''; }));
-  stops.push(core.on('playing', () => { viewState.value = 'playing'; isLoading.value = false; lastError.value = ''; }));
+  stops.push(core.on('playing', () => {
+    viewState.value = 'playing';
+    isLoading.value = false;
+    lastError.value = '';
+    emit('playing', { source: activeSource.value ?? props.sources[0] });
+  }));
   stops.push(core.on('paused', () => { viewState.value = 'idle'; isLoading.value = false; }));
   stops.push(core.on('reconnecting', () => { viewState.value = 'reconnecting'; isLoading.value = true; }));
   stops.push(core.on('sourceChanged', ({ source }) => {
@@ -265,7 +272,12 @@ async function mountPlayer() {
       if (videoRef.value) videoRef.value.playbackRate = 1;
     }
   }));
-  stops.push(core.on('error', ({ message }) => { viewState.value = 'error'; isLoading.value = false; lastError.value = message; }));
+  stops.push(core.on('error', ({ message }) => {
+    viewState.value = 'error';
+    isLoading.value = false;
+    lastError.value = message;
+    emit('playbackError', { message, source: activeSource.value ?? props.sources[0] });
+  }));
 
   await core.load();
 }

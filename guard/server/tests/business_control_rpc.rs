@@ -847,6 +847,7 @@ impl StreamControl for FakeStream {
             output_id: "out".to_string(),
             endpoints: vec![],
             error: None,
+            output: None,
         }))
     }
 
@@ -857,6 +858,7 @@ impl StreamControl for FakeStream {
         Ok(tonic::Response::new(CloseOutputResponse {
             closed: true,
             error: None,
+            output: None,
         }))
     }
 
@@ -866,6 +868,7 @@ impl StreamControl for FakeStream {
     ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
         Ok(tonic::Response::new(GetPlaybackEndpointsResponse {
             endpoints: vec![],
+            outputs: vec![],
         }))
     }
 

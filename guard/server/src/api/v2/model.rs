@@ -32,6 +32,25 @@ pub struct StreamSummary {
     pub state: StreamSummaryState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+pub enum StreamOutputState {
+    Preparing,
+    Ready,
+    Closed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct StreamOutputSummary {
+    pub output_id: String,
+    pub stream_id: String,
+    pub output_type: String,
+    pub endpoint: String,
+    pub state: StreamOutputState,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 pub struct MediaTransportCapability {

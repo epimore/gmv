@@ -911,21 +911,44 @@ async fn enable_invite_stream(
                     };
                     if stream_rpc::stream_online(&stream_node, &stream_key).await? {
                         if let Some(config) = custom_media_config {
-                            stream_rpc::init_media(
-                                &stream_node,
-                                &MediaConfig {
-                                    ssrc: ssrc_num,
-                                    stream_id: stream_id.clone(),
-                                    in_wait_timeout: None,
-                                    out_idle_timeout: None,
-                                    codec: config.codec.clone(),
-                                    transcode: config.transcode.clone(),
-                                    filter: config.filter.clone(),
-                                    output: config.output.clone(),
-                                    session_hook_endpoint: None,
-                                },
-                            )
-                            .await?;
+                            let output_type = match &config.output {
+                                OutputKind::HttpFlv(_) => "flv",
+                                OutputKind::DashFmp4(_) => "fmp4",
+                                OutputKind::HlsFmp4(_) => "hls",
+                                _ => "",
+                            };
+                            let audio_codec = config
+                                .transcode
+                                .as_ref()
+                                .and_then(|transcode| transcode.audio_codec)
+                                .map(|_| "aac")
+                                .unwrap_or("");
+                            if !output_type.is_empty() {
+                                stream_rpc::create_output(
+                                    &stream_node,
+                                    &format!("reuse-{stream_id}-{output_type}"),
+                                    &stream_id,
+                                    output_type,
+                                    audio_codec,
+                                )
+                                .await?;
+                            } else {
+                                stream_rpc::init_media(
+                                    &stream_node,
+                                    &MediaConfig {
+                                        ssrc: ssrc_num,
+                                        stream_id: stream_id.clone(),
+                                        in_wait_timeout: None,
+                                        out_idle_timeout: None,
+                                        codec: config.codec.clone(),
+                                        transcode: config.transcode.clone(),
+                                        filter: config.filter.clone(),
+                                        output: config.output.clone(),
+                                        session_hook_endpoint: None,
+                                    },
+                                )
+                                .await?;
+                            }
                         }
                         res = Some((stream_id.clone(), proxy_addr));
                     }

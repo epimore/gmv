@@ -28,13 +28,16 @@ use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::{broadcast, mpsc};
 use base::utils::rt::GlobalRuntime;
 use gmv_domain::enums::OptAction;
-use gmv_domain::info::media_info::MediaConfig;
+use gmv_domain::info::format::{CMaf, Flv};
+use gmv_domain::info::media_info::{MediaConfig, OutputAudioCodec, TranscodeConfig};
 use gmv_domain::info::media_info_ext::MediaExt;
 use gmv_domain::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, NetSource, OutputEventRes, OutputStreamInfo,
     RegisterStreamInfo, RtpInfo, StreamKey, StreamPlayInfo, StreamState, UnknownStreamEvent,
 };
-use gmv_domain::info::output::{OutputEnum, OutputKind};
+use gmv_domain::info::output::{
+    DashFmp4Output, HlsFmp4Output, HttpFlvOutput, OutputEnum, OutputKind,
+};
 use log::{error, info, warn};
 use parking_lot::Mutex;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -43,6 +46,42 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize,
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
+
+fn live_output_contract(
+    output_type: &str,
+) -> GlobalResult<(&'static str, OutputKind, OutputEnum, &'static str)> {
+    match output_type.trim().to_ascii_lowercase().as_str() {
+        "flv" | "http_flv" => Ok((
+            "flv",
+            OutputKind::HttpFlv(HttpFlvOutput {
+                fmt: Flv::default(),
+            }),
+            OutputEnum::HttpFlv,
+            "flv",
+        )),
+        "fmp4" | "dash_fmp4" => Ok((
+            "fmp4",
+            OutputKind::DashFmp4(DashFmp4Output {
+                fmt: CMaf::default(),
+            }),
+            OutputEnum::DashFmp4,
+            "fmp4",
+        )),
+        "hls" | "hls_fmp4" => Ok((
+            "hls",
+            OutputKind::HlsFmp4(HlsFmp4Output {
+                fmt: CMaf::default(),
+            }),
+            OutputEnum::HlsFmp4,
+            "m3u8",
+        )),
+        _ => Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "output_type must be flv, fmp4, or hls",
+            |msg| error!("{msg}: output_type={output_type}"),
+        )),
+    }
+}
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
 const RTP_QUEUE_RECOVERY_PACKET_COUNT: usize = 64;
 const RTP_INPUT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
@@ -974,6 +1013,88 @@ impl Register {
                 stream_id.to_string(),
             )
         })
+    }
+
+    pub fn create_live_output(
+        stream_id: &str,
+        output_type: &str,
+        audio_codec: &str,
+    ) -> GlobalResult<String> {
+        let (output_type, output_kind, _, suffix) = live_output_contract(output_type)?;
+        let requested_transcode = match audio_codec.trim().to_ascii_lowercase().as_str() {
+            "" => None,
+            "aac" => Some(TranscodeConfig {
+                audio_codec: Some(OutputAudioCodec::Aac),
+            }),
+            _ => {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidRequest.code(),
+                    "audio_codec must be aac",
+                    |msg| error!("{msg}: stream_id={stream_id}, audio_codec={audio_codec}"),
+                ));
+            }
+        };
+        let arc = Self::get().inner.clone();
+        let stream_id: Arc<str> = Arc::from(stream_id);
+        let mut meta = arc.stream_metadata_map.get_mut(&stream_id).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            )
+        })?;
+        if requested_transcode.is_some() && meta.converter.transcode != requested_transcode {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "existing stream uses a different transcode profile",
+                |msg| error!("{msg}: stream_id={stream_id}, output_type={output_type}"),
+            ));
+        }
+        if meta.output.put_if_absent(output_kind.clone()) {
+            meta.converter.muxer.put_if_absent(&output_kind);
+            let open = match output_kind {
+                OutputKind::HttpFlv(_) => meta.converter.muxer.flv.clone().map(MuxerKind::Flv),
+                OutputKind::DashFmp4(_) => meta.converter.muxer.fmp4.clone().map(MuxerKind::FMp4),
+                OutputKind::HlsFmp4(_) => {
+                    meta.converter.muxer.hls_mp4.clone().map(MuxerKind::HlsMp4)
+                }
+                _ => None,
+            };
+            if let Some(open) = open {
+                meta.mpsc_bus
+                    .try_publish(MuxerEvent::Open(open))
+                    .hand_log(|msg| error!("{msg}"))?;
+            }
+        }
+        let base = Self::build_base_stream_info(
+            &meta,
+            arc.server_conf.name.clone(),
+            arc.server_conf.proxy_addr.clone(),
+            stream_id.to_string(),
+        );
+        Ok(format!("{}.{}", base.rtp_info.proxy_addr, suffix))
+    }
+
+    pub fn close_live_output(stream_id: &str, output_type: &str) -> GlobalResult<bool> {
+        let (_, _, output_enum, _) = live_output_contract(output_type)?;
+        let arc = Self::get().inner.clone();
+        let stream_id: Arc<str> = Arc::from(stream_id);
+        let mut meta = arc.stream_metadata_map.get_mut(&stream_id).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            )
+        })?;
+        if !meta.output.remove(output_enum) {
+            return Ok(false);
+        }
+        let muxer = MuxerEnum::from_output_enum(output_enum);
+        meta.converter.muxer.close_by_muxer_type(muxer);
+        meta.mpsc_bus
+            .try_publish(MuxerEvent::Close(muxer))
+            .hand_log(|msg| error!("{msg}"))?;
+        Ok(true)
     }
     pub fn insert_origin_trans(stream_id: Arc<str>, origin_trans: (SocketAddr, Protocol)) -> bool {
         let arc = Self::get().inner.clone();

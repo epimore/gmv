@@ -16,7 +16,7 @@ use gmv_domain::info::media_info_ext::MediaMap;
 use gmv_domain::info::obj::{
     StreamInfoQo, StreamKey, StreamRecordInfo, TalkAnswerReq, TalkCloseReq, TalkOpenReq,
 };
-use gmv_domain::info::output::OutputEnum;
+use gmv_domain::info::output::{OutputEnum, OutputKind};
 use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
@@ -28,10 +28,10 @@ use gmv_protocol::guard::v1::{
 };
 use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
-    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, QueryStreamRequest,
-    QueryStreamResponse, StartReceiveRequest, StartReceiveResponse, StopReceiveRequest,
-    StopReceiveResponse, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState,
-    StreamUnitResponse, stream_control_server::StreamControl,
+    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, OutputInfo, OutputState,
+    QueryStreamRequest, QueryStreamResponse, StartReceiveRequest, StartReceiveResponse,
+    StopReceiveRequest, StopReceiveResponse, StreamBoolResponse, StreamJsonRequest,
+    StreamJsonResponse, StreamState, StreamUnitResponse, stream_control_server::StreamControl,
 };
 use tonic::transport::Channel;
 
@@ -592,7 +592,7 @@ pub struct StreamControlAdapter {
     identity: NodeIdentity,
     receive_endpoint: Endpoint,
     streams: HashMap<String, StreamRuntime>,
-    outputs: HashMap<String, String>,
+    outputs: HashMap<String, OutputRuntime>,
     media_tx: Option<mpsc::Sender<u32>>,
 }
 
@@ -602,6 +602,27 @@ struct StreamRuntime {
     route_id: String,
     endpoints: Vec<Endpoint>,
     state: StreamState,
+}
+
+#[derive(Debug, Clone)]
+struct OutputRuntime {
+    output_id: String,
+    stream_id: String,
+    output_type: String,
+    endpoint: String,
+    state: OutputState,
+}
+
+impl OutputRuntime {
+    fn info(&self) -> OutputInfo {
+        OutputInfo {
+            output_id: self.output_id.clone(),
+            stream_id: self.stream_id.clone(),
+            output_type: self.output_type.clone(),
+            endpoint: self.endpoint.clone(),
+            state: self.state as i32,
+        }
+    }
 }
 
 impl StreamControlAdapter {
@@ -677,6 +698,8 @@ impl StreamControlAdapter {
         match self.streams.get_mut(&request.stream_id) {
             Some(stream) => {
                 stream.state = StreamState::Stopped;
+                self.outputs
+                    .retain(|_, output| output.stream_id != request.stream_id);
                 StopReceiveResponse {
                     state: StreamState::Stopped as i32,
                     error: None,
@@ -711,6 +734,7 @@ impl StreamControlAdapter {
                     "multi_endpoint_disabled",
                     "multi RTP endpoint pool is reserved but not enabled",
                 )),
+                output: None,
             };
         }
         if !self.streams.contains_key(&request.stream_id) {
@@ -718,35 +742,143 @@ impl StreamControlAdapter {
                 output_id: String::new(),
                 endpoints: vec![],
                 error: Some(error("stream_not_found", "stream is not receiving")),
+                output: None,
             };
         }
-        let output_id = format!("out-{}-{}", request.output_type, request.stream_id);
-        self.outputs.insert(output_id.clone(), request.stream_id);
+        let output_type = match normalize_live_output_type(&request.output_type) {
+            Some(output_type) => output_type,
+            None => {
+                return CreateOutputResponse {
+                    output_id: String::new(),
+                    endpoints: vec![],
+                    error: Some(error(
+                        "unsupported_output_type",
+                        "output_type must be flv, fmp4, or hls",
+                    )),
+                    output: None,
+                };
+            }
+        };
+        let operation_id = request
+            .operation
+            .as_ref()
+            .map(|operation| operation.idempotency_key.trim())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                request
+                    .operation
+                    .as_ref()
+                    .map(|operation| operation.operation_id.trim())
+                    .filter(|value| !value.is_empty())
+            })
+            .unwrap_or(&request.stream_id);
+        let output_id = format!("out-{output_type}-{operation_id}");
+        if let Some(existing) = self.outputs.get(&output_id) {
+            let output = existing.info();
+            return CreateOutputResponse {
+                output_id,
+                endpoints: self.playback_endpoints(),
+                error: None,
+                output: Some(output),
+            };
+        }
+        let endpoint = if self.media_tx.is_some() {
+            match Register::create_live_output(
+                &request.stream_id,
+                output_type,
+                &request.audio_codec,
+            ) {
+                Ok(endpoint) => endpoint,
+                Err(error_value) => {
+                    return CreateOutputResponse {
+                        output_id: String::new(),
+                        endpoints: vec![],
+                        error: Some(detail_from_error(error_value)),
+                        output: None,
+                    };
+                }
+            }
+        } else {
+            String::new()
+        };
+        let runtime = OutputRuntime {
+            output_id: output_id.clone(),
+            stream_id: request.stream_id,
+            output_type: output_type.to_string(),
+            endpoint,
+            state: OutputState::Ready,
+        };
+        let output = runtime.info();
+        self.outputs.insert(output_id.clone(), runtime);
         CreateOutputResponse {
             output_id,
             endpoints: self.playback_endpoints(),
             error: None,
+            output: Some(output),
         }
     }
 
     pub fn close_output(&mut self, request: CloseOutputRequest) -> CloseOutputResponse {
+        let Some(runtime) = self.outputs.get(&request.output_id).cloned() else {
+            return CloseOutputResponse {
+                closed: false,
+                error: None,
+                output: None,
+            };
+        };
+        if !request.stream_id.is_empty() && request.stream_id != runtime.stream_id {
+            return CloseOutputResponse {
+                closed: false,
+                error: Some(error(
+                    "output_stream_mismatch",
+                    "output does not belong to stream",
+                )),
+                output: Some(runtime.info()),
+            };
+        }
+        self.outputs.remove(&request.output_id);
+        let still_referenced = self.outputs.values().any(|output| {
+            output.stream_id == runtime.stream_id && output.output_type == runtime.output_type
+        });
+        if !still_referenced
+            && self.media_tx.is_some()
+            && let Err(error_value) =
+                Register::close_live_output(&runtime.stream_id, &runtime.output_type)
+        {
+            self.outputs
+                .insert(runtime.output_id.clone(), runtime.clone());
+            return CloseOutputResponse {
+                closed: false,
+                error: Some(detail_from_error(error_value)),
+                output: Some(runtime.info()),
+            };
+        }
+        let mut output = runtime.info();
+        output.state = OutputState::Closed as i32;
         CloseOutputResponse {
-            closed: self.outputs.remove(&request.output_id).is_some(),
+            closed: true,
             error: None,
+            output: Some(output),
         }
     }
 
     pub fn get_playback_endpoints(
         &self,
-        _request: GetPlaybackEndpointsRequest,
+        request: GetPlaybackEndpointsRequest,
     ) -> GetPlaybackEndpointsResponse {
         GetPlaybackEndpointsResponse {
             endpoints: self.playback_endpoints(),
+            outputs: self
+                .outputs
+                .values()
+                .filter(|output| output.stream_id == request.stream_id)
+                .map(OutputRuntime::info)
+                .collect(),
         }
     }
 
     pub fn init_media(&mut self, request: StreamJsonRequest) -> StreamUnitResponse {
-        let media_tx = match self.media_tx.as_ref() {
+        let media_tx = match self.media_tx.clone() {
             Some(media_tx) => media_tx,
             None => {
                 return StreamUnitResponse {
@@ -757,16 +889,37 @@ impl StreamControlAdapter {
                 };
             }
         };
-        let result = decode_payload::<MediaConfig>(&request.payload_json)
-            .and_then(|value| Register::init_media(value).map_err(detail_from_error))
-            .and_then(|ssrc| {
-                media_tx.try_send(ssrc).map_err(|err| {
-                    error(
-                        "media_tx_busy",
-                        &format!("send media init event failed: {err}"),
-                    )
-                })
-            });
+        let result = decode_payload::<MediaConfig>(&request.payload_json).and_then(|value| {
+            let stream_id = value.stream_id.clone();
+            let output_type = live_output_type_from_kind(&value.output);
+            let audio_codec = value
+                .transcode
+                .as_ref()
+                .and_then(|transcode| transcode.audio_codec)
+                .map(|_| "aac")
+                .unwrap_or("");
+            let ssrc = Register::init_media(value).map_err(detail_from_error)?;
+            if let Some(output_type) = output_type {
+                let endpoint = Register::create_live_output(&stream_id, output_type, audio_codec)
+                    .map_err(detail_from_error)?;
+                let output_id = format!("out-{output_type}-primary-{stream_id}");
+                self.outputs
+                    .entry(output_id.clone())
+                    .or_insert(OutputRuntime {
+                        output_id,
+                        stream_id,
+                        output_type: output_type.to_string(),
+                        endpoint,
+                        state: OutputState::Ready,
+                    });
+            }
+            media_tx.try_send(ssrc).map_err(|err| {
+                error(
+                    "media_tx_busy",
+                    &format!("send media init event failed: {err}"),
+                )
+            })
+        });
         stream_unit_response(result)
     }
 
@@ -929,6 +1082,24 @@ fn error(code: &str, message: &str) -> ErrorDetail {
     gmv_nodec::error::error_detail(code, message)
 }
 
+fn normalize_live_output_type(output_type: &str) -> Option<&'static str> {
+    match output_type.trim().to_ascii_lowercase().as_str() {
+        "flv" | "http_flv" => Some("flv"),
+        "fmp4" | "dash_fmp4" => Some("fmp4"),
+        "hls" | "hls_fmp4" => Some("hls"),
+        _ => None,
+    }
+}
+
+fn live_output_type_from_kind(output: &OutputKind) -> Option<&'static str> {
+    match output {
+        OutputKind::HttpFlv(_) => Some("flv"),
+        OutputKind::DashFmp4(_) => Some("fmp4"),
+        OutputKind::HlsFmp4(_) => Some("hls"),
+        _ => None,
+    }
+}
+
 pub fn operation(operation_id: &str) -> OperationRef {
     OperationRef {
         operation_id: operation_id.to_string(),
@@ -986,16 +1157,31 @@ mod tests {
             StreamState::Receiving as i32
         );
         assert_eq!(control.resource_snapshot().resources.len(), 1);
+        let output = control.create_output(CreateOutputRequest {
+            operation: Some(operation("out-1")),
+            stream_id: "stream-a".to_string(),
+            output_type: "flv".to_string(),
+            endpoint_mode: EndpointMode::Single as i32,
+            audio_codec: "aac".to_string(),
+        });
+        assert!(output.error.is_none());
+        assert_eq!(
+            control
+                .get_playback_endpoints(GetPlaybackEndpointsRequest {
+                    stream_id: "stream-a".to_string(),
+                })
+                .outputs
+                .len(),
+            1
+        );
         assert!(
             control
-                .create_output(CreateOutputRequest {
-                    operation: Some(operation("out-1")),
+                .close_output(CloseOutputRequest {
+                    operation: Some(operation("close-out-1")),
+                    output_id: output.output_id,
                     stream_id: "stream-a".to_string(),
-                    output_type: "flv".to_string(),
-                    endpoint_mode: EndpointMode::Single as i32
                 })
-                .error
-                .is_none()
+                .closed
         );
         assert!(
             control
@@ -1003,7 +1189,8 @@ mod tests {
                     operation: Some(operation("out-2")),
                     stream_id: "stream-a".to_string(),
                     output_type: "rtp".to_string(),
-                    endpoint_mode: EndpointMode::Multi as i32
+                    endpoint_mode: EndpointMode::Multi as i32,
+                    audio_codec: "aac".to_string(),
                 })
                 .error
                 .is_some()

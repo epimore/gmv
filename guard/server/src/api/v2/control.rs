@@ -5,7 +5,8 @@ use gmv_nodec::error::META_GLOBAL_CODE;
 use gmv_protocol::avai::v1::avai_control_client::AvaiControlClient;
 use gmv_protocol::avai::v1::{AiTaskState, CancelTaskRequest, CreateTaskRequest};
 use gmv_protocol::common::v1::{
-    ErrorDetail, NodeIdentity as ProtoIdentity, NodeKind as ProtoNodeKind, OperationRef,
+    EndpointMode, ErrorDetail, NodeIdentity as ProtoIdentity, NodeKind as ProtoNodeKind,
+    OperationRef,
 };
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
@@ -17,8 +18,15 @@ use gmv_protocol::session::v1::{
     StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
     UpdateGbDeviceRequest,
 };
+use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
+use gmv_protocol::stream::v1::{
+    CloseOutputRequest, CreateOutputRequest, GetPlaybackEndpointsRequest, OutputInfo, OutputState,
+};
 
-use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
+use crate::api::v2::model::{
+    AiTaskSummary, AiTaskSummaryState, StreamOutputState, StreamOutputSummary, StreamSummary,
+    StreamSummaryState,
+};
 use crate::core::{
     ConnectionState, GmvGuardErrorCode, GuardError, GuardResult, LeaseState, NodeIdentity,
     NodeKind, RouteState, SchedulingState,
@@ -1151,6 +1159,134 @@ impl BusinessControl {
         })
     }
 
+    pub async fn create_stream_output(
+        &self,
+        operation_id: &str,
+        stream_id: &str,
+        output_type: &str,
+        audio_codec: &str,
+    ) -> GuardResult<StreamOutputSummary> {
+        let stream = self.stream_node_for_resource(stream_id)?;
+        let stream_grpc = grpc_uri(&stream)?;
+        let mut client = StreamControlClient::new(connect_rpc(&stream_grpc, "stream").await?);
+        let request = CreateOutputRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            stream_id: stream_id.to_string(),
+            output_type: output_type.to_string(),
+            endpoint_mode: EndpointMode::Single as i32,
+            audio_codec: audio_codec.to_string(),
+        };
+        let edge = RpcEdge::new(
+            "stream",
+            "create_output",
+            &stream.identity.node_id,
+            operation_id,
+            stream_id,
+        );
+        let response = edge.response(client.create_output(request).await)?;
+        if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
+            return Err(remote_error(
+                "stream",
+                "create_output",
+                error,
+                "stream_output_create_failed",
+                "媒体输出创建失败",
+                true,
+            ));
+        }
+        let output = response.output.ok_or_else(|| {
+            edge.invalid_response("output_missing");
+            GuardError::Conflict("stream create_output returned no output".to_string())
+        })?;
+        edge.success();
+        Ok(stream_output_summary(output))
+    }
+
+    pub async fn list_stream_outputs(
+        &self,
+        stream_id: &str,
+    ) -> GuardResult<Vec<StreamOutputSummary>> {
+        let stream = self.stream_node_for_resource(stream_id)?;
+        let stream_grpc = grpc_uri(&stream)?;
+        let mut client = StreamControlClient::new(connect_rpc(&stream_grpc, "stream").await?);
+        let edge = RpcEdge::new(
+            "stream",
+            "get_playback_endpoints",
+            &stream.identity.node_id,
+            "list-stream-outputs",
+            stream_id,
+        );
+        let response = edge.response(
+            client
+                .get_playback_endpoints(GetPlaybackEndpointsRequest {
+                    stream_id: stream_id.to_string(),
+                })
+                .await,
+        )?;
+        edge.success();
+        Ok(response
+            .outputs
+            .into_iter()
+            .map(stream_output_summary)
+            .collect())
+    }
+
+    pub async fn close_stream_output(
+        &self,
+        operation_id: &str,
+        stream_id: &str,
+        output_id: &str,
+    ) -> GuardResult<bool> {
+        let stream = self.stream_node_for_resource(stream_id)?;
+        let stream_grpc = grpc_uri(&stream)?;
+        let mut client = StreamControlClient::new(connect_rpc(&stream_grpc, "stream").await?);
+        let request = CloseOutputRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            output_id: output_id.to_string(),
+            stream_id: stream_id.to_string(),
+        };
+        let edge = RpcEdge::new(
+            "stream",
+            "close_output",
+            &stream.identity.node_id,
+            operation_id,
+            stream_id,
+        );
+        let response = edge.response(client.close_output(request).await)?;
+        if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
+            return Err(remote_error(
+                "stream",
+                "close_output",
+                error,
+                "stream_output_close_failed",
+                "媒体输出关闭失败",
+                true,
+            ));
+        }
+        edge.success();
+        Ok(response.closed)
+    }
+
+    fn stream_node_for_resource(&self, stream_id: &str) -> GuardResult<NodeRecord> {
+        let route = self
+            .store
+            .routes()
+            .into_iter()
+            .find(|route| route.resource_id == stream_id && route.state != RouteState::Closed)
+            .ok_or_else(|| GuardError::NotFound(format!("stream {stream_id}")))?;
+        self.store
+            .get_node(&route.node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("node {}", route.node_id)))
+    }
+
     pub async fn set_playback_speed(
         &self,
         operation_id: &str,
@@ -1753,6 +1889,22 @@ fn remote_user_message(code: &str, message: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         format!("{fallback}：{message}")
+    }
+}
+
+fn stream_output_summary(output: OutputInfo) -> StreamOutputSummary {
+    let state = match OutputState::try_from(output.state).unwrap_or(OutputState::Failed) {
+        OutputState::Preparing => StreamOutputState::Preparing,
+        OutputState::Ready => StreamOutputState::Ready,
+        OutputState::Closed => StreamOutputState::Closed,
+        OutputState::Failed | OutputState::Unspecified => StreamOutputState::Failed,
+    };
+    StreamOutputSummary {
+        output_id: output.output_id,
+        stream_id: output.stream_id,
+        output_type: output.output_type,
+        endpoint: output.endpoint,
+        state,
     }
 }
 

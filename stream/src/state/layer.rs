@@ -2,8 +2,8 @@ pub mod output_layer {
     use gmv_domain::impl_close;
     use gmv_domain::info::output::{
         DashFmp4Output, DashMp4Output, Gb28181FrameOutput, Gb28181PsOutput, HlsFmp4Output,
-        HlsTsOutput, HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputKind, RtmpOutput,
-        RtspOutput, WebRtcOutput,
+        HlsTsOutput, HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputEnum, OutputKind,
+        RtmpOutput, RtspOutput, WebRtcOutput,
     };
     use gmv_domain::paste::paste;
 
@@ -173,6 +173,23 @@ pub mod output_layer {
                 }
             }
             false
+        }
+
+        pub fn remove(&mut self, output: OutputEnum) -> bool {
+            match output {
+                OutputEnum::HttpFlv => self.http_flv.take().is_some(),
+                OutputEnum::Rtmp => self.rtmp.take().is_some(),
+                OutputEnum::DashFmp4 => self.dash_fmp4.take().is_some(),
+                OutputEnum::DashMp4 => self.dash_mp4.take().is_some(),
+                OutputEnum::HlsFmp4 => self.hls_fmp4.take().is_some(),
+                OutputEnum::HlsTs => self.hls_ts.take().is_some(),
+                OutputEnum::Rtsp => self.rtsp.take().is_some(),
+                OutputEnum::Gb28181Frame => self.gb28181_frame.take().is_some(),
+                OutputEnum::Gb28181Ps => self.gb28181_ps.take().is_some(),
+                OutputEnum::WebRtc => self.web_rtc.take().is_some(),
+                OutputEnum::LocalMp4 => self.local_mp4.take().is_some(),
+                OutputEnum::LocalTs => self.local_ts.take().is_some(),
+            }
         }
     }
 

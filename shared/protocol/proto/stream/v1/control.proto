@@ -65,22 +65,26 @@ message CreateOutputRequest {
   string stream_id = 2;
   string output_type = 3;
   gmv.common.v1.EndpointMode endpoint_mode = 4;
+  string audio_codec = 5;
 }
 
 message CreateOutputResponse {
   string output_id = 1;
   repeated gmv.common.v1.Endpoint endpoints = 2;
   gmv.common.v1.ErrorDetail error = 3;
+  OutputInfo output = 4;
 }
 
 message CloseOutputRequest {
   gmv.common.v1.OperationRef operation = 1;
   string output_id = 2;
+  string stream_id = 3;
 }
 
 message CloseOutputResponse {
   bool closed = 1;
   gmv.common.v1.ErrorDetail error = 2;
+  OutputInfo output = 3;
 }
 
 message GetPlaybackEndpointsRequest {
@@ -89,6 +93,23 @@ message GetPlaybackEndpointsRequest {
 
 message GetPlaybackEndpointsResponse {
   repeated gmv.common.v1.Endpoint endpoints = 1;
+  repeated OutputInfo outputs = 2;
+}
+
+message OutputInfo {
+  string output_id = 1;
+  string stream_id = 2;
+  string output_type = 3;
+  string endpoint = 4;
+  OutputState state = 5;
+}
+
+enum OutputState {
+  OUTPUT_STATE_UNSPECIFIED = 0;
+  OUTPUT_STATE_PREPARING = 1;
+  OUTPUT_STATE_READY = 2;
+  OUTPUT_STATE_CLOSED = 3;
+  OUTPUT_STATE_FAILED = 4;
 }
 
 enum StreamState {

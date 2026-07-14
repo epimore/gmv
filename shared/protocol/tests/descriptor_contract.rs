@@ -157,3 +157,37 @@ fn node_heartbeat_contains_structured_host_metrics() {
     assert_eq!(field_number("HostMetrics", "cpu_usage_percent"), Some(1));
     assert_eq!(field_number("HostMetrics", "process_threads"), Some(14));
 }
+
+#[test]
+fn stream_output_lifecycle_contract_is_stable() {
+    let descriptor = descriptor();
+    let stream = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.stream.v1"))
+        .unwrap();
+    let message = |name: &str| {
+        stream
+            .message_type
+            .iter()
+            .find(|message| message.name.as_deref() == Some(name))
+            .unwrap()
+    };
+    let field_number = |message_name: &str, field_name: &str| {
+        message(message_name)
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some(field_name))
+            .unwrap()
+            .number
+    };
+    assert_eq!(field_number("CreateOutputRequest", "audio_codec"), Some(5));
+    assert_eq!(field_number("CreateOutputResponse", "output"), Some(4));
+    assert_eq!(field_number("CloseOutputRequest", "stream_id"), Some(3));
+    assert_eq!(
+        field_number("GetPlaybackEndpointsResponse", "outputs"),
+        Some(2)
+    );
+    assert_eq!(field_number("OutputInfo", "output_id"), Some(1));
+    assert_eq!(field_number("OutputInfo", "state"), Some(5));
+}

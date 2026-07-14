@@ -107,11 +107,6 @@
           <span>最多 {{ multiViewLimit }} 路实时直播</span>
         </div>
         <div class="monitor-actions">
-          <el-select v-model="liveOutputType" style="width: 128px" aria-label="直播播放方式">
-            <el-option label="HTTP-FLV" value="flv" />
-            <el-option label="HLS-fMP4" value="hls" />
-            <el-option label="HTTP-fMP4" value="fmp4" />
-          </el-select>
           <el-select v-model="selectedMultiNodeId" filterable placeholder="选择 Session 节点" class="multi-node-select"
             :loading="listNodeLoading" @change="selectMultiNode">
             <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
@@ -196,6 +191,8 @@
       <div class="multi-player">
         <GmvMultiGrid :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
           @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz"
+          @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
+          @playback-error="handleMultiPlaybackError"
           @close="handleMultiClose" @reorder="handleMultiReorder" />
         <div v-if="multiPageCount > 1" class="multi-pagination">
           <el-pagination v-model:current-page="multiPage" :page-size="multiGridSize" :total="multiCells.length"
@@ -215,11 +212,6 @@
           <span>Session {{ selectedDevice.session_node_id || '-' }}</span>
         </div>
         <div class="monitor-actions">
-          <el-select v-model="liveOutputType" style="width: 128px" aria-label="直播播放方式">
-            <el-option label="HTTP-FLV" value="flv" />
-            <el-option label="HLS-fMP4" value="hls" />
-            <el-option label="HTTP-fMP4" value="fmp4" />
-          </el-select>
           <el-button :loading="resourceLoading" @click="openResourceDrawer">资源能力</el-button>
           <el-tooltip :content="deviceBroadcastReasonText" placement="bottom" :disabled="selectedDevice.monitor_status === 1 && !!availableAudioOutputs.length">
             <el-button v-if="!broadcastSession" type="warning" :loading="broadcastStarting"
@@ -279,6 +271,10 @@
               <span>{{ confText(channel.biz_enable, 1, '业务') }}</span>
             </div> -->
             <footer class="channel-actions">
+              <el-select :model-value="channelOutputType(channel)" style="width: 128px" aria-label="直播播放方式"
+                @change="(value: LiveOutputType) => setChannelOutputType(channel, value)">
+                <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
               <el-button :disabled="!canPlayLive(channel) || playerRequesting"
                 :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
               <el-button :disabled="!canPlayback(channel) || playerRequesting"
@@ -311,6 +307,11 @@
       <div v-if="selectedChannel" class="monitor-player">
         <div class="monitor-player-toolbar">
           <span>{{ selectedChannelTitle }}</span>
+          <el-select v-if="lastAction === '实时直播'" :model-value="selectedChannel ? channelOutputType(selectedChannel) : 'flv'"
+            :disabled="singleOutputSwitching" style="width: 128px" aria-label="当前画面播放方式"
+            @change="handleSingleOutputTypeChange">
+            <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
         </div>
         <div class="monitor-player-stage">
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
@@ -318,6 +319,7 @@
             :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
             :controls="playerControls"
             @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz"
+            @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
             @playback-rate-change="handlePlaybackRateChange" />
           <div v-if="playerRequesting" class="player-loading-badge">播放创建中...</div>
         </div>
@@ -408,6 +410,8 @@ import { onBeforeRouteLeave } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import {
   errorMessage,
+  closeStreamOutput,
+  createStreamOutput,
   getMediaTransport,
   getGbSessionNodeConfig,
   listGbChannelImages,
@@ -433,6 +437,7 @@ import {
   type GbSessionConfigInfo,
   type NodeInfo,
   type StreamSummary,
+  type StreamOutputSummary,
 } from '@/api/client';
 import { startGbMicrophoneBroadcast, type GbBroadcastSession } from '@/audio/gbBroadcast';
 import GlassPanel from '@/components/GlassPanel.vue';
@@ -444,7 +449,6 @@ const auth = useAuthStore();
 const singlePlayerRef = ref<InstanceType<typeof GmvPlayerView>>();
 type LiveOutputType = 'flv' | 'hls' | 'fmp4';
 const monitorMode = ref<'devices' | 'multi'>('devices');
-const liveOutputType = ref<LiveOutputType>('flv');
 const loading = ref(false);
 const channelLoading = ref(false);
 const resourceLoading = ref(false);
@@ -476,6 +480,14 @@ const selectedDevice = ref<GbDeviceInfo>();
 const selectedChannel = ref<GbChannelInfo>();
 const detailDevice = ref<GbDeviceInfo>();
 const lastStream = ref<StreamSummary>();
+const singleOutput = ref<StreamOutputSummary>();
+const singleOutputSwitching = ref(false);
+const singlePendingSwitch = ref<{
+  previous_type: LiveOutputType;
+  previous_output?: StreamOutputSummary;
+  previous_endpoint: string;
+  next_output: StreamOutputSummary;
+}>();
 const lastAction = ref('');
 const showImages = ref(false);
 const deviceDetailDrawer = ref(false);
@@ -493,6 +505,7 @@ const broadcastStarting = ref(false);
 const broadcastSession = ref<GbBroadcastSession>();
 const broadcastScopeId = ref('');
 const snapshotLoading = reactive<Record<string, boolean>>({});
+const channelOutputTypes = reactive<Record<string, LiveOutputType>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
 const treeChannelLoading = reactive<Record<string, boolean>>({});
 const selectedTreeChannelKeys = ref<string[]>([]);
@@ -530,6 +543,14 @@ interface MultiViewCell {
   error?: string;
   channel: GbChannelInfo;
   output_type: LiveOutputType;
+  output?: StreamOutputSummary;
+  output_switching?: boolean;
+  pending_switch?: {
+    previous_type: LiveOutputType;
+    previous_output?: StreamOutputSummary;
+    previous_sources: GmvSource[];
+    next_output: StreamOutputSummary;
+  };
 }
 interface SelectedChannelRef {
   device_id: string;
@@ -543,6 +564,11 @@ interface SelectedChannelRef {
 type TreeNodeData =
   | { key: string; label: string; kind: 'device'; device: GbDeviceInfo; leaf: false }
   | { key: string; label: string; kind: 'channel'; channel: GbChannelInfo; leaf: true };
+const liveOutputOptions = [
+  { value: 'flv', label: 'HTTP-FLV' },
+  { value: 'hls', label: 'HLS-fMP4' },
+  { value: 'fmp4', label: 'HTTP-fMP4' },
+] satisfies Array<{ value: LiveOutputType; label: string }>;
 
 const confOptions = [
   { label: '启用', value: 1 },
@@ -647,6 +673,9 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
     ],
     capabilities,
     controls: multiCellControls(capabilities),
+    outputType: cell.output_type,
+    outputOptions: liveOutputOptions,
+    outputSwitching: cell.output_switching,
   };
 }));
 
@@ -670,6 +699,9 @@ function clampMultiPage() {
 
 function displayDeviceName(device: GbDeviceInfo) { return device.alias || device.device_id; }
 function displayChannelName(channel: GbChannelInfo) { return channel.alias_name || channel.name || channel.channel_id; }
+function channelOutputKey(channel: GbChannelInfo) { return `${channel.device_id}:${channel.channel_id}`; }
+function channelOutputType(channel: GbChannelInfo): LiveOutputType { return channelOutputTypes[channelOutputKey(channel)] ?? 'flv'; }
+function setChannelOutputType(channel: GbChannelInfo, outputType: LiveOutputType) { channelOutputTypes[channelOutputKey(channel)] = outputType; }
 function selectedChannelTooltip(channel: SelectedChannelRef) { return `${channel.device_title} · ${channel.title}`; }
 function autoMultiGridSize(count: number) {
   if (count <= 1) return 1;
@@ -1038,7 +1070,7 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     sources: [],
     status: 'reconnecting',
     channel: channel.channel,
-    output_type: liveOutputType.value,
+    output_type: channelOutputType(channel.channel),
   });
   await reconcileVisibleMultiStreams();
 }
@@ -1167,6 +1199,9 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     }
     if (closeDialog) playerDialog.value = false;
     lastStream.value = undefined;
+    singleOutput.value = undefined;
+    singlePendingSwitch.value = undefined;
+    singleOutputSwitching.value = false;
     if (clearAction) lastAction.value = '';
     if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
   })().finally(() => {
@@ -1222,6 +1257,87 @@ function handleMultiReorder(event: { sourceIndex: number; targetIndex: number })
   cells.splice(targetIndex, 0, cell);
   multiCells.value = cells;
   syncSelectedTreeChannelsOrderFromCells();
+}
+
+function asLiveOutputType(value: string): LiveOutputType | undefined {
+  return value === 'flv' || value === 'hls' || value === 'fmp4' ? value : undefined;
+}
+
+async function handleMultiOutputTypeChange(event: { index: number; outputType: string }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  const outputType = asLiveOutputType(event.outputType);
+  if (!cell || !outputType || cell.output_switching || cell.output_type === outputType) return;
+  setChannelOutputType(cell.channel, outputType);
+  if (!cell.stream?.stream_id) {
+    upsertMultiCell({ ...cell, output_type: outputType });
+    return;
+  }
+  const previousType = cell.output_type;
+  const previousOutput = cell.output;
+  const previousSources = cell.sources;
+  upsertMultiCell({ ...cell, output_switching: true, status: 'reconnecting', error: undefined });
+  try {
+    const nextOutput = await createStreamOutput(
+      cell.stream.stream_id,
+      outputType,
+      `ui-multi-output-${Date.now()}-${cell.channel_id}-${outputType}`,
+    );
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (!current?.stream || current.stream.stream_id !== cell.stream.stream_id) {
+      await closeStreamOutput(cell.stream.stream_id, nextOutput.output_id).catch(() => undefined);
+      return;
+    }
+    upsertMultiCell({
+      ...current,
+      output_type: outputType,
+      output: nextOutput,
+      sources: streamSources({ ...current.stream, endpoint: nextOutput.endpoint }),
+      pending_switch: {
+        previous_type: previousType,
+        previous_output: previousOutput,
+        previous_sources: previousSources,
+        next_output: nextOutput,
+      },
+    });
+  } catch (error) {
+    setChannelOutputType(cell.channel, previousType);
+    upsertMultiCell({
+      ...cell,
+      output_switching: false,
+      status: cell.sources.length ? 'playing' : 'error',
+      error: cell.sources.length ? undefined : errorMessage(error, '切换播放方式失败'),
+    });
+    ElMessage.error(errorMessage(error, '切换播放方式失败'));
+  }
+}
+
+async function handleMultiPlaying(event: { index: number }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  const pending = cell?.pending_switch;
+  if (!cell || !pending) return;
+  upsertMultiCell({ ...cell, pending_switch: undefined, output_switching: false, status: 'playing', error: undefined });
+  if (pending.previous_output && pending.previous_output.output_id !== pending.next_output.output_id) {
+    await closeStreamOutput(cell.stream!.stream_id, pending.previous_output.output_id).catch(() => undefined);
+  }
+}
+
+async function handleMultiPlaybackError(event: { index: number; payload: { message: string } }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  const pending = cell?.pending_switch;
+  if (!cell || !pending || !cell.stream) return;
+  await closeStreamOutput(cell.stream.stream_id, pending.next_output.output_id).catch(() => undefined);
+  setChannelOutputType(cell.channel, pending.previous_type);
+  upsertMultiCell({
+    ...cell,
+    output_type: pending.previous_type,
+    output: pending.previous_output,
+    sources: pending.previous_sources,
+    pending_switch: undefined,
+    output_switching: false,
+    status: 'reconnecting',
+    error: undefined,
+  });
+  ElMessage.error(`切换播放方式失败：${event.payload.message}`);
 }
 
 function ptzPayload(command: GmvPtzCommand): GbPtzPayload {
@@ -1392,6 +1508,64 @@ async function backToDevices() {
   images.value = [];
   showImages.value = false;
 }
+async function handleSingleOutputTypeChange(value: string) {
+  const outputType = asLiveOutputType(value);
+  const channel = selectedChannel.value;
+  const stream = lastStream.value;
+  if (!outputType || !channel || !stream?.stream_id || singleOutputSwitching.value) return;
+  const previousType = channelOutputType(channel);
+  if (previousType === outputType) return;
+  singleOutputSwitching.value = true;
+  try {
+    const nextOutput = await createStreamOutput(
+      stream.stream_id,
+      outputType,
+      `ui-single-output-${Date.now()}-${channel.channel_id}-${outputType}`,
+    );
+    if (lastStream.value?.stream_id !== stream.stream_id) {
+      await closeStreamOutput(stream.stream_id, nextOutput.output_id).catch(() => undefined);
+      return;
+    }
+    singlePendingSwitch.value = {
+      previous_type: previousType,
+      previous_output: singleOutput.value,
+      previous_endpoint: stream.endpoint,
+      next_output: nextOutput,
+    };
+    singleOutput.value = nextOutput;
+    setChannelOutputType(channel, outputType);
+    lastStream.value = { ...stream, endpoint: nextOutput.endpoint };
+  } catch (error) {
+    singleOutputSwitching.value = false;
+    ElMessage.error(errorMessage(error, '切换播放方式失败'));
+  }
+}
+
+async function handleSinglePlaying() {
+  const pending = singlePendingSwitch.value;
+  const stream = lastStream.value;
+  if (!pending || !stream) return;
+  singlePendingSwitch.value = undefined;
+  singleOutputSwitching.value = false;
+  if (pending.previous_output && pending.previous_output.output_id !== pending.next_output.output_id) {
+    await closeStreamOutput(stream.stream_id, pending.previous_output.output_id).catch(() => undefined);
+  }
+}
+
+async function handleSinglePlaybackError(event: { message: string }) {
+  const pending = singlePendingSwitch.value;
+  const stream = lastStream.value;
+  const channel = selectedChannel.value;
+  if (!pending || !stream || !channel) return;
+  await closeStreamOutput(stream.stream_id, pending.next_output.output_id).catch(() => undefined);
+  setChannelOutputType(channel, pending.previous_type);
+  singleOutput.value = pending.previous_output;
+  singlePendingSwitch.value = undefined;
+  singleOutputSwitching.value = false;
+  lastStream.value = { ...stream, endpoint: pending.previous_endpoint };
+  ElMessage.error(`切换播放方式失败：${event.message}`);
+}
+
 async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
   if (playerRequesting.value) return;
   const action = kind === 'preview' ? '实时直播' : '历史回放';
@@ -1406,13 +1580,16 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
   try {
     await stopCurrentStream({ closeDialog: false, clearAction: false, cancelPending: false });
     const stream = kind === 'preview'
-      ? await startGbPreview(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-preview-' + Date.now(), output_type: liveOutputType.value, audio_codec: 'aac' })
+      ? await startGbPreview(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-preview-' + Date.now(), output_type: channelOutputType(channel), audio_codec: 'aac' })
       : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'fmp4', audio_codec: 'aac' });
     if (requestSeq !== playRequestSeq || !playerDialog.value) {
       if (stream.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
       return;
     }
     lastStream.value = stream;
+    singleOutput.value = undefined;
+    singlePendingSwitch.value = undefined;
+    singleOutputSwitching.value = false;
     ElMessage.success(action + '已提交');
   } catch (error) {
     if (requestSeq === playRequestSeq) ElMessage.error(errorMessage(error, '播放请求失败'));

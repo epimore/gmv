@@ -31,7 +31,7 @@ use crate::api::v2::control::{
 };
 use crate::api::v2::model::{
     AiTaskSummary, AiTaskSummaryState, DeviceSummary, MediaTransportCapability, RuntimeStatus,
-    StreamSummary, StreamSummaryState,
+    StreamOutputSummary, StreamSummary, StreamSummaryState,
 };
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
@@ -145,6 +145,14 @@ pub fn router(state: HttpState) -> Router {
         .route("/streams", get(streams))
         .route("/streams/{stream_id}/stop", post(stop_stream))
         .route("/streams/{stream_id}/speed", post(set_playback_speed))
+        .route(
+            "/streams/{stream_id}/outputs",
+            get(list_stream_outputs).post(create_stream_output),
+        )
+        .route(
+            "/streams/{stream_id}/outputs/{output_id}/close",
+            post(close_stream_output),
+        )
         .route("/ai/tasks", get(ai_tasks).post(start_ai_task))
         .route("/ai/tasks/{task_id}/cancel", post(cancel_ai_task))
         .route("/runtime/status", get(runtime_status))
@@ -1166,6 +1174,46 @@ fn issue_playback_ticket(
     Ok(stream)
 }
 
+fn issue_stream_output_ticket(
+    state: &HttpState,
+    mut output: StreamOutputSummary,
+    ui_session_token: &str,
+    session: &UiSession,
+) -> Result<StreamOutputSummary, HttpError> {
+    if output.endpoint.is_empty() {
+        return Ok(output);
+    }
+    let route = state
+        .api
+        .store()
+        .routes()
+        .into_iter()
+        .find(|route| route.resource_id == output.stream_id);
+    let lease = state
+        .api
+        .store()
+        .leases()
+        .into_iter()
+        .find(|lease| lease.resource_id == output.stream_id);
+    let token = Uuid::new_v4().to_string();
+    let now_ms = http_now_ms()?;
+    state
+        .api
+        .store()
+        .upsert_playback_ticket(PlaybackTicketRecord {
+            token: token.clone(),
+            stream_id: output.stream_id.clone(),
+            lease_id: lease.map(|lease| lease.lease_id).unwrap_or_default(),
+            route_id: route.map(|route| route.route_id).unwrap_or_default(),
+            username: session.username.clone(),
+            ui_session_token: ui_session_token.to_string(),
+            required_role: Role::Viewer,
+            expires_at_ms: now_ms + PLAYBACK_TOKEN_TTL_MS,
+        });
+    output.endpoint = endpoint_with_playback_token(&output.endpoint, &token);
+    Ok(output)
+}
+
 fn endpoint_with_playback_token(endpoint: &str, token: &str) -> String {
     let separator = if endpoint.contains('?') { '&' } else { '?' };
     format!("{endpoint}{separator}gmv-token={token}")
@@ -1524,6 +1572,26 @@ struct PlaybackSpeedRequest {
 struct PlaybackSpeedResponse {
     accepted: bool,
     speed_rate: f32,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct CreateStreamOutputRequest {
+    request_id: String,
+    output_type: String,
+    #[serde(default = "default_output_audio_codec")]
+    audio_codec: String,
+}
+
+fn default_output_audio_codec() -> String {
+    "aac".to_string()
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct CloseStreamOutputResponse {
+    closed: bool,
+    output_id: String,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -2502,6 +2570,94 @@ async fn streams(
     debug!("/api/v2/streams, req:<empty>");
     require_role(&state.auth, &headers, Role::Viewer)?;
     Ok(Json(real_streams(&state)))
+}
+
+async fn list_stream_outputs(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(stream_id): Path<String>,
+) -> Result<Json<Vec<StreamOutputSummary>>, HttpError> {
+    debug!("/api/v2/streams/{{stream_id}}/outputs, req: stream_id={stream_id}");
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let outputs = BusinessControl::new(state.api.store())
+        .list_stream_outputs(&stream_id)
+        .await?;
+    Ok(Json(outputs))
+}
+
+async fn create_stream_output(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(stream_id): Path<String>,
+    Json(request): Json<CreateStreamOutputRequest>,
+) -> Result<(StatusCode, Json<StreamOutputSummary>), HttpError> {
+    debug!(
+        "/api/v2/streams/{{stream_id}}/outputs, req: stream_id={stream_id}, output_type={}, audio_codec={}",
+        request.output_type, request.audio_codec
+    );
+    let (ui_session_token, session) =
+        require_write_with_token(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id;
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "stream.output.create",
+        &session,
+        Role::Operator,
+    ))?;
+    let result = BusinessControl::new(state.api.store())
+        .create_stream_output(
+            &operation_id,
+            &stream_id,
+            &request.output_type,
+            &request.audio_codec,
+        )
+        .await;
+    match result {
+        Ok(output) => {
+            let output = issue_stream_output_ticket(&state, output, &ui_session_token, &session)?;
+            state
+                .api
+                .succeed_operation(&operation_id, "stream output ready")?;
+            Ok((StatusCode::CREATED, Json(output)))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(HttpError::from_operation(error, &operation_id))
+        }
+    }
+}
+
+async fn close_stream_output(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((stream_id, output_id)): Path<(String, String)>,
+) -> Result<Json<CloseStreamOutputResponse>, HttpError> {
+    debug!(
+        "/api/v2/streams/{{stream_id}}/outputs/{{output_id}}/close, req: stream_id={stream_id}, output_id={output_id}"
+    );
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = format!("close-output-{output_id}");
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "stream.output.close",
+        &session,
+        Role::Operator,
+    ))?;
+    let result = BusinessControl::new(state.api.store())
+        .close_stream_output(&operation_id, &stream_id, &output_id)
+        .await;
+    match result {
+        Ok(closed) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "stream output closed")?;
+            Ok(Json(CloseStreamOutputResponse { closed, output_id }))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(HttpError::from_operation(error, &operation_id))
+        }
+    }
 }
 
 async fn media_transport(
