@@ -1,17 +1,19 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base::chrono::{Duration as TimeDelta, Local};
 use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::net::state::{Association, Protocol};
 use base::once_cell::sync::OnceCell;
 use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::{SipRegisteredSource, SipTransportProtocol};
+use parking_lot::Mutex;
 
 use crate::gb::sip::NativeSipRuntimeHandle;
 use crate::register::event::{self, Event};
@@ -47,6 +49,7 @@ pub struct Inner {
     pub io_map: Network,
     recovering_devices: DashMap<Arc<str>, ()>,
     device_recovery_limit: Arc<Semaphore>,
+    device_recovery_failure_episode: Mutex<FailureEpisode>,
 }
 
 impl Register {
@@ -69,6 +72,7 @@ impl Register {
             },
             recovering_devices: DashMap::new(),
             device_recovery_limit: Arc::new(Semaphore::new(MAX_DEVICE_RECOVERY_CONCURRENCY)),
+            device_recovery_failure_episode: Mutex::new(FailureEpisode::default()),
         });
 
         REGISTER
@@ -167,10 +171,10 @@ impl Register {
             Ok(permit) => permit,
             Err(_) => {
                 inner.recovering_devices.remove(&device_id);
-                warn!(
-                    "device keepalive recovery concurrency is full; retry on next keepalive: \
-                     device_id={device_id}"
+                base::log::trace!(
+                    "device keepalive recovery attempt deferred: device_id={device_id}, reason=concurrency_full"
                 );
+                record_device_recovery_failure(&inner, "concurrency_full");
                 return Ok(());
             }
         };
@@ -179,12 +183,18 @@ impl Register {
             let result = Self::recover_device_session(&device_id, association).await;
             inner.recovering_devices.remove(&device_id);
             match result {
-                Ok(()) => db_task::submit(DbTask::TouchDeviceHeartbeat {
-                    device_id: device_id.to_string(),
-                }),
-                Err(err) => warn!(
-                    "recover device session from keepalive failed: device_id={device_id}, err={err}"
-                ),
+                Ok(()) => {
+                    record_device_recovery_success(&inner);
+                    db_task::submit(DbTask::TouchDeviceHeartbeat {
+                        device_id: device_id.to_string(),
+                    });
+                }
+                Err(err) => {
+                    base::log::trace!(
+                        "recover device session from keepalive failed: device_id={device_id}, err={err}"
+                    );
+                    record_device_recovery_failure(&inner, "recovery_failed");
+                }
             }
         });
         Ok(())
@@ -482,6 +492,46 @@ impl Register {
                 runtime.close_transport(&session.association, 1);
             }
         }
+    }
+}
+
+fn record_device_recovery_failure(inner: &Inner, reason: &str) {
+    match inner
+        .device_recovery_failure_episode
+        .lock()
+        .record_failure(Instant::now())
+    {
+        EpisodeDecision::Started => warn!(
+            "device keepalive recovery state changed: state=degraded, previous_state=ready, reason={reason}"
+        ),
+        EpisodeDecision::Summary {
+            total,
+            since_last_summary,
+            suppressed,
+            duration,
+        } => warn!(
+            "device keepalive recovery remains degraded: state=degraded, outcome=ongoing, latest_reason={reason}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+            duration.as_millis()
+        ),
+        EpisodeDecision::Suppressed => {}
+        EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+    }
+}
+
+fn record_device_recovery_success(inner: &Inner) {
+    if let EpisodeDecision::Recovered {
+        total,
+        suppressed,
+        duration,
+    } = inner
+        .device_recovery_failure_episode
+        .lock()
+        .record_success(Instant::now())
+    {
+        info!(
+            "device keepalive recovery state changed: state=ready, previous_state=degraded, outcome=recovered, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+            duration.as_millis()
+        );
     }
 }
 

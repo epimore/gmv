@@ -1,10 +1,11 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base::chrono::{Duration as TimeDelta, Local};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, warn};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use gmv_pjsip::SipOutboundSubscribe;
 use gmv_pjsip::message::extract_uri;
 
@@ -306,15 +307,49 @@ fn terminate_catalog_subscription(device_id: &str, generation: u64) {
 fn retry_new_catalog_subscription(device_id: String, expires: u32) {
     base::tokio::spawn(async move {
         let mut delay = Duration::from_secs(5);
+        let mut failure_episode = FailureEpisode::default();
         loop {
             base::tokio::time::sleep(delay).await;
             if Register::get_connected_device_session(&device_id).is_none() {
                 break;
             }
             match subscribe_catalog_once(&device_id, expires).await {
-                Ok(()) => break,
+                Ok(()) => {
+                    if let EpisodeDecision::Recovered {
+                        total,
+                        suppressed,
+                        duration,
+                    } = failure_episode.record_success(Instant::now())
+                    {
+                        base::log::info!(
+                            "catalog subscription state changed: state=active, previous_state=retrying, outcome=recovered, device_id={device_id}, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                            duration.as_millis()
+                        );
+                    }
+                    break;
+                }
                 Err(err) => {
-                    warn!("retry catalog subscription failed: device_id={device_id}, err={err}");
+                    base::log::trace!(
+                        "catalog subscription retry failed: device_id={device_id}, err={err}"
+                    );
+                    match failure_episode.record_failure(Instant::now()) {
+                        EpisodeDecision::Started => warn!(
+                            "catalog subscription state changed: state=retrying, previous_state=active, device_id={device_id}, reason=subscribe_failed"
+                        ),
+                        EpisodeDecision::Summary {
+                            total,
+                            since_last_summary,
+                            suppressed,
+                            duration,
+                        } => warn!(
+                            "catalog subscription remains unavailable: state=retrying, outcome=ongoing, device_id={device_id}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                            duration.as_millis()
+                        ),
+                        EpisodeDecision::Suppressed => {}
+                        EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => {
+                            unreachable!()
+                        }
+                    }
                     delay = Duration::from_secs(30);
                 }
             }

@@ -20,6 +20,7 @@ use base::dashmap::mapref::entry::Entry;
 use base::dashmap::mapref::one::Ref;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::net::state::Protocol;
 use base::once_cell::sync::OnceCell;
 use base::tokio::select;
@@ -35,13 +36,15 @@ use gmv_domain::info::obj::{
 };
 use gmv_domain::info::output::{OutputEnum, OutputKind};
 use log::{error, info, warn};
+use parking_lot::Mutex;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
+const RTP_QUEUE_RECOVERY_PACKET_COUNT: usize = 64;
 const RTP_INPUT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const UNKNOWN_STREAM_CONFIRM_MS: u64 = 2_000;
 const UNKNOWN_STREAM_MIN_PACKETS: u64 = 3;
@@ -68,6 +71,8 @@ pub struct RtpChannel {
     pub media_started: AtomicBool,
     pub stream_id: Arc<str>,
     pub miss_pkt: AtomicUsize,
+    queue_ready_streak: AtomicUsize,
+    queue_full_episode: Mutex<FailureEpisode>,
 }
 impl RtpChannel {
     fn new(stream_id: Arc<str>) -> RtpChannel {
@@ -81,6 +86,8 @@ impl RtpChannel {
             media_started: AtomicBool::new(false),
             stream_id,
             miss_pkt: AtomicUsize::new(0),
+            queue_ready_streak: AtomicUsize::new(0),
+            queue_full_episode: Mutex::new(FailureEpisode::default()),
         }
     }
     fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<RtpPacket> {
@@ -117,24 +124,72 @@ impl RtpChannel {
         self.in_has_timeout.store(0, Ordering::Relaxed);
 
         if self.rtp_tx.is_full() {
-            let count = self.miss_pkt.fetch_add(1, Ordering::Relaxed);
-            //延迟等待信令处理完成
-            let call_io_busy = if count < 60 {
-                count % 60 == 0
-            } else {
-                count % 300 == 0
-            };
-            if call_io_busy {
-                Err(GlobalError::new_biz_error(
-                    BaseErrorCode::IoBusy.code(),
-                    "rtp channel is full,miss pkt count: ",
-                    |msg| error!("ssrc: {ssrc},{msg}{count}"),
-                ))?;
+            self.queue_ready_streak.store(0, Ordering::Relaxed);
+            let dropped_total = self
+                .miss_pkt
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+            base::log::trace!(
+                "rtp input channel full: ssrc={ssrc}, dropped_since_recovery={dropped_total}"
+            );
+            if dropped_total == 1 || dropped_total % 64 == 0 {
+                self.record_queue_full(ssrc, dropped_total);
             }
         } else {
-            self.miss_pkt.store(0, Ordering::Relaxed);
+            let dropped_total = self.miss_pkt.load(Ordering::Relaxed);
+            if dropped_total > 0 {
+                let ready_streak = self
+                    .queue_ready_streak
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                if ready_streak >= RTP_QUEUE_RECOVERY_PACKET_COUNT {
+                    let dropped_total = self.miss_pkt.swap(0, Ordering::Relaxed);
+                    self.queue_ready_streak.store(0, Ordering::Relaxed);
+                    self.record_queue_recovered(ssrc, dropped_total);
+                }
+            }
         }
         Ok(self.rtp_tx.clone())
+    }
+
+    fn record_queue_full(&self, ssrc: u32, dropped_total: usize) {
+        match self
+            .queue_full_episode
+            .lock()
+            .record_failure(Instant::now())
+        {
+            EpisodeDecision::Started => warn!(
+                "rtp input channel state changed: state=full, previous_state=ready, ssrc={ssrc}, outcome=dropping"
+            ),
+            EpisodeDecision::Summary {
+                total,
+                since_last_summary,
+                suppressed,
+                duration,
+            } => warn!(
+                "rtp input channel remains full: state=full, outcome=ongoing, ssrc={ssrc}, dropped_since_recovery={dropped_total}, sampled_failures={total}, samples_since_last_summary={since_last_summary}, suppressed_samples={suppressed}, duration_ms={}",
+                duration.as_millis()
+            ),
+            EpisodeDecision::Suppressed => {}
+            EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+        }
+    }
+
+    fn record_queue_recovered(&self, ssrc: u32, dropped_total: usize) {
+        if let EpisodeDecision::Recovered {
+            total,
+            suppressed,
+            duration,
+        } = self
+            .queue_full_episode
+            .lock()
+            .record_success(Instant::now())
+        {
+            info!(
+                "rtp input channel state changed: state=ready, previous_state=full, outcome=recovered, ssrc={ssrc}, dropped_total={dropped_total}, sampled_failures={total}, suppressed_samples={suppressed}, duration_ms={}",
+                duration.as_millis()
+            );
+        }
     }
 }
 

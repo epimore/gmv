@@ -4,19 +4,24 @@ use crate::state::register::{RefreshRtp, Register};
 use base::bytes::{Bytes, BytesMut};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{debug, error, warn};
+use base::log::{debug, error, info, warn};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::net;
 use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, U16BeLengthPrefixEncoder};
 use base::net::state::{CHANNEL_BUFFER_SIZE, IoEventType, Protocol, Zip};
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
 use crossbeam_channel::TrySendError;
+use parking_lot::Mutex;
 use rtp_types::RtpPacket;
 use socket2::Socket;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 const RECV_BUF_SIZE: usize = 8 * 1024 * 1024;
+const PARSE_RECOVERY_PACKET_COUNT: usize = 64;
 pub fn listen_media_server(port: u16) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
     let socket_addr =
         SocketAddr::from_str(&format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
@@ -51,7 +56,7 @@ pub fn run(
         net::rw::direct_rw::<RtpReader, RtpReader, U16BeLengthPrefixEncoder>(
             tu,
             cancel.clone(),
-            Arc::new(RtpReader),
+            Arc::new(RtpReader::default()),
             Arc::new(U16BeLengthPrefixEncoder),
         )?;
     base::tokio::spawn(write_net(output_rx, writer.clone(), cancel));
@@ -117,7 +122,11 @@ fn listener_port(tu: &(Option<TcpListener>, Option<UdpSocket>)) -> GlobalResult<
 }
 
 #[derive(Default)]
-struct RtpReader;
+struct RtpReader {
+    parse_failure_active: AtomicBool,
+    parse_success_streak: AtomicUsize,
+    parse_failure_episode: Mutex<FailureEpisode>,
+}
 
 impl RtpReader {
     fn forward_packet(
@@ -133,7 +142,7 @@ impl RtpReader {
             RefreshRtp::Ready(sender) => sender,
             RefreshRtp::UnknownSsrc => {
                 Register::observe_unknown_rtp(ssrc, remote_addr, protocol);
-                debug!("drop rtp packet for unknown ssrc; ssrc: {ssrc}");
+                base::log::trace!("drop rtp packet for unknown ssrc; ssrc: {ssrc}");
                 return Ok(());
             }
             RefreshRtp::Failed(error) => return Err(error),
@@ -150,10 +159,10 @@ impl RtpReader {
         match rtp_tx.try_send(packet) {
             Ok(_) => {}
             Err(TrySendError::Full(_)) => {
-                warn!("rtp input channel full; drop ssrc={ssrc}");
+                base::log::trace!("rtp input channel full; drop ssrc={ssrc}");
             }
             Err(TrySendError::Disconnected(_)) => {
-                debug!("drop rtp packet for disconnected channel; ssrc: {ssrc}");
+                base::log::trace!("drop rtp packet for disconnected channel; ssrc: {ssrc}");
             }
         }
 
@@ -170,16 +179,73 @@ impl PacketDispatcher for RtpReader {
     ) -> GlobalResult<()> {
         match RtpPacket::parse(data.as_ref()) {
             Ok(pkt) => {
+                self.record_parse_success();
                 let payload_start = pkt.payload_offset();
                 let payload_end = payload_start + pkt.payload_len();
                 let payload = data.slice(payload_start..payload_end);
                 self.forward_packet(pkt, payload, remote_addr, protocol)?;
             }
             Err(error) => {
-                warn!("parse rtp pkt error: {error}");
+                base::log::trace!("parse rtp packet failed: error={error}");
+                self.record_parse_failure();
             }
         }
         Ok(())
+    }
+}
+
+impl RtpReader {
+    fn record_parse_failure(&self) {
+        let mut episode = self.parse_failure_episode.lock();
+        self.parse_success_streak.store(0, Ordering::Release);
+        self.parse_failure_active.store(true, Ordering::Release);
+        match episode.record_failure(Instant::now()) {
+            EpisodeDecision::Started => warn!(
+                "rtp input parse state changed: state=failed, previous_state=ready, reason=invalid_packet"
+            ),
+            EpisodeDecision::Summary {
+                total,
+                since_last_summary,
+                suppressed,
+                duration,
+            } => warn!(
+                "rtp input parse remains failed: state=failed, outcome=ongoing, reason=invalid_packet, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                duration.as_millis()
+            ),
+            EpisodeDecision::Suppressed => {}
+            EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+        }
+    }
+
+    fn record_parse_success(&self) {
+        if !self.parse_failure_active.load(Ordering::Acquire) {
+            return;
+        }
+        let success_streak = self
+            .parse_success_streak
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if success_streak < PARSE_RECOVERY_PACKET_COUNT {
+            return;
+        }
+        let mut episode = self.parse_failure_episode.lock();
+        if self.parse_success_streak.load(Ordering::Acquire) < PARSE_RECOVERY_PACKET_COUNT {
+            return;
+        }
+        if let EpisodeDecision::Recovered {
+            total,
+            suppressed,
+            duration,
+        } = episode.record_success(Instant::now())
+        {
+            info!(
+                "rtp input parse state changed: state=ready, previous_state=failed, outcome=recovered, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                duration.as_millis()
+            );
+        }
+        self.parse_failure_active
+            .store(episode.is_active(), Ordering::Release);
+        self.parse_success_streak.store(0, Ordering::Release);
     }
 }
 

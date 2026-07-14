@@ -1,6 +1,5 @@
 use crate::media::context::RtpState;
 use base::bytes::{Bytes, BytesMut};
-use base::log::{debug, warn};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use gmv_domain::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
@@ -292,9 +291,10 @@ impl RtpPacketBuffer {
             }
             PayloadKind::Aac => {
                 if lost_before {
-                    warn!(
+                    base::log::trace!(
                         "aac rtp sequence loss; keep next intact packet; ssrc: {}, timestamp: {}",
-                        self.ssrc, pkt.timestamp
+                        self.ssrc,
+                        pkt.timestamp
                     );
                 }
                 if let Some(data) = self.depacketize_aac(pkt.payload) {
@@ -303,9 +303,10 @@ impl RtpPacketBuffer {
             }
             PayloadKind::G711 => {
                 if lost_before {
-                    warn!(
+                    base::log::trace!(
                         "g711 rtp sequence loss; keep next intact packet; ssrc: {}, timestamp: {}",
-                        self.ssrc, pkt.timestamp
+                        self.ssrc,
+                        pkt.timestamp
                     );
                 }
                 self.ready_aus.push_back(pkt.payload);
@@ -339,7 +340,7 @@ impl RtpPacketBuffer {
         }
 
         if self.au_damaged {
-            warn!(
+            base::log::trace!(
                 "drop damaged rtp access unit; ssrc: {}, timestamp: {:?}, bytes: {}",
                 self.ssrc,
                 self.au_timestamp,
@@ -376,7 +377,7 @@ impl RtpPacketBuffer {
                 self.wait_keyframe = false;
                 true
             } else {
-                debug!(
+                base::log::trace!(
                     "drop video access unit while waiting keyframe; ssrc: {}",
                     self.ssrc
                 );
@@ -404,7 +405,7 @@ impl RtpPacketBuffer {
             .au_timestamp
             .is_some_and(|current| current != next_timestamp)
         {
-            warn!(
+            base::log::trace!(
                 "drop rtp access unit before sequence loss; ssrc: {}, timestamp: {:?}, bytes: {}",
                 self.ssrc,
                 self.au_timestamp,
@@ -455,9 +456,11 @@ impl RtpPacketBuffer {
     fn enqueue(&mut self, pkt: RtpPacket) {
         let seq = pkt.seq;
         if self.is_old_packet(seq) {
-            debug!(
+            base::log::trace!(
                 "drop old rtp packet; ssrc: {}, seq: {}, first read seq: {}",
-                self.ssrc, seq, self.first_read_rtp_sn
+                self.ssrc,
+                seq,
+                self.first_read_rtp_sn
             );
             return;
         }
@@ -470,9 +473,11 @@ impl RtpPacketBuffer {
         if item.is_none() {
             self.queue_count += 1;
         } else if let Some(existing) = item.as_ref() {
-            debug!(
+            base::log::trace!(
                 "replace rtp queue slot; ssrc: {}, old seq: {}, new seq: {}",
-                self.ssrc, existing.seq, seq
+                self.ssrc,
+                existing.seq,
+                seq
             );
         }
         *item = Some(pkt);
@@ -506,7 +511,7 @@ impl RtpPacketBuffer {
 
         let lost_before = offset > 0;
         if lost_before {
-            debug!(
+            base::log::trace!(
                 "rtp packet lost; ssrc: {}, expected seq: {}, next seq: {}, missed: {}, max_wait_ms: {}, queue_count: {}",
                 self.ssrc,
                 self.first_read_rtp_sn,
@@ -594,7 +599,7 @@ impl RtpPacketBuffer {
                 return true;
             }
             if self.queue_count >= REORDER_BUFFER_HIGH_WATERMARK {
-                debug!(
+                base::log::trace!(
                     "rtp reorder buffer high watermark; ssrc: {}, expected seq: {}, queue_count: {}, max_wait_ms: {}",
                     self.ssrc,
                     expected_seq,
@@ -651,7 +656,7 @@ impl RtpPacketBuffer {
             24 => depacketize_h264_stap_a(payload),
             28 => self.depacketize_h264_fu_a(payload),
             _ => {
-                warn!("unsupported h264 rtp nal type: {}", nal_type);
+                base::log::trace!("unsupported h264 rtp nal type: {}", nal_type);
                 None
             }
         }
@@ -659,7 +664,7 @@ impl RtpPacketBuffer {
 
     fn depacketize_h264_fu_a(&mut self, payload: &[u8]) -> Option<Bytes> {
         if payload.len() < 3 {
-            warn!("short h264 fu-a packet");
+            base::log::trace!("short h264 fu-a packet");
             self.h264_fu = None;
             return None;
         }
@@ -669,7 +674,7 @@ impl RtpPacketBuffer {
         let start = fu_header & 0x80 != 0;
         let end = fu_header & 0x40 != 0;
         if start && end {
-            warn!("invalid h264 fu-a packet with both start and end bits");
+            base::log::trace!("invalid h264 fu-a packet with both start and end bits");
             self.h264_fu = None;
             return None;
         }
@@ -685,7 +690,7 @@ impl RtpPacketBuffer {
         }
 
         let Some(out) = self.h264_fu.as_mut() else {
-            warn!("drop h264 fu-a fragment without start");
+            base::log::trace!("drop h264 fu-a fragment without start");
             return None;
         };
         out.extend_from_slice(&payload[2..]);
@@ -697,7 +702,7 @@ impl RtpPacketBuffer {
 
     fn depacketize_h265(&mut self, payload: &[u8]) -> Option<Bytes> {
         if payload.len() < 3 {
-            warn!("short h265 rtp packet");
+            base::log::trace!("short h265 rtp packet");
             return None;
         }
 
@@ -705,15 +710,15 @@ impl RtpPacketBuffer {
         let layer_id = ((payload[0] << 5) & 0x20) | ((payload[1] >> 3) & 0x1f);
         let tid = payload[1] & 0x07;
         if layer_id != 0 {
-            warn!("unsupported multi-layer h265 rtp packet");
+            base::log::trace!("unsupported multi-layer h265 rtp packet");
             return None;
         }
         if tid == 0 {
-            warn!("invalid h265 rtp temporal id");
+            base::log::trace!("invalid h265 rtp temporal id");
             return None;
         }
         if nal_type > 50 {
-            warn!("unsupported h265 rtp nal type: {}", nal_type);
+            base::log::trace!("unsupported h265 rtp nal type: {}", nal_type);
             return None;
         }
         match nal_type {
@@ -721,7 +726,7 @@ impl RtpPacketBuffer {
             48 => depacketize_h265_ap(payload),
             49 => self.depacketize_h265_fu(payload),
             _ => {
-                warn!("unsupported h265 rtp nal type: {}", nal_type);
+                base::log::trace!("unsupported h265 rtp nal type: {}", nal_type);
                 None
             }
         }
@@ -729,7 +734,7 @@ impl RtpPacketBuffer {
 
     fn depacketize_h265_fu(&mut self, payload: &[u8]) -> Option<Bytes> {
         if payload.len() < 4 {
-            warn!("short h265 fu packet");
+            base::log::trace!("short h265 fu packet");
             self.h265_fu = None;
             return None;
         }
@@ -739,7 +744,7 @@ impl RtpPacketBuffer {
         let end = fu_header & 0x40 != 0;
         let fu_type = fu_header & 0x3f;
         if start && end {
-            warn!("invalid h265 fu packet with both start and end bits");
+            base::log::trace!("invalid h265 fu packet with both start and end bits");
             self.h265_fu = None;
             return None;
         }
@@ -755,7 +760,7 @@ impl RtpPacketBuffer {
         }
 
         let Some(out) = self.h265_fu.as_mut() else {
-            warn!("drop h265 fu fragment without start");
+            base::log::trace!("drop h265 fu fragment without start");
             return None;
         };
         out.extend_from_slice(&payload[3..]);
@@ -782,7 +787,7 @@ impl RtpPacketBuffer {
             || au_header_bits % header_size_bits != 0
             || payload.len() < 2 + au_header_bytes
         {
-            warn!("unsupported aac rtp payload without ADTS");
+            base::log::trace!("unsupported aac rtp payload without ADTS");
             return None;
         }
 
@@ -798,7 +803,7 @@ impl RtpPacketBuffer {
             let au_header = u16::from_be_bytes([payload[byte_offset], payload[byte_offset + 1]]);
             let au_size = (au_header >> 3) as usize;
             if data_offset + au_size > payload.len() {
-                warn!("aac rtp AU size exceeds payload");
+                base::log::trace!("aac rtp AU size exceeds payload");
                 return None;
             }
 
@@ -836,7 +841,7 @@ fn depacketize_h264_stap_a(payload: &[u8]) -> Option<Bytes> {
         let nalu_len = u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize;
         pos += 2;
         if nalu_len == 0 || pos + nalu_len > payload.len() {
-            warn!("invalid h264 stap-a nalu size");
+            base::log::trace!("invalid h264 stap-a nalu size");
             return None;
         }
         out.extend_from_slice(START_CODE);
@@ -862,7 +867,7 @@ fn depacketize_h265_ap(payload: &[u8]) -> Option<Bytes> {
         let nalu_len = u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize;
         pos += 2;
         if nalu_len == 0 || pos + nalu_len > payload.len() {
-            warn!("invalid h265 aggregation nalu size");
+            base::log::trace!("invalid h265 aggregation nalu size");
             return None;
         }
         out.extend_from_slice(START_CODE);
@@ -933,7 +938,7 @@ fn is_adts(data: &[u8]) -> bool {
 
 fn append_adts_frame(out: &mut BytesMut, frame: &[u8], cfg: AacAdtsConfig) {
     let Some(sample_rate_index) = aac_sample_rate_index(cfg.sample_rate) else {
-        warn!("unsupported aac sample rate for ADTS: {}", cfg.sample_rate);
+        base::log::trace!("unsupported aac sample rate for ADTS: {}", cfg.sample_rate);
         return;
     };
 

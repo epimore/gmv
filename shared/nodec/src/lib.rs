@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::tokio::sync::mpsc;
 use base::tokio::task::JoinHandle;
 use base::tokio_util::sync::CancellationToken;
-use std::time::Instant;
 
 use base_rpc::{RpcChannelConfig, connect_channel};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
@@ -58,7 +58,7 @@ impl NodeEventSender {
         let topic = event.topic.clone();
         let payload_bytes = event.payload.len();
         self.tx.try_send(event)?;
-        base::log::info!(
+        base::log::debug!(
             "guard event enqueue: event_id={}, topic={}, payload_bytes={}",
             event_id,
             topic,
@@ -93,6 +93,7 @@ impl NodeReporter {
         let handle = base::tokio::spawn(async move {
             let mut sequence = 0u64;
             let mut collector = HostMetricsCollector::new();
+            let mut connection_episode = FailureEpisode::default();
             while !cancel.is_cancelled() {
                 let result = run_connection(
                     &config,
@@ -100,37 +101,52 @@ impl NodeReporter {
                     &mut collector,
                     &mut sequence,
                     &mut event_rx,
+                    &mut connection_episode,
                 )
                 .await;
                 if cancel.is_cancelled() {
-                    base::log::debug!(
+                    base::log::trace!(
                         "node reporter control stream ended: outcome=local_cancelled"
                     );
                     break;
                 }
                 match result {
                     Ok(ControlStreamEnd::LocalCancelled) => {
-                        base::log::debug!(
+                        base::log::trace!(
                             "node reporter control stream ended: outcome=local_cancelled"
                         );
                         break;
                     }
                     Ok(ControlStreamEnd::RemoteEof) => {
-                        base::log::warn!("node reporter control stream ended: outcome=remote_eof");
+                        record_connection_failure(
+                            &mut connection_episode,
+                            "remote_eof",
+                            None,
+                            None,
+                        );
                     }
                     Ok(ControlStreamEnd::TransportError(code)) => {
-                        base::log::warn!(
-                            "node reporter control stream ended: outcome=transport_error, tonic_code={code:?}"
+                        record_connection_failure(
+                            &mut connection_episode,
+                            "transport_error",
+                            Some(code),
+                            None,
                         );
                     }
                     Ok(ControlStreamEnd::OutputReceiverDropped) => {
-                        base::log::warn!(
-                            "node reporter control stream ended: outcome=output_receiver_dropped"
+                        record_connection_failure(
+                            &mut connection_episode,
+                            "output_receiver_dropped",
+                            None,
+                            None,
                         );
                     }
                     Err(error) => {
-                        base::log::warn!(
-                            "node reporter connection failed: outcome=connection_error, error={error}"
+                        record_connection_failure(
+                            &mut connection_episode,
+                            "connection_error",
+                            None,
+                            Some(error.as_ref()),
                         );
                     }
                 }
@@ -150,21 +166,15 @@ async fn run_connection(
     collector: &mut HostMetricsCollector,
     sequence: &mut u64,
     event_rx: &mut mpsc::Receiver<NodeEvent>,
+    connection_episode: &mut FailureEpisode,
 ) -> Result<ControlStreamEnd, Box<dyn std::error::Error + Send + Sync>> {
     let started = Instant::now();
-    base::log::debug!(
+    base::log::trace!(
         "node reporter rpc client outbound: service=guard_node_control, endpoint={}",
         config.channel.endpoint
     );
-    let channel = connect_channel(&config.channel).await.map_err(|error| {
-        base::log::debug!(
-            "node reporter rpc client inbound: service=guard_node_control, endpoint={}, status=error, elapsed_ms={}, err={error}",
-            config.channel.endpoint,
-            started.elapsed().as_millis()
-        );
-        error
-    })?;
-    base::log::debug!(
+    let channel = connect_channel(&config.channel).await?;
+    base::log::trace!(
         "node reporter rpc client inbound: service=guard_node_control, endpoint={}, status=ok, elapsed_ms={}",
         config.channel.endpoint,
         started.elapsed().as_millis()
@@ -181,6 +191,7 @@ async fn run_connection(
         .into_inner();
     let identity = register.identity;
     let mut interval = base::tokio::time::interval(Duration::from_millis(interval_ms));
+    let mut recovered = false;
     loop {
         base::tokio::select! {
             _ = cancel.cancelled() => return Ok(ControlStreamEnd::LocalCancelled),
@@ -201,7 +212,7 @@ async fn run_connection(
                 }
             }
             Some(event) = event_rx.recv() => {
-                base::log::info!(
+                base::log::debug!(
                     "guard event stream send: event_id={}, topic={}, payload_bytes={}",
                     event.event_id,
                     event.topic,
@@ -220,7 +231,12 @@ async fn run_connection(
             }
             response = output.message() => {
                 match response {
-                    Ok(Some(_)) => {}
+                    Ok(Some(_)) => {
+                        if !recovered {
+                            record_connection_recovered(connection_episode);
+                            recovered = true;
+                        }
+                    }
                     Ok(None) if cancel.is_cancelled() => {
                         return Ok(ControlStreamEnd::LocalCancelled);
                     }
@@ -232,6 +248,53 @@ async fn run_connection(
                 }
             }
         }
+    }
+}
+
+fn record_connection_failure(
+    episode: &mut FailureEpisode,
+    reason: &str,
+    tonic_code: Option<tonic::Code>,
+    error: Option<&dyn std::fmt::Display>,
+) {
+    if let Some(error) = error {
+        base::log::trace!(
+            "node reporter connection unavailable: state=down, outcome=failed_attempt, reason={reason}, tonic_code={tonic_code:?}, error={error}"
+        );
+    } else {
+        base::log::trace!(
+            "node reporter connection unavailable: state=down, outcome=failed_attempt, reason={reason}, tonic_code={tonic_code:?}"
+        );
+    }
+    match episode.record_failure(Instant::now()) {
+        EpisodeDecision::Started => base::log::warn!(
+            "node reporter connection state changed: state=down, previous_state=up, reason={reason}, tonic_code={tonic_code:?}"
+        ),
+        EpisodeDecision::Summary {
+            total,
+            since_last_summary,
+            suppressed,
+            duration,
+        } => base::log::warn!(
+            "node reporter connection unavailable: state=down, outcome=ongoing, reason={reason}, tonic_code={tonic_code:?}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+            duration.as_millis()
+        ),
+        EpisodeDecision::Suppressed => {}
+        EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+    }
+}
+
+fn record_connection_recovered(episode: &mut FailureEpisode) {
+    if let EpisodeDecision::Recovered {
+        total,
+        suppressed,
+        duration,
+    } = episode.record_success(Instant::now())
+    {
+        base::log::info!(
+            "node reporter connection state changed: state=up, previous_state=down, outcome=recovered, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+            duration.as_millis()
+        );
     }
 }
 

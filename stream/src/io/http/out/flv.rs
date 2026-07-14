@@ -11,6 +11,7 @@ use axum::response::Response;
 use base::bytes::Bytes;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{debug, warn};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::tokio::sync::{broadcast, oneshot};
 use base::tokio::time::timeout;
 use futures_util::stream;
@@ -18,6 +19,7 @@ use gmv_domain::info::obj::{BaseStreamInfo, StreamPlayInfo};
 use gmv_domain::info::output::OutputEnum;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub async fn handler(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> Response<Body> {
     match Register::get_base_stream_info_by_stream_id(stream_id.clone()) {
@@ -137,18 +139,51 @@ fn flv_stream(
                 }
                 FlvStreamState::Live => {
                     let mut waiting_keyframe = false;
+                    let mut lag_episode = FailureEpisode::default();
+                    let mut lost_packets = 0u64;
                     loop {
                         match ctx.rx.recv().await {
                             Ok(pkt) if waiting_keyframe && !pkt.is_key => continue,
                             Ok(pkt) => {
+                                if waiting_keyframe
+                                    && let EpisodeDecision::Recovered {
+                                        total,
+                                        suppressed,
+                                        duration,
+                                    } = lag_episode.record_success(Instant::now())
+                                {
+                                    base::log::info!(
+                                        "http flv output state changed: state=ready, previous_state=lagged, outcome=recovered, ssrc={}, lost_packets={lost_packets}, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                                        ctx.ssrc,
+                                        duration.as_millis()
+                                    );
+                                }
                                 return Some((Ok(pkt.data.clone()), ctx));
                             }
                             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                if !waiting_keyframe {
-                                    warn!(
-                                        "http flv output lagged: stage=output, outcome=wait_keyframe, ssrc={}, lost_packets={}",
-                                        ctx.ssrc, skipped
-                                    );
+                                lost_packets = lost_packets.saturating_add(skipped);
+                                base::log::trace!(
+                                    "http flv output lagged: stage=output, outcome=wait_keyframe, ssrc={}, lost_packets={skipped}",
+                                    ctx.ssrc
+                                );
+                                match lag_episode.record_failure(Instant::now()) {
+                                    EpisodeDecision::Started => warn!(
+                                        "http flv output state changed: state=lagged, previous_state=ready, outcome=wait_keyframe, ssrc={}, lost_packets={lost_packets}",
+                                        ctx.ssrc
+                                    ),
+                                    EpisodeDecision::Summary {
+                                        total,
+                                        since_last_summary,
+                                        suppressed,
+                                        duration,
+                                    } => warn!(
+                                        "http flv output remains lagged: state=lagged, outcome=ongoing, ssrc={}, lost_packets={lost_packets}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                                        ctx.ssrc,
+                                        duration.as_millis()
+                                    ),
+                                    EpisodeDecision::Suppressed => {}
+                                    EpisodeDecision::Recovered { .. }
+                                    | EpisodeDecision::Healthy => unreachable!(),
                                 }
                                 waiting_keyframe = true;
                             }

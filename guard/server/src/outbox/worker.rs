@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base_rpc::RetryPolicy;
+use parking_lot::Mutex;
 
 use crate::core::GuardResult;
 use crate::outbox::state::{mark_dead, mark_delivered, mark_retry, mark_sending};
@@ -160,6 +162,7 @@ pub struct OutboxWorker {
     batch_size: usize,
     sending_timeout: Duration,
     max_record_age: Option<Duration>,
+    delivery_failure_episode: Arc<Mutex<FailureEpisode>>,
 }
 
 impl OutboxWorker {
@@ -176,6 +179,7 @@ impl OutboxWorker {
             batch_size: batch_size.max(1),
             sending_timeout: Duration::from_secs(30),
             max_record_age: None,
+            delivery_failure_episode: Arc::new(Mutex::new(FailureEpisode::default())),
         }
     }
 
@@ -199,6 +203,8 @@ impl OutboxWorker {
             .recover_stale_sending(now_ms.saturating_sub(timeout_ms), now_ms)
             .await?;
         let records = self.store.due(now_ms, self.batch_size).await?;
+        let mut failed_deliveries = 0usize;
+        let mut delivered = 0usize;
         for mut record in records.iter().cloned() {
             mark_sending(&mut record, now_ms)?;
             self.store.update(record.clone()).await?;
@@ -216,6 +222,7 @@ impl OutboxWorker {
             match self.delivery.deliver(&record).await {
                 Ok(()) => {
                     mark_delivered(&mut record, now_ms)?;
+                    delivered = delivered.saturating_add(1);
                     base::log::debug!(
                         "guard outbox transition: outbox_id={}, event_id={}, outcome=delivered, attempts={}",
                         record.outbox_id,
@@ -224,12 +231,13 @@ impl OutboxWorker {
                     );
                 }
                 Err(error) if self.retry.permits(record.attempts.saturating_add(1)) => {
+                    failed_deliveries = failed_deliveries.saturating_add(1);
                     let reason = error.to_string();
                     let delay = self.retry.delay(record.attempts);
                     let next =
                         now_ms.saturating_add(delay.as_millis().min(i64::MAX as u128) as i64);
                     mark_retry(&mut record, now_ms, next, reason)?;
-                    base::log::warn!(
+                    base::log::trace!(
                         "guard outbox transition: outbox_id={}, event_id={}, outcome=retry_wait, attempts={}, next_attempt_at_ms={}, reason=delivery_failed",
                         record.outbox_id,
                         record.event_id,
@@ -238,6 +246,7 @@ impl OutboxWorker {
                     );
                 }
                 Err(error) => {
+                    failed_deliveries = failed_deliveries.saturating_add(1);
                     let reason = error.to_string();
                     mark_dead(&mut record, now_ms, reason)?;
                     base::log::warn!(
@@ -250,7 +259,41 @@ impl OutboxWorker {
             }
             self.store.update(record).await?;
         }
+        self.record_delivery_result(failed_deliveries, delivered);
         Ok(records.len())
+    }
+
+    fn record_delivery_result(&self, failed_deliveries: usize, delivered: usize) {
+        let mut episode = self.delivery_failure_episode.lock();
+        if failed_deliveries > 0 {
+            match episode.record_failure(Instant::now()) {
+                EpisodeDecision::Started => base::log::warn!(
+                    "guard outbox delivery state changed: state=failed, previous_state=ready, outcome=retrying, failed_records={failed_deliveries}"
+                ),
+                EpisodeDecision::Summary {
+                    total,
+                    since_last_summary,
+                    suppressed,
+                    duration,
+                } => base::log::warn!(
+                    "guard outbox delivery remains failed: state=failed, outcome=ongoing, failed_records={failed_deliveries}, failure_batches={total}, batches_since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                    duration.as_millis()
+                ),
+                EpisodeDecision::Suppressed => {}
+                EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+            }
+        } else if delivered > 0
+            && let EpisodeDecision::Recovered {
+                total,
+                suppressed,
+                duration,
+            } = episode.record_success(Instant::now())
+        {
+            base::log::info!(
+                "guard outbox delivery state changed: state=ready, previous_state=failed, outcome=recovered, delivered_records={delivered}, failure_batches={total}, suppressed={suppressed}, duration_ms={}",
+                duration.as_millis()
+            );
+        }
     }
 
     fn record_expired(&self, record: &OutboxRecord, now_ms: i64) -> bool {

@@ -193,34 +193,49 @@ impl GuardNodeControl for GuardNodeRpc {
                 }
                 stream_owner.get_or_insert(message_owner.clone());
                 let sequence = message.sequence;
-                let identity_summary = message.identity.clone();
-                let payload_summary = match &message.payload {
-                    Some(node_to_guard_message::Payload::Heartbeat(_)) => "heartbeat".to_string(),
+                match &message.payload {
+                    Some(node_to_guard_message::Payload::Heartbeat(_)) => {
+                        base::log::trace!(
+                            "guard_node.open_control_stream message, req: identity={:?}, sequence={}, sent_at_epoch_ms={}, payload=heartbeat",
+                            message.identity,
+                            sequence,
+                            message.sent_at_epoch_ms,
+                        );
+                    }
                     Some(node_to_guard_message::Payload::Snapshot(snapshot)) => {
-                        format!(
-                            "snapshot(resources={}, full={})",
+                        base::log::debug!(
+                            "guard_node.open_control_stream message, req: identity={:?}, sequence={}, sent_at_epoch_ms={}, payload=snapshot, resources={}, full={}",
+                            message.identity,
+                            sequence,
+                            message.sent_at_epoch_ms,
                             snapshot.resources.len(),
                             snapshot.full
-                        )
+                        );
                     }
                     Some(node_to_guard_message::Payload::Event(event)) => {
-                        format!(
-                            "event(event_id={}, topic={}, payload_bytes={})",
+                        base::log::debug!(
+                            "guard_node.open_control_stream message, req: identity={:?}, sequence={}, sent_at_epoch_ms={}, payload=event, event_id={}, topic={}, payload_bytes={}",
+                            message.identity,
+                            sequence,
+                            message.sent_at_epoch_ms,
                             event.event_id,
                             event.topic,
                             event.payload.len()
-                        )
+                        );
                     }
-                    Some(_) => "other".to_string(),
-                    None => "none".to_string(),
-                };
-                base::log::debug!(
-                    "guard_node.open_control_stream message, req: identity={:?}, sequence={}, sent_at_epoch_ms={}, payload={}",
-                    identity_summary,
-                    sequence,
-                    message.sent_at_epoch_ms,
-                    payload_summary
-                );
+                    Some(_) => base::log::debug!(
+                        "guard_node.open_control_stream message, req: identity={:?}, sequence={}, sent_at_epoch_ms={}, payload=other",
+                        message.identity,
+                        sequence,
+                        message.sent_at_epoch_ms,
+                    ),
+                    None => base::log::debug!(
+                        "guard_node.open_control_stream message, req: identity={:?}, sequence={}, sent_at_epoch_ms={}, payload=none",
+                        message.identity,
+                        sequence,
+                        message.sent_at_epoch_ms,
+                    ),
+                }
                 let result = match message.payload {
                     Some(node_to_guard_message::Payload::Heartbeat(heartbeat)) => apply_heartbeat(
                         &registry,
@@ -237,13 +252,6 @@ impl GuardNodeControl for GuardNodeRpc {
                         snapshot,
                     ),
                     Some(node_to_guard_message::Payload::Event(event)) => {
-                        base::log::info!(
-                            "guard node event inbound: sequence={}, event_id={}, topic={}, payload_bytes={}",
-                            sequence,
-                            event.event_id,
-                            event.topic,
-                            event.payload.len()
-                        );
                         apply_event(&store, forwarder.as_ref(), event).await
                     }
                     _ => Ok(()),
@@ -506,13 +514,23 @@ async fn apply_event(
             .forward(event_id.clone(), topic.clone(), payload)
             .await?;
     }
-    base::log::info!(
-        "guard node event stored: event_id={}, topic={}, priority={}, payload_bytes={}",
-        event_id,
-        topic,
-        priority,
-        payload_bytes
-    );
+    if inserted {
+        base::log::info!(
+            "guard node event stored: event_id={}, topic={}, priority={}, payload_bytes={}",
+            event_id,
+            topic,
+            priority,
+            payload_bytes
+        );
+    } else {
+        base::log::debug!(
+            "guard node event deduplicated: event_id={}, topic={}, priority={}, payload_bytes={}",
+            event_id,
+            topic,
+            priority,
+            payload_bytes
+        );
+    }
     Ok(())
 }
 

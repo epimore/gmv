@@ -1,12 +1,13 @@
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, info, warn};
 use base::logger;
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::tokio_util::sync::CancellationToken;
 
 use crate::api::v2::ApiV2;
@@ -210,12 +211,46 @@ fn spawn_mqtt_runtime(
     .with_max_record_age(Duration::from_secs(mqtt.publish_event_ttl_sec));
     let worker_cancel = cancel.clone();
     base::tokio::spawn(async move {
+        let mut failure_episode = FailureEpisode::default();
         loop {
             if worker_cancel.is_cancelled() {
                 break;
             }
-            if let Err(error) = worker.run_once(now_ms().unwrap_or_default()).await {
-                warn!("MQTT outbox worker failed: {error}");
+            match worker.run_once(now_ms().unwrap_or_default()).await {
+                Ok(_) => {
+                    if let EpisodeDecision::Recovered {
+                        total,
+                        suppressed,
+                        duration,
+                    } = failure_episode.record_success(Instant::now())
+                    {
+                        info!(
+                            "MQTT outbox worker state changed: state=ready, previous_state=failed, outcome=recovered, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                            duration.as_millis()
+                        );
+                    }
+                }
+                Err(error) => {
+                    base::log::trace!("MQTT outbox worker attempt failed: error={error}");
+                    match failure_episode.record_failure(Instant::now()) {
+                        EpisodeDecision::Started => warn!(
+                            "MQTT outbox worker state changed: state=failed, previous_state=ready, reason=run_once_failed"
+                        ),
+                        EpisodeDecision::Summary {
+                            total,
+                            since_last_summary,
+                            suppressed,
+                            duration,
+                        } => warn!(
+                            "MQTT outbox worker remains failed: outcome=ongoing, reason=run_once_failed, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                            duration.as_millis()
+                        ),
+                        EpisodeDecision::Suppressed => {}
+                        EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => {
+                            unreachable!()
+                        }
+                    }
+                }
             }
             base::tokio::time::sleep(Duration::from_secs(2)).await;
         }

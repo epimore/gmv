@@ -12,6 +12,7 @@ use axum::response::Response;
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{debug, warn};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::tokio::sync::{broadcast, oneshot};
 use futures_util::stream;
 use gmv_domain::info::output::OutputEnum;
@@ -294,15 +295,34 @@ async fn fmp4_next_chunk(
     mut ctx: Fmp4StreamContext,
 ) -> Option<(Result<Bytes, std::convert::Infallible>, Fmp4StreamContext)> {
     let mut waiting_keyframe = false;
+    let mut lag_episode = FailureEpisode::default();
+    let mut lost_packets = 0u64;
     loop {
         let pkt = match ctx.rx.recv().await {
             Ok(pkt) => pkt,
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                if !waiting_keyframe {
-                    warn!(
-                        "http fmp4 output lagged: stage=output, outcome=wait_keyframe, ssrc={}, lost_packets={}",
-                        ctx.ssrc, skipped
-                    );
+                lost_packets = lost_packets.saturating_add(skipped);
+                base::log::trace!(
+                    "http fmp4 output lagged: stage=output, outcome=wait_keyframe, ssrc={}, lost_packets={skipped}",
+                    ctx.ssrc
+                );
+                match lag_episode.record_failure(Instant::now()) {
+                    EpisodeDecision::Started => warn!(
+                        "http fmp4 output state changed: state=lagged, previous_state=ready, outcome=wait_keyframe, ssrc={}, lost_packets={lost_packets}",
+                        ctx.ssrc
+                    ),
+                    EpisodeDecision::Summary {
+                        total,
+                        since_last_summary,
+                        suppressed,
+                        duration,
+                    } => warn!(
+                        "http fmp4 output remains lagged: state=lagged, outcome=ongoing, ssrc={}, lost_packets={lost_packets}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                        ctx.ssrc,
+                        duration.as_millis()
+                    ),
+                    EpisodeDecision::Suppressed => {}
+                    EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
                 }
                 waiting_keyframe = true;
                 continue;
@@ -312,6 +332,19 @@ async fn fmp4_next_chunk(
 
         if waiting_keyframe && !pkt.is_key {
             continue;
+        }
+        if waiting_keyframe
+            && let EpisodeDecision::Recovered {
+                total,
+                suppressed,
+                duration,
+            } = lag_episode.record_success(Instant::now())
+        {
+            base::log::info!(
+                "http fmp4 output state changed: state=ready, previous_state=lagged, outcome=recovered, ssrc={}, lost_packets={lost_packets}, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                ctx.ssrc,
+                duration.as_millis()
+            );
         }
 
         if pkt.epoch != ctx.current_epoch {
