@@ -15,6 +15,8 @@ use base::exception::GlobalError;
 use base::log::debug;
 use gmv_protocol::session::v1::{
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
+    GbResource as RpcGbResource, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest,
 };
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -100,6 +102,15 @@ pub fn router(state: HttpState) -> Router {
             post(delete_gb_device),
         )
         .route("/gb28181/devices/{device_id}/channels", get(gb_channels))
+        .route("/gb28181/devices/{device_id}/resources", get(gb_resources))
+        .route(
+            "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation",
+            post(save_gb_resource_confirmation),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation/reset",
+            post(reset_gb_resource_confirmation),
+        )
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}",
             get(gb_channel).post(update_gb_channel),
@@ -120,6 +131,11 @@ pub fn router(state: HttpState) -> Router {
             "/gb28181/devices/{device_id}/channels/{channel_id}/images",
             get(gb_channel_images).post(gb_snapshot_image),
         )
+        .route(
+            "/gb28181/devices/{device_id}/broadcast/start",
+            post(gb_broadcast),
+        )
+        .route("/gb28181/broadcasts/{stream_id}/stop", post(stop_stream))
         .route("/devices", get(devices))
         .route("/devices/{device_id}/preview", post(preview))
         .route("/devices/{device_id}/playback", post(playback))
@@ -1413,6 +1429,62 @@ struct GbChannelImageResponse {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
+struct GbResourceConfirmationResponse {
+    status: i64,
+    resource_kind: String,
+    owner_scope: String,
+    owner_id: String,
+    suggested_enum_id: String,
+    source_parent_id: String,
+    confirmed_by: String,
+    confirmed_at_ms: i64,
+    remark: String,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbResourceResponse {
+    device_id: String,
+    resource_id: String,
+    name: String,
+    status: String,
+    parent_id: String,
+    type_code: String,
+    enum_id: String,
+    enum_name: String,
+    suggested_kind: String,
+    classification_mode: String,
+    effective_kind: String,
+    effective_owner_scope: String,
+    effective_owner_id: String,
+    warning: String,
+    biz_enable: i64,
+    owner_biz_enable: i64,
+    supported: bool,
+    available: bool,
+    unavailable_reason: String,
+    confirmation: Option<GbResourceConfirmationResponse>,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct SaveGbResourceConfirmationBody {
+    request_id: String,
+    resource_kind: String,
+    owner_scope: String,
+    owner_id: String,
+    #[serde(default)]
+    remark: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct ResetGbResourceConfirmationBody {
+    request_id: String,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
 struct GbSessionConfigResponse {
     domain: String,
     domain_id: String,
@@ -1567,6 +1639,43 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
         sort_no: record.sort_no,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+fn gb_resource_response(record: RpcGbResource) -> GbResourceResponse {
+    GbResourceResponse {
+        device_id: record.device_id,
+        resource_id: record.resource_id,
+        name: record.name,
+        status: record.status,
+        parent_id: record.parent_id,
+        type_code: record.type_code,
+        enum_id: record.enum_id,
+        enum_name: record.enum_name,
+        suggested_kind: record.suggested_kind,
+        classification_mode: record.classification_mode,
+        effective_kind: record.effective_kind,
+        effective_owner_scope: record.effective_owner_scope,
+        effective_owner_id: record.effective_owner_id,
+        warning: record.warning,
+        biz_enable: record.biz_enable,
+        owner_biz_enable: record.owner_biz_enable,
+        supported: record.supported,
+        available: record.available,
+        unavailable_reason: record.unavailable_reason,
+        confirmation: record
+            .confirmation
+            .map(|confirmation| GbResourceConfirmationResponse {
+                status: confirmation.status,
+                resource_kind: confirmation.resource_kind,
+                owner_scope: confirmation.owner_scope,
+                owner_id: confirmation.owner_id,
+                suggested_enum_id: confirmation.suggested_enum_id,
+                source_parent_id: confirmation.source_parent_id,
+                confirmed_by: confirmation.confirmed_by,
+                confirmed_at_ms: confirmation.confirmed_at_ms,
+                remark: confirmation.remark,
+            }),
     }
 }
 
@@ -1819,6 +1928,128 @@ async fn gb_channels(
     ))
 }
 
+async fn gb_resources(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+) -> Result<Json<Vec<GbResourceResponse>>, HttpError> {
+    debug!("/api/v2/gb28181/devices/{{device_id}}/resources, req: device_id={device_id}");
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let resources = BusinessControl::new(state.api.store())
+        .list_gb_resources(&device_id)
+        .await?;
+    Ok(Json(
+        resources.into_iter().map(gb_resource_response).collect(),
+    ))
+}
+
+async fn save_gb_resource_confirmation(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, resource_id)): Path<(String, String)>,
+    Json(request): Json<SaveGbResourceConfirmationBody>,
+) -> Result<Json<GbResourceResponse>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    if request.request_id.trim().is_empty() {
+        return Err(HttpError::bad_request("request_id is required"));
+    }
+    let control = BusinessControl::new(state.api.store());
+    let current = control
+        .list_gb_resources(&device_id)
+        .await?
+        .into_iter()
+        .find(|resource| resource.resource_id == resource_id)
+        .ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 resource {device_id}/{resource_id}"))
+        })?;
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/resources/{{resource_id}}/confirmation, req: device_id={}, resource_id={}, resource_kind={}, owner_scope={}, owner_id={}, request_id={}, confirmed_by={}",
+        device_id,
+        resource_id,
+        request.resource_kind,
+        request.owner_scope,
+        request.owner_id,
+        request.request_id,
+        session.username,
+    );
+    let operation_id = request.request_id.clone();
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "gb28181.resource_confirmation.save",
+        &session,
+        Role::Admin,
+    ))?;
+    let result = control
+        .save_gb_resource_confirmation(SaveGbResourceConfirmationRequest {
+            device_id,
+            resource_id,
+            resource_kind: request.resource_kind,
+            owner_scope: request.owner_scope,
+            owner_id: request.owner_id,
+            suggested_enum_id: current.enum_id,
+            source_parent_id: current.parent_id,
+            confirmed_by: session.username,
+            remark: request.remark,
+            request_id: request.request_id,
+        })
+        .await;
+    match result {
+        Ok(resource) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "resource confirmation saved")?;
+            Ok(Json(gb_resource_response(resource)))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(HttpError::from_operation(error, &operation_id))
+        }
+    }
+}
+
+async fn reset_gb_resource_confirmation(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, resource_id)): Path<(String, String)>,
+    Json(request): Json<ResetGbResourceConfirmationBody>,
+) -> Result<Json<GbResourceResponse>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    if request.request_id.trim().is_empty() {
+        return Err(HttpError::bad_request("request_id is required"));
+    }
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/resources/{{resource_id}}/confirmation/reset, req: device_id={}, resource_id={}, request_id={}, confirmed_by={}",
+        device_id, resource_id, request.request_id, session.username,
+    );
+    let operation_id = request.request_id.clone();
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "gb28181.resource_confirmation.reset",
+        &session,
+        Role::Admin,
+    ))?;
+    let result = BusinessControl::new(state.api.store())
+        .reset_gb_resource_confirmation(ResetGbResourceConfirmationRequest {
+            device_id,
+            resource_id,
+            confirmed_by: session.username,
+            request_id: request.request_id,
+        })
+        .await;
+    match result {
+        Ok(resource) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "resource confirmation reset")?;
+            Ok(Json(gb_resource_response(resource)))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(HttpError::from_operation(error, &operation_id))
+        }
+    }
+}
+
 async fn gb_channel(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1922,8 +2153,7 @@ async fn gb_preview(
         headers,
         device_id,
         gb_preview_request(channel_id, request),
-        "stream.start",
-        "stream started",
+        DeviceStreamHttpPolicy::output("stream.start", "stream started"),
         |control, operation_id, device_id, channel_id, options| async move {
             control
                 .start_live_with_options(&operation_id, &device_id, &channel_id, options)
@@ -1944,8 +2174,7 @@ async fn gb_playback(
         headers,
         device_id,
         gb_preview_request(channel_id, request),
-        "stream.playback",
-        "playback started",
+        DeviceStreamHttpPolicy::output("stream.playback", "playback started"),
         |control, operation_id, device_id, channel_id, options| async move {
             control
                 .start_playback_with_options(&operation_id, &device_id, &channel_id, options)
@@ -2036,8 +2265,7 @@ async fn preview(
         headers,
         device_id,
         request,
-        "stream.start",
-        "stream started",
+        DeviceStreamHttpPolicy::output("stream.start", "stream started"),
         |control, operation_id, device_id, channel_id, options| async move {
             control
                 .start_live_with_options(&operation_id, &device_id, &channel_id, options)
@@ -2058,8 +2286,7 @@ async fn playback(
         headers,
         device_id,
         request,
-        "stream.playback",
-        "playback started",
+        DeviceStreamHttpPolicy::output("stream.playback", "playback started"),
         |control, operation_id, device_id, channel_id, options| async move {
             control
                 .start_playback_with_options(&operation_id, &device_id, &channel_id, options)
@@ -2080,8 +2307,7 @@ async fn download(
         headers,
         device_id,
         request,
-        "stream.download",
-        "download started",
+        DeviceStreamHttpPolicy::output("stream.download", "download started"),
         |control, operation_id, device_id, channel_id, options| async move {
             control
                 .start_download_with_options(&operation_id, &device_id, &channel_id, options)
@@ -2102,8 +2328,7 @@ async fn talk(
         headers,
         device_id,
         request,
-        "device.talk",
-        "talk started",
+        DeviceStreamHttpPolicy::input("device.talk", "talk started"),
         |control, operation_id, device_id, channel_id, options| async move {
             control
                 .start_talk_with_options(&operation_id, &device_id, &channel_id, options)
@@ -2113,26 +2338,70 @@ async fn talk(
     .await
 }
 
+async fn gb_broadcast(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+    Json(request): Json<PreviewRequest>,
+) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
+    start_device_stream_http(
+        state,
+        headers,
+        device_id,
+        request,
+        DeviceStreamHttpPolicy::input("device.broadcast", "broadcast started"),
+        |control, operation_id, device_id, channel_id, options| async move {
+            control
+                .start_talk_with_options(&operation_id, &device_id, &channel_id, options)
+                .await
+        },
+    )
+    .await
+}
+
+struct DeviceStreamHttpPolicy<'a> {
+    operation_kind: &'a str,
+    success_message: &'a str,
+    issue_ticket: bool,
+}
+
+impl<'a> DeviceStreamHttpPolicy<'a> {
+    fn output(operation_kind: &'a str, success_message: &'a str) -> Self {
+        Self {
+            operation_kind,
+            success_message,
+            issue_ticket: true,
+        }
+    }
+
+    fn input(operation_kind: &'a str, success_message: &'a str) -> Self {
+        Self {
+            operation_kind,
+            success_message,
+            issue_ticket: false,
+        }
+    }
+}
+
 async fn start_device_stream_http<F, Fut>(
     state: HttpState,
     headers: HeaderMap,
     device_id: String,
     request: PreviewRequest,
-    operation_kind: &str,
-    success_message: &str,
+    policy: DeviceStreamHttpPolicy<'_>,
     rpc_start: F,
 ) -> Result<(StatusCode, Json<StreamSummary>), HttpError>
 where
     F: FnOnce(BusinessControl, String, String, String, DeviceStreamOptions) -> Fut,
     Fut: std::future::Future<Output = Result<StreamSummary, GuardError>>,
 {
-    log_preview_request(operation_kind, &device_id, &request);
+    log_preview_request(policy.operation_kind, &device_id, &request);
     let (ui_session_token, session) =
         require_write_with_token(&state.auth, &headers, Role::Operator)?;
     let operation_id = request.request_id.clone();
     state.api.start_operation(operation_request(
         operation_id.clone(),
-        operation_kind,
+        policy.operation_kind,
         &session,
         Role::Operator,
     ))?;
@@ -2146,11 +2415,14 @@ where
     .await;
     match start_result {
         Ok(stream) => {
-            let stream =
-                issue_playback_ticket(&state, stream, &ui_session_token, &session, Role::Viewer)?;
+            let stream = if policy.issue_ticket {
+                issue_playback_ticket(&state, stream, &ui_session_token, &session, Role::Viewer)?
+            } else {
+                stream
+            };
             state
                 .api
-                .succeed_operation(&operation_id, success_message)?;
+                .succeed_operation(&operation_id, policy.success_message)?;
             Ok((StatusCode::ACCEPTED, Json(stream)))
         }
         Err(error) => {

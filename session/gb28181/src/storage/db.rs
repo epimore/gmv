@@ -150,9 +150,17 @@ pub fn mysql_pool() -> &'static MySqlPool {
 }
 
 #[cfg(feature = "db-sqlite")]
-const SQLITE_SCHEMA: &str = include_str!("../../schema/sqlite/gb28181_core.sql");
+const SQLITE_SCHEMA: &str = concat!(
+    include_str!("../../schema/sqlite/gb28181_core.sql"),
+    "\n",
+    include_str!("../../schema/sqlite/gb28181_enum_code_seed.sql")
+);
 #[cfg(feature = "db-mysql")]
-const MYSQL_SCHEMA: &str = include_str!("../../schema/mysql/gb28181_core.sql");
+const MYSQL_SCHEMA: &str = concat!(
+    include_str!("../../schema/mysql/gb28181_core.sql"),
+    "\n",
+    include_str!("../../schema/mysql/gb28181_enum_code_seed.sql")
+);
 
 pub async fn initialize() -> GlobalResult<()> {
     match backend() {
@@ -282,6 +290,28 @@ mod tests {
             assert!(names.contains(&"gb28181_oauth".to_string()));
             assert!(names.contains(&"gb28181_device".to_string()));
             assert!(names.contains(&"gb28181_sip_dialog_session".to_string()));
+            assert!(names.contains(&"gb28181_enum_code".to_string()));
+            assert!(names.contains(&"gb28181_resource_confirmation".to_string()));
+
+            let enum_count: i64 = base_db::sqlx::query_scalar(
+                "SELECT COUNT(*) FROM gb28181_enum_code WHERE status=1",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count enum seed rows");
+            assert!(enum_count > 100);
+
+            for value in ["111", "118", "131", "132", "136", "137"] {
+                let count: i64 = base_db::sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM gb28181_enum_code WHERE value_start=? AND value_end=? AND status=1",
+                )
+                .bind(value)
+                .bind(value)
+                .fetch_one(&pool)
+                .await
+                .expect("query enum code");
+                assert_eq!(count, 1, "missing exact enum value {value}");
+            }
 
             let legacy_names: i64 = base_db::sqlx::query_scalar(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','index') AND name GLOB 'GB28181_*'",

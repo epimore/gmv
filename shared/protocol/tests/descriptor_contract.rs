@@ -104,6 +104,33 @@ fn guard_and_direct_service_rpc_boundaries_exist() {
 }
 
 #[test]
+fn session_resource_override_rpcs_are_stable() {
+    let descriptor = descriptor();
+    let session = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.session.v1"))
+        .unwrap();
+    let service = session
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("SessionControl"))
+        .unwrap();
+    let methods = service
+        .method
+        .iter()
+        .filter_map(|method| method.name.as_deref())
+        .collect::<Vec<_>>();
+    for method in [
+        "ListGbResources",
+        "SaveGbResourceConfirmation",
+        "ResetGbResourceConfirmation",
+    ] {
+        assert!(methods.contains(&method), "missing SessionControl.{method}");
+    }
+}
+
+#[test]
 fn node_heartbeat_contains_structured_host_metrics() {
     let descriptor = descriptor();
     let guard = descriptor

@@ -22,6 +22,9 @@ service SessionControl {
   rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
   rpc UpdateGbChannel(UpdateGbChannelRequest) returns (UpdateGbChannelResponse);
   rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
+  rpc ListGbResources(ListGbResourcesRequest) returns (ListGbResourcesResponse);
+  rpc SaveGbResourceConfirmation(SaveGbResourceConfirmationRequest) returns (GbResourceResponse);
+  rpc ResetGbResourceConfirmation(ResetGbResourceConfirmationRequest) returns (GbResourceResponse);
 }
 
 service SessionHook {
@@ -270,4 +273,71 @@ message GbChannelImage {
   string channel_id = 3;
   string image_url = 4;
   int64 created_at_ms = 5;
+}
+
+message ListGbResourcesRequest {
+  string device_id = 1;
+}
+
+message ListGbResourcesResponse {
+  repeated GbResource resources = 1;
+}
+
+message SaveGbResourceConfirmationRequest {
+  string device_id = 1;
+  string resource_id = 2;
+  string resource_kind = 3;
+  string owner_scope = 4;
+  string owner_id = 5;
+  string suggested_enum_id = 6;
+  string source_parent_id = 7;
+  string confirmed_by = 8;
+  string remark = 9;
+  string request_id = 10;
+}
+
+message ResetGbResourceConfirmationRequest {
+  string device_id = 1;
+  string resource_id = 2;
+  string confirmed_by = 3;
+  string request_id = 4;
+}
+
+message GbResourceResponse {
+  GbResource resource = 1;
+}
+
+message GbResource {
+  string device_id = 1;
+  string resource_id = 2;
+  string name = 3;
+  string status = 4;
+  string parent_id = 5;
+  string type_code = 6;
+  string enum_id = 7;
+  string enum_name = 8;
+  string suggested_kind = 9;
+  string classification_mode = 10;
+  string effective_kind = 11;
+  string effective_owner_scope = 12;
+  string effective_owner_id = 13;
+  string warning = 14;
+  int64 biz_enable = 15;
+  int64 owner_biz_enable = 16;
+  bool supported = 17;
+  bool available = 18;
+  string unavailable_reason = 19;
+  GbResourceConfirmation confirmation = 20;
+}
+
+message GbResourceConfirmation {
+  int64 status = 1;
+  string resource_kind = 2;
+  string owner_scope = 3;
+  string owner_id = 4;
+  string suggested_enum_id = 5;
+  string source_parent_id = 6;
+  string confirmed_by = 7;
+  int64 confirmed_at_ms = 8;
+  string remark = 9;
 }

@@ -1,5 +1,6 @@
 use crate::storage::db;
-use base::exception::{GlobalResult, GlobalResultExt};
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base_db::sqlx;
 
@@ -30,17 +31,25 @@ pub async fn resolve_broadcast_target_id(
     if crate::storage::entity::test_storage_enabled() {
         return Ok(channel_id.to_string());
     }
-    // 多个语音输出子通道暂按 channel_id 取第一条，待真实设备接入后再决定最终策略。
-    let res: Option<(String, String, String)> = db::fetch_optional_as!(
-        (String, String, String),
-        "SELECT a.device_id,a.channel_id,b.channel_id FROM gb28181_device_channel a \
-         INNER JOIN gb28181_device_channel b \
-         ON a.device_id=b.device_id AND a.channel_id=b.parent_id \
-         WHERE a.device_id=? AND a.channel_id=? \
-         ORDER BY b.channel_id LIMIT 1",
-        device_id,
-        channel_id,
-    )
-    .hand_log(|msg| error!("{msg}"))?;
-    Ok(res.map_or_else(|| channel_id.to_string(), |(_, _, target_id)| target_id))
+    let resources = crate::storage::resource::GbResourceView::list(device_id).await?;
+    let mut outputs = resources
+        .iter()
+        .filter(|resource| {
+            resource.effective_kind == crate::storage::resource::RESOURCE_KIND_AUDIO_OUTPUT
+                && resource.available
+                && (resource.resource_id == channel_id
+                    || channel_id == device_id
+                    || resource.effective_owner_id == channel_id)
+        })
+        .collect::<Vec<_>>();
+    outputs.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+    match outputs.as_slice() {
+        [] => Err(GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "no available GB28181 audio output resource",
+            |msg| error!("{msg}: device_id={device_id}, scope_id={channel_id}"),
+        )),
+        [output] => Ok(output.resource_id.clone()),
+        _ => Ok(channel_id.to_string()),
+    }
 }

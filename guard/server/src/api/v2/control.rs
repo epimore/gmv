@@ -10,10 +10,11 @@ use gmv_protocol::common::v1::{
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
     ControlPtzRequest, CreateGbDeviceRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
-    GbChannelImage, GbDevice, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
-    ListGbChannelImagesRequest, ListGbChannelsRequest, ListGbDevicesRequest, SnapshotImageRequest,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
-    UpdateGbDeviceRequest,
+    GbChannelImage, GbDevice, GbResource, GetGbChannelRequest, GetGbDeviceRequest,
+    GetSessionConfigRequest, ListGbChannelImagesRequest, ListGbChannelsRequest,
+    ListGbDevicesRequest, ListGbResourcesRequest, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, SnapshotImageRequest, StartDeviceStreamRequest,
+    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbDeviceRequest,
 };
 
 use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
@@ -163,6 +164,25 @@ impl<'a> RpcEdge<'a> {
 impl BusinessControl {
     pub fn new(store: InMemoryGuardStore) -> Self {
         Self { store }
+    }
+
+    fn gb_session_for_device(&self, device: &GbDevice, action: &str) -> GuardResult<NodeRecord> {
+        let node_id = &device.session_node_id;
+        let session = self
+            .store
+            .get_node(node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 session node {node_id}")))?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable("session", action, node_id));
+        }
+        Ok(session)
     }
 
     pub async fn gb_session_config(&self, node_id: &str) -> GuardResult<GbSessionConfigSummary> {
@@ -655,6 +675,88 @@ impl BusinessControl {
         }
         images.sort_by_key(|image| std::cmp::Reverse(image.created_at_ms));
         Ok(images)
+    }
+
+    pub async fn list_gb_resources(&self, device_id: &str) -> GuardResult<Vec<GbResource>> {
+        let device = self
+            .get_gb_device(device_id)
+            .await?
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
+        let session = self.gb_session_for_device(&device, "list_gb_resources")?;
+        let mut client = self.session_client(&session).await?;
+        let request = ListGbResourcesRequest {
+            device_id: device_id.to_string(),
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "list_gb_resources",
+            &session.identity.node_id,
+            "",
+            device_id,
+        );
+        let response = edge.response(client.list_gb_resources(request).await)?;
+        edge.success();
+        Ok(response.resources)
+    }
+
+    pub async fn save_gb_resource_confirmation(
+        &self,
+        request: SaveGbResourceConfirmationRequest,
+    ) -> GuardResult<GbResource> {
+        let device = self
+            .get_gb_device(&request.device_id)
+            .await?
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {}", request.device_id)))?;
+        let session = self.gb_session_for_device(&device, "save_gb_resource_confirmation")?;
+        let resource_id = request.resource_id.clone();
+        let request_id = request.request_id.clone();
+        let mut client = self.session_client(&session).await?;
+        let edge = RpcEdge::new(
+            "session",
+            "save_gb_resource_confirmation",
+            &session.identity.node_id,
+            &request_id,
+            &resource_id,
+        );
+        let response = edge.response(client.save_gb_resource_confirmation(request).await)?;
+        let Some(resource) = response.resource else {
+            edge.invalid_response("empty_resource");
+            return Err(GuardError::Conflict(
+                "session returned empty GB28181 resource".to_string(),
+            ));
+        };
+        edge.success();
+        Ok(resource)
+    }
+
+    pub async fn reset_gb_resource_confirmation(
+        &self,
+        request: ResetGbResourceConfirmationRequest,
+    ) -> GuardResult<GbResource> {
+        let device = self
+            .get_gb_device(&request.device_id)
+            .await?
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {}", request.device_id)))?;
+        let session = self.gb_session_for_device(&device, "reset_gb_resource_confirmation")?;
+        let resource_id = request.resource_id.clone();
+        let request_id = request.request_id.clone();
+        let mut client = self.session_client(&session).await?;
+        let edge = RpcEdge::new(
+            "session",
+            "reset_gb_resource_confirmation",
+            &session.identity.node_id,
+            &request_id,
+            &resource_id,
+        );
+        let response = edge.response(client.reset_gb_resource_confirmation(request).await)?;
+        let Some(resource) = response.resource else {
+            edge.invalid_response("empty_resource");
+            return Err(GuardError::Conflict(
+                "session returned empty GB28181 resource".to_string(),
+            ));
+        };
+        edge.success();
+        Ok(resource)
     }
 
     pub async fn snapshot_image(

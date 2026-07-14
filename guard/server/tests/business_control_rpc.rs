@@ -22,11 +22,12 @@ use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionC
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
     DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
-    GbChannel, GbDevice, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest,
-    GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
+    GbChannel, GbDevice, GbResource, GbResourceResponse, GetGbChannelRequest, GetGbChannelResponse,
+    GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
-    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, SnapshotImageRequest,
-    SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
+    ListGbResourcesResponse, ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest,
+    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
     UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
@@ -732,6 +733,48 @@ impl SessionControl for FakeSession {
     ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
         Ok(tonic::Response::new(ListGbChannelImagesResponse {
             images: vec![],
+        }))
+    }
+
+    async fn list_gb_resources(
+        &self,
+        _request: tonic::Request<ListGbResourcesRequest>,
+    ) -> Result<tonic::Response<ListGbResourcesResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ListGbResourcesResponse {
+            resources: vec![],
+        }))
+    }
+
+    async fn save_gb_resource_confirmation(
+        &self,
+        request: tonic::Request<SaveGbResourceConfirmationRequest>,
+    ) -> Result<tonic::Response<GbResourceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(GbResourceResponse {
+            resource: Some(GbResource {
+                device_id: request.device_id,
+                resource_id: request.resource_id,
+                classification_mode: "manual".to_string(),
+                effective_kind: request.resource_kind,
+                effective_owner_scope: request.owner_scope,
+                effective_owner_id: request.owner_id,
+                ..GbResource::default()
+            }),
+        }))
+    }
+
+    async fn reset_gb_resource_confirmation(
+        &self,
+        request: tonic::Request<ResetGbResourceConfirmationRequest>,
+    ) -> Result<tonic::Response<GbResourceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(GbResourceResponse {
+            resource: Some(GbResource {
+                device_id: request.device_id,
+                resource_id: request.resource_id,
+                classification_mode: "default".to_string(),
+                ..GbResource::default()
+            }),
         }))
     }
 

@@ -94,6 +94,40 @@ CREATE TABLE IF NOT EXISTS `gb28181_device_channel_conf`  (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '通道业务配置表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+CREATE TABLE IF NOT EXISTS `gb28181_enum_code` (
+  `id` varchar(32) NOT NULL,
+  `parent_id` varchar(32) NULL DEFAULT NULL,
+  `name` varchar(128) NOT NULL,
+  `value_start` varchar(16) NOT NULL,
+  `value_end` varchar(16) NOT NULL,
+  `remark` varchar(255) NULL DEFAULT NULL,
+  `seq` int NULL DEFAULT 0,
+  `status` tinyint UNSIGNED NOT NULL DEFAULT 1,
+  `created_at` datetime NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_gb28181_enum_code_parent` (`parent_id` ASC) USING BTREE,
+  INDEX `idx_gb28181_enum_code_value` (`value_start` ASC, `value_end` ASC, `status` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'GB28181 enum code reference' ROW_FORMAT = Dynamic;
+
+CREATE TABLE IF NOT EXISTS `gb28181_resource_confirmation` (
+  `device_id` varchar(20) NOT NULL,
+  `resource_id` varchar(32) NOT NULL,
+  `resource_kind` varchar(32) NOT NULL,
+  `owner_scope` varchar(16) NOT NULL,
+  `owner_id` varchar(32) NOT NULL,
+  `status` tinyint UNSIGNED NOT NULL DEFAULT 1,
+  `suggested_enum_id` varchar(32) NULL DEFAULT NULL,
+  `source_parent_id` varchar(32) NULL DEFAULT NULL,
+  `confirmed_by` varchar(64) NOT NULL,
+  `confirmed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `remark` varchar(255) NULL DEFAULT NULL,
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`device_id`, `resource_id`) USING BTREE,
+  INDEX `idx_gb28181_resource_confirmation_owner` (`device_id` ASC, `owner_scope` ASC, `owner_id` ASC, `status` ASC) USING BTREE,
+  INDEX `idx_gb28181_resource_confirmation_kind` (`device_id` ASC, `resource_kind` ASC, `status` ASC) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = 'GB28181 resource manual classification override' ROW_FORMAT = Dynamic;
+
 -- Table structure for gb28181_device_ptz_preset
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS `gb28181_device_ptz_preset`  (

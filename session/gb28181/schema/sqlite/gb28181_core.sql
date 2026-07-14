@@ -101,6 +101,43 @@ CREATE TABLE IF NOT EXISTS gb28181_device_channel_conf (
 
 CREATE INDEX IF NOT EXISTS idx_gb28181_dcc_sort ON gb28181_device_channel_conf (device_id, sort_no, channel_id);
 
+CREATE TABLE IF NOT EXISTS gb28181_enum_code (
+    id VARCHAR(32) NOT NULL PRIMARY KEY,
+    parent_id VARCHAR(32) NULL,
+    name VARCHAR(128) NOT NULL,
+    value_start VARCHAR(16) NOT NULL,
+    value_end VARCHAR(16) NOT NULL,
+    remark VARCHAR(255) NULL,
+    seq INTEGER NULL DEFAULT 0,
+    status INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_gb28181_enum_code_parent ON gb28181_enum_code (parent_id);
+CREATE INDEX IF NOT EXISTS idx_gb28181_enum_code_value ON gb28181_enum_code (value_start, value_end, status);
+
+CREATE TABLE IF NOT EXISTS gb28181_resource_confirmation (
+    device_id VARCHAR(20) NOT NULL,
+    resource_id VARCHAR(32) NOT NULL,
+    resource_kind VARCHAR(32) NOT NULL,
+    owner_scope VARCHAR(16) NOT NULL,
+    owner_id VARCHAR(32) NOT NULL,
+    status INTEGER NOT NULL DEFAULT 1,
+    suggested_enum_id VARCHAR(32) NULL,
+    source_parent_id VARCHAR(32) NULL,
+    confirmed_by VARCHAR(64) NOT NULL,
+    confirmed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    remark VARCHAR(255) NULL,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (device_id, resource_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gb28181_resource_confirmation_owner
+    ON gb28181_resource_confirmation (device_id, owner_scope, owner_id, status);
+CREATE INDEX IF NOT EXISTS idx_gb28181_resource_confirmation_kind
+    ON gb28181_resource_confirmation (device_id, resource_kind, status);
+
 CREATE TABLE IF NOT EXISTS gb28181_device_ptz_preset (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id VARCHAR(20) NOT NULL,

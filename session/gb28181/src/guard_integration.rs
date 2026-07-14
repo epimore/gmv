@@ -29,10 +29,12 @@ use gmv_protocol::guard::v1::{
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
     DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
-    GbChannel, GbChannelImage, GbDevice, GetGbChannelRequest, GetGbChannelResponse,
-    GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
-    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
-    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, SessionHookRequest,
+    GbChannel, GbChannelImage, GbDevice, GbResource, GbResourceConfirmation, GbResourceResponse,
+    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
+    GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
+    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
+    ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SessionHookRequest,
     SessionHookResponse, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
     StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
     UpdateGbDeviceRequest, UpdateGbDeviceResponse, session_control_server::SessionControl,
@@ -937,6 +939,77 @@ impl SessionControl for SessionControlRpc {
         .collect();
         Ok(tonic::Response::new(ListGbChannelImagesResponse { images }))
     }
+
+    async fn list_gb_resources(
+        &self,
+        request: tonic::Request<ListGbResourcesRequest>,
+    ) -> Result<tonic::Response<ListGbResourcesResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!("session_control.list_gb_resources, req:{request:?}");
+        let resources = crate::storage::resource::GbResourceView::list(&request.device_id)
+            .await
+            .map_err(storage_status)?
+            .into_iter()
+            .map(gb_resource_proto)
+            .collect();
+        Ok(tonic::Response::new(ListGbResourcesResponse { resources }))
+    }
+
+    async fn save_gb_resource_confirmation(
+        &self,
+        request: tonic::Request<SaveGbResourceConfirmationRequest>,
+    ) -> Result<tonic::Response<GbResourceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!(
+            "session_control.save_gb_resource_confirmation, req: device_id={}, resource_id={}, resource_kind={}, owner_scope={}, owner_id={}, confirmed_by={}, request_id={}",
+            request.device_id,
+            request.resource_id,
+            request.resource_kind,
+            request.owner_scope,
+            request.owner_id,
+            request.confirmed_by,
+            request.request_id,
+        );
+        let resource = crate::storage::resource::GbResourceView::save_confirmation(
+            crate::storage::resource::ResourceConfirmationInput {
+                device_id: request.device_id,
+                resource_id: request.resource_id,
+                resource_kind: request.resource_kind,
+                owner_scope: request.owner_scope,
+                owner_id: request.owner_id,
+                suggested_enum_id: request.suggested_enum_id,
+                source_parent_id: request.source_parent_id,
+                confirmed_by: request.confirmed_by,
+                remark: request.remark,
+            },
+        )
+        .await
+        .map_err(storage_status)?;
+        Ok(tonic::Response::new(GbResourceResponse {
+            resource: Some(gb_resource_proto(resource)),
+        }))
+    }
+
+    async fn reset_gb_resource_confirmation(
+        &self,
+        request: tonic::Request<ResetGbResourceConfirmationRequest>,
+    ) -> Result<tonic::Response<GbResourceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!(
+            "session_control.reset_gb_resource_confirmation, req: device_id={}, resource_id={}, confirmed_by={}, request_id={}",
+            request.device_id, request.resource_id, request.confirmed_by, request.request_id,
+        );
+        let resource = crate::storage::resource::GbResourceView::reset_confirmation(
+            &request.device_id,
+            &request.resource_id,
+            &request.confirmed_by,
+        )
+        .await
+        .map_err(storage_status)?;
+        Ok(tonic::Response::new(GbResourceResponse {
+            resource: Some(gb_resource_proto(resource)),
+        }))
+    }
 }
 
 impl SessionControlRpc {
@@ -1553,6 +1626,41 @@ fn gb_channel_image_proto(row: crate::storage::guard_query::GbChannelImageView) 
         channel_id: row.channel_id,
         image_url: row.image_url,
         created_at_ms: datetime_ms(row.created_at),
+    }
+}
+
+fn gb_resource_proto(row: crate::storage::resource::GbResourceView) -> GbResource {
+    GbResource {
+        device_id: row.device_id,
+        resource_id: row.resource_id,
+        name: row.name,
+        status: row.status,
+        parent_id: row.parent_id,
+        type_code: row.type_code,
+        enum_id: row.enum_id,
+        enum_name: row.enum_name,
+        suggested_kind: row.suggested_kind,
+        classification_mode: row.classification_mode,
+        effective_kind: row.effective_kind,
+        effective_owner_scope: row.effective_owner_scope,
+        effective_owner_id: row.effective_owner_id,
+        warning: row.warning,
+        biz_enable: row.biz_enable,
+        owner_biz_enable: row.owner_biz_enable,
+        supported: row.supported,
+        available: row.available,
+        unavailable_reason: row.unavailable_reason,
+        confirmation: row.confirmation.map(|confirmation| GbResourceConfirmation {
+            status: confirmation.status,
+            resource_kind: confirmation.resource_kind,
+            owner_scope: confirmation.owner_scope,
+            owner_id: confirmation.owner_id,
+            suggested_enum_id: confirmation.suggested_enum_id,
+            source_parent_id: confirmation.source_parent_id,
+            confirmed_by: confirmation.confirmed_by,
+            confirmed_at_ms: confirmation.confirmed_at_ms,
+            remark: confirmation.remark,
+        }),
     }
 }
 

@@ -210,6 +210,12 @@
           <span>Session {{ selectedDevice.session_node_id || '-' }}</span>
         </div>
         <div class="monitor-actions">
+          <el-button :loading="resourceLoading" @click="openResourceDrawer">资源能力</el-button>
+          <el-tooltip :content="deviceBroadcastReasonText" placement="bottom" :disabled="selectedDevice.monitor_status === 1 && !!availableAudioOutputs.length">
+            <el-button v-if="!broadcastSession" type="warning" :loading="broadcastStarting"
+              :disabled="!canOperate || selectedDevice.monitor_status !== 1 || !availableAudioOutputs.length" @click="startBroadcast(selectedDevice.device_id)">设备广播</el-button>
+          </el-tooltip>
+          <el-button v-if="broadcastSession" type="danger" :loading="broadcastStarting" @click="stopBroadcast">停止广播</el-button>
           <el-button :loading="channelLoading" @click="reloadChannels">刷新通道</el-button>
           <el-button type="primary" @click="backToDevices">返回</el-button>
         </div>
@@ -248,6 +254,10 @@
               </div>
               <StatusPill :label="channelStatusText(channel)" :tone="channelOnline(channel) ? 'ONLINE' : 'OFFLINE'" />
             </header>
+            <div class="channel-tags">
+              <span v-if="channelOutputs(channel).length">广播 ×{{ channelOutputs(channel).length }}</span>
+              <span v-if="channelOutputs(channel)[0]">{{ capabilitySourceText(channelOutputs(channel)[0]) }}</span>
+            </div>
             <button class="channel-cover" type="button" :disabled="!channel.pic_url" @click="previewCover(channel)">
               <img v-if="channel.pic_url" :src="channel.pic_url" :alt="displayChannelName(channel)" />
               <span v-else>暂无封面</span>
@@ -267,6 +277,11 @@
                 @click="snapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
               <el-button :disabled="!canPlayLive(channel)" @click="focusChannelInMultiView(channel)">多画面</el-button>
+              <el-tooltip :content="channelBroadcastReason(channel)" placement="top" :disabled="canBroadcastChannel(channel)">
+                <el-button type="warning" :disabled="!canOperate || !canBroadcastChannel(channel) || !!broadcastSession"
+                  :loading="broadcastStarting && broadcastScopeId === channel.channel_id"
+                  @click="startBroadcast(channel.channel_id)">广播</el-button>
+              </el-tooltip>
               <el-button :disabled="!canOperate" @click="openConfig(channel)">配置</el-button>
             </footer>
           </article>
@@ -331,6 +346,48 @@
         </div>
       </template>
     </el-drawer>
+
+    <el-drawer v-model="resourceDrawer" title="资源识别覆盖管理" size="760px"
+      class="resource-capability-drawer" destroy-on-close>
+      <div v-loading="resourceLoading" class="resource-capability-content">
+        <el-alert title="资源类型优先采用人工覆盖；没有有效覆盖时使用枚举、设备编码和 ParentID 自动识别。" type="info" :closable="false" />
+        <el-table :data="resources" max-height="620" empty-text="暂无 Catalog 资源">
+          <el-table-column prop="resource_id" label="资源 ID" min-width="190" show-overflow-tooltip />
+          <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
+          <el-table-column label="编码" width="72"><template #default="{ row }">{{ row.type_code || '-' }}</template></el-table-column>
+          <el-table-column label="有效类型" width="120"><template #default="{ row }">{{ resourceKindText(row.effective_kind) }}</template></el-table-column>
+          <el-table-column label="来源/状态" width="130"><template #default="{ row }">
+            <el-tag :type="classificationTagType(row)">{{ classificationText(row) }}</el-tag>
+          </template></el-table-column>
+          <el-table-column label="业务所有者" min-width="170" show-overflow-tooltip><template #default="{ row }">{{ row.effective_owner_scope }} · {{ row.effective_owner_id || '-' }}</template></el-table-column>
+          <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }">
+            <el-button type="primary" link :disabled="!canManageResources" @click="editResource(row)">覆盖</el-button>
+            <el-button type="warning" link :disabled="!canManageResources || !row.confirmation || row.confirmation.status !== 1"
+              @click="resetResource(row)">恢复自动</el-button>
+          </template></el-table-column>
+        </el-table>
+      </div>
+    </el-drawer>
+
+    <el-dialog v-model="resourceEditDialog" title="人工覆盖资源识别" width="520px"
+      class="resource-confirm-dialog" destroy-on-close>
+      <el-form :model="resourceForm" label-width="110px">
+        <el-form-item label="资源 ID"><el-input :model-value="resourceEditing?.resource_id" disabled /></el-form-item>
+        <el-form-item label="默认建议"><el-input :model-value="resourceKindText(resourceEditing?.suggested_kind || 'unknown')" disabled /></el-form-item>
+        <el-form-item label="资源类型"><el-select v-model="resourceForm.resource_kind" style="width:100%">
+          <el-option label="视频资源" value="video" /><el-option label="语音输入" value="audio_input" />
+          <el-option label="语音输出" value="audio_output" /><el-option label="其它/否决" value="other" />
+        </el-select></el-form-item>
+        <el-form-item label="所有者范围"><el-radio-group v-model="resourceForm.owner_scope" @change="syncResourceOwner">
+          <el-radio value="device">注册设备</el-radio><el-radio value="resource">Catalog 资源</el-radio>
+        </el-radio-group></el-form-item>
+        <el-form-item label="业务所有者"><el-select v-if="resourceForm.owner_scope === 'resource'" v-model="resourceForm.owner_id" filterable style="width:100%">
+          <el-option v-for="channel in ownerResourceOptions" :key="channel.channel_id" :label="displayChannelName(channel) + ' · ' + channel.channel_id" :value="channel.channel_id" />
+        </el-select><el-input v-else v-model="resourceForm.owner_id" disabled /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="resourceForm.remark" type="textarea" maxlength="255" show-word-limit /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="resourceEditDialog = false">取消</el-button><el-button type="primary" :loading="resourceSaving" @click="saveResource">保存人工覆盖</el-button></template>
+    </el-dialog>
   </div>
 </template>
 
@@ -345,7 +402,10 @@ import {
   listGbChannelImages,
   listGbChannels,
   listGbDevicePage,
+  listGbResources,
   listNodes,
+  resetGbResourceConfirmation,
+  saveGbResourceConfirmation,
   sendGbPtz,
   startGbPlayback,
   startGbPreview,
@@ -357,10 +417,12 @@ import {
   type GbChannelPayload,
   type GbDeviceInfo,
   type GbPtzPayload,
+  type GbResourceInfo,
   type GbSessionConfigInfo,
   type NodeInfo,
   type StreamSummary,
 } from '@/api/client';
+import { startGbMicrophoneBroadcast, type GbBroadcastSession } from '@/audio/gbBroadcast';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
 import { GmvMultiGrid, GmvPlayerView, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
@@ -370,6 +432,8 @@ const auth = useAuthStore();
 const monitorMode = ref<'devices' | 'multi'>('devices');
 const loading = ref(false);
 const channelLoading = ref(false);
+const resourceLoading = ref(false);
+const resourcesLoaded = ref(false);
 const imageLoading = ref(false);
 const configSaving = ref(false);
 const listNodeLoading = ref(false);
@@ -380,6 +444,7 @@ const treeDeviceId = ref('');
 const treeDeviceName = ref('');
 const devices = ref<GbDeviceInfo[]>([]);
 const channels = ref<GbChannelInfo[]>([]);
+const resources = ref<GbResourceInfo[]>([]);
 const treeDevices = ref<GbDeviceInfo[]>([]);
 const images = ref<GbChannelImageInfo[]>([]);
 const sessionNodes = ref<NodeInfo[]>([]);
@@ -405,6 +470,13 @@ const playerDialog = ref(false);
 const playerRequesting = ref(false);
 const pendingPlayKey = ref('');
 const configDrawer = ref(false);
+const resourceDrawer = ref(false);
+const resourceEditDialog = ref(false);
+const resourceEditing = ref<GbResourceInfo>();
+const resourceSaving = ref(false);
+const broadcastStarting = ref(false);
+const broadcastSession = ref<GbBroadcastSession>();
+const broadcastScopeId = ref('');
 const snapshotLoading = reactive<Record<string, boolean>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
 const treeChannelLoading = reactive<Record<string, boolean>>({});
@@ -426,6 +498,8 @@ let multiVisibilityTask: Promise<void> = Promise.resolve();
 let multiViewDisposed = false;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
+const canManageResources = computed(() => auth.session?.role === 'admin');
+const resourceForm = reactive({ resource_kind: 'audio_output' as 'video' | 'audio_input' | 'audio_output' | 'other', owner_scope: 'device' as 'device' | 'resource', owner_id: '', remark: '' });
 
 type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
 type MultiCellStatus = 'idle' | 'online' | 'playing' | 'offline' | 'reconnecting' | 'error';
@@ -466,10 +540,16 @@ const bizOptions = [
 const selectedListNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedListNodeId.value));
 const selectedMultiNodeOption = computed(() => sessionNodeOptions.value.find((item) => item.node.node_id === selectedMultiNodeId.value));
 const selectedMultiNodeLabel = computed(() => selectedMultiNodeOption.value ? listNodeLabel(selectedMultiNodeOption.value) : '未选择信令节点');
-const sortedChannels = computed(() => [...channels.value].sort((left, right) => {
+const videoResourceIds = computed(() => new Set(resources.value.filter((resource) => resource.effective_kind === 'video').map((resource) => resource.resource_id)));
+const sortedChannels = computed(() => channels.value.filter((channel) => !resourcesLoaded.value || videoResourceIds.value.has(channel.channel_id)).sort((left, right) => {
   const sortNo = Number(left.sort_no || 0) - Number(right.sort_no || 0);
   return sortNo || displayChannelName(left).localeCompare(displayChannelName(right), 'zh-Hans-CN');
 }));
+const audioOutputs = computed(() => resources.value.filter((resource) => resource.effective_kind === 'audio_output'));
+const availableAudioOutputs = computed(() => audioOutputs.value.filter((resource) => resource.available));
+const deviceBroadcastReason = computed(() => selectedDevice.value?.monitor_status !== 1 ? 'DEVICE_OFFLINE' : availableAudioOutputs.value.length ? '' : audioOutputs.value[0]?.unavailable_reason || 'NO_AUDIO_OUTPUT');
+const deviceBroadcastReasonText = computed(() => broadcastReasonText(deviceBroadcastReason.value));
+const ownerResourceOptions = computed(() => channels.value.filter((channel) => channel.channel_id !== resourceEditing.value?.resource_id));
 const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeChannelItems.value);
 const selectedTreeChannelSubtitle = computed(() => `${selectedTreeChannels.value.length}/${multiViewLimit.value}`);
 const treeProps = { label: 'label', isLeaf: 'leaf' };
@@ -674,6 +754,33 @@ function formatTime(value: number) {
   if (!value) return '-';
   return new Date(value).toLocaleString();
 }
+function resourceKindText(kind: string) {
+  return ({ video: '视频资源', audio_input: '语音输入', audio_output: '语音输出', other: '其它', unknown: '未知' } as Record<string, string>)[kind] || kind || '未知';
+}
+function classificationText(resource: GbResourceInfo) {
+  return ({ default: '自动', manual: '人工', manual_stale: '人工·待复核', unknown: '未知', conflict: '冲突', orphan: '孤儿' } as Record<string, string>)[resource.classification_mode] || resource.classification_mode;
+}
+function classificationTagType(resource: GbResourceInfo): 'success' | 'warning' | 'danger' | 'info' {
+  if (resource.classification_mode === 'manual') return 'success';
+  if (resource.classification_mode === 'default') return 'info';
+  if (resource.classification_mode === 'manual_stale') return 'warning';
+  return 'danger';
+}
+function capabilitySourceText(resource: GbResourceInfo) {
+  return resource.classification_mode.startsWith('manual') ? '人工' : `自动${resource.type_code ? `（编码 ${resource.type_code}）` : ''}`;
+}
+function channelOutputs(channel: GbChannelInfo) {
+  return audioOutputs.value.filter((resource) => resource.resource_id === channel.channel_id || resource.effective_owner_id === channel.channel_id);
+}
+function canBroadcastChannel(channel: GbChannelInfo) { return selectedDevice.value?.monitor_status === 1 && channelOutputs(channel).some((resource) => resource.available); }
+function channelBroadcastReason(channel: GbChannelInfo) {
+  if (selectedDevice.value?.monitor_status !== 1) return broadcastReasonText('DEVICE_OFFLINE');
+  const outputs = channelOutputs(channel);
+  return broadcastReasonText(outputs.find((resource) => !resource.available)?.unavailable_reason || (outputs.length ? '' : 'NO_AUDIO_OUTPUT'));
+}
+function broadcastReasonText(reason: string) {
+  return ({ NO_AUDIO_OUTPUT: '没有语音输出资源', UNKNOWN_RESOURCE_KIND: '资源类型未知', RESOURCE_CONFLICT: '资源归属冲突', RESOURCE_ORPHAN: '资源已不在 Catalog', DEVICE_OFFLINE: '设备离线', OUTPUT_OFFLINE: '语音输出离线', BUSINESS_DISABLED: '业务已禁用' } as Record<string, string>)[reason] || reason || '可广播';
+}
 function channelKey(channel: GbChannelInfo) { return `${channel.device_id}:${channel.channel_id}`; }
 function streamSources(stream?: StreamSummary): GmvSource[] {
   const endpoint = stream?.endpoint;
@@ -788,7 +895,14 @@ async function loadTreeDeviceChannels(device: GbDeviceInfo) {
   if (treeChannelsByDevice[device.device_id]) return treeChannelsByDevice[device.device_id];
   treeChannelLoading[device.device_id] = true;
   try {
-    treeChannelsByDevice[device.device_id] = await listGbChannels(device.device_id);
+    const [channelRows, resourceRows] = await Promise.all([
+      listGbChannels(device.device_id),
+      listGbResources(device.device_id),
+    ]);
+    const videoIds = new Set(resourceRows.filter((resource) => resource.effective_kind === 'video').map((resource) => resource.resource_id));
+    treeChannelsByDevice[device.device_id] = resourceRows.length
+      ? channelRows.filter((channel) => videoIds.has(channel.channel_id))
+      : channelRows;
   } catch (error) {
     treeChannelsByDevice[device.device_id] = [];
     ElMessage.error(errorMessage(error, '通道加载失败'));
@@ -1230,19 +1344,30 @@ async function openChannels(device: GbDeviceInfo) {
 async function reloadChannels() {
   if (!selectedDevice.value) return;
   channelLoading.value = true;
+  resourceLoading.value = true;
   try {
-    channels.value = await listGbChannels(selectedDevice.value.device_id);
+    const [channelRows, resourceRows] = await Promise.all([
+      listGbChannels(selectedDevice.value.device_id),
+      listGbResources(selectedDevice.value.device_id),
+    ]);
+    channels.value = channelRows;
+    resources.value = resourceRows;
+    resourcesLoaded.value = true;
   } catch (error) {
     ElMessage.error(errorMessage(error, '通道列表加载失败'));
   } finally {
     channelLoading.value = false;
+    resourceLoading.value = false;
   }
 }
 async function backToDevices() {
+  await stopBroadcast();
   await stopCurrentStream();
   selectedDevice.value = undefined;
   selectedChannel.value = undefined;
   channels.value = [];
+  resources.value = [];
+  resourcesLoaded.value = false;
   images.value = [];
   showImages.value = false;
 }
@@ -1330,6 +1455,95 @@ function openConfig(channel: GbChannelInfo) {
   });
   configDrawer.value = true;
 }
+async function openResourceDrawer() {
+  resourceDrawer.value = true;
+  if (!selectedDevice.value) return;
+  resourceLoading.value = true;
+  try {
+    resources.value = await listGbResources(selectedDevice.value.device_id);
+    resourcesLoaded.value = true;
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '资源能力加载失败'));
+  } finally {
+    resourceLoading.value = false;
+  }
+}
+function editResource(resource: GbResourceInfo) {
+  if (!canManageResources.value) return;
+  resourceEditing.value = resource;
+  Object.assign(resourceForm, {
+    resource_kind: (resource.confirmation?.status === 1 ? resource.confirmation.resource_kind : resource.effective_kind) as typeof resourceForm.resource_kind,
+    owner_scope: (resource.confirmation?.status === 1 ? resource.confirmation.owner_scope : resource.effective_owner_scope) as typeof resourceForm.owner_scope,
+    owner_id: resource.confirmation?.status === 1 ? resource.confirmation.owner_id : resource.effective_owner_id,
+    remark: resource.confirmation?.remark || '',
+  });
+  syncResourceOwner();
+  resourceEditDialog.value = true;
+}
+function syncResourceOwner() {
+  if (!selectedDevice.value) return;
+  if (resourceForm.owner_scope === 'device') resourceForm.owner_id = selectedDevice.value.device_id;
+  else if (!ownerResourceOptions.value.some((channel) => channel.channel_id === resourceForm.owner_id)) resourceForm.owner_id = ownerResourceOptions.value[0]?.channel_id || '';
+}
+async function saveResource() {
+  if (!selectedDevice.value || !resourceEditing.value || !resourceForm.owner_id) return;
+  resourceSaving.value = true;
+  try {
+    await saveGbResourceConfirmation(selectedDevice.value.device_id, resourceEditing.value.resource_id, {
+      request_id: `ui-resource-confirm-${Date.now()}`,
+      resource_kind: resourceForm.resource_kind,
+      owner_scope: resourceForm.owner_scope,
+      owner_id: resourceForm.owner_id,
+      remark: resourceForm.remark,
+    });
+    resourceEditDialog.value = false;
+    await openResourceDrawer();
+    ElMessage.success('人工覆盖已保存');
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '人工覆盖保存失败'));
+  } finally {
+    resourceSaving.value = false;
+  }
+}
+async function resetResource(resource: GbResourceInfo) {
+  if (!selectedDevice.value || !canManageResources.value) return;
+  resourceSaving.value = true;
+  try {
+    await resetGbResourceConfirmation(selectedDevice.value.device_id, resource.resource_id, `ui-resource-reset-${Date.now()}`);
+    await openResourceDrawer();
+    ElMessage.success('已恢复自动识别');
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '恢复自动识别失败'));
+  } finally {
+    resourceSaving.value = false;
+  }
+}
+async function startBroadcast(scopeId: string) {
+  if (!selectedDevice.value || broadcastStarting.value || broadcastSession.value) return;
+  broadcastStarting.value = true;
+  broadcastScopeId.value = scopeId;
+  try {
+    broadcastSession.value = await startGbMicrophoneBroadcast(selectedDevice.value.device_id, scopeId);
+    ElMessage.success('语音广播已开始');
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '语音广播启动失败'));
+  } finally {
+    broadcastStarting.value = false;
+  }
+}
+async function stopBroadcast() {
+  const session = broadcastSession.value;
+  if (!session) return;
+  broadcastSession.value = undefined;
+  broadcastStarting.value = true;
+  try {
+    await session.stop();
+    ElMessage.success('语音广播已停止');
+  } finally {
+    broadcastScopeId.value = '';
+    broadcastStarting.value = false;
+  }
+}
 async function saveConfig() {
   if (!selectedChannel.value) return;
   configSaving.value = true;
@@ -1358,10 +1572,12 @@ async function handlePlayerPtz(command: GmvPtzCommand) {
 onMounted(loadDevices);
 onBeforeRouteLeave(async () => {
   multiViewDisposed = true;
+  await stopBroadcast();
   await stopAllMultiStreams({ quiet: true });
 });
 onBeforeUnmount(() => {
   multiViewDisposed = true;
+  void stopBroadcast();
   void stopAllMultiStreams({ quiet: true });
   void stopCurrentStream();
 });
@@ -2152,7 +2368,8 @@ onBeforeUnmount(() => {
 }
 
 :deep(.device-detail-drawer),
-:deep(.camera-config-drawer) {
+:deep(.camera-config-drawer),
+:deep(.resource-capability-drawer) {
   border-left: 1px solid var(--line);
   background: linear-gradient(145deg, rgba(13, 29, 58, .98), rgba(7, 16, 34, .96)) !important;
   color: var(--text);
@@ -2160,7 +2377,8 @@ onBeforeUnmount(() => {
 }
 
 :deep(.device-detail-drawer .el-drawer__header),
-:deep(.camera-config-drawer .el-drawer__header) {
+:deep(.camera-config-drawer .el-drawer__header),
+:deep(.resource-capability-drawer .el-drawer__header) {
   margin-bottom: 0;
   padding: 18px 20px 14px;
   border-bottom: 1px solid rgba(100, 203, 255, .12);
@@ -2168,21 +2386,78 @@ onBeforeUnmount(() => {
 }
 
 :deep(.device-detail-drawer .el-drawer__title),
-:deep(.camera-config-drawer .el-drawer__title) {
+:deep(.camera-config-drawer .el-drawer__title),
+:deep(.resource-capability-drawer .el-drawer__title) {
   color: var(--text);
   font-size: 16px;
   font-weight: 800;
 }
 
 :deep(.device-detail-drawer .el-drawer__body),
-:deep(.camera-config-drawer .el-drawer__body) {
+:deep(.camera-config-drawer .el-drawer__body),
+:deep(.resource-capability-drawer .el-drawer__body) {
   padding: 18px 20px;
 }
 
 :deep(.device-detail-drawer .el-drawer__footer),
-:deep(.camera-config-drawer .el-drawer__footer) {
+:deep(.camera-config-drawer .el-drawer__footer),
+:deep(.resource-capability-drawer .el-drawer__footer) {
   padding: 12px 20px 18px;
   border-top: 1px solid rgba(100, 203, 255, .12);
+}
+
+:deep(.device-detail-drawer .el-drawer__close-btn),
+:deep(.camera-config-drawer .el-drawer__close-btn),
+:deep(.resource-capability-drawer .el-drawer__close-btn) {
+  color: var(--muted);
+}
+
+:deep(.device-detail-drawer .el-drawer__close-btn:hover),
+:deep(.camera-config-drawer .el-drawer__close-btn:hover),
+:deep(.resource-capability-drawer .el-drawer__close-btn:hover) {
+  color: var(--cyan);
+}
+
+.resource-capability-content {
+  display: grid;
+  gap: 14px;
+}
+
+:deep(.resource-capability-drawer .el-alert--info.is-light) {
+  border: 1px solid rgba(57, 167, 255, .28);
+  background: rgba(17, 73, 133, .32);
+}
+
+:deep(.resource-capability-drawer .el-alert__title),
+:deep(.resource-capability-drawer .el-alert__description) {
+  color: var(--muted);
+}
+
+:deep(.resource-capability-drawer .el-table) {
+  overflow: hidden;
+  border: 1px solid rgba(100, 203, 255, .14);
+  border-radius: 10px;
+  background: rgba(3, 10, 24, .32) !important;
+}
+
+:deep(.resource-confirm-dialog .el-textarea__inner) {
+  border: 1px solid rgba(68, 151, 255, .42);
+  background: rgba(23, 59, 119, .42);
+  color: var(--text);
+  box-shadow: none;
+}
+
+:deep(.resource-confirm-dialog .el-textarea__inner:focus) {
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 1px rgba(52, 216, 255, .18);
+}
+
+:deep(.resource-confirm-dialog .el-radio__label) {
+  color: var(--muted);
+}
+
+:deep(.resource-confirm-dialog .el-radio.is-checked .el-radio__label) {
+  color: var(--cyan);
 }
 
 :deep(.camera-config-drawer .el-form-item) {
