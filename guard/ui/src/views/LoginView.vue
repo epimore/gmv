@@ -31,11 +31,12 @@
         </div>
         <el-form label-position="top" @submit.prevent="submit">
           <el-form-item label="用户名">
-            <el-input v-model="form.username" size="large" placeholder="请输入用户名" :prefix-icon="User" />
+            <el-input v-model="form.username" size="large" placeholder="请输入用户名" :prefix-icon="User"
+              @keyup.enter="submit" />
           </el-form-item>
           <el-form-item label="密码">
             <el-input v-model="form.password" size="large" type="password" placeholder="请输入密码" :prefix-icon="Lock"
-              show-password />
+              show-password @keyup.enter="submit" />
           </el-form-item>
           <div class="login-form-meta">
             <el-checkbox v-model="form.remember">记住此设备</el-checkbox>

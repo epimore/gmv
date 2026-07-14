@@ -91,6 +91,20 @@ test('未登录禁止 URL 直达，登录后恢复目标页面并可退出', asy
   await expect(page).toHaveURL((url) => url.pathname === '/login' && url.searchParams.get('redirect') === '/system');
 });
 
+test('密码框按 Enter 可提交登录', async ({ page }) => {
+  await mockAuth(page);
+
+  await page.goto('/login');
+  await page.getByLabel('用户名').fill('admin');
+  await page.getByLabel('密码').fill('secret');
+
+  const loginRequest = page.waitForRequest('**/api/v2/auth/login');
+  await page.getByLabel('密码').press('Enter');
+
+  expect((await loginRequest).postDataJSON()).toEqual({ username: 'admin', password: 'secret' });
+  await expect(page).toHaveURL((url) => url.pathname === '/dashboard');
+});
+
 test('登录页不主动恢复会话', async ({ page }) => {
   let sessionRequests = 0;
   await page.route('**/api/v2/auth/session', async (route) => {
