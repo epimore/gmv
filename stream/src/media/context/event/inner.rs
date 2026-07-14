@@ -12,6 +12,7 @@ pub enum InnerEvent {
     FlvHeader(oneshot::Sender<Bytes>),
     Mp4Header(oneshot::Sender<Bytes>),
     Fmp4Header(oneshot::Sender<Bytes>),
+    HlsFmp4Header(oneshot::Sender<Bytes>),
     DashMp4Header(oneshot::Sender<Bytes>),
     MediaParam(oneshot::Sender<MediaParam>),
     //...
@@ -50,6 +51,16 @@ impl InnerEvent {
                 Some(context) => {
                     if let Err(_) = sender.send(context.get_header()) {
                         debug!("fmp4 header receiver dropped");
+                    }
+                }
+            },
+            InnerEvent::HlsFmp4Header(sender) => match &media_context.muxer_context.hls_mp4 {
+                None => {
+                    error!("no hls fmp4 context");
+                }
+                Some(context) => {
+                    if sender.send(context.get_header()).is_err() {
+                        debug!("hls fmp4 header receiver dropped");
                     }
                 }
             },

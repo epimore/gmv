@@ -17,6 +17,7 @@ export type {
   GmvPlayerControlsState,
   GmvPlayerEvent,
   GmvPlayerEvents,
+  GmvPlaybackRateMode,
   GmvProtocol,
   GmvPtzCommand,
   GmvSource,

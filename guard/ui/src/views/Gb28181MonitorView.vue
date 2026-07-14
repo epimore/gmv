@@ -107,6 +107,11 @@
           <span>最多 {{ multiViewLimit }} 路实时直播</span>
         </div>
         <div class="monitor-actions">
+          <el-select v-model="liveOutputType" style="width: 128px" aria-label="直播播放方式">
+            <el-option label="HTTP-FLV" value="flv" />
+            <el-option label="HLS-fMP4" value="hls" />
+            <el-option label="HTTP-fMP4" value="fmp4" />
+          </el-select>
           <el-select v-model="selectedMultiNodeId" filterable placeholder="选择 Session 节点" class="multi-node-select"
             :loading="listNodeLoading" @change="selectMultiNode">
             <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
@@ -210,6 +215,11 @@
           <span>Session {{ selectedDevice.session_node_id || '-' }}</span>
         </div>
         <div class="monitor-actions">
+          <el-select v-model="liveOutputType" style="width: 128px" aria-label="直播播放方式">
+            <el-option label="HTTP-FLV" value="flv" />
+            <el-option label="HLS-fMP4" value="hls" />
+            <el-option label="HTTP-fMP4" value="fmp4" />
+          </el-select>
           <el-button :loading="resourceLoading" @click="openResourceDrawer">资源能力</el-button>
           <el-tooltip :content="deviceBroadcastReasonText" placement="bottom" :disabled="selectedDevice.monitor_status === 1 && !!availableAudioOutputs.length">
             <el-button v-if="!broadcastSession" type="warning" :loading="broadcastStarting"
@@ -303,11 +313,12 @@
           <span>{{ selectedChannelTitle }}</span>
         </div>
         <div class="monitor-player-stage">
-          <GmvPlayerView :sources="playerSources" :device-id="selectedChannel?.device_id"
+          <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
             :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
             :controls="playerControls"
-            @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz" />
+            @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz"
+            @playback-rate-change="handlePlaybackRateChange" />
           <div v-if="playerRequesting" class="player-loading-badge">播放创建中...</div>
         </div>
       </div>
@@ -407,6 +418,7 @@ import {
   resetGbResourceConfirmation,
   saveGbResourceConfirmation,
   sendGbPtz,
+  setStreamPlaybackSpeed,
   startGbPlayback,
   startGbPreview,
   stopStream,
@@ -429,7 +441,10 @@ import { GmvMultiGrid, GmvPlayerView, type GmvCodec, type GmvPlayerControlsConfi
 import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
+const singlePlayerRef = ref<InstanceType<typeof GmvPlayerView>>();
+type LiveOutputType = 'flv' | 'hls' | 'fmp4';
 const monitorMode = ref<'devices' | 'multi'>('devices');
+const liveOutputType = ref<LiveOutputType>('flv');
 const loading = ref(false);
 const channelLoading = ref(false);
 const resourceLoading = ref(false);
@@ -514,6 +529,7 @@ interface MultiViewCell {
   status: MultiCellStatus;
   error?: string;
   channel: GbChannelInfo;
+  output_type: LiveOutputType;
 }
 interface SelectedChannelRef {
   device_id: string;
@@ -608,8 +624,9 @@ const playerSources = computed<GmvSource[]>(() => {
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: fmp4MimeCodec(codec, hasAudio),
+    mimeCodec: lastStream.value?.mime_codec ?? fmp4MimeCodec(codec, hasAudio),
     hasAudio,
+    rateMode: protocol === 'mp4' ? 'local-file' : lastAction.value === '历史回放' ? 'remote-stream' : 'disabled',
     label: streamSourceLabel(codec, hasAudio),
     priority: 1,
   }];
@@ -728,6 +745,7 @@ function streamProtocol(endpoint: string): GmvSource['protocol'] {
   const path = endpoint.split('?')[0].toLowerCase();
   if (path.endsWith('.fmp4')) return 'fmp4';
   if (path.endsWith('.m3u8')) return 'hls';
+  if (path.endsWith('.mp4')) return 'mp4';
   return 'flv';
 }
 function streamCodec(stream?: StreamSummary): GmvCodec | undefined {
@@ -792,8 +810,9 @@ function streamSources(stream?: StreamSummary): GmvSource[] {
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: fmp4MimeCodec(codec, hasAudio),
+    mimeCodec: stream?.mime_codec ?? fmp4MimeCodec(codec, hasAudio),
     hasAudio,
+    rateMode: protocol === 'mp4' ? 'local-file' : 'disabled',
     label: streamSourceLabel(codec, hasAudio),
     priority: 1,
   }];
@@ -1019,6 +1038,7 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     sources: [],
     status: 'reconnecting',
     channel: channel.channel,
+    output_type: liveOutputType.value,
   });
   await reconcileVisibleMultiStreams();
 }
@@ -1028,7 +1048,8 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
   try {
     const stream = await startGbPreview(cell.device_id, cell.channel_id, {
       request_id: 'ui-multi-preview-' + Date.now() + '-' + cell.channel_id,
-      output_type: 'flv',
+      output_type: cell.output_type,
+      audio_codec: 'aac',
     });
     if (multiPlayVersions[key] !== version || !isMultiCellVisible(key) || multiViewDisposed) {
       await stopMultiStream(stream);
@@ -1385,8 +1406,8 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
   try {
     await stopCurrentStream({ closeDialog: false, clearAction: false, cancelPending: false });
     const stream = kind === 'preview'
-      ? await startGbPreview(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-preview-' + Date.now(), output_type: 'flv' })
-      : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'flv' });
+      ? await startGbPreview(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-preview-' + Date.now(), output_type: liveOutputType.value, audio_codec: 'aac' })
+      : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'fmp4', audio_codec: 'aac' });
     if (requestSeq !== playRequestSeq || !playerDialog.value) {
       if (stream.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
       return;
@@ -1560,6 +1581,17 @@ async function saveConfig() {
     configSaving.value = false;
   }
 }
+async function handlePlaybackRateChange({ rate }: { rate: number }) {
+  if (!lastStream.value?.stream_id) return;
+  try {
+    await setStreamPlaybackSpeed(lastStream.value.stream_id, rate);
+    singlePlayerRef.value?.confirmPlaybackRate(rate);
+    ElMessage.success(`回放倍速已切换为 ${rate}x`);
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '回放倍速设置失败'));
+  }
+}
+
 async function handlePlayerPtz(command: GmvPtzCommand) {
   if (!selectedChannel.value) return;
   try {

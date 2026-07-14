@@ -160,6 +160,7 @@ const emit = defineEmits<{
   talkStart: [];
   talkStop: [];
   playbackSeek: [{ timeMs: number }];
+  playbackRateChange: [{ rate: number }];
   streamSwitch: [{ source: GmvSource }];
   reconnect: [];
 }>();
@@ -180,6 +181,7 @@ const ptzSpeed = ref(64);
 const playbackRate = ref(1);
 const seekMs = ref(0);
 const selectedSourceUrl = ref('');
+const activeSource = ref<GmvSource>();
 const controlsAreVisible = ref(true);
 const stops: Array<() => void> = [];
 
@@ -254,7 +256,15 @@ async function mountPlayer() {
   stops.push(core.on('playing', () => { viewState.value = 'playing'; isLoading.value = false; lastError.value = ''; }));
   stops.push(core.on('paused', () => { viewState.value = 'idle'; isLoading.value = false; }));
   stops.push(core.on('reconnecting', () => { viewState.value = 'reconnecting'; isLoading.value = true; }));
-  stops.push(core.on('sourceChanged', ({ source }) => { selectedSourceUrl.value = source.url; }));
+  stops.push(core.on('sourceChanged', ({ source }) => {
+    const changed = activeSource.value?.url !== source.url;
+    activeSource.value = source;
+    selectedSourceUrl.value = source.url;
+    if (changed) {
+      playbackRate.value = 1;
+      if (videoRef.value) videoRef.value.playbackRate = 1;
+    }
+  }));
   stops.push(core.on('error', ({ message }) => { viewState.value = 'error'; isLoading.value = false; lastError.value = message; }));
 
   await core.load();
@@ -264,6 +274,7 @@ function destroyPlayer() {
   while (stops.length) stops.pop()?.();
   player.value?.destroy();
   player.value = undefined;
+  activeSource.value = undefined;
   isLoading.value = false;
 }
 
@@ -318,9 +329,22 @@ function switchSource(url: string) {
 }
 
 function setPlaybackRate(rate: number) {
-  playbackRate.value = rate;
-  if (videoRef.value) videoRef.value.playbackRate = rate;
+  const mode = activeSource.value?.rateMode ?? (activeSource.value?.protocol === 'mp4' ? 'local-file' : 'disabled');
+  if (mode === 'disabled') return;
+  if (mode === 'local-file') {
+    playbackRate.value = rate;
+    if (videoRef.value) videoRef.value.playbackRate = rate;
+    return;
+  }
+  emit('playbackRateChange', { rate });
 }
+
+function confirmPlaybackRate(rate: number) {
+  playbackRate.value = rate;
+  if (videoRef.value) videoRef.value.playbackRate = 1;
+}
+
+defineExpose({ confirmPlaybackRate });
 
 async function toggleFullscreen() {
   const element = playerRef.value;

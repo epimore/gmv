@@ -281,22 +281,30 @@ pub mod converter_layer {
     use crate::state::layer::muxer_layer::MuxerLayer;
     use gmv_domain::info::codec::Codec;
     use gmv_domain::info::filter::Filter;
+    use gmv_domain::info::media_info::TranscodeConfig;
     use gmv_domain::info::output::OutputKind;
 
     #[derive(Clone)]
     pub struct ConverterLayer {
         pub codec: Option<CodecLayer>,
+        pub transcode: Option<TranscodeConfig>,
         pub muxer: MuxerLayer,
         pub filter: FilterLayer,
     }
 
     impl ConverterLayer {
-        pub fn new(codec: Option<Codec>, filter: Filter, output: &OutputKind) -> Self {
+        pub fn new(
+            codec: Option<Codec>,
+            transcode: Option<TranscodeConfig>,
+            filter: Filter,
+            output: &OutputKind,
+        ) -> Self {
             let muxer = MuxerLayer::new(output);
             let filter = FilterLayer::new(filter);
             let codec = codec.map(CodecLayer::new);
             Self {
                 codec,
+                transcode,
                 muxer,
                 filter,
             }
@@ -450,8 +458,8 @@ pub mod muxer_layer {
                     }
                 }
                 OutputKind::HlsFmp4(_) => {
-                    if self.fmp4.is_none() {
-                        self.fmp4 = Some(CMafLayer::layer(CMaf::default()));
+                    if self.hls_mp4.is_none() {
+                        self.hls_mp4 = Some(CMafLayer::layer(CMaf::default()));
                     }
                 }
                 OutputKind::HlsTs(_) => {
@@ -633,5 +641,22 @@ pub mod codec_layer {
                 CodecLayer::Aac => "aac".to_string(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::muxer_layer::MuxerLayer;
+    use gmv_domain::info::format::CMaf;
+    use gmv_domain::info::output::{HlsFmp4Output, OutputKind};
+
+    #[test]
+    fn hls_fmp4_uses_its_dedicated_muxer_layer() {
+        let layer = MuxerLayer::new(&OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: CMaf::default(),
+        }));
+
+        assert!(layer.hls_mp4.is_some());
+        assert!(layer.fmp4.is_none());
     }
 }

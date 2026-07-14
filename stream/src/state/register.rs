@@ -3,7 +3,7 @@ use crate::general::cfg::{ServerConf, StreamConf};
 use crate::general::util::Placeholder;
 use crate::io::local::mp4::{LocalStoreMp4Context, Mp4OutputInnerEvent};
 use crate::media::context::event::ContextEvent;
-use crate::media::context::event::muxer::MuxerEvent;
+use crate::media::context::event::muxer::{MuxerEvent, MuxerKind};
 use crate::media::context::format::MuxPacket;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
@@ -329,6 +329,7 @@ impl StreamMetadata {
             OutputKind::LocalMp4(info) => {
                 let context = LocalStoreMp4Context {
                     path: info.path,
+                    token: info.token,
                     ssrc,
                     file_name: stream_id.clone(),
                     pkt_rx: self.converter.muxer.get_rx(MuxerEnum::Mp4).unwrap(),
@@ -999,14 +1000,76 @@ impl Register {
         let ssrc = media_config.ssrc;
         let time_schedule_key = TimeScheduleKey::RtpGateway(ssrc);
         let stream_id: Arc<str> = Arc::from(media_config.stream_id);
+        let arc = Self::get().inner.clone();
+        if let Some(mut meta) = arc.stream_metadata_map.get_mut(&stream_id) {
+            if meta.ssrc != ssrc {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "stream id and ssrc do not match existing media",
+                    |msg| {
+                        error!(
+                            "{msg}: stream_id={stream_id}, expected={}, actual={ssrc}",
+                            meta.ssrc
+                        )
+                    },
+                ));
+            }
+            if meta.converter.transcode != media_config.transcode {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "existing stream uses a different transcode profile",
+                    |msg| error!("{msg}: stream_id={stream_id}, ssrc={ssrc}"),
+                ));
+            }
+            let output_kind = media_config.output;
+            if !meta.output.put_if_absent(output_kind.clone()) {
+                return Ok(ssrc);
+            }
+            meta.converter.muxer.put_if_absent(&output_kind);
+            let open = match &output_kind {
+                OutputKind::HttpFlv(_) | OutputKind::Rtmp(_) => {
+                    meta.converter.muxer.flv.clone().map(MuxerKind::Flv)
+                }
+                OutputKind::DashFmp4(_) => meta.converter.muxer.fmp4.clone().map(MuxerKind::FMp4),
+                OutputKind::HlsFmp4(_) => {
+                    meta.converter.muxer.hls_mp4.clone().map(MuxerKind::HlsMp4)
+                }
+                OutputKind::DashMp4(_) => meta
+                    .converter
+                    .muxer
+                    .dash_mp4
+                    .clone()
+                    .map(MuxerKind::DashMp4),
+                OutputKind::LocalMp4(_) => meta.converter.muxer.mp4.clone().map(MuxerKind::Mp4),
+                _ => None,
+            };
+            let active_event = meta.build_from_output_kind(
+                output_kind,
+                ssrc,
+                stream_id.clone(),
+                arc.event_tx.clone(),
+            );
+            if let Some(open) = open {
+                meta.mpsc_bus
+                    .try_publish(MuxerEvent::Open(open))
+                    .hand_log(|msg| error!("{msg}"))?;
+            }
+            drop(meta);
+            if let Some(active_event) = active_event {
+                arc.event_tx
+                    .try_send((Event::Active(active_event), None))
+                    .hand_log(|msg| error!("{msg}"))?;
+            }
+            return Ok(ssrc);
+        }
         let rtp_channel = RtpChannel::new(stream_id.clone());
         let converter = ConverterLayer::new(
             media_config.codec,
+            media_config.transcode,
             media_config.filter,
             &media_config.output,
         );
         let output = OutputLayer::new(media_config.output.clone());
-        let arc = Self::get().inner.clone();
         let in_wait_timeout = media_config
             .in_wait_timeout
             .unwrap_or_else(|| arc.stream_conf.in_wait_timeout);

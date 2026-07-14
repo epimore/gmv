@@ -147,6 +147,7 @@ fn device_stream_options(payload: &Value) -> DeviceStreamOptions {
         end_time_sec: payload_u32(payload, "end_time_sec"),
         trans_mode: payload_string(payload, "trans_mode").unwrap_or_default(),
         output_type: payload_string(payload, "output_type").unwrap_or_default(),
+        audio_codec: payload_string(payload, "audio_codec").unwrap_or_default(),
         talk_codec: payload_string(payload, "talk_codec").unwrap_or_default(),
         talk_sample_rate: payload_u32(payload, "talk_sample_rate"),
         talk_channel_count: payload_u32(payload, "talk_channel_count"),

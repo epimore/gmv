@@ -150,7 +150,7 @@ cd ffmpeg-${FFMPEG_VERSION} && \
 --enable-protocol=file \
 --enable-demuxer=mov,flv,mpegts,mpegps,h264,hevc,aac \
 --enable-muxer=mov,mp4,flv,mpegts,hls,dash \
---enable-decoder=h264,hevc,aac \
+--enable-decoder=h264,hevc,aac,pcm_alaw,pcm_mulaw \
 --enable-encoder=aac \
 --enable-parser=h264,hevc,aac \
 --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \

@@ -4,23 +4,36 @@ use crate::media::context::event::inner::InnerEvent;
 use crate::media::context::format::MuxPacket;
 use crate::state::event::{Event, EventRes, OutEvent};
 use crate::state::register::Register;
+use axum::body::Body;
+use axum::http::{StatusCode, header};
+use axum::response::Response;
 use base::bus::mpsc::TypedReceiver;
+use base::dashmap::DashMap;
 use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::{error, warn};
+use base::once_cell::sync::Lazy;
 use base::tokio;
 use base::tokio::fs;
 use base::tokio::fs::File;
-use base::tokio::io::AsyncWriteExt;
+use base::tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use base::tokio::sync::{broadcast, mpsc, oneshot};
+use base::tokio_util::io::ReaderStream;
 use gmv_domain::enums::OptAction;
 use gmv_domain::info::obj::StreamRecordInfo;
 use gmv_domain::info::output::OutputEnum;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 const STORE_MP4_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1));
+
+struct CompletedMp4 {
+    path: PathBuf,
+    token: Option<String>,
+}
+
+static COMPLETED_MP4: Lazy<DashMap<String, CompletedMp4>> = Lazy::new(DashMap::new);
 
 pub enum Mp4OutputInnerEvent {
     StoreInfo(oneshot::Sender<StreamRecordInfo>), //获取当前录制信息
@@ -30,6 +43,7 @@ pub enum Mp4OutputInnerEvent {
 // pub struct Mp4StoreSender(pub oneshot::Sender<StreamRecordInfo>);
 pub struct LocalStoreMp4Context {
     pub path: String,
+    pub token: Option<String>,
     pub ssrc: u32,
 
     pub file_name: Arc<str>,                         //stream_id
@@ -51,9 +65,19 @@ impl LocalStoreMp4Context {
             );
             match self.run().await {
                 Ok(_) => {
+                    let path_file_name = format!("{}/mp4/{}.mp4", self.path, self.file_name);
+                    if self.state == 0 {
+                        COMPLETED_MP4.insert(
+                            self.file_name.to_string(),
+                            CompletedMp4 {
+                                path: PathBuf::from(&path_file_name),
+                                token: self.token.clone(),
+                            },
+                        );
+                    }
                     let info = StreamRecordInfo {
                         stream_id: Some(self.file_name.to_string()),
-                        path_file_name: Some(format!("{}/mp4/{}.mp4", self.path, self.file_name)),
+                        path_file_name: Some(path_file_name),
                         file_size: self.file_size as u64,
                         timestamp: self.ts as u32,
                         state: if self.state == 0 { 1 } else { self.state },
@@ -200,5 +224,105 @@ impl LocalStoreMp4Context {
                 }
             }
         }
+    }
+}
+
+pub async fn serve_completed(stream_id: &str, token: &str, range: Option<&str>) -> Response<Body> {
+    let Some(entry) = COMPLETED_MP4.get(stream_id) else {
+        return status_response(StatusCode::NOT_FOUND);
+    };
+    if entry
+        .token
+        .as_deref()
+        .is_some_and(|expected| expected != token)
+    {
+        return status_response(StatusCode::UNAUTHORIZED);
+    }
+    let path = entry.path.clone();
+    drop(entry);
+
+    let Ok(mut file) = File::open(path).await else {
+        return status_response(StatusCode::NOT_FOUND);
+    };
+    let Ok(metadata) = file.metadata().await else {
+        return status_response(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let total = metadata.len();
+    if total == 0 {
+        return status_response(StatusCode::NO_CONTENT);
+    }
+
+    let (status, start, end) = match range {
+        Some(value) => match parse_range(value, total) {
+            Some((start, end)) => (StatusCode::PARTIAL_CONTENT, start, end),
+            None => {
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+                    .body(Body::empty())
+                    .unwrap();
+            }
+        },
+        None => (StatusCode::OK, 0, total - 1),
+    };
+    if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return status_response(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let length = end - start + 1;
+    let stream = ReaderStream::new(file.take(length));
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, length.to_string());
+    if status == StatusCode::PARTIAL_CONTENT {
+        builder = builder.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{total}"),
+        );
+    }
+    builder.body(Body::from_stream(stream)).unwrap()
+}
+
+fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
+    let spec = value.strip_prefix("bytes=")?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (start, end) = spec.split_once('-')?;
+    if start.is_empty() {
+        let suffix = end.parse::<u64>().ok()?.min(total);
+        return (suffix > 0).then_some((total - suffix, total - 1));
+    }
+    let start = start.parse::<u64>().ok()?;
+    if start >= total {
+        return None;
+    }
+    let end = if end.is_empty() {
+        total - 1
+    } else {
+        end.parse::<u64>().ok()?.min(total - 1)
+    };
+    (start <= end).then_some((start, end))
+}
+
+fn status_response(status: StatusCode) -> Response<Body> {
+    Response::builder()
+        .status(status)
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_range;
+
+    #[test]
+    fn parses_http_byte_ranges() {
+        assert_eq!(parse_range("bytes=0-99", 1_000), Some((0, 99)));
+        assert_eq!(parse_range("bytes=900-", 1_000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=-100", 1_000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=1000-", 1_000), None);
+        assert_eq!(parse_range("bytes=0-1,4-5", 1_000), None);
     }
 }

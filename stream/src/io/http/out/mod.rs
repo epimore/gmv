@@ -4,6 +4,7 @@ use crate::state::register::Register;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query};
+use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use base::bytes::Bytes;
 use base::log::{debug, info, warn};
@@ -32,6 +33,7 @@ async fn handler(
     Path(stream_id): Path<String>,
     Query(mut map): Query<HashMap<String, String>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Response<Body> {
     debug!("stream play:stream_id: {}, param: {:?}", stream_id, map);
     let token: Arc<str> = match map.remove("gmv-token") {
@@ -49,8 +51,25 @@ async fn handler(
                     info!("flv stream play:stream_id: {}, param: {:?}", stream_id, map);
                     flv::handler(id, token, addr).await
                 }
-                "m3u8" => hls::m3u8_handler().await,
-                "hmp4" => hls::segment_mp4_handler().await,
+                "m3u8" => hls::m3u8_handler(id, token, addr).await,
+                "hmp4" => hls::init_mp4_handler(id, token).await,
+                "m4s"
+                    if id
+                        .rsplit_once('-')
+                        .is_some_and(|(_, sequence)| sequence.parse::<u64>().is_ok()) =>
+                {
+                    hls::segment_mp4_handler(id, token).await
+                }
+                "mp4" => {
+                    crate::io::local::mp4::serve_completed(
+                        &id,
+                        &token,
+                        headers
+                            .get(header::RANGE)
+                            .and_then(|value| value.to_str().ok()),
+                    )
+                    .await
+                }
                 "ts" => hls::segment_ts_handler().await,
                 "mpd" => {
                     debug!(

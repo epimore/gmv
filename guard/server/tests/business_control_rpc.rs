@@ -27,8 +27,9 @@ use gmv_protocol::session::v1::{
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
     ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
     ListGbResourcesResponse, ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest,
-    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
-    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SnapshotImageRequest, SnapshotImageResponse,
+    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -618,6 +619,16 @@ impl SessionControl for FakeSession {
             endpoint: String::new(),
             video_codec: String::new(),
             audio_codec: String::new(),
+        }))
+    }
+
+    async fn set_playback_speed(
+        &self,
+        _request: tonic::Request<SetPlaybackSpeedRequest>,
+    ) -> Result<tonic::Response<SetPlaybackSpeedResponse>, tonic::Status> {
+        Ok(tonic::Response::new(SetPlaybackSpeedResponse {
+            accepted: true,
+            error: None,
         }))
     }
 

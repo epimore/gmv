@@ -8,6 +8,7 @@ use base::log::error;
 use base::serde_json;
 use gmv_domain::info::codec::Codec;
 use gmv_domain::info::filter::Filter;
+use gmv_domain::info::media_info::TranscodeConfig;
 use gmv_domain::info::output::{HttpFlvOutput, OutputEnum, OutputKind};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -34,6 +35,8 @@ pub struct CustomMediaConfig {
     pub output: OutputKind,
     /// 媒体流转码信息
     pub codec: Option<Codec>,
+    #[serde(default)]
+    pub transcode: Option<TranscodeConfig>,
     /// 媒体流过滤信息
     pub filter: Filter,
 }
@@ -137,6 +140,12 @@ impl StreamInfo {
             Some(OutputKind::DashMp4(_)) => {
                 url = format!("{}.mpd", url);
             }
+            Some(OutputKind::HlsFmp4(_)) => {
+                url = format!("{}.m3u8", url);
+            }
+            Some(OutputKind::LocalMp4(_)) => {
+                url = format!("{}.mp4", url);
+            }
             _ => Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
                 "unsupported output",
@@ -234,6 +243,7 @@ fn test1() {
                 fmt: Default::default(),
             }),
             codec: None,
+            transcode: None,
             filter: Default::default(),
         }),
     };

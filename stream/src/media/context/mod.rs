@@ -226,7 +226,7 @@ impl MediaContext {
         let converter = stream_config.converter;
 
         let context = MediaContext {
-            codec_context: CodecContext::init(converter.codec),
+            codec_context: CodecContext::init(converter.codec, converter.transcode),
             filter_context: FilterContext::init(converter.filter),
             ssrc,
             media_ext: stream_config.media_ext,
@@ -353,6 +353,9 @@ impl MediaContext {
                 return Ok(MediaCompletion::Eof);
             }
             let mut normalizer = &mut cache_info.timeline_normalizer;
+            if let Some(codec) = &mut self.codec_context {
+                codec.prepare(&mut self.demuxer_context)?;
+            }
             //初始化muxer
             self.muxer_context = MuxerContext::init(&self.demuxer_context, muxer_layer);
             //消费缓存数据，以关键帧开始
@@ -361,7 +364,7 @@ impl MediaContext {
                     Ok(event) => self.handle_event(event),
                     Err(MessageBusError::ChannelClosed) => {
                         rsmpeg::ffi::av_packet_unref(&mut pkt);
-                        Self::handle_pkt_muxer_end(&mut self.muxer_context);
+                        self.finish_pipeline()?;
                         return Ok(MediaCompletion::InputClosed);
                     }
                     Err(_) => {}
@@ -378,7 +381,7 @@ impl MediaContext {
                 match self.context_event_rx.try_recv() {
                     Ok(event) => self.handle_event(event),
                     Err(MessageBusError::ChannelClosed) => {
-                        Self::handle_pkt_muxer_end(&mut self.muxer_context);
+                        self.finish_pipeline()?;
                         return Ok(MediaCompletion::InputClosed);
                     }
                     Err(_) => {}
@@ -397,13 +400,30 @@ impl MediaContext {
                 process_result?;
             }
             //write end
-            Self::handle_pkt_muxer_end(&mut self.muxer_context);
+            self.finish_pipeline()?;
         }
 
         fn rpt_diff_u32(a: u32, b: u32) -> u32 {
             if a >= b { a - b } else { b.wrapping_sub(a) }
         }
         Ok(MediaCompletion::Eof)
+    }
+
+    fn finish_pipeline(&mut self) -> GlobalResult<()> {
+        let packets = match &mut self.codec_context {
+            Some(codec) => codec.flush()?,
+            None => Vec::new(),
+        };
+        for packet in packets {
+            Self::handle_pkt_muxer(
+                self,
+                ProcessResult::Ok,
+                &packet,
+                (packet.pts.max(0) as u64) / 48_000,
+            )?;
+        }
+        Self::handle_pkt_muxer_end(&mut self.muxer_context);
+        Ok(())
     }
     unsafe fn process(
         &mut self,
@@ -416,7 +436,27 @@ impl MediaContext {
             // 暂不实现处理filter
             // Self::handle_filter(&mut self.filter_context);
             // 调用 muxer 其中master_clock_us需要转换为秒，供录制进度信息
-            Self::handle_pkt_muxer(self, res, &pkt, (master_clock_us / 1000_000) as u64)?;
+            if self
+                .codec_context
+                .as_ref()
+                .is_some_and(|codec| codec.handles(pkt))
+            {
+                let packets = self
+                    .codec_context
+                    .as_mut()
+                    .expect("codec context checked")
+                    .process(pkt)?;
+                for packet in packets {
+                    Self::handle_pkt_muxer(
+                        self,
+                        res,
+                        &packet,
+                        (packet.pts.max(0) as u64) / 48_000,
+                    )?;
+                }
+            } else {
+                Self::handle_pkt_muxer(self, res, &pkt, (master_clock_us / 1000_000) as u64)?;
+            }
         }
         Ok(())
     }

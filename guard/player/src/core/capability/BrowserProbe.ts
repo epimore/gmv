@@ -24,10 +24,15 @@ export class BrowserProbe {
     return !!mpegts.getFeatureList?.().mseLivePlayback;
   }
 
+  static canPlayMp4(video: HTMLVideoElement, source: GmvSource): boolean {
+    return video.canPlayType(source.mimeCodec ?? 'video/mp4') !== '';
+  }
+
   static canTrySource(video: HTMLVideoElement, source: GmvSource): boolean {
     if (source.protocol === 'fmp4') return this.canUseFetchStream() && this.canPlayFmp4(source);
     if (source.protocol === 'hls') return this.canUseMse() || this.canNativeHls(video);
     if (source.protocol === 'flv') return this.canPlayFlv();
+    if (source.protocol === 'mp4') return this.canPlayMp4(video, source);
     return false;
   }
 }

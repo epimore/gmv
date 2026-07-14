@@ -34,7 +34,7 @@ export interface EventPage { items: EventItem[]; next_after_id: string | null }
 export interface LeaseInfo { lease_id: string; route_id: string; resource_id: string; node_id: string; instance_id: string; state: 'allocated' | 'confirmed' | 'failed' | 'released' | 'expired'; expires_at_ms: number }
 export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
 export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
-export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; state: 'running' | 'stopped' | 'failed' }
+export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; state: 'running' | 'stopped' | 'failed' }
 export interface MediaTransportCapability { scheme: 'http' | 'https'; http_version: 'http/1.1' | 'h2'; multi_view_limit: number }
 export interface AiTaskSummary { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
 export interface RuntimeStatus { guard_available: boolean; streams: number; running_streams: number; ai_tasks: number; running_ai_tasks: number; ptz_commands: number }
@@ -107,6 +107,7 @@ export const startPreview = (deviceId: string, channelId: string, requestId: str
 export const sendPtz = (deviceId: string, channelId: string) => request<{ accepted: boolean; count: number }>('/devices/' + deviceId + '/ptz', { method: 'POST', body: JSON.stringify({ channel_id: channelId }) });
 export const listStreams = () => request<StreamSummary[]>('/streams');
 export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
+export const setStreamPlaybackSpeed = (streamId: string, speedRate: number) => request<{ accepted: boolean; speed_rate: number }>('/streams/' + encodeURIComponent(streamId) + '/speed', { method: 'POST', body: JSON.stringify({ speed_rate: speedRate }) });
 export const listAiTasks = () => request<AiTaskSummary[]>('/ai/tasks');
 export const startAiTask = (streamId: string, model: string, requestId: string) => request<AiTaskSummary>('/ai/tasks', { method: 'POST', body: JSON.stringify({ stream_id: streamId, model, request_id: requestId }) });
 export const cancelAiTask = (taskId: string) => request<AiTaskSummary>('/ai/tasks/' + taskId + '/cancel', { method: 'POST', body: '{}' });
@@ -125,7 +126,7 @@ export interface GbResourceConfirmationInfo { status: number; resource_kind: str
 export interface GbResourceInfo { device_id: string; resource_id: string; name: string; status: string; parent_id: string; type_code: string; enum_id: string; enum_name: string; suggested_kind: string; classification_mode: 'default' | 'manual' | 'manual_stale' | 'unknown' | 'conflict' | 'orphan'; effective_kind: string; effective_owner_scope: string; effective_owner_id: string; warning: string; biz_enable: number; owner_biz_enable: number; supported: boolean; available: boolean; unavailable_reason: string; confirmation: GbResourceConfirmationInfo | null }
 export interface GbResourceConfirmationPayload { request_id: string; resource_kind: 'video' | 'audio_input' | 'audio_output' | 'other'; owner_scope: 'device' | 'resource'; owner_id: string; remark?: string }
 export interface GbSnapshotInfo { session_id: string }
-export interface GbStreamPayload { request_id: string; token?: string; start_time_sec?: number; end_time_sec?: number; trans_mode?: string; output_type?: string }
+export interface GbStreamPayload { request_id: string; token?: string; start_time_sec?: number; end_time_sec?: number; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
 export interface GbBroadcastPayload extends GbStreamPayload { channel_id: string; talk_codec: 'PCMA'; talk_sample_rate: 8000; talk_channel_count: 1; talk_frame_duration_ms: 20 }
 
 const gbPath = (value: string) => encodeURIComponent(value);

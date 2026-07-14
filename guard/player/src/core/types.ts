@@ -1,5 +1,6 @@
-export type GmvProtocol = 'flv' | 'fmp4' | 'hls';
+export type GmvProtocol = 'flv' | 'fmp4' | 'hls' | 'mp4';
 export type GmvCodec = 'h264' | 'h265';
+export type GmvPlaybackRateMode = 'local-file' | 'remote-stream' | 'disabled';
 export type GmvDeviceStatus = 'online' | 'offline' | 'playing' | 'reconnecting' | 'error' | 'idle';
 
 export interface GmvSource {
@@ -10,6 +11,7 @@ export interface GmvSource {
   hasAudio?: boolean;
   priority?: number;
   label?: string;
+  rateMode?: GmvPlaybackRateMode;
 }
 
 export interface GmvPlayerCoreOptions {

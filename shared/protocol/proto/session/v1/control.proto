@@ -11,6 +11,7 @@ service SessionControl {
   rpc StartDownload(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc SetPlaybackSpeed(SetPlaybackSpeedRequest) returns (SetPlaybackSpeedResponse);
   rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
   rpc SnapshotImage(SnapshotImageRequest) returns (SnapshotImageResponse);
   rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
@@ -59,12 +60,24 @@ message StartDeviceStreamRequest {
   uint32 talk_sample_rate = 13;
   uint32 talk_channel_count = 14;
   uint32 talk_frame_duration_ms = 15;
+  string audio_codec = 16;
 }
 
 message StopDeviceStreamRequest {
   gmv.common.v1.OperationRef operation = 1;
   string stream_id = 2;
   string reason = 3;
+}
+
+message SetPlaybackSpeedRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  float speed_rate = 3;
+}
+
+message SetPlaybackSpeedResponse {
+  bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
 }
 
 message DeviceStreamResponse {

@@ -2,6 +2,7 @@ import { BrowserProbe } from './capability/BrowserProbe';
 import { FlvEngine } from './engines/FlvEngine';
 import { Fmp4Engine } from './engines/Fmp4Engine';
 import { HlsEngine } from './engines/HlsEngine';
+import { Mp4Engine } from './engines/Mp4Engine';
 import type { GmvEngine, GmvEngineFactory, GmvPlayerCoreOptions, GmvPlayerEvents, GmvPlayerEvent, GmvProtocol, GmvSource } from './types';
 import { EventBus, type EventHandler } from './utils/EventBus';
 import { GmvErrorCode } from './utils/ErrorCode';
@@ -38,6 +39,7 @@ export class GmvPlayerCore {
       flv: () => new FlvEngine(),
       fmp4: () => new Fmp4Engine(),
       hls: () => new HlsEngine(),
+      mp4: () => new Mp4Engine(),
     };
     this.bindVideoEvents();
   }

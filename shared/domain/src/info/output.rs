@@ -43,6 +43,8 @@ pub enum OutputKind {
 pub struct LocalMp4Output {
     pub fmt: Mp4,
     pub path: String,
+    #[serde(default)]
+    pub token: Option<String>,
 }
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]

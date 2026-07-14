@@ -13,8 +13,9 @@ use gmv_protocol::session::v1::{
     GbChannelImage, GbDevice, GbResource, GetGbChannelRequest, GetGbDeviceRequest,
     GetSessionConfigRequest, ListGbChannelImagesRequest, ListGbChannelsRequest,
     ListGbDevicesRequest, ListGbResourcesRequest, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SnapshotImageRequest, StartDeviceStreamRequest,
-    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbDeviceRequest,
+    SaveGbResourceConfirmationRequest, SetPlaybackSpeedRequest, SnapshotImageRequest,
+    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbDeviceRequest,
 };
 
 use crate::api::v2::model::{AiTaskSummary, AiTaskSummaryState, StreamSummary, StreamSummaryState};
@@ -56,6 +57,7 @@ pub struct DeviceStreamOptions {
     pub end_time_sec: u32,
     pub trans_mode: String,
     pub output_type: String,
+    pub audio_codec: String,
     pub talk_codec: String,
     pub talk_sample_rate: u32,
     pub talk_channel_count: u32,
@@ -991,13 +993,14 @@ impl BusinessControl {
             end_time_sec: options.end_time_sec,
             trans_mode: options.trans_mode,
             output_type: options.output_type,
+            audio_codec: options.audio_codec,
             talk_codec: options.talk_codec,
             talk_sample_rate: options.talk_sample_rate,
             talk_channel_count: options.talk_channel_count,
             talk_frame_duration_ms: options.talk_frame_duration_ms,
         };
         base::log::debug!(
-            "guard rpc client outbound: method=session_control.start_{}, node={}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
+            "guard rpc client outbound: method=session_control.start_{}, node={}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
             kind.prefix(),
             session.identity.node_id,
             request.operation,
@@ -1012,6 +1015,7 @@ impl BusinessControl {
             request.end_time_sec,
             request.trans_mode,
             request.output_type,
+            request.audio_codec,
             request.talk_codec,
             request.talk_sample_rate,
             request.talk_channel_count,
@@ -1145,6 +1149,62 @@ impl BusinessControl {
             audio_codec: String::new(),
             state: StreamSummaryState::Stopped,
         })
+    }
+
+    pub async fn set_playback_speed(
+        &self,
+        operation_id: &str,
+        stream_id: &str,
+        speed_rate: f32,
+    ) -> GuardResult<()> {
+        if !matches!(speed_rate, 0.5 | 1.0 | 2.0 | 4.0) {
+            return Err(GuardError::user_visible(
+                "invalid_playback_speed",
+                "unsupported playback speed",
+                "仅支持 0.5x、1x、2x、4x 回放倍速",
+                false,
+                BTreeMap::new(),
+            ));
+        }
+        let session = self.select_any_session()?;
+        let session_grpc = grpc_uri(&session)?;
+        let mut session_client =
+            SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
+        let request = SetPlaybackSpeedRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            stream_id: stream_id.to_string(),
+            speed_rate,
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "set_playback_speed",
+            &session.identity.node_id,
+            operation_id,
+            stream_id,
+        );
+        let response = edge.response(session_client.set_playback_speed(request).await)?;
+        if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
+            return Err(remote_error(
+                "session",
+                "set_playback_speed",
+                error,
+                "playback_speed_failed",
+                "回放倍速设置失败",
+                false,
+            ));
+        }
+        if !response.accepted {
+            edge.invalid_response("playback_speed_not_accepted");
+            return Err(GuardError::Conflict(
+                "playback speed was not accepted".to_string(),
+            ));
+        }
+        edge.success();
+        Ok(())
     }
 
     pub async fn ptz(

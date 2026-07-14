@@ -144,6 +144,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/devices/{device_id}/ptz", post(ptz))
         .route("/streams", get(streams))
         .route("/streams/{stream_id}/stop", post(stop_stream))
+        .route("/streams/{stream_id}/speed", post(set_playback_speed))
         .route("/ai/tasks", get(ai_tasks).post(start_ai_task))
         .route("/ai/tasks/{task_id}/cancel", post(cancel_ai_task))
         .route("/runtime/status", get(runtime_status))
@@ -1110,6 +1111,8 @@ struct PreviewRequest {
     #[serde(default)]
     output_type: String,
     #[serde(default)]
+    audio_codec: String,
+    #[serde(default)]
     talk_codec: String,
     #[serde(default)]
     talk_sample_rate: u32,
@@ -1126,6 +1129,7 @@ fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
         end_time_sec: request.end_time_sec,
         trans_mode: request.trans_mode.clone(),
         output_type: request.output_type.clone(),
+        audio_codec: request.audio_codec.clone(),
         talk_codec: request.talk_codec.clone(),
         talk_sample_rate: request.talk_sample_rate,
         talk_channel_count: request.talk_channel_count,
@@ -1505,6 +1509,21 @@ struct GbStreamRequest {
     trans_mode: String,
     #[serde(default)]
     output_type: String,
+    #[serde(default)]
+    audio_codec: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct PlaybackSpeedRequest {
+    speed_rate: f32,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct PlaybackSpeedResponse {
+    accepted: bool,
+    speed_rate: f32,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -1769,6 +1788,7 @@ fn gb_preview_request(channel_id: String, request: GbStreamRequest) -> PreviewRe
         end_time_sec: request.end_time_sec,
         trans_mode: request.trans_mode,
         output_type: request.output_type,
+        audio_codec: request.audio_codec,
         talk_codec: String::new(),
         talk_sample_rate: 0,
         talk_channel_count: 0,
@@ -2528,6 +2548,33 @@ async fn stop_stream(
             Err(HttpError::from_operation(error, &operation_id))
         }
     }
+}
+
+async fn set_playback_speed(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(stream_id): Path<String>,
+    Json(request): Json<PlaybackSpeedRequest>,
+) -> Result<Json<PlaybackSpeedResponse>, HttpError> {
+    debug!(
+        "/api/v2/streams/{{stream_id}}/speed, req: stream_id={stream_id}, speed_rate={}",
+        request.speed_rate
+    );
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = format!("speed-{stream_id}-{}", request.speed_rate);
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "stream.playback_speed",
+        &session,
+        Role::Operator,
+    ))?;
+    BusinessControl::new(state.api.store())
+        .set_playback_speed(&operation_id, &stream_id, request.speed_rate)
+        .await?;
+    Ok(Json(PlaybackSpeedResponse {
+        accepted: true,
+        speed_rate: request.speed_rate,
+    }))
 }
 
 async fn ai_tasks(

@@ -10,12 +10,15 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error as log_error, info, warn};
 use base::serde::de::DeserializeOwned;
 use base_rpc::RpcChannelConfig;
-use gmv_domain::info::format::{CMaf, Flv};
+use gmv_domain::info::format::{CMaf, Flv, Mp4};
+use gmv_domain::info::media_info::{OutputAudioCodec, TranscodeConfig};
 use gmv_domain::info::obj::{
     OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState,
     TalkClosedEvent, TalkStartModel, TalkStopModel, UnknownStreamEvent,
 };
-use gmv_domain::info::output::{DashFmp4Output, HttpFlvOutput, OutputKind};
+use gmv_domain::info::output::{
+    DashFmp4Output, HlsFmp4Output, HttpFlvOutput, LocalMp4Output, OutputKind,
+};
 use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
@@ -35,10 +38,10 @@ use gmv_protocol::session::v1::{
     ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
     ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SessionHookRequest,
-    SessionHookResponse, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
-    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
-    UpdateGbDeviceRequest, UpdateGbDeviceResponse, session_control_server::SessionControl,
-    session_hook_server::SessionHook,
+    SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SnapshotImageRequest,
+    SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+    session_control_server::SessionControl, session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
@@ -47,7 +50,8 @@ use tonic::transport::Channel;
 
 use crate::service::{api_serv, edge_serv, hook_serv, stream_close};
 use crate::state::model::{
-    DeviceChannelIdent, PlayBackModel, PlayLiveModel, PtzControlModel, SnapshotImage, TransMode,
+    DeviceChannelIdent, PlayBackModel, PlayLiveModel, PlaySpeedModel, PtzControlModel,
+    SnapshotImage, TransMode,
 };
 use crate::state::session::GuardLease;
 use crate::state::{StreamNode, StreamNodeRegistry};
@@ -601,6 +605,36 @@ impl SessionControl for SessionControlRpc {
         Ok(tonic::Response::new(response))
     }
 
+    async fn set_playback_speed(
+        &self,
+        request: tonic::Request<SetPlaybackSpeedRequest>,
+    ) -> Result<tonic::Response<SetPlaybackSpeedResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!("session_control.set_playback_speed, req:{request:?}");
+        let response = match api_serv::speed(
+            PlaySpeedModel {
+                streamId: request.stream_id,
+                speedRate: request.speed_rate,
+            },
+            String::new(),
+        )
+        .await
+        {
+            Ok(_) => SetPlaybackSpeedResponse {
+                accepted: true,
+                error: None,
+            },
+            Err(err) => SetPlaybackSpeedResponse {
+                accepted: false,
+                error: Some(gmv_nodec::error::global_error_detail(
+                    "playback_speed_failed",
+                    &err,
+                )),
+            },
+        };
+        Ok(tonic::Response::new(response))
+    }
+
     async fn control_ptz(
         &self,
         request: tonic::Request<ControlPtzRequest>,
@@ -1029,7 +1063,7 @@ impl SessionControlRpc {
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!(
-            "session_control.start_{stream_type}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
+            "session_control.start_{stream_type}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
             request.operation,
             request.device_id,
             request.channel_id,
@@ -1042,6 +1076,7 @@ impl SessionControlRpc {
             request.end_time_sec,
             request.trans_mode,
             request.output_type,
+            request.audio_codec,
             request.talk_codec,
             request.talk_sample_rate,
             request.talk_channel_count,
@@ -1066,13 +1101,24 @@ impl SessionControlRpc {
         } else {
             request.token.clone()
         };
+        let media_config =
+            match custom_media_config(stream_type, &request.output_type, &request.audio_codec) {
+                Ok(config) => config,
+                Err(detail) => {
+                    return Ok(tonic::Response::new(device_response(
+                        "",
+                        DeviceStreamState::Failed,
+                        Some(detail),
+                    )));
+                }
+            };
         let response = match stream_type {
             "live" => api_serv::play_live(
                 PlayLiveModel {
                     device_id: request.device_id.clone(),
                     channel_id: optional_channel(&request.channel_id),
                     trans_mode: trans_mode(&request.trans_mode),
-                    custom_media_config: custom_media_config(&request.output_type),
+                    custom_media_config: media_config.clone(),
                 },
                 token,
             )
@@ -1090,7 +1136,7 @@ impl SessionControlRpc {
                     device_id: request.device_id.clone(),
                     channel_id: optional_channel(&request.channel_id),
                     trans_mode: trans_mode(&request.trans_mode),
-                    custom_media_config: custom_media_config(&request.output_type),
+                    custom_media_config: media_config,
                     st: request.start_time_sec,
                     et: request.end_time_sec,
                 },
@@ -1110,15 +1156,20 @@ impl SessionControlRpc {
                     device_id: request.device_id.clone(),
                     channel_id: optional_channel(&request.channel_id),
                     trans_mode: trans_mode(&request.trans_mode),
-                    custom_media_config: None,
+                    custom_media_config: media_config,
                     st: request.start_time_sec,
                     et: request.end_time_sec,
                 },
                 token,
             )
             .await
-            .map(|stream_id| {
-                stream_response(stream_id, String::new(), String::new(), String::new())
+            .map(|info| {
+                stream_response(
+                    info.streamId,
+                    info.url,
+                    info.video_codec.unwrap_or_default(),
+                    info.audio_codec.unwrap_or_default(),
+                )
             }),
             "talk" => api_serv::talk_start(
                 TalkStartModel {
@@ -1753,22 +1804,58 @@ fn trans_mode(value: &str) -> Option<TransMode> {
     }
 }
 
-fn custom_media_config(output_type: &str) -> Option<crate::state::model::CustomMediaConfig> {
+fn custom_media_config(
+    stream_type: &str,
+    output_type: &str,
+    audio_codec: &str,
+) -> Result<Option<crate::state::model::CustomMediaConfig>, ErrorDetail> {
     let output = match output_type.trim().to_ascii_lowercase().as_str() {
-        "" => return None,
+        "" => return Ok(None),
         "http_flv" | "flv" => OutputKind::HttpFlv(HttpFlvOutput {
             fmt: Flv::default(),
         }),
         "dash_fmp4" | "fmp4" => OutputKind::DashFmp4(DashFmp4Output {
             fmt: CMaf::default(),
         }),
-        _ => return None,
+        "hls" | "hls_fmp4" => OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: CMaf::default(),
+        }),
+        "mp4" if stream_type == "download" => OutputKind::LocalMp4(LocalMp4Output {
+            fmt: Mp4::default(),
+            path: String::new(),
+            token: None,
+        }),
+        "mp4" => {
+            return Err(error(
+                "OUTPUT_NOT_ALLOWED_FOR_LIVE",
+                "mp4 output is only allowed for finite downloads",
+            ));
+        }
+        _ => {
+            return Err(error(
+                "UNSUPPORTED_OUTPUT_TYPE",
+                "output_type must be flv, fmp4, hls, or mp4",
+            ));
+        }
     };
-    Some(crate::state::model::CustomMediaConfig {
+    let transcode = match audio_codec.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        "aac" => Some(TranscodeConfig {
+            audio_codec: Some(OutputAudioCodec::Aac),
+        }),
+        _ => {
+            return Err(error(
+                "UNSUPPORTED_AUDIO_TARGET_CODEC",
+                "audio_codec must be aac",
+            ));
+        }
+    };
+    Ok(Some(crate::state::model::CustomMediaConfig {
         output,
         codec: None,
+        transcode,
         filter: Default::default(),
-    })
+    }))
 }
 
 fn optional_u8(value: u32, name: &str) -> Result<Option<u8>, tonic::Status> {

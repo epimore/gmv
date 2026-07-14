@@ -4,6 +4,21 @@ use crate::info::output::OutputKind;
 use base::serde::{Deserialize, Serialize};
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+pub enum OutputAudioCodec {
+    Aac,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(crate = "base::serde")]
+pub struct TranscodeConfig {
+    #[serde(default)]
+    pub audio_codec: Option<OutputAudioCodec>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct MediaConfig {
@@ -16,7 +31,10 @@ pub struct MediaConfig {
     ///   out_idle_timeout: 6 #u8 单位秒；输出流闲置超时,0：立即关闭,建议：2-8；
     pub in_wait_timeout: Option<u8>,
     pub out_idle_timeout: Option<u8>,
+    /// Legacy ambiguous codec target. New callers must use `transcode.audio_codec` for audio.
     pub codec: Option<Codec>,
+    #[serde(default)]
+    pub transcode: Option<TranscodeConfig>,
     pub filter: Filter,
     pub output: OutputKind,
     #[serde(default)]

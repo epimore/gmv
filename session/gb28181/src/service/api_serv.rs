@@ -10,7 +10,7 @@ use base::log::{debug, error, info, warn};
 use base::tokio::sync::mpsc;
 use base::tokio::time::{Instant, sleep};
 use gmv_domain::info::format::{CMaf, Mp4};
-use gmv_domain::info::media_info::MediaConfig;
+use gmv_domain::info::media_info::{MediaConfig, OutputAudioCodec};
 use gmv_domain::info::media_info_ext::MediaMap;
 use gmv_domain::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
 use gmv_domain::info::obj::{TalkAnswerReq, TalkInfo, TalkOpenReq, TalkStartModel, TalkStopModel};
@@ -53,9 +53,17 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
     let _setup_guard = setup_lock.lock().await;
 
-    if let Some((stream_id, proxy_addr)) = enable_invite_stream(device_id, channel_id, &am).await? {
-        state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-        return StreamInfo::build(stream_id, proxy_addr, output);
+    if let Some((stream_id, proxy_addr)) = enable_invite_stream(
+        device_id,
+        channel_id,
+        &am,
+        play_live_model.custom_media_config.as_ref(),
+    )
+    .await?
+    {
+        let info = StreamInfo::build(stream_id.clone(), proxy_addr, output)?;
+        state::session::Cache::stream_map_insert_token(stream_id, token.clone());
+        return Ok(with_play_token(info, &token));
     }
 
     let (stream_id, _node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
@@ -69,8 +77,15 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
         play_live_model.custom_media_config,
     )
     .await?;
-    state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    StreamInfo::build_with_codecs(stream_id, proxy_addr, output, video_codec, audio_codec)
+    let info = StreamInfo::build_with_codecs(
+        stream_id.clone(),
+        proxy_addr,
+        output,
+        video_codec,
+        audio_codec,
+    )?;
+    state::session::Cache::stream_map_insert_token(stream_id, token.clone());
+    Ok(with_play_token(info, &token))
 }
 
 pub async fn download_info_by_stream_id(
@@ -115,7 +130,7 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
     Ok(false)
 }
 
-pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<String> {
+pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_back_model.device_id;
     if !Register::has_session(device_id) {
         return Err(GlobalError::new_biz_error(
@@ -157,18 +172,34 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         })?
         .to_string();
 
-    let down_conf = play_back_model
+    let mut down_conf = play_back_model
         .custom_media_config
         .clone()
         .unwrap_or_else(|| CustomMediaConfig {
             output: OutputKind::LocalMp4(LocalMp4Output {
                 fmt: Mp4::default(),
                 path: abs_path.clone(),
+                token: Some(token.clone()),
             }),
             codec: None,
+            transcode: None,
             filter: Default::default(),
         });
-    let (stream_id, node_name, _proxy_addr, _video_codec, _audio_codec) = start_invite_stream(
+    match &mut down_conf.output {
+        OutputKind::LocalMp4(output) => {
+            output.path = abs_path;
+            output.token = Some(token.clone());
+        }
+        _ => {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "download output must be mp4",
+                |msg| error!("{msg}"),
+            ));
+        }
+    }
+    let output = Some(down_conf.output.clone());
+    let (stream_id, node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
         device_id,
         channel_id,
         &token,
@@ -179,7 +210,7 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         Some(down_conf),
     )
     .await?;
-    state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
+    state::session::Cache::stream_map_insert_token(stream_id.clone(), token.clone());
     if let Err(err) = crate::guard_integration::guard_record_started(
         &stream_id, device_id, channel_id, st as i64, et as i64, 1, &node_name,
     )
@@ -188,7 +219,9 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         stream_close::begin(stream_id.clone());
         return Err(err);
     }
-    Ok(stream_id)
+    let info =
+        StreamInfo::build_with_codecs(stream_id, proxy_addr, output, video_codec, audio_codec)?;
+    Ok(with_play_token(info, &token))
 }
 
 pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
@@ -212,9 +245,17 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
     let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
     let _setup_guard = setup_lock.lock().await;
 
-    if let Some((stream_id, proxy_addr)) = enable_invite_stream(device_id, channel_id, &am).await? {
-        state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-        return StreamInfo::build(stream_id, proxy_addr, output);
+    if let Some((stream_id, proxy_addr)) = enable_invite_stream(
+        device_id,
+        channel_id,
+        &am,
+        play_back_model.custom_media_config.as_ref(),
+    )
+    .await?
+    {
+        let info = StreamInfo::build(stream_id.clone(), proxy_addr, output)?;
+        state::session::Cache::stream_map_insert_token(stream_id, token.clone());
+        return Ok(with_play_token(info, &token));
     }
     let (stream_id, _node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
         device_id,
@@ -227,8 +268,20 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
         play_back_model.custom_media_config,
     )
     .await?;
-    state::session::Cache::stream_map_insert_token(stream_id.clone(), token);
-    StreamInfo::build_with_codecs(stream_id, proxy_addr, output, video_codec, audio_codec)
+    let info = StreamInfo::build_with_codecs(
+        stream_id.clone(),
+        proxy_addr,
+        output,
+        video_codec,
+        audio_codec,
+    )?;
+    state::session::Cache::stream_map_insert_token(stream_id, token.clone());
+    Ok(with_play_token(info, &token))
+}
+
+fn with_play_token(mut info: StreamInfo, token: &str) -> StreamInfo {
+    info.url = append_gmv_token(info.url, token);
+    info
 }
 
 pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
@@ -630,6 +683,7 @@ async fn start_invite_stream(
             stream_id: stream_id.clone(),
             in_wait_timeout: None,
             codec: None,
+            transcode: None,
             filter: Default::default(),
             output: OutputKind::DashFmp4(DashFmp4Output {
                 fmt: CMaf::default(),
@@ -642,6 +696,7 @@ async fn start_invite_stream(
             stream_id: stream_id.clone(),
             in_wait_timeout: None,
             codec: cmc.codec,
+            transcode: cmc.transcode,
             output: cmc.output,
             filter: cmc.filter,
             out_idle_timeout: None,
@@ -725,7 +780,15 @@ async fn start_invite_stream(
         ext: media_ext,
     };
     let video_codec = normalized_codec(map.ext.video_params.codec_id.as_deref());
-    let audio_codec = normalized_codec(map.ext.audio_params.codec_id.as_deref());
+    let source_audio_codec = normalized_codec(map.ext.audio_params.codec_id.as_deref());
+    let audio_codec = if source_audio_codec.is_some()
+        && msc.transcode.as_ref().and_then(|config| config.audio_codec)
+            == Some(OutputAudioCodec::Aac)
+    {
+        Some("aac".to_string())
+    } else {
+        source_audio_codec
+    };
     if let Err(err) = stream_rpc::init_media_ext(&stream_node, &map).await {
         let _ = sip_command::invite_stop_by_device(
             device_id,
@@ -829,6 +892,7 @@ async fn enable_invite_stream(
     device_id: &String,
     channel_id: &String,
     am: &AccessMode,
+    custom_media_config: Option<&CustomMediaConfig>,
 ) -> GlobalResult<Option<(String, String)>> {
     match state::session::Cache::device_map_get_invite_info(device_id, channel_id, am) {
         None => Ok(None),
@@ -846,6 +910,23 @@ async fn enable_invite_stream(
                         stream_id: Some(stream_id.clone()),
                     };
                     if stream_rpc::stream_online(&stream_node, &stream_key).await? {
+                        if let Some(config) = custom_media_config {
+                            stream_rpc::init_media(
+                                &stream_node,
+                                &MediaConfig {
+                                    ssrc: ssrc_num,
+                                    stream_id: stream_id.clone(),
+                                    in_wait_timeout: None,
+                                    out_idle_timeout: None,
+                                    codec: config.codec.clone(),
+                                    transcode: config.transcode.clone(),
+                                    filter: config.filter.clone(),
+                                    output: config.output.clone(),
+                                    session_hook_endpoint: None,
+                                },
+                            )
+                            .await?;
+                        }
                         res = Some((stream_id.clone(), proxy_addr));
                     }
                 }
