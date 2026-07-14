@@ -19,6 +19,7 @@ use base::dashmap::DashMap;
 use base::dashmap::mapref::entry::Entry;
 use base::dashmap::mapref::one::Ref;
 use base::err::BaseErrorCode;
+use base::exception::typed::common::MessageBusError;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::net::state::Protocol;
@@ -46,6 +47,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize,
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
+
+fn publish_muxer_event(
+    message_bus: &bus::mpsc::TypedMessageBus,
+    event: MuxerEvent,
+) -> Result<(), MessageBusError> {
+    message_bus.try_publish(ContextEvent::Muxer(event))
+}
 
 fn live_output_contract(
     output_type: &str,
@@ -578,9 +586,7 @@ impl Register {
                             meta.ssrc, stream_id, muxer_enum
                         );
                         meta.converter.muxer.close_by_muxer_type(muxer_enum);
-                        let _ = meta
-                            .mpsc_bus
-                            .try_publish(MuxerEvent::Close(muxer_enum))
+                        let _ = publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer_enum))
                             .hand_log(|msg| info!("{msg}"));
                     }
                 });
@@ -1061,8 +1067,7 @@ impl Register {
                 _ => None,
             };
             if let Some(open) = open {
-                meta.mpsc_bus
-                    .try_publish(MuxerEvent::Open(open))
+                publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Open(open))
                     .hand_log(|msg| error!("{msg}"))?;
             }
         }
@@ -1091,8 +1096,7 @@ impl Register {
         }
         let muxer = MuxerEnum::from_output_enum(output_enum);
         meta.converter.muxer.close_by_muxer_type(muxer);
-        meta.mpsc_bus
-            .try_publish(MuxerEvent::Close(muxer))
+        publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer))
             .hand_log(|msg| error!("{msg}"))?;
         Ok(true)
     }
@@ -1171,8 +1175,7 @@ impl Register {
                 arc.event_tx.clone(),
             );
             if let Some(open) = open {
-                meta.mpsc_bus
-                    .try_publish(MuxerEvent::Open(open))
+                publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Open(open))
                     .hand_log(|msg| error!("{msg}"))?;
             }
             drop(meta);
@@ -1463,9 +1466,11 @@ impl OutputCount {
 #[cfg(test)]
 mod unknown_stream_tests {
     use super::{
-        RtpChannel, UNKNOWN_STREAM_COOLDOWN_MS, UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation,
+        ContextEvent, MuxerEnum, MuxerEvent, RtpChannel, UNKNOWN_STREAM_COOLDOWN_MS,
+        UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation, publish_muxer_event,
         stream_config_ready,
     };
+    use base::bus::mpsc::TypedMessageBus;
     use base::net::state::Protocol;
     use gmv_domain::info::media_info_ext::MediaExt;
     use std::net::SocketAddr;
@@ -1525,5 +1530,18 @@ mod unknown_stream_tests {
         let channel = RtpChannel::new(Arc::from("stream-a"));
         assert!(!channel.media_started.swap(true, Ordering::AcqRel));
         assert!(channel.media_started.swap(true, Ordering::AcqRel));
+    }
+
+    #[test]
+    fn muxer_events_use_the_context_event_channel() {
+        let message_bus = TypedMessageBus::new();
+        let mut receiver = message_bus.sub_type_channel::<ContextEvent>().unwrap();
+
+        publish_muxer_event(&message_bus, MuxerEvent::Close(MuxerEnum::HlsMp4)).unwrap();
+
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            ContextEvent::Muxer(MuxerEvent::Close(MuxerEnum::HlsMp4))
+        ));
     }
 }

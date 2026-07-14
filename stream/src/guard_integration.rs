@@ -641,6 +641,10 @@ impl StreamControlAdapter {
         self
     }
 
+    fn should_attempt_output_creation(&self, stream_id: &str) -> bool {
+        self.media_tx.is_some() || self.streams.contains_key(stream_id)
+    }
+
     pub fn start_receive(&mut self, request: StartReceiveRequest) -> StartReceiveResponse {
         if !self.matches_expected(request.expected_stream.as_ref()) {
             return start_response(
@@ -737,7 +741,7 @@ impl StreamControlAdapter {
                 output: None,
             };
         }
-        if !self.streams.contains_key(&request.stream_id) {
+        if !self.should_attempt_output_creation(&request.stream_id) {
             return CreateOutputResponse {
                 output_id: String::new(),
                 endpoints: vec![],
@@ -1110,6 +1114,87 @@ pub fn operation(operation_id: &str) -> OperationRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_plane_output_creation_defers_stream_existence_to_register() {
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            false,
+            30000,
+        );
+        let control =
+            StreamControlAdapter::new(node.identity, endpoint("rtp", "rtp", "127.0.0.1", 30000));
+        assert!(!control.should_attempt_output_creation("stream-from-init-media"));
+
+        let (media_tx, _media_rx) = mpsc::channel(1);
+        let control = control.with_media_tx(media_tx);
+        assert!(control.should_attempt_output_creation("stream-from-init-media"));
+        assert!(control.streams.is_empty());
+    }
+
+    #[test]
+    fn same_input_supports_dynamic_outputs_and_independent_close() {
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            false,
+            30000,
+        );
+        let mut control = StreamControlAdapter::new(
+            node.identity.clone(),
+            endpoint("rtp", "rtp", "127.0.0.1", 30000),
+        );
+        let started = control.start_receive(StartReceiveRequest {
+            operation: Some(operation("start-live")),
+            stream_id: "stream-a".to_string(),
+            route_id: "route-a".to_string(),
+            lease_id: "lease-a".to_string(),
+            expected_stream: Some(node.identity),
+            preferred_endpoints: vec![],
+        });
+        assert_eq!(started.state, StreamState::Receiving as i32);
+
+        let mut output_ids = HashMap::new();
+        for output_type in ["flv", "hls", "fmp4"] {
+            let output = control.create_output(CreateOutputRequest {
+                operation: Some(operation(&format!("create-{output_type}"))),
+                stream_id: "stream-a".to_string(),
+                output_type: output_type.to_string(),
+                endpoint_mode: EndpointMode::Single as i32,
+                audio_codec: "aac".to_string(),
+            });
+            assert!(output.error.is_none(), "failed to create {output_type}");
+            output_ids.insert(output_type, output.output_id);
+        }
+        assert_eq!(control.outputs.len(), 3);
+
+        let closed = control.close_output(CloseOutputRequest {
+            operation: Some(operation("close-hls")),
+            output_id: output_ids["hls"].clone(),
+            stream_id: "stream-a".to_string(),
+        });
+        assert!(closed.closed);
+        assert_eq!(control.outputs.len(), 2);
+        assert!(
+            control
+                .outputs
+                .values()
+                .any(|output| output.output_type == "flv")
+        );
+        assert!(
+            control
+                .outputs
+                .values()
+                .any(|output| output.output_type == "fmp4")
+        );
+    }
 
     #[test]
     fn stream_registers_heartbeats_starts_idempotently_and_snapshots() {
