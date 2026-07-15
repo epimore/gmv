@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock},
     time::Instant,
@@ -578,7 +578,22 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!("session_control.stop_device_stream, req:{request:?}");
-        let stopped = if crate::state::session::Cache::talk_map_get(&request.stream_id).is_some() {
+        let force = request.force || request.subscription_id.is_empty();
+        let setup_lock = (!force)
+            .then(|| crate::state::session::Cache::stream_map_query_input(&request.stream_id))
+            .flatten()
+            .map(|(device_id, channel_id, access_mode)| {
+                crate::state::session::Cache::stream_setup_lock(
+                    &device_id,
+                    &channel_id,
+                    access_mode,
+                )
+            });
+        let _setup_guard = match setup_lock.as_ref() {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        let state = if crate::state::session::Cache::talk_map_get(&request.stream_id).is_some() {
             api_serv::talk_stop(
                 TalkStopModel {
                     talk_id: request.stream_id.clone(),
@@ -586,20 +601,34 @@ impl SessionControl for SessionControlRpc {
                 String::new(),
             )
             .await
+            .map(|_| DeviceStreamState::Stopped)
             .map_err(device_error)
+        } else if !force {
+            match crate::state::session::Cache::stream_map_release_token(
+                &request.stream_id,
+                &request.subscription_id,
+            ) {
+                Some(remaining) if remaining > 0 => Ok(DeviceStreamState::Running),
+                Some(_) => {
+                    stream_close::begin(request.stream_id.clone());
+                    Ok(DeviceStreamState::Stopped)
+                }
+                None => Ok(DeviceStreamState::Stopped),
+            }
         } else {
             stream_close::begin(request.stream_id.clone());
-            Ok(true)
+            Ok(DeviceStreamState::Stopped)
         };
-        let response = match stopped {
-            Ok(_) => DeviceStreamResponse {
-                stream_id: request.stream_id,
-                state: DeviceStreamState::Stopped as i32,
-                error: None,
-                endpoint: String::new(),
-                video_codec: String::new(),
-                audio_codec: String::new(),
-            },
+        let response = match state {
+            Ok(state) => {
+                let mut response = device_response(&request.stream_id, state, None);
+                response.subscription_id = request.subscription_id;
+                if let Ok(control) = self.inner.lock() {
+                    response.session_node_id = control.identity.node_id.clone();
+                    response.session_instance_id = control.identity.instance_id.clone();
+                }
+                response
+            }
             Err(error) => error,
         };
         Ok(tonic::Response::new(response))
@@ -1083,7 +1112,7 @@ impl SessionControlRpc {
             request.talk_frame_duration_ms,
             request.expected_session
         );
-        {
+        let identity = {
             let control = self
                 .inner
                 .lock()
@@ -1095,7 +1124,8 @@ impl SessionControlRpc {
                     Some(error("stale_instance", "session instance does not match")),
                 )));
             }
-        }
+            control.identity.clone()
+        };
         let token = if request.token.trim().is_empty() {
             operation_token(request.operation.as_ref())
         } else {
@@ -1112,7 +1142,8 @@ impl SessionControlRpc {
                     )));
                 }
             };
-        let response = match stream_type {
+        let subscription_id = token.clone();
+        let mut response = match stream_type {
             "live" => api_serv::play_live(
                 PlayLiveModel {
                     device_id: request.device_id.clone(),
@@ -1192,6 +1223,11 @@ impl SessionControlRpc {
             )),
         }
         .unwrap_or_else(device_error);
+        if response.state == DeviceStreamState::Running as i32 {
+            response.subscription_id = subscription_id;
+            response.session_node_id = identity.node_id;
+            response.session_instance_id = identity.instance_id;
+        }
         Ok(tonic::Response::new(response))
     }
 }
@@ -1320,6 +1356,7 @@ struct SessionStream {
     channel_id: String,
     route_id: String,
     lease_id: String,
+    subscriptions: HashSet<String>,
     state: DeviceStreamState,
 }
 
@@ -1387,16 +1424,25 @@ impl SessionControlAdapter {
             );
         }
         let stream_id = stream_start.stream_id;
+        let subscription_id = request.token.clone();
         self.active_streams
             .entry(stream_id.clone())
+            .and_modify(|stream| {
+                stream.subscriptions.insert(subscription_id.clone());
+            })
             .or_insert(SessionStream {
                 device_id: request.device_id,
                 channel_id: request.channel_id,
                 route_id: request.route_id,
                 lease_id: request.lease_id,
+                subscriptions: HashSet::from([subscription_id.clone()]),
                 state: DeviceStreamState::Running,
             });
-        device_response(&stream_id, DeviceStreamState::Running, None)
+        let mut response = device_response(&stream_id, DeviceStreamState::Running, None);
+        response.subscription_id = subscription_id;
+        response.session_node_id = self.identity.node_id.clone();
+        response.session_instance_id = self.identity.instance_id.clone();
+        response
     }
 
     pub fn start_device_stream(
@@ -1419,9 +1465,14 @@ impl SessionControlAdapter {
             );
         }
         let stream_id = stream_id_for(stream_type, &request);
-        if let Some(existing) = self.active_streams.get(&stream_id) {
+        if let Some(existing) = self.active_streams.get_mut(&stream_id) {
             if existing.lease_id == request.lease_id {
-                return device_response(&stream_id, existing.state, None);
+                existing.subscriptions.insert(request.token.clone());
+                let mut response = device_response(&stream_id, existing.state, None);
+                response.subscription_id = request.token;
+                response.session_node_id = self.identity.node_id.clone();
+                response.session_instance_id = self.identity.instance_id.clone();
+                return response;
             }
             return device_response(
                 &stream_id,
@@ -1439,17 +1490,36 @@ impl SessionControlAdapter {
                 channel_id: request.channel_id,
                 route_id: request.route_id,
                 lease_id: request.lease_id,
+                subscriptions: HashSet::from([request.token.clone()]),
                 state: DeviceStreamState::Running,
             },
         );
-        device_response(&stream_id, DeviceStreamState::Running, None)
+        let mut response = device_response(&stream_id, DeviceStreamState::Running, None);
+        response.subscription_id = request.token;
+        response.session_node_id = self.identity.node_id.clone();
+        response.session_instance_id = self.identity.instance_id.clone();
+        response
     }
 
     pub fn stop_device_stream(&mut self, request: StopDeviceStreamRequest) -> DeviceStreamResponse {
         match self.active_streams.get_mut(&request.stream_id) {
             Some(stream) => {
-                stream.state = DeviceStreamState::Stopped;
-                device_response(&request.stream_id, DeviceStreamState::Stopped, None)
+                let force = request.force || request.subscription_id.is_empty();
+                if force {
+                    stream.subscriptions.clear();
+                } else {
+                    stream.subscriptions.remove(&request.subscription_id);
+                }
+                stream.state = if stream.subscriptions.is_empty() {
+                    DeviceStreamState::Stopped
+                } else {
+                    DeviceStreamState::Running
+                };
+                let mut response = device_response(&request.stream_id, stream.state, None);
+                response.subscription_id = request.subscription_id;
+                response.session_node_id = self.identity.node_id.clone();
+                response.session_instance_id = self.identity.instance_id.clone();
+                response
             }
             None => device_response(&request.stream_id, DeviceStreamState::Stopped, None),
         }
@@ -1556,6 +1626,9 @@ fn device_response(
         endpoint: String::new(),
         video_codec: String::new(),
         audio_codec: String::new(),
+        subscription_id: String::new(),
+        session_node_id: String::new(),
+        session_instance_id: String::new(),
     }
 }
 
@@ -1744,6 +1817,9 @@ fn stream_response(
         endpoint,
         video_codec,
         audio_codec,
+        subscription_id: String::new(),
+        session_node_id: String::new(),
+        session_instance_id: String::new(),
     }
 }
 
@@ -1758,6 +1834,9 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
         endpoint: String::new(),
         video_codec: String::new(),
         audio_codec: String::new(),
+        subscription_id: String::new(),
+        session_node_id: String::new(),
+        session_instance_id: String::new(),
     }
 }
 
@@ -2005,6 +2084,7 @@ mod tests {
                 route_id: allocation.route_id,
                 lease_id: allocation.lease_id,
                 expected_session: Some(node.identity.clone()),
+                token: "viewer-1".to_string(),
                 ..Default::default()
             },
             StartReceiveResponse {
@@ -2015,6 +2095,40 @@ mod tests {
             },
         );
         assert_eq!(response.state, DeviceStreamState::Running as i32);
+        assert_eq!(response.subscription_id, "viewer-1");
+        let second = control.complete_start_live(
+            StartDeviceStreamRequest {
+                operation: Some(operation("op-2")),
+                device_id: "dev-1".to_string(),
+                channel_id: "ch-1".to_string(),
+                route_id: "route-1".to_string(),
+                lease_id: "lease-1".to_string(),
+                expected_session: Some(node.identity.clone()),
+                token: "viewer-2".to_string(),
+                ..Default::default()
+            },
+            StartReceiveResponse {
+                stream_id: "stream-1".to_string(),
+                state: ProtoStreamState::Receiving as i32,
+                receive_endpoints: vec![],
+                error: None,
+            },
+        );
+        assert_eq!(second.subscription_id, "viewer-2");
+        let first_release = control.stop_device_stream(StopDeviceStreamRequest {
+            stream_id: "stream-1".to_string(),
+            subscription_id: "viewer-1".to_string(),
+            force: false,
+            ..Default::default()
+        });
+        assert_eq!(first_release.state, DeviceStreamState::Running as i32);
+        let last_release = control.stop_device_stream(StopDeviceStreamRequest {
+            stream_id: "stream-1".to_string(),
+            subscription_id: "viewer-2".to_string(),
+            force: false,
+            ..Default::default()
+        });
+        assert_eq!(last_release.state, DeviceStreamState::Stopped as i32);
         assert_eq!(control.resource_snapshot().resources.len(), 1);
         assert!(
             control

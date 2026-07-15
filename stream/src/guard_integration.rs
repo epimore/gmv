@@ -777,7 +777,27 @@ impl StreamControlAdapter {
             })
             .unwrap_or(&request.stream_id);
         let output_id = format!("out-{output_type}-{operation_id}");
-        if let Some(existing) = self.outputs.get(&output_id) {
+        if let Some(mut existing) = self.outputs.get(&output_id).cloned() {
+            if self.media_tx.is_some() {
+                match Register::create_live_output(
+                    &request.stream_id,
+                    output_type,
+                    &request.audio_codec,
+                ) {
+                    Ok(endpoint) => {
+                        existing.endpoint = endpoint;
+                        self.outputs.insert(output_id.clone(), existing.clone());
+                    }
+                    Err(error_value) => {
+                        return CreateOutputResponse {
+                            output_id: String::new(),
+                            endpoints: self.playback_endpoints(),
+                            error: Some(detail_from_error(error_value)),
+                            output: None,
+                        };
+                    }
+                }
+            }
             let output = existing.info();
             return CreateOutputResponse {
                 output_id,

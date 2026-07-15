@@ -35,7 +35,7 @@ use crate::gateway::{AllocationRequest, AllocationService};
 use crate::lease::{LeaseRequest, LeaseService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
 use crate::store::InMemoryGuardStore;
-use crate::store::model::{NodeRecord, RouteRecord};
+use crate::store::model::{NodeRecord, RouteRecord, StreamSessionOwnerRecord};
 
 #[derive(Debug, Clone)]
 pub struct BusinessControl {
@@ -980,7 +980,44 @@ impl BusinessControl {
         channel_id: &str,
         options: DeviceStreamOptions,
     ) -> GuardResult<StreamSummary> {
-        let session = self.select_node(NodeKind::Session, kind.session_capability())?;
+        let input_key = kind.input_key(device_id, channel_id);
+        let session = match input_key.as_deref() {
+            Some(key) => match self.store.get_stream_session_owner_by_input(key) {
+                Some(owner) => match self.session_node_for_owner(&owner) {
+                    Ok(session) => session,
+                    Err(_) if owner.stream_id.is_empty() => {
+                        let candidate =
+                            self.select_node(NodeKind::Session, kind.session_capability())?;
+                        let owner = self.store.replace_inactive_stream_input_owner(
+                            key,
+                            StreamSessionOwnerRecord {
+                                stream_id: String::new(),
+                                input_key: key.to_string(),
+                                node_id: candidate.identity.node_id,
+                                instance_id: candidate.identity.instance_id,
+                            },
+                        );
+                        self.session_node_for_owner(&owner)?
+                    }
+                    Err(error) => return Err(error),
+                },
+                None => {
+                    let candidate =
+                        self.select_node(NodeKind::Session, kind.session_capability())?;
+                    let owner = self.store.claim_stream_input_owner(
+                        key,
+                        StreamSessionOwnerRecord {
+                            stream_id: String::new(),
+                            input_key: key.to_string(),
+                            node_id: candidate.identity.node_id,
+                            instance_id: candidate.identity.instance_id,
+                        },
+                    );
+                    self.session_node_for_owner(&owner)?
+                }
+            },
+            None => self.select_node(NodeKind::Session, kind.session_capability())?,
+        };
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
             SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
@@ -993,6 +1030,7 @@ impl BusinessControl {
         } else {
             options.token
         };
+        let requested_subscription_id = token.clone();
         let request = StartDeviceStreamRequest {
             operation: Some(operation),
             device_id: device_id.to_string(),
@@ -1066,6 +1104,14 @@ impl BusinessControl {
             )));
         }
         edge.success();
+        let stream_id = session_response.stream_id.clone();
+        self.store
+            .upsert_stream_session_owner(StreamSessionOwnerRecord {
+                stream_id: stream_id.clone(),
+                input_key: input_key.unwrap_or_default(),
+                node_id: session.identity.node_id.clone(),
+                instance_id: session.identity.instance_id.clone(),
+            });
         let lease = self
             .store
             .leases()
@@ -1077,7 +1123,7 @@ impl BusinessControl {
             .into_iter()
             .find(|route| route.resource_id == session_response.stream_id);
         Ok(StreamSummary {
-            stream_id: session_response.stream_id,
+            stream_id,
             device_id: device_id.to_string(),
             channel_id: channel_id.to_string(),
             node_id: route
@@ -1093,6 +1139,13 @@ impl BusinessControl {
             endpoint: session_response.endpoint,
             video_codec: session_response.video_codec,
             audio_codec: session_response.audio_codec,
+            subscription_id: if session_response.subscription_id.is_empty() {
+                requested_subscription_id
+            } else {
+                session_response.subscription_id
+            },
+            session_node_id: session.identity.node_id.clone(),
+            session_instance_id: session.identity.instance_id.clone(),
             state: StreamSummaryState::Running,
         })
     }
@@ -1102,7 +1155,7 @@ impl BusinessControl {
         operation_id: &str,
         stream_id: &str,
     ) -> GuardResult<StreamSummary> {
-        let session = self.select_any_session()?;
+        let session = self.session_for_stream(stream_id)?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
             SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
@@ -1113,6 +1166,8 @@ impl BusinessControl {
             }),
             stream_id: stream_id.to_string(),
             reason: "manual".to_string(),
+            subscription_id: String::new(),
+            force: true,
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.stop_device_stream, node={}, req:{request:?}",
@@ -1137,7 +1192,16 @@ impl BusinessControl {
                 true,
             ));
         }
+        if response.state != DeviceStreamState::Stopped as i32 {
+            edge.invalid_response("stream_not_stopped");
+            return Err(GuardError::Conflict(
+                "session did not stop device stream".to_string(),
+            ));
+        }
         edge.success();
+        let session_node_id = session.identity.node_id.clone();
+        let session_instance_id = session.identity.instance_id.clone();
+        self.store.remove_stream_session_owner(stream_id);
         if let Some(route) = self
             .store
             .routes()
@@ -1152,14 +1216,99 @@ impl BusinessControl {
             stream_id: stream_id.to_string(),
             device_id: String::new(),
             channel_id: String::new(),
-            node_id: session.identity.node_id,
-            instance_id: session.identity.instance_id,
+            node_id: session_node_id.clone(),
+            instance_id: session_instance_id.clone(),
             lease_id: String::new(),
             route_id: String::new(),
             endpoint: String::new(),
             video_codec: String::new(),
             audio_codec: String::new(),
+            subscription_id: String::new(),
+            session_node_id,
+            session_instance_id,
             state: StreamSummaryState::Stopped,
+        })
+    }
+
+    pub async fn release_stream(
+        &self,
+        operation_id: &str,
+        stream_id: &str,
+        subscription_id: &str,
+    ) -> GuardResult<StreamSummary> {
+        if subscription_id.trim().is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "subscription_id is required".to_string(),
+            ));
+        }
+        let session = self.session_for_stream(stream_id)?;
+        let session_grpc = grpc_uri(&session)?;
+        let mut session_client =
+            SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
+        let request = StopDeviceStreamRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            stream_id: stream_id.to_string(),
+            reason: "viewer_release".to_string(),
+            subscription_id: subscription_id.to_string(),
+            force: false,
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "release_device_stream",
+            &session.identity.node_id,
+            operation_id,
+            stream_id,
+        );
+        let response = edge.response(session_client.stop_device_stream(request).await)?;
+        if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
+            return Err(remote_error(
+                "session",
+                "release_device_stream",
+                error,
+                "stream_release_failed",
+                "释放视频订阅失败，请稍后重试",
+                true,
+            ));
+        }
+        let state =
+            if response.state == DeviceStreamState::Running as i32 {
+                StreamSummaryState::Running
+            } else if response.state == DeviceStreamState::Stopped as i32 {
+                self.store.remove_stream_session_owner(stream_id);
+                if let Some(route) = self.store.routes().into_iter().find(|route| {
+                    route.resource_id == stream_id && route.state != RouteState::Closed
+                }) && let Some(mut stored_route) = self.store.get_route(&route.route_id)
+                {
+                    stored_route.state = RouteState::Closed;
+                    self.store.upsert_route(stored_route);
+                }
+                StreamSummaryState::Stopped
+            } else {
+                edge.invalid_response("stream_release_invalid_state");
+                return Err(GuardError::Conflict(
+                    "session returned invalid release state".to_string(),
+                ));
+            };
+        edge.success();
+        Ok(StreamSummary {
+            stream_id: stream_id.to_string(),
+            device_id: String::new(),
+            channel_id: String::new(),
+            node_id: String::new(),
+            instance_id: String::new(),
+            lease_id: String::new(),
+            route_id: String::new(),
+            endpoint: String::new(),
+            video_codec: String::new(),
+            audio_codec: String::new(),
+            subscription_id: subscription_id.to_string(),
+            session_node_id: session.identity.node_id,
+            session_instance_id: session.identity.instance_id,
+            state,
         })
     }
 
@@ -1310,7 +1459,7 @@ impl BusinessControl {
                 BTreeMap::new(),
             ));
         }
-        let session = self.select_any_session()?;
+        let session = self.session_for_stream(stream_id)?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
             SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
@@ -1622,6 +1771,36 @@ impl BusinessControl {
             .into_iter()
             .next()
             .ok_or_else(|| GuardError::NotFound("no connected session node".to_string()))
+    }
+
+    fn session_for_stream(&self, stream_id: &str) -> GuardResult<NodeRecord> {
+        if let Some(owner) = self.store.get_stream_session_owner(stream_id) {
+            return self.session_node_for_owner(&owner);
+        }
+        let sessions = self.session_nodes();
+        if sessions.len() == 1 {
+            return Ok(sessions.into_iter().next().expect("one session node"));
+        }
+        Err(GuardError::Conflict(format!(
+            "session owner for stream {stream_id} is unknown"
+        )))
+    }
+
+    fn session_node_for_owner(&self, owner: &StreamSessionOwnerRecord) -> GuardResult<NodeRecord> {
+        let node = self
+            .store
+            .get_node(&owner.node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("node {}", owner.node_id)))?;
+        if node.identity.instance_id != owner.instance_id
+            || node.connection != ConnectionState::Connected
+            || (owner.stream_id.is_empty() && node.scheduling != SchedulingState::Enabled)
+        {
+            return Err(GuardError::Conflict(format!(
+                "session owner for stream {} is unavailable or stale",
+                owner.stream_id
+            )));
+        }
+        Ok(node)
     }
 
     fn session_nodes(&self) -> Vec<NodeRecord> {
@@ -1951,6 +2130,10 @@ enum DeviceStreamKind {
 }
 
 impl DeviceStreamKind {
+    fn input_key(self, device_id: &str, channel_id: &str) -> Option<String> {
+        matches!(self, Self::Live).then(|| format!("live:{device_id}:{channel_id}"))
+    }
+
     fn prefix(self) -> &'static str {
         match self {
             Self::Live => "live",
@@ -1994,6 +2177,56 @@ mod tests {
     use gmv_protocol::common::v1::ErrorDetail;
 
     use super::*;
+
+    #[test]
+    fn live_input_owner_claim_is_atomic() {
+        let store = InMemoryGuardStore::default();
+        let first = store.claim_stream_input_owner(
+            "live:device:channel",
+            StreamSessionOwnerRecord {
+                stream_id: String::new(),
+                input_key: "live:device:channel".to_string(),
+                node_id: "session-a".to_string(),
+                instance_id: "instance-a".to_string(),
+            },
+        );
+        let second = store.claim_stream_input_owner(
+            "live:device:channel",
+            StreamSessionOwnerRecord {
+                stream_id: String::new(),
+                input_key: "live:device:channel".to_string(),
+                node_id: "session-b".to_string(),
+                instance_id: "instance-b".to_string(),
+            },
+        );
+
+        assert_eq!(first.node_id, "session-a");
+        assert_eq!(second, first);
+
+        store.upsert_stream_session_owner(StreamSessionOwnerRecord {
+            stream_id: "stream-live".to_string(),
+            input_key: "live:device:channel".to_string(),
+            node_id: "session-a".to_string(),
+            instance_id: "instance-a".to_string(),
+        });
+        store.remove_stream_session_owner("stream-live");
+        let inactive = store
+            .get_stream_session_owner_by_input("live:device:channel")
+            .unwrap();
+        assert!(inactive.stream_id.is_empty());
+        assert_eq!(inactive.node_id, "session-a");
+
+        let replacement = store.replace_inactive_stream_input_owner(
+            "live:device:channel",
+            StreamSessionOwnerRecord {
+                stream_id: String::new(),
+                input_key: "live:device:channel".to_string(),
+                node_id: "session-b".to_string(),
+                instance_id: "instance-b".to_string(),
+            },
+        );
+        assert_eq!(replacement.node_id, "session-b");
+    }
 
     #[test]
     fn remote_error_uses_global_code_metadata_for_user_message() {

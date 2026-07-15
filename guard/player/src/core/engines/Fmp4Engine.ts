@@ -40,6 +40,7 @@ export class Fmp4Engine extends BaseEngine {
           this.sourceBuffer = mediaSource.addSourceBuffer(source.mimeCodec!);
           this.sourceBuffer.mode = 'segments';
           this.sourceBuffer.addEventListener('updateend', this.flush);
+          this.sourceBuffer.addEventListener('error', this.handleSourceBufferError);
           resolve();
         } catch (error) {
           reject(error);
@@ -49,9 +50,7 @@ export class Fmp4Engine extends BaseEngine {
       mediaSource.addEventListener('sourceopen', onOpen);
     });
 
-    this.startFetch(source.url).catch((error) => {
-      if (!this.destroyed) throw error;
-    });
+    void this.startFetch(source.url).catch((error) => this.emitError(error));
   }
 
   destroy(): void {
@@ -62,6 +61,7 @@ export class Fmp4Engine extends BaseEngine {
 
     if (this.sourceBuffer) {
       this.sourceBuffer.removeEventListener('updateend', this.flush);
+      this.sourceBuffer.removeEventListener('error', this.handleSourceBufferError);
     }
 
     if (this.mediaSource?.readyState === 'open') {
@@ -116,7 +116,17 @@ export class Fmp4Engine extends BaseEngine {
       this.sourceBuffer.appendBuffer(chunk);
     } catch (error) {
       this.queue.unshift(chunk);
-      throw error;
+      this.emitError(error);
     }
   };
+
+  private readonly handleSourceBufferError = (): void => {
+    this.emitError(new Error('fMP4 SourceBuffer error'));
+  };
+
+  private emitError(error: unknown): void {
+    if (this.destroyed || !this.video) return;
+    const message = error instanceof Error ? error.message : String(error);
+    this.video.dispatchEvent(new ErrorEvent('error', { message }));
+  }
 }

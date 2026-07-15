@@ -330,6 +330,28 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .unwrap();
             registry
                 .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-rpc-b",
+                        "session-inst-b",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec![
+                        "device.live".to_string(),
+                        "device.playback".to_string(),
+                        "device.download".to_string(),
+                        "device.talk".to_string(),
+                        "device.ptz".to_string(),
+                    ],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: Default::default(),
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
                     identity: NodeIdentity::new("stream-rpc", "stream-inst", NodeKind::Stream),
                     capabilities: vec![
                         "live".to_string(),
@@ -376,6 +398,12 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             assert_eq!(stream.stream_id, "live-op-live-rpc");
             assert_eq!(stream.node_id, "session-rpc");
             assert_eq!(stream.endpoint, "rtp://127.0.0.1:30000/live-op-live-rpc");
+            let second_viewer = control
+                .start_live("op-live-rpc-viewer-2", "device-1", "channel-1")
+                .await
+                .unwrap();
+            assert_eq!(second_viewer.session_node_id, stream.session_node_id);
+            assert_ne!(second_viewer.subscription_id, stream.subscription_id);
 
             assert_eq!(
                 control
@@ -619,6 +647,9 @@ impl SessionControl for FakeSession {
             endpoint: String::new(),
             video_codec: String::new(),
             audio_codec: String::new(),
+            subscription_id: String::new(),
+            session_node_id: String::new(),
+            session_instance_id: String::new(),
         }))
     }
 
@@ -964,6 +995,9 @@ fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> Devi
         endpoint,
         video_codec: "h264".to_string(),
         audio_codec: String::new(),
+        subscription_id: request.token,
+        session_node_id: String::new(),
+        session_instance_id: String::new(),
     }
 }
 

@@ -34,7 +34,7 @@ export interface EventPage { items: EventItem[]; next_after_id: string | null }
 export interface LeaseInfo { lease_id: string; route_id: string; resource_id: string; node_id: string; instance_id: string; state: 'allocated' | 'confirmed' | 'failed' | 'released' | 'expired'; expires_at_ms: number }
 export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
 export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
-export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; state: 'running' | 'stopped' | 'failed' }
+export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; subscription_id?: string; session_node_id?: string; session_instance_id?: string; state: 'running' | 'stopped' | 'failed' }
 export interface StreamOutputSummary { output_id: string; stream_id: string; output_type: 'flv' | 'hls' | 'fmp4'; endpoint: string; state: 'preparing' | 'ready' | 'closed' | 'failed' }
 export type MediaOperationState = 'preparing' | 'ready' | 'failed' | 'cancelled';
 export interface MediaOperationError { code: string; message: string; user_message: string; retryable: boolean }
@@ -132,6 +132,7 @@ export const startPreview = async (deviceId: string, channelId: string, requestI
 export const sendPtz = (deviceId: string, channelId: string) => request<{ accepted: boolean; count: number }>('/devices/' + deviceId + '/ptz', { method: 'POST', body: JSON.stringify({ channel_id: channelId }) });
 export const listStreams = () => request<StreamSummary[]>('/streams');
 export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
+export const releaseStream = (streamId: string, subscriptionId: string, requestId: string) => request<StreamSummary>('/streams/' + encodeURIComponent(streamId) + '/release', { method: 'POST', body: JSON.stringify({ request_id: requestId, subscription_id: subscriptionId }) });
 export const setStreamPlaybackSpeed = (streamId: string, speedRate: number) => request<{ accepted: boolean; speed_rate: number }>('/streams/' + encodeURIComponent(streamId) + '/speed', { method: 'POST', body: JSON.stringify({ speed_rate: speedRate }) });
 export const listStreamOutputs = (streamId: string) => request<StreamOutputSummary[]>('/streams/' + encodeURIComponent(streamId) + '/outputs');
 export const createStreamOutput = async (
@@ -140,7 +141,7 @@ export const createStreamOutput = async (
   requestId: string,
   options: MediaOperationWaitOptions<StreamOutputSummary> = {},
 ) => {
-  const operation = await request<MediaOperationSummary<StreamOutputSummary>>('/streams/' + encodeURIComponent(streamId) + '/outputs', { method: 'POST', body: JSON.stringify({ request_id: requestId, output_type: outputType, audio_codec: 'aac' }) }, true, 3_000);
+  const operation = await request<MediaOperationSummary<StreamOutputSummary>>('/streams/' + encodeURIComponent(streamId) + '/outputs', { method: 'POST', body: JSON.stringify({ request_id: requestId, output_type: outputType, audio_codec: 'aac', subscription_id: options.subscriptionId || '' }) }, true, 3_000);
   return waitMediaOperation(operation, options);
 };
 export const closeStreamOutput = (streamId: string, outputId: string) => request<{ closed: boolean; output_id: string }>('/streams/' + encodeURIComponent(streamId) + '/outputs/' + encodeURIComponent(outputId) + '/close', { method: 'POST', body: '{}' });
@@ -153,6 +154,7 @@ export const getMediaTransport = () => request<MediaTransportCapability>('/media
 export interface MediaOperationWaitOptions<T> {
   signal?: AbortSignal;
   onUpdate?: (operation: MediaOperationSummary<T>) => void;
+  subscriptionId?: string;
 }
 
 export const getMediaOperation = <T = unknown>(operationId: string) => request<MediaOperationSummary<T>>('/media/operations/' + encodeURIComponent(operationId), {}, true, 2_000);

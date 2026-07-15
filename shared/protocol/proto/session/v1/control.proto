@@ -67,6 +67,8 @@ message StopDeviceStreamRequest {
   gmv.common.v1.OperationRef operation = 1;
   string stream_id = 2;
   string reason = 3;
+  string subscription_id = 4;
+  bool force = 5;
 }
 
 message SetPlaybackSpeedRequest {
@@ -87,6 +89,9 @@ message DeviceStreamResponse {
   string endpoint = 4;
   string video_codec = 5;
   string audio_codec = 6;
+  string subscription_id = 7;
+  string session_node_id = 8;
+  string session_instance_id = 9;
 }
 
 enum DeviceStreamState {

@@ -8,7 +8,7 @@ pub struct DeviceSummary {
     pub online: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
 pub enum StreamSummaryState {
     Running,
@@ -16,7 +16,7 @@ pub enum StreamSummaryState {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct StreamSummary {
     pub stream_id: String,
@@ -29,6 +29,9 @@ pub struct StreamSummary {
     pub endpoint: String,
     pub video_codec: String,
     pub audio_codec: String,
+    pub subscription_id: String,
+    pub session_node_id: String,
+    pub session_instance_id: String,
     pub state: StreamSummaryState,
 }
 

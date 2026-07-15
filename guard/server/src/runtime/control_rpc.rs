@@ -193,6 +193,14 @@ impl GuardControl for GuardControlRpc {
                 "playback token is not valid",
             ));
         };
+        let now = now_ms();
+        if ticket.expires_at_ms <= now {
+            self.store.revoke_playback_token(&request.token);
+            return Ok(reject_playback(
+                "playback_token_expired",
+                "playback token has expired",
+            ));
+        }
         if ticket.stream_id != request.stream_id {
             return Ok(reject_playback(
                 "playback_stream_mismatch",
@@ -244,7 +252,7 @@ impl GuardControl for GuardControlRpc {
                 "stream route is closed",
             ));
         }
-        ticket.expires_at_ms = now_ms() + PLAYBACK_TOKEN_TTL_MS;
+        ticket.expires_at_ms = now + PLAYBACK_TOKEN_TTL_MS;
         self.store.upsert_playback_ticket(ticket);
         Ok(Response::new(CheckPlaybackResponse {
             accepted: true,

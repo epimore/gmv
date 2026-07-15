@@ -308,10 +308,7 @@ async function mountPlayer(sources = props.sources) {
     if (version === playerLoadVersion) startupProgress.value = progress;
   }));
   playerStops[slot].push(core.on('playing', () => {
-    if (version !== playerLoadVersion) {
-      destroyPlayerSlot(slot);
-      return;
-    }
+    if (version !== playerLoadVersion) return;
     const previousSlot = activeVideoSlot.value;
     const changed = activeSource.value?.url !== slotSource.url;
     activeVideoSlot.value = slot;

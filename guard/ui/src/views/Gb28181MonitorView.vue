@@ -430,13 +430,13 @@ import {
   listGbDevicePage,
   listGbResources,
   listNodes,
+  releaseStream,
   resetGbResourceConfirmation,
   saveGbResourceConfirmation,
   sendGbPtz,
   setStreamPlaybackSpeed,
   startGbPlayback,
   startGbPreview,
-  stopStream,
   takeGbSnapshot,
   updateGbChannel,
   type GbChannelImageInfo,
@@ -1153,14 +1153,47 @@ function isMultiCellVisible(key: string) {
 async function stopMultiStream(stream?: StreamSummary) {
   const streamId = stream?.stream_id;
   if (!streamId) return;
-  const existing = multiStopTasks.get(streamId);
+  const taskKey = `${streamId}:${stream.subscription_id || 'legacy'}`;
+  const existing = multiStopTasks.get(taskKey);
   if (existing) return existing;
   let task: Promise<void>;
-  task = stopStream(streamId).then(() => undefined).catch(() => undefined).finally(() => {
-    if (multiStopTasks.get(streamId) === task) multiStopTasks.delete(streamId);
+  task = releaseViewerStream(stream).catch(() => undefined).finally(() => {
+    if (multiStopTasks.get(taskKey) === task) multiStopTasks.delete(taskKey);
   });
-  multiStopTasks.set(streamId, task);
+  multiStopTasks.set(taskKey, task);
   return task;
+}
+
+async function releaseViewerStream(stream: StreamSummary) {
+  if (!stream.subscription_id) return;
+  await releaseStream(
+    stream.stream_id,
+    stream.subscription_id,
+    `ui-stream-release-${crypto.randomUUID()}`,
+  );
+}
+
+async function closeTrackedOutputs(
+  streamId: string,
+  outputs: Array<StreamOutputSummary | undefined>,
+) {
+  const outputIds = [...new Set(outputs.map((output) => output?.output_id).filter((id): id is string => !!id))];
+  await Promise.allSettled(outputIds.map((outputId) => closeStreamOutput(streamId, outputId)));
+}
+
+async function disposeMultiCellMedia(cell?: MultiViewCell) {
+  if (!cell) return;
+  if (cell.operation?.state === 'preparing') {
+    await cancelMediaOperation(cell.operation.operation_id).catch(() => undefined);
+  }
+  if (cell.stream) {
+    await closeTrackedOutputs(cell.stream.stream_id, [
+      cell.output,
+      cell.pending_switch?.previous_output,
+      cell.pending_switch?.next_output,
+    ]);
+    await stopMultiStream(cell.stream);
+  }
 }
 async function suspendMultiCell(key: string) {
   const cell = multiCells.value.find((item) => item.key === key);
@@ -1170,9 +1203,7 @@ async function suspendMultiCell(key: string) {
   multiPreviewAborts.delete(key);
   multiOutputAborts.get(key)?.abort();
   multiOutputAborts.delete(key);
-  if (cell.operation?.state === 'preparing') {
-    await cancelMediaOperation(cell.operation.operation_id).catch(() => undefined);
-  }
+  await disposeMultiCellMedia(cell);
   upsertMultiCell({
     ...cell,
     stream: undefined,
@@ -1180,7 +1211,6 @@ async function suspendMultiCell(key: string) {
     operation: undefined,
     status: cell.status === 'error' ? 'error' : 'online',
   });
-  if (cell.stream) await stopMultiStream(cell.stream);
 }
 function reconcileVisibleMultiStreams() {
   const lifecycleVersion = ++multiLifecycleVersion;
@@ -1212,10 +1242,7 @@ async function stopMultiCell(key: string, options: { removeSelection?: boolean }
     selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
     selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => selectedChannelKey(item) !== key);
   }
-  if (cell?.operation?.state === 'preparing') {
-    await cancelMediaOperation(cell.operation.operation_id).catch(() => undefined);
-  }
-  await stopMultiStream(cell?.stream);
+  await disposeMultiCellMedia(cell);
   await reconcileVisibleMultiStreams();
 }
 async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
@@ -1236,12 +1263,7 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
     multiGridManual.value = false;
     multiGridSize.value = 1;
     multiPage.value = 1;
-    await Promise.allSettled([
-      ...streams.map((stream) => stopMultiStream(stream)),
-      ...cells
-        .filter((cell) => cell.operation?.state === 'preparing')
-        .map((cell) => cancelMediaOperation(cell.operation!.operation_id).then(() => undefined)),
-    ]);
+    await Promise.allSettled(cells.map((cell) => disposeMultiCellMedia(cell)));
     await multiVisibilityTask;
     if (!options.quiet && streams.length) ElMessage.success('多画面已停止');
   } finally {
@@ -1255,6 +1277,8 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
   const cancelPending = options.cancelPending !== false;
   stopCurrentStreamTask = (async () => {
     const stream = lastStream.value;
+    const output = singleOutput.value;
+    const pendingSwitch = singlePendingSwitch.value;
     if (cancelPending) {
       playRequestSeq += 1;
       singlePreviewAbort?.abort();
@@ -1273,9 +1297,16 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     singleMediaOperation.value = undefined;
     singleWaitAcknowledged.value = false;
     if (clearAction) lastAction.value = '';
-    if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
-    if (!stream?.stream_id && operation?.state === 'preparing') {
+    if (operation?.state === 'preparing') {
       await cancelMediaOperation(operation.operation_id).catch(() => undefined);
+    }
+    if (stream?.stream_id) {
+      await closeTrackedOutputs(stream.stream_id, [
+        output,
+        pendingSwitch?.previous_output,
+        pendingSwitch?.next_output,
+      ]);
+      await releaseViewerStream(stream).catch(() => undefined);
     }
   })().finally(() => {
     stopCurrentStreamTask = undefined;
@@ -1402,6 +1433,7 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
       outputType,
       `ui-multi-output-${Date.now()}-${cell.channel_id}-${outputType}`,
       {
+        subscriptionId: cell.stream.subscription_id,
         signal: controller.signal,
         onUpdate: (operation) => {
           const current = multiCells.value.find((item) => item.key === cell.key);
@@ -1696,6 +1728,7 @@ async function handleSingleOutputTypeChange(value: string) {
       outputType,
       `ui-single-output-${Date.now()}-${channel.channel_id}-${outputType}`,
       {
+        subscriptionId: stream.subscription_id,
         signal: controller.signal,
         onUpdate: (operation) => {
           if (singleOutputAbort === controller) singleMediaOperation.value = operation;
@@ -1805,7 +1838,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
         )
       : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'fmp4', audio_codec: 'aac' });
     if (requestSeq !== playRequestSeq || !playerDialog.value) {
-      if (stream.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
+      if (stream.stream_id) await releaseViewerStream(stream).catch(() => undefined);
       return;
     }
     lastStream.value = stream;

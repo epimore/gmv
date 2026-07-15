@@ -158,6 +158,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/devices/{device_id}/ptz", post(ptz))
         .route("/streams", get(streams))
         .route("/streams/{stream_id}/stop", post(stop_stream))
+        .route("/streams/{stream_id}/release", post(release_stream))
         .route("/streams/{stream_id}/speed", post(set_playback_speed))
         .route(
             "/streams/{stream_id}/outputs",
@@ -1179,6 +1180,8 @@ fn issue_playback_ticket(
         .upsert_playback_ticket(PlaybackTicketRecord {
             token: token.clone(),
             stream_id: stream.stream_id.clone(),
+            output_id: String::new(),
+            subscription_id: stream.subscription_id.clone(),
             lease_id: stream.lease_id.clone(),
             route_id: stream.route_id.clone(),
             username: session.username.clone(),
@@ -1193,6 +1196,7 @@ fn issue_playback_ticket(
 fn issue_stream_output_ticket(
     state: &HttpState,
     mut output: StreamOutputSummary,
+    subscription_id: &str,
     ui_session_token: &str,
     session: &UiSession,
 ) -> Result<StreamOutputSummary, HttpError> {
@@ -1219,6 +1223,8 @@ fn issue_stream_output_ticket(
         .upsert_playback_ticket(PlaybackTicketRecord {
             token: token.clone(),
             stream_id: output.stream_id.clone(),
+            output_id: output.output_id.clone(),
+            subscription_id: subscription_id.to_string(),
             lease_id: lease.map(|lease| lease.lease_id).unwrap_or_default(),
             route_id: route.map(|route| route.route_id).unwrap_or_default(),
             username: session.username.clone(),
@@ -1231,8 +1237,40 @@ fn issue_stream_output_ticket(
 }
 
 fn endpoint_with_playback_token(endpoint: &str, token: &str) -> String {
-    let separator = if endpoint.contains('?') { '&' } else { '?' };
-    format!("{endpoint}{separator}gmv-token={token}")
+    let (base, query) = endpoint.split_once('?').unwrap_or((endpoint, ""));
+    let mut parameters = query
+        .split('&')
+        .filter(|part| !part.is_empty() && !part.starts_with("gmv-token="))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    parameters.push(format!("gmv-token={token}"));
+    format!("{base}?{}", parameters.join("&"))
+}
+
+fn playback_token_from_endpoint(endpoint: &str) -> Option<&str> {
+    endpoint
+        .split_once('?')
+        .map(|(_, query)| query)
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .find_map(|part| part.strip_prefix("gmv-token="))
+        .filter(|token| !token.is_empty())
+}
+
+async fn compensate_stream_start(state: &HttpState, operation_id: &str, stream: &StreamSummary) {
+    if let Some(token) = playback_token_from_endpoint(&stream.endpoint) {
+        state.api.store().revoke_playback_token(token);
+    }
+    if stream.subscription_id.is_empty() {
+        return;
+    }
+    let _ = BusinessControl::new(state.api.store())
+        .release_stream(
+            &format!("compensate-{operation_id}"),
+            &stream.stream_id,
+            &stream.subscription_id,
+        )
+        .await;
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -1585,6 +1623,13 @@ struct PlaybackSpeedRequest {
     speed_rate: f32,
 }
 
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct ReleaseStreamRequest {
+    request_id: String,
+    subscription_id: String,
+}
+
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct PlaybackSpeedResponse {
@@ -1597,6 +1642,8 @@ struct PlaybackSpeedResponse {
 struct CreateStreamOutputRequest {
     request_id: String,
     output_type: String,
+    #[serde(default)]
+    subscription_id: String,
     #[serde(default = "default_output_audio_codec")]
     audio_codec: String,
     #[serde(default)]
@@ -2581,12 +2628,14 @@ where
                 return;
             }
         };
+        let started_stream = stream.clone();
 
         if task_state
             .api
             .get_operation(&task_operation_id)
             .is_ok_and(|record| record.status == OperationStatus::Cancelled)
         {
+            compensate_stream_start(&task_state, &task_operation_id, &started_stream).await;
             return;
         }
 
@@ -2600,6 +2649,7 @@ where
             ) {
                 Ok(stream) => stream,
                 Err(error) => {
+                    compensate_stream_start(&task_state, &task_operation_id, &started_stream).await;
                     let _ = task_state.api.fail_operation(
                         &task_operation_id,
                         GuardError::Conflict(format!(
@@ -2613,9 +2663,11 @@ where
         } else {
             stream
         };
+        let published_stream = stream.clone();
         let result = match base::serde_json::to_value(stream) {
             Ok(result) => result,
             Err(error) => {
+                compensate_stream_start(&task_state, &task_operation_id, &published_stream).await;
                 let _ = task_state.api.fail_operation(
                     &task_operation_id,
                     GuardError::Conflict(format!("stream result serialization failed: {error}")),
@@ -2623,11 +2675,13 @@ where
                 return;
             }
         };
-        let _ = task_state.api.succeed_operation_with_result(
-            &task_operation_id,
-            success_message,
-            result,
-        );
+        if task_state
+            .api
+            .succeed_operation_with_result(&task_operation_id, success_message, result)
+            .is_err()
+        {
+            compensate_stream_start(&task_state, &task_operation_id, &published_stream).await;
+        }
     });
 
     Ok((
@@ -2654,12 +2708,33 @@ where
     let (ui_session_token, session) =
         require_write_with_token(&state.auth, &headers, Role::Operator)?;
     let operation_id = request.request_id.clone();
-    state.api.start_operation(operation_request(
+    let (existing, created) = state.api.start_operation_once(operation_request(
         operation_id.clone(),
         policy.operation_kind,
         &session,
         Role::Operator,
     ))?;
+    if !created {
+        return if existing.status == OperationStatus::Succeeded {
+            existing
+                .result
+                .and_then(|result| base::serde_json::from_value(result).ok())
+                .map(|stream| (StatusCode::OK, Json(stream)))
+                .ok_or_else(|| {
+                    HttpError::from_operation(
+                        GuardError::Conflict("stored stream result is unavailable".to_string()),
+                        &operation_id,
+                    )
+                })
+        } else {
+            Err(HttpError::from_operation(
+                existing.error.unwrap_or_else(|| {
+                    GuardError::Conflict("stream start is already in progress".to_string())
+                }),
+                &operation_id,
+            ))
+        };
+    }
     let start_result = rpc_start(
         BusinessControl::new(state.api.store()),
         request.request_id.clone(),
@@ -2670,14 +2745,46 @@ where
     .await;
     match start_result {
         Ok(stream) => {
+            let started_stream = stream.clone();
             let stream = if policy.issue_ticket {
-                issue_playback_ticket(&state, stream, &ui_session_token, &session, Role::Viewer)?
+                match issue_playback_ticket(
+                    &state,
+                    stream,
+                    &ui_session_token,
+                    &session,
+                    Role::Viewer,
+                ) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        compensate_stream_start(&state, &operation_id, &started_stream).await;
+                        let guard_error = GuardError::Conflict(format!(
+                            "playback ticket creation failed: {}",
+                            error.message
+                        ));
+                        let _ = state.api.fail_operation(&operation_id, guard_error.clone());
+                        return Err(HttpError::from_operation(guard_error, &operation_id));
+                    }
+                }
             } else {
                 stream
             };
-            state
-                .api
-                .succeed_operation(&operation_id, policy.success_message)?;
+            let stored = match base::serde_json::to_value(&stream) {
+                Ok(stored) => stored,
+                Err(error) => {
+                    compensate_stream_start(&state, &operation_id, &stream).await;
+                    return Err(HttpError::internal(format!(
+                        "serialize stream result: {error}"
+                    )));
+                }
+            };
+            if let Err(error) = state.api.succeed_operation_with_result(
+                &operation_id,
+                policy.success_message,
+                stored,
+            ) {
+                compensate_stream_start(&state, &operation_id, &stream).await;
+                return Err(HttpError::from_operation(error, &operation_id));
+            }
             Ok((StatusCode::ACCEPTED, Json(stream)))
         }
         Err(error) => {
@@ -2822,6 +2929,16 @@ async fn create_stream_output(
                 return;
             }
             Err(_) => {
+                let output_type = request.output_type.trim().to_ascii_lowercase();
+                if matches!(output_type.as_str(), "flv" | "fmp4" | "hls") {
+                    let _ = BusinessControl::new(task_state.api.store())
+                        .close_stream_output(
+                            &format!("timeout-{task_operation_id}"),
+                            &stream_id,
+                            &format!("out-{output_type}-{task_operation_id}"),
+                        )
+                        .await;
+                }
                 let _ = task_state.api.fail_operation(
                     &task_operation_id,
                     GuardError::user_visible(
@@ -2849,25 +2966,48 @@ async fn create_stream_output(
                 .await;
             return;
         }
-        let output =
-            match issue_stream_output_ticket(&task_state, output, &ui_session_token, &session) {
-                Ok(output) => output,
-                Err(error) => {
-                    let _ = task_state.api.fail_operation(
-                        &task_operation_id,
-                        GuardError::Conflict(format!(
-                            "stream output ticket creation failed: {}",
-                            error.message
-                        )),
-                    );
-                    return;
-                }
-            };
         let output_id = output.output_id.clone();
         let output_stream_id = output.stream_id.clone();
+        let output = match issue_stream_output_ticket(
+            &task_state,
+            output,
+            &request.subscription_id,
+            &ui_session_token,
+            &session,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = BusinessControl::new(task_state.api.store())
+                    .close_stream_output(
+                        &format!("compensate-{task_operation_id}"),
+                        &output_stream_id,
+                        &output_id,
+                    )
+                    .await;
+                let _ = task_state.api.fail_operation(
+                    &task_operation_id,
+                    GuardError::Conflict(format!(
+                        "stream output ticket creation failed: {}",
+                        error.message
+                    )),
+                );
+                return;
+            }
+        };
         let result = match base::serde_json::to_value(output) {
             Ok(result) => result,
             Err(error) => {
+                task_state
+                    .api
+                    .store()
+                    .revoke_playback_tickets_for_output(&output_stream_id, &output_id);
+                let _ = BusinessControl::new(task_state.api.store())
+                    .close_stream_output(
+                        &format!("compensate-{task_operation_id}"),
+                        &output_stream_id,
+                        &output_id,
+                    )
+                    .await;
                 let _ = task_state.api.fail_operation(
                     &task_operation_id,
                     GuardError::Conflict(format!("output result serialization failed: {error}")),
@@ -2933,18 +3073,37 @@ async fn close_stream_output(
         "/api/v2/streams/{{stream_id}}/outputs/{{output_id}}/close, req: stream_id={stream_id}, output_id={output_id}"
     );
     let session = require_write(&state.auth, &headers, Role::Operator)?;
-    let operation_id = format!("close-output-{output_id}");
-    state.api.start_operation(operation_request(
+    let operation_id = format!("close-output-{output_id}-{}", session.username);
+    let (existing, created) = state.api.start_operation_once(operation_request(
         operation_id.clone(),
         "stream.output.close",
         &session,
         Role::Operator,
     ))?;
+    if !created {
+        return if existing.status == OperationStatus::Succeeded {
+            Ok(Json(CloseStreamOutputResponse {
+                closed: true,
+                output_id,
+            }))
+        } else {
+            Err(HttpError::from_operation(
+                existing.error.unwrap_or_else(|| {
+                    GuardError::Conflict("stream output close is already in progress".to_string())
+                }),
+                &operation_id,
+            ))
+        };
+    }
     let result = BusinessControl::new(state.api.store())
         .close_stream_output(&operation_id, &stream_id, &output_id)
         .await;
     match result {
         Ok(closed) => {
+            state
+                .api
+                .store()
+                .revoke_playback_tickets_for_output(&stream_id, &output_id);
             state
                 .api
                 .succeed_operation(&operation_id, "stream output closed")?;
@@ -3127,13 +3286,34 @@ async fn stop_stream(
 ) -> Result<Json<StreamSummary>, HttpError> {
     debug!("/api/v2/streams/{{stream_id}}/stop, req: stream_id={stream_id}");
     let session = require_write(&state.auth, &headers, Role::Operator)?;
-    let operation_id = format!("stop-{stream_id}");
-    state.api.start_operation(operation_request(
+    let operation_id = format!("stop-{stream_id}-{}", session.username);
+    let (existing, created) = state.api.start_operation_once(operation_request(
         operation_id.clone(),
         "stream.stop",
         &session,
         Role::Operator,
     ))?;
+    if !created {
+        return if existing.status == OperationStatus::Succeeded {
+            existing
+                .result
+                .and_then(|result| base::serde_json::from_value(result).ok())
+                .map(Json)
+                .ok_or_else(|| {
+                    HttpError::from_operation(
+                        GuardError::Conflict("stored stop result is unavailable".to_string()),
+                        &operation_id,
+                    )
+                })
+        } else {
+            Err(HttpError::from_operation(
+                existing.error.unwrap_or_else(|| {
+                    GuardError::Conflict("stream stop is already in progress".to_string())
+                }),
+                &operation_id,
+            ))
+        };
+    }
     let stop_result = BusinessControl::new(state.api.store())
         .stop_stream(&operation_id, &stream_id)
         .await;
@@ -3143,9 +3323,86 @@ async fn stop_stream(
                 .api
                 .store()
                 .revoke_playback_tickets_for_stream(&stream_id);
+            let result = base::serde_json::to_value(&stream)
+                .map_err(|error| HttpError::internal(format!("serialize stop result: {error}")))?;
             state
                 .api
-                .succeed_operation(&operation_id, "stream stopped")?;
+                .succeed_operation_with_result(&operation_id, "stream stopped", result)?;
+            Ok(Json(stream))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(HttpError::from_operation(error, &operation_id))
+        }
+    }
+}
+
+async fn release_stream(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(stream_id): Path<String>,
+    Json(request): Json<ReleaseStreamRequest>,
+) -> Result<Json<StreamSummary>, HttpError> {
+    debug!(
+        "/api/v2/streams/{{stream_id}}/release, req: stream_id={stream_id}, subscription_id={}",
+        if request.subscription_id.is_empty() {
+            "<empty>"
+        } else {
+            "<redacted>"
+        }
+    );
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id;
+    let (existing, created) = state.api.start_operation_once(operation_request(
+        operation_id.clone(),
+        "stream.release",
+        &session,
+        Role::Operator,
+    ))?;
+    if !created {
+        return if existing.status == OperationStatus::Succeeded {
+            existing
+                .result
+                .and_then(|result| base::serde_json::from_value(result).ok())
+                .map(Json)
+                .ok_or_else(|| {
+                    HttpError::from_operation(
+                        GuardError::Conflict("stored release result is unavailable".to_string()),
+                        &operation_id,
+                    )
+                })
+        } else {
+            Err(HttpError::from_operation(
+                existing.error.unwrap_or_else(|| {
+                    GuardError::Conflict("stream release is already in progress".to_string())
+                }),
+                &operation_id,
+            ))
+        };
+    }
+    let result = BusinessControl::new(state.api.store())
+        .release_stream(&operation_id, &stream_id, &request.subscription_id)
+        .await;
+    match result {
+        Ok(stream) => {
+            state
+                .api
+                .store()
+                .revoke_playback_tickets_for_subscription(&stream_id, &request.subscription_id);
+            if stream.state == StreamSummaryState::Stopped {
+                state
+                    .api
+                    .store()
+                    .revoke_playback_tickets_for_stream(&stream_id);
+            }
+            let stored = base::serde_json::to_value(&stream).map_err(|error| {
+                HttpError::internal(format!("serialize release result: {error}"))
+            })?;
+            state.api.succeed_operation_with_result(
+                &operation_id,
+                "stream subscription released",
+                stored,
+            )?;
             Ok(Json(stream))
         }
         Err(error) => {
@@ -3270,6 +3527,7 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
         .into_iter()
         .filter(|route| !route.resource_id.starts_with("ai-"))
         .map(|route| {
+            let owner = store.get_stream_session_owner(&route.resource_id);
             let lease = leases
                 .iter()
                 .find(|lease| lease.resource_id == route.resource_id);
@@ -3286,6 +3544,12 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
                 endpoint: String::new(),
                 video_codec: String::new(),
                 audio_codec: String::new(),
+                subscription_id: String::new(),
+                session_node_id: owner
+                    .as_ref()
+                    .map(|owner| owner.node_id.clone())
+                    .unwrap_or_default(),
+                session_instance_id: owner.map(|owner| owner.instance_id).unwrap_or_default(),
                 state: if route.state == RouteState::Closed {
                     StreamSummaryState::Stopped
                 } else if lease
@@ -3675,7 +3939,24 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuardError, HttpError, media_startup_timeout_ms};
+    use super::{
+        GuardError, HttpError, endpoint_with_playback_token, media_startup_timeout_ms,
+        playback_token_from_endpoint,
+    };
+
+    #[test]
+    fn playback_ticket_replaces_internal_subscription_token() {
+        let endpoint = endpoint_with_playback_token(
+            "https://media.example/stream.flv?quality=main&gmv-token=subscription",
+            "ticket",
+        );
+
+        assert_eq!(
+            endpoint,
+            "https://media.example/stream.flv?quality=main&gmv-token=ticket"
+        );
+        assert_eq!(playback_token_from_endpoint(&endpoint), Some("ticket"));
+    }
 
     #[test]
     fn operation_error_keeps_operation_id_for_http_response() {

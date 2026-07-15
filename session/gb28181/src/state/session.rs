@@ -358,6 +358,14 @@ impl Cache {
         })
     }
 
+    pub fn stream_map_query_input(stream_id: &str) -> Option<(String, String, AccessMode)> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get(stream_id)
+            .map(|item| (item.device_id.clone(), item.channel_id.clone(), item.am))
+    }
+
     pub fn stream_map_remove(stream_id: &String, gmv_token: Option<&String>) {
         match gmv_token {
             None => {
@@ -370,6 +378,17 @@ impl Cache {
                 Entry::Vacant(_) => {}
             },
         }
+    }
+
+    pub fn stream_map_release_token(stream_id: &str, token: &str) -> Option<usize> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
+            .map(|mut stream| {
+                stream.gmv_token_sets.remove(token);
+                stream.gmv_token_sets.len()
+            })
     }
 
     pub fn stream_map_contains_token(stream_id: &String, gmv_token: &String) -> bool {
@@ -1533,6 +1552,46 @@ mod tests {
         Cache::stream_map_remove(&first, None);
         Cache::stream_map_remove(&second, None);
         assert!(!Cache::ssrc_is_active(ssrc));
+    }
+
+    #[test]
+    fn releasing_subscription_keeps_shared_stream_until_last_viewer() {
+        let stream_id = "shared-viewer-release".to_string();
+        Cache::stream_map_remove(&stream_id, None);
+        Cache::stream_map_insert_info(
+            stream_id.clone(),
+            "device-id".to_string(),
+            "channel-id".to_string(),
+            200_009_998,
+            String::new(),
+            "media-shared-test".to_string(),
+            "call-shared-test".to_string(),
+            1,
+            AccessMode::Live,
+        );
+        assert!(Cache::stream_map_insert_token(
+            stream_id.clone(),
+            "viewer-a".to_string()
+        ));
+        assert!(Cache::stream_map_insert_token(
+            stream_id.clone(),
+            "viewer-b".to_string()
+        ));
+
+        assert_eq!(
+            Cache::stream_map_release_token(&stream_id, "viewer-a"),
+            Some(1)
+        );
+        assert!(Cache::stream_map_contains_token(
+            &stream_id,
+            &"viewer-b".to_string()
+        ));
+        assert_eq!(
+            Cache::stream_map_release_token(&stream_id, "viewer-b"),
+            Some(0)
+        );
+
+        Cache::stream_map_remove(&stream_id, None);
     }
 
     #[test]

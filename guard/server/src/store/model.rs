@@ -89,12 +89,22 @@ pub struct RouteRecord {
 pub struct PlaybackTicketRecord {
     pub token: String,
     pub stream_id: String,
+    pub output_id: String,
+    pub subscription_id: String,
     pub lease_id: String,
     pub route_id: String,
     pub username: String,
     pub ui_session_token: String,
     pub required_role: Role,
     pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamSessionOwnerRecord {
+    pub stream_id: String,
+    pub input_key: String,
+    pub node_id: String,
+    pub instance_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

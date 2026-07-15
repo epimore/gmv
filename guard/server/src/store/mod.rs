@@ -16,7 +16,7 @@ use parking_lot::RwLock;
 use crate::core::{GuardError, GuardResult};
 use model::{
     EventRecord, LeaseRecord, NodeRecord, OutboxRecord, OutboxState, PlaybackTicketRecord,
-    RouteRecord,
+    RouteRecord, StreamSessionOwnerRecord,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +34,8 @@ struct StoreInner {
     outbox: HashMap<String, OutboxRecord>,
     command_ids: HashMap<String, i64>,
     playback_tickets: HashMap<String, PlaybackTicketRecord>,
+    stream_session_owners: HashMap<String, StreamSessionOwnerRecord>,
+    stream_input_owners: HashMap<String, StreamSessionOwnerRecord>,
 }
 
 impl InMemoryGuardStore {
@@ -129,6 +131,99 @@ impl InMemoryGuardStore {
             .playback_tickets
             .retain(|_, ticket| ticket.stream_id != stream_id);
         before - inner.playback_tickets.len()
+    }
+
+    pub fn revoke_playback_tickets_for_output(&self, stream_id: &str, output_id: &str) -> usize {
+        let mut inner = self.inner.write();
+        let before = inner.playback_tickets.len();
+        inner
+            .playback_tickets
+            .retain(|_, ticket| ticket.stream_id != stream_id || ticket.output_id != output_id);
+        before - inner.playback_tickets.len()
+    }
+
+    pub fn revoke_playback_tickets_for_subscription(
+        &self,
+        stream_id: &str,
+        subscription_id: &str,
+    ) -> usize {
+        let mut inner = self.inner.write();
+        let before = inner.playback_tickets.len();
+        inner.playback_tickets.retain(|_, ticket| {
+            ticket.stream_id != stream_id || ticket.subscription_id != subscription_id
+        });
+        before - inner.playback_tickets.len()
+    }
+
+    pub fn upsert_stream_session_owner(&self, owner: StreamSessionOwnerRecord) {
+        let mut inner = self.inner.write();
+        if !owner.input_key.is_empty() {
+            inner
+                .stream_input_owners
+                .insert(owner.input_key.clone(), owner.clone());
+        }
+        inner
+            .stream_session_owners
+            .insert(owner.stream_id.clone(), owner);
+    }
+
+    pub fn get_stream_session_owner(&self, stream_id: &str) -> Option<StreamSessionOwnerRecord> {
+        self.inner
+            .read()
+            .stream_session_owners
+            .get(stream_id)
+            .cloned()
+    }
+
+    pub fn get_stream_session_owner_by_input(
+        &self,
+        input_key: &str,
+    ) -> Option<StreamSessionOwnerRecord> {
+        self.inner
+            .read()
+            .stream_input_owners
+            .get(input_key)
+            .cloned()
+    }
+
+    pub fn claim_stream_input_owner(
+        &self,
+        input_key: &str,
+        candidate: StreamSessionOwnerRecord,
+    ) -> StreamSessionOwnerRecord {
+        self.inner
+            .write()
+            .stream_input_owners
+            .entry(input_key.to_string())
+            .or_insert(candidate)
+            .clone()
+    }
+
+    pub fn replace_inactive_stream_input_owner(
+        &self,
+        input_key: &str,
+        candidate: StreamSessionOwnerRecord,
+    ) -> StreamSessionOwnerRecord {
+        let mut inner = self.inner.write();
+        let owner = inner
+            .stream_input_owners
+            .entry(input_key.to_string())
+            .or_insert_with(|| candidate.clone());
+        if owner.stream_id.is_empty() {
+            *owner = candidate;
+        }
+        owner.clone()
+    }
+
+    pub fn remove_stream_session_owner(&self, stream_id: &str) {
+        let mut inner = self.inner.write();
+        if let Some(owner) = inner.stream_session_owners.remove(stream_id)
+            && !owner.input_key.is_empty()
+            && let Some(current) = inner.stream_input_owners.get_mut(&owner.input_key)
+            && current.stream_id == stream_id
+        {
+            current.stream_id.clear();
+        }
     }
 
     pub fn insert_event_once(&self, event: EventRecord) -> GuardResult<bool> {

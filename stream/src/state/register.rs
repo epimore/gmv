@@ -9,6 +9,7 @@ use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
 use crate::state::event::{ActiveEvent, Event, EventRes, InnerEvent, OutEvent};
 use crate::state::layer::converter_layer::ConverterLayer;
+use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::layer::output_layer::OutputLayer;
 use crate::state::msg::StreamConfig;
 use crate::state::{RTP_BUFFER_SIZE, event};
@@ -90,6 +91,19 @@ fn live_output_contract(
         )),
     }
 }
+
+fn close_output_layers(
+    output: &mut OutputLayer,
+    muxer: &mut MuxerLayer,
+    output_enum: OutputEnum,
+) -> bool {
+    if !output.remove(output_enum) {
+        return false;
+    }
+    muxer.close_by_muxer_type(MuxerEnum::from_output_enum(output_enum));
+    true
+}
+
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
 const RTP_QUEUE_RECOVERY_PACKET_COUNT: usize = 64;
 const RTP_INPUT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
@@ -579,13 +593,18 @@ impl Register {
                 let muxer_enum = MuxerEnum::from_output_enum(info.play_type);
                 let stream_id = Arc::from(info.base_stream_info.stream_id);
                 arc.stream_metadata_map.get_mut(&stream_id).map(|mut meta| {
+                    let meta = &mut *meta;
                     let size = meta.output_count.get_muxer_size(info.play_type);
                     if size == 0 {
                         info!(
                             "ssrc = {},stream id = {} close muxer: {:?}",
                             meta.ssrc, stream_id, muxer_enum
                         );
-                        meta.converter.muxer.close_by_muxer_type(muxer_enum);
+                        close_output_layers(
+                            &mut meta.output,
+                            &mut meta.converter.muxer,
+                            info.play_type,
+                        );
                         let _ = publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer_enum))
                             .hand_log(|msg| info!("{msg}"));
                     }
@@ -1091,11 +1110,11 @@ impl Register {
                 |msg| error!("{msg}: stream_id={stream_id}"),
             )
         })?;
-        if !meta.output.remove(output_enum) {
+        let meta = &mut *meta;
+        if !close_output_layers(&mut meta.output, &mut meta.converter.muxer, output_enum) {
             return Ok(false);
         }
         let muxer = MuxerEnum::from_output_enum(output_enum);
-        meta.converter.muxer.close_by_muxer_type(muxer);
         publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer))
             .hand_log(|msg| error!("{msg}"))?;
         Ok(true)
@@ -1477,9 +1496,11 @@ impl OutputCount {
 mod unknown_stream_tests {
     use super::{
         ContextEvent, MuxerEnum, MuxerEvent, RtpChannel, UNKNOWN_STREAM_COOLDOWN_MS,
-        UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation, publish_muxer_event,
-        stream_config_ready,
+        UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation, close_output_layers,
+        live_output_contract, publish_muxer_event, stream_config_ready,
     };
+    use crate::state::layer::muxer_layer::MuxerLayer;
+    use crate::state::layer::output_layer::OutputLayer;
     use base::bus::mpsc::TypedMessageBus;
     use base::net::state::Protocol;
     use gmv_domain::info::media_info_ext::MediaExt;
@@ -1553,5 +1574,25 @@ mod unknown_stream_tests {
             receiver.try_recv().unwrap(),
             ContextEvent::Muxer(MuxerEvent::Close(MuxerEnum::HlsMp4))
         ));
+    }
+
+    #[test]
+    fn live_outputs_can_reopen_after_idle_close() {
+        for output_type in ["flv", "fmp4", "hls"] {
+            let (_, output_kind, output_enum, _) = live_output_contract(output_type).unwrap();
+            let mut output = OutputLayer::new(output_kind.clone());
+            let mut muxer = MuxerLayer::new(&output_kind);
+
+            assert!(close_output_layers(&mut output, &mut muxer, output_enum));
+            assert!(output.put_if_absent(output_kind.clone()));
+            muxer.put_if_absent(&output_kind);
+
+            assert!(
+                muxer
+                    .get_rx(MuxerEnum::from_output_enum(output_enum))
+                    .is_ok(),
+                "{output_type} muxer should reopen after idle close"
+            );
+        }
     }
 }

@@ -135,12 +135,14 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
             store.upsert_playback_ticket(PlaybackTicketRecord {
                 token: "play-token-1".to_string(),
                 stream_id: "stream-play-1".to_string(),
+                output_id: String::new(),
+                subscription_id: "viewer-1".to_string(),
                 lease_id: "lease-play-1".to_string(),
                 route_id: "route-play-1".to_string(),
                 username: "operator".to_string(),
                 ui_session_token: ui_session_token.clone(),
                 required_role: Role::Viewer,
-                expires_at_ms: 0,
+                expires_at_ms: i64::MAX,
             });
             let service = GuardControlRpc::with_auth(store.clone(), auth.clone());
 
@@ -176,6 +178,32 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
             assert!(!mismatch.accepted);
             assert_eq!(mismatch.error.unwrap().code, "playback_stream_mismatch");
 
+            store.upsert_playback_ticket(PlaybackTicketRecord {
+                token: "play-token-expired".to_string(),
+                stream_id: "stream-play-1".to_string(),
+                output_id: "output-expired".to_string(),
+                subscription_id: "viewer-expired".to_string(),
+                lease_id: "lease-play-1".to_string(),
+                route_id: "route-play-1".to_string(),
+                username: "operator".to_string(),
+                ui_session_token: ui_session_token.clone(),
+                required_role: Role::Viewer,
+                expires_at_ms: 0,
+            });
+            let expired = service
+                .check_playback(tonic::Request::new(CheckPlaybackRequest {
+                    stream_id: "stream-play-1".to_string(),
+                    token: "play-token-expired".to_string(),
+                    remote_addr: String::new(),
+                    output_type: "HlsMp4".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(!expired.accepted);
+            assert_eq!(expired.error.unwrap().code, "playback_token_expired");
+            assert!(store.get_playback_ticket("play-token-expired").is_none());
+
             store.revoke_playback_tickets_for_stream("stream-play-1");
             let revoked = service
                 .check_playback(tonic::Request::new(CheckPlaybackRequest {
@@ -193,12 +221,14 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
             store.upsert_playback_ticket(PlaybackTicketRecord {
                 token: "play-token-2".to_string(),
                 stream_id: "stream-play-1".to_string(),
+                output_id: String::new(),
+                subscription_id: "viewer-2".to_string(),
                 lease_id: "lease-play-1".to_string(),
                 route_id: "route-play-1".to_string(),
                 username: "operator".to_string(),
                 ui_session_token,
                 required_role: Role::Viewer,
-                expires_at_ms: 0,
+                expires_at_ms: i64::MAX,
             });
             auth.revoke_user_sessions("operator");
             let inactive_session = service
