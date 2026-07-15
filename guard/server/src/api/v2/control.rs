@@ -872,6 +872,10 @@ impl BusinessControl {
         .await
     }
 
+    pub fn validate_live_start(&self) -> GuardResult<()> {
+        self.select_any_session().map(|_| ())
+    }
+
     pub async fn start_playback(
         &self,
         operation_id: &str,
@@ -1233,6 +1237,10 @@ impl BusinessControl {
             .into_iter()
             .map(stream_output_summary)
             .collect())
+    }
+
+    pub fn validate_stream_output_target(&self, stream_id: &str) -> GuardResult<()> {
+        self.stream_node_for_resource(stream_id).map(|_| ())
     }
 
     pub async fn close_stream_output(

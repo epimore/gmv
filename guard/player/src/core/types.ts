@@ -12,6 +12,7 @@ export interface GmvSource {
   priority?: number;
   label?: string;
   rateMode?: GmvPlaybackRateMode;
+  startupTimeoutMs?: number;
 }
 
 export interface GmvPlayerCoreOptions {
@@ -42,6 +43,7 @@ export interface GmvPlayerEvents {
   paused: undefined;
   stalled: undefined;
   reconnecting: { retry: number; reason: string };
+  startupProgress: { stage: 'buffering_player'; elapsedMs: number; checkpointMs: number; hardTimeoutMs: number };
   reconnected: undefined;
   error: { code: string; message: string; source?: GmvSource };
   sourceChanged: { source: GmvSource };

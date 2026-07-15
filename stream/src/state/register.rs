@@ -1126,6 +1126,14 @@ impl Register {
         let time_schedule_key = TimeScheduleKey::RtpGateway(ssrc);
         let stream_id: Arc<str> = Arc::from(media_config.stream_id);
         let arc = Self::get().inner.clone();
+        let (in_wait_timeout, out_idle_timeout) = arc
+            .stream_conf
+            .resolve_media_timeouts(media_config.in_wait_timeout, media_config.out_idle_timeout)
+            .map_err(|message| {
+                GlobalError::new_biz_error(BaseErrorCode::InvalidRequest.code(), &message, |msg| {
+                    error!("{msg}: stream_id={stream_id}, ssrc={ssrc}")
+                })
+            })?;
         if let Some(mut meta) = arc.stream_metadata_map.get_mut(&stream_id) {
             if meta.ssrc != ssrc {
                 return Err(GlobalError::new_biz_error(
@@ -1143,6 +1151,14 @@ impl Register {
                 return Err(GlobalError::new_biz_error(
                     BaseErrorCode::InvalidState.code(),
                     "existing stream uses a different transcode profile",
+                    |msg| error!("{msg}: stream_id={stream_id}, ssrc={ssrc}"),
+                ));
+            }
+            if meta.in_wait_timeout != in_wait_timeout || meta.out_idle_timeout != out_idle_timeout
+            {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "existing stream uses different media timeout values",
                     |msg| error!("{msg}: stream_id={stream_id}, ssrc={ssrc}"),
                 ));
             }
@@ -1194,12 +1210,6 @@ impl Register {
             &media_config.output,
         );
         let output = OutputLayer::new(media_config.output.clone());
-        let in_wait_timeout = media_config
-            .in_wait_timeout
-            .unwrap_or_else(|| arc.stream_conf.in_wait_timeout);
-        let out_idle_timeout = media_config
-            .out_idle_timeout
-            .unwrap_or_else(|| arc.stream_conf.out_idle_timeout);
         let mut metadata =
             StreamMetadata::new(ssrc, in_wait_timeout, out_idle_timeout, converter, output);
         metadata.session_hook_endpoint = media_config.session_hook_endpoint;

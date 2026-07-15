@@ -10,8 +10,15 @@ import { GmvErrorCode } from './utils/ErrorCode';
 const STALL_GRACE_MS = 5_000;
 const STALL_CHECK_INTERVAL_MS = 1_000;
 const STABLE_PLAYBACK_MS = 10_000;
-const STARTUP_VIDEO_GRACE_MS = 3_000;
+const STARTUP_FEEDBACK_MS = 3_000;
+const STARTUP_CHECKPOINT_MS = 8_000;
 const MAX_RECONNECT_DELAY_MS = 10_000;
+const DEFAULT_STARTUP_TIMEOUT_MS: Record<GmvProtocol, number> = {
+  flv: 10_000,
+  fmp4: 10_000,
+  hls: 12_000,
+  mp4: 10_000,
+};
 
 export class GmvPlayerCore {
   private readonly bus = new EventBus<GmvPlayerEvents>();
@@ -25,7 +32,9 @@ export class GmvPlayerCore {
   private destroyed = false;
   private loadVersion = 0;
   private stallWatch?: number;
-  private startupWatch?: number;
+  private startupFeedbackWatch?: number;
+  private startupHardWatch?: number;
+  private startupProgressWatch?: number;
   private stablePlaybackTimer?: number;
   private stallCurrentTime = 0;
   private stallBufferEnd = 0;
@@ -269,24 +278,42 @@ export class GmvPlayerCore {
 
   private startStartupWatch(source: GmvSource, version: number): void {
     this.clearStartupWatch();
-    this.startupWatch = window.setTimeout(() => {
-      this.startupWatch = undefined;
+    const startedAt = Date.now();
+    const hardTimeoutMs = source.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS[source.protocol];
+    const emitProgress = () => {
+      this.bus.emit('startupProgress', {
+        stage: 'buffering_player',
+        elapsedMs: Math.min(Date.now() - startedAt, hardTimeoutMs),
+        checkpointMs: STARTUP_CHECKPOINT_MS,
+        hardTimeoutMs,
+      });
+    };
+    this.startupProgressWatch = window.setInterval(emitProgress, 1_000);
+    this.startupFeedbackWatch = window.setTimeout(() => {
+      this.startupFeedbackWatch = undefined;
       if (this.destroyed || version !== this.loadVersion || this.activeSource?.url !== source.url) return;
+      emitProgress();
 
       if (source.protocol === 'flv' && source.hasAudio !== false) {
         this.bus.emit('reconnecting', { retry: this.reconnectRetry, reason: 'video-only-fallback' });
-        void this.load([{ ...source, hasAudio: false }]);
-        return;
+        void this.load([{ ...source, hasAudio: false, startupTimeoutMs: Math.max(1_000, hardTimeoutMs - STARTUP_FEEDBACK_MS) }]);
       }
-
-      this.emitError(GmvErrorCode.StreamOpenFailed, '视频启动超时', source);
-    }, STARTUP_VIDEO_GRACE_MS);
+    }, Math.min(STARTUP_FEEDBACK_MS, hardTimeoutMs));
+    this.startupHardWatch = window.setTimeout(() => {
+      this.startupHardWatch = undefined;
+      if (this.destroyed || version !== this.loadVersion || this.activeSource?.url !== source.url) return;
+      this.clearStartupWatch();
+      this.emitError(GmvErrorCode.StreamOpenFailed, `视频启动超时（已等待 ${Math.ceil(hardTimeoutMs / 1_000)} 秒）`, source);
+    }, hardTimeoutMs);
   }
 
   private clearStartupWatch(): void {
-    if (this.startupWatch === undefined) return;
-    window.clearTimeout(this.startupWatch);
-    this.startupWatch = undefined;
+    if (this.startupFeedbackWatch !== undefined) window.clearTimeout(this.startupFeedbackWatch);
+    if (this.startupHardWatch !== undefined) window.clearTimeout(this.startupHardWatch);
+    if (this.startupProgressWatch !== undefined) window.clearInterval(this.startupProgressWatch);
+    this.startupFeedbackWatch = undefined;
+    this.startupHardWatch = undefined;
+    this.startupProgressWatch = undefined;
   }
 
   private clearStablePlaybackTimer(): void {

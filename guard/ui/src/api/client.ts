@@ -36,6 +36,20 @@ export interface OutboxInfo { outbox_id: string; event_id: string; destination_k
 export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
 export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; state: 'running' | 'stopped' | 'failed' }
 export interface StreamOutputSummary { output_id: string; stream_id: string; output_type: 'flv' | 'hls' | 'fmp4'; endpoint: string; state: 'preparing' | 'ready' | 'closed' | 'failed' }
+export type MediaOperationState = 'preparing' | 'ready' | 'failed' | 'cancelled';
+export interface MediaOperationError { code: string; message: string; user_message: string; retryable: boolean }
+export interface MediaOperationSummary<T = unknown> {
+  operation_id: string;
+  state: MediaOperationState;
+  stage: string;
+  elapsed_ms: number;
+  last_progress_at_ms: number;
+  checkpoint_ms: number;
+  hard_timeout_ms: number;
+  can_continue: boolean;
+  result: T | null;
+  error: MediaOperationError | null;
+}
 export interface MediaTransportCapability { scheme: 'http' | 'https'; http_version: 'http/1.1' | 'h2'; multi_view_limit: number }
 export interface AiTaskSummary { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
 export interface RuntimeStatus { guard_available: boolean; streams: number; running_streams: number; ai_tasks: number; running_ai_tasks: number; ptz_commands: number }
@@ -48,17 +62,24 @@ let csrfToken = '';
 let unauthorizedHandler: (() => void) | undefined;
 export function setUnauthorizedHandler(handler: () => void): void { unauthorizedHandler = handler; }
 
-async function requestAt<T>(url: string, init: RequestInit = {}, redirectOnUnauthorized = true): Promise<T> {
+async function requestAt<T>(url: string, init: RequestInit = {}, redirectOnUnauthorized = true, timeoutMs = 0): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
   if (method !== 'GET' && method !== 'POST') throw new Error('HTTP method is not allowed: ' + method);
   const headers = new Headers(init.headers);
   if (init.body) headers.set('content-type', 'application/json');
   if (csrfToken && method === 'POST') headers.set('x-csrf-token', csrfToken);
+  const timeoutController = timeoutMs > 0 && !init.signal ? new AbortController() : undefined;
+  const timeoutId = timeoutController ? window.setTimeout(() => timeoutController.abort(), timeoutMs) : undefined;
   let response: Response;
   try {
-    response = await fetch(url, { ...init, headers, credentials: 'include' });
+    response = await fetch(url, { ...init, signal: init.signal ?? timeoutController?.signal, headers, credentials: 'include' });
   } catch {
+    if (timeoutController?.signal.aborted) {
+      throw new ApiError(0, { code: 'request_timeout', message: 'request timed out', user_message: '控制请求响应超时，请稍后重试', retryable: true });
+    }
     throw new ApiError(0, { code: 'network_error', message: 'fetch failed', user_message: '无法连接 Guard 服务，请检查网络或刷新页面', retryable: true });
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
   }
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'HTTP ' + response.status }));
@@ -68,7 +89,7 @@ async function requestAt<T>(url: string, init: RequestInit = {}, redirectOnUnaut
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
-const request = <T>(path: string, init: RequestInit = {}, redirectOnUnauthorized = true) => requestAt<T>('/api/v2' + path, init, redirectOnUnauthorized);
+const request = <T>(path: string, init: RequestInit = {}, redirectOnUnauthorized = true, timeoutMs = 0) => requestAt<T>('/api/v2' + path, init, redirectOnUnauthorized, timeoutMs);
 
 export function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) return error.userMessage || fallback;
@@ -104,19 +125,131 @@ export const listLeases = () => request<LeaseInfo[]>('/leases');
 export const listOutbox = (limit = 100) => request<OutboxInfo[]>('/integrations/outbox?limit=' + limit);
 export const retryOutbox = (outboxId: string) => request<OutboxInfo>('/integrations/outbox/' + encodeURIComponent(outboxId) + '/retry', { method: 'POST', body: '{}' });
 export const listDevices = () => request<DeviceSummary[]>('/devices');
-export const startPreview = (deviceId: string, channelId: string, requestId: string) => request<StreamSummary>('/devices/' + deviceId + '/preview', { method: 'POST', body: JSON.stringify({ channel_id: channelId, request_id: requestId }) });
+export const startPreview = async (deviceId: string, channelId: string, requestId: string) => {
+  const operation = await request<MediaOperationSummary<StreamSummary>>('/devices/' + deviceId + '/preview', { method: 'POST', body: JSON.stringify({ channel_id: channelId, request_id: requestId }) }, true, 3_000);
+  return waitMediaOperation(operation);
+};
 export const sendPtz = (deviceId: string, channelId: string) => request<{ accepted: boolean; count: number }>('/devices/' + deviceId + '/ptz', { method: 'POST', body: JSON.stringify({ channel_id: channelId }) });
 export const listStreams = () => request<StreamSummary[]>('/streams');
 export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
 export const setStreamPlaybackSpeed = (streamId: string, speedRate: number) => request<{ accepted: boolean; speed_rate: number }>('/streams/' + encodeURIComponent(streamId) + '/speed', { method: 'POST', body: JSON.stringify({ speed_rate: speedRate }) });
 export const listStreamOutputs = (streamId: string) => request<StreamOutputSummary[]>('/streams/' + encodeURIComponent(streamId) + '/outputs');
-export const createStreamOutput = (streamId: string, outputType: StreamOutputSummary['output_type'], requestId: string) => request<StreamOutputSummary>('/streams/' + encodeURIComponent(streamId) + '/outputs', { method: 'POST', body: JSON.stringify({ request_id: requestId, output_type: outputType, audio_codec: 'aac' }) });
+export const createStreamOutput = async (
+  streamId: string,
+  outputType: StreamOutputSummary['output_type'],
+  requestId: string,
+  options: MediaOperationWaitOptions<StreamOutputSummary> = {},
+) => {
+  const operation = await request<MediaOperationSummary<StreamOutputSummary>>('/streams/' + encodeURIComponent(streamId) + '/outputs', { method: 'POST', body: JSON.stringify({ request_id: requestId, output_type: outputType, audio_codec: 'aac' }) }, true, 3_000);
+  return waitMediaOperation(operation, options);
+};
 export const closeStreamOutput = (streamId: string, outputId: string) => request<{ closed: boolean; output_id: string }>('/streams/' + encodeURIComponent(streamId) + '/outputs/' + encodeURIComponent(outputId) + '/close', { method: 'POST', body: '{}' });
 export const listAiTasks = () => request<AiTaskSummary[]>('/ai/tasks');
 export const startAiTask = (streamId: string, model: string, requestId: string) => request<AiTaskSummary>('/ai/tasks', { method: 'POST', body: JSON.stringify({ stream_id: streamId, model, request_id: requestId }) });
 export const cancelAiTask = (taskId: string) => request<AiTaskSummary>('/ai/tasks/' + taskId + '/cancel', { method: 'POST', body: '{}' });
 export const runtimeStatus = () => request<RuntimeStatus>('/runtime/status');
 export const getMediaTransport = () => request<MediaTransportCapability>('/media/transport');
+
+export interface MediaOperationWaitOptions<T> {
+  signal?: AbortSignal;
+  onUpdate?: (operation: MediaOperationSummary<T>) => void;
+}
+
+export const getMediaOperation = <T = unknown>(operationId: string) => request<MediaOperationSummary<T>>('/media/operations/' + encodeURIComponent(operationId), {}, true, 2_000);
+export const getMediaOperations = <T = unknown>(operationIds: string[]) => {
+  const query = new URLSearchParams({ ids: operationIds.join(',') });
+  return request<MediaOperationSummary<T>[]>('/media/operations?' + query, {}, true, 2_000);
+};
+export const continueMediaOperation = <T = unknown>(operationId: string) => request<MediaOperationSummary<T>>('/media/operations/' + encodeURIComponent(operationId) + '/continue', { method: 'POST', body: '{}' }, true, 3_000);
+export const cancelMediaOperation = <T = unknown>(operationId: string) => request<MediaOperationSummary<T>>('/media/operations/' + encodeURIComponent(operationId) + '/cancel', { method: 'POST', body: '{}' }, true, 3_000);
+
+export async function waitMediaOperation<T>(initial: MediaOperationSummary<T>, options: MediaOperationWaitOptions<T> = {}): Promise<T> {
+  let operation = initial;
+  while (true) {
+    options.onUpdate?.(operation);
+    if (operation.state === 'ready' && operation.result) return operation.result;
+    if (operation.state === 'failed') {
+      const error = operation.error;
+      throw new ApiError(409, {
+        code: error?.code || 'media_operation_failed',
+        message: error?.message || 'media operation failed',
+        user_message: error?.user_message || '媒体操作失败，请稍后重试',
+        operation_id: operation.operation_id,
+        retryable: error?.retryable ?? true,
+      });
+    }
+    if (operation.state === 'cancelled') {
+      throw new ApiError(409, {
+        code: 'media_operation_cancelled',
+        message: 'media operation cancelled',
+        user_message: '媒体操作已取消',
+        operation_id: operation.operation_id,
+        retryable: true,
+      });
+    }
+    const pollMs = operation.elapsed_ms < operation.checkpoint_ms ? 1_000 : 2_000;
+    await abortableDelay(pollMs, options.signal);
+    operation = await getMediaOperationBatched<T>(operation.operation_id);
+  }
+}
+
+type PendingOperationRead = {
+  resolve: (operation: MediaOperationSummary<unknown>) => void;
+  reject: (error: unknown) => void;
+};
+const pendingOperationReads = new Map<string, PendingOperationRead[]>();
+let pendingOperationReadTimer: number | undefined;
+
+function getMediaOperationBatched<T>(operationId: string): Promise<MediaOperationSummary<T>> {
+  return new Promise((resolve, reject) => {
+    const readers = pendingOperationReads.get(operationId) ?? [];
+    readers.push({
+      resolve: (operation) => resolve(operation as MediaOperationSummary<T>),
+      reject,
+    });
+    pendingOperationReads.set(operationId, readers);
+    if (pendingOperationReadTimer === undefined) {
+      pendingOperationReadTimer = window.setTimeout(flushMediaOperationReads, 25);
+    }
+  });
+}
+
+async function flushMediaOperationReads() {
+  pendingOperationReadTimer = undefined;
+  const batch = new Map(pendingOperationReads);
+  pendingOperationReads.clear();
+  try {
+    const operations = await getMediaOperations([...batch.keys()]);
+    const byId = new Map(operations.map((operation) => [operation.operation_id, operation]));
+    for (const [operationId, readers] of batch) {
+      const operation = byId.get(operationId);
+      if (!operation) {
+        const error = new ApiError(404, { code: 'media_operation_not_found', message: 'media operation not found', operation_id: operationId, retryable: false });
+        readers.forEach((reader) => reader.reject(error));
+      } else {
+        readers.forEach((reader) => reader.resolve(operation));
+      }
+    }
+  } catch (error) {
+    for (const readers of batch.values()) readers.forEach((reader) => reader.reject(error));
+  }
+}
+
+function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 
 export interface GbSessionConfigInfo { domain: string; domain_id: string; wan_ip: string; wan_port: number }
@@ -158,7 +291,15 @@ export const saveGbResourceConfirmation = (deviceId: string, resourceId: string,
 export const resetGbResourceConfirmation = (deviceId: string, resourceId: string, requestId: string) => request<GbResourceInfo>('/gb28181/devices/' + gbPath(deviceId) + '/resources/' + gbPath(resourceId) + '/confirmation/reset', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export const updateGbChannel = (deviceId: string, channelId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'POST', body: JSON.stringify(payload) });
 export const listGbChannelImages = (deviceId: string, channelId: string) => request<GbChannelImageInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/images');
-export const startGbPreview = (deviceId: string, channelId: string, payload: GbStreamPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/preview', { method: 'POST', body: JSON.stringify(payload) });
+export async function startGbPreview(
+  deviceId: string,
+  channelId: string,
+  payload: GbStreamPayload,
+  options: MediaOperationWaitOptions<StreamSummary> = {},
+): Promise<StreamSummary> {
+  const operation = await request<MediaOperationSummary<StreamSummary>>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/preview', { method: 'POST', body: JSON.stringify(payload) }, true, 3_000);
+  return waitMediaOperation(operation, options);
+}
 export const startGbPlayback = (deviceId: string, channelId: string, payload: GbStreamPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/playback', { method: 'POST', body: JSON.stringify(payload) });
 export const startGbBroadcast = (deviceId: string, payload: GbBroadcastPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/broadcast/start', { method: 'POST', body: JSON.stringify(payload) });
 export const stopGbBroadcast = (broadcastId: string) => request<StreamSummary>('/gb28181/broadcasts/' + gbPath(broadcastId) + '/stop', { method: 'POST', body: '{}' });

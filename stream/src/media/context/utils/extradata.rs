@@ -451,31 +451,7 @@ fn estimate_audio_bandwidth(sample_rate: u32, channels: u32) -> u32 {
     .min(256_000)
 }
 
-/// 调试辅助：打印 codec 信息
-#[allow(dead_code)]
-pub fn debug_codec_info(codec: &str) {
-    let supported = is_codec_supported(codec);
-    debug!("Codec: {} - {}", codec, if supported { "✅" } else { "❌" });
-}
-
-/// 检查 codec 是否被支持（模拟 MediaSource.isTypeSupported）
-fn is_codec_supported(codec: &str) -> bool {
-    // 常见的支持 codec 列表
-    let supported_codecs = [
-        "avc1.42E01E", // Baseline 3.0
-        "avc1.4D401E", // Main 3.0
-        "avc1.4D0029", // Main 4.1
-        "avc1.640028", // High 4.0
-        "avc1.64001F", // High 3.1
-        "mp4a.40.2",   // AAC LC
-        "mp4a.40.5",   // AAC HE
-    ];
-
-    supported_codecs.contains(&codec)
-}
-
 /// 调试辅助：打印完整的流信息
-#[allow(dead_code)]
 pub unsafe fn dump_stream_info(ctx: &DemuxerContext) {
     let fmt = ctx.avio.fmt_ctx;
     info!("=== Media Stream Info ===");

@@ -127,8 +127,33 @@ describe("FlvEngine audio fallback", () => {
     void core.load();
     await vi.advanceTimersByTimeAsync(3_000);
 
+    expect(onError).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(7_000);
+
     expect(mpegtsMock.createPlayer).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledOnce();
+    core.destroy();
+  });
+
+  it("三秒后报告启动进度但不提前判定超时", async () => {
+    vi.useFakeTimers();
+    mpegtsMock.createPlayer.mockImplementation(() => createMpegtsPlayer(() => new Promise(() => {})));
+    const core = new GmvPlayerCore({
+      video: testVideo(),
+      sources: [source(false)],
+      autoplay: true,
+      muted: true,
+    });
+    const onProgress = vi.fn();
+    const onError = vi.fn();
+    core.on("startupProgress", onProgress);
+    core.on("error", onError);
+
+    void core.load();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(onProgress).toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
     core.destroy();
   });
 });

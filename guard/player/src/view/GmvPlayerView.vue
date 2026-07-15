@@ -8,7 +8,8 @@
     @pointerleave="handlePlayerPointerLeave"
     @keydown="notifyControlsActivity"
   >
-    <video ref="videoRef" class="gmv-video" playsinline muted :poster="poster || undefined"></video>
+    <video ref="videoARef" class="gmv-video" :class="{ 'is-active': activeVideoSlot === 0 }" playsinline muted :poster="poster || undefined"></video>
+    <video ref="videoBRef" class="gmv-video" :class="{ 'is-active': activeVideoSlot === 1 }" playsinline muted :poster="poster || undefined"></video>
 
     <div class="gmv-layer osd-layer">
       <span
@@ -32,9 +33,10 @@
       </span>
     </div>
 
-    <div v-if="isLoading" class="player-waiting-cover" aria-label="视频加载中" role="status">
+    <div v-if="isLoading && !activePlaybackReady" class="player-waiting-cover" aria-label="视频加载中" role="status">
       <span class="waiting-ring"></span>
       <span class="waiting-scan"></span>
+      <span v-if="startupProgress && startupProgress.elapsedMs >= 3000" class="startup-progress-text">{{ startupProgressText }}</span>
     </div>
 
     <header class="player-topbar">
@@ -48,7 +50,12 @@
       </div>
     </header>
 
-    <div v-if="viewState === 'reconnecting' || lastError" class="reconnect-banner">
+    <div v-if="activePlaybackReady && (isLoading || outputSwitching)" class="reconnect-banner startup-switch-banner">
+      <span>{{ startupText || startupProgressText || '正在切换播放方式，当前画面继续播放' }}</span>
+      <button v-if="startupCanCancel || (startupProgress && startupProgress.elapsedMs >= startupProgress.checkpointMs)" type="button" @click="cancelPendingPlaybackSwitch">保持当前播放</button>
+    </div>
+
+    <div v-else-if="viewState === 'reconnecting' || lastError" class="reconnect-banner">
       <span>{{ lastError || '正在重连...' }}</span>
       <button type="button" @click="reconnect">重连</button>
     </div>
@@ -138,6 +145,9 @@ const props = withDefaults(
     aiBoxes?: GmvAiBox[];
     capabilities?: GmvViewCapabilities;
     controls?: GmvPlayerControlsConfig;
+    outputSwitching?: boolean;
+    startupText?: string;
+    startupCanCancel?: boolean;
     /** @deprecated 请使用 controls.visibility。 */
     controlsVisible?: boolean;
   }>(),
@@ -164,16 +174,24 @@ const emit = defineEmits<{
   streamSwitch: [{ source: GmvSource }];
   playing: [{ source?: GmvSource }];
   playbackError: [{ message: string; source?: GmvSource }];
+  playbackSwitchCancel: [];
   reconnect: [];
 }>();
 
 const playerRef = ref<HTMLElement>();
-const videoRef = ref<HTMLVideoElement>();
-const player = ref<GmvPlayerCore>();
+const videoARef = ref<HTMLVideoElement>();
+const videoBRef = ref<HTMLVideoElement>();
 const controlsRef = ref<InstanceType<typeof PlayerControls>>();
+type VideoSlot = 0 | 1;
+const activeVideoSlot = ref<VideoSlot>(0);
+const activePlaybackReady = ref(false);
+const players: Array<GmvPlayerCore | undefined> = [undefined, undefined];
+const playerStops: Array<Array<() => void>> = [[], []];
+let playerLoadVersion = 0;
 const viewState = ref<GmvDeviceStatus>('idle');
 const isLoading = ref(false);
 const lastError = ref('');
+const startupProgress = ref<{ elapsedMs: number; checkpointMs: number; hardTimeoutMs: number }>();
 const isFullscreen = ref(false);
 const ptzOpen = ref(false);
 const recording = ref(false);
@@ -185,7 +203,6 @@ const seekMs = ref(0);
 const selectedSourceUrl = ref('');
 const activeSource = ref<GmvSource>();
 const controlsAreVisible = ref(true);
-const stops: Array<() => void> = [];
 
 const basePayload = computed(() => ({ deviceId: props.deviceId, channelId: props.channelId }));
 const fullscreenSupported = computed(() => typeof document !== 'undefined' && !!document.fullscreenEnabled);
@@ -217,6 +234,16 @@ const statusLabel = computed(() => {
   if (props.status === 'offline') return '离线';
   return '待播放';
 });
+const startupProgressText = computed(() => {
+  const progress = startupProgress.value;
+  if (!progress) return '';
+  if (progress.elapsedMs < progress.checkpointMs) {
+    const remaining = Math.max(1, Math.ceil((progress.checkpointMs - progress.elapsedMs) / 1_000));
+    return `播放器正在缓冲，${remaining} 秒后检查启动结果`;
+  }
+  const remaining = Math.max(0, Math.ceil((progress.hardTimeoutMs - progress.elapsedMs) / 1_000));
+  return `播放器仍在缓冲，继续等待中（最多 ${remaining} 秒）`;
+});
 
 onMounted(() => {
   document.addEventListener('fullscreenchange', updateFullscreenState);
@@ -240,62 +267,136 @@ watch(() => props.capabilities.ptz, (value) => {
   if (value === false) closePtzPanel();
 });
 
-async function mountPlayer() {
-  destroyPlayer();
-  if (!videoRef.value || props.sources.length === 0) return;
+async function mountPlayer(sources = props.sources) {
+  const version = ++playerLoadVersion;
+  if (sources.length === 0) {
+    destroyPlayer();
+    return;
+  }
+  if (activePlaybackReady.value && activeSource.value?.url === sources[0].url) {
+    destroyPlayerSlot(activeVideoSlot.value === 0 ? 1 : 0);
+    viewState.value = 'playing';
+    isLoading.value = false;
+    startupProgress.value = undefined;
+    return;
+  }
+  const hasActivePlayback = activePlaybackReady.value && !!players[activeVideoSlot.value];
+  const slot: VideoSlot = hasActivePlayback ? (activeVideoSlot.value === 0 ? 1 : 0) : activeVideoSlot.value;
+  const video = videoForSlot(slot);
+  if (!video) return;
+  destroyPlayerSlot(slot);
 
-  selectedSourceUrl.value = props.sources[0].url;
+  let slotSource = sources[0];
+  selectedSourceUrl.value = hasActivePlayback ? selectedSourceUrl.value : sources[0].url;
   const core = new GmvPlayerCore({
-    video: videoRef.value,
-    sources: props.sources,
+    video,
+    sources,
     autoplay: true,
     muted: !audioEnabled.value,
     fallback: true,
   });
-  player.value = core;
+  players[slot] = core;
 
-  stops.push(core.on('loading', () => { viewState.value = 'idle'; isLoading.value = true; lastError.value = ''; }));
-  stops.push(core.on('playing', () => {
+  playerStops[slot].push(core.on('loading', () => {
+    if (version !== playerLoadVersion) return;
+    viewState.value = hasActivePlayback ? 'reconnecting' : 'idle';
+    isLoading.value = true;
+    lastError.value = '';
+    startupProgress.value = undefined;
+  }));
+  playerStops[slot].push(core.on('startupProgress', (progress) => {
+    if (version === playerLoadVersion) startupProgress.value = progress;
+  }));
+  playerStops[slot].push(core.on('playing', () => {
+    if (version !== playerLoadVersion) {
+      destroyPlayerSlot(slot);
+      return;
+    }
+    const previousSlot = activeVideoSlot.value;
+    const changed = activeSource.value?.url !== slotSource.url;
+    activeVideoSlot.value = slot;
+    activePlaybackReady.value = true;
+    activeSource.value = slotSource;
+    selectedSourceUrl.value = slotSource.url;
     viewState.value = 'playing';
     isLoading.value = false;
     lastError.value = '';
-    emit('playing', { source: activeSource.value ?? props.sources[0] });
-  }));
-  stops.push(core.on('paused', () => { viewState.value = 'idle'; isLoading.value = false; }));
-  stops.push(core.on('reconnecting', () => { viewState.value = 'reconnecting'; isLoading.value = true; }));
-  stops.push(core.on('sourceChanged', ({ source }) => {
-    const changed = activeSource.value?.url !== source.url;
-    activeSource.value = source;
-    selectedSourceUrl.value = source.url;
+    startupProgress.value = undefined;
     if (changed) {
       playbackRate.value = 1;
-      if (videoRef.value) videoRef.value.playbackRate = 1;
+      video.playbackRate = 1;
+    }
+    if (previousSlot !== slot) destroyPlayerSlot(previousSlot);
+    emit('playing', { source: slotSource });
+  }));
+  playerStops[slot].push(core.on('paused', () => {
+    if (slot === activeVideoSlot.value) {
+      viewState.value = 'idle';
+      isLoading.value = false;
     }
   }));
-  stops.push(core.on('error', ({ message }) => {
-    viewState.value = 'error';
+  playerStops[slot].push(core.on('reconnecting', () => {
+    if (version === playerLoadVersion && !hasActivePlayback) {
+      viewState.value = 'reconnecting';
+      isLoading.value = true;
+    }
+  }));
+  playerStops[slot].push(core.on('sourceChanged', ({ source }) => {
+    slotSource = source;
+  }));
+  playerStops[slot].push(core.on('error', ({ message }) => {
+    if (version !== playerLoadVersion) return;
+    destroyPlayerSlot(slot);
     isLoading.value = false;
-    lastError.value = message;
-    emit('playbackError', { message, source: activeSource.value ?? props.sources[0] });
+    startupProgress.value = undefined;
+    if (hasActivePlayback && activePlaybackReady.value) {
+      viewState.value = 'playing';
+      lastError.value = '';
+    } else {
+      activePlaybackReady.value = false;
+      viewState.value = 'error';
+      lastError.value = message;
+    }
+    emit('playbackError', { message, source: slotSource });
   }));
 
   await core.load();
 }
 
 function destroyPlayer() {
-  while (stops.length) stops.pop()?.();
-  player.value?.destroy();
-  player.value = undefined;
+  playerLoadVersion += 1;
+  destroyPlayerSlot(0);
+  destroyPlayerSlot(1);
   activeSource.value = undefined;
+  activePlaybackReady.value = false;
   isLoading.value = false;
+  startupProgress.value = undefined;
+}
+
+function destroyPlayerSlot(slot: VideoSlot) {
+  while (playerStops[slot].length) playerStops[slot].pop()?.();
+  players[slot]?.destroy();
+  players[slot] = undefined;
+}
+
+function videoForSlot(slot: VideoSlot) {
+  return slot === 0 ? videoARef.value : videoBRef.value;
+}
+
+function activePlayer() {
+  return players[activeVideoSlot.value];
+}
+
+function activeVideo() {
+  return videoForSlot(activeVideoSlot.value);
 }
 
 function togglePlay() {
   if (viewState.value === 'playing') {
-    player.value?.pause();
+    activePlayer()?.pause();
     return;
   }
-  void player.value?.play();
+  void activePlayer()?.play();
 }
 
 function toggleRecord() {
@@ -310,7 +411,7 @@ function toggleRecord() {
 function toggleAudio() {
   if (props.capabilities.audio === false) return;
   audioEnabled.value = !audioEnabled.value;
-  if (videoRef.value) videoRef.value.muted = !audioEnabled.value;
+  if (activeVideo()) activeVideo()!.muted = !audioEnabled.value;
 }
 
 function toggleTalk() {
@@ -337,7 +438,7 @@ function switchSource(url: string) {
   if (!source) return;
   selectedSourceUrl.value = url;
   emit('streamSwitch', { source });
-  void player.value?.switchSource(source);
+  void mountPlayer([source]);
 }
 
 function setPlaybackRate(rate: number) {
@@ -345,7 +446,7 @@ function setPlaybackRate(rate: number) {
   if (mode === 'disabled') return;
   if (mode === 'local-file') {
     playbackRate.value = rate;
-    if (videoRef.value) videoRef.value.playbackRate = rate;
+    if (activeVideo()) activeVideo()!.playbackRate = rate;
     return;
   }
   emit('playbackRateChange', { rate });
@@ -353,7 +454,7 @@ function setPlaybackRate(rate: number) {
 
 function confirmPlaybackRate(rate: number) {
   playbackRate.value = rate;
-  if (videoRef.value) videoRef.value.playbackRate = 1;
+  if (activeVideo()) activeVideo()!.playbackRate = 1;
 }
 
 defineExpose({ confirmPlaybackRate });
@@ -376,7 +477,19 @@ function updateFullscreenState() {
 
 function reconnect() {
   emit('reconnect');
-  void player.value?.reconnect();
+  void activePlayer()?.reconnect();
+}
+
+function cancelPendingPlaybackSwitch() {
+  if (!activePlaybackReady.value || (!isLoading.value && !props.outputSwitching)) return;
+  if (isLoading.value) {
+    playerLoadVersion += 1;
+    destroyPlayerSlot(activeVideoSlot.value === 0 ? 1 : 0);
+    viewState.value = 'playing';
+    isLoading.value = false;
+    startupProgress.value = undefined;
+  }
+  emit('playbackSwitchCancel');
 }
 
 function notifyControlsActivity() {
@@ -500,6 +613,16 @@ function boxStyle(box: GmvAiBox) {
   inset: 0;
   background: linear-gradient(180deg, transparent 0%, rgba(100, 203, 255, .14) 50%, transparent 100%);
   animation: waiting-scan 1.8s ease-in-out infinite;
+}
+
+.startup-progress-text {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 18px;
+  color: rgba(230, 247, 255, .92);
+  font-size: 12px;
+  text-align: center;
 }
 
 @keyframes waiting-spin {

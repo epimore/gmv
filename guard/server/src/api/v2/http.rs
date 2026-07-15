@@ -21,7 +21,7 @@ use gmv_protocol::session::v1::{
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
@@ -30,8 +30,9 @@ use crate::api::v2::control::{
     BusinessControl, DeviceStreamOptions, GbDevicePage, GbSessionConfigSummary,
 };
 use crate::api::v2::model::{
-    AiTaskSummary, AiTaskSummaryState, DeviceSummary, MediaTransportCapability, RuntimeStatus,
-    StreamOutputSummary, StreamSummary, StreamSummaryState,
+    AiTaskSummary, AiTaskSummaryState, DeviceSummary, MediaOperationError, MediaOperationState,
+    MediaOperationSummary, MediaTransportCapability, RuntimeStatus, StreamOutputSummary,
+    StreamSummary, StreamSummaryState,
 };
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
@@ -39,6 +40,7 @@ use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{AuthState, Role, UiSession, UserProfile, hash_password as hash_ui_password};
 use crate::core::{GmvGuardErrorCode, GuardError, HealthState, LeaseState, RouteState};
 use crate::operation::OperationRequest;
+use crate::operation::{OperationRecord, OperationStatus};
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
 use crate::store::model::{
@@ -50,6 +52,8 @@ use crate::store::persistent::UserRepository;
 const CSRF_HEADER: &str = "x-csrf-token";
 const DEFAULT_GB_DEVICE_PAGE_SIZE: u32 = 20;
 const MAX_GB_DEVICE_PAGE_SIZE: u32 = 500;
+const MEDIA_CHECKPOINT_MS: u64 = 8_000;
+const FIRST_PREVIEW_HARD_TIMEOUT_MS: u64 = 15_000;
 
 #[derive(Debug, Clone)]
 pub struct HttpState {
@@ -81,6 +85,16 @@ pub fn router(state: HttpState) -> Router {
         .route("/me", get(current_profile).post(update_profile))
         .route("/dashboard", get(dashboard))
         .route("/media/transport", get(media_transport))
+        .route("/media/operations", get(media_operations))
+        .route("/media/operations/{operation_id}", get(media_operation))
+        .route(
+            "/media/operations/{operation_id}/continue",
+            post(continue_media_operation),
+        )
+        .route(
+            "/media/operations/{operation_id}/cancel",
+            post(cancel_media_operation),
+        )
         .route("/nodes", get(nodes))
         .route("/leases", get(leases))
         .route("/events", get(events))
@@ -1121,6 +1135,8 @@ struct PreviewRequest {
     #[serde(default)]
     audio_codec: String,
     #[serde(default)]
+    startup_timeout_ms: Option<u64>,
+    #[serde(default)]
     talk_codec: String,
     #[serde(default)]
     talk_sample_rate: u32,
@@ -1559,6 +1575,8 @@ struct GbStreamRequest {
     output_type: String,
     #[serde(default)]
     audio_codec: String,
+    #[serde(default)]
+    startup_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -1581,6 +1599,8 @@ struct CreateStreamOutputRequest {
     output_type: String,
     #[serde(default = "default_output_audio_codec")]
     audio_codec: String,
+    #[serde(default)]
+    startup_timeout_ms: Option<u64>,
 }
 
 fn default_output_audio_codec() -> String {
@@ -1857,6 +1877,7 @@ fn gb_preview_request(channel_id: String, request: GbStreamRequest) -> PreviewRe
         trans_mode: request.trans_mode,
         output_type: request.output_type,
         audio_codec: request.audio_codec,
+        startup_timeout_ms: request.startup_timeout_ms,
         talk_codec: String::new(),
         talk_sample_rate: 0,
         talk_channel_count: 0,
@@ -2235,8 +2256,8 @@ async fn gb_preview(
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
     Json(request): Json<GbStreamRequest>,
-) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
-    start_device_stream_http(
+) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError> {
+    start_live_operation_http(
         state,
         headers,
         device_id,
@@ -2347,8 +2368,8 @@ async fn preview(
     headers: HeaderMap,
     Path(device_id): Path<String>,
     Json(request): Json<PreviewRequest>,
-) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
-    start_device_stream_http(
+) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError> {
+    start_live_operation_http(
         state,
         headers,
         device_id,
@@ -2471,6 +2492,152 @@ impl<'a> DeviceStreamHttpPolicy<'a> {
     }
 }
 
+async fn start_live_operation_http<F, Fut>(
+    state: HttpState,
+    headers: HeaderMap,
+    device_id: String,
+    request: PreviewRequest,
+    policy: DeviceStreamHttpPolicy<'_>,
+    rpc_start: F,
+) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError>
+where
+    F: FnOnce(BusinessControl, String, String, String, DeviceStreamOptions) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<StreamSummary, GuardError>> + Send + 'static,
+{
+    log_preview_request(policy.operation_kind, &device_id, &request);
+    let (ui_session_token, session) =
+        require_write_with_token(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id.clone();
+    if let Ok(existing) = state.api.get_operation(&operation_id) {
+        require_operation_owner(&existing, &session)?;
+        require_operation_kind(&existing, policy.operation_kind)?;
+        let summary = media_operation_summary(existing);
+        let status = if summary.state == MediaOperationState::Ready {
+            StatusCode::OK
+        } else {
+            StatusCode::ACCEPTED
+        };
+        return Ok((status, Json(summary)));
+    }
+    BusinessControl::new(state.api.store()).validate_live_start()?;
+    let hard_timeout_ms =
+        media_startup_timeout_ms(request.startup_timeout_ms, FIRST_PREVIEW_HARD_TIMEOUT_MS)?;
+    let (existing, created) = state.api.start_operation_once(operation_request(
+        operation_id.clone(),
+        policy.operation_kind,
+        &session,
+        Role::Operator,
+    ))?;
+    if !created {
+        let summary = media_operation_summary(existing);
+        let status = if summary.state == MediaOperationState::Ready {
+            StatusCode::OK
+        } else {
+            StatusCode::ACCEPTED
+        };
+        return Ok((status, Json(summary)));
+    }
+    state.api.configure_media_operation(
+        &operation_id,
+        "waiting_device_response",
+        MEDIA_CHECKPOINT_MS,
+        hard_timeout_ms,
+    )?;
+
+    let task_state = state.clone();
+    let task_operation_id = operation_id.clone();
+    let success_message = policy.success_message.to_string();
+    let issue_ticket = policy.issue_ticket;
+    let channel_id = request.channel_id.clone();
+    let options = device_stream_options(&request);
+    base::tokio::spawn(async move {
+        let control = BusinessControl::new(task_state.api.store());
+        let start_result = base::tokio::time::timeout(
+            Duration::from_millis(hard_timeout_ms),
+            rpc_start(
+                control,
+                task_operation_id.clone(),
+                device_id,
+                channel_id,
+                options,
+            ),
+        )
+        .await;
+        let stream = match start_result {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => {
+                let _ = task_state.api.fail_operation(&task_operation_id, error);
+                return;
+            }
+            Err(_) => {
+                let error = GuardError::user_visible(
+                    "media_startup_timeout",
+                    "device preview did not become ready before the absolute deadline",
+                    "视频仍未启动，请检查设备和网络后重试",
+                    true,
+                    BTreeMap::new(),
+                );
+                let _ = task_state.api.fail_operation(&task_operation_id, error);
+                return;
+            }
+        };
+
+        if task_state
+            .api
+            .get_operation(&task_operation_id)
+            .is_ok_and(|record| record.status == OperationStatus::Cancelled)
+        {
+            return;
+        }
+
+        let stream = if issue_ticket {
+            match issue_playback_ticket(
+                &task_state,
+                stream,
+                &ui_session_token,
+                &session,
+                Role::Viewer,
+            ) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = task_state.api.fail_operation(
+                        &task_operation_id,
+                        GuardError::Conflict(format!(
+                            "playback ticket creation failed: {}",
+                            error.message
+                        )),
+                    );
+                    return;
+                }
+            }
+        } else {
+            stream
+        };
+        let result = match base::serde_json::to_value(stream) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = task_state.api.fail_operation(
+                    &task_operation_id,
+                    GuardError::Conflict(format!("stream result serialization failed: {error}")),
+                );
+                return;
+            }
+        };
+        let _ = task_state.api.succeed_operation_with_result(
+            &task_operation_id,
+            success_message,
+            result,
+        );
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(media_operation_summary(
+            state.api.get_operation(&operation_id)?,
+        )),
+    ))
+}
+
 async fn start_device_stream_http<F, Fut>(
     state: HttpState,
     headers: HeaderMap,
@@ -2590,7 +2757,7 @@ async fn create_stream_output(
     headers: HeaderMap,
     Path(stream_id): Path<String>,
     Json(request): Json<CreateStreamOutputRequest>,
-) -> Result<(StatusCode, Json<StreamOutputSummary>), HttpError> {
+) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError> {
     debug!(
         "/api/v2/streams/{{stream_id}}/outputs, req: stream_id={stream_id}, output_type={}, audio_codec={}",
         request.output_type, request.audio_codec
@@ -2598,33 +2765,163 @@ async fn create_stream_output(
     let (ui_session_token, session) =
         require_write_with_token(&state.auth, &headers, Role::Operator)?;
     let operation_id = request.request_id;
-    state.api.start_operation(operation_request(
+    if let Ok(existing) = state.api.get_operation(&operation_id) {
+        require_operation_owner(&existing, &session)?;
+        require_operation_kind(&existing, "stream.output.create")?;
+        let summary = media_operation_summary(existing);
+        let status = if summary.state == MediaOperationState::Ready {
+            StatusCode::OK
+        } else {
+            StatusCode::ACCEPTED
+        };
+        return Ok((status, Json(summary)));
+    }
+    BusinessControl::new(state.api.store()).validate_stream_output_target(&stream_id)?;
+    let hard_timeout_ms = media_startup_timeout_ms(
+        request.startup_timeout_ms,
+        output_startup_timeout_ms(&request.output_type),
+    )?;
+    let (existing, created) = state.api.start_operation_once(operation_request(
         operation_id.clone(),
         "stream.output.create",
         &session,
         Role::Operator,
     ))?;
-    let result = BusinessControl::new(state.api.store())
-        .create_stream_output(
-            &operation_id,
-            &stream_id,
-            &request.output_type,
-            &request.audio_codec,
+    if !created {
+        let summary = media_operation_summary(existing);
+        let status = if summary.state == MediaOperationState::Ready {
+            StatusCode::OK
+        } else {
+            StatusCode::ACCEPTED
+        };
+        return Ok((status, Json(summary)));
+    }
+    state.api.configure_media_operation(
+        &operation_id,
+        "building_output",
+        MEDIA_CHECKPOINT_MS,
+        hard_timeout_ms,
+    )?;
+    let task_state = state.clone();
+    let task_operation_id = operation_id.clone();
+    base::tokio::spawn(async move {
+        let result = base::tokio::time::timeout(
+            Duration::from_millis(hard_timeout_ms),
+            BusinessControl::new(task_state.api.store()).create_stream_output(
+                &task_operation_id,
+                &stream_id,
+                &request.output_type,
+                &request.audio_codec,
+            ),
         )
         .await;
-    match result {
-        Ok(output) => {
-            let output = issue_stream_output_ticket(&state, output, &ui_session_token, &session)?;
-            state
+        let output = match result {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                let _ = task_state.api.fail_operation(&task_operation_id, error);
+                return;
+            }
+            Err(_) => {
+                let _ = task_state.api.fail_operation(
+                    &task_operation_id,
+                    GuardError::user_visible(
+                        "media_startup_timeout",
+                        "stream output creation exceeded the protocol deadline",
+                        "播放方式准备超时，请保持当前方式或稍后重试",
+                        true,
+                        BTreeMap::new(),
+                    ),
+                );
+                return;
+            }
+        };
+        if task_state
+            .api
+            .get_operation(&task_operation_id)
+            .is_ok_and(|record| record.status == OperationStatus::Cancelled)
+        {
+            let _ = BusinessControl::new(task_state.api.store())
+                .close_stream_output(
+                    &format!("cancelled-{task_operation_id}"),
+                    &output.stream_id,
+                    &output.output_id,
+                )
+                .await;
+            return;
+        }
+        let output =
+            match issue_stream_output_ticket(&task_state, output, &ui_session_token, &session) {
+                Ok(output) => output,
+                Err(error) => {
+                    let _ = task_state.api.fail_operation(
+                        &task_operation_id,
+                        GuardError::Conflict(format!(
+                            "stream output ticket creation failed: {}",
+                            error.message
+                        )),
+                    );
+                    return;
+                }
+            };
+        let output_id = output.output_id.clone();
+        let output_stream_id = output.stream_id.clone();
+        let result = match base::serde_json::to_value(output) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = task_state.api.fail_operation(
+                    &task_operation_id,
+                    GuardError::Conflict(format!("output result serialization failed: {error}")),
+                );
+                return;
+            }
+        };
+        if task_state
+            .api
+            .succeed_operation_with_result(&task_operation_id, "stream output ready", result)
+            .is_err()
+            && task_state
                 .api
-                .succeed_operation(&operation_id, "stream output ready")?;
-            Ok((StatusCode::CREATED, Json(output)))
+                .get_operation(&task_operation_id)
+                .is_ok_and(|record| record.status == OperationStatus::Cancelled)
+        {
+            let _ = BusinessControl::new(task_state.api.store())
+                .close_stream_output(
+                    &format!("cancelled-{task_operation_id}"),
+                    &output_stream_id,
+                    &output_id,
+                )
+                .await;
         }
-        Err(error) => {
-            let _ = state.api.fail_operation(&operation_id, error.clone());
-            Err(HttpError::from_operation(error, &operation_id))
-        }
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(media_operation_summary(
+            state.api.get_operation(&operation_id)?,
+        )),
+    ))
+}
+
+fn output_startup_timeout_ms(output_type: &str) -> u64 {
+    if output_type.eq_ignore_ascii_case("hls") {
+        12_000
+    } else {
+        10_000
     }
+}
+
+fn media_startup_timeout_ms(
+    requested: Option<u64>,
+    protocol_default_ms: u64,
+) -> Result<u64, HttpError> {
+    let Some(requested) = requested else {
+        return Ok(protocol_default_ms);
+    };
+    if !(protocol_default_ms..=30_000).contains(&requested) {
+        return Err(HttpError::bad_request(format!(
+            "startup_timeout_ms must be between {protocol_default_ms} and 30000"
+        )));
+    }
+    Ok(requested)
 }
 
 async fn close_stream_output(
@@ -2657,6 +2954,158 @@ async fn close_stream_output(
             let _ = state.api.fail_operation(&operation_id, error.clone());
             Err(HttpError::from_operation(error, &operation_id))
         }
+    }
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct MediaOperationQuery {
+    ids: Option<String>,
+}
+
+async fn media_operations(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<MediaOperationQuery>,
+) -> Result<Json<Vec<MediaOperationSummary>>, HttpError> {
+    let session = require_role(&state.auth, &headers, Role::Viewer)?;
+    let requested_ids = query.ids.map(|ids| {
+        ids.split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .take(100)
+            .map(str::to_string)
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let operations = state
+        .api
+        .list_operations()
+        .into_iter()
+        .filter(|record| record.checkpoint_ms > 0)
+        .filter(|record| operation_visible_to(record, &session))
+        .filter(|record| {
+            requested_ids
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&record.operation_id))
+        })
+        .map(media_operation_summary)
+        .collect();
+    Ok(Json(operations))
+}
+
+async fn media_operation(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> Result<Json<MediaOperationSummary>, HttpError> {
+    let session = require_role(&state.auth, &headers, Role::Viewer)?;
+    let record = state.api.get_operation(&operation_id)?;
+    require_operation_owner(&record, &session)?;
+    Ok(Json(media_operation_summary(record)))
+}
+
+async fn continue_media_operation(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> Result<Json<MediaOperationSummary>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let record = state.api.get_operation(&operation_id)?;
+    require_operation_owner(&record, &session)?;
+    Ok(Json(media_operation_summary(record)))
+}
+
+async fn cancel_media_operation(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(operation_id): Path<String>,
+) -> Result<Json<MediaOperationSummary>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let record = state.api.get_operation(&operation_id)?;
+    require_operation_owner(&record, &session)?;
+    Ok(Json(media_operation_summary(
+        state.api.cancel_operation(&operation_id)?,
+    )))
+}
+
+fn operation_visible_to(record: &OperationRecord, session: &UiSession) -> bool {
+    session.role == Role::Admin || record.requested_by == session.username
+}
+
+fn require_operation_owner(record: &OperationRecord, session: &UiSession) -> Result<(), HttpError> {
+    if operation_visible_to(record, session) {
+        Ok(())
+    } else {
+        Err(HttpError::forbidden(
+            "media operation belongs to another user",
+        ))
+    }
+}
+
+fn require_operation_kind(record: &OperationRecord, expected: &str) -> Result<(), HttpError> {
+    if record.kind == expected {
+        Ok(())
+    } else {
+        Err(GuardError::Conflict(format!(
+            "operation {} already belongs to {}",
+            record.operation_id, record.kind
+        ))
+        .into())
+    }
+}
+
+fn media_operation_summary(record: OperationRecord) -> MediaOperationSummary {
+    let terminal = record.status.is_terminal();
+    let state = match record.status {
+        OperationStatus::Accepted | OperationStatus::Running => MediaOperationState::Preparing,
+        OperationStatus::Succeeded => MediaOperationState::Ready,
+        OperationStatus::Failed => MediaOperationState::Failed,
+        OperationStatus::Cancelled => MediaOperationState::Cancelled,
+    };
+    let elapsed_ms = if terminal {
+        record.updated_at_ms
+    } else {
+        http_now_ms().unwrap_or(record.updated_at_ms)
+    }
+    .saturating_sub(record.started_at_ms)
+    .max(0) as u64;
+    let can_continue = matches!(state, MediaOperationState::Preparing)
+        && (record.hard_timeout_ms == 0 || elapsed_ms < record.hard_timeout_ms);
+    let error = record.error.as_ref().map(media_operation_error);
+    MediaOperationSummary {
+        operation_id: record.operation_id,
+        state,
+        stage: record.stage,
+        elapsed_ms,
+        last_progress_at_ms: record.updated_at_ms,
+        checkpoint_ms: record.checkpoint_ms,
+        hard_timeout_ms: record.hard_timeout_ms,
+        can_continue,
+        result: record.result,
+        error,
+    }
+}
+
+fn media_operation_error(error: &GuardError) -> MediaOperationError {
+    match error {
+        GuardError::UserVisible {
+            code,
+            message,
+            user_message,
+            retryable,
+            ..
+        } => MediaOperationError {
+            code: code.clone(),
+            message: message.clone(),
+            user_message: user_message.clone(),
+            retryable: *retryable,
+        },
+        _ => MediaOperationError {
+            code: "media_operation_failed".to_string(),
+            message: error.to_string(),
+            user_message: "媒体操作失败，请稍后重试".to_string(),
+            retryable: true,
+        },
     }
 }
 
@@ -3015,7 +3464,6 @@ impl HttpError {
         }
     }
 
-    #[allow(dead_code)]
     fn bad_request(message: impl Into<String>) -> Self {
         let code = GmvGuardErrorCode::BadRequest;
         Self {
@@ -3227,7 +3675,7 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuardError, HttpError};
+    use super::{GuardError, HttpError, media_startup_timeout_ms};
 
     #[test]
     fn operation_error_keeps_operation_id_for_http_response() {
@@ -3239,5 +3687,16 @@ mod tests {
             error.details.get("operation_id").map(String::as_str),
             Some("op-123")
         );
+    }
+
+    #[test]
+    fn startup_timeout_override_cannot_shorten_protocol_default_or_exceed_cap() {
+        assert!(matches!(media_startup_timeout_ms(None, 12_000), Ok(12_000)));
+        assert!(matches!(
+            media_startup_timeout_ms(Some(20_000), 12_000),
+            Ok(20_000)
+        ));
+        assert!(media_startup_timeout_ms(Some(11_999), 12_000).is_err());
+        assert!(media_startup_timeout_ms(Some(30_001), 12_000).is_err());
     }
 }

@@ -193,6 +193,7 @@
           @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz"
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
           @playback-error="handleMultiPlaybackError"
+          @playback-switch-cancel="handleMultiPlaybackSwitchCancel"
           @close="handleMultiClose" @reorder="handleMultiReorder" />
         <div v-if="multiPageCount > 1" class="multi-pagination">
           <el-pagination v-model:current-page="multiPage" :page-size="multiGridSize" :total="multiCells.length"
@@ -317,11 +318,19 @@
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
             :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
-            :controls="playerControls"
+            :controls="playerControls" :output-switching="singleOutputSwitching"
+            :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
             @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz"
             @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
+            @playback-switch-cancel="handleSinglePlaybackSwitchCancel"
             @playback-rate-change="handlePlaybackRateChange" />
-          <div v-if="playerRequesting" class="player-loading-badge">播放创建中...</div>
+          <div v-if="playerRequesting" class="player-loading-badge" role="status" aria-live="polite">
+            <span>{{ singleStartupText }}</span>
+            <div v-if="singleCheckpointReached" class="player-loading-actions">
+              <el-button size="small" type="primary" text @click="acknowledgeSingleWait">继续等待</el-button>
+              <el-button size="small" type="danger" text @click="cancelSingleStartup">取消</el-button>
+            </div>
+          </div>
         </div>
       </div>
       <el-empty v-else description="选择在线通道后播放" />
@@ -410,7 +419,9 @@ import { onBeforeRouteLeave } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import {
   errorMessage,
+  cancelMediaOperation,
   closeStreamOutput,
+  continueMediaOperation,
   createStreamOutput,
   getMediaTransport,
   getGbSessionNodeConfig,
@@ -436,6 +447,7 @@ import {
   type GbResourceInfo,
   type GbSessionConfigInfo,
   type NodeInfo,
+  type MediaOperationSummary,
   type StreamSummary,
   type StreamOutputSummary,
 } from '@/api/client';
@@ -495,6 +507,8 @@ const coverDialog = ref(false);
 const coverUrl = ref('');
 const playerDialog = ref(false);
 const playerRequesting = ref(false);
+const singleMediaOperation = ref<MediaOperationSummary<unknown>>();
+const singleWaitAcknowledged = ref(false);
 const pendingPlayKey = ref('');
 const configDrawer = ref(false);
 const resourceDrawer = ref(false);
@@ -519,7 +533,11 @@ const multiPage = ref(1);
 const multiViewLimit = ref(6);
 const multiPlayVersions = reactive<Record<string, number>>({});
 const multiStopTasks = new Map<string, Promise<void>>();
+const multiPreviewAborts = new Map<string, AbortController>();
+const multiOutputAborts = new Map<string, AbortController>();
 let stopCurrentStreamTask: Promise<void> | undefined;
+let singlePreviewAbort: AbortController | undefined;
+let singleOutputAbort: AbortController | undefined;
 let playRequestSeq = 0;
 let multiLifecycleVersion = 0;
 let multiVisibilityTask: Promise<void> = Promise.resolve();
@@ -541,6 +559,7 @@ interface MultiViewCell {
   sources: GmvSource[];
   status: MultiCellStatus;
   error?: string;
+  operation?: MediaOperationSummary<unknown>;
   channel: GbChannelInfo;
   output_type: LiveOutputType;
   output?: StreamOutputSummary;
@@ -605,6 +624,11 @@ const treeDeviceNodes = computed<TreeNodeData[]>(() => treeDevices.value.map((de
 const selectedChannelTitle = computed(() => selectedChannel.value ? displayChannelName(selectedChannel.value) : '未选择通道');
 const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
 const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
+const singleCheckpointReached = computed(() => {
+  const operation = singleMediaOperation.value;
+  return !!operation && operation.checkpoint_ms > 0 && operation.elapsed_ms >= operation.checkpoint_ms;
+});
+const singleStartupText = computed(() => mediaOperationText(singleMediaOperation.value, singleWaitAcknowledged.value));
 const multiPlayerSubtitle = computed(() => multiCells.value.length ? `实时直播 · 运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '实时直播 · 选择通道后播放');
 const multiPageCount = computed(() => Math.max(1, Math.ceil(multiCells.value.length / multiGridSize.value)));
 const multiVisibleStart = computed(() => (multiPage.value - 1) * multiGridSize.value);
@@ -676,6 +700,8 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
     outputType: cell.output_type,
     outputOptions: liveOutputOptions,
     outputSwitching: cell.output_switching,
+    startupText: cell.operation ? mediaOperationText(cell.operation) : undefined,
+    startupCanCancel: !!cell.operation && cell.operation.checkpoint_ms > 0 && cell.operation.elapsed_ms >= cell.operation.checkpoint_ms,
   };
 }));
 
@@ -1077,11 +1103,21 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
 async function startVisibleMultiCell(cell: MultiViewCell) {
   const key = cell.key;
   const version = bumpMultiPlayVersion(key);
+  const controller = new AbortController();
+  multiPreviewAborts.get(key)?.abort();
+  multiPreviewAborts.set(key, controller);
   try {
     const stream = await startGbPreview(cell.device_id, cell.channel_id, {
       request_id: 'ui-multi-preview-' + Date.now() + '-' + cell.channel_id,
       output_type: cell.output_type,
       audio_codec: 'aac',
+    }, {
+      signal: controller.signal,
+      onUpdate: (operation) => {
+        if (multiPlayVersions[key] !== version || multiViewDisposed) return;
+        const current = multiCells.value.find((item) => item.key === key);
+        if (current) upsertMultiCell({ ...current, operation, status: 'reconnecting' });
+      },
     });
     if (multiPlayVersions[key] !== version || !isMultiCellVisible(key) || multiViewDisposed) {
       await stopMultiStream(stream);
@@ -1092,6 +1128,7 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
       stream,
       sources: streamSources(stream),
       status: stream.state === 'running' ? 'playing' : 'online',
+      operation: undefined,
     });
   } catch (error) {
     if (multiPlayVersions[key] !== version || !isMultiCellVisible(key) || multiViewDisposed) return;
@@ -1101,6 +1138,8 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
       status: 'error',
       error: errorMessage(error, '播放失败'),
     });
+  } finally {
+    if (multiPreviewAborts.get(key) === controller) multiPreviewAborts.delete(key);
   }
 }
 function visibleMultiCellKeys() {
@@ -1125,15 +1164,23 @@ async function stopMultiStream(stream?: StreamSummary) {
 }
 async function suspendMultiCell(key: string) {
   const cell = multiCells.value.find((item) => item.key === key);
-  if (!cell?.stream) return;
+  if (!cell) return;
   bumpMultiPlayVersion(key);
+  multiPreviewAborts.get(key)?.abort();
+  multiPreviewAborts.delete(key);
+  multiOutputAborts.get(key)?.abort();
+  multiOutputAborts.delete(key);
+  if (cell.operation?.state === 'preparing') {
+    await cancelMediaOperation(cell.operation.operation_id).catch(() => undefined);
+  }
   upsertMultiCell({
     ...cell,
     stream: undefined,
     sources: [],
+    operation: undefined,
     status: cell.status === 'error' ? 'error' : 'online',
   });
-  await stopMultiStream(cell.stream);
+  if (cell.stream) await stopMultiStream(cell.stream);
 }
 function reconcileVisibleMultiStreams() {
   const lifecycleVersion = ++multiLifecycleVersion;
@@ -1156,10 +1203,17 @@ async function stopMultiCell(key: string, options: { removeSelection?: boolean }
   const removeSelection = options.removeSelection !== false;
   bumpMultiPlayVersion(key);
   const cell = multiCells.value.find((item) => item.key === key);
+  multiPreviewAborts.get(key)?.abort();
+  multiPreviewAborts.delete(key);
+  multiOutputAborts.get(key)?.abort();
+  multiOutputAborts.delete(key);
   multiCells.value = multiCells.value.filter((item) => item.key !== key);
   if (removeSelection) {
     selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
     selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => selectedChannelKey(item) !== key);
+  }
+  if (cell?.operation?.state === 'preparing') {
+    await cancelMediaOperation(cell.operation.operation_id).catch(() => undefined);
   }
   await stopMultiStream(cell?.stream);
   await reconcileVisibleMultiStreams();
@@ -1172,13 +1226,22 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
   try {
     multiLifecycleVersion += 1;
     for (const cell of cells) bumpMultiPlayVersion(cell.key);
+    for (const controller of multiPreviewAborts.values()) controller.abort();
+    multiPreviewAborts.clear();
+    for (const controller of multiOutputAborts.values()) controller.abort();
+    multiOutputAborts.clear();
     multiCells.value = [];
     selectedTreeChannelKeys.value = [];
     selectedTreeChannelItems.value = [];
     multiGridManual.value = false;
     multiGridSize.value = 1;
     multiPage.value = 1;
-    await Promise.allSettled(streams.map((stream) => stopMultiStream(stream)));
+    await Promise.allSettled([
+      ...streams.map((stream) => stopMultiStream(stream)),
+      ...cells
+        .filter((cell) => cell.operation?.state === 'preparing')
+        .map((cell) => cancelMediaOperation(cell.operation!.operation_id).then(() => undefined)),
+    ]);
     await multiVisibilityTask;
     if (!options.quiet && streams.length) ElMessage.success('多画面已停止');
   } finally {
@@ -1194,16 +1257,26 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     const stream = lastStream.value;
     if (cancelPending) {
       playRequestSeq += 1;
+      singlePreviewAbort?.abort();
+      singlePreviewAbort = undefined;
+      singleOutputAbort?.abort();
+      singleOutputAbort = undefined;
       playerRequesting.value = false;
       pendingPlayKey.value = '';
     }
+    const operation = singleMediaOperation.value;
     if (closeDialog) playerDialog.value = false;
     lastStream.value = undefined;
     singleOutput.value = undefined;
     singlePendingSwitch.value = undefined;
     singleOutputSwitching.value = false;
+    singleMediaOperation.value = undefined;
+    singleWaitAcknowledged.value = false;
     if (clearAction) lastAction.value = '';
     if (stream?.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
+    if (!stream?.stream_id && operation?.state === 'preparing') {
+      await cancelMediaOperation(operation.operation_id).catch(() => undefined);
+    }
   })().finally(() => {
     stopCurrentStreamTask = undefined;
   });
@@ -1263,32 +1336,90 @@ function asLiveOutputType(value: string): LiveOutputType | undefined {
   return value === 'flv' || value === 'hls' || value === 'fmp4' ? value : undefined;
 }
 
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function mediaOperationStageText(stage?: string) {
+  const labels: Record<string, string> = {
+    accepted: '正在受理请求',
+    waiting_device_response: '正在等待设备响应',
+    waiting_media_input: '设备已响应，正在等待媒体数据',
+    waiting_keyframe: '正在等待视频关键帧',
+    building_output: '正在生成媒体输出',
+    waiting_playlist: '正在生成 HLS 播放列表',
+    attaching_player: '正在连接播放器',
+    buffering_player: '播放器正在缓冲',
+  };
+  return labels[stage || ''] || '正在准备媒体';
+}
+
+function mediaOperationText(operation?: MediaOperationSummary<unknown>, acknowledged = false) {
+  if (!operation) return '正在提交播放请求...';
+  const elapsedSeconds = Math.max(0, Math.ceil(operation.elapsed_ms / 1_000));
+  if (operation.checkpoint_ms > operation.elapsed_ms) {
+    const remainingSeconds = Math.max(1, Math.ceil((operation.checkpoint_ms - operation.elapsed_ms) / 1_000));
+    return elapsedSeconds < 3
+      ? mediaOperationStageText(operation.stage)
+      : `${mediaOperationStageText(operation.stage)}，${remainingSeconds} 秒后检查启动结果`;
+  }
+  const hardRemaining = Math.max(0, Math.ceil((operation.hard_timeout_ms - operation.elapsed_ms) / 1_000));
+  return acknowledged
+    ? `${mediaOperationStageText(operation.stage)}，继续等待中（最多 ${hardRemaining} 秒）`
+    : `${mediaOperationStageText(operation.stage)}，尚未启动，是否继续等待？`;
+}
+
+async function acknowledgeSingleWait() {
+  const operation = singleMediaOperation.value;
+  if (!operation || operation.state !== 'preparing') return;
+  singleWaitAcknowledged.value = true;
+  singleMediaOperation.value = await continueMediaOperation(operation.operation_id).catch(() => operation);
+}
+
+async function cancelSingleStartup() {
+  await stopCurrentStream({ closeDialog: false, clearAction: false });
+}
+
 async function handleMultiOutputTypeChange(event: { index: number; outputType: string }) {
   const cell = multiCellAtVisibleIndex(event.index);
   const outputType = asLiveOutputType(event.outputType);
   if (!cell || !outputType || cell.output_switching || cell.output_type === outputType) return;
-  setChannelOutputType(cell.channel, outputType);
   if (!cell.stream?.stream_id) {
+    setChannelOutputType(cell.channel, outputType);
     upsertMultiCell({ ...cell, output_type: outputType });
     return;
   }
   const previousType = cell.output_type;
   const previousOutput = cell.output;
   const previousSources = cell.sources;
-  upsertMultiCell({ ...cell, output_switching: true, status: 'reconnecting', error: undefined });
+  const controller = new AbortController();
+  multiOutputAborts.get(cell.key)?.abort();
+  multiOutputAborts.set(cell.key, controller);
+  upsertMultiCell({ ...cell, operation: undefined, output_switching: true, status: 'reconnecting', error: undefined });
   try {
     const nextOutput = await createStreamOutput(
       cell.stream.stream_id,
       outputType,
       `ui-multi-output-${Date.now()}-${cell.channel_id}-${outputType}`,
+      {
+        signal: controller.signal,
+        onUpdate: (operation) => {
+          const current = multiCells.value.find((item) => item.key === cell.key);
+          if (current && multiOutputAborts.get(cell.key) === controller) {
+            upsertMultiCell({ ...current, operation });
+          }
+        },
+      },
     );
     const current = multiCells.value.find((item) => item.key === cell.key);
     if (!current?.stream || current.stream.stream_id !== cell.stream.stream_id) {
       await closeStreamOutput(cell.stream.stream_id, nextOutput.output_id).catch(() => undefined);
       return;
     }
+    setChannelOutputType(cell.channel, outputType);
     upsertMultiCell({
       ...current,
+      operation: undefined,
       output_type: outputType,
       output: nextOutput,
       sources: streamSources({ ...current.stream, endpoint: nextOutput.endpoint }),
@@ -1301,13 +1432,18 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
     });
   } catch (error) {
     setChannelOutputType(cell.channel, previousType);
+    const current = multiCells.value.find((item) => item.key === cell.key) ?? cell;
     upsertMultiCell({
-      ...cell,
+      ...current,
+      operation: undefined,
+      output_type: previousType,
       output_switching: false,
       status: cell.sources.length ? 'playing' : 'error',
       error: cell.sources.length ? undefined : errorMessage(error, '切换播放方式失败'),
     });
-    ElMessage.error(errorMessage(error, '切换播放方式失败'));
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换播放方式失败'));
+  } finally {
+    if (multiOutputAborts.get(cell.key) === controller) multiOutputAborts.delete(cell.key);
   }
 }
 
@@ -1338,6 +1474,39 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
     error: undefined,
   });
   ElMessage.error(`切换播放方式失败：${event.payload.message}`);
+}
+
+async function handleMultiPlaybackSwitchCancel(event: { index: number }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (!cell) return;
+  if (!cell.pending_switch && cell.operation?.state === 'preparing') {
+    multiOutputAborts.get(cell.key)?.abort();
+    await cancelMediaOperation(cell.operation.operation_id).catch(() => undefined);
+    upsertMultiCell({
+      ...cell,
+      operation: undefined,
+      output_switching: false,
+      status: 'playing',
+      error: undefined,
+    });
+    ElMessage.info('已保持当前播放方式');
+    return;
+  }
+  const pending = cell?.pending_switch;
+  if (!cell || !pending || !cell.stream) return;
+  await closeStreamOutput(cell.stream.stream_id, pending.next_output.output_id).catch(() => undefined);
+  setChannelOutputType(cell.channel, pending.previous_type);
+  upsertMultiCell({
+    ...cell,
+    output_type: pending.previous_type,
+    output: pending.previous_output,
+    sources: pending.previous_sources,
+    pending_switch: undefined,
+    output_switching: false,
+    status: 'playing',
+    error: undefined,
+  });
+  ElMessage.info('已保持当前播放方式');
 }
 
 function ptzPayload(command: GmvPtzCommand): GbPtzPayload {
@@ -1515,12 +1684,23 @@ async function handleSingleOutputTypeChange(value: string) {
   if (!outputType || !channel || !stream?.stream_id || singleOutputSwitching.value) return;
   const previousType = channelOutputType(channel);
   if (previousType === outputType) return;
+  const controller = new AbortController();
+  singleOutputAbort?.abort();
+  singleOutputAbort = controller;
   singleOutputSwitching.value = true;
+  singleMediaOperation.value = undefined;
+  singleWaitAcknowledged.value = false;
   try {
     const nextOutput = await createStreamOutput(
       stream.stream_id,
       outputType,
       `ui-single-output-${Date.now()}-${channel.channel_id}-${outputType}`,
+      {
+        signal: controller.signal,
+        onUpdate: (operation) => {
+          if (singleOutputAbort === controller) singleMediaOperation.value = operation;
+        },
+      },
     );
     if (lastStream.value?.stream_id !== stream.stream_id) {
       await closeStreamOutput(stream.stream_id, nextOutput.output_id).catch(() => undefined);
@@ -1533,11 +1713,15 @@ async function handleSingleOutputTypeChange(value: string) {
       next_output: nextOutput,
     };
     singleOutput.value = nextOutput;
+    singleMediaOperation.value = undefined;
     setChannelOutputType(channel, outputType);
     lastStream.value = { ...stream, endpoint: nextOutput.endpoint };
   } catch (error) {
+    singleMediaOperation.value = undefined;
     singleOutputSwitching.value = false;
-    ElMessage.error(errorMessage(error, '切换播放方式失败'));
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换播放方式失败'));
+  } finally {
+    if (singleOutputAbort === controller) singleOutputAbort = undefined;
   }
 }
 
@@ -1566,6 +1750,29 @@ async function handleSinglePlaybackError(event: { message: string }) {
   ElMessage.error(`切换播放方式失败：${event.message}`);
 }
 
+async function handleSinglePlaybackSwitchCancel() {
+  const pending = singlePendingSwitch.value;
+  const stream = lastStream.value;
+  const channel = selectedChannel.value;
+  const operation = singleMediaOperation.value;
+  if (!pending && operation?.state === 'preparing') {
+    singleOutputAbort?.abort();
+    await cancelMediaOperation(operation.operation_id).catch(() => undefined);
+    singleMediaOperation.value = undefined;
+    singleOutputSwitching.value = false;
+    ElMessage.info('已保持当前播放方式');
+    return;
+  }
+  if (!pending || !stream || !channel) return;
+  await closeStreamOutput(stream.stream_id, pending.next_output.output_id).catch(() => undefined);
+  setChannelOutputType(channel, pending.previous_type);
+  singleOutput.value = pending.previous_output;
+  singlePendingSwitch.value = undefined;
+  singleOutputSwitching.value = false;
+  lastStream.value = { ...stream, endpoint: pending.previous_endpoint };
+  ElMessage.info('已保持当前播放方式');
+}
+
 async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
   if (playerRequesting.value) return;
   const action = kind === 'preview' ? '实时直播' : '历史回放';
@@ -1576,11 +1783,26 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
   showImages.value = false;
   playerDialog.value = true;
   playerRequesting.value = true;
+  singleMediaOperation.value = undefined;
+  singleWaitAcknowledged.value = false;
   pendingPlayKey.value = playRequestKey(kind, channel);
   try {
     await stopCurrentStream({ closeDialog: false, clearAction: false, cancelPending: false });
+    const controller = new AbortController();
+    singlePreviewAbort?.abort();
+    singlePreviewAbort = controller;
     const stream = kind === 'preview'
-      ? await startGbPreview(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-preview-' + Date.now(), output_type: channelOutputType(channel), audio_codec: 'aac' })
+      ? await startGbPreview(
+          channel.device_id,
+          channel.channel_id,
+          { request_id: 'ui-monitor-preview-' + Date.now(), output_type: channelOutputType(channel), audio_codec: 'aac' },
+          {
+            signal: controller.signal,
+            onUpdate: (operation) => {
+              if (requestSeq === playRequestSeq) singleMediaOperation.value = operation;
+            },
+          },
+        )
       : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'fmp4', audio_codec: 'aac' });
     if (requestSeq !== playRequestSeq || !playerDialog.value) {
       if (stream.stream_id) await stopStream(stream.stream_id).catch(() => undefined);
@@ -1590,6 +1812,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
     singleOutput.value = undefined;
     singlePendingSwitch.value = undefined;
     singleOutputSwitching.value = false;
+    singleMediaOperation.value = undefined;
     ElMessage.success(action + '已提交');
   } catch (error) {
     if (requestSeq === playRequestSeq) ElMessage.error(errorMessage(error, '播放请求失败'));
@@ -1597,6 +1820,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
     if (requestSeq === playRequestSeq) {
       playerRequesting.value = false;
       pendingPlayKey.value = '';
+      singlePreviewAbort = undefined;
     }
   }
 }
@@ -1999,6 +2223,16 @@ onBeforeUnmount(() => {
   color: var(--text);
   font-size: 12px;
   letter-spacing: 0;
+}
+
+.player-loading-badge span {
+  display: block;
+}
+
+.player-loading-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 .monitor-player :deep(.gmv-player) {

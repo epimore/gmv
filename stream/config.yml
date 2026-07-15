@@ -33,6 +33,6 @@ server:
   #流代理地址:http://127.0.0.1:[server.http_port]，用于如nginx代理
   #默认播放地址：http://127.0.0.1:[server.http_port]/[server.name]/play/[stream_id].flv?gmv-token=uxxx
   proxy_addr: http://127.0.0.1:28570 #eg:https://epimore.cn/s1/play/4FEqqzfqsa0Vzqqq2lqqc1lqq4fa.flv?gmv-token=uxxx;
-stream: #输入输出默认超时回调；执行优先级：回调>监听配置>默认配置
-  in_wait_timeout: 4 #u8 单位秒；输入流等待超时,需大于等于1,建议：2-8;
-  out_idle_timeout: 6 #u8 单位秒；输出流闲置超时,0：立即关闭,建议：2-8；
+stream: #Stream 数据面生命周期；单流内部覆盖优先于本配置，不属于 Guard/Player 启动超时
+  in_wait_timeout: 4 #单位秒；连续无 RTP 包判死时间，范围 1-30，建议 2-8
+  out_idle_timeout: 20 #单位秒；output/viewer session 延迟释放时间，范围 12-120，建议 15-60

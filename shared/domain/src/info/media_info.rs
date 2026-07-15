@@ -27,8 +27,8 @@ pub struct MediaConfig {
     /// None:默认配置
     /// 如超时立即发起回调事件通知信令，是否立即释放该SSRC媒体流资源，不监听该SSRC,根据返回信息进行下一步操作，释放或等待流保活
     /// 执行优先级：回调>监听配置>默认配置
-    ///   in_wait_timeout: 4 #u8 单位秒；输入流等待超时,需大于等于1,建议：2-8;
-    ///   out_idle_timeout: 6 #u8 单位秒；输出流闲置超时,0：立即关闭,建议：2-8；
+    ///   in_wait_timeout: 4 # 单位秒；连续无 RTP 包判死时间，范围 1-30
+    ///   out_idle_timeout: 20 # 单位秒；output/viewer session 延迟释放时间，范围 12-120
     pub in_wait_timeout: Option<u8>,
     pub out_idle_timeout: Option<u8>,
     /// Legacy ambiguous codec target. New callers must use `transcode.audio_codec` for audio.

@@ -15,21 +15,46 @@ pub struct StreamConf {
     pub out_idle_timeout: u8,
 }
 serde_default!(default_in_wait_timeout, u8, 4);
-serde_default!(default_out_idle_timeout, u8, 6);
+serde_default!(default_out_idle_timeout, u8, 20);
+const MIN_IN_WAIT_TIMEOUT: u8 = 1;
+const MAX_IN_WAIT_TIMEOUT: u8 = 30;
+const MIN_OUT_IDLE_TIMEOUT: u8 = 12;
+const MAX_OUT_IDLE_TIMEOUT: u8 = 120;
 impl StreamConf {
     pub fn init_by_conf() -> Self {
         StreamConf::conf()
     }
+
+    pub fn resolve_media_timeouts(
+        &self,
+        in_wait_timeout: Option<u8>,
+        out_idle_timeout: Option<u8>,
+    ) -> Result<(u8, u8), String> {
+        let in_wait_timeout = in_wait_timeout.unwrap_or(self.in_wait_timeout);
+        let out_idle_timeout = out_idle_timeout.unwrap_or(self.out_idle_timeout);
+        validate_media_timeouts(in_wait_timeout, out_idle_timeout)?;
+        Ok((in_wait_timeout, out_idle_timeout))
+    }
 }
 impl CheckFromConf for StreamConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
-        if self.in_wait_timeout < 1 {
-            return Err(FieldCheckError::BizError(
-                "The in_wait_timeout must be greater than or equal to 1".to_string(),
-            ));
-        }
-        Ok(())
+        validate_media_timeouts(self.in_wait_timeout, self.out_idle_timeout)
+            .map_err(FieldCheckError::BizError)
     }
+}
+
+fn validate_media_timeouts(in_wait_timeout: u8, out_idle_timeout: u8) -> Result<(), String> {
+    if !(MIN_IN_WAIT_TIMEOUT..=MAX_IN_WAIT_TIMEOUT).contains(&in_wait_timeout) {
+        return Err(format!(
+            "stream.in_wait_timeout must be between {MIN_IN_WAIT_TIMEOUT} and {MAX_IN_WAIT_TIMEOUT} seconds"
+        ));
+    }
+    if !(MIN_OUT_IDLE_TIMEOUT..=MAX_OUT_IDLE_TIMEOUT).contains(&out_idle_timeout) {
+        return Err(format!(
+            "stream.out_idle_timeout must be between {MIN_OUT_IDLE_TIMEOUT} and {MAX_OUT_IDLE_TIMEOUT} seconds"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -225,7 +250,7 @@ impl ServerConf {
 
 #[cfg(test)]
 mod tests {
-    use crate::general::cfg::ServerConf;
+    use crate::general::cfg::{ServerConf, StreamConf};
     use base::cfg_lib::conf::init_cfg;
 
     //   hls 与 flv: 都为false时，触发panic
@@ -234,5 +259,26 @@ mod tests {
         init_cfg("config.yml".to_string());
         let cf: ServerConf = ServerConf::init_by_conf();
         println!("{:?}", cf);
+    }
+
+    #[test]
+    fn stream_timeout_defaults_and_boundaries_are_validated() {
+        let defaults = StreamConf {
+            in_wait_timeout: 4,
+            out_idle_timeout: 20,
+        };
+        assert_eq!(defaults.resolve_media_timeouts(None, None), Ok((4, 20)));
+        assert_eq!(
+            defaults.resolve_media_timeouts(Some(1), Some(12)),
+            Ok((1, 12))
+        );
+        assert_eq!(
+            defaults.resolve_media_timeouts(Some(30), Some(120)),
+            Ok((30, 120))
+        );
+        assert!(defaults.resolve_media_timeouts(Some(0), None).is_err());
+        assert!(defaults.resolve_media_timeouts(Some(31), None).is_err());
+        assert!(defaults.resolve_media_timeouts(None, Some(11)).is_err());
+        assert!(defaults.resolve_media_timeouts(None, Some(121)).is_err());
     }
 }

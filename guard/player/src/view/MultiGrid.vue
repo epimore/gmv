@@ -63,10 +63,11 @@
           @stream-switch="(payload) => emit('streamSwitch', { index, payload })"
           @playing="(payload) => emit('playing', { index, payload })"
           @playback-error="(payload) => emit('playbackError', { index, payload })"
+          @playback-switch-cancel="() => emit('playbackSwitchCancel', { index })"
         />
         <span v-else-if="cells[index]" class="empty-cell">
           <b>{{ cells[index]?.title || '等待播放' }}</b>
-          <small>{{ cells[index]?.status === 'error' ? '播放失败' : '正在请求播放' }}</small>
+          <small>{{ cells[index]?.status === 'error' ? '播放失败' : cells[index]?.startupText || '正在请求播放' }}</small>
         </span>
         <span v-else class="empty-cell">空画面 {{ index + 1 }}</span>
       </div>
@@ -94,6 +95,8 @@ export interface GmvGridCell {
   outputType?: string;
   outputOptions?: Array<{ value: string; label: string }>;
   outputSwitching?: boolean;
+  startupText?: string;
+  startupCanCancel?: boolean;
 }
 
 const props = defineProps<{
@@ -116,6 +119,7 @@ const emit = defineEmits<{
   outputTypeChange: [{ index: number; outputType: string }];
   playing: [{ index: number; payload: { source?: GmvSource } }];
   playbackError: [{ index: number; payload: { message: string; source?: GmvSource } }];
+  playbackSwitchCancel: [{ index: number }];
   close: [{ index: number }];
   reorder: [{ sourceIndex: number; targetIndex: number }];
 }>();

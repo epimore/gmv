@@ -35,6 +35,43 @@ impl ApiV2 {
         self.operations.start(request)
     }
 
+    pub fn start_operation_once(
+        &self,
+        request: OperationRequest,
+    ) -> GuardResult<(OperationRecord, bool)> {
+        self.operations.start_once(request)
+    }
+
+    pub fn get_operation(&self, operation_id: &str) -> GuardResult<OperationRecord> {
+        self.operations.get(operation_id)
+    }
+
+    pub fn list_operations(&self) -> Vec<OperationRecord> {
+        self.operations.list()
+    }
+
+    pub fn configure_media_operation(
+        &self,
+        operation_id: &str,
+        stage: impl Into<String>,
+        checkpoint_ms: u64,
+        hard_timeout_ms: u64,
+    ) -> GuardResult<OperationRecord> {
+        self.operations
+            .configure_media(operation_id, stage, checkpoint_ms, hard_timeout_ms)
+    }
+
+    pub fn progress_operation(
+        &self,
+        operation_id: &str,
+        stage: impl Into<String>,
+        progress_percent: u8,
+        message: impl Into<String>,
+    ) -> GuardResult<OperationRecord> {
+        self.operations
+            .progress_stage(operation_id, stage, progress_percent, message)
+    }
+
     pub fn succeed_operation(
         &self,
         operation_id: &str,
@@ -49,5 +86,19 @@ impl ApiV2 {
         error: crate::core::GuardError,
     ) -> GuardResult<OperationRecord> {
         self.operations.fail(operation_id, error)
+    }
+
+    pub fn succeed_operation_with_result(
+        &self,
+        operation_id: &str,
+        message: impl Into<String>,
+        result: base::serde_json::Value,
+    ) -> GuardResult<OperationRecord> {
+        self.operations
+            .succeed_with_result(operation_id, message, result)
+    }
+
+    pub fn cancel_operation(&self, operation_id: &str) -> GuardResult<OperationRecord> {
+        self.operations.cancel(operation_id)
     }
 }

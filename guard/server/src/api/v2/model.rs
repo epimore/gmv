@@ -51,6 +51,39 @@ pub struct StreamOutputSummary {
     pub state: StreamOutputState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+pub enum MediaOperationState {
+    Preparing,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct MediaOperationError {
+    pub code: String,
+    pub message: String,
+    pub user_message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct MediaOperationSummary {
+    pub operation_id: String,
+    pub state: MediaOperationState,
+    pub stage: String,
+    pub elapsed_ms: u64,
+    pub last_progress_at_ms: i64,
+    pub checkpoint_ms: u64,
+    pub hard_timeout_ms: u64,
+    pub can_continue: bool,
+    pub result: Option<base::serde_json::Value>,
+    pub error: Option<MediaOperationError>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 pub struct MediaTransportCapability {

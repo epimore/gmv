@@ -729,57 +729,9 @@ fn decode_range_error(field: &str, ty: &str) -> GlobalError {
 }
 
 #[cfg(test)]
-#[allow(dead_code, unused_imports)]
 mod tests {
     use super::*;
-    use base::cfg_lib::conf::init_cfg;
     use base::chrono::TimeZone;
-    use base::tokio;
-
-    // #[tokio::test]
-    async fn test_read_gmv_oauth_by_device_id() {
-        init();
-        let res = GmvOauth::read_gmv_oauth_by_device_id(&"34020000001320000003".to_string()).await;
-        println!("{res:?}");
-    }
-
-    // #[tokio::test]
-    async fn test_query_gmv_device_by_device_id() {
-        init();
-        let res =
-            GmvDevice::query_gmv_device_by_device_id(&"34020000001320000003".to_string()).await;
-        println!("{res:?}");
-    }
-
-    // #[tokio::test]
-    async fn test_insert_single_gmv_device_by_register() {
-        init();
-        let res =
-            GmvDevice::query_gmv_device_by_device_id(&"34020000001320000004".to_string()).await;
-        if let Ok(Some(gd)) = res {
-            let a = GmvDevice {
-                device_id: "34020000001320000004".to_string(),
-                register_time: Local::now().naive_local(),
-                ..gd
-            };
-            println!("{a:?}");
-            let result = a.insert_single_gmv_device_by_register().await;
-            println!("{:?}", result)
-        }
-    }
-
-    // #[tokio::test]
-    async fn test_expire_online_by_device_id() {
-        init();
-        let res = GmvDevice::expire_online_by_device_id(&"34020000001320000003".to_string()).await;
-        println!("{:?}", res);
-    }
-
-    fn init() {
-        init_cfg(
-            "/home/ubuntu20/code/rs/mv/github/epimore/gmv/session/gb28181/config.yml".to_string(),
-        );
-    }
 
     #[test]
     fn oauth_select_fields_match_lowercase_schema_for_from_row() {

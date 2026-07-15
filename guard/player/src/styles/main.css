@@ -93,7 +93,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .gmv-player { position: relative; width: 100%; height: 100%; min-height: 220px; overflow: hidden; background: #02050a; color: var(--text); }
 .gmv-player:fullscreen { width: 100vw; height: 100vh; }
-.gmv-video { width: 100%; height: 100%; display: block; object-fit: contain; background: #02050a; }
+.gmv-video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: contain; background: #02050a; visibility: hidden; }
+.gmv-video.is-active { visibility: visible; }
 .gmv-layer { position: absolute; inset: 0; pointer-events: none; }
 .osd-item {
   position: absolute;
