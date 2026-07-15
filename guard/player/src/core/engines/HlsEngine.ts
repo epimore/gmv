@@ -27,6 +27,11 @@ export class HlsEngine extends BaseEngine {
         liveSyncDurationCount: 3,
         backBufferLength: 30,
       });
+      this.hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal?: boolean; details?: string; reason?: string }) => {
+        if (!data?.fatal || !this.video) return;
+        const message = data.details || data.reason || 'HLS fatal error';
+        this.video.dispatchEvent(new ErrorEvent('error', { message }));
+      });
       this.hls.loadSource(source.url);
       this.hls.attachMedia(video);
       return;

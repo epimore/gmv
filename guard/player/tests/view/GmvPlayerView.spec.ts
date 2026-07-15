@@ -53,7 +53,25 @@ describe('GmvPlayerView make-before-break', () => {
     expect(players[0].destroy).not.toHaveBeenCalled();
     expect(videos[0].classes()).toContain('is-active');
 
+    let presentNextFrame: (() => void) | undefined;
+    Object.defineProperty(videos[1].element, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: vi.fn((callback: VideoFrameRequestCallback) => {
+        presentNextFrame = () => callback(0, {} as VideoFrameCallbackMetadata);
+        return 1;
+      }),
+    });
+    Object.defineProperty(videos[1].element, 'cancelVideoFrameCallback', {
+      configurable: true,
+      value: vi.fn(),
+    });
     videos[1].element.dispatchEvent(new Event('playing'));
+    await wrapper.vm.$nextTick();
+
+    expect(players[0].destroy).not.toHaveBeenCalled();
+    expect(videos[0].classes()).toContain('is-active');
+
+    presentNextFrame?.();
     await wrapper.vm.$nextTick();
 
     expect(players[0].destroy).toHaveBeenCalledOnce();

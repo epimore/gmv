@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn same_input_supports_dynamic_outputs_and_independent_close() {
+    fn same_input_supports_three_formats_and_multi_user_independent_close() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -1175,9 +1175,34 @@ mod tests {
         }
         assert_eq!(control.outputs.len(), 3);
 
+        let second_hls = control.create_output(CreateOutputRequest {
+            operation: Some(operation("create-hls-user-2")),
+            stream_id: "stream-a".to_string(),
+            output_type: "hls".to_string(),
+            endpoint_mode: EndpointMode::Single as i32,
+            audio_codec: "aac".to_string(),
+        });
+        assert!(second_hls.error.is_none());
+        assert_ne!(second_hls.output_id, output_ids["hls"]);
+        assert_eq!(control.outputs.len(), 4);
+
         let closed = control.close_output(CloseOutputRequest {
             operation: Some(operation("close-hls")),
             output_id: output_ids["hls"].clone(),
+            stream_id: "stream-a".to_string(),
+        });
+        assert!(closed.closed);
+        assert_eq!(control.outputs.len(), 3);
+        assert!(
+            control
+                .outputs
+                .values()
+                .any(|output| output.output_type == "hls")
+        );
+
+        let closed = control.close_output(CloseOutputRequest {
+            operation: Some(operation("close-hls-user-2")),
+            output_id: second_hls.output_id,
             stream_id: "stream-a".to_string(),
         });
         assert!(closed.closed);

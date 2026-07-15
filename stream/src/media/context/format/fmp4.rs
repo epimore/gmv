@@ -1,5 +1,7 @@
 use crate::media::context::format::demuxer::DemuxerContext;
-use crate::media::context::format::{FmtMuxer, MuxPacket, write_callback};
+use crate::media::context::format::{
+    FmtMuxer, MuxPacket, can_start_fragmented_output, write_callback,
+};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
@@ -41,6 +43,7 @@ pub struct CmafFmp4Context {
 
     in_timebase_map: HashMap<c_int, AVRational>,
     v_idx: c_int,
+    started: bool,
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
     pub epoch: Instant,              //当由于seek导致dts回退时，重新初始化mux cxt
@@ -162,7 +165,8 @@ impl FmtMuxer for CmafFmp4Context {
                 out_buf_ptr,
                 in_timebase_map,
                 v_idx,
-                fragment_started_with_key: true,
+                started: false,
+                fragment_started_with_key: false,
                 fragment_start_timestamp: 0,
                 epoch: Instant::now(),
             })
@@ -183,6 +187,21 @@ impl FmtMuxer for CmafFmp4Context {
                     return Ok(());
                 }
                 Some(&in_tb) => {
+                    let is_keyframe =
+                        self.v_idx == pkt.stream_index && (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
+                    if !can_start_fragmented_output(
+                        self.started,
+                        self.v_idx,
+                        pkt.stream_index,
+                        is_keyframe,
+                    ) {
+                        return Ok(());
+                    }
+                    if !self.started {
+                        self.started = true;
+                        self.fragment_started_with_key = self.v_idx < 0 || is_keyframe;
+                        self.fragment_start_timestamp = timestamp;
+                    }
                     let mut cloned = std::mem::zeroed::<AVPacket>();
 
                     // 写入当前帧
@@ -199,8 +218,6 @@ impl FmtMuxer for CmafFmp4Context {
                     }
                     // self.fragment_frame_count += 1;
                     av_packet_unref(&mut cloned);
-                    let is_keyframe =
-                        self.v_idx == pkt.stream_index && (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     if self.flush_fragment(
                         self.fragment_start_timestamp,
                         self.fragment_started_with_key,

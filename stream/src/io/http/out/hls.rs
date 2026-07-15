@@ -26,6 +26,7 @@ static HLS_STORES: Lazy<DashMap<u32, Arc<RwLock<HlsStore>>>> = Lazy::new(DashMap
 struct HlsSegment {
     seq: usize,
     data: Bytes,
+    is_key: bool,
 }
 
 struct HlsStore {
@@ -141,7 +142,11 @@ pub async fn segment_ts_handler() -> Response<Body> {
 
 async fn ensure_store(ssrc: u32) -> Option<Arc<RwLock<HlsStore>>> {
     if let Some(store) = HLS_STORES.get(&ssrc) {
-        return Some(store.clone());
+        let store = store.clone();
+        if !store.read().await.ended {
+            return Some(store);
+        }
+        remove_store_if_same(&HLS_STORES, ssrc, &store);
     }
     let mut rx = Register::get_muxer_rx(&ssrc, MuxerEnum::HlsMp4).ok()?;
     let (tx, header_rx) = oneshot::channel();
@@ -170,10 +175,9 @@ async fn ensure_store(ssrc: u32) -> Option<Arc<RwLock<HlsStore>>> {
                     state.segments.push_back(HlsSegment {
                         seq: packet.seq,
                         data: packet.data.clone(),
+                        is_key: packet.is_key,
                     });
-                    while state.segments.len() > HLS_WINDOW_SIZE {
-                        state.segments.pop_front();
-                    }
+                    trim_segment_window(&mut state.segments);
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     task_store.write().await.segments.clear();
@@ -183,9 +187,31 @@ async fn ensure_store(ssrc: u32) -> Option<Arc<RwLock<HlsStore>>> {
         }
         task_store.write().await.ended = true;
         base::tokio::time::sleep(Duration::from_secs(30)).await;
-        HLS_STORES.remove(&ssrc);
+        remove_store_if_same(&HLS_STORES, ssrc, &task_store);
     });
     Some(store)
+}
+
+fn trim_segment_window(segments: &mut VecDeque<HlsSegment>) {
+    while segments.len() > HLS_WINDOW_SIZE {
+        let Some(next_key_index) = segments.iter().skip(1).position(|segment| segment.is_key)
+        else {
+            break;
+        };
+        for _ in 0..=next_key_index {
+            segments.pop_front();
+        }
+    }
+}
+
+fn remove_store_if_same(
+    stores: &DashMap<u32, Arc<RwLock<HlsStore>>>,
+    ssrc: u32,
+    expected: &Arc<RwLock<HlsStore>>,
+) -> bool {
+    stores
+        .remove_if(&ssrc, |_, current| Arc::ptr_eq(current, expected))
+        .is_some()
 }
 
 fn media_response(data: Bytes) -> Response<Body> {
@@ -196,4 +222,46 @@ fn media_response(data: Bytes) -> Response<Body> {
         .header(header::CONTENT_LENGTH, data.len())
         .body(Body::from(data))
         .expect("valid HLS media response")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store(ended: bool) -> Arc<RwLock<HlsStore>> {
+        Arc::new(RwLock::new(HlsStore {
+            init: Bytes::new(),
+            segments: VecDeque::new(),
+            ended,
+        }))
+    }
+
+    #[test]
+    fn stale_hls_cleanup_does_not_remove_a_new_store_generation() {
+        let stores = DashMap::new();
+        let old = store(true);
+        let current = store(false);
+        stores.insert(1, old.clone());
+        assert!(remove_store_if_same(&stores, 1, &old));
+
+        stores.insert(1, current.clone());
+        assert!(!remove_store_if_same(&stores, 1, &old));
+        assert!(Arc::ptr_eq(stores.get(&1).unwrap().value(), &current));
+    }
+
+    #[test]
+    fn sliding_hls_window_keeps_a_key_fragment_at_its_front() {
+        let mut segments = VecDeque::new();
+        for seq in 1..=8 {
+            segments.push_back(HlsSegment {
+                seq,
+                data: Bytes::new(),
+                is_key: seq == 1 || seq == 5,
+            });
+            trim_segment_window(&mut segments);
+        }
+
+        assert_eq!(segments.front().map(|segment| segment.seq), Some(5));
+        assert!(segments.front().is_some_and(|segment| segment.is_key));
+    }
 }

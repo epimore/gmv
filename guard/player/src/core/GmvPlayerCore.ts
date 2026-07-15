@@ -36,6 +36,7 @@ export class GmvPlayerCore {
   private startupHardWatch?: number;
   private startupProgressWatch?: number;
   private stablePlaybackTimer?: number;
+  private videoFrameWatch?: number;
   private stallCurrentTime = 0;
   private stallBufferEnd = 0;
   private readonly videoCleanups: Array<() => void> = [];
@@ -63,6 +64,7 @@ export class GmvPlayerCore {
     this.clearStallWatch();
     this.clearStartupWatch();
     this.clearStablePlaybackTimer();
+    this.clearVideoFrameWatch();
     this.destroyCurrentEngine();
     this.activeSource = undefined;
     this.destroyed = false;
@@ -131,6 +133,7 @@ export class GmvPlayerCore {
     this.clearStallWatch();
     this.clearStartupWatch();
     this.clearStablePlaybackTimer();
+    this.clearVideoFrameWatch();
     this.reconnectInFlight = true;
     this.bus.emit('reconnecting', { retry: this.reconnectRetry, reason });
     const version = this.loadVersion;
@@ -154,6 +157,7 @@ export class GmvPlayerCore {
     this.clearStallWatch();
     this.clearStartupWatch();
     this.clearStablePlaybackTimer();
+    this.clearVideoFrameWatch();
     this.destroyCurrentEngine();
     while (this.videoCleanups.length) this.videoCleanups.pop()?.();
     this.video.pause();
@@ -182,16 +186,27 @@ export class GmvPlayerCore {
 
   private bindVideoEvents(): void {
     const onPlaying = () => {
-      this.clearStallWatch();
-      this.clearStartupWatch();
-      this.bus.emit('playing', undefined);
-      this.emitStats();
-      this.scheduleStablePlaybackReset();
+      if (this.destroyed) return;
+      const version = this.loadVersion;
+      this.clearVideoFrameWatch();
+      if (this.video.videoWidth > 0 && this.video.readyState >= 2) {
+        this.confirmPlaying(version);
+        return;
+      }
+      if (typeof this.video.requestVideoFrameCallback !== 'function') {
+        this.confirmPlaying(version);
+        return;
+      }
+      this.videoFrameWatch = this.video.requestVideoFrameCallback(() => {
+        this.videoFrameWatch = undefined;
+        this.confirmPlaying(version);
+      });
     };
     const onPause = () => {
       this.clearStallWatch();
       this.clearStartupWatch();
       this.clearStablePlaybackTimer();
+      this.clearVideoFrameWatch();
       this.bus.emit('paused', undefined);
     };
     const onStalled = () => {
@@ -199,12 +214,16 @@ export class GmvPlayerCore {
       this.bus.emit('stalled', undefined);
       this.startStallWatch();
     };
-    const onError = () => {
+    const onError = (event: Event) => {
       if (this.destroyed) return;
       this.clearStallWatch();
       this.clearStartupWatch();
       this.clearStablePlaybackTimer();
-      this.emitError(GmvErrorCode.StreamReadFailed, this.video.error?.message ?? 'video error', this.activeSource);
+      this.clearVideoFrameWatch();
+      const message = event instanceof ErrorEvent && event.message
+        ? event.message
+        : this.video.error?.message ?? 'video error';
+      this.emitError(GmvErrorCode.StreamReadFailed, message, this.activeSource);
       void this.reconnect('video-error');
     };
     this.video.addEventListener('playing', onPlaying);
@@ -217,6 +236,15 @@ export class GmvPlayerCore {
       () => this.video.removeEventListener('stalled', onStalled),
       () => this.video.removeEventListener('error', onError),
     );
+  }
+
+  private confirmPlaying(version: number): void {
+    if (this.destroyed || version !== this.loadVersion) return;
+    this.clearStallWatch();
+    this.clearStartupWatch();
+    this.bus.emit('playing', undefined);
+    this.emitStats();
+    this.scheduleStablePlaybackReset();
   }
 
   private emitStats(): void {
@@ -320,6 +348,12 @@ export class GmvPlayerCore {
     if (this.stablePlaybackTimer === undefined) return;
     window.clearTimeout(this.stablePlaybackTimer);
     this.stablePlaybackTimer = undefined;
+  }
+
+  private clearVideoFrameWatch(): void {
+    if (this.videoFrameWatch === undefined) return;
+    this.video.cancelVideoFrameCallback?.(this.videoFrameWatch);
+    this.videoFrameWatch = undefined;
   }
 
   private bufferedEnd(): number {
