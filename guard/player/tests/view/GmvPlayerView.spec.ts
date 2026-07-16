@@ -75,6 +75,29 @@ afterEach(() => {
 });
 
 describe('GmvPlayerView make-before-break', () => {
+  it('远端确认倍速后同步设置本地 video playbackRate', async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [{
+          protocol: 'flv',
+          url: 'http://127.0.0.1/playback.flv',
+          codec: 'h264',
+          rateMode: 'remote-stream',
+        }],
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const video = wrapper.find('video').element;
+    video.dispatchEvent(new Event('playing'));
+    await wrapper.vm.$nextTick();
+
+    (wrapper.vm as unknown as { confirmPlaybackRate: (rate: number) => void })
+      .confirmPlaybackRate(4);
+
+    expect(video.playbackRate).toBe(4);
+    wrapper.unmount();
+  });
+
   it('新 source playing 前保留旧 engine 和旧画面', async () => {
     const wrapper = mount(GmvPlayerView, { props: { sources: source('http://127.0.0.1/old.flv') } });
     await vi.waitFor(() => expect(players).toHaveLength(1));

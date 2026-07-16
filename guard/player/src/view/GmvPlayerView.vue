@@ -500,7 +500,7 @@ function setPlaybackRate(rate: number) {
 
 function confirmPlaybackRate(rate: number) {
   playbackRate.value = rate;
-  if (activeVideo()) activeVideo()!.playbackRate = 1;
+  if (activeVideo()) activeVideo()!.playbackRate = rate;
 }
 
 function confirmPlaybackState(paused: boolean) {

@@ -3487,15 +3487,20 @@ fn require_playback_control(
         .store()
         .find_playback_control_ticket(playback_id, stream_id)
         .ok_or_else(|| HttpError::forbidden("playback control owner not found"))?;
-    if ticket.expires_at_ms <= http_now_ms()? {
-        return Err(HttpError::forbidden("playback control ticket expired"));
-    }
-    if ticket.username != session.username || ticket.ui_session_token != ui_session_token {
+    if !playback_control_owner_matches(&ticket, &session.username, &ui_session_token) {
         return Err(HttpError::forbidden(
             "playback control belongs to another UI session",
         ));
     }
     Ok(ticket)
+}
+
+fn playback_control_owner_matches(
+    ticket: &PlaybackTicketRecord,
+    username: &str,
+    ui_session_token: &str,
+) -> bool {
+    ticket.username == username && ticket.ui_session_token == ui_session_token
 }
 
 async fn seek_playback(
@@ -4104,8 +4109,40 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 mod tests {
     use super::{
         GuardError, HttpError, endpoint_with_playback_token, media_startup_timeout_ms,
-        playback_token_from_endpoint,
+        playback_control_owner_matches, playback_token_from_endpoint,
     };
+    use crate::auth::Role;
+    use crate::store::model::PlaybackTicketRecord;
+
+    #[test]
+    fn playback_control_ownership_does_not_expire_with_media_url_ticket() {
+        let ticket = PlaybackTicketRecord {
+            token: "media-token".to_string(),
+            stream_id: "stream-1".to_string(),
+            playback_id: "playback-1".to_string(),
+            playback_start_time_sec: 100,
+            playback_end_time_sec: 200,
+            output_id: String::new(),
+            subscription_id: "subscription-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            route_id: "route-1".to_string(),
+            username: "operator".to_string(),
+            ui_session_token: "ui-session".to_string(),
+            required_role: Role::Operator,
+            expires_at_ms: 0,
+        };
+
+        assert!(playback_control_owner_matches(
+            &ticket,
+            "operator",
+            "ui-session"
+        ));
+        assert!(!playback_control_owner_matches(
+            &ticket,
+            "operator",
+            "another-session"
+        ));
+    }
 
     #[test]
     fn playback_ticket_replaces_internal_subscription_token() {
