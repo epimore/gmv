@@ -110,7 +110,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { GmvPlayerCore } from '../core/GmvPlayerCore';
 import type {
   GmvAiBox,
@@ -281,6 +281,9 @@ async function mountPlayer(sources = props.sources) {
     return;
   }
   const hasActivePlayback = activePlaybackReady.value && !!players[activeVideoSlot.value];
+  const retainedSlot = activeVideoSlot.value;
+  const retainedSource = activeSource.value;
+  const retainedSourceUrl = selectedSourceUrl.value;
   const slot: VideoSlot = hasActivePlayback ? (activeVideoSlot.value === 0 ? 1 : 0) : activeVideoSlot.value;
   const video = videoForSlot(slot);
   if (!video) return;
@@ -323,8 +326,11 @@ async function mountPlayer(sources = props.sources) {
       playbackRate.value = 1;
       video.playbackRate = 1;
     }
-    if (previousSlot !== slot) destroyPlayerSlot(previousSlot);
-    emit('playing', { source: slotSource });
+    void nextTick().then(() => {
+      if (version !== playerLoadVersion || activeVideoSlot.value !== slot || players[slot] !== core) return;
+      if (previousSlot !== slot) destroyPlayerSlot(previousSlot);
+      emit('playing', { source: slotSource });
+    });
   }));
   playerStops[slot].push(core.on('paused', () => {
     if (slot === activeVideoSlot.value) {
@@ -346,11 +352,16 @@ async function mountPlayer(sources = props.sources) {
     destroyPlayerSlot(slot);
     isLoading.value = false;
     startupProgress.value = undefined;
-    if (hasActivePlayback && activePlaybackReady.value) {
+    if (hasActivePlayback && retainedSlot !== slot && players[retainedSlot]) {
+      activeVideoSlot.value = retainedSlot;
+      activePlaybackReady.value = true;
+      activeSource.value = retainedSource;
+      selectedSourceUrl.value = retainedSourceUrl;
       viewState.value = 'playing';
       lastError.value = '';
     } else {
       activePlaybackReady.value = false;
+      activeSource.value = undefined;
       viewState.value = 'error';
       lastError.value = message;
     }
@@ -573,6 +584,26 @@ function boxStyle(box: GmvAiBox) {
 </script>
 
 <style scoped>
+.gmv-player {
+  position: relative;
+  overflow: hidden;
+}
+
+.gmv-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #02050a;
+  visibility: hidden;
+}
+
+.gmv-video.is-active {
+  visibility: visible;
+}
+
 .player-waiting-cover {
   position: absolute;
   inset: 0;

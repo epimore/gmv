@@ -1,7 +1,7 @@
 use crate::general::util::Placeholder;
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
-use crate::media::context::format::MuxPacket;
+use crate::media::context::format::MuxPacketReceiver;
 use crate::state::event::{Event, EventRes, OutEvent};
 use crate::state::register::Register;
 use axum::body::Body;
@@ -46,8 +46,8 @@ pub struct LocalStoreMp4Context {
     pub token: Option<String>,
     pub ssrc: u32,
 
-    pub file_name: Arc<str>,                         //stream_id
-    pub pkt_rx: broadcast::Receiver<Arc<MuxPacket>>, //数据接收端，当发送端drop，即录制完成
+    pub file_name: Arc<str>,       //stream_id
+    pub pkt_rx: MuxPacketReceiver, //数据接收端，当发送端drop，即录制完成
     pub record_event_tx: mpsc::Sender<(Event, Option<oneshot::Sender<EventRes>>)>, //用于主动发送录制报错、录制结束
     pub inner_event_rx: TypedReceiver<Mp4OutputInnerEvent>, //获取当前录制信息
     pub file_size: usize,

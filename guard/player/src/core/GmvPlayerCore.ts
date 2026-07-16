@@ -12,6 +12,7 @@ const STALL_CHECK_INTERVAL_MS = 1_000;
 const STABLE_PLAYBACK_MS = 10_000;
 const STARTUP_FEEDBACK_MS = 3_000;
 const STARTUP_CHECKPOINT_MS = 8_000;
+const VIDEO_READY_CHECK_INTERVAL_MS = 100;
 const MAX_RECONNECT_DELAY_MS = 10_000;
 const DEFAULT_STARTUP_TIMEOUT_MS: Record<GmvProtocol, number> = {
   flv: 10_000,
@@ -37,6 +38,8 @@ export class GmvPlayerCore {
   private startupProgressWatch?: number;
   private stablePlaybackTimer?: number;
   private videoFrameWatch?: number;
+  private videoReadyWatch?: number;
+  private pendingPlayingVersion?: number;
   private stallCurrentTime = 0;
   private stallBufferEnd = 0;
   private readonly videoCleanups: Array<() => void> = [];
@@ -189,7 +192,8 @@ export class GmvPlayerCore {
       if (this.destroyed) return;
       const version = this.loadVersion;
       this.clearVideoFrameWatch();
-      if (this.video.videoWidth > 0 && this.video.readyState >= 2) {
+      this.pendingPlayingVersion = version;
+      if (this.hasCurrentVideoFrame()) {
         this.confirmPlaying(version);
         return;
       }
@@ -197,10 +201,24 @@ export class GmvPlayerCore {
         this.confirmPlaying(version);
         return;
       }
-      this.videoFrameWatch = this.video.requestVideoFrameCallback(() => {
+      this.videoReadyWatch = window.setInterval(() => {
+        if (this.pendingPlayingVersion !== version) return;
+        if (this.destroyed || version !== this.loadVersion) {
+          this.clearVideoFrameWatch();
+          return;
+        }
+        if (this.hasCurrentVideoFrame()) this.confirmPlaying(version);
+      }, VIDEO_READY_CHECK_INTERVAL_MS);
+      const frameWatch = this.video.requestVideoFrameCallback(() => {
+        if (this.pendingPlayingVersion !== version) return;
         this.videoFrameWatch = undefined;
         this.confirmPlaying(version);
       });
+      if (this.pendingPlayingVersion === version) {
+        this.videoFrameWatch = frameWatch;
+      } else {
+        this.video.cancelVideoFrameCallback?.(frameWatch);
+      }
     };
     const onPause = () => {
       this.clearStallWatch();
@@ -239,7 +257,8 @@ export class GmvPlayerCore {
   }
 
   private confirmPlaying(version: number): void {
-    if (this.destroyed || version !== this.loadVersion) return;
+    if (this.destroyed || version !== this.loadVersion || this.pendingPlayingVersion !== version) return;
+    this.clearVideoFrameWatch();
     this.clearStallWatch();
     this.clearStartupWatch();
     this.bus.emit('playing', undefined);
@@ -351,9 +370,19 @@ export class GmvPlayerCore {
   }
 
   private clearVideoFrameWatch(): void {
-    if (this.videoFrameWatch === undefined) return;
-    this.video.cancelVideoFrameCallback?.(this.videoFrameWatch);
+    if (this.videoFrameWatch !== undefined) {
+      this.video.cancelVideoFrameCallback?.(this.videoFrameWatch);
+    }
+    if (this.videoReadyWatch !== undefined) {
+      window.clearInterval(this.videoReadyWatch);
+    }
     this.videoFrameWatch = undefined;
+    this.videoReadyWatch = undefined;
+    this.pendingPlayingVersion = undefined;
+  }
+
+  private hasCurrentVideoFrame(): boolean {
+    return this.video.videoWidth > 0 && this.video.readyState >= 2;
   }
 
   private bufferedEnd(): number {

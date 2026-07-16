@@ -4,7 +4,7 @@ use crate::general::util::Placeholder;
 use crate::io::local::mp4::{LocalStoreMp4Context, Mp4OutputInnerEvent};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::muxer::{MuxerEvent, MuxerKind};
-use crate::media::context::format::MuxPacket;
+use crate::media::context::format::MuxPacketReceiver;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::media::rtp::RtpPacket;
 use crate::state::event::{ActiveEvent, Event, EventRes, InnerEvent, OutEvent};
@@ -825,10 +825,7 @@ impl Register {
     pub fn get_server_conf() -> &'static ServerConf {
         &Self::get().inner.server_conf
     }
-    pub fn get_muxer_rx(
-        ssrc: &u32,
-        muxer_enum: MuxerEnum,
-    ) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
+    pub fn get_muxer_rx(ssrc: &u32, muxer_enum: MuxerEnum) -> GlobalResult<MuxPacketReceiver> {
         let arc = Self::get().inner.clone();
         match arc.rtp_gateway_map.get(&ssrc) {
             None => Err(GlobalError::new_biz_error(

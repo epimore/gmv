@@ -2,7 +2,9 @@ use crate::io::http::out::{DisconnectAwareStream, OutPlayKind, stream_user_token
 use crate::io::http::{res_401, res_404};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
-use crate::media::context::format::MuxPacket;
+use crate::media::context::format::MuxPacketReceiver;
+#[cfg(test)]
+use crate::media::context::format::MuxPacketSender;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::state::event::{Event, EventRes, OutEvent, OutEventRes};
 use crate::state::register::{DEFAULT_EXPIRES, Register};
@@ -60,7 +62,7 @@ pub async fn handler(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
 
 fn send_frame(
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
 ) -> Response<Body> {
     let wrapped_stream = DisconnectAwareStream {
@@ -80,7 +82,7 @@ mod tests {
 
     #[test]
     fn flv_response_omits_connection_header() {
-        let (_, rx) = broadcast::channel(1);
+        let rx = MuxPacketSender::new(1).subscribe();
 
         let response = send_frame(1, rx, None);
 
@@ -100,13 +102,13 @@ enum FlvStreamState {
 
 struct FlvStreamContext {
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
     state: FlvStreamState,
 }
 
 fn flv_stream(
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
 ) -> impl futures_core::Stream<Item = Result<Bytes, std::convert::Infallible>> {
     stream::unfold(
         FlvStreamContext {

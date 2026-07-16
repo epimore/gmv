@@ -1,11 +1,10 @@
 use crate::media::context::format::demuxer::DemuxerContext;
-use crate::media::context::format::{FmtMuxer, MuxPacket, write_callback};
+use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender, write_callback};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
-use base::tokio::sync::broadcast;
 use rsmpeg::ffi::{
     AV_PKT_FLAG_KEY, AVDictionary, AVFMT_FLAG_FLUSH_PACKETS, AVFormatContext, AVIOContext,
     AVPacket, AVRational, av_dict_free, av_dict_set, av_free, av_guess_format,
@@ -23,7 +22,7 @@ static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 
 pub struct Mp4Context {
     pub header: Bytes,
-    pub pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
+    pub pkt_tx: MuxPacketSender,
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
     pub io_buf: *mut u8,
@@ -60,10 +59,7 @@ impl Drop for Mp4Context {
 }
 
 impl FmtMuxer for Mp4Context {
-    fn init_context(
-        demuxer_context: &DemuxerContext,
-        pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
-    ) -> GlobalResult<Self>
+    fn init_context(demuxer_context: &DemuxerContext, pkt_tx: MuxPacketSender) -> GlobalResult<Self>
     where
         Self: Sized,
     {

@@ -1,13 +1,12 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::{
-    FmtMuxer, MuxPacket, can_start_fragmented_output, write_callback,
+    FmtMuxer, MuxPacket, MuxPacketSender, can_start_fragmented_output, write_callback,
 };
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, info, warn};
 use base::once_cell::sync::Lazy;
-use base::tokio::sync::broadcast;
 use log::error;
 use rsmpeg::ffi::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_CUSTOM_IO,
@@ -34,7 +33,7 @@ static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 const MAX_DURATION: Duration = Duration::from_millis(500);
 pub struct HlsFmp4Context {
     pub init_segment: Bytes, // CMAF init.mp4
-    pub pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
+    pub pkt_tx: MuxPacketSender,
 
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
@@ -70,7 +69,7 @@ impl Drop for HlsFmp4Context {
 impl FmtMuxer for HlsFmp4Context {
     fn init_context(
         demuxer_context: &DemuxerContext,
-        pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
+        pkt_tx: MuxPacketSender,
     ) -> GlobalResult<Self> {
         unsafe {
             let io_buf = av_malloc(DEFAULT_IO_BUF_SIZE) as *mut u8;

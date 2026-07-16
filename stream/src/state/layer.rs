@@ -370,16 +370,14 @@ pub mod filter_layer {
     }
 }
 pub mod muxer_layer {
-    use crate::media::context::format::MuxPacket;
     use crate::media::context::format::muxer::MuxerEnum;
+    use crate::media::context::format::{MuxPacketReceiver, MuxPacketSender};
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::err::BaseErrorCode;
     use base::exception::{GlobalError, GlobalResult};
     use base::log::{error, warn};
-    use base::tokio::sync::broadcast;
     use gmv_domain::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
     use gmv_domain::info::output::OutputKind;
-    use std::sync::Arc;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
@@ -395,10 +393,7 @@ pub mod muxer_layer {
         pub ts: Option<TsLayer>,
     }
     impl MuxerLayer {
-        pub fn get_rx(
-            &self,
-            muxer_enum: MuxerEnum,
-        ) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
+        pub fn get_rx(&self, muxer_enum: MuxerEnum) -> GlobalResult<MuxPacketReceiver> {
             match muxer_enum {
                 MuxerEnum::Flv => {
                     if self.flv.is_none() {
@@ -523,9 +518,7 @@ pub mod muxer_layer {
         }
     }
 
-    fn unsupported_muxer_rx(
-        muxer_enum: MuxerEnum,
-    ) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
+    fn unsupported_muxer_rx(muxer_enum: MuxerEnum) -> GlobalResult<MuxPacketReceiver> {
         Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
             &format!("muxer: {:?}暂不支持", muxer_enum),
@@ -535,23 +528,26 @@ pub mod muxer_layer {
 
     #[derive(Clone)]
     pub struct FlvLayer {
-        pub tx: broadcast::Sender<Arc<MuxPacket>>,
+        pub tx: MuxPacketSender,
     }
     impl FlvLayer {
         pub fn layer() -> Self {
-            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
-            Self { tx }
+            Self {
+                tx: MuxPacketSender::new(FORMAT_BROADCAST_BUFFER),
+            }
         }
     }
     #[derive(Clone)]
     pub struct Mp4Layer {
-        pub tx: broadcast::Sender<Arc<MuxPacket>>,
+        pub tx: MuxPacketSender,
         pub mp4: Mp4,
     }
     impl Mp4Layer {
         pub fn layer(mp4: Mp4) -> Self {
-            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
-            Self { tx, mp4 }
+            Self {
+                tx: MuxPacketSender::new(FORMAT_BROADCAST_BUFFER),
+                mp4,
+            }
         }
     }
 
@@ -566,12 +562,13 @@ pub mod muxer_layer {
 
     #[derive(Clone)]
     pub struct CMafLayer {
-        pub tx: broadcast::Sender<Arc<MuxPacket>>,
+        pub tx: MuxPacketSender,
     }
     impl CMafLayer {
-        pub fn layer(cmaf: CMaf) -> Self {
-            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
-            Self { tx }
+        pub fn layer(_cmaf: CMaf) -> Self {
+            Self {
+                tx: MuxPacketSender::new(FORMAT_BROADCAST_BUFFER),
+            }
         }
     }
     #[derive(Clone)]

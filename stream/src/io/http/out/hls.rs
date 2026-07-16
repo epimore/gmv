@@ -2,6 +2,7 @@ use crate::io::http::out::{OutPlayKind, stream_user_token_check};
 use crate::io::http::{res_401, res_404};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
+use crate::media::context::format::MuxPacket;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::state::register::Register;
 use axum::body::Body;
@@ -20,7 +21,7 @@ use std::time::Duration;
 const HLS_WINDOW_SIZE: usize = 6;
 const HLS_TARGET_DURATION: u64 = 2;
 
-static HLS_STORES: Lazy<DashMap<u32, Arc<RwLock<HlsStore>>>> = Lazy::new(DashMap::new);
+static HLS_STORES: Lazy<DashMap<u32, Arc<HlsStoreHandle>>> = Lazy::new(DashMap::new);
 
 #[derive(Clone)]
 struct HlsSegment {
@@ -33,6 +34,11 @@ struct HlsStore {
     init: Bytes,
     segments: VecDeque<HlsSegment>,
     ended: bool,
+}
+
+struct HlsStoreHandle {
+    channel_id: u64,
+    state: RwLock<HlsStore>,
 }
 
 pub async fn m3u8_handler(
@@ -68,7 +74,7 @@ pub async fn m3u8_handler(
         Some(store) => store,
         None => return res_404(),
     };
-    let state = store.read().await;
+    let state = store.state.read().await;
     let first_seq = state
         .segments
         .front()
@@ -105,7 +111,7 @@ pub async fn init_mp4_handler(stream_id: Arc<str>, token: Arc<str>) -> Response<
     let Some(store) = ensure_store(base.rtp_info.ssrc).await else {
         return res_404();
     };
-    let init = store.read().await.init.clone();
+    let init = store.state.read().await.init.clone();
     media_response(init)
 }
 
@@ -126,7 +132,7 @@ pub async fn segment_mp4_handler(segment_id: Arc<str>, token: Arc<str>) -> Respo
     let Some(store) = ensure_store(base.rtp_info.ssrc).await else {
         return res_404();
     };
-    let state = store.read().await;
+    let state = store.state.read().await;
     match state.segments.iter().find(|segment| segment.seq == seq) {
         Some(segment) => media_response(segment.data.clone()),
         None => res_404(),
@@ -140,56 +146,97 @@ pub async fn segment_ts_handler() -> Response<Body> {
         .expect("valid HLS-TS unsupported response")
 }
 
-async fn ensure_store(ssrc: u32) -> Option<Arc<RwLock<HlsStore>>> {
+async fn ensure_store(ssrc: u32) -> Option<Arc<HlsStoreHandle>> {
+    let mut rx = Register::get_muxer_rx(&ssrc, MuxerEnum::HlsMp4).ok()?;
+    let channel_id = rx.channel_id();
     if let Some(store) = HLS_STORES.get(&ssrc) {
         let store = store.clone();
-        if !store.read().await.ended {
+        // A request from the previous output generation may finish after the replacement store.
+        if store.channel_id > channel_id {
+            return Some(store);
+        }
+        if store.channel_id == channel_id && !store.state.read().await.ended {
             return Some(store);
         }
         remove_store_if_same(&HLS_STORES, ssrc, &store);
     }
-    let mut rx = Register::get_muxer_rx(&ssrc, MuxerEnum::HlsMp4).ok()?;
     let (tx, header_rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::HlsFmp4Header(tx))).ok()?;
     let init = header_rx.await.ok()?;
-    let store = Arc::new(RwLock::new(HlsStore {
+    let mut state = HlsStore {
         init,
         segments: VecDeque::with_capacity(HLS_WINDOW_SIZE),
         ended: false,
-    }));
-    match HLS_STORES.entry(ssrc) {
-        base::dashmap::mapref::entry::Entry::Occupied(entry) => return Some(entry.get().clone()),
-        base::dashmap::mapref::entry::Entry::Vacant(entry) => {
-            entry.insert(store.clone());
+    };
+    loop {
+        match rx.try_recv() {
+            Ok(packet) => push_hls_packet(&mut state, packet),
+            Err(broadcast::error::TryRecvError::Lagged(_)) => state.segments.clear(),
+            Err(broadcast::error::TryRecvError::Empty) => break,
+            Err(broadcast::error::TryRecvError::Closed) => {
+                state.ended = true;
+                break;
+            }
         }
+    }
+    let store = Arc::new(HlsStoreHandle {
+        channel_id,
+        state: RwLock::new(state),
+    });
+    let installed = install_store(&HLS_STORES, ssrc, store.clone());
+    if !Arc::ptr_eq(&installed, &store) {
+        return Some(installed);
     }
     let task_store = store.clone();
     base::tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(packet) => {
-                    let mut state = task_store.write().await;
-                    if state.segments.is_empty() && !packet.is_key {
-                        continue;
-                    }
-                    state.segments.push_back(HlsSegment {
-                        seq: packet.seq,
-                        data: packet.data.clone(),
-                        is_key: packet.is_key,
-                    });
-                    trim_segment_window(&mut state.segments);
+                    let mut state = task_store.state.write().await;
+                    push_hls_packet(&mut state, packet);
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    task_store.write().await.segments.clear();
+                    task_store.state.write().await.segments.clear();
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }
-        task_store.write().await.ended = true;
+        task_store.state.write().await.ended = true;
         base::tokio::time::sleep(Duration::from_secs(30)).await;
         remove_store_if_same(&HLS_STORES, ssrc, &task_store);
     });
     Some(store)
+}
+
+fn install_store(
+    stores: &DashMap<u32, Arc<HlsStoreHandle>>,
+    ssrc: u32,
+    candidate: Arc<HlsStoreHandle>,
+) -> Arc<HlsStoreHandle> {
+    match stores.entry(ssrc) {
+        base::dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+            if entry.get().channel_id >= candidate.channel_id {
+                return entry.get().clone();
+            }
+            entry.insert(candidate.clone());
+        }
+        base::dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(candidate.clone());
+        }
+    }
+    candidate
+}
+
+fn push_hls_packet(state: &mut HlsStore, packet: Arc<MuxPacket>) {
+    if state.segments.is_empty() && !packet.is_key {
+        return;
+    }
+    state.segments.push_back(HlsSegment {
+        seq: packet.seq,
+        data: packet.data.clone(),
+        is_key: packet.is_key,
+    });
+    trim_segment_window(&mut state.segments);
 }
 
 fn trim_segment_window(segments: &mut VecDeque<HlsSegment>) {
@@ -205,9 +252,9 @@ fn trim_segment_window(segments: &mut VecDeque<HlsSegment>) {
 }
 
 fn remove_store_if_same(
-    stores: &DashMap<u32, Arc<RwLock<HlsStore>>>,
+    stores: &DashMap<u32, Arc<HlsStoreHandle>>,
     ssrc: u32,
-    expected: &Arc<RwLock<HlsStore>>,
+    expected: &Arc<HlsStoreHandle>,
 ) -> bool {
     stores
         .remove_if(&ssrc, |_, current| Arc::ptr_eq(current, expected))
@@ -227,25 +274,42 @@ fn media_response(data: Bytes) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
-    fn store(ended: bool) -> Arc<RwLock<HlsStore>> {
-        Arc::new(RwLock::new(HlsStore {
-            init: Bytes::new(),
-            segments: VecDeque::new(),
-            ended,
-        }))
+    fn store(channel_id: u64, ended: bool) -> Arc<HlsStoreHandle> {
+        Arc::new(HlsStoreHandle {
+            channel_id,
+            state: RwLock::new(HlsStore {
+                init: Bytes::new(),
+                segments: VecDeque::new(),
+                ended,
+            }),
+        })
     }
 
     #[test]
     fn stale_hls_cleanup_does_not_remove_a_new_store_generation() {
         let stores = DashMap::new();
-        let old = store(true);
-        let current = store(false);
+        let old = store(1, true);
+        let current = store(2, false);
         stores.insert(1, old.clone());
         assert!(remove_store_if_same(&stores, 1, &old));
 
         stores.insert(1, current.clone());
         assert!(!remove_store_if_same(&stores, 1, &old));
+        assert!(Arc::ptr_eq(stores.get(&1).unwrap().value(), &current));
+    }
+
+    #[test]
+    fn stale_hls_request_does_not_replace_a_new_store_generation() {
+        let stores = DashMap::new();
+        let current = store(2, false);
+        let stale = store(1, false);
+        stores.insert(1, current.clone());
+
+        let installed = install_store(&stores, 1, stale);
+
+        assert!(Arc::ptr_eq(&installed, &current));
         assert!(Arc::ptr_eq(stores.get(&1).unwrap().value(), &current));
     }
 
@@ -263,5 +327,39 @@ mod tests {
 
         assert_eq!(segments.front().map(|segment| segment.seq), Some(5));
         assert!(segments.front().is_some_and(|segment| segment.is_key));
+    }
+
+    #[test]
+    fn hls_store_starts_from_a_replayed_key_fragment() {
+        let epoch = Instant::now();
+        let mut state = HlsStore {
+            init: Bytes::new(),
+            segments: VecDeque::new(),
+            ended: false,
+        };
+        push_hls_packet(
+            &mut state,
+            Arc::new(MuxPacket {
+                data: Bytes::from_static(b"delta"),
+                is_key: false,
+                timestamp: 1,
+                epoch,
+                seq: 1,
+            }),
+        );
+        assert!(state.segments.is_empty());
+
+        push_hls_packet(
+            &mut state,
+            Arc::new(MuxPacket {
+                data: Bytes::from_static(b"key"),
+                is_key: true,
+                timestamp: 2,
+                epoch,
+                seq: 2,
+            }),
+        );
+        assert_eq!(state.segments.front().map(|segment| segment.seq), Some(2));
+        assert!(state.segments.front().is_some_and(|segment| segment.is_key));
     }
 }

@@ -1,12 +1,11 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::h265flv::H265FlvContext;
-use crate::media::context::format::{FmtMuxer, MuxPacket, write_callback};
+use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender, write_callback};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
-use base::tokio::sync::broadcast;
 use rsmpeg::ffi::{
     AV_PKT_FLAG_KEY, AVFMT_FLAG_FLUSH_PACKETS, AVFormatContext, AVIOContext,
     AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational, av_free,
@@ -26,7 +25,7 @@ pub enum FlvSupperCtx {
 }
 pub struct FlvContext {
     pub header: Bytes,
-    pub pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
+    pub pkt_tx: MuxPacketSender,
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
     pub io_buf: *mut u8,
@@ -65,7 +64,7 @@ impl Drop for FlvContext {
 impl FmtMuxer for FlvContext {
     fn init_context(
         demuxer_context: &DemuxerContext,
-        pkt_tx: broadcast::Sender<Arc<MuxPacket>>,
+        pkt_tx: MuxPacketSender,
     ) -> GlobalResult<Self> {
         unsafe {
             let io_buf_size = DEFAULT_IO_BUF_SIZE;

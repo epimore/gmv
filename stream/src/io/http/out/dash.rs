@@ -4,7 +4,7 @@ use crate::io::http::out::{DisconnectAwareStream, OutPlayKind, stream_user_token
 use crate::io::http::{res_401, res_404};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
-use crate::media::context::format::MuxPacket;
+use crate::media::context::format::MuxPacketReceiver;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::state::register::{DEFAULT_OFFSET_SECOND, Register};
 use axum::body::Body;
@@ -237,7 +237,7 @@ fn generate_mpd(stream_id: Arc<str>, mp: MediaParam) -> String {
 
 async fn send_fmp4(
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
 ) -> Response<Body> {
     let wrapped = DisconnectAwareStream {
@@ -260,7 +260,7 @@ enum Fmp4StreamState {
 
 struct Fmp4StreamContext {
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
     state: Fmp4StreamState,
     started: bool,
     current_epoch: Instant,
@@ -268,7 +268,7 @@ struct Fmp4StreamContext {
 
 fn fmp4_stream(
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
 ) -> impl futures_core::Stream<Item = Result<Bytes, std::convert::Infallible>> {
     stream::unfold(
         Fmp4StreamContext {

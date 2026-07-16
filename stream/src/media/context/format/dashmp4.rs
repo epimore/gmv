@@ -1,12 +1,10 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::fmp4::CmafFmp4Context;
-use crate::media::context::format::{FmtMuxer, MuxPacket, fmp4, write_callback};
+use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender, fmp4, write_callback};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use axum::body::Bytes;
 use base::exception::{GlobalError, GlobalResult};
 use base::once_cell::sync::Lazy;
-use base::tokio::sync::broadcast;
-use base::tokio::sync::broadcast::Sender;
 use log::{debug, error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
@@ -25,7 +23,7 @@ use std::time::Instant;
 static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 pub struct DashCmafMp4Context {
     pub init_segment: Bytes, // CMAF init.mp4
-    pub pkt_tx: Sender<Arc<MuxPacket>>,
+    pub pkt_tx: MuxPacketSender,
 
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
@@ -57,10 +55,7 @@ impl Drop for DashCmafMp4Context {
     }
 }
 impl FmtMuxer for DashCmafMp4Context {
-    fn init_context(
-        demuxer_context: &DemuxerContext,
-        pkt_tx: Sender<Arc<MuxPacket>>,
-    ) -> GlobalResult<Self>
+    fn init_context(demuxer_context: &DemuxerContext, pkt_tx: MuxPacketSender) -> GlobalResult<Self>
     where
         Self: Sized,
     {

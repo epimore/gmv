@@ -1,8 +1,7 @@
 use crate::media::context::format::demuxer::{DemuxerContext, H265ParameterSets};
-use crate::media::context::format::{FmtMuxer, MuxPacket};
+use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender};
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
-use base::tokio::sync::broadcast::Sender;
 use log::{debug, info, warn};
 use rsmpeg::ffi::*;
 use std::collections::HashMap;
@@ -70,7 +69,7 @@ impl Default for AudioStreamInfo {
 }
 
 pub struct H265FlvContext {
-    pub tx: Sender<Arc<MuxPacket>>,
+    pub tx: MuxPacketSender,
 
     // H265 参数集（用于关键帧检测和过滤）
     vps: Vec<u8>,
@@ -506,7 +505,7 @@ impl H265FlvContext {
 
     /// 发送 MuxPacket
     fn send_packet(
-        tx: &Sender<Arc<MuxPacket>>,
+        tx: &MuxPacketSender,
         epoch: Instant,
         data: Vec<u8>,
         timestamp: u64,
@@ -570,7 +569,7 @@ impl H265FlvContext {
 impl FmtMuxer for H265FlvContext {
     fn init_context(
         demuxer_context: &DemuxerContext,
-        pkt_tx: Sender<Arc<MuxPacket>>,
+        pkt_tx: MuxPacketSender,
     ) -> GlobalResult<Self> {
         let mut ctx = H265FlvContext {
             tx: pkt_tx,
