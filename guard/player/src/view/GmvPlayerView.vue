@@ -148,6 +148,7 @@ const props = withDefaults(
     outputSwitching?: boolean;
     startupText?: string;
     startupCanCancel?: boolean;
+    playbackDurationMs?: number;
     /** @deprecated 请使用 controls.visibility。 */
     controlsVisible?: boolean;
   }>(),
@@ -171,6 +172,8 @@ const emit = defineEmits<{
   talkStop: [];
   playbackSeek: [{ timeMs: number }];
   playbackRateChange: [{ rate: number }];
+  playbackStateChange: [{ paused: boolean }];
+  playbackProgress: [{ mediaTimeMs: number }];
   streamSwitch: [{ source: GmvSource }];
   playing: [{ source?: GmvSource }];
   playbackError: [{ message: string; source?: GmvSource }];
@@ -187,6 +190,32 @@ const activeVideoSlot = ref<VideoSlot>(0);
 const activePlaybackReady = ref(false);
 const players: Array<GmvPlayerCore | undefined> = [undefined, undefined];
 const playerStops: Array<Array<() => void>> = [[], []];
+let lastFrameProgressAt = 0;
+const frameProgressHandles: Array<number | undefined> = [undefined, undefined];
+
+function scheduleFrameProgress(slot: VideoSlot) {
+  const video = videoForSlot(slot);
+  if (!video || typeof video.requestVideoFrameCallback !== 'function') return;
+  frameProgressHandles[slot] = video.requestVideoFrameCallback((now, metadata) => {
+    if (slot === activeVideoSlot.value && now - lastFrameProgressAt >= 1000) {
+      lastFrameProgressAt = now;
+      emit('playbackProgress', { mediaTimeMs: metadata.mediaTime * 1000 });
+    }
+    scheduleFrameProgress(slot);
+  });
+}
+
+function stopFrameProgress() {
+  ([0, 1] as VideoSlot[]).forEach((slot) => {
+    const video = videoForSlot(slot);
+    const handle = frameProgressHandles[slot];
+    if (video && handle !== undefined && typeof video.cancelVideoFrameCallback === 'function') {
+      video.cancelVideoFrameCallback(handle);
+    }
+    frameProgressHandles[slot] = undefined;
+  });
+}
+
 let playerLoadVersion = 0;
 const viewState = ref<GmvDeviceStatus>('idle');
 const isLoading = ref(false);
@@ -224,6 +253,7 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
   talking: talking.value,
   playbackRate: playbackRate.value,
   seekMs: seekMs.value,
+  durationMs: props.playbackDurationMs ?? 86_400_000,
   selectedSourceUrl: selectedSourceUrl.value,
 }));
 const statusLabel = computed(() => {
@@ -246,11 +276,14 @@ const startupProgressText = computed(() => {
 });
 
 onMounted(() => {
+  scheduleFrameProgress(0);
+  scheduleFrameProgress(1);
   document.addEventListener('fullscreenchange', updateFullscreenState);
   void mountPlayer();
 });
 
 onBeforeUnmount(() => {
+  stopFrameProgress();
   document.removeEventListener('fullscreenchange', updateFullscreenState);
   destroyPlayer();
 });
@@ -400,6 +433,11 @@ function activeVideo() {
 }
 
 function togglePlay() {
+  const mode = activeSource.value?.rateMode ?? 'disabled';
+  if (mode === 'remote-stream') {
+    emit('playbackStateChange', { paused: viewState.value === 'playing' });
+    return;
+  }
   if (viewState.value === 'playing') {
     activePlayer()?.pause();
     return;
@@ -465,7 +503,16 @@ function confirmPlaybackRate(rate: number) {
   if (activeVideo()) activeVideo()!.playbackRate = 1;
 }
 
-defineExpose({ confirmPlaybackRate });
+function confirmPlaybackState(paused: boolean) {
+  if (paused) activePlayer()?.pause();
+  else void activePlayer()?.play();
+}
+
+function confirmPlaybackProgress(timeMs: number) {
+  seekMs.value = Math.max(0, timeMs);
+}
+
+defineExpose({ confirmPlaybackRate, confirmPlaybackState, confirmPlaybackProgress });
 
 async function toggleFullscreen() {
   const element = playerRef.value;

@@ -245,18 +245,6 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
     let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
     let _setup_guard = setup_lock.lock().await;
 
-    if let Some((stream_id, proxy_addr)) = enable_invite_stream(
-        device_id,
-        channel_id,
-        &am,
-        play_back_model.custom_media_config.as_ref(),
-    )
-    .await?
-    {
-        let info = StreamInfo::build(stream_id.clone(), proxy_addr, output)?;
-        state::session::Cache::stream_map_insert_token(stream_id, token.clone());
-        return Ok(with_play_token(info, &token));
-    }
     let (stream_id, _node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
         device_id,
         channel_id,
@@ -287,6 +275,12 @@ fn with_play_token(mut info: StreamInfo, token: &str) -> StreamInfo {
 pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
     let device_id = playback_stream_device(&seek_mode.streamId)?;
     sip_command::play_seek(&device_id, &seek_mode.streamId, seek_mode.seekSecond).await?;
+    Ok(true)
+}
+
+pub async fn playback_state(stream_id: &String, paused: bool) -> GlobalResult<bool> {
+    let device_id = playback_stream_device(stream_id)?;
+    sip_command::play_state(&device_id, stream_id, paused).await?;
     Ok(true)
 }
 

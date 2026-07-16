@@ -279,7 +279,7 @@
               <el-button :disabled="!canPlayLive(channel) || playerRequesting"
                 :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
               <el-button :disabled="!canPlayback(channel) || playerRequesting"
-                :loading="isPlayRequesting('playback', channel)" @click="startPlay('playback', channel)">回放</el-button>
+                :loading="isPlayRequesting('playback', channel)" @click="requestPlayback(channel)">回放</el-button>
               <el-button :disabled="!canPlayLive(channel)" @click="focusChannelInMultiView(channel)">多画面</el-button>
               <el-button :disabled="!canSnapshot(channel)" :loading="snapshotLoading[channel.channel_id]"
                 @click="snapshot(channel)">抓拍</el-button>
@@ -303,6 +303,15 @@
       <el-empty v-else description="暂无封面" />
     </el-dialog>
 
+    <el-dialog v-model="playbackRangeDialog" title="选择历史回放时段" width="560px">
+      <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
+        start-placeholder="开始时间" end-placeholder="结束时间" :clearable="true" style="width: 100%" />
+      <template #footer>
+        <el-button @click="playbackRangeDialog = false">取消</el-button>
+        <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始回放</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="playerDialog" :title="playerDialogTitle" width="960px" class="monitor-player-dialog"
       destroy-on-close @close="stopCurrentStream">
       <div v-if="selectedChannel" class="monitor-player">
@@ -318,12 +327,13 @@
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
             :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
-            :controls="playerControls" :output-switching="singleOutputSwitching"
+            :controls="playerControls" :playback-duration-ms="playbackDurationMs" :output-switching="singleOutputSwitching"
             :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
             @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz"
             @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
             @playback-switch-cancel="handleSinglePlaybackSwitchCancel"
-            @playback-rate-change="handlePlaybackRateChange" />
+            @playback-rate-change="handlePlaybackRateChange" @playback-seek="handlePlaybackSeek"
+            @playback-state-change="handlePlaybackStateChange" @playback-progress="handlePlaybackProgress" />
           <div v-if="playerRequesting" class="player-loading-badge" role="status" aria-live="polite">
             <span>{{ singleStartupText }}</span>
             <div v-if="singleCheckpointReached" class="player-loading-actions">
@@ -434,7 +444,9 @@ import {
   resetGbResourceConfirmation,
   saveGbResourceConfirmation,
   sendGbPtz,
-  setStreamPlaybackSpeed,
+  seekGbPlayback,
+  setGbPlaybackSpeed,
+  setGbPlaybackState,
   startGbPlayback,
   startGbPreview,
   takeGbSnapshot,
@@ -505,6 +517,17 @@ const showImages = ref(false);
 const deviceDetailDrawer = ref(false);
 const coverDialog = ref(false);
 const coverUrl = ref('');
+const playbackRangeDialog = ref(false);
+const playbackRange = ref<[Date, Date]>();
+const pendingPlaybackChannel = ref<GbChannelInfo>();
+const playbackGeneration = ref(0);
+const playbackAnchorPositionSec = ref(0);
+const playbackAnchorMediaTimeMs = ref<number>();
+const playbackLastMediaTimeMs = ref<number>();
+const playbackDisplayedPositionSec = ref(0);
+const playbackRangeEnded = ref(false);
+let seekInFlight = false;
+let queuedSeekMs: number | undefined;
 const playerDialog = ref(false);
 const playerRequesting = ref(false);
 const singleMediaOperation = ref<MediaOperationSummary<unknown>>();
@@ -659,6 +682,11 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   if (!playback && channel && canPtz(channel)) items.push('ptz');
   if (playback && channel && canPlayback(channel)) items.push('playbackRate', 'timeline');
   return { items, visibility: 'auto', autoHideDelayMs: 3000, playbackRates: [0.5, 1, 2, 4] };
+});
+const playbackDurationMs = computed(() => {
+  const stream = lastStream.value;
+  if (!stream?.playback_start_time_sec || !stream.playback_end_time_sec) return 86_400_000;
+  return Math.max(1_000, (stream.playback_end_time_sec - stream.playback_start_time_sec) * 1_000);
 });
 const playerOsd = computed(() => [
   { id: 'channel', text: selectedChannelTitle.value, x: 3, y: 5 },
@@ -1806,7 +1834,24 @@ async function handleSinglePlaybackSwitchCancel() {
   ElMessage.info('已保持当前播放方式');
 }
 
-async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
+function requestPlayback(channel: GbChannelInfo) {
+  pendingPlaybackChannel.value = channel;
+  playbackRange.value = undefined;
+  playbackRangeDialog.value = true;
+}
+
+async function confirmPlaybackRange() {
+  const channel = pendingPlaybackChannel.value;
+  const range = playbackRange.value;
+  if (!channel || !range || range[0].getTime() >= range[1].getTime()) {
+    ElMessage.warning('请选择有效的回放开始和结束时间');
+    return;
+  }
+  playbackRangeDialog.value = false;
+  await startPlay('playback', channel, range);
+}
+
+async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, range?: [Date, Date]) {
   if (playerRequesting.value) return;
   const action = kind === 'preview' ? '实时直播' : '历史回放';
   const requestSeq = playRequestSeq + 1;
@@ -1824,6 +1869,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
     const controller = new AbortController();
     singlePreviewAbort?.abort();
     singlePreviewAbort = controller;
+    const playbackRequestId = 'ui-monitor-playback-' + Date.now();
     const stream = kind === 'preview'
       ? await startGbPreview(
           channel.device_id,
@@ -1836,12 +1882,20 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo) {
             },
           },
         )
-      : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: 'ui-monitor-playback-' + Date.now(), output_type: 'fmp4', audio_codec: 'aac' });
+      : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: playbackRequestId, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: 'fmp4', audio_codec: 'aac' });
     if (requestSeq !== playRequestSeq || !playerDialog.value) {
       if (stream.stream_id) await releaseViewerStream(stream).catch(() => undefined);
       return;
     }
     lastStream.value = stream;
+    if (kind === 'playback') {
+      playbackGeneration.value = stream.playback_generation ?? 0;
+      playbackAnchorPositionSec.value = stream.playback_start_time_sec ?? Math.floor(range![0].getTime() / 1000);
+      playbackAnchorMediaTimeMs.value = undefined;
+      playbackLastMediaTimeMs.value = undefined;
+      playbackDisplayedPositionSec.value = playbackAnchorPositionSec.value;
+      playbackRangeEnded.value = false;
+    }
     singleOutput.value = undefined;
     singlePendingSwitch.value = undefined;
     singleOutputSwitching.value = false;
@@ -2016,13 +2070,97 @@ async function saveConfig() {
   }
 }
 async function handlePlaybackRateChange({ rate }: { rate: number }) {
-  if (!lastStream.value?.stream_id) return;
+  const stream = lastStream.value;
+  if (!stream?.stream_id || !stream.playback_id) return;
   try {
-    await setStreamPlaybackSpeed(lastStream.value.stream_id, rate);
+    const response = await setGbPlaybackSpeed(stream.playback_id, {
+      request_id: 'ui-playback-speed-' + Date.now(),
+      stream_id: stream.stream_id,
+      speed_rate: rate,
+      expected_generation: playbackGeneration.value,
+    });
+    playbackGeneration.value = response.generation;
     singlePlayerRef.value?.confirmPlaybackRate(rate);
     ElMessage.success(`回放倍速已切换为 ${rate}x`);
   } catch (error) {
     ElMessage.error(errorMessage(error, '回放倍速设置失败'));
+  }
+}
+
+async function handlePlaybackSeek({ timeMs }: { timeMs: number }) {
+  queuedSeekMs = timeMs;
+  if (seekInFlight) return;
+  seekInFlight = true;
+  try {
+    while (queuedSeekMs !== undefined) {
+      const targetMs = queuedSeekMs;
+      queuedSeekMs = undefined;
+      const stream = lastStream.value;
+      if (!stream?.stream_id || !stream.playback_id || !stream.playback_start_time_sec) return;
+      const targetSec = stream.playback_start_time_sec + Math.floor(targetMs / 1000);
+      const response = await seekGbPlayback(stream.playback_id, {
+        request_id: 'ui-playback-seek-' + Date.now(),
+        stream_id: stream.stream_id,
+        position_sec: targetSec,
+        expected_generation: playbackGeneration.value,
+      });
+      playbackGeneration.value = response.generation;
+      playbackAnchorPositionSec.value = targetSec;
+      playbackAnchorMediaTimeMs.value = undefined;
+      playbackLastMediaTimeMs.value = undefined;
+      playbackDisplayedPositionSec.value = targetSec;
+      singlePlayerRef.value?.confirmPlaybackProgress(targetMs);
+    }
+  } catch (error) {
+    queuedSeekMs = undefined;
+    ElMessage.error(errorMessage(error, '回放定位失败'));
+  } finally {
+    seekInFlight = false;
+  }
+}
+
+async function handlePlaybackStateChange({ paused }: { paused: boolean }) {
+  const stream = lastStream.value;
+  if (!stream?.stream_id || !stream.playback_id) return;
+  try {
+    const response = await setGbPlaybackState(stream.playback_id, {
+      request_id: 'ui-playback-state-' + Date.now(),
+      stream_id: stream.stream_id,
+      paused,
+      expected_generation: playbackGeneration.value,
+    });
+    playbackGeneration.value = response.generation;
+    singlePlayerRef.value?.confirmPlaybackState(paused);
+  } catch (error) {
+    ElMessage.error(errorMessage(error, paused ? '暂停回放失败' : '继续回放失败'));
+  }
+}
+
+function handlePlaybackProgress({ mediaTimeMs }: { mediaTimeMs: number }) {
+  const stream = lastStream.value;
+  if (!stream?.playback_start_time_sec || !stream.playback_end_time_sec) return;
+  if (playbackLastMediaTimeMs.value !== undefined && mediaTimeMs + 1000 < playbackLastMediaTimeMs.value) {
+    playbackAnchorPositionSec.value = playbackDisplayedPositionSec.value;
+    playbackAnchorMediaTimeMs.value = mediaTimeMs;
+  }
+  playbackLastMediaTimeMs.value = mediaTimeMs;
+  if (playbackAnchorMediaTimeMs.value === undefined) playbackAnchorMediaTimeMs.value = mediaTimeMs;
+  const elapsedMs = Math.max(0, mediaTimeMs - playbackAnchorMediaTimeMs.value);
+  const positionSec = Math.min(stream.playback_end_time_sec, playbackAnchorPositionSec.value + elapsedMs / 1000);
+  playbackDisplayedPositionSec.value = positionSec;
+  singlePlayerRef.value?.confirmPlaybackProgress((positionSec - stream.playback_start_time_sec) * 1000);
+  if (positionSec >= stream.playback_end_time_sec && !playbackRangeEnded.value) {
+    playbackRangeEnded.value = true;
+    void finishPlaybackRange(stream);
+  }
+}
+
+async function finishPlaybackRange(stream: StreamSummary) {
+  singlePlayerRef.value?.confirmPlaybackState(true);
+  await releaseViewerStream(stream).catch(() => undefined);
+  if (lastStream.value?.stream_id === stream.stream_id) {
+    lastStream.value = { ...stream, endpoint: '', state: 'stopped' };
+    ElMessage.success('历史回放已结束');
   }
 }
 

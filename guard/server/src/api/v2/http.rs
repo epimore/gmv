@@ -160,6 +160,12 @@ pub fn router(state: HttpState) -> Router {
         .route("/streams/{stream_id}/stop", post(stop_stream))
         .route("/streams/{stream_id}/release", post(release_stream))
         .route("/streams/{stream_id}/speed", post(set_playback_speed))
+        .route("/playbacks/{playback_id}/seek", post(seek_playback))
+        .route(
+            "/playbacks/{playback_id}/speed",
+            post(set_versioned_playback_speed),
+        )
+        .route("/playbacks/{playback_id}/state", post(set_playback_state))
         .route(
             "/streams/{stream_id}/outputs",
             get(list_stream_outputs).post(create_stream_output),
@@ -1145,6 +1151,7 @@ struct PreviewRequest {
     talk_channel_count: u32,
     #[serde(default)]
     talk_frame_duration_ms: u32,
+    playback_id: String,
 }
 
 fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
@@ -1159,6 +1166,7 @@ fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
         talk_sample_rate: request.talk_sample_rate,
         talk_channel_count: request.talk_channel_count,
         talk_frame_duration_ms: request.talk_frame_duration_ms,
+        playback_id: request.playback_id.clone(),
     }
 }
 
@@ -1180,6 +1188,9 @@ fn issue_playback_ticket(
         .upsert_playback_ticket(PlaybackTicketRecord {
             token: token.clone(),
             stream_id: stream.stream_id.clone(),
+            playback_id: stream.playback_id.clone(),
+            playback_start_time_sec: stream.playback_start_time_sec,
+            playback_end_time_sec: stream.playback_end_time_sec,
             output_id: String::new(),
             subscription_id: stream.subscription_id.clone(),
             lease_id: stream.lease_id.clone(),
@@ -1223,6 +1234,9 @@ fn issue_stream_output_ticket(
         .upsert_playback_ticket(PlaybackTicketRecord {
             token: token.clone(),
             stream_id: output.stream_id.clone(),
+            playback_id: String::new(),
+            playback_start_time_sec: 0,
+            playback_end_time_sec: 0,
             output_id: output.output_id.clone(),
             subscription_id: subscription_id.to_string(),
             lease_id: lease.map(|lease| lease.lease_id).unwrap_or_default(),
@@ -1615,6 +1629,8 @@ struct GbStreamRequest {
     audio_codec: String,
     #[serde(default)]
     startup_timeout_ms: Option<u64>,
+    #[serde(default)]
+    playback_id: String,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -1635,6 +1651,40 @@ struct ReleaseStreamRequest {
 struct PlaybackSpeedResponse {
     accepted: bool,
     speed_rate: f32,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct PlaybackSeekRequest {
+    request_id: String,
+    stream_id: String,
+    position_sec: u32,
+    expected_generation: u64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct VersionedPlaybackSpeedRequest {
+    request_id: String,
+    stream_id: String,
+    speed_rate: f32,
+    expected_generation: u64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct PlaybackStateRequest {
+    request_id: String,
+    stream_id: String,
+    paused: bool,
+    expected_generation: u64,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct PlaybackControlHttpResponse {
+    accepted: bool,
+    generation: u64,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -1929,6 +1979,7 @@ fn gb_preview_request(channel_id: String, request: GbStreamRequest) -> PreviewRe
         talk_sample_rate: 0,
         talk_channel_count: 0,
         talk_frame_duration_ms: 0,
+        playback_id: request.playback_id,
     }
 }
 
@@ -2323,8 +2374,19 @@ async fn gb_playback(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
-    Json(request): Json<GbStreamRequest>,
+    Json(mut request): Json<GbStreamRequest>,
 ) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
+    if request.start_time_sec == 0
+        || request.end_time_sec == 0
+        || request.start_time_sec >= request.end_time_sec
+    {
+        return Err(HttpError::bad_request(
+            "a valid playback time range is required",
+        ));
+    }
+    if request.playback_id.trim().is_empty() {
+        request.playback_id = request.request_id.clone();
+    }
     start_device_stream_http(
         state,
         headers,
@@ -3412,6 +3474,103 @@ async fn release_stream(
     }
 }
 
+fn require_playback_control(
+    state: &HttpState,
+    headers: &HeaderMap,
+    playback_id: &str,
+    stream_id: &str,
+) -> Result<PlaybackTicketRecord, HttpError> {
+    let (ui_session_token, session) =
+        require_write_with_token(&state.auth, headers, Role::Operator)?;
+    let ticket = state
+        .api
+        .store()
+        .find_playback_control_ticket(playback_id, stream_id)
+        .ok_or_else(|| HttpError::forbidden("playback control owner not found"))?;
+    if ticket.expires_at_ms <= http_now_ms()? {
+        return Err(HttpError::forbidden("playback control ticket expired"));
+    }
+    if ticket.username != session.username || ticket.ui_session_token != ui_session_token {
+        return Err(HttpError::forbidden(
+            "playback control belongs to another UI session",
+        ));
+    }
+    Ok(ticket)
+}
+
+async fn seek_playback(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(playback_id): Path<String>,
+    Json(request): Json<PlaybackSeekRequest>,
+) -> Result<Json<PlaybackControlHttpResponse>, HttpError> {
+    let ticket = require_playback_control(&state, &headers, &playback_id, &request.stream_id)?;
+    if request.position_sec < ticket.playback_start_time_sec
+        || request.position_sec > ticket.playback_end_time_sec
+    {
+        return Err(HttpError::bad_request(
+            "playback seek position is outside the selected range",
+        ));
+    }
+    let generation = BusinessControl::new(state.api.store())
+        .seek_playback(
+            &request.request_id,
+            &playback_id,
+            &request.stream_id,
+            request.position_sec,
+            request.expected_generation,
+        )
+        .await?;
+    Ok(Json(PlaybackControlHttpResponse {
+        accepted: true,
+        generation,
+    }))
+}
+
+async fn set_versioned_playback_speed(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(playback_id): Path<String>,
+    Json(request): Json<VersionedPlaybackSpeedRequest>,
+) -> Result<Json<PlaybackControlHttpResponse>, HttpError> {
+    require_playback_control(&state, &headers, &playback_id, &request.stream_id)?;
+    let generation = BusinessControl::new(state.api.store())
+        .set_playback_speed_versioned(
+            &request.request_id,
+            &playback_id,
+            &request.stream_id,
+            request.speed_rate,
+            request.expected_generation,
+        )
+        .await?;
+    Ok(Json(PlaybackControlHttpResponse {
+        accepted: true,
+        generation,
+    }))
+}
+
+async fn set_playback_state(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(playback_id): Path<String>,
+    Json(request): Json<PlaybackStateRequest>,
+) -> Result<Json<PlaybackControlHttpResponse>, HttpError> {
+    require_playback_control(&state, &headers, &playback_id, &request.stream_id)?;
+    let generation = BusinessControl::new(state.api.store())
+        .set_playback_state(
+            &request.request_id,
+            &playback_id,
+            &request.stream_id,
+            request.paused,
+            request.expected_generation,
+        )
+        .await?;
+    Ok(Json(PlaybackControlHttpResponse {
+        accepted: true,
+        generation,
+    }))
+}
+
 async fn set_playback_speed(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -3550,6 +3709,10 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
                     .map(|owner| owner.node_id.clone())
                     .unwrap_or_default(),
                 session_instance_id: owner.map(|owner| owner.instance_id).unwrap_or_default(),
+                playback_id: String::new(),
+                playback_generation: 0,
+                playback_start_time_sec: 0,
+                playback_end_time_sec: 0,
                 state: if route.state == RouteState::Closed {
                     StreamSummaryState::Stopped
                 } else if lease

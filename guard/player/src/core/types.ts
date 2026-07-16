@@ -121,6 +121,7 @@ export interface GmvPlayerControlsState {
   talking: boolean;
   playbackRate: number;
   seekMs: number;
+  durationMs: number;
   selectedSourceUrl: string;
 }
 

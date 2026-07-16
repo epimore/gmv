@@ -34,7 +34,7 @@ export interface EventPage { items: EventItem[]; next_after_id: string | null }
 export interface LeaseInfo { lease_id: string; route_id: string; resource_id: string; node_id: string; instance_id: string; state: 'allocated' | 'confirmed' | 'failed' | 'released' | 'expired'; expires_at_ms: number }
 export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
 export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
-export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; subscription_id?: string; session_node_id?: string; session_instance_id?: string; state: 'running' | 'stopped' | 'failed' }
+export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; subscription_id?: string; session_node_id?: string; session_instance_id?: string; playback_id?: string; playback_generation?: number; playback_start_time_sec?: number; playback_end_time_sec?: number; state: 'running' | 'stopped' | 'failed' }
 export interface StreamOutputSummary { output_id: string; stream_id: string; output_type: 'flv' | 'hls' | 'fmp4'; endpoint: string; state: 'preparing' | 'ready' | 'closed' | 'failed' }
 export type MediaOperationState = 'preparing' | 'ready' | 'failed' | 'cancelled';
 export interface MediaOperationError { code: string; message: string; user_message: string; retryable: boolean }
@@ -134,6 +134,10 @@ export const listStreams = () => request<StreamSummary[]>('/streams');
 export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
 export const releaseStream = (streamId: string, subscriptionId: string, requestId: string) => request<StreamSummary>('/streams/' + encodeURIComponent(streamId) + '/release', { method: 'POST', body: JSON.stringify({ request_id: requestId, subscription_id: subscriptionId }) });
 export const setStreamPlaybackSpeed = (streamId: string, speedRate: number) => request<{ accepted: boolean; speed_rate: number }>('/streams/' + encodeURIComponent(streamId) + '/speed', { method: 'POST', body: JSON.stringify({ speed_rate: speedRate }) });
+export interface PlaybackControlResponse { accepted: boolean; generation: number }
+export const seekGbPlayback = (playbackId: string, payload: { request_id: string; stream_id: string; position_sec: number; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/seek', { method: 'POST', body: JSON.stringify(payload) });
+export const setGbPlaybackSpeed = (playbackId: string, payload: { request_id: string; stream_id: string; speed_rate: number; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/speed', { method: 'POST', body: JSON.stringify(payload) });
+export const setGbPlaybackState = (playbackId: string, payload: { request_id: string; stream_id: string; paused: boolean; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/state', { method: 'POST', body: JSON.stringify(payload) });
 export const listStreamOutputs = (streamId: string) => request<StreamOutputSummary[]>('/streams/' + encodeURIComponent(streamId) + '/outputs');
 export const createStreamOutput = async (
   streamId: string,
@@ -265,7 +269,7 @@ export interface GbResourceConfirmationInfo { status: number; resource_kind: str
 export interface GbResourceInfo { device_id: string; resource_id: string; name: string; status: string; parent_id: string; type_code: string; enum_id: string; enum_name: string; suggested_kind: string; classification_mode: 'default' | 'manual' | 'manual_stale' | 'unknown' | 'conflict' | 'orphan'; effective_kind: string; effective_owner_scope: string; effective_owner_id: string; warning: string; biz_enable: number; owner_biz_enable: number; supported: boolean; available: boolean; unavailable_reason: string; confirmation: GbResourceConfirmationInfo | null }
 export interface GbResourceConfirmationPayload { request_id: string; resource_kind: 'video' | 'audio_input' | 'audio_output' | 'other'; owner_scope: 'device' | 'resource'; owner_id: string; remark?: string }
 export interface GbSnapshotInfo { session_id: string }
-export interface GbStreamPayload { request_id: string; token?: string; start_time_sec?: number; end_time_sec?: number; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
+export interface GbStreamPayload { request_id: string; token?: string; start_time_sec?: number; end_time_sec?: number; playback_id?: string; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
 export interface GbBroadcastPayload extends GbStreamPayload { channel_id: string; talk_codec: 'PCMA'; talk_sample_rate: 8000; talk_channel_count: 1; talk_frame_duration_ms: 20 }
 
 const gbPath = (value: string) => encodeURIComponent(value);

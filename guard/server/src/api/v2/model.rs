@@ -32,6 +32,10 @@ pub struct StreamSummary {
     pub subscription_id: String,
     pub session_node_id: String,
     pub session_instance_id: String,
+    pub playback_id: String,
+    pub playback_generation: u64,
+    pub playback_start_time_sec: u32,
+    pub playback_end_time_sec: u32,
     pub state: StreamSummaryState,
 }
 

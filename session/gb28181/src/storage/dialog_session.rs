@@ -566,6 +566,65 @@ impl SipDialogSessionRepository {
         Ok(rows == 1)
     }
 
+    pub async fn initialize_playback_control(
+        stream_id: &str,
+        playback_id: &str,
+        start_sec: u32,
+        end_sec: u32,
+    ) -> GlobalResult<()> {
+        validate_len(playback_id, 64, "playback_id")?;
+        if start_sec == 0 || start_sec >= end_sec {
+            return Err(invalid_data("invalid playback range"));
+        }
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(());
+        }
+        let rows = db::execute!(
+            "UPDATE gb28181_sip_dialog_session SET playback_id=?,playback_start_sec=?,             playback_end_sec=?,playback_generation=0,mansrtsp_cseq=local_cseq,             acknowledged_position_sec=?,desired_rate_milli=1000,acknowledged_rate_milli=1000              WHERE stream_id=? AND session_type='PLAYBACK'",
+            playback_id,
+            i64::from(start_sec),
+            i64::from(end_sec),
+            i64::from(start_sec),
+            stream_id,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        if rows != 1 {
+            return Err(invalid_data("playback dialog was not initialized"));
+        }
+        Ok(())
+    }
+
+    pub async fn cas_ack_playback_control(
+        stream_id: &str,
+        playback_id: &str,
+        expected_generation: u64,
+        position_sec: Option<u32>,
+        rate_milli: Option<i64>,
+        operation_id: &str,
+    ) -> GlobalResult<bool> {
+        validate_len(playback_id, 64, "playback_id")?;
+        validate_len(operation_id, 128, "operation_id")?;
+        let expected_generation = i64::try_from(expected_generation)
+            .map_err(|_| invalid_data("playback generation overflow"))?;
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(true);
+        }
+        let rows = db::execute!(
+            "UPDATE gb28181_sip_dialog_session SET              playback_generation=playback_generation+1,             acknowledged_position_sec=COALESCE(?,acknowledged_position_sec),             desired_rate_milli=COALESCE(?,desired_rate_milli),             acknowledged_rate_milli=COALESCE(?,acknowledged_rate_milli),             mansrtsp_cseq=local_cseq,last_control_operation_id=?,version=version+1              WHERE stream_id=? AND playback_id=? AND session_type='PLAYBACK'              AND playback_generation=?",
+            position_sec.map(i64::from),
+            rate_milli,
+            rate_milli,
+            operation_id,
+            stream_id,
+            playback_id,
+            expected_generation,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        Ok(rows == 1)
+    }
+
     pub async fn cas_reserve_local_cseq(
         stream_id: &str,
         signal_node_id: &str,

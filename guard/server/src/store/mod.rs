@@ -120,6 +120,19 @@ impl InMemoryGuardStore {
         self.inner.read().playback_tickets.get(token).cloned()
     }
 
+    pub fn find_playback_control_ticket(
+        &self,
+        playback_id: &str,
+        stream_id: &str,
+    ) -> Option<PlaybackTicketRecord> {
+        self.inner
+            .read()
+            .playback_tickets
+            .values()
+            .find(|ticket| ticket.playback_id == playback_id && ticket.stream_id == stream_id)
+            .cloned()
+    }
+
     pub fn revoke_playback_token(&self, token: &str) {
         self.inner.write().playback_tickets.remove(token);
     }

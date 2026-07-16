@@ -152,6 +152,7 @@ fn device_stream_options(payload: &Value) -> DeviceStreamOptions {
         talk_sample_rate: payload_u32(payload, "talk_sample_rate"),
         talk_channel_count: payload_u32(payload, "talk_channel_count"),
         talk_frame_duration_ms: payload_u32(payload, "talk_frame_duration_ms"),
+        playback_id: payload_string(payload, "playback_id").unwrap_or_default(),
     }
 }
 

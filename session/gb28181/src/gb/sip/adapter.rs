@@ -244,10 +244,16 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
             let notify_type = super::xml::value(&items, super::xml::NOTIFY_TYPE);
             if notify_type.is_none_or(|value| value == "121") {
                 if let Some(channel_id) = channel_id {
-                    for stream_id in
-                        GeneralCache::stream_ids_for_media_status(device_id, channel_id)
-                    {
-                        stream_close::begin(stream_id);
+                    let candidates =
+                        GeneralCache::stream_ids_for_media_status(device_id, channel_id);
+                    match candidates.as_slice() {
+                        [stream_id] => stream_close::begin(stream_id.clone()),
+                        [] => debug!(
+                            "MediaStatus has no active playback match: device_id={device_id}; channel_id={channel_id}"
+                        ),
+                        _ => warn!(
+                            "MediaStatus playback match is ambiguous; keep sessions active: device_id={device_id}; channel_id={channel_id}; candidates={candidates:?}"
+                        ),
                     }
                 }
             }

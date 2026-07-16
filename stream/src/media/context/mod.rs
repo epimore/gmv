@@ -323,7 +323,7 @@ impl MediaContext {
             if should_cache {
                 cache_info
                     .timeline_normalizer
-                    .rescale_global_base_us(pkt.pts);
+                    .rescale_global_base_us(idx, pkt.pts);
                 cache_info.pkts.push_back(pkt);
             } else {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);

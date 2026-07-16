@@ -89,6 +89,9 @@ pub struct RouteRecord {
 pub struct PlaybackTicketRecord {
     pub token: String,
     pub stream_id: String,
+    pub playback_id: String,
+    pub playback_start_time_sec: u32,
+    pub playback_end_time_sec: u32,
     pub output_id: String,
     pub subscription_id: String,
     pub lease_id: String,

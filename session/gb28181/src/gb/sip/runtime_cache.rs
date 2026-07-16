@@ -71,6 +71,8 @@ pub struct SipResponseMetadata {
     pub to_header: Option<String>,
     pub to_tag: Option<String>,
     pub expires: Option<u32>,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]

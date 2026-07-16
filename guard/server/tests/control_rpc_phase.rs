@@ -135,6 +135,9 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
             store.upsert_playback_ticket(PlaybackTicketRecord {
                 token: "play-token-1".to_string(),
                 stream_id: "stream-play-1".to_string(),
+                playback_id: String::new(),
+                playback_start_time_sec: 0,
+                playback_end_time_sec: 0,
                 output_id: String::new(),
                 subscription_id: "viewer-1".to_string(),
                 lease_id: "lease-play-1".to_string(),
@@ -181,6 +184,9 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
             store.upsert_playback_ticket(PlaybackTicketRecord {
                 token: "play-token-expired".to_string(),
                 stream_id: "stream-play-1".to_string(),
+                playback_id: String::new(),
+                playback_start_time_sec: 0,
+                playback_end_time_sec: 0,
                 output_id: "output-expired".to_string(),
                 subscription_id: "viewer-expired".to_string(),
                 lease_id: "lease-play-1".to_string(),
@@ -221,6 +227,9 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
             store.upsert_playback_ticket(PlaybackTicketRecord {
                 token: "play-token-2".to_string(),
                 stream_id: "stream-play-1".to_string(),
+                playback_id: String::new(),
+                playback_start_time_sec: 0,
+                playback_end_time_sec: 0,
                 output_id: String::new(),
                 subscription_id: "viewer-2".to_string(),
                 lease_id: "lease-play-1".to_string(),

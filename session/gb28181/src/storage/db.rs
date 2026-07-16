@@ -165,26 +165,97 @@ const MYSQL_SCHEMA: &str = concat!(
 pub async fn initialize() -> GlobalResult<()> {
     match backend() {
         #[cfg(feature = "db-mysql")]
-        SessionDatabaseBackend::Mysql => base_db::sqlx::raw_sql(MYSQL_SCHEMA)
-            .execute(mysql_pool())
-            .await
-            .map(|_| ())
-            .hand_log(|msg| error!("{msg}")),
+        SessionDatabaseBackend::Mysql => {
+            base_db::sqlx::raw_sql(MYSQL_SCHEMA)
+                .execute(mysql_pool())
+                .await
+                .hand_log(|msg| error!("{msg}"))?;
+            ensure_mysql_playback_columns().await
+        }
         #[cfg(not(feature = "db-mysql"))]
         SessionDatabaseBackend::Mysql => {
             Err(backend_not_enabled_global(SessionDatabaseBackend::Mysql))
         }
         #[cfg(feature = "db-sqlite")]
-        SessionDatabaseBackend::Sqlite => base_db::sqlx::raw_sql(SQLITE_SCHEMA)
-            .execute(sqlite_pool())
-            .await
-            .map(|_| ())
-            .hand_log(|msg| error!("{msg}")),
+        SessionDatabaseBackend::Sqlite => {
+            base_db::sqlx::raw_sql(SQLITE_SCHEMA)
+                .execute(sqlite_pool())
+                .await
+                .hand_log(|msg| error!("{msg}"))?;
+            ensure_sqlite_playback_columns().await
+        }
         #[cfg(not(feature = "db-sqlite"))]
         SessionDatabaseBackend::Sqlite => {
             Err(backend_not_enabled_global(SessionDatabaseBackend::Sqlite))
         }
     }
+}
+
+#[cfg(feature = "db-mysql")]
+async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
+    let existing: Vec<String> = base_db::sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='gb28181_sip_dialog_session'",
+    )
+    .fetch_all(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    const COLUMNS: &[(&str, &str)] = &[
+        ("playback_id", "varchar(64) NULL"),
+        ("playback_start_sec", "bigint NULL"),
+        ("playback_end_sec", "bigint NULL"),
+        ("playback_generation", "bigint NULL"),
+        ("mansrtsp_cseq", "bigint NULL"),
+        ("acknowledged_position_sec", "bigint NULL"),
+        ("desired_rate_milli", "bigint NULL"),
+        ("acknowledged_rate_milli", "bigint NULL"),
+        ("last_control_operation_id", "varchar(128) NULL"),
+    ];
+    for (name, definition) in COLUMNS {
+        if !existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_sip_dialog_session ADD COLUMN {name} {definition}"
+            )))
+            .execute(mysql_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "db-sqlite")]
+async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
+    use base_db::sqlx::Row;
+    let rows = base_db::sqlx::query("PRAGMA table_info(gb28181_sip_dialog_session)")
+        .fetch_all(sqlite_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    let existing: Vec<String> = rows
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    const COLUMNS: &[(&str, &str)] = &[
+        ("playback_id", "VARCHAR(64) NULL"),
+        ("playback_start_sec", "BIGINT NULL"),
+        ("playback_end_sec", "BIGINT NULL"),
+        ("playback_generation", "BIGINT NULL"),
+        ("mansrtsp_cseq", "BIGINT NULL"),
+        ("acknowledged_position_sec", "BIGINT NULL"),
+        ("desired_rate_milli", "BIGINT NULL"),
+        ("acknowledged_rate_milli", "BIGINT NULL"),
+        ("last_control_operation_id", "VARCHAR(128) NULL"),
+    ];
+    for (name, definition) in COLUMNS {
+        if !existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_sip_dialog_session ADD COLUMN {name} {definition}"
+            )))
+            .execute(sqlite_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn backend_not_enabled_global(backend: SessionDatabaseBackend) -> GlobalError {

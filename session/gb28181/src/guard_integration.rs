@@ -37,11 +37,13 @@ use gmv_protocol::session::v1::{
     GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
     ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
     ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
-    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SessionHookRequest,
-    SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SnapshotImageRequest,
-    SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
-    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
-    session_control_server::SessionControl, session_hook_server::SessionHook,
+    PlaybackControlResponse, PlaybackState, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SessionHookRequest,
+    SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
+    SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
+    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
+    UpdateGbDeviceRequest, UpdateGbDeviceResponse, session_control_server::SessionControl,
+    session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
@@ -50,11 +52,12 @@ use tonic::transport::Channel;
 
 use crate::service::{api_serv, edge_serv, hook_serv, stream_close};
 use crate::state::model::{
-    DeviceChannelIdent, PlayBackModel, PlayLiveModel, PlaySpeedModel, PtzControlModel,
-    SnapshotImage, TransMode,
+    DeviceChannelIdent, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
+    PtzControlModel, SnapshotImage, TransMode,
 };
 use crate::state::session::GuardLease;
 use crate::state::{StreamNode, StreamNodeRegistry};
+use crate::storage::dialog_session::SipDialogSessionRepository;
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -640,18 +643,46 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<SetPlaybackSpeedResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!("session_control.set_playback_speed, req:{request:?}");
-        let response = match api_serv::speed(
+        let stream_id = request.stream_id.clone();
+        let result = api_serv::speed(
             PlaySpeedModel {
                 streamId: request.stream_id,
                 speedRate: request.speed_rate,
             },
             String::new(),
         )
-        .await
-        {
+        .await;
+        let result = match result {
+            Ok(value) if request.playback_id.is_empty() => Ok(value),
+            Ok(value) => {
+                let rate_milli = (request.speed_rate * 1000.0).round() as i64;
+                if SipDialogSessionRepository::cas_ack_playback_control(
+                    &stream_id,
+                    &request.playback_id,
+                    request.expected_generation,
+                    None,
+                    Some(rate_milli),
+                    &operation_id(request.operation.as_ref()),
+                )
+                .await
+                .map_err(storage_status)?
+                {
+                    Ok(value)
+                } else {
+                    Err(GlobalError::new_biz_error(
+                        BaseErrorCode::InvalidState.code(),
+                        "stale playback generation",
+                        |msg| log_error!("{msg}: stream_id={stream_id}"),
+                    ))
+                }
+            }
+            Err(err) => Err(err),
+        };
+        let response = match result {
             Ok(_) => SetPlaybackSpeedResponse {
                 accepted: true,
                 error: None,
+                generation: request.expected_generation.saturating_add(1),
             },
             Err(err) => SetPlaybackSpeedResponse {
                 accepted: false,
@@ -659,8 +690,103 @@ impl SessionControl for SessionControlRpc {
                     "playback_speed_failed",
                     &err,
                 )),
+                generation: request.expected_generation,
             },
         };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn seek_playback(
+        &self,
+        request: tonic::Request<SeekPlaybackRequest>,
+    ) -> Result<tonic::Response<PlaybackControlResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!("session_control.seek_playback, req:{request:?}");
+        let stream_id = request.stream_id.clone();
+        let result = api_serv::seek(
+            PlaySeekModel {
+                streamId: request.stream_id,
+                seekSecond: request.position_sec,
+            },
+            String::new(),
+        )
+        .await;
+        let result = match result {
+            Ok(value)
+                if SipDialogSessionRepository::cas_ack_playback_control(
+                    &stream_id,
+                    &request.playback_id,
+                    request.expected_generation,
+                    Some(request.position_sec),
+                    None,
+                    &operation_id(request.operation.as_ref()),
+                )
+                .await
+                .map_err(storage_status)? =>
+            {
+                Ok(value)
+            }
+            Ok(_) => Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stale playback generation",
+                |msg| log_error!("{msg}: stream_id={stream_id}"),
+            )),
+            Err(err) => Err(err),
+        };
+        let response = playback_control_response(
+            result,
+            request.expected_generation,
+            request.position_sec,
+            PlaybackState::Playing,
+        );
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn set_playback_state(
+        &self,
+        request: tonic::Request<SetPlaybackStateRequest>,
+    ) -> Result<tonic::Response<PlaybackControlResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!("session_control.set_playback_state, req:{request:?}");
+        let state = PlaybackState::try_from(request.state).unwrap_or(PlaybackState::Unspecified);
+        if state == PlaybackState::Unspecified {
+            return Ok(tonic::Response::new(PlaybackControlResponse {
+                accepted: false,
+                error: Some(error(
+                    "invalid_playback_state",
+                    "playback state is required",
+                )),
+                generation: request.expected_generation,
+                acknowledged_position_sec: 0,
+                acknowledged_speed_rate: 0.0,
+                state: PlaybackState::Unspecified as i32,
+            }));
+        }
+        let result =
+            api_serv::playback_state(&request.stream_id, state == PlaybackState::Paused).await;
+        let result = match result {
+            Ok(value)
+                if SipDialogSessionRepository::cas_ack_playback_control(
+                    &request.stream_id,
+                    &request.playback_id,
+                    request.expected_generation,
+                    None,
+                    None,
+                    &operation_id(request.operation.as_ref()),
+                )
+                .await
+                .map_err(storage_status)? =>
+            {
+                Ok(value)
+            }
+            Ok(_) => Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stale playback generation",
+                |msg| log_error!("{msg}: stream_id={}", request.stream_id),
+            )),
+            Err(err) => Err(err),
+        };
+        let response = playback_control_response(result, request.expected_generation, 0, state);
         Ok(tonic::Response::new(response))
     }
 
@@ -1143,6 +1269,11 @@ impl SessionControlRpc {
                 }
             };
         let subscription_id = token.clone();
+        let playback_id = if request.playback_id.trim().is_empty() {
+            operation_id(request.operation.as_ref())
+        } else {
+            request.playback_id.clone()
+        };
         let mut response = match stream_type {
             "live" => api_serv::play_live(
                 PlayLiveModel {
@@ -1224,9 +1355,22 @@ impl SessionControlRpc {
         }
         .unwrap_or_else(device_error);
         if response.state == DeviceStreamState::Running as i32 {
+            if stream_type == "playback" {
+                SipDialogSessionRepository::initialize_playback_control(
+                    &response.stream_id,
+                    &playback_id,
+                    request.start_time_sec,
+                    request.end_time_sec,
+                )
+                .await
+                .map_err(storage_status)?;
+            }
             response.subscription_id = subscription_id;
             response.session_node_id = identity.node_id;
             response.session_instance_id = identity.instance_id;
+            if stream_type == "playback" {
+                response.playback_id = playback_id;
+            }
         }
         Ok(tonic::Response::new(response))
     }
@@ -1629,6 +1773,37 @@ fn device_response(
         subscription_id: String::new(),
         session_node_id: String::new(),
         session_instance_id: String::new(),
+        playback_id: String::new(),
+        playback_generation: 0,
+    }
+}
+
+fn playback_control_response(
+    result: GlobalResult<bool>,
+    generation: u64,
+    position_sec: u32,
+    state: PlaybackState,
+) -> PlaybackControlResponse {
+    match result {
+        Ok(_) => PlaybackControlResponse {
+            accepted: true,
+            error: None,
+            generation: generation.saturating_add(1),
+            acknowledged_position_sec: position_sec,
+            acknowledged_speed_rate: 0.0,
+            state: state as i32,
+        },
+        Err(err) => PlaybackControlResponse {
+            accepted: false,
+            error: Some(gmv_nodec::error::global_error_detail(
+                "playback_control_failed",
+                &err,
+            )),
+            generation,
+            acknowledged_position_sec: 0,
+            acknowledged_speed_rate: 0.0,
+            state: PlaybackState::Unspecified as i32,
+        },
     }
 }
 
@@ -1820,6 +1995,8 @@ fn stream_response(
         subscription_id: String::new(),
         session_node_id: String::new(),
         session_instance_id: String::new(),
+        playback_id: String::new(),
+        playback_generation: 0,
     }
 }
 
@@ -1837,7 +2014,15 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
         subscription_id: String::new(),
         session_node_id: String::new(),
         session_instance_id: String::new(),
+        playback_id: String::new(),
+        playback_generation: 0,
     }
+}
+
+fn operation_id(operation: Option<&OperationRef>) -> String {
+    operation
+        .map(|operation| operation.operation_id.clone())
+        .unwrap_or_default()
 }
 
 fn operation_token(operation: Option<&OperationRef>) -> String {

@@ -726,6 +726,11 @@ impl StreamControlAdapter {
             stream_id: request.stream_id,
             state: state as i32,
             outputs: self.playback_endpoints(),
+            playback_id: String::new(),
+            playback_generation: 0,
+            source_position_ms: 0,
+            media_ready: state == StreamState::Receiving,
+            terminal_reason: String::new(),
         }
     }
 

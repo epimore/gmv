@@ -58,6 +58,11 @@ message QueryStreamResponse {
   string stream_id = 1;
   StreamState state = 2;
   repeated gmv.common.v1.Endpoint outputs = 3;
+  string playback_id = 4;
+  uint64 playback_generation = 5;
+  uint64 source_position_ms = 6;
+  bool media_ready = 7;
+  string terminal_reason = 8;
 }
 
 message CreateOutputRequest {

@@ -818,6 +818,8 @@ fn response_metadata(event: &SipRuntimeEvent) -> super::runtime_cache::SipRespon
             .as_deref()
             .and_then(gmv_pjsip::message::extract_tag),
         expires: event.expires_seconds,
+        content_type: event.content_type.clone(),
+        body: event.body.clone(),
     }
 }
 

@@ -104,7 +104,8 @@ impl StreamTimeline {
         // 1. 首次跳变检测
         let mut result = ProcessResult::Ok;
         let dis_dts_diff = pkt.dts - self.last_origin_dts;
-        if dis_dts_diff < 0 || dis_dts_diff > MAX_DELTA_TICKS {
+        let dis_dts_diff_us = unsafe { av_rescale_q(dis_dts_diff, self.time_base, AV_TIME_BASE_Q) };
+        if dis_dts_diff < 0 || dis_dts_diff_us > MAX_JUMP_US {
             info!(
                 "ssrc: {} ,Discontinuity: current dts: {}, last dts: {}",
                 ssrc, pkt.dts, self.last_origin_dts
@@ -114,7 +115,8 @@ impl StreamTimeline {
         self.last_origin_dts = pkt.dts;
         // 2. 修正数据
         let fix_dts_diff = pkt.dts - self.last_dts;
-        if fix_dts_diff < 0 || fix_dts_diff > MAX_DELTA_TICKS {
+        let fix_dts_diff_us = unsafe { av_rescale_q(fix_dts_diff, self.time_base, AV_TIME_BASE_Q) };
+        if fix_dts_diff < 0 || fix_dts_diff_us > MAX_JUMP_US {
             // 强制单调递增
             let delta = self.get_delta();
             pkt.dts = self.last_dts + delta;
@@ -177,9 +179,13 @@ impl TimelineNormalizer {
         ));
     }
 
-    pub fn rescale_global_base_us(&mut self, pts: i64) {
-        if pts != AV_NOPTS_VALUE {
-            self.global_base_us = self.global_base_us.min(pts);
+    pub fn rescale_global_base_us(&mut self, idx: usize, pts: i64) {
+        if pts == AV_NOPTS_VALUE {
+            return;
+        }
+        if let Some(Some(stream)) = self.streams.get(idx) {
+            let pts_us = unsafe { av_rescale_q(pts, stream.time_base, AV_TIME_BASE_Q) };
+            self.global_base_us = self.global_base_us.min(pts_us);
         }
     }
 
@@ -217,17 +223,13 @@ impl TimelineNormalizer {
             warn!("Discard packet without pts/dts; ssrc: {}", ssrc);
             return (None, ProcessResult::Ok);
         }
-        let pts = pkt.pts;
-
-        let global = if self.global_base_us == i64::MAX {
+        // Preserve the source timestamp in microseconds before mux timeline repair.
+        let source_pts_us = unsafe { av_rescale_q(pkt.pts, stream.time_base, AV_TIME_BASE_Q) };
+        let scale_global = if self.global_base_us == i64::MAX {
             0
         } else {
-            pts.saturating_sub(self.global_base_us)
+            source_pts_us.saturating_sub(self.global_base_us).max(0)
         };
-        let mut scale_global = 0;
-        if global > 0 {
-            scale_global = unsafe { av_rescale_q(global, stream.time_base, AV_TIME_BASE_Q) };
-        }
         // println!(
         //     "pts: {}, global_base_us: {}, before diff: {}, scale_global diff: {}, tb: {:?}",
         //     pts, self.global_base_us, global, scale_global, stream.time_base

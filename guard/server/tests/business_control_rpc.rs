@@ -26,8 +26,9 @@ use gmv_protocol::session::v1::{
     GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
     ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
-    ListGbResourcesResponse, ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest,
-    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SnapshotImageRequest, SnapshotImageResponse,
+    ListGbResourcesResponse, PlaybackControlResponse, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
+    SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
     StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
     UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
@@ -650,6 +651,8 @@ impl SessionControl for FakeSession {
             subscription_id: String::new(),
             session_node_id: String::new(),
             session_instance_id: String::new(),
+            playback_id: String::new(),
+            playback_generation: 0,
         }))
     }
 
@@ -660,6 +663,37 @@ impl SessionControl for FakeSession {
         Ok(tonic::Response::new(SetPlaybackSpeedResponse {
             accepted: true,
             error: None,
+            generation: 1,
+        }))
+    }
+
+    async fn seek_playback(
+        &self,
+        request: tonic::Request<SeekPlaybackRequest>,
+    ) -> Result<tonic::Response<PlaybackControlResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(PlaybackControlResponse {
+            accepted: true,
+            error: None,
+            generation: request.expected_generation + 1,
+            acknowledged_position_sec: request.position_sec,
+            acknowledged_speed_rate: 1.0,
+            state: 1,
+        }))
+    }
+
+    async fn set_playback_state(
+        &self,
+        request: tonic::Request<SetPlaybackStateRequest>,
+    ) -> Result<tonic::Response<PlaybackControlResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(PlaybackControlResponse {
+            accepted: true,
+            error: None,
+            generation: request.expected_generation + 1,
+            acknowledged_position_sec: 0,
+            acknowledged_speed_rate: 1.0,
+            state: request.state,
         }))
     }
 
@@ -867,6 +901,11 @@ impl StreamControl for FakeStream {
             stream_id: request.into_inner().stream_id,
             state: StreamState::Receiving as i32,
             outputs: vec![],
+            playback_id: String::new(),
+            playback_generation: 0,
+            source_position_ms: 0,
+            media_ready: true,
+            terminal_reason: String::new(),
         }))
     }
 
@@ -998,6 +1037,8 @@ fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> Devi
         subscription_id: request.token,
         session_node_id: String::new(),
         session_instance_id: String::new(),
+        playback_id: request.playback_id,
+        playback_generation: 0,
     }
 }
 

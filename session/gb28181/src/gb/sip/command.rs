@@ -51,6 +51,7 @@ const DIALOG_EXPIRE_HOURS: i64 = 8;
 struct DurableDialogReservation {
     signal_node_id: String,
     version: i64,
+    mansrtsp_cseq: u32,
 }
 
 pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Protocol)> {
@@ -124,6 +125,56 @@ async fn send_native_message_on_device_and_wait(
     ))
 }
 
+fn mansrtsp_cseq(body: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(body).ok()?;
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("cseq")
+            .then(|| value.trim().parse().ok())
+            .flatten()
+    })
+}
+
+fn validate_mansrtsp_response(body: &[u8], expected_cseq: Option<u32>) -> GlobalResult<()> {
+    if body.is_empty() {
+        // Some GB28181 devices acknowledge INFO only at the SIP layer.
+        return Ok(());
+    }
+    let text = std::str::from_utf8(body).map_err(|_| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "invalid MANSRTSP response encoding",
+            |msg| error!("{msg}"),
+        )
+    })?;
+    let first_line = text.lines().next().unwrap_or_default().trim();
+    if !first_line.starts_with("RTSP/") {
+        return Ok(());
+    }
+    let status = first_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok());
+    if !status.is_some_and(|status| (200..300).contains(&status)) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "device rejected MANSRTSP control",
+            |msg| error!("{msg}: status_line={first_line}"),
+        ));
+    }
+    if let (Some(expected), Some(actual)) = (expected_cseq, mansrtsp_cseq(body))
+        && expected != actual
+    {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "MANSRTSP CSeq mismatch",
+            |msg| error!("{msg}: expected={expected}; actual={actual}"),
+        ));
+    }
+    Ok(())
+}
+
 async fn send_native_dialog_and_wait(
     device_id: &str,
     method: SipDialogMethod,
@@ -135,6 +186,7 @@ async fn send_native_dialog_and_wait(
     if Register::get_connected_device_session(device_id).is_none() {
         return Err(device_not_connected(device_id));
     }
+    let expected_mansrtsp_cseq = mansrtsp_cseq(&body);
     let runtime = NativeSipRuntimeHandle::global()?;
     let operation_id = runtime.next_operation_id();
     let rx = SipRuntimeCache::global().insert_native_response_waiter(operation_id, timeout);
@@ -167,6 +219,7 @@ async fn send_native_dialog_and_wait(
     if (200..300).contains(&result.status)
         || (method == SipDialogMethod::Bye && result.status == 481)
     {
+        validate_mansrtsp_response(&result.metadata.body, expected_mansrtsp_cseq)?;
         return Ok(());
     }
     Err(GlobalError::new_biz_error(
@@ -194,6 +247,7 @@ async fn send_restored_dialog_and_wait(
     if session.transport == DialogTransport::Tcp && association.is_none() {
         return Err(device_not_connected(device_id));
     }
+    let expected_mansrtsp_cseq = mansrtsp_cseq(&body);
     let runtime = NativeSipRuntimeHandle::global()?;
     let operation_id = runtime.next_operation_id();
     let rx = SipRuntimeCache::global().insert_native_response_waiter(operation_id, timeout);
@@ -233,6 +287,7 @@ async fn send_restored_dialog_and_wait(
     if (200..300).contains(&result.status)
         || (method == SipDialogMethod::Bye && result.status == 481)
     {
+        validate_mansrtsp_response(&result.metadata.body, expected_mansrtsp_cseq)?;
         return Ok(());
     }
     Err(GlobalError::new_biz_error(
@@ -1300,9 +1355,45 @@ pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
 
 pub async fn play_seek(device_id: &str, stream_id: &str, seek_second: u32) -> GlobalResult<()> {
     let call_id = stream_call_id(stream_id)?;
-    reserve_durable_dialog_request(stream_id, SipDialogMethod::Info).await?;
+    let mansrtsp_cseq = reserve_durable_dialog_request(stream_id, SipDialogMethod::Info)
+        .await?
+        .map(|reservation| reservation.mansrtsp_cseq)
+        .unwrap_or(1);
     let content_type = Some(CONTENT_TYPE_MANSRTSP.to_string());
-    let body = build_mansrtsp_seek_body(f64::from(seek_second), 1).into_bytes();
+    let body = build_mansrtsp_seek_body(f64::from(seek_second), mansrtsp_cseq).into_bytes();
+    if GeneralCache::stream_is_restored(stream_id) {
+        let session = load_durable_dialog(stream_id).await?;
+        send_restored_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Info,
+            &session,
+            content_type,
+            body,
+            REQUEST_WAIT_TIMEOUT,
+        )
+        .await
+    } else {
+        send_native_dialog_and_wait(
+            device_id,
+            SipDialogMethod::Info,
+            call_id,
+            content_type,
+            body,
+            REQUEST_WAIT_TIMEOUT,
+        )
+        .await
+    }
+}
+
+pub async fn play_state(device_id: &str, stream_id: &str, paused: bool) -> GlobalResult<()> {
+    let call_id = stream_call_id(stream_id)?;
+    let mansrtsp_cseq = reserve_durable_dialog_request(stream_id, SipDialogMethod::Info)
+        .await?
+        .map(|reservation| reservation.mansrtsp_cseq)
+        .unwrap_or(1);
+    let method = if paused { "PAUSE" } else { "PLAY" };
+    let content_type = Some(CONTENT_TYPE_MANSRTSP.to_string());
+    let body = format!("{method} RTSP/1.0\r\nCSeq: {mansrtsp_cseq}\r\n\r\n").into_bytes();
     if GeneralCache::stream_is_restored(stream_id) {
         let session = load_durable_dialog(stream_id).await?;
         send_restored_dialog_and_wait(
@@ -1329,9 +1420,12 @@ pub async fn play_seek(device_id: &str, stream_id: &str, seek_second: u32) -> Gl
 
 pub async fn play_speed(device_id: &str, stream_id: &str, speed: f32) -> GlobalResult<()> {
     let call_id = stream_call_id(stream_id)?;
-    reserve_durable_dialog_request(stream_id, SipDialogMethod::Info).await?;
+    let mansrtsp_cseq = reserve_durable_dialog_request(stream_id, SipDialogMethod::Info)
+        .await?
+        .map(|reservation| reservation.mansrtsp_cseq)
+        .unwrap_or(1);
     let content_type = Some(CONTENT_TYPE_MANSRTSP.to_string());
-    let body = build_mansrtsp_speed_body(speed, None, 1).into_bytes();
+    let body = build_mansrtsp_speed_body(speed, None, mansrtsp_cseq).into_bytes();
     if GeneralCache::stream_is_restored(stream_id) {
         let session = load_durable_dialog(stream_id).await?;
         send_restored_dialog_and_wait(
@@ -1441,13 +1535,32 @@ async fn reserve_durable_dialog_request(
     Ok(Some(DurableDialogReservation {
         signal_node_id: session.signal_node_id,
         version: session.version + 1,
+        mansrtsp_cseq: u32::try_from(next_cseq).map_err(|_| {
+            GlobalError::new_sys_error("MANSRTSP CSeq overflow", |msg| {
+                error!("stream_id={stream_id}; {msg}")
+            })
+        })?,
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_ptz_command, invite_subject, normalize_gb_ssrc};
+    use super::{
+        build_ptz_command, invite_subject, mansrtsp_cseq, normalize_gb_ssrc,
+        validate_mansrtsp_response,
+    };
     use crate::state::model::PtzControlModel;
+
+    #[test]
+    fn validates_mansrtsp_response_cseq() {
+        let body = b"RTSP/1.0 200 OK
+CSeq: 7
+
+";
+        assert_eq!(mansrtsp_cseq(body), Some(7));
+        assert!(validate_mansrtsp_response(body, Some(7)).is_ok());
+        assert!(validate_mansrtsp_response(body, Some(8)).is_err());
+    }
 
     #[test]
     fn builds_gb28181_ptz_hex_command() {

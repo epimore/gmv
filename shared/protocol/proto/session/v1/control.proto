@@ -12,6 +12,8 @@ service SessionControl {
   rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc SetPlaybackSpeed(SetPlaybackSpeedRequest) returns (SetPlaybackSpeedResponse);
+  rpc SeekPlayback(SeekPlaybackRequest) returns (PlaybackControlResponse);
+  rpc SetPlaybackState(SetPlaybackStateRequest) returns (PlaybackControlResponse);
   rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
   rpc SnapshotImage(SnapshotImageRequest) returns (SnapshotImageResponse);
   rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
@@ -61,6 +63,7 @@ message StartDeviceStreamRequest {
   uint32 talk_channel_count = 14;
   uint32 talk_frame_duration_ms = 15;
   string audio_codec = 16;
+  string playback_id = 17;
 }
 
 message StopDeviceStreamRequest {
@@ -75,11 +78,45 @@ message SetPlaybackSpeedRequest {
   gmv.common.v1.OperationRef operation = 1;
   string stream_id = 2;
   float speed_rate = 3;
+  string playback_id = 4;
+  uint64 expected_generation = 5;
 }
 
 message SetPlaybackSpeedResponse {
   bool accepted = 1;
   gmv.common.v1.ErrorDetail error = 2;
+  uint64 generation = 3;
+}
+
+message SeekPlaybackRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string playback_id = 2;
+  string stream_id = 3;
+  uint32 position_sec = 4;
+  uint64 expected_generation = 5;
+}
+
+message SetPlaybackStateRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string playback_id = 2;
+  string stream_id = 3;
+  PlaybackState state = 4;
+  uint64 expected_generation = 5;
+}
+
+message PlaybackControlResponse {
+  bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+  uint64 generation = 3;
+  uint32 acknowledged_position_sec = 4;
+  float acknowledged_speed_rate = 5;
+  PlaybackState state = 6;
+}
+
+enum PlaybackState {
+  PLAYBACK_STATE_UNSPECIFIED = 0;
+  PLAYBACK_STATE_PLAYING = 1;
+  PLAYBACK_STATE_PAUSED = 2;
 }
 
 message DeviceStreamResponse {
@@ -92,6 +129,8 @@ message DeviceStreamResponse {
   string subscription_id = 7;
   string session_node_id = 8;
   string session_instance_id = 9;
+  string playback_id = 10;
+  uint64 playback_generation = 11;
 }
 
 enum DeviceStreamState {

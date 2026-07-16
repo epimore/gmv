@@ -13,8 +13,9 @@ use gmv_protocol::session::v1::{
     ControlPtzRequest, CreateGbDeviceRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
     GbChannelImage, GbDevice, GbResource, GetGbChannelRequest, GetGbDeviceRequest,
     GetSessionConfigRequest, ListGbChannelImagesRequest, ListGbChannelsRequest,
-    ListGbDevicesRequest, ListGbResourcesRequest, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SetPlaybackSpeedRequest, SnapshotImageRequest,
+    ListGbDevicesRequest, ListGbResourcesRequest, PlaybackState,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SetPlaybackSpeedRequest, SetPlaybackStateRequest, SnapshotImageRequest,
     StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
     UpdateGbDeviceRequest,
 };
@@ -70,6 +71,7 @@ pub struct DeviceStreamOptions {
     pub talk_sample_rate: u32,
     pub talk_channel_count: u32,
     pub talk_frame_duration_ms: u32,
+    pub playback_id: String,
 }
 
 struct RpcEdge<'a> {
@@ -1048,6 +1050,7 @@ impl BusinessControl {
             talk_sample_rate: options.talk_sample_rate,
             talk_channel_count: options.talk_channel_count,
             talk_frame_duration_ms: options.talk_frame_duration_ms,
+            playback_id: options.playback_id.clone(),
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.start_{}, node={}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
@@ -1146,6 +1149,10 @@ impl BusinessControl {
             },
             session_node_id: session.identity.node_id.clone(),
             session_instance_id: session.identity.instance_id.clone(),
+            playback_id: session_response.playback_id,
+            playback_generation: session_response.playback_generation,
+            playback_start_time_sec: options.start_time_sec,
+            playback_end_time_sec: options.end_time_sec,
             state: StreamSummaryState::Running,
         })
     }
@@ -1226,6 +1233,10 @@ impl BusinessControl {
             subscription_id: String::new(),
             session_node_id,
             session_instance_id,
+            playback_id: String::new(),
+            playback_generation: 0,
+            playback_start_time_sec: 0,
+            playback_end_time_sec: 0,
             state: StreamSummaryState::Stopped,
         })
     }
@@ -1308,6 +1319,10 @@ impl BusinessControl {
             subscription_id: subscription_id.to_string(),
             session_node_id: session.identity.node_id,
             session_instance_id: session.identity.instance_id,
+            playback_id: String::new(),
+            playback_generation: 0,
+            playback_start_time_sec: 0,
+            playback_end_time_sec: 0,
             state,
         })
     }
@@ -1450,19 +1465,31 @@ impl BusinessControl {
         stream_id: &str,
         speed_rate: f32,
     ) -> GuardResult<()> {
+        self.set_playback_speed_versioned(operation_id, "", stream_id, speed_rate, 0)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn set_playback_speed_versioned(
+        &self,
+        operation_id: &str,
+        playback_id: &str,
+        stream_id: &str,
+        speed_rate: f32,
+        expected_generation: u64,
+    ) -> GuardResult<u64> {
         if !matches!(speed_rate, 0.5 | 1.0 | 2.0 | 4.0) {
             return Err(GuardError::user_visible(
                 "invalid_playback_speed",
                 "unsupported playback speed",
-                "仅支持 0.5x、1x、2x、4x 回放倍速",
+                "only 0.5x, 1x, 2x and 4x are supported",
                 false,
                 BTreeMap::new(),
             ));
         }
         let session = self.session_for_stream(stream_id)?;
-        let session_grpc = grpc_uri(&session)?;
         let mut session_client =
-            SessionControlClient::new(connect_rpc(&session_grpc, "session").await?);
+            SessionControlClient::new(connect_rpc(&grpc_uri(&session)?, "session").await?);
         let request = SetPlaybackSpeedRequest {
             operation: Some(OperationRef {
                 operation_id: operation_id.to_string(),
@@ -1470,6 +1497,8 @@ impl BusinessControl {
             }),
             stream_id: stream_id.to_string(),
             speed_rate,
+            playback_id: playback_id.to_string(),
+            expected_generation,
         };
         let edge = RpcEdge::new(
             "session",
@@ -1486,7 +1515,7 @@ impl BusinessControl {
                 "set_playback_speed",
                 error,
                 "playback_speed_failed",
-                "回放倍速设置失败",
+                "playback speed change failed",
                 false,
             ));
         }
@@ -1497,7 +1526,97 @@ impl BusinessControl {
             ));
         }
         edge.success();
-        Ok(())
+        Ok(response.generation)
+    }
+
+    pub async fn seek_playback(
+        &self,
+        operation_id: &str,
+        playback_id: &str,
+        stream_id: &str,
+        position_sec: u32,
+        expected_generation: u64,
+    ) -> GuardResult<u64> {
+        let session = self.session_for_stream(stream_id)?;
+        let mut client =
+            SessionControlClient::new(connect_rpc(&grpc_uri(&session)?, "session").await?);
+        let response = client
+            .seek_playback(SeekPlaybackRequest {
+                operation: Some(OperationRef {
+                    operation_id: operation_id.to_string(),
+                    idempotency_key: operation_id.to_string(),
+                }),
+                playback_id: playback_id.to_string(),
+                stream_id: stream_id.to_string(),
+                position_sec,
+                expected_generation,
+            })
+            .await
+            .map_err(|error| GuardError::Conflict(format!("playback seek RPC failed: {error}")))?
+            .into_inner();
+        if let Some(error) = non_empty_error(response.error) {
+            return Err(remote_error(
+                "session",
+                "seek_playback",
+                error,
+                "playback_seek_failed",
+                "playback seek failed",
+                true,
+            ));
+        }
+        if !response.accepted {
+            return Err(GuardError::Conflict(
+                "playback seek was not accepted".to_string(),
+            ));
+        }
+        Ok(response.generation)
+    }
+
+    pub async fn set_playback_state(
+        &self,
+        operation_id: &str,
+        playback_id: &str,
+        stream_id: &str,
+        paused: bool,
+        expected_generation: u64,
+    ) -> GuardResult<u64> {
+        let session = self.session_for_stream(stream_id)?;
+        let mut client =
+            SessionControlClient::new(connect_rpc(&grpc_uri(&session)?, "session").await?);
+        let response = client
+            .set_playback_state(SetPlaybackStateRequest {
+                operation: Some(OperationRef {
+                    operation_id: operation_id.to_string(),
+                    idempotency_key: operation_id.to_string(),
+                }),
+                playback_id: playback_id.to_string(),
+                stream_id: stream_id.to_string(),
+                state: if paused {
+                    PlaybackState::Paused as i32
+                } else {
+                    PlaybackState::Playing as i32
+                },
+                expected_generation,
+            })
+            .await
+            .map_err(|error| GuardError::Conflict(format!("playback state RPC failed: {error}")))?
+            .into_inner();
+        if let Some(error) = non_empty_error(response.error) {
+            return Err(remote_error(
+                "session",
+                "set_playback_state",
+                error,
+                "playback_state_failed",
+                "playback state change failed",
+                true,
+            ));
+        }
+        if !response.accepted {
+            return Err(GuardError::Conflict(
+                "playback state was not accepted".to_string(),
+            ));
+        }
+        Ok(response.generation)
     }
 
     pub async fn ptz(
