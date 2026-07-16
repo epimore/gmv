@@ -149,8 +149,7 @@ pub async fn segment_ts_handler() -> Response<Body> {
 async fn ensure_store(ssrc: u32) -> Option<Arc<HlsStoreHandle>> {
     let mut rx = Register::get_muxer_rx(&ssrc, MuxerEnum::HlsMp4).ok()?;
     let channel_id = rx.channel_id();
-    if let Some(store) = HLS_STORES.get(&ssrc) {
-        let store = store.clone();
+    if let Some(store) = cloned_store(&HLS_STORES, ssrc) {
         // A request from the previous output generation may finish after the replacement store.
         if store.channel_id > channel_id {
             return Some(store);
@@ -206,6 +205,13 @@ async fn ensure_store(ssrc: u32) -> Option<Arc<HlsStoreHandle>> {
         remove_store_if_same(&HLS_STORES, ssrc, &task_store);
     });
     Some(store)
+}
+
+fn cloned_store(
+    stores: &DashMap<u32, Arc<HlsStoreHandle>>,
+    ssrc: u32,
+) -> Option<Arc<HlsStoreHandle>> {
+    stores.get(&ssrc).map(|store| store.value().clone())
 }
 
 fn install_store(
@@ -285,6 +291,19 @@ mod tests {
                 ended,
             }),
         })
+    }
+
+    #[test]
+    fn cloned_hls_store_does_not_hold_map_guard_during_cleanup() {
+        let stores = DashMap::new();
+        let old = store(1, true);
+        stores.insert(1, old.clone());
+
+        let cloned = cloned_store(&stores, 1).unwrap();
+
+        assert!(Arc::ptr_eq(&cloned, &old));
+        assert!(remove_store_if_same(&stores, 1, &cloned));
+        assert!(!stores.contains_key(&1));
     }
 
     #[test]
