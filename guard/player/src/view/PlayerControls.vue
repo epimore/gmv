@@ -103,20 +103,41 @@
           class="timeline"
           :class="{ disabled: capabilities.playback === false }"
         >
-          <span>回放</span>
-          <input
-            :value="state.seekMs"
-            type="range"
-            min="0"
-            :max="state.durationMs"
-            step="1000"
-            :disabled="capabilities.playback === false"
-            aria-label="回放进度"
-            @pointerdown="beginInteraction"
-            @pointerup="endInteraction"
-            @pointercancel="endInteraction"
-            @change="emitSeek($event)"
-          />
+          <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
+          <span class="timeline-track">
+            <span
+              v-if="hoverTimelineTimeMs !== undefined"
+              class="timeline-tooltip"
+              :style="{ left: hoverTimelineLeft + '%' }"
+            >
+              {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
+            </span>
+            <input
+              :value="state.seekMs"
+              type="range"
+              min="0"
+              :max="state.durationMs"
+              step="1000"
+              :disabled="capabilities.playback === false"
+              aria-label="回放进度"
+              @pointerdown="beginInteraction"
+              @pointermove="updateTimelineHover"
+              @pointerleave="clearTimelineHover"
+              @pointerup="endInteraction"
+              @pointercancel="endInteraction"
+              @change="emitSeek($event)"
+            />
+            <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
+              <span
+                v-for="tick in timelineTicks"
+                :key="tick.ratio"
+                :style="{ left: tick.ratio * 100 + '%' }"
+              >
+                {{ formatTimelineTick(tick.timeMs) }}
+              </span>
+            </span>
+          </span>
+          <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
         </label>
         <div v-else-if="control === 'presets'" class="preset-box">
           <input
@@ -247,20 +268,41 @@
           class="timeline"
           :class="{ disabled: capabilities.playback === false }"
         >
-          <span>回放</span>
-          <input
-            :value="state.seekMs"
-            type="range"
-            min="0"
-            :max="state.durationMs"
-            step="1000"
-            :disabled="capabilities.playback === false"
-            aria-label="回放进度"
-            @pointerdown="beginInteraction"
-            @pointerup="endInteraction"
-            @pointercancel="endInteraction"
-            @change="emitSeek($event, true)"
-          />
+          <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
+          <span class="timeline-track">
+            <span
+              v-if="hoverTimelineTimeMs !== undefined"
+              class="timeline-tooltip"
+              :style="{ left: hoverTimelineLeft + '%' }"
+            >
+              {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
+            </span>
+            <input
+              :value="state.seekMs"
+              type="range"
+              min="0"
+              :max="state.durationMs"
+              step="1000"
+              :disabled="capabilities.playback === false"
+              aria-label="回放进度"
+              @pointerdown="beginInteraction"
+              @pointermove="updateTimelineHover"
+              @pointerleave="clearTimelineHover"
+              @pointerup="endInteraction"
+              @pointercancel="endInteraction"
+              @change="emitSeek($event, true)"
+            />
+            <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
+              <span
+                v-for="tick in timelineTicks"
+                :key="tick.ratio"
+                :style="{ left: tick.ratio * 100 + '%' }"
+              >
+                {{ formatTimelineTick(tick.timeMs) }}
+              </span>
+            </span>
+          </span>
+          <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
         </label>
         <div v-else-if="control === 'presets'" class="preset-box">
           <input
@@ -327,6 +369,8 @@ const pointerInside = ref(false);
 const focusWithin = ref(false);
 const interactionActive = ref(false);
 const presetId = ref("1");
+const hoverTimelineTimeMs = ref<number>();
+const hoverTimelineLeft = ref(0);
 let hideTimer: number | undefined;
 
 const visibility = computed(() => props.config.visibility ?? "auto");
@@ -334,6 +378,17 @@ const renderControls = computed(() => visibility.value !== "hidden");
 const playbackRates = computed(() =>
   props.config.playbackRates?.length ? props.config.playbackRates : [0.5, 1, 2, 4],
 );
+const timelineStartTimeMs = computed(() => props.state.timelineStartTimeMs);
+const timelineEndTimeMs = computed(() => props.state.timelineEndTimeMs);
+const timelineTicks = computed(() => {
+  const start = timelineStartTimeMs.value;
+  const end = timelineEndTimeMs.value;
+  if (start === undefined || end === undefined || end <= start) return [];
+  return [0.25, 0.5, 0.75].map((ratio) => ({
+    ratio,
+    timeMs: start + Math.round((end - start) * ratio),
+  }));
+});
 const primaryItems = computed(() => [...new Set(props.config.items)]);
 const overflowItems = computed(() => {
   const primary = new Set(primaryItems.value);
@@ -515,6 +570,41 @@ function emitSeek(event: Event, fromOverflow = false) {
   afterAction(fromOverflow);
 }
 
+function updateTimelineHover(event: PointerEvent) {
+  const start = timelineStartTimeMs.value;
+  const end = timelineEndTimeMs.value;
+  const input = event.currentTarget as HTMLInputElement;
+  const rect = input.getBoundingClientRect();
+  if (start === undefined || end === undefined || end <= start || rect.width <= 0) return;
+  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  hoverTimelineTimeMs.value = start + Math.round(((end - start) * ratio) / 1_000) * 1_000;
+  hoverTimelineLeft.value = Math.min(93, Math.max(7, ratio * 100));
+}
+
+function clearTimelineHover() {
+  hoverTimelineTimeMs.value = undefined;
+}
+
+function twoDigits(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function formatTimelineBoundary(timeMs: number | undefined) {
+  if (timeMs === undefined) return "--:--:--";
+  const time = new Date(timeMs);
+  return `${twoDigits(time.getMonth() + 1)}-${twoDigits(time.getDate())} ${formatTimelineTick(timeMs)}`;
+}
+
+function formatTimelineTick(timeMs: number) {
+  const time = new Date(timeMs);
+  return `${twoDigits(time.getHours())}:${twoDigits(time.getMinutes())}:${twoDigits(time.getSeconds())}`;
+}
+
+function formatTimelineTooltip(timeMs: number) {
+  const time = new Date(timeMs);
+  return `${time.getFullYear()}-${formatTimelineBoundary(timeMs)}`;
+}
+
 function emitPreset(type: "preset-call" | "preset-set", fromOverflow = false) {
   emit("action", { type, presetId: presetId.value });
   afterAction(fromOverflow);
@@ -585,15 +675,68 @@ button.active {
 
 .timeline {
   display: flex;
-  flex: 1 0 130px;
+  flex: 1 0 460px;
   align-items: center;
   gap: 8px;
-  min-width: 130px;
+  min-width: 460px;
   color: var(--muted);
 }
 
-.timeline input {
+.timeline-boundary {
+  flex: 0 0 auto;
+  color: rgba(226, 232, 240, 0.88);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timeline-track {
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 220px;
+  height: 48px;
+}
+
+.timeline-track input {
+  position: absolute;
+  top: 17px;
+  left: 0;
   width: 100%;
+  margin: 0;
+}
+
+.timeline-tooltip {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  padding: 1px 5px;
+  transform: translateX(-50%);
+  border-radius: 4px;
+  background: rgba(3, 10, 24, 0.94);
+  color: #f8fafc;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.timeline-ticks {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  left: 0;
+  height: 12px;
+  pointer-events: none;
+}
+
+.timeline-ticks > span {
+  position: absolute;
+  transform: translateX(-50%);
+  color: rgba(148, 163, 184, 0.86);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .timeline.disabled {

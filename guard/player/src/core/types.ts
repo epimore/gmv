@@ -122,6 +122,8 @@ export interface GmvPlayerControlsState {
   playbackRate: number;
   seekMs: number;
   durationMs: number;
+  timelineStartTimeMs?: number;
+  timelineEndTimeMs?: number;
   selectedSourceUrl: string;
 }
 

@@ -703,14 +703,32 @@ impl SessionControl for SessionControlRpc {
         let request = request.into_inner();
         debug!("session_control.seek_playback, req:{request:?}");
         let stream_id = request.stream_id.clone();
-        let result = api_serv::seek(
-            PlaySeekModel {
-                streamId: request.stream_id,
-                seekSecond: request.position_sec,
-            },
-            String::new(),
-        )
-        .await;
+        let playback_range =
+            SipDialogSessionRepository::find_playback_range(&stream_id, &request.playback_id)
+                .await
+                .map_err(storage_status)?;
+        let result = match playback_range {
+            Some((start_sec, end_sec)) => {
+                match playback_seek_offset(request.position_sec, start_sec, end_sec) {
+                    Ok(seek_second) => {
+                        api_serv::seek(
+                            PlaySeekModel {
+                                streamId: request.stream_id,
+                                seekSecond: seek_second,
+                            },
+                            String::new(),
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            None => Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "playback range is unavailable",
+                |msg| log_error!("{msg}: stream_id={stream_id}"),
+            )),
+        };
         let result = match result {
             Ok(value)
                 if SipDialogSessionRepository::cas_ack_playback_control(
@@ -1807,6 +1825,22 @@ fn playback_control_response(
     }
 }
 
+fn playback_seek_offset(position_sec: u32, start_sec: u32, end_sec: u32) -> GlobalResult<u32> {
+    if start_sec == 0 || start_sec >= end_sec || position_sec < start_sec || position_sec > end_sec
+    {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "playback seek position is outside the selected range",
+            |msg| {
+                log_error!(
+                    "{msg}: position_sec={position_sec}; start_sec={start_sec}; end_sec={end_sec}"
+                )
+            },
+        ));
+    }
+    Ok(position_sec - start_sec)
+}
+
 fn gb_device_proto(
     row: crate::storage::guard_query::GbDeviceView,
     session_node_id: &str,
@@ -2184,6 +2218,15 @@ mod tests {
     use super::*;
     use gmv_protocol::common::v1::Endpoint;
     use gmv_protocol::session::v1::session_hook_server::SessionHook;
+
+    #[test]
+    fn playback_seek_uses_npt_offset_from_selected_start() {
+        assert_eq!(
+            playback_seek_offset(1_784_131_545, 1_784_131_000, 1_784_134_600).unwrap(),
+            545
+        );
+        assert!(playback_seek_offset(1_784_130_999, 1_784_131_000, 1_784_134_600).is_err());
+    }
 
     #[test]
     fn session_hook_rpc_rejects_unknown_event_and_invalid_payload() {

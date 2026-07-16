@@ -149,6 +149,8 @@ const props = withDefaults(
     startupText?: string;
     startupCanCancel?: boolean;
     playbackDurationMs?: number;
+    playbackStartTimeMs?: number;
+    playbackEndTimeMs?: number;
     /** @deprecated 请使用 controls.visibility。 */
     controlsVisible?: boolean;
   }>(),
@@ -254,6 +256,8 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
   playbackRate: playbackRate.value,
   seekMs: seekMs.value,
   durationMs: props.playbackDurationMs ?? 86_400_000,
+  timelineStartTimeMs: props.playbackStartTimeMs,
+  timelineEndTimeMs: props.playbackEndTimeMs,
   selectedSourceUrl: selectedSourceUrl.value,
 }));
 const statusLabel = computed(() => {

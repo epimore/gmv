@@ -338,4 +338,34 @@ describe("PlayerControls", () => {
     ]);
     wrapper.unmount();
   });
+
+  it("回放时间轴展示首尾时刻、跨度刻度和悬停时刻", async () => {
+    const start = new Date(2026, 6, 16, 10, 0, 0).getTime();
+    const end = new Date(2026, 6, 16, 11, 0, 0).getTime();
+    const wrapper = mountControls(
+      { items: ["timeline"], visibility: "always" },
+      {
+        ...playingState,
+        durationMs: end - start,
+        timelineStartTimeMs: start,
+        timelineEndTimeMs: end,
+      },
+    );
+
+    expect(wrapper.text()).toContain("07-16 10:00:00");
+    expect(wrapper.text()).toContain("10:15:00");
+    expect(wrapper.text()).toContain("10:30:00");
+    expect(wrapper.text()).toContain("10:45:00");
+    expect(wrapper.text()).toContain("07-16 11:00:00");
+
+    const range = wrapper.get<HTMLInputElement>('[aria-label="回放进度"]');
+    Object.defineProperty(range.element, "getBoundingClientRect", {
+      value: () => ({ left: 0, width: 100 }),
+    });
+    range.element.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 50 }));
+    await nextTick();
+
+    expect(wrapper.text()).toContain("2026-07-16 10:30:00");
+    wrapper.unmount();
+  });
 });

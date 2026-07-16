@@ -759,6 +759,36 @@ impl SipDialogSessionRepository {
         row.map(TryInto::try_into).transpose()
     }
 
+    pub async fn find_playback_range(
+        stream_id: &str,
+        playback_id: &str,
+    ) -> GlobalResult<Option<(u32, u32)>> {
+        validate_len(stream_id, 64, "stream_id")?;
+        validate_len(playback_id, 64, "playback_id")?;
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(None);
+        }
+        let row: Option<(Option<i64>, Option<i64>)> = db::fetch_optional_as!(
+            (Option<i64>, Option<i64>),
+            "SELECT playback_start_sec,playback_end_sec FROM gb28181_sip_dialog_session WHERE stream_id=? AND playback_id=? AND session_type='PLAYBACK'",
+            stream_id,
+            playback_id,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        let Some((Some(start_sec), Some(end_sec))) = row else {
+            return Ok(None);
+        };
+        let start_sec =
+            u32::try_from(start_sec).map_err(|_| invalid_data("invalid playback start time"))?;
+        let end_sec =
+            u32::try_from(end_sec).map_err(|_| invalid_data("invalid playback end time"))?;
+        if start_sec == 0 || start_sec >= end_sec {
+            return Err(invalid_data("invalid playback range"));
+        }
+        Ok(Some((start_sec, end_sec)))
+    }
+
     pub async fn find_by_call_id(call_id: &str) -> GlobalResult<Vec<SipDialogSession>> {
         validate_len(call_id, 128, "call_id")?;
         #[cfg(test)]

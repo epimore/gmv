@@ -327,7 +327,9 @@
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
             :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
-            :controls="playerControls" :playback-duration-ms="playbackDurationMs" :output-switching="singleOutputSwitching"
+            :controls="playerControls" :playback-duration-ms="playbackDurationMs"
+            :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
+            :output-switching="singleOutputSwitching"
             :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
             @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz"
             @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
@@ -687,6 +689,14 @@ const playbackDurationMs = computed(() => {
   const stream = lastStream.value;
   if (!stream?.playback_start_time_sec || !stream.playback_end_time_sec) return 86_400_000;
   return Math.max(1_000, (stream.playback_end_time_sec - stream.playback_start_time_sec) * 1_000);
+});
+const playbackStartTimeMs = computed(() => {
+  const startSec = lastStream.value?.playback_start_time_sec;
+  return startSec ? startSec * 1_000 : undefined;
+});
+const playbackEndTimeMs = computed(() => {
+  const endSec = lastStream.value?.playback_end_time_sec;
+  return endSec ? endSec * 1_000 : undefined;
 });
 const playerOsd = computed(() => [
   { id: 'channel', text: selectedChannelTitle.value, x: 3, y: 5 },
