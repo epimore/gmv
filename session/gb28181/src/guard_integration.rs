@@ -662,6 +662,7 @@ impl SessionControl for SessionControlRpc {
                     request.expected_generation,
                     None,
                     Some(rate_milli),
+                    Some("PLAYING"),
                     &operation_id(request.operation.as_ref()),
                 )
                 .await
@@ -737,6 +738,7 @@ impl SessionControl for SessionControlRpc {
                     request.expected_generation,
                     Some(request.position_sec),
                     None,
+                    Some("PLAYING"),
                     &operation_id(request.operation.as_ref()),
                 )
                 .await
@@ -790,6 +792,11 @@ impl SessionControl for SessionControlRpc {
                     request.expected_generation,
                     None,
                     None,
+                    Some(if state == PlaybackState::Paused {
+                        "PAUSED"
+                    } else {
+                        "PLAYING"
+                    }),
                     &operation_id(request.operation.as_ref()),
                 )
                 .await
@@ -1419,7 +1426,7 @@ impl SessionHook for SessionHookRpc {
             }
             "stream.input_timeout" => {
                 let value: StreamState = decode_payload(&request.payload_json)?;
-                hook_response(true, Some(hook_serv::stream_input_timeout(value)))?
+                hook_response(true, Some(hook_serv::stream_input_timeout(value).await))?
             }
             "stream.on_play" | "stream.on_played" => {
                 let value: StreamPlayInfo = decode_payload(&request.payload_json)?;

@@ -368,4 +368,29 @@ describe("PlayerControls", () => {
     expect(wrapper.text()).toContain("2026-07-16 10:30:00");
     wrapper.unmount();
   });
+
+  it("按输入秒数前后跳跃并限制在所选时段内", async () => {
+    const wrapper = mountControls(
+      { items: ["timeline"], visibility: "always" },
+      { ...playingState, seekMs: 5_000, durationMs: 10_000 },
+    );
+    await wrapper.get('[aria-label="跳跃秒数"]').setValue("3");
+    await wrapper.get('[aria-label="向前跳跃"]').trigger("click");
+    await wrapper.get('[aria-label="向后跳跃"]').trigger("click");
+
+    expect(wrapper.emitted("action")).toEqual([
+      [{ type: "seek", timeMs: 8_000 }],
+      [{ type: "seek", timeMs: 2_000 }],
+    ]);
+
+    await wrapper.get('[aria-label="跳跃秒数"]').setValue("30");
+    await wrapper.get('[aria-label="向前跳跃"]').trigger("click");
+    await wrapper.get('[aria-label="向后跳跃"]').trigger("click");
+    expect(wrapper.get<HTMLInputElement>('[aria-label="跳跃秒数"]').element.value).toBe("10");
+    expect(wrapper.emitted("action")?.slice(-2)).toEqual([
+      [{ type: "seek", timeMs: 10_000 }],
+      [{ type: "seek", timeMs: 0 }],
+    ]);
+    wrapper.unmount();
+  });
 });

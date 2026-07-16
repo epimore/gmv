@@ -581,7 +581,7 @@ impl SipDialogSessionRepository {
             return Ok(());
         }
         let rows = db::execute!(
-            "UPDATE gb28181_sip_dialog_session SET playback_id=?,playback_start_sec=?,             playback_end_sec=?,playback_generation=0,mansrtsp_cseq=local_cseq,             acknowledged_position_sec=?,desired_rate_milli=1000,acknowledged_rate_milli=1000              WHERE stream_id=? AND session_type='PLAYBACK'",
+            "UPDATE gb28181_sip_dialog_session SET playback_id=?,playback_start_sec=?,             playback_end_sec=?,playback_generation=0,mansrtsp_cseq=local_cseq,             acknowledged_position_sec=?,desired_rate_milli=1000,acknowledged_rate_milli=1000,             playback_state='PLAYING' WHERE stream_id=? AND session_type='PLAYBACK'",
             playback_id,
             i64::from(start_sec),
             i64::from(end_sec),
@@ -601,10 +601,14 @@ impl SipDialogSessionRepository {
         expected_generation: u64,
         position_sec: Option<u32>,
         rate_milli: Option<i64>,
+        playback_state: Option<&str>,
         operation_id: &str,
     ) -> GlobalResult<bool> {
         validate_len(playback_id, 64, "playback_id")?;
         validate_len(operation_id, 128, "operation_id")?;
+        if playback_state.is_some_and(|state| !matches!(state, "PLAYING" | "PAUSED")) {
+            return Err(invalid_data("invalid playback state"));
+        }
         let expected_generation = i64::try_from(expected_generation)
             .map_err(|_| invalid_data("playback generation overflow"))?;
         #[cfg(test)]
@@ -612,10 +616,11 @@ impl SipDialogSessionRepository {
             return Ok(true);
         }
         let rows = db::execute!(
-            "UPDATE gb28181_sip_dialog_session SET              playback_generation=playback_generation+1,             acknowledged_position_sec=COALESCE(?,acknowledged_position_sec),             desired_rate_milli=COALESCE(?,desired_rate_milli),             acknowledged_rate_milli=COALESCE(?,acknowledged_rate_milli),             mansrtsp_cseq=local_cseq,last_control_operation_id=?,version=version+1              WHERE stream_id=? AND playback_id=? AND session_type='PLAYBACK'              AND playback_generation=?",
+            "UPDATE gb28181_sip_dialog_session SET              playback_generation=playback_generation+1,             acknowledged_position_sec=COALESCE(?,acknowledged_position_sec),             desired_rate_milli=COALESCE(?,desired_rate_milli),             acknowledged_rate_milli=COALESCE(?,acknowledged_rate_milli),             playback_state=COALESCE(?,playback_state),mansrtsp_cseq=local_cseq,             last_control_operation_id=?,version=version+1              WHERE stream_id=? AND playback_id=? AND session_type='PLAYBACK'              AND playback_generation=?",
             position_sec.map(i64::from),
             rate_milli,
             rate_milli,
+            playback_state,
             operation_id,
             stream_id,
             playback_id,
@@ -787,6 +792,21 @@ impl SipDialogSessionRepository {
             return Err(invalid_data("invalid playback range"));
         }
         Ok(Some((start_sec, end_sec)))
+    }
+
+    pub async fn find_playback_state(stream_id: &str) -> GlobalResult<Option<String>> {
+        validate_len(stream_id, 64, "stream_id")?;
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(None);
+        }
+        let row: Option<(Option<String>,)> = db::fetch_optional_as!(
+            (Option<String>,),
+            "SELECT playback_state FROM gb28181_sip_dialog_session WHERE stream_id=? AND session_type='PLAYBACK' AND state='ESTABLISHED'",
+            stream_id,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        Ok(row.and_then(|(state,)| state))
     }
 
     pub async fn find_by_call_id(call_id: &str) -> GlobalResult<Vec<SipDialogSession>> {

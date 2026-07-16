@@ -2091,6 +2091,7 @@ async function handlePlaybackRateChange({ rate }: { rate: number }) {
     });
     playbackGeneration.value = response.generation;
     singlePlayerRef.value?.confirmPlaybackRate(rate);
+    singlePlayerRef.value?.confirmPlaybackState(false);
     ElMessage.success(`回放倍速已切换为 ${rate}x`);
   } catch (error) {
     ElMessage.error(errorMessage(error, '回放倍速设置失败'));
@@ -2120,6 +2121,7 @@ async function handlePlaybackSeek({ timeMs }: { timeMs: number }) {
       playbackLastMediaTimeMs.value = undefined;
       playbackDisplayedPositionSec.value = targetSec;
       singlePlayerRef.value?.confirmPlaybackProgress(targetMs);
+      singlePlayerRef.value?.confirmPlaybackState(false);
     }
   } catch (error) {
     queuedSeekMs = undefined;

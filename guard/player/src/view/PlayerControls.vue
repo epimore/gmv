@@ -98,7 +98,7 @@
         >
           <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}x</option>
         </select>
-        <label
+        <div
           v-else-if="control === 'timeline'"
           class="timeline"
           :class="{ disabled: capabilities.playback === false }"
@@ -138,7 +138,34 @@
             </span>
           </span>
           <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
-        </label>
+          <span class="timeline-jump">
+            <button
+              type="button"
+              :disabled="capabilities.playback === false || state.seekMs <= 0"
+              aria-label="向后跳跃"
+              @click="emitJump(-1)"
+            >
+              后退
+            </button>
+            <input
+              v-model.number="jumpSeconds"
+              type="number"
+              min="1"
+              :max="Math.max(1, Math.floor(state.durationMs / 1000))"
+              :disabled="capabilities.playback === false"
+              aria-label="跳跃秒数"
+            />
+            <span>秒</span>
+            <button
+              type="button"
+              :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+              aria-label="向前跳跃"
+              @click="emitJump(1)"
+            >
+              前进
+            </button>
+          </span>
+        </div>
         <div v-else-if="control === 'presets'" class="preset-box">
           <input
             v-model="presetId"
@@ -263,7 +290,7 @@
         >
           <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}x</option>
         </select>
-        <label
+        <div
           v-else-if="control === 'timeline'"
           class="timeline"
           :class="{ disabled: capabilities.playback === false }"
@@ -303,7 +330,34 @@
             </span>
           </span>
           <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
-        </label>
+          <span class="timeline-jump">
+            <button
+              type="button"
+              :disabled="capabilities.playback === false || state.seekMs <= 0"
+              aria-label="向后跳跃"
+              @click="emitJump(-1, true)"
+            >
+              后退
+            </button>
+            <input
+              v-model.number="jumpSeconds"
+              type="number"
+              min="1"
+              :max="Math.max(1, Math.floor(state.durationMs / 1000))"
+              :disabled="capabilities.playback === false"
+              aria-label="跳跃秒数"
+            />
+            <span>秒</span>
+            <button
+              type="button"
+              :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+              aria-label="向前跳跃"
+              @click="emitJump(1, true)"
+            >
+              前进
+            </button>
+          </span>
+        </div>
         <div v-else-if="control === 'presets'" class="preset-box">
           <input
             v-model="presetId"
@@ -369,6 +423,7 @@ const pointerInside = ref(false);
 const focusWithin = ref(false);
 const interactionActive = ref(false);
 const presetId = ref("1");
+const jumpSeconds = ref(10);
 const hoverTimelineTimeMs = ref<number>();
 const hoverTimelineLeft = ref(0);
 let hideTimer: number | undefined;
@@ -570,6 +625,21 @@ function emitSeek(event: Event, fromOverflow = false) {
   afterAction(fromOverflow);
 }
 
+function emitJump(direction: -1 | 1, fromOverflow = false) {
+  const maxSeconds = Math.max(1, Math.floor(props.state.durationMs / 1_000));
+  const seconds = Math.min(
+    maxSeconds,
+    Math.max(1, Math.floor(Number(jumpSeconds.value) || 1)),
+  );
+  jumpSeconds.value = seconds;
+  const targetMs = Math.min(
+    props.state.durationMs,
+    Math.max(0, props.state.seekMs + direction * seconds * 1_000),
+  );
+  emit("action", { type: "seek", timeMs: targetMs });
+  afterAction(fromOverflow);
+}
+
 function updateTimelineHover(event: PointerEvent) {
   const start = timelineStartTimeMs.value;
   const end = timelineEndTimeMs.value;
@@ -674,12 +744,30 @@ button.active {
 }
 
 .timeline {
-  display: flex;
+  display: grid;
   flex: 1 0 460px;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  grid-template-rows: 48px 30px;
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 2px;
   min-width: 460px;
   color: var(--muted);
+}
+
+.timeline > .timeline-boundary:first-child {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.timeline > .timeline-track {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.timeline > .timeline-track + .timeline-boundary {
+  grid-column: 3;
+  grid-row: 1;
 }
 
 .timeline-boundary {
@@ -737,6 +825,31 @@ button.active {
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.timeline-jump {
+  display: inline-flex;
+  grid-column: 2;
+  grid-row: 2;
+  align-items: center;
+  justify-self: center;
+  gap: 4px;
+  color: rgba(226, 232, 240, 0.88);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.timeline-jump button {
+  height: 28px;
+  padding: 0 7px;
+}
+
+.timeline-jump input {
+  width: 54px;
+  height: 28px;
+  padding: 0 5px;
+  border-radius: 5px;
+  text-align: center;
 }
 
 .timeline.disabled {

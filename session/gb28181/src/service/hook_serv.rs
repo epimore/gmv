@@ -33,15 +33,34 @@ pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
     }
 }
 
-pub fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRes {
+pub async fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRes {
     let stream_id = stream_state.base_stream_info.stream_id;
     let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, stream_id);
     let _ = state::session::Cache::notify_stream_wait(&key_stream_in_id, None);
     if state::session::Cache::stream_is_closing(&stream_id) {
         return InTimeoutEventRes::CloseAll;
     }
+
+    match SipDialogSessionRepository::find_playback_state(&stream_id).await {
+        Ok(playback_state) if keep_alive_paused_playback(playback_state.as_deref()) => {
+            debug!(
+                "stream input timeout kept alive: action=input_timeout, outcome=keep_alive, reason=playback_paused, stream_id={stream_id}"
+            );
+            return InTimeoutEventRes::KeepAlive;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                "query playback state on input timeout failed: action=input_timeout, outcome=close_all, reason=state_query_failed, stream_id={stream_id}, err={err}"
+            );
+        }
+    }
     stream_close::begin(stream_id);
     InTimeoutEventRes::CloseAll
+}
+
+fn keep_alive_paused_playback(playback_state: Option<&str>) -> bool {
+    matches!(playback_state, Some("PAUSED"))
 }
 
 pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
@@ -271,4 +290,16 @@ fn invalid_file_name_error() -> GlobalError {
         "文件名错误",
         |msg| error!("{msg}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_alive_paused_playback;
+
+    #[test]
+    fn input_timeout_only_keeps_acknowledged_paused_playback_alive() {
+        assert!(keep_alive_paused_playback(Some("PAUSED")));
+        assert!(!keep_alive_paused_playback(Some("PLAYING")));
+        assert!(!keep_alive_paused_playback(None));
+    }
 }
