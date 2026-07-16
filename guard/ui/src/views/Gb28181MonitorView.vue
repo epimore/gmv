@@ -272,7 +272,7 @@
               <span>{{ confText(channel.biz_enable, 1, '业务') }}</span>
             </div> -->
             <footer class="channel-actions">
-              <el-select :model-value="channelOutputType(channel)" style="width: 128px" aria-label="直播播放方式"
+              <el-select :model-value="channelOutputType(channel)" class="channel-output-select" aria-label="直播播放方式"
                 @change="(value: LiveOutputType) => setChannelOutputType(channel, value)">
                 <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-select>
@@ -280,10 +280,10 @@
                 :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
               <el-button :disabled="!canPlayback(channel) || playerRequesting"
                 :loading="isPlayRequesting('playback', channel)" @click="startPlay('playback', channel)">回放</el-button>
+              <el-button :disabled="!canPlayLive(channel)" @click="focusChannelInMultiView(channel)">多画面</el-button>
               <el-button :disabled="!canSnapshot(channel)" :loading="snapshotLoading[channel.channel_id]"
                 @click="snapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
-              <el-button :disabled="!canPlayLive(channel)" @click="focusChannelInMultiView(channel)">多画面</el-button>
               <el-tooltip :content="channelBroadcastReason(channel)" placement="top" :disabled="canBroadcastChannel(channel)">
                 <el-button type="warning" :disabled="!canOperate || !canBroadcastChannel(channel) || !!broadcastSession"
                   :loading="broadcastStarting && broadcastScopeId === channel.channel_id"
@@ -2114,7 +2114,7 @@ onBeforeUnmount(() => {
 
 .channel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   min-height: 160px;
 }
@@ -2194,7 +2194,7 @@ onBeforeUnmount(() => {
 
 .channel-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px;
   padding: 12px;
 }
@@ -2202,6 +2202,12 @@ onBeforeUnmount(() => {
 .channel-actions .el-button {
   width: 100%;
   margin-left: 0;
+}
+
+.channel-output-select {
+  grid-column: span 2;
+  width: 100%;
+  min-width: 0;
 }
 
 :deep(.monitor-player-dialog .el-dialog__body) {
@@ -2972,6 +2978,18 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+@media (max-width: 1500px) {
+  .channel-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .channel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .monitor-head {
     grid-template-columns: 1fr;
@@ -2987,7 +3005,7 @@ onBeforeUnmount(() => {
   }
 
   .channel-actions {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .detail-row.two {
