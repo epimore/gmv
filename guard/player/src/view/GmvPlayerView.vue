@@ -52,11 +52,31 @@
     <div v-if="recording" class="recording-indicator" aria-live="polite">● 录像中</div>
 
     <aside v-if="infoOpen" class="media-info-panel" aria-label="媒体基本信息">
-      <div><span>名称</span><b>{{ title || '-' }}</b></div>
-      <div><span>设备 ID</span><b>{{ deviceId || '-' }}</b></div>
-      <div><span>通道 ID</span><b>{{ channelId || '-' }}</b></div>
-      <div><span>状态</span><b>{{ statusLabel }}</b></div>
-      <div v-if="viewers !== undefined"><span>观看人数</span><b>{{ viewers }}</b></div>
+      <div class="media-info-row"><span>名称</span><b>{{ title || '-' }}</b></div>
+      <div class="media-info-row"><span>设备/通道</span><b>{{ deviceId || '-' }} / {{ channelId || '-' }}</b></div>
+      <div class="media-info-row"><span>播放模式</span><b>{{ mediaModeLabel }}</b></div>
+      <div class="media-info-row"><span>媒体输出</span><b>{{ outputFormatLabel }}</b></div>
+      <div class="media-info-row"><span>视频</span><b>{{ videoInfoText }}</b></div>
+      <div class="media-info-row"><span>音频</span><b>{{ audioInfoText }}</b></div>
+      <div class="media-info-row"><span>状态</span><b>{{ statusViewersText }}</b></div>
+      <template v-if="mediaMode === 'playback'">
+        <div class="media-info-row"><span>回放范围</span><b>{{ playbackRangeText }}</b></div>
+        <div class="media-info-row"><span>当前位置</span><b>{{ playbackPositionText }}</b></div>
+        <div class="media-info-row"><span>播放倍速</span><b>{{ playbackRate }}x</b></div>
+      </template>
+      <details class="media-info-diagnostics">
+        <summary>扩展</summary>
+        <div class="media-info-diagnostic-list">
+          <div class="media-info-row"><span>Stream ID</span><b>{{ streamId || '-' }}</b></div>
+          <div class="media-info-row"><span>媒体节点</span><b>{{ mediaNodeId || '-' }}</b></div>
+          <div class="media-info-row"><span>Session 节点</span><b>{{ sessionNodeId || '-' }}</b></div>
+          <div class="media-info-row"><span>已解码帧</span><b>{{ mediaStats.totalFrames || '-' }}</b></div>
+          <div class="media-info-row"><span>丢帧</span><b>{{ droppedFramesText }}</b></div>
+          <div class="media-info-row"><span>缓冲时长</span><b>{{ mediaStats.bufferSeconds.toFixed(1) }} 秒</b></div>
+          <div class="media-info-row"><span>渲染帧率</span><b>{{ mediaStats.fps ? mediaStats.fps.toFixed(1) + ' FPS' : '-' }}</b></div>
+          <div class="media-info-row"><span>输出状态</span><b>{{ outputStatusLabel }}</b></div>
+        </div>
+      </details>
     </aside>
 
     <aside
@@ -109,11 +129,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { GmvPlayerCore } from '../core/GmvPlayerCore';
 import type {
   GmvAiBox,
   GmvDeviceStatus,
+  GmvMediaMode,
   GmvOsdItem,
   GmvPlayerControlAction,
   GmvPlayerControlsConfig,
@@ -140,6 +161,11 @@ const props = withDefaults(
     title?: string;
     status?: GmvDeviceStatus;
     viewers?: number;
+    mediaMode?: GmvMediaMode;
+    streamId?: string;
+    mediaNodeId?: string;
+    sessionNodeId?: string;
+    audioCodec?: string;
     poster?: string;
     osd?: GmvOsdItem[];
     aiBoxes?: GmvAiBox[];
@@ -158,6 +184,7 @@ const props = withDefaults(
   }>(),
   {
     status: 'idle',
+    mediaMode: 'live',
     osd: () => [],
     aiBoxes: () => [],
     capabilities: () => ({}),
@@ -197,15 +224,26 @@ const activePlaybackReady = ref(false);
 const players: Array<GmvPlayerCore | undefined> = [undefined, undefined];
 const playerStops: Array<Array<() => void>> = [[], []];
 let lastFrameProgressAt = 0;
+let metricWindowFrames = 0;
 const frameProgressHandles: Array<number | undefined> = [undefined, undefined];
 
 function scheduleFrameProgress(slot: VideoSlot) {
   const video = videoForSlot(slot);
   if (!video || typeof video.requestVideoFrameCallback !== 'function') return;
   frameProgressHandles[slot] = video.requestVideoFrameCallback((now, metadata) => {
-    if (slot === activeVideoSlot.value && now - lastFrameProgressAt >= 1000) {
-      lastFrameProgressAt = now;
-      emit('playbackProgress', { mediaTimeMs: metadata.mediaTime * 1000 });
+    if (slot === activeVideoSlot.value) {
+      metricWindowFrames += 1;
+      mediaStats.currentMediaTimeMs = metadata.mediaTime * 1000;
+      if (lastFrameProgressAt === 0) {
+        lastFrameProgressAt = now;
+      } else if (now - lastFrameProgressAt >= 1000) {
+        const elapsedMs = Math.max(1, now - lastFrameProgressAt);
+        mediaStats.fps = metricWindowFrames * 1000 / elapsedMs;
+        metricWindowFrames = 0;
+        lastFrameProgressAt = now;
+        sampleMediaStats(video);
+        emit('playbackProgress', { mediaTimeMs: metadata.mediaTime * 1000 });
+      }
     }
     scheduleFrameProgress(slot);
   });
@@ -239,6 +277,15 @@ const seekMs = ref(0);
 const selectedSourceUrl = ref('');
 const activeSource = ref<GmvSource>();
 const controlsAreVisible = ref(true);
+const mediaStats = reactive({
+  width: 0,
+  height: 0,
+  totalFrames: 0,
+  droppedFrames: 0,
+  fps: 0,
+  bufferSeconds: 0,
+  currentMediaTimeMs: 0,
+});
 
 const basePayload = computed(() => ({ deviceId: props.deviceId, channelId: props.channelId }));
 const fullscreenSupported = computed(() => typeof document !== 'undefined' && !!document.fullscreenEnabled);
@@ -271,9 +318,47 @@ const statusLabel = computed(() => {
   if (viewState.value === 'playing') return '播放中';
   if (viewState.value === 'reconnecting') return '重连中';
   if (viewState.value === 'error') return '异常';
+  if (activePlaybackReady.value) return '已暂停';
   if (props.status === 'online') return '在线';
   if (props.status === 'offline') return '离线';
   return '待播放';
+});
+const currentSource = computed(() => activeSource.value ?? props.sources[0]);
+const mediaModeLabel = computed(() => props.mediaMode === 'playback' ? '历史回放' : '实时直播');
+const outputFormatLabel = computed(() => {
+  const configured = props.outputOptions.find((option) => option.value === props.outputType)?.label;
+  if (configured) return configured;
+  return formatProtocol(currentSource.value?.protocol);
+});
+const resolutionText = computed(() => mediaStats.width && mediaStats.height ? `${mediaStats.width}×${mediaStats.height}` : '-');
+const videoInfoText = computed(() => [formatVideoCodec(currentSource.value?.codec), resolutionText.value].filter((item) => item !== '-').join(' · ') || '-');
+const audioInfoText = computed(() => {
+  if (currentSource.value?.hasAudio === false) return '无音频';
+  if (props.audioCodec) return props.audioCodec.toUpperCase();
+  return currentSource.value?.hasAudio ? '有音频' : '-';
+});
+const statusViewersText = computed(() => props.viewers === undefined ? statusLabel.value : `${statusLabel.value} · ${props.viewers} 人观看`);
+const playbackRangeText = computed(() => {
+  if (props.playbackStartTimeMs === undefined || props.playbackEndTimeMs === undefined) return '-';
+  return `${formatDateTime(props.playbackStartTimeMs)} 至 ${formatDateTime(props.playbackEndTimeMs)}`;
+});
+const playbackPositionText = computed(() => {
+  const positionMs = activePlaybackReady.value ? mediaStats.currentMediaTimeMs : seekMs.value;
+  return props.playbackStartTimeMs === undefined
+    ? formatDuration(positionMs)
+    : formatDateTime(props.playbackStartTimeMs + positionMs);
+});
+const droppedFramesText = computed(() => {
+  if (!mediaStats.totalFrames) return '-';
+  const ratio = mediaStats.droppedFrames / mediaStats.totalFrames * 100;
+  return `${mediaStats.droppedFrames}（${ratio.toFixed(2)}%）`;
+});
+const outputStatusLabel = computed(() => {
+  if (props.outputSwitching) return '切换中';
+  if (viewState.value === 'error') return '异常';
+  if (viewState.value === 'playing') return '输出中';
+  if (activePlaybackReady.value) return '已暂停';
+  return '待输出';
 });
 const startupProgressText = computed(() => {
   const progress = startupProgress.value;
@@ -285,6 +370,64 @@ const startupProgressText = computed(() => {
   const remaining = Math.max(0, Math.ceil((progress.hardTimeoutMs - progress.elapsedMs) / 1_000));
   return `播放器仍在缓冲，继续等待中（最多 ${remaining} 秒）`;
 });
+
+function sampleMediaStats(video: HTMLVideoElement) {
+  mediaStats.width = video.videoWidth;
+  mediaStats.height = video.videoHeight;
+  mediaStats.currentMediaTimeMs = video.currentTime * 1000;
+  const quality = typeof video.getVideoPlaybackQuality === 'function' ? video.getVideoPlaybackQuality() : undefined;
+  mediaStats.totalFrames = quality?.totalVideoFrames ?? 0;
+  mediaStats.droppedFrames = quality?.droppedVideoFrames ?? 0;
+  mediaStats.bufferSeconds = 0;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    if (start <= video.currentTime && end >= video.currentTime) {
+      mediaStats.bufferSeconds = Math.max(0, end - video.currentTime);
+      break;
+    }
+  }
+}
+
+function resetMediaStats() {
+  mediaStats.width = 0;
+  mediaStats.height = 0;
+  mediaStats.totalFrames = 0;
+  mediaStats.droppedFrames = 0;
+  mediaStats.fps = 0;
+  mediaStats.bufferSeconds = 0;
+  mediaStats.currentMediaTimeMs = 0;
+  metricWindowFrames = 0;
+  lastFrameProgressAt = 0;
+}
+
+function formatProtocol(protocol?: GmvSource['protocol']) {
+  if (!protocol) return '-';
+  return ({ flv: 'HTTP-FLV', hls: 'HLS-fMP4', fmp4: 'HTTP-fMP4', mp4: 'MP4' } as const)[protocol];
+}
+
+function formatVideoCodec(codec?: GmvSource['codec']) {
+  if (codec === 'h264') return 'H.264';
+  if (codec === 'h265') return 'H.265';
+  return '-';
+}
+
+function twoDigits(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function formatDateTime(timeMs: number) {
+  const time = new Date(timeMs);
+  return `${time.getFullYear()}-${twoDigits(time.getMonth() + 1)}-${twoDigits(time.getDate())} ${twoDigits(time.getHours())}:${twoDigits(time.getMinutes())}:${twoDigits(time.getSeconds())}`;
+}
+
+function formatDuration(timeMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(timeMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  const seconds = totalSeconds % 60;
+  return `${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}`;
+}
 
 onMounted(() => {
   scheduleFrameProgress(0);
@@ -367,9 +510,11 @@ async function mountPlayer(sources = props.sources) {
     lastError.value = '';
     startupProgress.value = undefined;
     if (changed) {
+      resetMediaStats();
       playbackRate.value = 1;
       video.playbackRate = 1;
     }
+    sampleMediaStats(video);
     void nextTick().then(() => {
       if (version !== playerLoadVersion || activeVideoSlot.value !== slot || players[slot] !== core) return;
       if (previousSlot !== slot) destroyPlayerSlot(previousSlot);
@@ -423,6 +568,7 @@ function destroyPlayer() {
   activePlaybackReady.value = false;
   isLoading.value = false;
   startupProgress.value = undefined;
+  resetMediaStats();
 }
 
 function destroyPlayerSlot(slot: VideoSlot) {

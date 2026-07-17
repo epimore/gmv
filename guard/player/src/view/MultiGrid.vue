@@ -66,7 +66,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import type { GmvAiBox, GmvDeviceStatus, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
+import type { GmvAiBox, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
 import GmvPlayerView from './GmvPlayerView.vue';
 
 export interface GmvGridCell {
@@ -76,6 +76,11 @@ export interface GmvGridCell {
   channelId?: string;
   status?: GmvDeviceStatus;
   viewers?: number;
+  mediaMode?: GmvMediaMode;
+  streamId?: string;
+  mediaNodeId?: string;
+  sessionNodeId?: string;
+  audioCodec?: string;
   poster?: string;
   osd?: GmvOsdItem[];
   aiBoxes?: GmvAiBox[];

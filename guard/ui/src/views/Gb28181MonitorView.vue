@@ -318,6 +318,9 @@
         <div class="monitor-player-stage">
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
+            :media-mode="lastAction === '历史回放' ? 'playback' : 'live'" :stream-id="lastStream?.stream_id"
+            :media-node-id="lastStream?.node_id" :session-node-id="lastStream?.session_node_id"
+            :audio-codec="lastStream?.audio_codec"
             :poster="playerPoster" :capabilities="playerCapabilities"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
@@ -718,6 +721,11 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
     channelId: cell.channel_id,
     status: cell.status,
     viewers: 1,
+    mediaMode: 'live' as const,
+    streamId: cell.stream?.stream_id,
+    mediaNodeId: cell.stream?.node_id,
+    sessionNodeId: cell.stream?.session_node_id,
+    audioCodec: cell.stream?.audio_codec,
     poster: cell.poster,
     capabilities,
     controls: multiCellControls(capabilities),
@@ -2422,17 +2430,19 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 7px;
   width: min(360px, calc(100% - 20px));
+  max-height: calc(100% - 64px);
   padding: 10px 12px;
+  overflow: auto;
   border: 1px solid rgba(100, 203, 255, .22);
   border-radius: 8px;
   background: rgba(3, 10, 24, .92);
   box-shadow: 0 14px 36px rgba(0, 0, 0, .42);
 }
 
-.monitor-player :deep(.media-info-panel div),
-.multi-player :deep(.media-info-panel div) {
+.monitor-player :deep(.media-info-row),
+.multi-player :deep(.media-info-row) {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -2448,6 +2458,26 @@ onBeforeUnmount(() => {
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
+}
+
+.monitor-player :deep(.media-info-diagnostics),
+.multi-player :deep(.media-info-diagnostics) {
+  padding-top: 7px;
+  border-top: 1px solid rgba(100, 203, 255, .22);
+}
+
+.monitor-player :deep(.media-info-diagnostics summary),
+.multi-player :deep(.media-info-diagnostics summary) {
+  cursor: pointer;
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.monitor-player :deep(.media-info-diagnostic-list),
+.multi-player :deep(.media-info-diagnostic-list) {
+  display: grid;
+  gap: 7px;
+  margin-top: 7px;
 }
 
 .monitor-player :deep(.reconnect-banner) {
@@ -2749,6 +2779,7 @@ onBeforeUnmount(() => {
   bottom: 48px;
   gap: 5px;
   width: min(280px, calc(100% - 12px));
+  max-height: calc(100% - 58px);
   padding: 7px 8px;
 }
 

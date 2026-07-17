@@ -94,7 +94,9 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   display: grid;
   gap: 7px;
   width: min(360px, calc(100% - 20px));
+  max-height: calc(100% - 64px);
   padding: 10px 12px;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(3, 10, 24, .92);
@@ -103,9 +105,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   box-shadow: 0 14px 36px rgba(0, 0, 0, .42);
   transition: opacity 180ms ease, visibility 180ms ease;
 }
-.media-info-panel div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; }
+.media-info-row { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; }
 .media-info-panel span { color: var(--muted); font-size: 12px; }
 .media-info-panel b { overflow-wrap: anywhere; color: var(--text); font-size: 12px; font-weight: 600; }
+.media-info-diagnostics { border-top: 1px solid var(--line); padding-top: 7px; }
+.media-info-diagnostics summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.media-info-diagnostic-list { display: grid; gap: 7px; margin-top: 7px; }
 .reconnect-banner {
   position: absolute;
   top: 48px;

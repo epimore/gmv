@@ -9,6 +9,7 @@ export type {
   GmvDeviceStatus,
   GmvEngine,
   GmvEngineFactory,
+  GmvMediaMode,
   GmvOsdItem,
   GmvPlayerCoreOptions,
   GmvPlayerControl,

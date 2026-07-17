@@ -104,6 +104,9 @@ describe("PlayerControls", () => {
         title: "东门枪机",
         status: "online",
         viewers: 2,
+        mediaMode: "playback",
+        playbackStartTimeMs: new Date(2026, 6, 16, 10, 0, 0).getTime(),
+        playbackEndTimeMs: new Date(2026, 6, 16, 11, 0, 0).getTime(),
         controls: { items: ["info"], visibility: "always" },
       },
       attachTo: document.body,
@@ -120,6 +123,9 @@ describe("PlayerControls", () => {
     expect(wrapper.get(".media-info-panel").text()).toContain("channel-1");
     expect(wrapper.get(".media-info-panel").text()).toContain("在线");
     expect(wrapper.get(".media-info-panel").text()).toContain("2");
+    expect(wrapper.get(".media-info-panel").text()).toContain("历史回放");
+    expect(wrapper.get(".media-info-panel").text()).toContain("回放范围");
+    expect(wrapper.get(".media-info-panel").text()).toContain("播放倍速1x");
 
     wrapper.findComponent(PlayerControls).vm.$emit("visibilityChange", false);
     await nextTick();

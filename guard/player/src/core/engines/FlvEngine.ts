@@ -14,7 +14,6 @@ export class FlvEngine extends BaseEngine {
       throw new Error(`${GmvErrorCode.UnsupportedProtocol}: 当前浏览器不支持 MSE FLV 播放`);
     }
 
-    const workerSupported = typeof Worker !== 'undefined';
     const mediaDataSource: Record<string, unknown> = {
       type: 'flv',
       isLive: true,
@@ -34,7 +33,8 @@ export class FlvEngine extends BaseEngine {
         liveSyncTargetLatency: 1.2,
         liveSyncMaxLatency: 2,
         liveSyncPlaybackRate: 1.05,
-        enableWorker: workerSupported,
+        // mpegts.js uses a webpack-specific Blob worker that cannot reliably boot from the Vite production bundle.
+        enableWorker: false,
         enableWorkerForMSE: false,
         autoCleanupSourceBuffer: true,
       },

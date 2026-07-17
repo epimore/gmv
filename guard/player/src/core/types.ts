@@ -1,5 +1,6 @@
 export type GmvProtocol = 'flv' | 'fmp4' | 'hls' | 'mp4';
 export type GmvCodec = 'h264' | 'h265';
+export type GmvMediaMode = 'live' | 'playback';
 export type GmvPlaybackRateMode = 'local-file' | 'remote-stream' | 'disabled';
 export type GmvDeviceStatus = 'online' | 'offline' | 'playing' | 'reconnecting' | 'error' | 'idle';
 

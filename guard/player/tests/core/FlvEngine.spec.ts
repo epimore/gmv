@@ -53,6 +53,17 @@ afterEach(() => {
 });
 
 describe("FlvEngine audio fallback", () => {
+  it("使用与 Vite 生产构建兼容的主线程转封装", async () => {
+    const engine = new FlvEngine();
+    await engine.attach(testVideo(), source(false));
+
+    expect(mpegtsMock.createPlayer.mock.calls[0][1]).toMatchObject({
+      enableWorker: false,
+      enableWorkerForMSE: false,
+    });
+    engine.destroy();
+  });
+
   it.each([undefined, true])("音频状态为 %s 时不强制覆盖媒体流探测结果", async (hasAudio) => {
     const engine = new FlvEngine();
     await engine.attach(testVideo(), source(hasAudio));
