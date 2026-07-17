@@ -2832,10 +2832,10 @@ onBeforeUnmount(() => {
 
 .channel-tags span {
   padding: 4px 8px;
-  border: 1px solid rgba(100, 203, 255, .14);
+  border: 1px solid var(--component-border);
   border-radius: 999px;
   color: var(--cyan);
-  background: rgba(255, 255, 255, .03);
+  background: var(--component-bg-soft);
   font-size: 12px;
 }
 
@@ -3551,9 +3551,9 @@ onBeforeUnmount(() => {
   align-items: center;
   min-width: 0;
   padding: 12px 14px;
-  border: 1px solid rgba(100, 203, 255, .16);
+  border: 1px solid var(--component-border);
   border-radius: 8px;
-  background: rgba(3, 10, 24, .36);
+  background: var(--component-bg-soft);
 }
 
 .detail-item.wide {
@@ -3577,32 +3577,6 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-:deep(.device-detail-drawer),
-:deep(.camera-config-drawer),
-:deep(.resource-capability-drawer) {
-  border-left: 1px solid var(--line);
-  background: linear-gradient(145deg, rgba(13, 29, 58, .98), rgba(7, 16, 34, .96)) !important;
-  color: var(--text);
-  box-shadow: var(--shadow);
-}
-
-:deep(.device-detail-drawer .el-drawer__header),
-:deep(.camera-config-drawer .el-drawer__header),
-:deep(.resource-capability-drawer .el-drawer__header) {
-  margin-bottom: 0;
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid rgba(100, 203, 255, .12);
-  color: var(--text);
-}
-
-:deep(.device-detail-drawer .el-drawer__title),
-:deep(.camera-config-drawer .el-drawer__title),
-:deep(.resource-capability-drawer .el-drawer__title) {
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 800;
-}
-
 :deep(.device-detail-drawer .el-drawer__body),
 :deep(.camera-config-drawer .el-drawer__body),
 :deep(.resource-capability-drawer .el-drawer__body) {
@@ -3613,19 +3587,7 @@ onBeforeUnmount(() => {
 :deep(.camera-config-drawer .el-drawer__footer),
 :deep(.resource-capability-drawer .el-drawer__footer) {
   padding: 12px 20px 18px;
-  border-top: 1px solid rgba(100, 203, 255, .12);
-}
-
-:deep(.device-detail-drawer .el-drawer__close-btn),
-:deep(.camera-config-drawer .el-drawer__close-btn),
-:deep(.resource-capability-drawer .el-drawer__close-btn) {
-  color: var(--muted);
-}
-
-:deep(.device-detail-drawer .el-drawer__close-btn:hover),
-:deep(.camera-config-drawer .el-drawer__close-btn:hover),
-:deep(.resource-capability-drawer .el-drawer__close-btn:hover) {
-  color: var(--cyan);
+  border-top: 1px solid var(--component-divider);
 }
 
 .resource-capability-content {
@@ -3633,41 +3595,11 @@ onBeforeUnmount(() => {
   gap: 14px;
 }
 
-:deep(.resource-capability-drawer .el-alert--info.is-light) {
-  border: 1px solid rgba(57, 167, 255, .28);
-  background: rgba(17, 73, 133, .32);
-}
-
-:deep(.resource-capability-drawer .el-alert__title),
-:deep(.resource-capability-drawer .el-alert__description) {
-  color: var(--muted);
-}
-
 :deep(.resource-capability-drawer .el-table) {
   overflow: hidden;
-  border: 1px solid rgba(100, 203, 255, .14);
+  border: 1px solid var(--component-border);
   border-radius: 10px;
-  background: rgba(3, 10, 24, .32) !important;
-}
-
-:deep(.resource-confirm-dialog .el-textarea__inner) {
-  border: 1px solid rgba(68, 151, 255, .42);
-  background: rgba(23, 59, 119, .42);
-  color: var(--text);
-  box-shadow: none;
-}
-
-:deep(.resource-confirm-dialog .el-textarea__inner:focus) {
-  border-color: var(--line-strong);
-  box-shadow: 0 0 0 1px rgba(52, 216, 255, .18);
-}
-
-:deep(.resource-confirm-dialog .el-radio__label) {
-  color: var(--muted);
-}
-
-:deep(.resource-confirm-dialog .el-radio.is-checked .el-radio__label) {
-  color: var(--cyan);
+  background: var(--component-bg-soft) !important;
 }
 
 :deep(.camera-config-drawer .el-form-item) {
@@ -3675,24 +3607,7 @@ onBeforeUnmount(() => {
 }
 
 :deep(.camera-config-drawer .el-form-item__label) {
-  color: var(--muted) !important;
   font-weight: 700;
-}
-
-:deep(.camera-config-drawer .el-input__wrapper),
-:deep(.camera-config-drawer .el-select__wrapper) {
-  background: rgba(4, 12, 28, .62) !important;
-  border-color: rgba(105, 205, 255, .22);
-}
-
-:deep(.camera-config-drawer .el-input.is-disabled .el-input__wrapper) {
-  background: rgba(9, 18, 38, .72) !important;
-  border-color: rgba(100, 203, 255, .12);
-}
-
-:deep(.camera-config-drawer .el-input.is-disabled .el-input__inner) {
-  color: var(--muted) !important;
-  -webkit-text-fill-color: var(--muted) !important;
 }
 
 .config-form :deep(.el-select),

@@ -280,9 +280,9 @@ onMounted(loadDevices);
   display: flex;
   align-items: center;
   padding: 0 10px;
-  border: 1px solid rgba(100, 203, 255, .18);
+  border: 1px solid var(--component-border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, .04);
+  background: var(--component-bg-soft);
   color: var(--text);
   word-break: break-all;
 }

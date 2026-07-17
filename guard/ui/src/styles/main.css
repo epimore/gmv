@@ -12,7 +12,6 @@
   --faint: #6f8fb7;
   --cyan: #05bdf2;
   --blue: #387dff;
-  --violet: #862bff;
   --green: #35f0a1;
   --yellow: #ffd166;
   --red: #ff6b8a;
@@ -30,6 +29,8 @@
   --component-bg-soft: rgba(8, 86, 122, 0.16);
   --component-border: rgba(34, 211, 238, 0.28);
   --component-border-strong: rgba(103, 232, 249, 0.56);
+  --component-divider: rgba(34, 211, 238, 0.14);
+  --component-overlay-bg: linear-gradient(150deg, rgba(12, 39, 91, 0.96), rgba(3, 17, 47, 0.96));
   --component-disabled-bg: rgba(55, 68, 82, 0.3);
   --component-disabled-border: rgba(113, 135, 154, 0.24);
   --component-disabled-text: #71879a;
@@ -274,13 +275,13 @@ button:not(.channel-cover):focus-visible {
 }
 .el-input__wrapper,
 .el-select__wrapper {
-  background: rgba(8, 86, 122, 0.18) !important;
+  background: var(--component-bg-soft) !important;
   border: 1px solid var(--component-border);
   box-shadow: none !important;
 }
 .el-textarea__inner {
   border: 1px solid var(--component-border);
-  background: rgba(8, 86, 122, 0.18);
+  background: var(--component-bg-soft);
   color: var(--text);
   box-shadow: none;
 }
@@ -319,25 +320,25 @@ button:not(.channel-cover):focus-visible {
   background-color: rgba(1, 6, 16, 0.72) !important;
   backdrop-filter: blur(8px);
 }
-.el-dialog {
-  --el-dialog-bg-color: var(--surface-strong);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: linear-gradient(150deg, rgba(12, 39, 91, 0.96), rgba(3, 17, 47, 0.96)) !important;
+.el-dialog,
+.el-drawer,
+.el-message-box {
+  border: 1px solid var(--component-border);
+  background: var(--component-overlay-bg) !important;
   color: var(--text);
   box-shadow: var(--shadow);
 }
+.el-dialog {
+  --el-dialog-bg-color: var(--component-bg-strong);
+  border-radius: 16px;
+}
 .el-drawer {
   --el-drawer-bg-color: var(--component-bg-strong);
-  border-left: 1px solid var(--component-border);
-  background: linear-gradient(145deg, rgba(13, 29, 58, 0.98), rgba(7, 21, 53, 0.98)) !important;
-  color: var(--text);
-  box-shadow: var(--shadow);
 }
 .el-drawer__header {
   margin-bottom: 0;
   padding: 18px 20px 14px;
-  border-bottom: 1px solid var(--component-border);
+  border-bottom: 1px solid var(--component-divider);
   color: var(--text);
 }
 .el-drawer__title {
@@ -349,7 +350,7 @@ button:not(.channel-cover):focus-visible {
   color: var(--text);
 }
 .el-drawer__footer {
-  border-top: 1px solid var(--component-border);
+  border-top: 1px solid var(--component-divider);
 }
 .el-drawer__close-btn,
 .el-dialog__headerbtn,
@@ -366,21 +367,15 @@ button:not(.channel-cover):focus-visible {
   background: transparent !important;
   color: var(--cyan) !important;
 }
-.el-message-box {
-  border: 1px solid var(--component-border);
-  background: linear-gradient(150deg, rgba(12, 39, 91, 0.98), rgba(3, 17, 47, 0.98));
-  color: var(--text);
-  box-shadow: var(--shadow);
-}
 .el-message-box__title,
 .el-message-box__content {
   color: var(--text);
 }
 .el-message-box__header {
-  border-bottom: 1px solid rgba(34, 211, 238, 0.14);
+  border-bottom: 1px solid var(--component-divider);
 }
 .el-message-box__btns {
-  border-top: 1px solid rgba(34, 211, 238, 0.14);
+  border-top: 1px solid var(--component-divider);
 }
 .el-message {
   border: 1px solid var(--component-border) !important;
@@ -410,7 +405,7 @@ button:not(.channel-cover):focus-visible {
 .el-dialog__header {
   margin-right: 0;
   padding: 18px 20px 10px;
-  border-bottom: 1px solid rgba(100, 203, 255, 0.12);
+  border-bottom: 1px solid var(--component-divider);
 }
 .el-dialog__title {
   color: var(--text);
@@ -430,7 +425,7 @@ button:not(.channel-cover):focus-visible {
 }
 .el-dialog__footer {
   padding: 12px 20px 18px;
-  border-top: 1px solid rgba(100, 203, 255, 0.12);
+  border-top: 1px solid var(--component-divider);
 }
 .el-form-item__label {
   color: var(--muted) !important;
@@ -458,9 +453,9 @@ button:not(.channel-cover):focus-visible {
 }
 .el-input-number__decrease,
 .el-input-number__increase {
-  background: rgba(7, 16, 34, 0.95) !important;
-  border-color: rgba(105, 205, 255, 0.22) !important;
-  color: var(--text) !important;
+  background: var(--component-bg-soft) !important;
+  border-color: var(--component-border) !important;
+  color: var(--button-text) !important;
 }
 .el-input-number.is-disabled .el-input-number__decrease,
 .el-input-number.is-disabled .el-input-number__increase {
@@ -476,22 +471,22 @@ button:not(.channel-cover):focus-visible {
 }
 .el-popper.is-light,
 .el-select__popper.el-popper {
-  border: 1px solid var(--line) !important;
-  background: var(--surface-strong) !important;
+  border: 1px solid var(--component-border) !important;
+  background: var(--component-bg-strong) !important;
   color: var(--text);
 }
 .el-popper.is-light .el-popper__arrow::before {
-  border-color: var(--line) !important;
-  background: var(--surface-strong) !important;
+  border-color: var(--component-border) !important;
+  background: var(--component-bg-strong) !important;
 }
 .el-popper.is-dark {
   border: 1px solid var(--component-border) !important;
-  background: rgba(3, 17, 47, 0.98) !important;
+  background: var(--component-bg-strong) !important;
   color: var(--text);
 }
 .el-popper.is-dark .el-popper__arrow::before {
   border-color: var(--component-border) !important;
-  background: rgba(3, 17, 47, 0.98) !important;
+  background: var(--component-bg-strong) !important;
 }
 .el-select-dropdown__item {
   color: var(--text);
@@ -619,7 +614,7 @@ button:not(.channel-cover):focus-visible {
   position: absolute;
   inset: 9%;
   border-radius: 50%;
-  border: 1px dashed rgba(168, 117, 255, 0.22);
+  border: 1px dashed rgba(34, 211, 238, 0.18);
 }
 .console-texture::after {
   inset: 23%;
@@ -791,13 +786,13 @@ button:not(.channel-cover):focus-visible {
   font-size: 11px;
 }
 .user-dropdown-popper.el-popper {
-  border-color: var(--line);
-  background: rgba(3, 17, 47, 0.96);
+  border-color: var(--component-border);
+  background: var(--component-bg-strong);
   box-shadow: var(--shadow);
 }
 .user-dropdown-popper .el-popper__arrow::before {
-  border-color: var(--line);
-  background: rgba(3, 17, 47, 0.96);
+  border-color: var(--component-border);
+  background: var(--component-bg-strong);
 }
 .user-dropdown-popper .el-dropdown-menu {
   min-width: 138px;
@@ -816,7 +811,7 @@ button:not(.channel-cover):focus-visible {
   color: #ffffff;
 }
 .user-dropdown-popper .el-dropdown-menu__item--divided {
-  border-top-color: rgba(100, 203, 255, 0.14);
+  border-top-color: var(--component-divider);
 }
 .keepalive-summary {
   display: grid;
@@ -1217,8 +1212,8 @@ button:not(.channel-cover):focus-visible {
 }
 .login-card .el-input__wrapper {
   min-height: 58px;
-  border-color: rgba(68, 151, 255, 0.58);
-  background: rgba(23, 59, 119, 0.54) !important;
+  border-color: var(--component-border);
+  background: var(--component-bg-soft) !important;
   border-radius: 6px;
 }
 .login-card .el-input__inner {
