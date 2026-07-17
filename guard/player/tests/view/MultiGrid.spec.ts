@@ -77,4 +77,33 @@ describe("MultiGrid output selector", () => {
     ]);
     wrapper.unmount();
   });
+
+  it("forwards playback controls and progress with the cell index", async () => {
+    const wrapper = mount(MultiGrid, {
+      props: {
+        gridSize: 1,
+        cells: [{
+          title: "playback-a",
+          mediaMode: "playback",
+          sources: [{ protocol: "fmp4", url: "playback-a.fmp4", rateMode: "remote-stream" }],
+          playbackDurationMs: 60_000,
+          playbackStartTimeMs: 1_000,
+          playbackEndTimeMs: 61_000,
+          capabilities: { playback: true },
+          controls: { items: ["play", "timeline"], overflowItems: ["playbackRate"] },
+        }],
+      },
+    });
+    const player = wrapper.findComponent({ name: "GmvPlayerView" });
+
+    player.vm.$emit("playbackRateChange", { rate: 2 });
+    player.vm.$emit("playbackStateChange", { paused: true });
+    player.vm.$emit("playbackProgress", { mediaTimeMs: 12_000 });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("playbackRateChange")).toEqual([[{ index: 0, payload: { rate: 2 } }]]);
+    expect(wrapper.emitted("playbackStateChange")).toEqual([[{ index: 0, payload: { paused: true } }]]);
+    expect(wrapper.emitted("playbackProgress")).toEqual([[{ index: 0, payload: { mediaTimeMs: 12_000 } }]]);
+    wrapper.unmount();
+  });
 });

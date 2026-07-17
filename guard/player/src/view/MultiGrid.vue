@@ -44,6 +44,7 @@
         </button>
         <GmvPlayerView
           v-if="cells[index]?.sources.length"
+          :ref="(instance) => setPlayerRef(index, instance)"
           v-bind="cells[index]"
           @snapshot="(payload) => emit('snapshot', { index, payload })"
           @snapshot-error="(payload) => emit('snapshotError', { index, payload })"
@@ -55,6 +56,9 @@
           @talk-start="() => emit('talkStart', { index })"
           @talk-stop="() => emit('talkStop', { index })"
           @playback-seek="(payload) => emit('playbackSeek', { index, payload })"
+          @playback-rate-change="(payload) => emit('playbackRateChange', { index, payload })"
+          @playback-state-change="(payload) => emit('playbackStateChange', { index, payload })"
+          @playback-progress="(payload) => emit('playbackProgress', { index, payload })"
           @stream-switch="(payload) => emit('streamSwitch', { index, payload })"
           @output-type-change="(outputType) => emit('outputTypeChange', { index, outputType })"
           @playing="(payload) => emit('playing', { index, payload })"
@@ -72,7 +76,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, type ComponentPublicInstance } from 'vue';
 import type { GmvAiBox, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
 import GmvPlayerView from './GmvPlayerView.vue';
 
@@ -98,6 +102,9 @@ export interface GmvGridCell {
   outputSwitching?: boolean;
   startupText?: string;
   startupCanCancel?: boolean;
+  playbackDurationMs?: number;
+  playbackStartTimeMs?: number;
+  playbackEndTimeMs?: number;
 }
 
 const props = defineProps<{
@@ -117,6 +124,9 @@ const emit = defineEmits<{
   talkStart: [{ index: number }];
   talkStop: [{ index: number }];
   playbackSeek: [{ index: number; payload: { timeMs: number } }];
+  playbackRateChange: [{ index: number; payload: { rate: number } }];
+  playbackStateChange: [{ index: number; payload: { paused: boolean } }];
+  playbackProgress: [{ index: number; payload: { mediaTimeMs: number } }];
   streamSwitch: [{ index: number; payload: { source: GmvSource } }];
   outputTypeChange: [{ index: number; outputType: string }];
   playing: [{ index: number; payload: { source?: GmvSource } }];
@@ -130,6 +140,12 @@ const gridSizes = [1, 4, 9, 16];
 const localGrid = ref(props.gridSize ?? 4);
 const selectedIndex = ref(0);
 const draggingIndex = ref<number>();
+type PlayerInstance = ComponentPublicInstance & {
+  confirmPlaybackRate: (rate: number) => void;
+  confirmPlaybackState: (paused: boolean) => void;
+  confirmPlaybackProgress: (timeMs: number) => void;
+};
+const playerRefs = new Map<number, PlayerInstance>();
 const modelGrid = computed({
   get: () => props.gridSize ?? localGrid.value,
   set: (value: number) => {
@@ -163,5 +179,24 @@ function handleDrop(targetIndex: number) {
 function handleDragEnd() {
   draggingIndex.value = undefined;
 }
+
+function setPlayerRef(index: number, instance: unknown) {
+  if (instance) playerRefs.set(index, instance as PlayerInstance);
+  else playerRefs.delete(index);
+}
+
+function confirmPlaybackRate(index: number, rate: number) {
+  playerRefs.get(index)?.confirmPlaybackRate(rate);
+}
+
+function confirmPlaybackState(index: number, paused: boolean) {
+  playerRefs.get(index)?.confirmPlaybackState(paused);
+}
+
+function confirmPlaybackProgress(index: number, timeMs: number) {
+  playerRefs.get(index)?.confirmPlaybackProgress(timeMs);
+}
+
+defineExpose({ confirmPlaybackRate, confirmPlaybackState, confirmPlaybackProgress });
 
 </script>

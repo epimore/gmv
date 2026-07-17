@@ -610,6 +610,8 @@ pnpm -C guard/ui build
 
 单路全屏、截图、声音、云台及“…”扩展菜单均渲染在该路 player cell 内。多画面把具备能力的“云台”放入对应 cell 的扩展菜单；不支持 PTZ 的 cell 不展示该按钮。宫格档位、分页和整个多画面区域满屏属于容器操作，不属于单路媒体能力。
 
+多画面回放时，`GmvGridCell` 可分别传入 `mediaMode: 'playback'`、`playbackDurationMs`、`playbackStartTimeMs` 和 `playbackEndTimeMs`。`MultiGrid` 会为 `playbackSeek`、`playbackRateChange`、`playbackStateChange`、`playbackProgress` 附加 cell index，并通过 `confirmPlaybackRate(index, rate)`、`confirmPlaybackState(index, paused)`、`confirmPlaybackProgress(index, timeMs)` 只确认对应子播放器。业务层仍负责 playback_id、stream_id、generation、远端控制和资源释放，组件不把多个 cell 合并为共享回放会话。
+
 ## 风险和约束
 
 - H.265 能否播放取决于浏览器、系统和硬件解码能力，前端不能保证所有环境可播。

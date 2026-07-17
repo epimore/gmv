@@ -16,7 +16,7 @@
         <el-button type="primary" :loading="loading" @click="queryDevices">查询</el-button>
         <el-button :loading="loading" @click="resetDevices">重置</el-button>
         <!-- <el-button :loading="loading" @click="loadDevices">刷新</el-button> -->
-        <el-button type="primary" plain @click="openMultiView">多画面工作台</el-button>
+        <el-button type="primary" plain @click="openMultiView('live')">多画面工作台</el-button>
       </div>
       <el-table :data="devices" height="620" empty-text="暂无监控设备">
         <el-table-column type="index" :index="tableIndex" label="序号" width="64" />
@@ -104,9 +104,16 @@
       <div class="monitor-head">
         <div class="device-summary">
           <strong>多画面工作台</strong>
-          <span>最多 {{ multiViewLimit }} 路实时直播</span>
+          <el-radio-group :model-value="multiMode" size="small" @change="handleMultiModeChange">
+            <el-radio-button value="live">实时直播</el-radio-button>
+            <el-radio-button value="playback">历史回放</el-radio-button>
+          </el-radio-group>
+          <span>当前传输能力最多 {{ multiViewLimit }} 路{{ multiMode === 'playback' ? ' · 启动并发 1' : '' }}</span>
         </div>
         <div class="monitor-actions">
+          <el-date-picker v-if="multiMode === 'playback'" v-model="multiDefaultRange" type="datetimerange"
+            range-separator="至" start-placeholder="默认开始时间" end-placeholder="默认结束时间"
+            :clearable="true" class="multi-default-range" />
           <el-select v-model="selectedMultiNodeId" filterable placeholder="选择 Session 节点" class="multi-node-select"
             :loading="listNodeLoading" @change="selectMultiNode">
             <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
@@ -143,7 +150,7 @@
                   :tone="data.device.monitor_status === 1 ? 'ONLINE' : 'OFFLINE'" />
               </div>
               <el-checkbox v-else class="tree-channel-node" :model-value="selectedTreeChannelKeys.includes(data.key)"
-                :disabled="!canPlayLive(data.channel)" @click.stop
+                :disabled="!canSelectMultiChannel(data.channel)" @click.stop
                 @change="(checked: boolean) => toggleTreeChannel(data.channel, checked)">
                 <span class="tree-channel-label">
                   <b>{{ data.label }}</b>
@@ -165,15 +172,30 @@
 
     <GlassPanel class="span-7" title="已选通道" :subtitle="selectedTreeChannelSubtitle">
       <div class="selected-channel-panel">
-        <div class="selected-channel-list">
+        <div class="selected-channel-list" :class="{ playback: multiMode === 'playback' }">
           <article v-for="(channel, index) in selectedTreeChannels" :key="channel.device_id + ':' + channel.channel_id"
             class="selected-channel-item" :class="{ dragging: draggingTreeChannelIndex === index }" draggable="true"
             @dragstart="handleSelectedChannelDragStart(index)" @dragover.prevent @drop="handleSelectedChannelDrop(index)"
             @dragend="handleSelectedChannelDragEnd">
-            <div>
+            <div class="selected-channel-main">
               <el-tooltip :content="selectedChannelTooltip(channel)" placement="top">
                 <b>{{ index + 1 }}. {{ channel.device_id }} · {{ channel.channel_id }}</b>
               </el-tooltip>
+              <span v-if="multiMode === 'playback'">{{ multiPlaybackSelectionStatus(channel) }}</span>
+            </div>
+            <div v-if="multiMode === 'playback'" class="selected-channel-playback">
+              <el-date-picker v-model="channel.playback_range" type="datetimerange" range-separator="至"
+                start-placeholder="开始时间" end-placeholder="结束时间" :clearable="true"
+                :disabled="channel.playback_locked" size="small" />
+              <div class="selected-channel-actions">
+                <el-button size="small" :disabled="channel.playback_locked || !isValidPlaybackRange(multiDefaultRange)" @click="restoreMultiPlaybackDefault(channel)">恢复默认</el-button>
+                <el-button size="small" type="primary" :disabled="channel.playback_locked || !isValidPlaybackRange(channel.playback_range)"
+                  @click="confirmMultiPlayback(channel)">确认播放</el-button>
+                <el-button v-if="channel.playback_locked && canReplayMultiPlayback(channel)" size="small" type="primary" plain
+                  @click="replayMultiPlayback(channel)">重新播放</el-button>
+                <el-button v-if="channel.playback_locked" size="small" type="warning" plain
+                  @click="stopConfirmedMultiPlayback(channel)">停止并编辑</el-button>
+              </div>
             </div>
             <el-button type="danger" link @click="removeTreeChannel(channel)">移除</el-button>
           </article>
@@ -184,9 +206,11 @@
 
     <GlassPanel class="span-12 multi-player-panel" :class="{ 'is-multi-fullscreen': multiFullscreen }">
       <div class="multi-player">
-        <GmvMultiGrid :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
+        <GmvMultiGrid ref="multiGridRef" :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
           @snapshot="handleMultiSnapshot" @snapshot-error="handleMultiSnapshotError" @ptz="handleMultiPtz"
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
+          @playback-rate-change="handleMultiPlaybackRateChange" @playback-state-change="handleMultiPlaybackStateChange"
+          @playback-seek="handleMultiPlaybackSeek" @playback-progress="handleMultiPlaybackProgress"
           @playback-error="handleMultiPlaybackError"
           @playback-switch-cancel="handleMultiPlaybackSwitchCancel"
           @close="handleMultiClose" @reorder="handleMultiReorder">
@@ -198,6 +222,15 @@
           </template>
           <template #actions>
             <div class="multi-player-actions">
+              <template v-if="multiMode === 'playback'">
+                <el-button :loading="multiBulkBusy" :disabled="multiPlaybackStarting || !multiControllableCells.length" @click="toggleAllMultiPlayback">
+                  {{ multiPauseActionLabel }}
+                </el-button>
+                <el-select :model-value="multiDesiredRate" :disabled="multiBulkBusy || multiPlaybackStarting || !multiControllableCells.length"
+                  aria-label="统一倍速" class="multi-rate-select" @change="setAllMultiPlaybackRate">
+                  <el-option v-for="rate in playbackRates" :key="rate" :label="rate + 'x'" :value="rate" />
+                </el-select>
+              </template>
               <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏' }}</el-button>
             </div>
           </template>
@@ -287,7 +320,15 @@
                 :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
               <el-button :disabled="!canPlayback(channel) || playerRequesting"
                 :loading="isPlayRequesting('playback', channel)" @click="requestPlayback(channel)">回放</el-button>
-              <el-button :disabled="!canPlayLive(channel)" @click="focusChannelInMultiView(channel)">多画面</el-button>
+              <el-dropdown trigger="click" @command="(command: MultiMode) => focusChannelInMultiView(channel, command)">
+                <el-button :disabled="!canPlayLive(channel) && !canPlayback(channel)">多画面⌄</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="live" :disabled="!canPlayLive(channel)">加入多画面直播</el-dropdown-item>
+                    <el-dropdown-item command="playback" :disabled="!canPlayback(channel)">加入多画面回放</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <el-button :disabled="!canSnapshot(channel)" :loading="deviceSnapshotLoading[channel.channel_id]"
                 @click="requestDeviceSnapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
@@ -431,7 +472,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { onBeforeRouteLeave } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   errorMessage,
   cancelMediaOperation,
@@ -476,7 +517,9 @@ import { useAuthStore } from '@/stores/auth';
 
 const auth = useAuthStore();
 const singlePlayerRef = ref<InstanceType<typeof GmvPlayerView>>();
+const multiGridRef = ref<InstanceType<typeof GmvMultiGrid>>();
 type LiveOutputType = 'flv' | 'hls' | 'fmp4';
+type MultiMode = 'live' | 'playback';
 const monitorMode = ref<'devices' | 'multi'>('devices');
 const loading = ref(false);
 const channelLoading = ref(false);
@@ -559,6 +602,13 @@ const multiGridManual = ref(false);
 const multiFullscreen = ref(false);
 const multiPage = ref(1);
 const multiViewLimit = ref(6);
+const multiMode = ref<MultiMode>('live');
+const multiDefaultRange = ref<[Date, Date]>();
+const multiPlaybackQueue = ref<string[]>([]);
+const multiPlaybackStarting = ref(false);
+const multiBulkBusy = ref(false);
+const multiDesiredRate = ref(1);
+const playbackRates = [0.5, 1, 2, 4];
 const multiPlayVersions = reactive<Record<string, number>>({});
 const multiStopTasks = new Map<string, Promise<void>>();
 const multiPreviewAborts = new Map<string, AbortController>();
@@ -576,7 +626,7 @@ const canManageResources = computed(() => auth.session?.role === 'admin');
 const resourceForm = reactive({ resource_kind: 'audio_output' as 'video' | 'audio_input' | 'audio_output' | 'other', owner_scope: 'device' as 'device' | 'resource', owner_id: '', remark: '' });
 
 type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
-type MultiCellStatus = 'idle' | 'online' | 'playing' | 'offline' | 'reconnecting' | 'error';
+type MultiCellStatus = 'idle' | 'online' | 'playing' | 'paused' | 'queued' | 'suspended' | 'stopped' | 'offline' | 'reconnecting' | 'error';
 interface MultiViewCell {
   key: string;
   device_id: string;
@@ -589,7 +639,15 @@ interface MultiViewCell {
   error?: string;
   operation?: MediaOperationSummary<unknown>;
   channel: GbChannelInfo;
+  mode: MultiMode;
   output_type: LiveOutputType;
+  playback_start_sec?: number;
+  playback_end_sec?: number;
+  playback_position_sec?: number;
+  playback_generation?: number;
+  playback_rate?: number;
+  playback_ack_rate?: number;
+  playback_state?: 'playing' | 'paused';
   output?: StreamOutputSummary;
   output_switching?: boolean;
   pending_switch?: {
@@ -607,6 +665,8 @@ interface SelectedChannelRef {
   device_title: string;
   status_text: string;
   channel: GbChannelInfo;
+  playback_range?: [Date, Date];
+  playback_locked?: boolean;
 }
 type TreeNodeData =
   | { key: string; label: string; kind: 'device'; device: GbDeviceInfo; leaf: false }
@@ -657,9 +717,16 @@ const singleCheckpointReached = computed(() => {
   return !!operation && operation.checkpoint_ms > 0 && operation.elapsed_ms >= operation.checkpoint_ms;
 });
 const singleStartupText = computed(() => mediaOperationText(singleMediaOperation.value, singleWaitAcknowledged.value));
-const multiPlayerSubtitle = computed(() => multiCells.value.length ? `实时直播 · 运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路` : '实时直播 · 选择通道后播放');
+const multiPlayerSubtitle = computed(() => {
+  const label = multiMode.value === 'live' ? '实时直播' : '历史回放';
+  return multiCells.value.length
+    ? `${label} · 运行中 ${multiCells.value.filter((cell) => cell.stream?.state === 'running').length} 路`
+    : `${label} · 选择通道后播放`;
+});
 const multiPageCount = computed(() => Math.max(1, Math.ceil(multiCells.value.length / multiGridSize.value)));
 const multiVisibleStart = computed(() => (multiPage.value - 1) * multiGridSize.value);
+const multiControllableCells = computed(() => multiCells.value.filter((cell) => cell.mode === 'playback' && !!cell.stream?.stream_id));
+const multiPauseActionLabel = computed(() => multiControllableCells.value.some((cell) => cell.playback_state !== 'paused') ? '统一暂停' : '统一继续');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerPoster = computed(() => selectedChannel.value?.pic_url || undefined);
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
@@ -727,9 +794,9 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
     title: cell.error ? cell.title + ' · ' + cell.error : cell.title,
     deviceId: cell.device_id,
     channelId: cell.channel_id,
-    status: cell.status,
+    status: multiPlayerDeviceStatus(cell.status),
     viewers: 1,
-    mediaMode: 'live' as const,
+    mediaMode: cell.mode,
     streamId: cell.stream?.stream_id,
     mediaNodeId: cell.stream?.node_id,
     sessionNodeId: cell.stream?.session_node_id,
@@ -737,9 +804,12 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
     poster: cell.poster,
     capabilities,
     controls: multiCellControls(capabilities),
-    outputType: cell.output_type,
-    outputOptions: liveOutputOptions,
-    outputSwitching: cell.output_switching,
+    outputType: cell.mode === 'live' ? cell.output_type : undefined,
+    outputOptions: cell.mode === 'live' ? liveOutputOptions : undefined,
+    outputSwitching: cell.mode === 'live' ? cell.output_switching : undefined,
+    playbackDurationMs: playbackCellDurationMs(cell),
+    playbackStartTimeMs: cell.mode === 'playback' && cell.playback_start_sec ? cell.playback_start_sec * 1_000 : undefined,
+    playbackEndTimeMs: cell.mode === 'playback' && cell.playback_end_sec ? cell.playback_end_sec * 1_000 : undefined,
     startupText: cell.operation ? mediaOperationText(cell.operation) : undefined,
     startupCanCancel: !!cell.operation && cell.operation.checkpoint_ms > 0 && cell.operation.elapsed_ms >= cell.operation.checkpoint_ms,
   };
@@ -809,6 +879,7 @@ function confText(value: unknown, defaultValue: number, label: string) {
 }
 function canPlayLive(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel); }
 function canPlayback(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.playback_enable); }
+function canSelectMultiChannel(channel: GbChannelInfo) { return multiMode.value === 'live' ? canPlayLive(channel) : canPlayback(channel); }
 function canSnapshot(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.snapshot); }
 function canPtz(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.ptz_enable); }
 function canAudio(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.audio_enable); }
@@ -816,11 +887,11 @@ function canViewImages(channel: GbChannelInfo) { return bizEnabled(channel); }
 function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
   const hasAudio = cell.sources.some((source) => source.hasAudio);
   return {
-    ptz: canPtz(cell.channel),
+    ptz: cell.mode === 'live' && canPtz(cell.channel),
     presets: false,
     snapshot: true,
     record: false,
-    playback: false,
+    playback: cell.mode === 'playback' && canPlayback(cell.channel),
     audio: hasAudio && canAudio(cell.channel),
     talk: false,
     streamSwitch: cell.sources.length > 1,
@@ -829,11 +900,14 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
 }
 function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControlsConfig {
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
-  const overflowItems: GmvPlayerControlsConfig['items'] = ['outputType', 'info'];
+  if (capabilities.playback) items.push('timeline');
+  const overflowItems: GmvPlayerControlsConfig['items'] = ['info'];
+  if (!capabilities.playback) overflowItems.unshift('outputType');
   if (capabilities.audio) overflowItems.push('audio');
   if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
-  return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000 };
+  if (capabilities.playback) overflowItems.push('playbackRate');
+  return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000, playbackRates };
 }
 function playRequestKey(kind: 'preview' | 'playback', channel: GbChannelInfo) { return `${kind}:${channel.device_id}:${channel.channel_id}`; }
 function isPlayRequesting(kind: 'preview' | 'playback', channel: GbChannelInfo) { return playerRequesting.value && pendingPlayKey.value === playRequestKey(kind, channel); }
@@ -896,7 +970,7 @@ function broadcastReasonText(reason: string) {
   return ({ NO_AUDIO_OUTPUT: '没有语音输出资源', UNKNOWN_RESOURCE_KIND: '资源类型未知', RESOURCE_CONFLICT: '资源归属冲突', RESOURCE_ORPHAN: '资源已不在 Catalog', DEVICE_OFFLINE: '设备离线', OUTPUT_OFFLINE: '语音输出离线', BUSINESS_DISABLED: '业务已禁用' } as Record<string, string>)[reason] || reason || '可广播';
 }
 function channelKey(channel: GbChannelInfo) { return `${channel.device_id}:${channel.channel_id}`; }
-function streamSources(stream?: StreamSummary): GmvSource[] {
+function streamSources(stream?: StreamSummary, mode: MultiMode = 'live'): GmvSource[] {
   const endpoint = stream?.endpoint;
   if (!endpoint) return [];
   const protocol = streamProtocol(endpoint);
@@ -908,10 +982,23 @@ function streamSources(stream?: StreamSummary): GmvSource[] {
     url: endpoint,
     mimeCodec: stream?.mime_codec ?? fmp4MimeCodec(codec, hasAudio),
     hasAudio,
-    rateMode: protocol === 'mp4' ? 'local-file' : 'disabled',
+    rateMode: protocol === 'mp4' ? 'local-file' : mode === 'playback' ? 'remote-stream' : 'disabled',
     label: streamSourceLabel(codec, hasAudio),
     priority: 1,
   }];
+}
+function playbackCellDurationMs(cell: MultiViewCell) {
+  if (cell.mode !== 'playback' || !cell.playback_start_sec || !cell.playback_end_sec) return undefined;
+  return Math.max(1_000, (cell.playback_end_sec - cell.playback_start_sec) * 1_000);
+}
+function multiPlayerDeviceStatus(status: MultiCellStatus): 'online' | 'offline' | 'playing' | 'reconnecting' | 'error' | 'idle' {
+  if (status === 'paused') return 'online';
+  if (status === 'queued' || status === 'suspended') return 'reconnecting';
+  if (status === 'stopped') return 'idle';
+  return status;
+}
+function isValidPlaybackRange(range?: [Date, Date]): range is [Date, Date] {
+  return !!range && range[0] instanceof Date && range[1] instanceof Date && range[0].getTime() < range[1].getTime();
 }
 function clearTreeLoadedChannelState() {
   for (const key of Object.keys(treeChannelsByDevice)) delete treeChannelsByDevice[key];
@@ -930,13 +1017,44 @@ function clearTreeDeviceState() {
   treeTotal.value = 0;
   clearTreeChannelState();
 }
-async function openMultiView() {
+async function openMultiView(mode: MultiMode = 'live') {
+  multiMode.value = mode;
+  multiDefaultRange.value = undefined;
   monitorMode.value = 'multi';
   multiGridManual.value = false;
   applyAutoMultiGridSize();
   selectedDevice.value = undefined;
   showImages.value = false;
   await Promise.all([loadMultiViewCapability(), loadSessionNodes()]);
+}
+async function handleMultiModeChange(value: string | number | boolean | undefined) {
+  const nextMode = value === 'playback' ? 'playback' : 'live';
+  if (nextMode === multiMode.value) return;
+  const previous = [...selectedTreeChannelItems.value];
+  if (previous.length) {
+    try {
+      await ElMessageBox.confirm('切换模式将停止当前全部画面，并保留目标模式仍可用的通道。', '切换多画面模式', {
+        confirmButtonText: '确认切换', cancelButtonText: '取消', type: 'warning',
+      });
+    } catch {
+      return;
+    }
+  }
+  await stopAllMultiStreams({ quiet: true });
+  multiMode.value = nextMode;
+  const retained = previous.filter((item) => nextMode === 'live'
+    ? canPlayLive(item.channel)
+    : canPlayback(item.channel) && isValidPlaybackRange(multiDefaultRange.value));
+  for (const item of retained) {
+    const range = nextMode === 'playback' && isValidPlaybackRange(multiDefaultRange.value)
+      ? [new Date(multiDefaultRange.value[0]), new Date(multiDefaultRange.value[1])] as [Date, Date]
+      : undefined;
+    selectedTreeChannelKeys.value.push(selectedChannelKey(item));
+    const selected = { ...item, playback_range: range, playback_locked: false };
+    selectedTreeChannelItems.value.push(selected);
+    await startSelectedMultiChannel(selected);
+  }
+  if (retained.length !== previous.length) ElMessage.info(`已移除 ${previous.length - retained.length} 路不满足目标模式能力的通道`);
 }
 async function loadMultiViewCapability() {
   try {
@@ -1045,11 +1163,32 @@ async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
   const key = channelKey(channel);
   if (checked) {
     if (selectedTreeChannelKeys.value.includes(key)) return;
+    if (multiMode.value === 'playback' && !isValidPlaybackRange(multiDefaultRange.value)) {
+      ElMessage.warning('请先选择有效的默认回放时段');
+      return;
+    }
     if (selectedTreeChannelKeys.value.length >= multiViewLimit.value) {
       ElMessage.warning(`当前传输能力最多选择 ${multiViewLimit.value} 个通道`);
       return;
     }
+    if (multiMode.value === 'playback') {
+      const sameDeviceCount = selectedTreeChannelItems.value.filter((item) => item.device_id === channel.device_id).length;
+      if (sameDeviceCount >= 4) {
+        try {
+          await ElMessageBox.confirm(
+            `同一设备 ${channel.device_id} 即将加入第 ${sameDeviceCount + 1} 路回放，边端设备可能无法同时承载，请确认添加。`,
+            '边端资源提示',
+            { confirmButtonText: '确认添加', cancelButtonText: '取消', type: 'warning' },
+          );
+        } catch {
+          return;
+        }
+      }
+    }
     const device = treeDevices.value.find((item) => item.device_id === channel.device_id);
+    const defaultRange = isValidPlaybackRange(multiDefaultRange.value)
+      ? [new Date(multiDefaultRange.value[0]), new Date(multiDefaultRange.value[1])] as [Date, Date]
+      : undefined;
     selectedTreeChannelKeys.value.push(key);
     selectedTreeChannelItems.value.push({
       device_id: channel.device_id,
@@ -1059,6 +1198,8 @@ async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
       device_title: device ? displayDeviceName(device) : channel.device_id,
       status_text: channelStatusText(channel),
       channel,
+      playback_range: multiMode.value === 'playback' ? defaultRange : undefined,
+      playback_locked: false,
     });
     await startSelectedMultiChannel(selectedTreeChannelItems.value[selectedTreeChannelItems.value.length - 1]);
     return;
@@ -1067,6 +1208,98 @@ async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
 }
 async function removeTreeChannel(channel: SelectedChannelRef) {
   await stopMultiCell(selectedChannelKey(channel));
+}
+function restoreMultiPlaybackDefault(channel: SelectedChannelRef) {
+  if (channel.playback_locked) return;
+  channel.playback_range = isValidPlaybackRange(multiDefaultRange.value)
+    ? [new Date(multiDefaultRange.value[0]), new Date(multiDefaultRange.value[1])]
+    : undefined;
+}
+function multiPlaybackSelectionStatus(channel: SelectedChannelRef) {
+  const cell = multiCells.value.find((item) => item.key === selectedChannelKey(channel));
+  if (!channel.playback_locked) {
+    const usingDefault = isValidPlaybackRange(channel.playback_range)
+      && isValidPlaybackRange(multiDefaultRange.value)
+      && channel.playback_range[0].getTime() === multiDefaultRange.value[0].getTime()
+      && channel.playback_range[1].getTime() === multiDefaultRange.value[1].getTime();
+    return usingDefault ? '默认时段 · 可编辑' : '自定义时段 · 可编辑';
+  }
+  const labels: Record<MultiCellStatus, string> = {
+    idle: '待确认', online: '在线', playing: '播放中', paused: '已暂停', queued: '排队中', suspended: '已释放，返回本页后续播',
+    stopped: '已停止', offline: '离线', reconnecting: '正在启动', error: '播放失败',
+  };
+  return cell ? labels[cell.status] : '已确认';
+}
+async function confirmMultiPlayback(channel: SelectedChannelRef) {
+  if (channel.playback_locked || !isValidPlaybackRange(channel.playback_range)) return;
+  const key = selectedChannelKey(channel);
+  const cell = multiCells.value.find((item) => item.key === key);
+  if (!cell) return;
+  const startSec = Math.floor(channel.playback_range[0].getTime() / 1_000);
+  const endSec = Math.floor(channel.playback_range[1].getTime() / 1_000);
+  channel.playback_locked = true;
+  upsertMultiCell({
+    ...cell,
+    mode: 'playback',
+    playback_start_sec: startSec,
+    playback_end_sec: endSec,
+    playback_position_sec: startSec,
+    playback_generation: 0,
+    playback_rate: multiDesiredRate.value,
+    playback_ack_rate: 1,
+    playback_state: 'playing',
+    status: 'queued',
+    error: undefined,
+  });
+  enqueueMultiPlayback(key);
+}
+async function stopConfirmedMultiPlayback(channel: SelectedChannelRef) {
+  const key = selectedChannelKey(channel);
+  const cell = multiCells.value.find((item) => item.key === key);
+  if (!cell) return;
+  bumpMultiPlayVersion(key);
+  multiPlaybackQueue.value = multiPlaybackQueue.value.filter((item) => item !== key);
+  multiPreviewAborts.get(key)?.abort();
+  multiPreviewAborts.delete(key);
+  await disposeMultiCellMedia(cell);
+  channel.playback_locked = false;
+  upsertMultiCell({
+    ...cell,
+    stream: undefined,
+    sources: [],
+    operation: undefined,
+    playback_generation: 0,
+    playback_position_sec: cell.playback_start_sec,
+    playback_ack_rate: 1,
+    playback_state: undefined,
+    status: 'idle',
+    error: undefined,
+  });
+}
+function canReplayMultiPlayback(channel: SelectedChannelRef) {
+  const status = multiCells.value.find((item) => item.key === selectedChannelKey(channel))?.status;
+  return status === 'error' || status === 'stopped';
+}
+async function replayMultiPlayback(channel: SelectedChannelRef) {
+  if (!channel.playback_locked || !isValidPlaybackRange(channel.playback_range)) return;
+  const key = selectedChannelKey(channel);
+  const cell = multiCells.value.find((item) => item.key === key);
+  if (!cell || !canReplayMultiPlayback(channel)) return;
+  bumpMultiPlayVersion(key);
+  await disposeMultiCellMedia(cell);
+  upsertMultiCell({
+    ...cell,
+    stream: undefined,
+    sources: [],
+    operation: undefined,
+    playback_position_sec: cell.playback_start_sec,
+    playback_generation: 0,
+    playback_ack_rate: 1,
+    playback_state: 'playing',
+    status: 'queued',
+    error: undefined,
+  });
+  enqueueMultiPlayback(key);
 }
 function syncSelectedTreeChannelKeys() {
   selectedTreeChannelKeys.value = selectedTreeChannelItems.value.map((item) => `${item.device_id}:${item.channel_id}`);
@@ -1132,11 +1365,12 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     title: channel.title,
     poster: channel.poster,
     sources: [],
-    status: 'reconnecting',
+    status: multiMode.value === 'live' ? 'reconnecting' : 'idle',
     channel: channel.channel,
+    mode: multiMode.value,
     output_type: channelOutputType(channel.channel),
   });
-  await reconcileVisibleMultiStreams();
+  if (multiMode.value === 'live') await reconcileVisibleMultiStreams();
 }
 async function startVisibleMultiCell(cell: MultiViewCell) {
   const key = cell.key;
@@ -1145,11 +1379,28 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
   multiPreviewAborts.get(key)?.abort();
   multiPreviewAborts.set(key, controller);
   try {
-    const stream = await startGbPreview(cell.device_id, cell.channel_id, {
-      request_id: 'ui-multi-preview-' + Date.now() + '-' + cell.channel_id,
-      output_type: cell.output_type,
-      audio_codec: 'aac',
-    }, {
+    const requestId = `ui-multi-${cell.mode}-${Date.now()}-${cell.channel_id}`;
+    const stream = cell.mode === 'live'
+      ? await startGbPreview(cell.device_id, cell.channel_id, {
+          request_id: requestId,
+          output_type: cell.output_type,
+          audio_codec: 'aac',
+        }, {
+          signal: controller.signal,
+          onUpdate: (operation) => {
+            if (multiPlayVersions[key] !== version || multiViewDisposed) return;
+            const current = multiCells.value.find((item) => item.key === key);
+            if (current) upsertMultiCell({ ...current, operation, status: 'reconnecting' });
+          },
+        })
+      : await startGbPlayback(cell.device_id, cell.channel_id, {
+          request_id: requestId,
+          playback_id: requestId,
+          start_time_sec: cell.playback_position_sec ?? cell.playback_start_sec,
+          end_time_sec: cell.playback_end_sec,
+          output_type: 'fmp4',
+          audio_codec: 'aac',
+        }, {
       signal: controller.signal,
       onUpdate: (operation) => {
         if (multiPlayVersions[key] !== version || multiViewDisposed) return;
@@ -1164,10 +1415,22 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
     upsertMultiCell({
       ...cell,
       stream,
-      sources: streamSources(stream),
+      sources: streamSources(stream, cell.mode),
       status: stream.state === 'running' ? 'playing' : 'online',
+      playback_start_sec: cell.mode === 'playback' ? stream.playback_start_time_sec ?? cell.playback_start_sec : undefined,
+      playback_end_sec: cell.mode === 'playback' ? stream.playback_end_time_sec ?? cell.playback_end_sec : undefined,
+      playback_position_sec: cell.mode === 'playback' ? stream.playback_start_time_sec ?? cell.playback_position_sec : undefined,
+      playback_generation: cell.mode === 'playback' ? stream.playback_generation ?? 0 : undefined,
+      playback_rate: cell.mode === 'playback' ? cell.playback_rate ?? multiDesiredRate.value : undefined,
+      playback_ack_rate: cell.mode === 'playback' ? 1 : undefined,
+      playback_state: cell.mode === 'playback' ? 'playing' : undefined,
       operation: undefined,
+      error: undefined,
     });
+    if (cell.mode === 'playback' && (cell.playback_rate ?? multiDesiredRate.value) !== 1) {
+      const current = multiCells.value.find((item) => item.key === key);
+      if (current) await applyMultiPlaybackRate(current, cell.playback_rate ?? multiDesiredRate.value, false);
+    }
   } catch (error) {
     if (multiPlayVersions[key] !== version || !isMultiCellVisible(key) || multiViewDisposed) return;
     upsertMultiCell({
@@ -1178,6 +1441,29 @@ async function startVisibleMultiCell(cell: MultiViewCell) {
     });
   } finally {
     if (multiPreviewAborts.get(key) === controller) multiPreviewAborts.delete(key);
+  }
+}
+function enqueueMultiPlayback(key: string) {
+  const cell = multiCells.value.find((item) => item.key === key);
+  if (!cell || cell.mode !== 'playback' || !isMultiCellVisible(key) || cell.stream || multiPlaybackQueue.value.includes(key)) return;
+  multiPlaybackQueue.value.push(key);
+  upsertMultiCell({ ...cell, status: 'queued', error: undefined });
+  void drainMultiPlaybackQueue();
+}
+async function drainMultiPlaybackQueue() {
+  if (multiPlaybackStarting.value || multiBulkBusy.value) return;
+  multiPlaybackStarting.value = true;
+  try {
+    while (multiPlaybackQueue.value.length && !multiBulkBusy.value && !multiViewDisposed) {
+      const key = multiPlaybackQueue.value.shift();
+      if (!key) continue;
+      const cell = multiCells.value.find((item) => item.key === key);
+      const selected = selectedTreeChannelItems.value.find((item) => selectedChannelKey(item) === key);
+      if (!cell || !selected?.playback_locked || cell.stream || !isMultiCellVisible(key)) continue;
+      await startVisibleMultiCell(cell);
+    }
+  } finally {
+    multiPlaybackStarting.value = false;
   }
 }
 function visibleMultiCellKeys() {
@@ -1235,7 +1521,7 @@ async function disposeMultiCellMedia(cell?: MultiViewCell) {
 }
 async function suspendMultiCell(key: string) {
   const cell = multiCells.value.find((item) => item.key === key);
-  if (!cell) return;
+  if (!cell || (!cell.stream && !cell.operation)) return;
   bumpMultiPlayVersion(key);
   multiPreviewAborts.get(key)?.abort();
   multiPreviewAborts.delete(key);
@@ -1247,7 +1533,7 @@ async function suspendMultiCell(key: string) {
     stream: undefined,
     sources: [],
     operation: undefined,
-    status: cell.status === 'error' ? 'error' : 'online',
+    status: cell.status === 'error' ? 'error' : cell.mode === 'playback' ? 'suspended' : 'online',
   });
 }
 function reconcileVisibleMultiStreams() {
@@ -1261,7 +1547,9 @@ function reconcileVisibleMultiStreams() {
     for (const key of visibleKeys) {
       if (multiViewDisposed || lifecycleVersion !== multiLifecycleVersion) return;
       const cell = multiCells.value.find((item) => item.key === key);
-      if (cell && !cell.stream && cell.status !== 'error') await startVisibleMultiCell(cell);
+      if (!cell || cell.stream || cell.status === 'error') continue;
+      if (cell.mode === 'live') await startVisibleMultiCell(cell);
+      else if (cell.status === 'suspended' || cell.status === 'queued') enqueueMultiPlayback(cell.key);
     }
   });
   multiVisibilityTask = task;
@@ -1275,6 +1563,7 @@ async function stopMultiCell(key: string, options: { removeSelection?: boolean }
   multiPreviewAborts.delete(key);
   multiOutputAborts.get(key)?.abort();
   multiOutputAborts.delete(key);
+  multiPlaybackQueue.value = multiPlaybackQueue.value.filter((item) => item !== key);
   multiCells.value = multiCells.value.filter((item) => item.key !== key);
   if (removeSelection) {
     selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
@@ -1296,6 +1585,7 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
     for (const controller of multiOutputAborts.values()) controller.abort();
     multiOutputAborts.clear();
     multiCells.value = [];
+    multiPlaybackQueue.value = [];
     selectedTreeChannelKeys.value = [];
     selectedTreeChannelItems.value = [];
     multiGridManual.value = false;
@@ -1351,7 +1641,7 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
   });
   return stopCurrentStreamTask;
 }
-async function focusChannelInMultiView(channel: GbChannelInfo) {
+async function focusChannelInMultiView(channel: GbChannelInfo, mode: MultiMode = 'live') {
   const device = selectedDevice.value;
   if (!device) return;
   await stopCurrentStream();
@@ -1360,6 +1650,8 @@ async function focusChannelInMultiView(channel: GbChannelInfo) {
   channels.value = [];
   images.value = [];
   showImages.value = false;
+  multiMode.value = mode;
+  multiDefaultRange.value = undefined;
   monitorMode.value = 'multi';
   await Promise.all([loadMultiViewCapability(), loadSessionNodes()]);
   const targetNodeId = device.session_node_id || selectedListNodeId.value;
@@ -1405,6 +1697,156 @@ function handleMultiReorder(event: { sourceIndex: number; targetIndex: number })
   cells.splice(targetIndex, 0, cell);
   multiCells.value = cells;
   syncSelectedTreeChannelsOrderFromCells();
+}
+
+function visibleMultiIndex(cell: MultiViewCell) {
+  const index = multiCells.value.findIndex((item) => item.key === cell.key) - multiVisibleStart.value;
+  return index >= 0 && index < multiGridSize.value ? index : undefined;
+}
+function requireMultiPlayback(cell?: MultiViewCell) {
+  const playbackId = cell?.stream?.playback_id;
+  const streamId = cell?.stream?.stream_id;
+  return cell?.mode === 'playback' && playbackId && streamId ? { cell, playbackId, streamId } : undefined;
+}
+async function applyMultiPlaybackRate(cell: MultiViewCell, rate: number, notify = true) {
+  const target = requireMultiPlayback(cell);
+  if (!target) return false;
+  if (cell.playback_state === 'paused') {
+    upsertMultiCell({ ...cell, playback_rate: rate });
+    const index = visibleMultiIndex(cell);
+    if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, rate);
+    return true;
+  }
+  try {
+    const result = await setGbPlaybackSpeed(target.playbackId, {
+      request_id: `ui-multi-speed-${Date.now()}-${cell.channel_id}`,
+      stream_id: target.streamId,
+      speed_rate: rate,
+      expected_generation: cell.playback_generation ?? 0,
+    });
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (current) upsertMultiCell({ ...current, playback_generation: result.generation, playback_rate: rate, playback_ack_rate: rate, error: undefined });
+    const index = visibleMultiIndex(cell);
+    if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, rate);
+    return true;
+  } catch (error) {
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (current) upsertMultiCell({ ...current, error: errorMessage(error, '倍速设置失败') });
+    const index = visibleMultiIndex(cell);
+    if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, cell.playback_rate ?? 1);
+    if (notify) ElMessage.error(errorMessage(error, `${cell.title} 倍速设置失败`));
+    return false;
+  }
+}
+async function applyMultiPlaybackState(cell: MultiViewCell, state: 'playing' | 'paused', notify = true) {
+  const target = requireMultiPlayback(cell);
+  if (!target) return false;
+  if (state === 'playing' && (cell.playback_rate ?? 1) !== (cell.playback_ack_rate ?? 1)) {
+    const applied = await applyMultiPlaybackRate({ ...cell, playback_state: 'playing' }, cell.playback_rate ?? 1, notify);
+    if (applied) {
+      const current = multiCells.value.find((item) => item.key === cell.key);
+      if (current) upsertMultiCell({ ...current, playback_state: 'playing', status: 'playing' });
+      const index = visibleMultiIndex(cell);
+      if (index !== undefined) multiGridRef.value?.confirmPlaybackState(index, false);
+    }
+    return applied;
+  }
+  try {
+    const result = await setGbPlaybackState(target.playbackId, {
+      request_id: `ui-multi-state-${Date.now()}-${cell.channel_id}`,
+      stream_id: target.streamId,
+      paused: state === 'paused',
+      expected_generation: cell.playback_generation ?? 0,
+    });
+    let current = multiCells.value.find((item) => item.key === cell.key);
+    if (current) {
+      current = { ...current, playback_generation: result.generation, playback_state: state, status: state === 'paused' ? 'paused' : 'playing', error: undefined };
+      upsertMultiCell(current);
+    }
+    const index = visibleMultiIndex(cell);
+    if (index !== undefined) multiGridRef.value?.confirmPlaybackState(index, state === 'paused');
+    return true;
+  } catch (error) {
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (current) upsertMultiCell({ ...current, error: errorMessage(error, '播放状态设置失败') });
+    const index = visibleMultiIndex(cell);
+    if (index !== undefined) multiGridRef.value?.confirmPlaybackState(index, cell.playback_state === 'paused');
+    if (notify) ElMessage.error(errorMessage(error, `${cell.title} 播放状态设置失败`));
+    return false;
+  }
+}
+async function handleMultiPlaybackRateChange(event: { index: number; payload: { rate: number } }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (cell) await applyMultiPlaybackRate(cell, event.payload.rate);
+}
+async function handleMultiPlaybackStateChange(event: { index: number; payload: { paused: boolean } }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (cell) await applyMultiPlaybackState(cell, event.payload.paused ? 'paused' : 'playing');
+}
+async function handleMultiPlaybackSeek(event: { index: number; payload: { timeMs: number } }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  const target = requireMultiPlayback(cell);
+  if (!target || !cell.playback_start_sec || !cell.playback_end_sec) return;
+  const positionSec = Math.min(cell.playback_end_sec, Math.max(cell.playback_start_sec, cell.playback_start_sec + event.payload.timeMs / 1_000));
+  try {
+    const result = await seekGbPlayback(target.playbackId, {
+      request_id: `ui-multi-seek-${Date.now()}-${cell.channel_id}`,
+      stream_id: target.streamId,
+      position_sec: positionSec,
+      expected_generation: cell.playback_generation ?? 0,
+    });
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (current) upsertMultiCell({ ...current, playback_generation: result.generation, playback_position_sec: positionSec, error: undefined });
+    multiGridRef.value?.confirmPlaybackProgress(event.index, (positionSec - cell.playback_start_sec) * 1_000);
+  } catch (error) {
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (current) upsertMultiCell({ ...current, error: errorMessage(error, '定位失败') });
+    ElMessage.error(errorMessage(error, `${cell.title} 定位失败`));
+    const currentMs = Math.max(0, ((cell.playback_position_sec ?? cell.playback_start_sec) - cell.playback_start_sec) * 1_000);
+    multiGridRef.value?.confirmPlaybackProgress(event.index, currentMs);
+  }
+}
+async function handleMultiPlaybackProgress(event: { index: number; payload: { mediaTimeMs: number } }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (!cell || cell.mode !== 'playback' || !cell.playback_start_sec || !cell.playback_end_sec) return;
+  const positionSec = Math.min(cell.playback_end_sec, cell.playback_start_sec + event.payload.mediaTimeMs / 1_000);
+  if (positionSec >= cell.playback_end_sec && cell.status !== 'stopped') {
+    await disposeMultiCellMedia(cell);
+    upsertMultiCell({ ...cell, stream: undefined, sources: [], operation: undefined, playback_position_sec: positionSec, playback_state: undefined, status: 'stopped' });
+    return;
+  }
+  upsertMultiCell({ ...cell, playback_position_sec: positionSec });
+}
+async function toggleAllMultiPlayback() {
+  if (multiBulkBusy.value || multiPlaybackStarting.value) {
+    ElMessage.info('正在启动回放，请稍后操作');
+    return;
+  }
+  const targetState = multiPauseActionLabel.value === '统一暂停' ? 'paused' : 'playing';
+  const cells = multiControllableCells.value.filter((cell) => targetState === 'playing' ? cell.playback_state === 'paused' : cell.playback_state !== 'paused');
+  multiBulkBusy.value = true;
+  let failed = 0;
+  try {
+    for (const cell of cells) if (!await applyMultiPlaybackState(cell, targetState, false)) failed += 1;
+  } finally {
+    multiBulkBusy.value = false;
+    void drainMultiPlaybackQueue();
+  }
+  if (failed) ElMessage.warning(`统一${targetState === 'paused' ? '暂停' : '继续'}完成，${failed} 路失败`);
+}
+async function setAllMultiPlaybackRate(value: number) {
+  const rate = Number(value);
+  if (!playbackRates.includes(rate) || multiBulkBusy.value || multiPlaybackStarting.value) return;
+  multiDesiredRate.value = rate;
+  multiBulkBusy.value = true;
+  let failed = 0;
+  try {
+    for (const cell of multiControllableCells.value) if (!await applyMultiPlaybackRate(cell, rate, false)) failed += 1;
+  } finally {
+    multiBulkBusy.value = false;
+    void drainMultiPlaybackQueue();
+  }
+  if (failed) ElMessage.warning(`统一倍速设置完成，${failed} 路失败`);
 }
 
 function asLiveOutputType(value: string): LiveOutputType | undefined {
@@ -1536,7 +1978,13 @@ async function handleMultiPlaying(event: { index: number }) {
 async function handleMultiPlaybackError(event: { index: number; payload: { message: string } }) {
   const cell = multiCellAtVisibleIndex(event.index);
   const pending = cell?.pending_switch;
-  if (!cell || !pending || !cell.stream) return;
+  if (!cell) return;
+  if (cell.mode === 'playback' && !pending) {
+    await disposeMultiCellMedia(cell);
+    upsertMultiCell({ ...cell, stream: undefined, sources: [], operation: undefined, status: 'error', error: event.payload.message });
+    return;
+  }
+  if (!pending || !cell.stream) return;
   await closeStreamOutput(cell.stream.stream_id, pending.next_output.output_id).catch(() => undefined);
   setChannelOutputType(cell.channel, pending.previous_type);
   upsertMultiCell({
@@ -1555,6 +2003,12 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
 async function handleMultiPlaybackSwitchCancel(event: { index: number }) {
   const cell = multiCellAtVisibleIndex(event.index);
   if (!cell) return;
+  if (cell.mode === 'playback' && cell.operation?.state === 'preparing') {
+    const selected = selectedTreeChannelItems.value.find((item) => selectedChannelKey(item) === cell.key);
+    if (selected) await stopConfirmedMultiPlayback(selected);
+    ElMessage.info('已取消该通道回放启动');
+    return;
+  }
   if (!cell.pending_switch && cell.operation?.state === 'preparing') {
     multiOutputAborts.get(cell.key)?.abort();
     await cancelMediaOperation(cell.operation.operation_id).catch(() => undefined);
@@ -1898,7 +2352,17 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
             },
           },
         )
-      : await startGbPlayback(channel.device_id, channel.channel_id, { request_id: playbackRequestId, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: 'fmp4', audio_codec: 'aac' });
+      : await startGbPlayback(
+          channel.device_id,
+          channel.channel_id,
+          { request_id: playbackRequestId, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: 'fmp4', audio_codec: 'aac' },
+          {
+            signal: controller.signal,
+            onUpdate: (operation) => {
+              if (requestSeq === playRequestSeq) singleMediaOperation.value = operation;
+            },
+          },
+        );
     if (requestSeq !== playRequestSeq || !playerDialog.value) {
       if (stream.stream_id) await releaseViewerStream(stream).catch(() => undefined);
       return;
@@ -2262,9 +2726,19 @@ onBeforeUnmount(() => {
   max-width: 100%;
 }
 
+.multi-default-range {
+  width: 390px;
+  max-width: 100%;
+}
+
 .multi-player-actions {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+.multi-rate-select {
+  width: 88px;
 }
 
 .multi-player-summary {
@@ -2674,9 +3148,13 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
+.selected-channel-list.playback {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .selected-channel-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(150px, .8fr) minmax(360px, 1.6fr) auto;
   gap: 12px;
   align-items: center;
   padding: 12px;
@@ -2685,6 +3163,23 @@ onBeforeUnmount(() => {
   background: rgba(3, 10, 24, .36);
   cursor: grab;
   user-select: none;
+}
+
+.selected-channel-main,
+.selected-channel-playback {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.selected-channel-playback :deep(.el-date-editor) {
+  width: 100%;
+}
+
+.selected-channel-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .selected-channel-item.dragging {

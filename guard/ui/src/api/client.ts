@@ -306,7 +306,15 @@ export async function startGbPreview(
   const operation = await request<MediaOperationSummary<StreamSummary>>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/preview', { method: 'POST', body: JSON.stringify(payload) }, true, 3_000);
   return waitMediaOperation(operation, options);
 }
-export const startGbPlayback = (deviceId: string, channelId: string, payload: GbStreamPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/playback', { method: 'POST', body: JSON.stringify(payload) });
+export async function startGbPlayback(
+  deviceId: string,
+  channelId: string,
+  payload: GbStreamPayload,
+  options: MediaOperationWaitOptions<StreamSummary> = {},
+): Promise<StreamSummary> {
+  const operation = await request<MediaOperationSummary<StreamSummary>>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/playback', { method: 'POST', body: JSON.stringify(payload) }, true, 3_000);
+  return waitMediaOperation(operation, options);
+}
 export const startGbBroadcast = (deviceId: string, payload: GbBroadcastPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/broadcast/start', { method: 'POST', body: JSON.stringify(payload) });
 export const stopGbBroadcast = (broadcastId: string) => request<StreamSummary>('/gb28181/broadcasts/' + gbPath(broadcastId) + '/stop', { method: 'POST', body: '{}' });
 export interface GbPtzPayload { leftRight: number; upDown: number; inOut: number; horizonSpeed: number; verticalSpeed: number; zoomSpeed: number }

@@ -2355,7 +2355,7 @@ async fn gb_preview(
     Path((device_id, channel_id)): Path<(String, String)>,
     Json(request): Json<GbStreamRequest>,
 ) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError> {
-    start_live_operation_http(
+    start_media_operation_http(
         state,
         headers,
         device_id,
@@ -2375,7 +2375,7 @@ async fn gb_playback(
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
     Json(mut request): Json<GbStreamRequest>,
-) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
+) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError> {
     if request.start_time_sec == 0
         || request.end_time_sec == 0
         || request.start_time_sec >= request.end_time_sec
@@ -2387,7 +2387,7 @@ async fn gb_playback(
     if request.playback_id.trim().is_empty() {
         request.playback_id = request.request_id.clone();
     }
-    start_device_stream_http(
+    start_media_operation_http(
         state,
         headers,
         device_id,
@@ -2478,7 +2478,7 @@ async fn preview(
     Path(device_id): Path<String>,
     Json(request): Json<PreviewRequest>,
 ) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError> {
-    start_live_operation_http(
+    start_media_operation_http(
         state,
         headers,
         device_id,
@@ -2601,7 +2601,7 @@ impl<'a> DeviceStreamHttpPolicy<'a> {
     }
 }
 
-async fn start_live_operation_http<F, Fut>(
+async fn start_media_operation_http<F, Fut>(
     state: HttpState,
     headers: HeaderMap,
     device_id: String,
@@ -2681,7 +2681,7 @@ where
             Err(_) => {
                 let error = GuardError::user_visible(
                     "media_startup_timeout",
-                    "device preview did not become ready before the absolute deadline",
+                    "device media did not become ready before the absolute deadline",
                     "视频仍未启动，请检查设备和网络后重试",
                     true,
                     BTreeMap::new(),
