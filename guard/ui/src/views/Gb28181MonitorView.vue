@@ -316,20 +316,19 @@
                 @change="(value: LiveOutputType) => setChannelOutputType(channel, value)">
                 <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-select>
-              <el-button :disabled="!canPlayLive(channel) || playerRequesting"
-                :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
-              <el-button :disabled="!canPlayback(channel) || playerRequesting"
-                :loading="isPlayRequesting('playback', channel)" @click="requestPlayback(channel)">回放</el-button>
-              <el-dropdown trigger="click" @command="(command: MultiMode) => focusChannelInMultiView(channel, command)">
-                <el-button :disabled="!canPlayLive(channel) && !canPlayback(channel)">多画面⌄</el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item command="live" :disabled="!canPlayLive(channel)">加入多画面直播</el-dropdown-item>
-                    <el-dropdown-item command="playback" :disabled="!canPlayback(channel)">加入多画面回放</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-              <el-button :disabled="!canSnapshot(channel)" :loading="deviceSnapshotLoading[channel.channel_id]"
+              <el-button-group class="channel-play-entry live">
+                <el-button class="channel-play-main" :disabled="!canPlayLive(channel) || playerRequesting"
+                  :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
+                <el-button class="channel-multi-tag" aria-label="加入多画面直播" :disabled="!canPlayLive(channel)"
+                  @click="focusChannelInMultiView(channel, 'live')">·多</el-button>
+              </el-button-group>
+              <el-button-group class="channel-play-entry playback">
+                <el-button class="channel-play-main" :disabled="!canPlayback(channel) || playerRequesting"
+                  :loading="isPlayRequesting('playback', channel)" @click="requestPlayback(channel)">回放</el-button>
+                <el-button class="channel-multi-tag" aria-label="加入多画面回放" :disabled="!canPlayback(channel)"
+                  @click="focusChannelInMultiView(channel, 'playback')">·多</el-button>
+              </el-button-group>
+              <el-button class="channel-second-row" :disabled="!canSnapshot(channel)" :loading="deviceSnapshotLoading[channel.channel_id]"
                 @click="requestDeviceSnapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
               <el-tooltip :content="channelBroadcastReason(channel)" placement="top" :disabled="canBroadcastChannel(channel)">
@@ -2842,7 +2841,7 @@ onBeforeUnmount(() => {
 
 .channel-actions {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 12px;
 }
@@ -2850,6 +2849,46 @@ onBeforeUnmount(() => {
 .channel-actions .el-button {
   width: 100%;
   margin-left: 0;
+}
+
+.channel-play-entry {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.channel-play-entry .el-button {
+  width: auto;
+  height: 32px;
+  padding: 7px 9px;
+}
+
+.channel-play-entry .channel-play-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.channel-play-entry .channel-multi-tag {
+  flex: 0 0 34px;
+  width: 34px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.channel-play-entry .channel-multi-tag:not(.is-disabled) {
+  color: #67e8f9;
+  background: rgba(8, 145, 178, .28);
+}
+
+.channel-play-entry .el-button:not(.is-disabled):hover {
+  filter: brightness(1.18);
+}
+
+.channel-second-row {
+  grid-column-start: 1;
 }
 
 .channel-output-select {
@@ -3292,8 +3331,9 @@ onBeforeUnmount(() => {
 }
 
 .multi-player :deep(.grid-toolbar button.active) {
-  background: var(--green);
-  color: #04120d;
+  border-color: rgba(103, 232, 249, .72);
+  background: rgba(8, 145, 178, .36);
+  color: #dffbff;
 }
 
 .multi-player :deep(.grid-body) {
@@ -3693,7 +3733,7 @@ onBeforeUnmount(() => {
   }
 
   .channel-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .detail-row.two {

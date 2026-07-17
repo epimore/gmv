@@ -7,6 +7,15 @@
   --text: #e8f2f8;
   --muted: #9db1c4;
   --accent: #22d3ee;
+  --button-text: #c9f7ff;
+  --button-bg: rgba(8, 86, 122, 0.2);
+  --button-border: rgba(34, 211, 238, 0.38);
+  --button-hover-bg: rgba(8, 145, 178, 0.3);
+  --button-hover-border: rgba(103, 232, 249, 0.7);
+  --button-active-bg: rgba(14, 116, 144, 0.42);
+  --button-disabled-text: #71879a;
+  --button-disabled-bg: rgba(55, 68, 82, 0.3);
+  --button-disabled-border: rgba(113, 135, 154, 0.24);
   --green: #34d399;
   --yellow: #fbbf24;
   --red: #fb7185;
@@ -17,13 +26,33 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 button, input, select { font: inherit; }
-button, select, input {
+select, input {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
 }
-button { cursor: pointer; }
-button:disabled { cursor: not-allowed; opacity: 0.45; }
+button {
+  border: 1px solid var(--button-border);
+  background: var(--button-bg);
+  color: var(--button-text);
+  cursor: pointer;
+}
+button:not(:disabled):hover {
+  border-color: var(--button-hover-border);
+  background: var(--button-hover-bg);
+  color: #effdff;
+}
+button:not(:disabled):active {
+  background: var(--button-active-bg);
+}
+button:disabled {
+  border-color: var(--button-disabled-border) !important;
+  background: var(--button-disabled-bg) !important;
+  color: var(--button-disabled-text) !important;
+  box-shadow: none !important;
+  cursor: not-allowed;
+  opacity: 1 !important;
+}
 
 .manual-page { min-height: 100vh; padding: 18px; display: grid; grid-template-rows: auto minmax(0, 1fr) 190px; gap: 14px; }
 .manual-toolbar { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: end; }
@@ -40,7 +69,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .grid-size-options { display: flex; align-items: center; }
 .grid-layout-title { white-space: nowrap; }
 .grid-toolbar button { min-width: 40px; height: 30px; border-radius: 5px; margin-left: 6px; }
-.grid-toolbar button.active { background: var(--green); color: #04120d; }
+.grid-toolbar button.active { border-color: var(--button-hover-border); background: var(--button-active-bg); color: #effdff; }
 .grid-body { min-height: 0; display: grid; gap: 8px; }
 .grid-cell {
   position: relative;
