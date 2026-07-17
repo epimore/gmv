@@ -673,14 +673,15 @@ const playerCapabilities = computed<GmvViewCapabilities>(() => {
 const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const channel = selectedChannel.value;
   const playback = lastAction.value === '历史回放';
-  const items: GmvPlayerControlsConfig['items'] = ['play'];
-  if (channel && canAudio(channel)) items.push('audio');
-  if (channel && canSnapshot(channel)) items.push('snapshot');
-  if (!playback) items.push('outputType');
-  items.push('info', 'fullscreen');
-  if (!playback && channel && canPtz(channel)) items.push('ptz');
-  if (playback && channel && canPlayback(channel)) items.push('playbackRate', 'timeline');
-  return { items, visibility: 'auto', autoHideDelayMs: 3000, playbackRates: [0.5, 1, 2, 4] };
+  const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
+  if (playback && channel && canPlayback(channel)) items.push('timeline');
+  const overflowItems: GmvPlayerControlsConfig['items'] = [];
+  if (!playback) overflowItems.push('outputType');
+  overflowItems.push('info');
+  if (channel && canAudio(channel)) overflowItems.push('audio');
+  if (!playback && channel && canPtz(channel)) overflowItems.push('ptz');
+  if (playback && channel && canPlayback(channel)) overflowItems.push('playbackRate');
+  return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000, playbackRates: [0.5, 1, 2, 4] };
 });
 const playbackDurationMs = computed(() => {
   const stream = lastStream.value;
@@ -820,13 +821,10 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
   };
 }
 function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControlsConfig {
-  const items: GmvPlayerControlsConfig['items'] = ['play'];
-  if (capabilities.snapshot) items.push('snapshot');
-  items.push('outputType');
-  items.push('info', 'fullscreen');
-  const overflowItems: GmvPlayerControlsConfig['items'] = [];
-  if (capabilities.ptz) overflowItems.push('ptz');
+  const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
+  const overflowItems: GmvPlayerControlsConfig['items'] = ['outputType', 'info'];
   if (capabilities.audio) overflowItems.push('audio');
+  if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
   return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000 };
 }

@@ -200,24 +200,26 @@ describe("PlayerControls", () => {
 
   it("按单路配置分别渲染主操作和竖向扩展操作", async () => {
     const wrapper = mountControls({
-      items: ["play", "snapshot", "info", "fullscreen"],
-      overflowItems: ["audio", "record"],
+      items: ["play", "snapshot", "fullscreen"],
+      overflowItems: ["outputType", "info", "audio", "record"],
       visibility: "always",
     });
 
     expect(wrapper.findAll(".primary-controls > button").map((item) => item.text())).toEqual([
       "暂停",
       "截图",
-      "信息",
       "全屏",
-      "…",
+      "更多",
     ]);
     expect(wrapper.find('[aria-label="切换声音"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="媒体输出格式"]').exists()).toBe(false);
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
 
     expect(wrapper.get(".overflow-menu").isVisible()).toBe(true);
+    expect(wrapper.find('.overflow-menu [aria-label="媒体输出格式"]').exists()).toBe(true);
     expect(wrapper.findAll(".overflow-menu > button").map((item) => item.text())).toEqual([
+      "信息",
       "声音",
       "录像",
     ]);
@@ -414,7 +416,11 @@ describe("PlayerControls", () => {
     const start = new Date(2026, 6, 16, 10, 0, 0).getTime();
     const end = new Date(2026, 6, 16, 11, 0, 0).getTime();
     const wrapper = mountControls(
-      { items: ["play", "timeline"], visibility: "always" },
+      {
+        items: ["play", "snapshot", "fullscreen", "timeline"],
+        overflowItems: ["info", "playbackRate"],
+        visibility: "always",
+      },
       {
         ...playingState,
         durationMs: end - start,
@@ -426,7 +432,17 @@ describe("PlayerControls", () => {
     expect(wrapper.find(".playback-timeline-row .timeline").exists()).toBe(true);
     expect(wrapper.find(".primary-controls .timeline").exists()).toBe(false);
     expect(wrapper.find('.primary-controls [aria-label="切换播放状态"]').exists()).toBe(true);
-    expect(wrapper.find(".primary-controls .primary-timeline-jump").exists()).toBe(true);
+    expect(wrapper.findAll(".primary-controls > button").map((item) => item.text())).toEqual([
+      "暂停",
+      "截图",
+      "全屏",
+      "更多",
+    ]);
+    expect(wrapper.find(".timeline-jump").exists()).toBe(false);
+
+    await wrapper.get('[aria-label="更多操作"]').trigger("click");
+    expect(wrapper.find('.overflow-menu [aria-label="播放倍速"]').exists()).toBe(true);
+    expect(wrapper.find(".overflow-menu .overflow-timeline-jump").exists()).toBe(true);
 
     expect(wrapper.text()).toContain("07-16 10:00:00");
     expect(wrapper.text()).toContain("10:15:00");
@@ -450,6 +466,7 @@ describe("PlayerControls", () => {
       { items: ["timeline"], visibility: "always" },
       { ...playingState, seekMs: 5_000, durationMs: 10_000 },
     );
+    await wrapper.get('[aria-label="更多操作"]').trigger("click");
     await wrapper.get('[aria-label="跳跃秒数"]').setValue("3");
     await wrapper.get('[aria-label="向前跳跃"]').trigger("click");
     await wrapper.get('[aria-label="向后跳跃"]').trigger("click");
