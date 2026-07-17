@@ -438,11 +438,11 @@ describe("PlayerControls", () => {
       "全屏",
       "更多",
     ]);
-    expect(wrapper.find(".timeline-jump").exists()).toBe(false);
+    expect(wrapper.find(".primary-timeline .primary-timeline-jump").exists()).toBe(true);
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
     expect(wrapper.find('.overflow-menu [aria-label="播放倍速"]').exists()).toBe(true);
-    expect(wrapper.find(".overflow-menu .overflow-timeline-jump").exists()).toBe(true);
+    expect(wrapper.find(".overflow-menu .timeline-jump").exists()).toBe(false);
 
     expect(wrapper.text()).toContain("07-16 10:00:00");
     expect(wrapper.text()).toContain("10:15:00");
@@ -466,7 +466,7 @@ describe("PlayerControls", () => {
       { items: ["timeline"], visibility: "always" },
       { ...playingState, seekMs: 5_000, durationMs: 10_000 },
     );
-    await wrapper.get('[aria-label="更多操作"]').trigger("click");
+    expect(wrapper.find('[aria-label="更多操作"]').exists()).toBe(false);
     await wrapper.get('[aria-label="跳跃秒数"]').setValue("3");
     await wrapper.get('[aria-label="向前跳跃"]').trigger("click");
     await wrapper.get('[aria-label="向后跳跃"]').trigger("click");

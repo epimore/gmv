@@ -49,6 +49,33 @@
           </span>
         </span>
         <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
+        <span class="timeline-jump primary-timeline-jump">
+          <button
+            type="button"
+            :disabled="capabilities.playback === false || state.seekMs <= 0"
+            aria-label="向后跳跃"
+            @click="emitJump(-1)"
+          >
+            后退
+          </button>
+          <input
+            v-model.number="jumpSeconds"
+            type="number"
+            min="1"
+            :max="Math.max(1, Math.floor(state.durationMs / 1000))"
+            :disabled="capabilities.playback === false"
+            aria-label="跳跃秒数"
+          />
+          <span>秒</span>
+          <button
+            type="button"
+            :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+            aria-label="向前跳跃"
+            @click="emitJump(1)"
+          >
+            前进
+          </button>
+        </span>
       </div>
     </div>
     <div class="control-items primary-controls">
@@ -183,7 +210,7 @@
       </template>
 
       <button
-        v-if="overflowItems.length || hasPrimaryTimeline"
+        v-if="overflowItems.length"
         ref="moreButtonRef"
         type="button"
         class="more-button"
@@ -394,33 +421,6 @@
           </button>
         </div>
       </template>
-      <span v-if="hasPrimaryTimeline" class="timeline-jump overflow-timeline-jump">
-        <button
-          type="button"
-          :disabled="capabilities.playback === false || state.seekMs <= 0"
-          aria-label="向后跳跃"
-          @click="emitJump(-1)"
-        >
-          后退
-        </button>
-        <input
-          v-model.number="jumpSeconds"
-          type="number"
-          min="1"
-          :max="Math.max(1, Math.floor(state.durationMs / 1000))"
-          :disabled="capabilities.playback === false"
-          aria-label="跳跃秒数"
-        />
-        <span>秒</span>
-        <button
-          type="button"
-          :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
-          aria-label="向前跳跃"
-          @click="emitJump(1)"
-        >
-          前进
-        </button>
-      </span>
     </div>
   </footer>
 </template>
@@ -508,8 +508,8 @@ watch(interactionActive, () => {
   if (canAutoHide.value) scheduleHide();
   else clearHideTimer();
 });
-watch([overflowItems, hasPrimaryTimeline], ([items, hasTimeline]) => {
-  if (!items.length && !hasTimeline) closeOverflow(false);
+watch(overflowItems, (items) => {
+  if (!items.length) closeOverflow(false);
 });
 
 onMounted(() => {
@@ -917,13 +917,26 @@ button.active {
   width: 100%;
   min-width: 0;
   flex: none;
+  grid-template-columns: auto minmax(80px, 1fr) auto max-content;
   grid-template-rows: 48px;
 }
 
-.overflow-timeline-jump {
-  grid-column: auto;
-  grid-row: auto;
-  justify-self: center;
+.primary-timeline-jump {
+  grid-column: 4;
+  grid-row: 1;
+  justify-self: end;
+  gap: clamp(2px, 0.5vw, 4px);
+  font-size: clamp(9px, 1vw, 11px);
+}
+
+.primary-timeline-jump button {
+  height: clamp(24px, 3vw, 28px);
+  padding: 0 clamp(4px, 0.7vw, 7px);
+}
+
+.primary-timeline-jump input {
+  width: clamp(42px, 5vw, 54px);
+  height: clamp(24px, 3vw, 28px);
 }
 
 .timeline.disabled {

@@ -73,10 +73,58 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("GmvPlayerView make-before-break", () => {
+  it("截图从当前活动视频帧生成 PNG 并触发浏览器下载", async () => {
+    const drawImage = vi.fn();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage,
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(
+      "data:image/png;base64,c25hcHNob3Q=",
+    );
+    let downloadedFileName = "";
+    let downloadedUrl = "";
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () {
+      downloadedFileName = this.download;
+      downloadedUrl = this.href;
+    });
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: source("http://127.0.0.1/live.flv"),
+        title: "东门/枪机",
+        deviceId: "device-1",
+        channelId: "channel-1",
+        capabilities: { snapshot: true },
+        controls: { items: ["snapshot"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const video = wrapper.find("video").element;
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 1920 },
+      videoHeight: { configurable: true, value: 1080 },
+    });
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    await wrapper.get('[aria-label="截图"]').trigger("click");
+
+    expect(drawImage).toHaveBeenCalledWith(video, 0, 0, 1920, 1080);
+    expect(downloadedUrl).toBe("data:image/png;base64,c25hcHNob3Q=");
+    expect(downloadedFileName).toMatch(/^东门-枪机-.*\.png$/);
+    expect(wrapper.emitted("snapshot")?.[0]?.[0]).toMatchObject({
+      deviceId: "device-1",
+      channelId: "channel-1",
+      fileName: downloadedFileName,
+    });
+    expect(wrapper.emitted("snapshotError")).toBeUndefined();
+    wrapper.unmount();
+  });
+
   it("展示媒体概览和可展开的运行时扩展信息", async () => {
     const wrapper = mount(GmvPlayerView, {
       props: {

@@ -200,7 +200,8 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  snapshot: [{ deviceId?: string; channelId?: string }];
+  snapshot: [{ deviceId?: string; channelId?: string; fileName: string }];
+  snapshotError: [{ message: string }];
   recordStart: [{ deviceId?: string; channelId?: string }];
   recordStop: [{ deviceId?: string; channelId?: string }];
   ptz: [GmvPtzCommand];
@@ -623,6 +624,45 @@ function toggleAudio() {
   if (activeVideo()) activeVideo()!.muted = !audioEnabled.value;
 }
 
+function captureSnapshot() {
+  const video = activeVideo();
+  if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) {
+    emit('snapshotError', { message: '当前播放画面尚未就绪，无法截图' });
+    return;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    emit('snapshotError', { message: '当前浏览器不支持画面截图' });
+    return;
+  }
+  try {
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const fileName = snapshotFileName();
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = fileName;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    try {
+      link.click();
+    } finally {
+      link.remove();
+    }
+    emit('snapshot', { ...basePayload.value, fileName });
+  } catch {
+    emit('snapshotError', { message: '画面截图失败，请检查媒体服务的跨域配置' });
+  }
+}
+
+function snapshotFileName() {
+  const name = (props.title || props.channelId || 'gmv').replace(/[\\/:*?"<>|]+/g, '-');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${name}-${timestamp}.png`;
+}
+
 function toggleTalk() {
   talking.value = !talking.value;
   if (talking.value) {
@@ -757,7 +797,7 @@ function handleControlAction(action: GmvPlayerControlAction) {
       toggleAudio();
       break;
     case 'snapshot':
-      emit('snapshot', basePayload.value);
+      captureSnapshot();
       break;
     case 'output-type-change':
       emit('outputTypeChange', action.outputType);

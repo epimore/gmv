@@ -190,7 +190,7 @@
       </template>
       <div class="multi-player">
         <GmvMultiGrid :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
-          @snapshot="handleMultiSnapshot" @ptz="handleMultiPtz"
+          @snapshot="handleMultiSnapshot" @snapshot-error="handleMultiSnapshotError" @ptz="handleMultiPtz"
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
           @playback-error="handleMultiPlaybackError"
           @playback-switch-cancel="handleMultiPlaybackSwitchCancel"
@@ -281,8 +281,8 @@
               <el-button :disabled="!canPlayback(channel) || playerRequesting"
                 :loading="isPlayRequesting('playback', channel)" @click="requestPlayback(channel)">回放</el-button>
               <el-button :disabled="!canPlayLive(channel)" @click="focusChannelInMultiView(channel)">多画面</el-button>
-              <el-button :disabled="!canSnapshot(channel)" :loading="snapshotLoading[channel.channel_id]"
-                @click="snapshot(channel)">抓拍</el-button>
+              <el-button :disabled="!canSnapshot(channel)" :loading="deviceSnapshotLoading[channel.channel_id]"
+                @click="requestDeviceSnapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
               <el-tooltip :content="channelBroadcastReason(channel)" placement="top" :disabled="canBroadcastChannel(channel)">
                 <el-button type="warning" :disabled="!canOperate || !canBroadcastChannel(channel) || !!broadcastSession"
@@ -327,7 +327,7 @@
             :output-type="channelOutputType(selectedChannel)" :output-options="liveOutputOptions"
             :output-switching="singleOutputSwitching" @output-type-change="handleSingleOutputTypeChange"
             :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
-            @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz"
+            @snapshot="handleSingleSnapshot" @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz"
             @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
             @playback-switch-cancel="handleSinglePlaybackSwitchCancel"
             @playback-rate-change="handlePlaybackRateChange" @playback-seek="handlePlaybackSeek"
@@ -539,7 +539,7 @@ const resourceSaving = ref(false);
 const broadcastStarting = ref(false);
 const broadcastSession = ref<GbBroadcastSession>();
 const broadcastScopeId = ref('');
-const snapshotLoading = reactive<Record<string, boolean>>({});
+const deviceSnapshotLoading = reactive<Record<string, boolean>>({});
 const channelOutputTypes = reactive<Record<string, LiveOutputType>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
 const treeChannelLoading = reactive<Record<string, boolean>>({});
@@ -661,7 +661,7 @@ const playerCapabilities = computed<GmvViewCapabilities>(() => {
   return {
     ptz: channel ? canPtz(channel) : false,
     presets: false,
-    snapshot: channel ? canSnapshot(channel) : false,
+    snapshot: true,
     record: false,
     playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
     audio: channel ? canAudio(channel) && hasAudio : false,
@@ -811,7 +811,7 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
   return {
     ptz: canPtz(cell.channel),
     presets: false,
-    snapshot: canSnapshot(cell.channel),
+    snapshot: true,
     record: false,
     playback: false,
     audio: hasAudio && canAudio(cell.channel),
@@ -1371,11 +1371,17 @@ async function focusChannelInMultiView(channel: GbChannelInfo) {
 function multiCellAtVisibleIndex(index: number) {
   return multiCells.value[multiVisibleStart.value + index];
 }
-async function handleMultiSnapshot(event: { index: number }) {
-  const cell = multiCellAtVisibleIndex(event.index);
-  if (!cell) return;
-  const channel = (treeChannelsByDevice[cell.device_id] || []).find((item) => item.channel_id === cell.channel_id);
-  if (channel) await snapshot(channel);
+function handleMultiSnapshot(event: { payload: { fileName: string } }) {
+  ElMessage.success('截图已保存：' + event.payload.fileName);
+}
+function handleMultiSnapshotError(event: { payload: { message: string } }) {
+  ElMessage.error(event.payload.message);
+}
+function handleSingleSnapshot(event: { fileName: string }) {
+  ElMessage.success('截图已保存：' + event.fileName);
+}
+function handleSingleSnapshotError(event: { message: string }) {
+  ElMessage.error(event.message);
 }
 async function handleMultiClose(event: { index: number }) {
   const cell = multiCellAtVisibleIndex(event.index);
@@ -1914,9 +1920,9 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
     }
   }
 }
-async function snapshot(channel: GbChannelInfo) {
-  if (snapshotLoading[channel.channel_id]) return;
-  snapshotLoading[channel.channel_id] = true;
+async function requestDeviceSnapshot(channel: GbChannelInfo) {
+  if (deviceSnapshotLoading[channel.channel_id]) return;
+  deviceSnapshotLoading[channel.channel_id] = true;
   try {
     await takeGbSnapshot(channel.device_id, channel.channel_id);
     selectedChannel.value = channel;
@@ -1925,7 +1931,7 @@ async function snapshot(channel: GbChannelInfo) {
   } catch (error) {
     ElMessage.error(errorMessage(error, '抓拍失败'));
   } finally {
-    snapshotLoading[channel.channel_id] = false;
+    deviceSnapshotLoading[channel.channel_id] = false;
   }
 }
 async function loadImages(channel: GbChannelInfo) {

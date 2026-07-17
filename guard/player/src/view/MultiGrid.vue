@@ -40,6 +40,7 @@
           v-if="cells[index]?.sources.length"
           v-bind="cells[index]"
           @snapshot="(payload) => emit('snapshot', { index, payload })"
+          @snapshot-error="(payload) => emit('snapshotError', { index, payload })"
           @record-start="(payload) => emit('recordStart', { index, payload })"
           @record-stop="(payload) => emit('recordStop', { index, payload })"
           @ptz="(payload) => emit('ptz', { index, payload })"
@@ -100,7 +101,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:gridSize': [value: number];
-  snapshot: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
+  snapshot: [{ index: number; payload: { deviceId?: string; channelId?: string; fileName: string } }];
+  snapshotError: [{ index: number; payload: { message: string } }];
   recordStart: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
   recordStop: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
   ptz: [{ index: number; payload: GmvPtzCommand }];
