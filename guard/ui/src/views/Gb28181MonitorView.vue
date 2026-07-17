@@ -315,21 +315,14 @@
     <el-dialog v-model="playerDialog" :title="playerDialogTitle" width="960px" class="monitor-player-dialog"
       destroy-on-close @close="stopCurrentStream">
       <div v-if="selectedChannel" class="monitor-player">
-        <div class="monitor-player-toolbar">
-          <span>{{ selectedChannelTitle }}</span>
-          <el-select v-if="lastAction === '实时直播'" :model-value="selectedChannel ? channelOutputType(selectedChannel) : 'flv'"
-            :disabled="singleOutputSwitching" style="width: 128px" aria-label="当前画面播放方式"
-            @change="handleSingleOutputTypeChange">
-            <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
-          </el-select>
-        </div>
         <div class="monitor-player-stage">
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
-            :poster="playerPoster" :osd="playerOsd" :capabilities="playerCapabilities"
+            :poster="playerPoster" :capabilities="playerCapabilities"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
-            :output-switching="singleOutputSwitching"
+            :output-type="channelOutputType(selectedChannel)" :output-options="liveOutputOptions"
+            :output-switching="singleOutputSwitching" @output-type-change="handleSingleOutputTypeChange"
             :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
             @snapshot="selectedChannel && snapshot(selectedChannel)" @ptz="handlePlayerPtz"
             @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
@@ -680,7 +673,8 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const items: GmvPlayerControlsConfig['items'] = ['play'];
   if (channel && canAudio(channel)) items.push('audio');
   if (channel && canSnapshot(channel)) items.push('snapshot');
-  items.push('fullscreen');
+  if (!playback) items.push('outputType');
+  items.push('info', 'fullscreen');
   if (!playback && channel && canPtz(channel)) items.push('ptz');
   if (playback && channel && canPlayback(channel)) items.push('playbackRate', 'timeline');
   return { items, visibility: 'auto', autoHideDelayMs: 3000, playbackRates: [0.5, 1, 2, 4] };
@@ -698,10 +692,6 @@ const playbackEndTimeMs = computed(() => {
   const endSec = lastStream.value?.playback_end_time_sec;
   return endSec ? endSec * 1_000 : undefined;
 });
-const playerOsd = computed(() => [
-  { id: 'channel', text: selectedChannelTitle.value, x: 3, y: 5 },
-  { id: 'mode', text: lastAction.value || 'monitor', x: 3, y: 12 },
-]);
 const playerSources = computed<GmvSource[]>(() => {
   const endpoint = lastStream.value?.endpoint;
   if (!endpoint) return [];
@@ -729,10 +719,6 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
     status: cell.status,
     viewers: 1,
     poster: cell.poster,
-    osd: [
-      { id: 'channel', text: cell.title, x: 3, y: 5 },
-      { id: 'mode', text: '实时直播', x: 3, y: 12 },
-    ],
     capabilities,
     controls: multiCellControls(capabilities),
     outputType: cell.output_type,
@@ -828,7 +814,8 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
 function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControlsConfig {
   const items: GmvPlayerControlsConfig['items'] = ['play'];
   if (capabilities.snapshot) items.push('snapshot');
-  items.push('fullscreen');
+  items.push('outputType');
+  items.push('info', 'fullscreen');
   const overflowItems: GmvPlayerControlsConfig['items'] = [];
   if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.audio) overflowItems.push('audio');
@@ -2366,31 +2353,13 @@ onBeforeUnmount(() => {
 
 .monitor-player {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 10px;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 560px;
   overflow: hidden;
   border: 1px solid rgba(100, 203, 255, .18);
   border-radius: 8px;
   background: #02050a;
   padding: 10px;
-}
-
-.monitor-player-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 34px;
-  color: var(--muted);
-}
-
-.monitor-player-toolbar span {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .monitor-player-stage {
@@ -2444,37 +2413,41 @@ onBeforeUnmount(() => {
   background: #02050a;
 }
 
-.monitor-player :deep(.player-topbar) {
+.monitor-player :deep(.media-info-panel),
+.multi-player :deep(.media-info-panel) {
   position: absolute;
-  inset: 0 0 auto;
-  z-index: 2;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
+  right: 10px;
+  bottom: 52px;
+  z-index: 5;
+  display: grid;
+  gap: 7px;
+  width: min(360px, calc(100% - 20px));
   padding: 10px 12px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, .72), transparent);
+  border: 1px solid rgba(100, 203, 255, .22);
+  border-radius: 8px;
+  background: rgba(3, 10, 24, .92);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .42);
 }
 
-.monitor-player :deep(.player-topbar strong) {
-  display: block;
-  color: var(--text);
-  font-size: 14px;
+.monitor-player :deep(.media-info-panel div),
+.multi-player :deep(.media-info-panel div) {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
 }
 
-.monitor-player :deep(.player-topbar span) {
+.monitor-player :deep(.media-info-panel span),
+.multi-player :deep(.media-info-panel span) {
   color: var(--muted);
   font-size: 12px;
 }
 
-.monitor-player :deep(.status-strip) {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.monitor-player :deep(.status-strip b) {
-  color: var(--green);
+.monitor-player :deep(.media-info-panel b),
+.multi-player :deep(.media-info-panel b) {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .monitor-player :deep(.reconnect-banner) {
@@ -2684,24 +2657,27 @@ onBeforeUnmount(() => {
 }
 
 .multi-player-panel.is-multi-fullscreen .multi-player {
+  grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   height: 100%;
 }
 
 .multi-player-panel.is-multi-fullscreen .multi-player :deep(.multi-grid) {
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
 
 .multi-player-panel.is-multi-fullscreen .multi-player :deep(.grid-body) {
+  aspect-ratio: auto;
   min-height: 0;
 }
 
 .multi-player {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
   gap: 12px;
-  min-height: 620px;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid rgba(100, 203, 255, .18);
   border-radius: 8px;
@@ -2711,10 +2687,10 @@ onBeforeUnmount(() => {
 
 .multi-player :deep(.multi-grid) {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
   gap: 10px;
-  height: 100%;
-  min-height: 548px;
+  height: auto;
+  min-height: 0;
 }
 
 .multi-player :deep(.grid-toolbar) {
@@ -2736,6 +2712,7 @@ onBeforeUnmount(() => {
 }
 
 .multi-player :deep(.grid-body) {
+  aspect-ratio: 16 / 9;
   min-height: 0;
   gap: 8px;
 }
@@ -2767,37 +2744,12 @@ onBeforeUnmount(() => {
   color: var(--text);
 }
 
-.multi-player :deep(.player-topbar) {
-  position: absolute;
-  inset: 0 0 auto;
-  z-index: 2;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, .68), transparent);
-}
-
-.multi-player :deep(.player-topbar strong) {
-  display: block;
-  color: var(--text);
-  font-size: 14px;
-}
-
-.multi-player :deep(.player-topbar span) {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.multi-player :deep(.status-strip) {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.multi-player :deep(.status-strip b) {
-  color: var(--green);
+.multi-player :deep(.media-info-panel) {
+  right: 6px;
+  bottom: 48px;
+  gap: 5px;
+  width: min(280px, calc(100% - 12px));
+  padding: 7px 8px;
 }
 
 .multi-player :deep(.ptz-panel) {

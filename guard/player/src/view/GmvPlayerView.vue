@@ -39,17 +39,6 @@
       <span v-if="startupProgress && startupProgress.elapsedMs >= 3000" class="startup-progress-text">{{ startupProgressText }}</span>
     </div>
 
-    <header class="player-topbar">
-      <div>
-        <strong>{{ title || 'GMV Player' }}</strong>
-        <span>{{ deviceId || '-' }} / {{ channelId || '-' }}</span>
-      </div>
-      <div class="status-strip">
-        <b>{{ statusLabel }}</b>
-        <span>{{ viewers ?? '-' }} 人观看</span>
-      </div>
-    </header>
-
     <div v-if="activePlaybackReady && (isLoading || outputSwitching)" class="reconnect-banner startup-switch-banner">
       <span>{{ startupText || startupProgressText || '正在切换播放方式，当前画面继续播放' }}</span>
       <button v-if="startupCanCancel || (startupProgress && startupProgress.elapsedMs >= startupProgress.checkpointMs)" type="button" @click="cancelPendingPlaybackSwitch">保持当前播放</button>
@@ -61,6 +50,14 @@
     </div>
 
     <div v-if="recording" class="recording-indicator" aria-live="polite">● 录像中</div>
+
+    <aside v-if="infoOpen" class="media-info-panel" aria-label="媒体基本信息">
+      <div><span>名称</span><b>{{ title || '-' }}</b></div>
+      <div><span>设备 ID</span><b>{{ deviceId || '-' }}</b></div>
+      <div><span>通道 ID</span><b>{{ channelId || '-' }}</b></div>
+      <div><span>状态</span><b>{{ statusLabel }}</b></div>
+      <div v-if="viewers !== undefined"><span>观看人数</span><b>{{ viewers }}</b></div>
+    </aside>
 
     <aside
       v-if="capabilities.ptz !== false && ptzOpen"
@@ -102,6 +99,8 @@
       :state="controlsState"
       :capabilities="capabilities"
       :sources="sources"
+      :output-options="outputOptions"
+      :output-switching="outputSwitching"
       :fullscreen-supported="fullscreenSupported"
       @action="handleControlAction"
       @visibility-change="handleControlsVisibilityChange"
@@ -119,6 +118,7 @@ import type {
   GmvPlayerControlAction,
   GmvPlayerControlsConfig,
   GmvPlayerControlsState,
+  GmvPlayerOutputOption,
   GmvPtzCommand,
   GmvSource,
   GmvViewCapabilities,
@@ -126,7 +126,7 @@ import type {
 import PlayerControls from './PlayerControls.vue';
 
 const defaultControls: GmvPlayerControlsConfig = {
-  items: ['play', 'audio', 'snapshot', 'fullscreen', 'ptz', 'record', 'talk', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
+  items: ['play', 'audio', 'snapshot', 'info', 'fullscreen', 'ptz', 'record', 'talk', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
   visibility: 'auto',
   autoHideDelayMs: 3000,
   playbackRates: [0.5, 1, 2, 4],
@@ -145,6 +145,8 @@ const props = withDefaults(
     aiBoxes?: GmvAiBox[];
     capabilities?: GmvViewCapabilities;
     controls?: GmvPlayerControlsConfig;
+    outputType?: string;
+    outputOptions?: GmvPlayerOutputOption[];
     outputSwitching?: boolean;
     startupText?: string;
     startupCanCancel?: boolean;
@@ -159,6 +161,7 @@ const props = withDefaults(
     osd: () => [],
     aiBoxes: () => [],
     capabilities: () => ({}),
+    outputOptions: () => [],
     controlsVisible: undefined,
   },
 );
@@ -177,6 +180,7 @@ const emit = defineEmits<{
   playbackStateChange: [{ paused: boolean }];
   playbackProgress: [{ mediaTimeMs: number }];
   streamSwitch: [{ source: GmvSource }];
+  outputTypeChange: [outputType: string];
   playing: [{ source?: GmvSource }];
   playbackError: [{ message: string; source?: GmvSource }];
   playbackSwitchCancel: [];
@@ -224,6 +228,7 @@ const isLoading = ref(false);
 const lastError = ref('');
 const startupProgress = ref<{ elapsedMs: number; checkpointMs: number; hardTimeoutMs: number }>();
 const isFullscreen = ref(false);
+const infoOpen = ref(false);
 const ptzOpen = ref(false);
 const recording = ref(false);
 const talking = ref(false);
@@ -250,6 +255,7 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
   playbackState: viewState.value,
   audioEnabled: audioEnabled.value,
   fullscreen: isFullscreen.value,
+  infoOpen: infoOpen.value,
   ptzOpen: ptzOpen.value,
   recording: recording.value,
   talking: talking.value,
@@ -259,6 +265,7 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
   timelineStartTimeMs: props.playbackStartTimeMs,
   timelineEndTimeMs: props.playbackEndTimeMs,
   selectedSourceUrl: selectedSourceUrl.value,
+  selectedOutputType: props.outputType ?? '',
 }));
 const statusLabel = computed(() => {
   if (viewState.value === 'playing') return '播放中';
@@ -568,6 +575,10 @@ function closePtzPanel() {
   setControlsInteraction(false);
 }
 
+function toggleInfoPanel() {
+  infoOpen.value = !infoOpen.value;
+}
+
 function togglePtzPanel() {
   if (props.capabilities.ptz === false) return;
   if (ptzOpen.value) {
@@ -579,7 +590,10 @@ function togglePtzPanel() {
 
 function handleControlsVisibilityChange(visible: boolean) {
   controlsAreVisible.value = visible;
-  if (!visible) closePtzPanel();
+  if (!visible) {
+    infoOpen.value = false;
+    closePtzPanel();
+  }
 }
 
 function handleControlAction(action: GmvPlayerControlAction) {
@@ -592,6 +606,12 @@ function handleControlAction(action: GmvPlayerControlAction) {
       break;
     case 'snapshot':
       emit('snapshot', basePayload.value);
+      break;
+    case 'output-type-change':
+      emit('outputTypeChange', action.outputType);
+      break;
+    case 'info-toggle':
+      toggleInfoPanel();
       break;
     case 'fullscreen-toggle':
       void toggleFullscreen();

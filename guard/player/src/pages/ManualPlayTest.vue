@@ -80,7 +80,7 @@ const cells = ref<GmvGridCell[]>(
       aiOverlay: true,
     },
     controls: {
-      items: ['play', 'audio', 'snapshot', 'fullscreen'],
+      items: ['play', 'audio', 'snapshot', 'info', 'fullscreen'],
       overflowItems: ['ptz', 'record', 'talk', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
       visibility: 'always',
       autoHideDelayMs: 3000,

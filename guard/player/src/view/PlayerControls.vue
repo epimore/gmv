@@ -40,6 +40,27 @@
         >
           截图
         </button>
+        <select
+          v-else-if="control === 'outputType'"
+          :value="state.selectedOutputType"
+          :disabled="outputSwitching || !outputOptions.length"
+          aria-label="媒体输出格式"
+          @change="emitOutputTypeChange($event)"
+        >
+          <option v-for="option in outputOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+        <button
+          v-else-if="control === 'info'"
+          type="button"
+          :class="{ active: state.infoOpen }"
+          aria-label="切换媒体信息"
+          :aria-expanded="state.infoOpen"
+          @click="emitSimple('info-toggle')"
+        >
+          信息
+        </button>
         <button
           v-else-if="control === 'fullscreen'"
           type="button"
@@ -232,6 +253,27 @@
         >
           截图
         </button>
+        <select
+          v-else-if="control === 'outputType'"
+          :value="state.selectedOutputType"
+          :disabled="outputSwitching || !outputOptions.length"
+          aria-label="媒体输出格式"
+          @change="emitOutputTypeChange($event, true)"
+        >
+          <option v-for="option in outputOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+        <button
+          v-else-if="control === 'info'"
+          type="button"
+          :class="{ active: state.infoOpen }"
+          aria-label="切换媒体信息"
+          :aria-expanded="state.infoOpen"
+          @click="emitSimple('info-toggle', true)"
+        >
+          信息
+        </button>
         <button
           v-else-if="control === 'fullscreen'"
           type="button"
@@ -391,6 +433,7 @@ import type {
   GmvPlayerControlAction,
   GmvPlayerControlsConfig,
   GmvPlayerControlsState,
+  GmvPlayerOutputOption,
   GmvSource,
   GmvViewCapabilities,
 } from "../core/types";
@@ -401,11 +444,15 @@ const props = withDefaults(
     state: GmvPlayerControlsState;
     capabilities?: GmvViewCapabilities;
     sources?: GmvSource[];
+    outputOptions?: GmvPlayerOutputOption[];
+    outputSwitching?: boolean;
     fullscreenSupported?: boolean;
   }>(),
   {
     capabilities: () => ({}),
     sources: () => [],
+    outputOptions: () => [],
+    outputSwitching: false,
     fullscreenSupported: false,
   },
 );
@@ -597,6 +644,7 @@ function emitSimple(
         | "play-toggle"
         | "audio-toggle"
         | "snapshot"
+        | "info-toggle"
         | "fullscreen-toggle"
         | "ptz-toggle"
         | "record-toggle"
@@ -616,6 +664,11 @@ function emitSourceChange(event: Event, fromOverflow = false) {
 
 function emitRateChange(event: Event, fromOverflow = false) {
   emit("action", { type: "rate-change", rate: Number((event.target as HTMLSelectElement).value) });
+  afterAction(fromOverflow);
+}
+
+function emitOutputTypeChange(event: Event, fromOverflow = false) {
+  emit("action", { type: "output-type-change", outputType: (event.target as HTMLSelectElement).value });
   afterAction(fromOverflow);
 }
 

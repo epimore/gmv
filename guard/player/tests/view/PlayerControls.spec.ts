@@ -9,12 +9,14 @@ const playingState: GmvPlayerControlsState = {
   playbackState: "playing",
   audioEnabled: false,
   fullscreen: false,
+  infoOpen: false,
   ptzOpen: false,
   recording: false,
   talking: false,
   playbackRate: 1,
   seekMs: 0,
   selectedSourceUrl: "stream-a",
+  selectedOutputType: "flv",
 };
 
 function mountControls(
@@ -39,6 +41,10 @@ function mountControls(
       sources: [
         { protocol: "flv", url: "stream-a", label: "主码流" },
         { protocol: "flv", url: "stream-b", label: "子码流" },
+      ],
+      outputOptions: [
+        { value: "flv", label: "HTTP-FLV" },
+        { value: "hls", label: "HLS-fMP4" },
       ],
     },
     attachTo: document.body,
@@ -86,6 +92,39 @@ describe("PlayerControls", () => {
     await ptzButton.trigger("click");
     expect(ptzButton.attributes("aria-expanded")).toBe("false");
     expect(wrapper.find(".ptz-panel").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("基本信息只在点击信息按钮后展示，并随控件隐藏关闭", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        deviceId: "device-1",
+        channelId: "channel-1",
+        title: "东门枪机",
+        status: "online",
+        viewers: 2,
+        controls: { items: ["info"], visibility: "always" },
+      },
+      attachTo: document.body,
+    });
+    const infoButton = wrapper.get('[aria-label="切换媒体信息"]');
+
+    expect(wrapper.find(".player-topbar").exists()).toBe(false);
+    expect(wrapper.find(".media-info-panel").exists()).toBe(false);
+
+    await infoButton.trigger("click");
+    expect(infoButton.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.get(".media-info-panel").text()).toContain("东门枪机");
+    expect(wrapper.get(".media-info-panel").text()).toContain("device-1");
+    expect(wrapper.get(".media-info-panel").text()).toContain("channel-1");
+    expect(wrapper.get(".media-info-panel").text()).toContain("在线");
+    expect(wrapper.get(".media-info-panel").text()).toContain("2");
+
+    wrapper.findComponent(PlayerControls).vm.$emit("visibilityChange", false);
+    await nextTick();
+    expect(wrapper.find(".media-info-panel").exists()).toBe(false);
+    expect(infoButton.attributes("aria-expanded")).toBe("false");
     wrapper.unmount();
   });
 
@@ -153,7 +192,7 @@ describe("PlayerControls", () => {
 
   it("按单路配置分别渲染主操作和竖向扩展操作", async () => {
     const wrapper = mountControls({
-      items: ["play", "snapshot", "fullscreen"],
+      items: ["play", "snapshot", "info", "fullscreen"],
       overflowItems: ["audio", "record"],
       visibility: "always",
     });
@@ -161,6 +200,7 @@ describe("PlayerControls", () => {
     expect(wrapper.findAll(".primary-controls > button").map((item) => item.text())).toEqual([
       "暂停",
       "截图",
+      "信息",
       "全屏",
       "…",
     ]);
@@ -324,16 +364,20 @@ describe("PlayerControls", () => {
 
   it("发送类型化 action 并携带选择值", async () => {
     const wrapper = mountControls({
-      items: ["snapshot", "playbackRate"],
+      items: ["snapshot", "outputType", "info", "playbackRate"],
       visibility: "always",
       playbackRates: [1, 2],
     });
 
     await wrapper.get('[aria-label="截图"]').trigger("click");
+    await wrapper.get('[aria-label="媒体输出格式"]').setValue("hls");
+    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
     await wrapper.get('[aria-label="播放倍速"]').setValue("2");
 
     expect(wrapper.emitted("action")).toEqual([
       [{ type: "snapshot" }],
+      [{ type: "output-type-change", outputType: "hls" }],
+      [{ type: "info-toggle" }],
       [{ type: "rate-change", rate: 2 }],
     ]);
     wrapper.unmount();

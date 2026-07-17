@@ -93,6 +93,8 @@ export type GmvPlayerControl =
   | 'play'
   | 'audio'
   | 'snapshot'
+  | 'outputType'
+  | 'info'
   | 'fullscreen'
   | 'ptz'
   | 'record'
@@ -116,6 +118,7 @@ export interface GmvPlayerControlsState {
   playbackState: GmvDeviceStatus;
   audioEnabled: boolean;
   fullscreen: boolean;
+  infoOpen: boolean;
   ptzOpen: boolean;
   recording: boolean;
   talking: boolean;
@@ -125,12 +128,20 @@ export interface GmvPlayerControlsState {
   timelineStartTimeMs?: number;
   timelineEndTimeMs?: number;
   selectedSourceUrl: string;
+  selectedOutputType: string;
+}
+
+export interface GmvPlayerOutputOption {
+  value: string;
+  label: string;
 }
 
 export type GmvPlayerControlAction =
   | { type: 'play-toggle' }
   | { type: 'audio-toggle' }
   | { type: 'snapshot' }
+  | { type: 'output-type-change'; outputType: string }
+  | { type: 'info-toggle' }
   | { type: 'fullscreen-toggle' }
   | { type: 'ptz-toggle' }
   | { type: 'record-toggle' }
