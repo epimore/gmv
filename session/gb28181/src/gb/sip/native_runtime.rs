@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, mpsc as std_mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::dashmap::DashMap;
@@ -10,15 +10,15 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Protocol};
 use base::tokio::runtime::Handle;
-use base::tokio::sync::mpsc;
+use base::tokio::sync::{mpsc, oneshot};
 use base::tokio::task::JoinHandle;
 use base::tokio::time;
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::{
     AuthAlgorithm, AuthCredential, CredentialKind, SipAuthLookupResult, SipDialogRequest,
     SipIncomingInviteAllow, SipInviteResponse, SipOutboundInvite, SipOutboundMessage,
-    SipOutboundSubscribe, SipRegisteredSource, SipRestoredDialogRequest, SipRuntime,
-    SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind, SipRuntimeSockets,
+    SipOutboundSubscribe, SipRecoverySource, SipRegisteredSource, SipRestoredDialogRequest,
+    SipRuntime, SipRuntimeConfig, SipRuntimeEvent, SipRuntimeEventKind, SipRuntimeSockets,
     SipTransportProtocol,
 };
 
@@ -55,6 +55,14 @@ struct AuthCompletion {
     result: SipAuthLookupResult,
 }
 
+#[derive(Debug)]
+pub struct NativeRecoverySource {
+    pub device_id: String,
+    pub remote_address: String,
+    pub protocol: SipTransportProtocol,
+    pub deadline: Instant,
+}
+
 enum RuntimeCommand {
     CompleteAuth(AuthCompletion),
     SendMessage(SipOutboundMessage),
@@ -63,8 +71,15 @@ enum RuntimeCommand {
     SendRestoredDialog(SipRestoredDialogRequest),
     RespondInvite(SipInviteResponse),
     SendSubscribe(SipOutboundSubscribe),
-    CloseTransport { association_id: u64, status: i32 },
+    CloseTransport {
+        association_id: u64,
+        status: i32,
+    },
     AllowRegisteredSource(SipRegisteredSource),
+    AllowRecoverySources {
+        sources: Vec<NativeRecoverySource>,
+        completion: oneshot::Sender<Result<usize, String>>,
+    },
     RemoveRegisteredSource(String),
     AllowIncomingInvite(SipIncomingInviteAllow),
 }
@@ -243,6 +258,34 @@ impl NativeSipRuntimeHandle {
 
     pub fn allow_registered_source(&self, source: SipRegisteredSource) -> GlobalResult<()> {
         self.try_send(RuntimeCommand::AllowRegisteredSource(source))
+    }
+
+    pub async fn allow_recovery_sources(
+        &self,
+        sources: Vec<NativeRecoverySource>,
+    ) -> GlobalResult<usize> {
+        if sources.is_empty() {
+            return Ok(0);
+        }
+        let (completion, result) = oneshot::channel();
+        self.try_send(RuntimeCommand::AllowRecoverySources {
+            sources,
+            completion,
+        })?;
+        result
+            .await
+            .map_err(|err| {
+                GlobalError::new_sys_error(
+                    &format!("native SIP recovery source acknowledgement was dropped: {err}"),
+                    |msg| error!("{msg}"),
+                )
+            })?
+            .map_err(|err| {
+                GlobalError::new_sys_error(
+                    &format!("install native SIP recovery sources failed: {err}"),
+                    |msg| error!("{msg}"),
+                )
+            })
     }
 
     pub fn remove_registered_source(&self, device_id: String) -> GlobalResult<()> {
@@ -450,6 +493,41 @@ impl NativeSipRuntimeService {
                                         source.device_id, source.remote_address
                                     );
                                 }
+                            }
+                            RuntimeCommand::AllowRecoverySources {
+                                sources,
+                                completion,
+                            } => {
+                                let now = Instant::now();
+                                let mut installed = 0usize;
+                                let mut failure = None;
+                                for source in sources {
+                                    let ttl = source.deadline.saturating_duration_since(now);
+                                    if ttl.is_zero() {
+                                        continue;
+                                    }
+                                    let recovery_source = SipRecoverySource {
+                                        device_id: source.device_id,
+                                        remote_address: source.remote_address,
+                                        protocol: source.protocol,
+                                        ttl,
+                                    };
+                                    if let Err(err) =
+                                        runtime.allow_recovery_source(&recovery_source)
+                                    {
+                                        failure = Some(format!(
+                                            "device_id={}, remote_address={}, err={err}",
+                                            recovery_source.device_id,
+                                            recovery_source.remote_address
+                                        ));
+                                        break;
+                                    }
+                                    installed += 1;
+                                }
+                                let _ = completion.send(match failure {
+                                    Some(err) => Err(err),
+                                    None => Ok(installed),
+                                });
                             }
                             RuntimeCommand::RemoveRegisteredSource(device_id) => {
                                 if let Err(err) = runtime.remove_registered_source(&device_id) {

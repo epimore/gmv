@@ -1,9 +1,10 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base::chrono::{Duration as TimeDelta, Local};
 use base::dashmap::DashMap;
+use base::dashmap::mapref::entry::Entry;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
 use base::logger::episode::{EpisodeDecision, FailureEpisode};
@@ -47,9 +48,17 @@ pub struct Register {
 pub struct Inner {
     pub event_tx: Sender<Event>,
     pub io_map: Network,
-    recovering_devices: DashMap<Arc<str>, ()>,
+    recovering_devices: DashMap<Arc<str>, u64>,
+    next_recovery_id: AtomicU64,
+    device_transition_lock: Mutex<()>,
     device_recovery_limit: Arc<Semaphore>,
     device_recovery_failure_episode: Mutex<FailureEpisode>,
+}
+
+enum DeviceRecoveryOutcome {
+    Recovered { registration_expires: u32 },
+    AlreadyLive,
+    Superseded,
 }
 
 impl Register {
@@ -71,6 +80,8 @@ impl Register {
                 net_device_map: Default::default(),
             },
             recovering_devices: DashMap::new(),
+            next_recovery_id: AtomicU64::new(1),
+            device_transition_lock: Mutex::new(()),
             device_recovery_limit: Arc::new(Semaphore::new(MAX_DEVICE_RECOVERY_CONCURRENCY)),
             device_recovery_failure_episode: Mutex::new(FailureEpisode::default()),
         });
@@ -160,12 +171,12 @@ impl Register {
         }
 
         let inner = Self::get().inner.clone();
-        if inner
-            .recovering_devices
-            .insert(device_id.clone(), ())
-            .is_some()
-        {
-            return Ok(());
+        let recovery_id = inner.next_recovery_id.fetch_add(1, Ordering::Relaxed);
+        match inner.recovering_devices.entry(device_id.clone()) {
+            Entry::Occupied(_) => return Ok(()),
+            Entry::Vacant(entry) => {
+                entry.insert(recovery_id);
+            }
         }
         let permit = match inner.device_recovery_limit.clone().try_acquire_owned() {
             Ok(permit) => permit,
@@ -180,14 +191,33 @@ impl Register {
         };
         base::tokio::spawn(async move {
             let _permit = permit;
-            let result = Self::recover_device_session(&device_id, association).await;
-            inner.recovering_devices.remove(&device_id);
+            let result = Self::recover_device_session(&device_id, association, recovery_id).await;
+            inner
+                .recovering_devices
+                .remove_if(&device_id, |_, current| *current == recovery_id);
             match result {
-                Ok(()) => {
+                Ok(DeviceRecoveryOutcome::Recovered {
+                    registration_expires,
+                }) => {
                     record_device_recovery_success(&inner);
                     db_task::submit(DbTask::TouchDeviceHeartbeat {
                         device_id: device_id.to_string(),
                     });
+                    crate::gb::sip::adapter::schedule_post_online_sync(
+                        device_id.to_string(),
+                        registration_expires,
+                    );
+                }
+                Ok(DeviceRecoveryOutcome::AlreadyLive) => {
+                    record_device_recovery_success(&inner);
+                    db_task::submit(DbTask::TouchDeviceHeartbeat {
+                        device_id: device_id.to_string(),
+                    });
+                }
+                Ok(DeviceRecoveryOutcome::Superseded) => {
+                    base::log::trace!(
+                        "device keepalive recovery superseded: device_id={device_id}"
+                    );
                 }
                 Err(err) => {
                     base::log::trace!(
@@ -203,9 +233,11 @@ impl Register {
     async fn recover_device_session(
         device_id: &Arc<str>,
         association: Association,
-    ) -> GlobalResult<()> {
+        recovery_id: u64,
+    ) -> GlobalResult<DeviceRecoveryOutcome> {
         if Self::has_session(device_id) {
-            return Self::device_heart(device_id, association);
+            Self::device_heart(device_id, association)?;
+            return Ok(DeviceRecoveryOutcome::AlreadyLive);
         }
         let oauth = GmvOauth::read_gmv_oauth_by_device_id(device_id)
             .await?
@@ -273,12 +305,45 @@ impl Register {
         if device.enable_lr != 0 {
             session.enable_lr();
         }
-        Self::register_device(device_id.clone(), session)
+        if Self::register_recovered_device(device_id.clone(), session, recovery_id)? {
+            Ok(DeviceRecoveryOutcome::Recovered {
+                registration_expires: u32::try_from(remaining).unwrap_or(u32::MAX),
+            })
+        } else {
+            Ok(DeviceRecoveryOutcome::Superseded)
+        }
     }
 
     pub fn register_device(device_id: Arc<str>, ds: DeviceSession) -> GlobalResult<()> {
         let arc = Self::get().inner.clone();
+        arc.recovering_devices.remove(&device_id);
+        let _transition = arc.device_transition_lock.lock();
+        Self::register_device_by_inner(device_id, ds, &arc)
+    }
 
+    fn register_recovered_device(
+        device_id: Arc<str>,
+        ds: DeviceSession,
+        recovery_id: u64,
+    ) -> GlobalResult<bool> {
+        let arc = Self::get().inner.clone();
+        let _transition = arc.device_transition_lock.lock();
+        let recovery_is_current = arc
+            .recovering_devices
+            .get(&device_id)
+            .is_some_and(|current| *current == recovery_id);
+        if !recovery_is_current || arc.io_map.session.contains_key(&device_id) {
+            return Ok(false);
+        }
+        Self::register_device_by_inner(device_id, ds, &arc)?;
+        Ok(true)
+    }
+
+    fn register_device_by_inner(
+        device_id: Arc<str>,
+        ds: DeviceSession,
+        arc: &Arc<Inner>,
+    ) -> GlobalResult<()> {
         let heartbeat_sec = ds.heartbeat_sec;
         let registration_duration = ds.registration_duration;
         let association = ds.association.clone();
@@ -378,6 +443,8 @@ impl Register {
 
     pub fn remove_device(device_id: &Arc<str>) {
         let inner = &Self::get().inner;
+        inner.recovering_devices.remove(device_id);
+        let _transition = inner.device_transition_lock.lock();
         Self::remove_device_by_inner(device_id, inner);
         GeneralCache::reset_device_state(device_id.as_ref());
     }
@@ -574,11 +641,83 @@ fn remove_native_registered_source(device_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::heartbeat_timeout;
+    use super::{DeviceRecoveryOutcome, Register, heartbeat_timeout};
+    use crate::storage::entity::{
+        GmvDevice, GmvOauth, TEST_STORAGE_TEST_LOCK, enable_test_storage,
+    };
+    use base::chrono::{Duration as TimeDelta, Local};
+    use base::net::state::{Association, Protocol};
+    use base::tokio::runtime::Builder;
+    use base::tokio_util::sync::CancellationToken;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
     fn heartbeat_timeout_includes_one_second_grace() {
         assert_eq!(heartbeat_timeout(60), Duration::from_secs(181));
+    }
+
+    #[test]
+    fn valid_keepalive_restores_device_session_from_persisted_lease() {
+        let _test_lock = TEST_STORAGE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _storage = enable_test_storage(GmvOauth {
+            device_id: "34020000001320000001".to_string(),
+            domain_id: "34020000002000000001".to_string(),
+            domain: "3402000000".to_string(),
+            status: 1,
+            heartbeat_sec: 60,
+            ..GmvOauth::default()
+        });
+        let cancel = CancellationToken::new();
+
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                Register::init(cancel.child_token()).expect("register init");
+                let now = Local::now().naive_local();
+                let device_id: Arc<str> = Arc::from("34020000001320000001");
+                GmvDevice {
+                    device_id: device_id.to_string(),
+                    transport: "UDP".to_string(),
+                    register_expires: 300,
+                    register_time: now - TimeDelta::seconds(10),
+                    online_expire_time: Some(now + TimeDelta::seconds(120)),
+                    local_addr: "192.0.2.10:15060".to_string(),
+                    contact_uri: "sip:34020000001320000001@192.0.2.10:15060".to_string(),
+                    ..GmvDevice::default()
+                }
+                .insert_single_gmv_device_by_register()
+                .await
+                .expect("persist device snapshot");
+                let recovery_id = 7;
+                Register::get()
+                    .inner
+                    .recovering_devices
+                    .insert(device_id.clone(), recovery_id);
+                let association = Association::new(
+                    "127.0.0.1:5060"
+                        .parse::<SocketAddr>()
+                        .expect("local address"),
+                    "192.0.2.10:16060"
+                        .parse::<SocketAddr>()
+                        .expect("remote address"),
+                    Protocol::UDP,
+                );
+
+                let outcome =
+                    Register::recover_device_session(&device_id, association.clone(), recovery_id)
+                        .await
+                        .expect("recover device session");
+                assert!(matches!(outcome, DeviceRecoveryOutcome::Recovered { .. }));
+                let session = Register::get_device_session(&device_id).expect("device session");
+                assert_eq!(session.association, association);
+                Register::remove_device(&device_id);
+                cancel.cancel();
+            });
     }
 }

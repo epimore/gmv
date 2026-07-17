@@ -1,10 +1,13 @@
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use base::chrono::{Duration as TimeDelta, Local};
+use base::dashmap::DashMap;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, info, warn};
 use base::net::state::{Association, Protocol};
+use base::tokio::sync::Semaphore;
 use gmv_pjsip::{SipAssociation, SipMethod, SipTransportProtocol};
 
 use crate::guard_integration::publish_guard_event;
@@ -21,6 +24,10 @@ use super::message::{GbMessageEvent, GbMessageKind};
 use super::register::GbRegisterEvent;
 use super::runtime_cache::SipRuntimeCache;
 use super::xml::KV2Model;
+
+const POST_ONLINE_SYNC_CONCURRENCY: usize = 32;
+static POST_ONLINE_SYNC_LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static POST_ONLINE_SYNC_DEVICES: OnceLock<DashMap<String, u32>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub enum GbSipEvent {
@@ -156,30 +163,57 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
         gb_version: event.gb_version.clone(),
     }));
 
-    let query_device_id = event.device_id.clone();
+    schedule_post_online_sync(event.device_id.clone(), expires);
+    Ok(())
+}
+
+pub(crate) fn schedule_post_online_sync(device_id: String, expires: u32) {
+    let pending = POST_ONLINE_SYNC_DEVICES.get_or_init(DashMap::new);
+    if pending.insert(device_id.clone(), expires).is_some() {
+        return;
+    }
+    let limit = POST_ONLINE_SYNC_LIMIT
+        .get_or_init(|| Arc::new(Semaphore::new(POST_ONLINE_SYNC_CONCURRENCY)))
+        .clone();
     base::tokio::spawn(async move {
+        let Ok(_permit) = limit.acquire_owned().await else {
+            pending.remove(&device_id);
+            return;
+        };
         base::tokio::time::sleep(Duration::from_millis(1500)).await;
+        if !Register::has_session(&device_id) {
+            pending.remove(&device_id);
+            return;
+        }
         if let Err(err) =
-            super::command::query_device_info(&query_device_id, super::sequence::next_sn()).await
+            super::command::query_device_info(&device_id, super::sequence::next_sn()).await
         {
-            warn!(
-                "query device info after register failed: device_id={query_device_id}, err={err}"
-            );
+            warn!("query device info after online failed: device_id={device_id}, err={err}");
         }
         base::tokio::time::sleep(Duration::from_millis(500)).await;
+        if !Register::has_session(&device_id) {
+            pending.remove(&device_id);
+            return;
+        }
         if let Err(err) =
-            super::command::query_catalog(&query_device_id, super::sequence::next_sn()).await
+            super::command::query_catalog(&device_id, super::sequence::next_sn()).await
         {
-            warn!("query catalog after register failed: device_id={query_device_id}, err={err}");
+            warn!("query catalog after online failed: device_id={device_id}, err={err}");
         }
         base::tokio::time::sleep(Duration::from_millis(500)).await;
-        if let Err(err) = super::subscription::subscribe_catalog(&query_device_id, expires).await {
-            warn!(
-                "subscribe catalog after register failed: device_id={query_device_id}, err={err}"
-            );
+        if !Register::has_session(&device_id) {
+            pending.remove(&device_id);
+            return;
+        }
+        let current_expires = pending
+            .remove(&device_id)
+            .map(|(_, current)| current)
+            .unwrap_or(expires);
+        if let Err(err) = super::subscription::subscribe_catalog(&device_id, current_expires).await
+        {
+            warn!("subscribe catalog after online failed: device_id={device_id}, err={err}");
         }
     });
-    Ok(())
 }
 
 fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {

@@ -26,6 +26,8 @@ use std::sync::{Mutex, OnceLock};
 static TEST_STORAGE_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_STORAGE: OnceLock<Mutex<TestStorage>> = OnceLock::new();
+#[cfg(test)]
+pub(crate) static TEST_STORAGE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 #[derive(Default)]
@@ -232,7 +234,13 @@ struct GmvDeviceRow {
     gb_version: Option<String>,
 }
 
-#[cfg(test)]
+pub struct GmvDeviceRecoveryPage {
+    pub devices: Vec<GmvDevice>,
+    pub next_device_id: Option<String>,
+    pub scanned: usize,
+    pub invalid: usize,
+}
+
 const GMV_DEVICE_SELECT_FIELDS: &str = "\
 device_id,\
 COALESCE(transport,'UDP') AS transport,\
@@ -243,6 +251,17 @@ COALESCE(local_addr,'') AS local_addr,\
 COALESCE(contact_uri,'') AS contact_uri,\
 COALESCE(enable_lr,0) AS enable_lr,\
 gb_version";
+
+const GMV_DEVICE_RECOVERY_SELECT_FIELDS: &str = "\
+d.device_id AS device_id,\
+COALESCE(d.transport,'UDP') AS transport,\
+COALESCE(d.register_expires,3600) AS register_expires,\
+COALESCE(d.register_time,CURRENT_TIMESTAMP) AS register_time,\
+d.online_expire_time AS online_expire_time,\
+COALESCE(d.local_addr,'') AS local_addr,\
+COALESCE(d.contact_uri,'') AS contact_uri,\
+COALESCE(d.enable_lr,0) AS enable_lr,\
+d.gb_version AS gb_version";
 
 const GMV_DEVICE_SELECT_BY_DEVICE_ID: &str = "\
 select \
@@ -276,6 +295,120 @@ impl TryFrom<GmvDeviceRow> for GmvDevice {
 }
 
 impl GmvDevice {
+    pub async fn page_recovery_candidates(
+        after_device_id: Option<&str>,
+        limit: u32,
+    ) -> GlobalResult<GmvDeviceRecoveryPage> {
+        if limit == 0 || limit > 10_000 {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "recovery candidate page limit must be between 1 and 10000",
+                |msg| error!("{msg}"),
+            ));
+        }
+
+        #[cfg(test)]
+        if use_test_storage() {
+            let storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut devices = storage
+                .devices
+                .values()
+                .filter(|device| {
+                    storage.oauths.get(&device.device_id).is_some_and(|oauth| {
+                        oauth.status == 1
+                            && after_device_id
+                                .is_none_or(|cursor| device.device_id.as_str() > cursor)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            devices.sort_by(|left, right| left.device_id.cmp(&right.device_id));
+            devices.truncate(limit as usize);
+            return Ok(GmvDeviceRecoveryPage {
+                next_device_id: devices.last().map(|device| device.device_id.clone()),
+                scanned: devices.len(),
+                invalid: 0,
+                devices,
+            });
+        }
+
+        let rows = match db::backend() {
+            #[cfg(feature = "db-mysql")]
+            db::SessionDatabaseBackend::Mysql => {
+                let mut builder = sqlx::QueryBuilder::<MySql>::new("select ");
+                builder.push(GMV_DEVICE_RECOVERY_SELECT_FIELDS).push(
+                    " from gb28181_device d inner join gb28181_oauth o \
+                     on o.device_id=d.device_id where COALESCE(o.del,0)=0 \
+                     and COALESCE(o.status,1)=1",
+                );
+                if let Some(cursor) = after_device_id {
+                    builder.push(" and d.device_id>").push_bind(cursor);
+                }
+                builder
+                    .push(" order by d.device_id limit ")
+                    .push_bind(limit);
+                builder
+                    .build_query_as::<GmvDeviceRow>()
+                    .fetch_all(db::mysql_pool())
+                    .await
+            }
+            #[cfg(feature = "db-sqlite")]
+            db::SessionDatabaseBackend::Sqlite => {
+                let mut builder = sqlx::QueryBuilder::<Sqlite>::new("select ");
+                builder.push(GMV_DEVICE_RECOVERY_SELECT_FIELDS).push(
+                    " from gb28181_device d inner join gb28181_oauth o \
+                     on o.device_id=d.device_id where COALESCE(o.del,0)=0 \
+                     and COALESCE(o.status,1)=1",
+                );
+                if let Some(cursor) = after_device_id {
+                    builder.push(" and d.device_id>").push_bind(cursor);
+                }
+                builder
+                    .push(" order by d.device_id limit ")
+                    .push_bind(limit);
+                builder
+                    .build_query_as::<GmvDeviceRow>()
+                    .fetch_all(db::sqlite_pool())
+                    .await
+            }
+            backend => return Err(db::backend_not_enabled_global(backend)),
+        }
+        .hand_log(|msg| error!("{msg}"))?;
+        let scanned = rows.len();
+        let next_device_id = rows.last().map(|row| row.device_id.clone());
+        let mut invalid = 0usize;
+        let devices = rows
+            .into_iter()
+            .filter_map(|row| {
+                if u32::try_from(row.register_expires).is_err()
+                    || u8::try_from(row.enable_lr).is_err()
+                {
+                    invalid += 1;
+                    return None;
+                }
+                Some(GmvDevice {
+                    device_id: row.device_id,
+                    transport: row.transport,
+                    register_expires: row.register_expires as u32,
+                    register_time: row.register_time,
+                    online_expire_time: row.online_expire_time,
+                    local_addr: row.local_addr,
+                    contact_uri: row.contact_uri,
+                    enable_lr: row.enable_lr as u8,
+                    gb_version: row.gb_version,
+                })
+            })
+            .collect();
+        Ok(GmvDeviceRecoveryPage {
+            devices,
+            next_device_id,
+            scanned,
+            invalid,
+        })
+    }
+
     pub async fn query_gmv_device_by_device_id(
         device_id: &String,
     ) -> GlobalResult<Option<GmvDevice>> {
@@ -732,6 +865,7 @@ fn decode_range_error(field: &str, ty: &str) -> GlobalError {
 mod tests {
     use super::*;
     use base::chrono::TimeZone;
+    use base::tokio::runtime::Builder;
 
     #[test]
     fn oauth_select_fields_match_lowercase_schema_for_from_row() {
@@ -780,5 +914,79 @@ mod tests {
         println!("{}", time_str1);
         let time_str2 = now.naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
         println!("{}", time_str2);
+    }
+
+    #[test]
+    fn recovery_candidates_use_stable_device_id_paging_and_enabled_auth() {
+        let _test_lock = TEST_STORAGE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let oauth = |device_id: &str, status| GmvOauth {
+            device_id: device_id.to_string(),
+            domain_id: "34020000002000000001".to_string(),
+            domain: "3402000000".to_string(),
+            status,
+            heartbeat_sec: 60,
+            ..GmvOauth::default()
+        };
+        let _guard = enable_test_storage(oauth("device-01", 1));
+        let now = Local::now().naive_local();
+        let device = |device_id: &str| GmvDevice {
+            device_id: device_id.to_string(),
+            transport: "UDP".to_string(),
+            register_expires: 3600,
+            register_time: now,
+            online_expire_time: Some(now),
+            local_addr: "127.0.0.1:5060".to_string(),
+            ..GmvDevice::default()
+        };
+        {
+            let mut storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            storage
+                .oauths
+                .insert("device-02".to_string(), oauth("device-02", 1));
+            storage
+                .oauths
+                .insert("device-03".to_string(), oauth("device-03", 1));
+            storage
+                .oauths
+                .insert("device-04".to_string(), oauth("device-04", 0));
+            for device_id in ["device-03", "device-01", "device-04", "device-02"] {
+                storage
+                    .devices
+                    .insert(device_id.to_string(), device(device_id));
+            }
+        }
+
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let first = GmvDevice::page_recovery_candidates(None, 2)
+                    .await
+                    .expect("first page");
+                assert_eq!(
+                    first
+                        .devices
+                        .iter()
+                        .map(|device| device.device_id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["device-01", "device-02"]
+                );
+                let second = GmvDevice::page_recovery_candidates(Some("device-02"), 2)
+                    .await
+                    .expect("second page");
+                assert_eq!(
+                    second
+                        .devices
+                        .iter()
+                        .map(|device| device.device_id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["device-03"]
+                );
+            });
     }
 }

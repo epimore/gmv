@@ -23,7 +23,7 @@ pub use invite::{
     GbIncomingInviteEvent, GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest,
 };
 pub use message::{CreateDeviceMessageRequest, GbMessageEvent, GbMessageKind};
-pub use native_runtime::{NativeSipRuntimeHandle, NativeSipRuntimeService};
+pub use native_runtime::{NativeRecoverySource, NativeSipRuntimeHandle, NativeSipRuntimeService};
 pub use register::GbRegisterEvent;
 
 /// Periodically clean session-level business waiters.
