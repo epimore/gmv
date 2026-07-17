@@ -182,19 +182,26 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-12 multi-player-panel" :class="{ 'is-multi-fullscreen': multiFullscreen }" title="多画面播放" :subtitle="multiPlayerSubtitle">
-      <template #action>
-        <div class="multi-player-actions">
-          <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏' }}</el-button>
-        </div>
-      </template>
+    <GlassPanel class="span-12 multi-player-panel" :class="{ 'is-multi-fullscreen': multiFullscreen }">
       <div class="multi-player">
         <GmvMultiGrid :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
           @snapshot="handleMultiSnapshot" @snapshot-error="handleMultiSnapshotError" @ptz="handleMultiPtz"
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
           @playback-error="handleMultiPlaybackError"
           @playback-switch-cancel="handleMultiPlaybackSwitchCancel"
-          @close="handleMultiClose" @reorder="handleMultiReorder" />
+          @close="handleMultiClose" @reorder="handleMultiReorder">
+          <template #summary>
+            <div class="multi-player-summary">
+              <strong>多画面播放</strong>
+              <span>{{ multiPlayerSubtitle }}</span>
+            </div>
+          </template>
+          <template #actions>
+            <div class="multi-player-actions">
+              <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏' }}</el-button>
+            </div>
+          </template>
+        </GmvMultiGrid>
         <div v-if="multiPageCount > 1" class="multi-pagination">
           <el-pagination v-model:current-page="multiPage" :page-size="multiGridSize" :total="multiCells.length"
             layout="total, prev, pager, next" />
@@ -2258,7 +2265,25 @@ onBeforeUnmount(() => {
 .multi-player-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+}
+
+.multi-player-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.multi-player-summary > strong {
+  font-size: 16px;
+}
+
+.multi-player-summary > span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
 }
 
 .channel-grid {
@@ -2679,20 +2704,26 @@ onBeforeUnmount(() => {
 
 .multi-player-panel.is-multi-fullscreen {
   position: fixed;
-  inset: 14px;
+  inset: 0;
   z-index: 3000;
-  width: auto;
-  height: calc(100vh - 28px);
+  width: 100vw;
+  height: 100vh;
   max-height: none;
+  border-radius: 0;
   background: rgba(3, 10, 24, .98);
   box-shadow: 0 0 0 1px rgba(100, 203, 255, .22), 0 24px 70px rgba(0, 0, 0, .62);
 }
 
+.multi-player-panel :deep(.panel-inner) {
+  padding: 10px;
+}
+
 .multi-player-panel.is-multi-fullscreen :deep(.panel-inner) {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  padding: 0;
 }
 
 .multi-player-panel.is-multi-fullscreen .multi-player {
@@ -2715,19 +2746,19 @@ onBeforeUnmount(() => {
 .multi-player {
   display: grid;
   grid-template-rows: auto auto;
-  gap: 12px;
+  gap: 8px;
   min-height: 0;
   overflow: hidden;
   border: 1px solid rgba(100, 203, 255, .18);
   border-radius: 8px;
   background: #02050a;
-  padding: 12px;
+  padding: 8px;
 }
 
 .multi-player :deep(.multi-grid) {
   display: grid;
-  grid-template-rows: auto auto;
-  gap: 10px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
   height: auto;
   min-height: 0;
 }
@@ -2736,6 +2767,26 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 32px;
+  flex-wrap: nowrap;
+}
+
+.multi-player :deep(.grid-toolbar-summary) {
+  min-width: 0;
+}
+
+.multi-player :deep(.grid-toolbar-actions) {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.multi-player :deep(.grid-layout-title) {
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .multi-player :deep(.grid-toolbar button) {

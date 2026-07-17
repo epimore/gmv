@@ -1,11 +1,17 @@
 <template>
   <section class="multi-grid">
     <header class="grid-toolbar">
-      <strong>多宫格</strong>
-      <div>
-        <button v-for="size in gridSizes" :key="size" type="button" :class="{ active: modelGrid === size }" @click="modelGrid = size">
-          {{ size }}
-        </button>
+      <div class="grid-toolbar-summary">
+        <slot name="summary"><strong>多宫格</strong></slot>
+      </div>
+      <div class="grid-toolbar-actions">
+        <strong v-if="$slots.summary" class="grid-layout-title">多宫格</strong>
+        <div class="grid-size-options">
+          <button v-for="size in gridSizes" :key="size" type="button" :class="{ active: modelGrid === size }" @click="modelGrid = size">
+            {{ size }}
+          </button>
+        </div>
+        <slot name="actions" />
       </div>
     </header>
 

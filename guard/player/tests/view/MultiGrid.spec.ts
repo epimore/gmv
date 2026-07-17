@@ -18,6 +18,24 @@ vi.mock("mpegts.js", () => ({
 }));
 
 describe("MultiGrid output selector", () => {
+  it("在同一工具栏展示概要、宫格切换和外部操作", () => {
+    const wrapper = mount(MultiGrid, {
+      props: { gridSize: 4, cells: [] },
+      slots: {
+        summary: '<span class="test-summary">多画面播放 · 实时直播 · 运行中 1 路</span>',
+        actions: '<button class="test-fullscreen">满屏</button>',
+      },
+    });
+
+    const toolbar = wrapper.get(".grid-toolbar");
+    expect(wrapper.findAll(".grid-toolbar")).toHaveLength(1);
+    expect(toolbar.text()).toContain("多画面播放 · 实时直播 · 运行中 1 路");
+    expect(toolbar.text()).toContain("多宫格");
+    expect(toolbar.text()).toContain("满屏");
+    expect(toolbar.find(".grid-body").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("keeps media output selection scoped to the selected cell", async () => {
     const wrapper = mount(MultiGrid, {
       props: {
