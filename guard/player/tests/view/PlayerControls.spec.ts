@@ -115,6 +115,8 @@ describe("PlayerControls", () => {
 
     expect(wrapper.find(".player-topbar").exists()).toBe(false);
     expect(wrapper.find(".media-info-panel").exists()).toBe(false);
+    expect(wrapper.find(".osd-item").exists()).toBe(false);
+    expect(wrapper.get(".gmv-player").text()).not.toContain("东门枪机");
 
     await infoButton.trigger("click");
     expect(infoButton.attributes("aria-expanded")).toBe("true");
@@ -261,7 +263,24 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
-  it("暂停状态保持显示，恢复播放后重新启动计时", async () => {
+  it("回放进度行和功能按钮行使用同一超时隐藏状态", async () => {
+    vi.useFakeTimers();
+    const wrapper = mountControls(
+      { items: ["play", "timeline"], visibility: "auto", autoHideDelayMs: 3000 },
+      { ...playingState, durationMs: 10_000 },
+    );
+
+    expect(wrapper.find(".playback-timeline-row").exists()).toBe(true);
+    expect(wrapper.find(".primary-controls").exists()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(wrapper.get(".control-bar").classes()).toContain("is-hidden");
+    expect(wrapper.find(".playback-timeline-row").exists()).toBe(true);
+    expect(wrapper.find(".primary-controls").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("暂停状态同样按无活动超时隐藏", async () => {
     vi.useFakeTimers();
     const wrapper = mountControls(
       { items: ["play"], visibility: "auto", autoHideDelayMs: 3000 },
@@ -271,10 +290,12 @@ describe("PlayerControls", () => {
       },
     );
 
-    await vi.advanceTimersByTimeAsync(6000);
-    expect(wrapper.get(".control-bar").classes()).not.toContain("is-hidden");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(wrapper.get(".control-bar").classes()).toContain("is-hidden");
 
-    await wrapper.setProps({ state: playingState });
+    (wrapper.vm as unknown as { notifyActivity: () => void }).notifyActivity();
+    await nextTick();
+    expect(wrapper.get(".control-bar").classes()).not.toContain("is-hidden");
     await vi.advanceTimersByTimeAsync(3000);
     expect(wrapper.get(".control-bar").classes()).toContain("is-hidden");
     wrapper.unmount();
@@ -393,7 +414,7 @@ describe("PlayerControls", () => {
     const start = new Date(2026, 6, 16, 10, 0, 0).getTime();
     const end = new Date(2026, 6, 16, 11, 0, 0).getTime();
     const wrapper = mountControls(
-      { items: ["timeline"], visibility: "always" },
+      { items: ["play", "timeline"], visibility: "always" },
       {
         ...playingState,
         durationMs: end - start,
@@ -401,6 +422,11 @@ describe("PlayerControls", () => {
         timelineEndTimeMs: end,
       },
     );
+
+    expect(wrapper.find(".playback-timeline-row .timeline").exists()).toBe(true);
+    expect(wrapper.find(".primary-controls .timeline").exists()).toBe(false);
+    expect(wrapper.find('.primary-controls [aria-label="切换播放状态"]').exists()).toBe(true);
+    expect(wrapper.find(".primary-controls .primary-timeline-jump").exists()).toBe(true);
 
     expect(wrapper.text()).toContain("07-16 10:00:00");
     expect(wrapper.text()).toContain("10:15:00");

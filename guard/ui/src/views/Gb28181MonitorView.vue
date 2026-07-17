@@ -2439,6 +2439,11 @@ onBeforeUnmount(() => {
   box-shadow: 0 14px 36px rgba(0, 0, 0, .42);
 }
 
+.monitor-player :deep(.gmv-player.has-playback-timeline .media-info-panel) {
+  bottom: 112px;
+  max-height: calc(100% - 124px);
+}
+
 .monitor-player :deep(.media-info-row),
 .multi-player :deep(.media-info-row) {
   display: grid;

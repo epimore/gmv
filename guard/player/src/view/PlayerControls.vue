@@ -3,7 +3,7 @@
     v-if="renderControls"
     ref="rootRef"
     class="control-bar"
-    :class="{ 'is-hidden': !visible }"
+    :class="{ 'is-hidden': !visible, 'has-primary-timeline': hasPrimaryTimeline }"
     @pointermove.stop="notifyActivity"
     @pointerenter="handlePointerEnter"
     @pointerleave="handlePointerLeave"
@@ -12,8 +12,47 @@
     @focusin="handleFocusIn"
     @focusout="handleFocusOut"
   >
+    <div v-if="hasPrimaryTimeline" class="playback-timeline-row">
+      <div class="timeline primary-timeline" :class="{ disabled: capabilities.playback === false }">
+        <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
+        <span class="timeline-track">
+          <span
+            v-if="hoverTimelineTimeMs !== undefined"
+            class="timeline-tooltip"
+            :style="{ left: hoverTimelineLeft + '%' }"
+          >
+            {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
+          </span>
+          <input
+            :value="state.seekMs"
+            type="range"
+            min="0"
+            :max="state.durationMs"
+            step="1000"
+            :disabled="capabilities.playback === false"
+            aria-label="回放进度"
+            @pointerdown="beginInteraction"
+            @pointermove="updateTimelineHover"
+            @pointerleave="clearTimelineHover"
+            @pointerup="endInteraction"
+            @pointercancel="endInteraction"
+            @change="emitSeek($event)"
+          />
+          <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
+            <span
+              v-for="tick in timelineTicks"
+              :key="tick.ratio"
+              :style="{ left: tick.ratio * 100 + '%' }"
+            >
+              {{ formatTimelineTick(tick.timeMs) }}
+            </span>
+          </span>
+        </span>
+        <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
+      </div>
+    </div>
     <div class="control-items primary-controls">
-      <template v-for="control in primaryItems" :key="control">
+      <template v-for="control in primaryActionItems" :key="control">
         <button
           v-if="control === 'play'"
           type="button"
@@ -119,74 +158,6 @@
         >
           <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}x</option>
         </select>
-        <div
-          v-else-if="control === 'timeline'"
-          class="timeline"
-          :class="{ disabled: capabilities.playback === false }"
-        >
-          <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
-          <span class="timeline-track">
-            <span
-              v-if="hoverTimelineTimeMs !== undefined"
-              class="timeline-tooltip"
-              :style="{ left: hoverTimelineLeft + '%' }"
-            >
-              {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
-            </span>
-            <input
-              :value="state.seekMs"
-              type="range"
-              min="0"
-              :max="state.durationMs"
-              step="1000"
-              :disabled="capabilities.playback === false"
-              aria-label="回放进度"
-              @pointerdown="beginInteraction"
-              @pointermove="updateTimelineHover"
-              @pointerleave="clearTimelineHover"
-              @pointerup="endInteraction"
-              @pointercancel="endInteraction"
-              @change="emitSeek($event)"
-            />
-            <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
-              <span
-                v-for="tick in timelineTicks"
-                :key="tick.ratio"
-                :style="{ left: tick.ratio * 100 + '%' }"
-              >
-                {{ formatTimelineTick(tick.timeMs) }}
-              </span>
-            </span>
-          </span>
-          <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
-          <span class="timeline-jump">
-            <button
-              type="button"
-              :disabled="capabilities.playback === false || state.seekMs <= 0"
-              aria-label="向后跳跃"
-              @click="emitJump(-1)"
-            >
-              后退
-            </button>
-            <input
-              v-model.number="jumpSeconds"
-              type="number"
-              min="1"
-              :max="Math.max(1, Math.floor(state.durationMs / 1000))"
-              :disabled="capabilities.playback === false"
-              aria-label="跳跃秒数"
-            />
-            <span>秒</span>
-            <button
-              type="button"
-              :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
-              aria-label="向前跳跃"
-              @click="emitJump(1)"
-            >
-              前进
-            </button>
-          </span>
-        </div>
         <div v-else-if="control === 'presets'" class="preset-box">
           <input
             v-model="presetId"
@@ -210,6 +181,34 @@
           </button>
         </div>
       </template>
+
+      <span v-if="hasPrimaryTimeline" class="timeline-jump primary-timeline-jump">
+        <button
+          type="button"
+          :disabled="capabilities.playback === false || state.seekMs <= 0"
+          aria-label="向后跳跃"
+          @click="emitJump(-1)"
+        >
+          后退
+        </button>
+        <input
+          v-model.number="jumpSeconds"
+          type="number"
+          min="1"
+          :max="Math.max(1, Math.floor(state.durationMs / 1000))"
+          :disabled="capabilities.playback === false"
+          aria-label="跳跃秒数"
+        />
+        <span>秒</span>
+        <button
+          type="button"
+          :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+          aria-label="向前跳跃"
+          @click="emitJump(1)"
+        >
+          前进
+        </button>
+      </span>
 
       <button
         v-if="overflowItems.length"
@@ -492,20 +491,17 @@ const timelineTicks = computed(() => {
   }));
 });
 const primaryItems = computed(() => [...new Set(props.config.items)]);
+const hasPrimaryTimeline = computed(() => primaryItems.value.includes("timeline"));
+const primaryActionItems = computed(() => primaryItems.value.filter((item) => item !== "timeline"));
 const overflowItems = computed(() => {
   const primary = new Set(primaryItems.value);
   return [...new Set(props.config.overflowItems ?? [])].filter((item) => !primary.has(item));
 });
-const canAutoHide = computed(
-  () =>
-    visibility.value === "auto" &&
-    props.state.playbackState === "playing" &&
-    !interactionActive.value,
-);
+const canAutoHide = computed(() => visibility.value === "auto" && !interactionActive.value);
 
 watch(visible, (value) => emit("visibilityChange", value), { immediate: true });
 watch(
-  () => [visibility.value, props.state.playbackState, props.config.autoHideDelayMs] as const,
+  () => [visibility.value, props.config.autoHideDelayMs] as const,
   syncVisibility,
   { immediate: true },
 );
@@ -774,6 +770,20 @@ defineExpose({ notifyActivity, notifySurfaceLeave, setExternalInteractionActive 
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.78), transparent);
 }
 
+.playback-timeline-row {
+  position: absolute;
+  right: 0;
+  bottom: 52px;
+  left: 0;
+  padding: 4px 10px 0;
+  pointer-events: auto;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.2));
+}
+
+.control-bar.has-primary-timeline .primary-controls {
+  background: rgba(0, 0, 0, 0.72);
+}
+
 button,
 select,
 .preset-box input {
@@ -905,6 +915,20 @@ button.active {
   text-align: center;
 }
 
+.primary-timeline {
+  width: 100%;
+  min-width: 0;
+  flex: none;
+  grid-template-rows: 48px;
+}
+
+.primary-timeline-jump {
+  flex: 0 0 auto;
+  grid-column: auto;
+  grid-row: auto;
+  justify-self: auto;
+}
+
 .timeline.disabled {
   opacity: 0.45;
 }
@@ -941,6 +965,10 @@ button.active {
 .overflow-menu > button,
 .overflow-menu > select {
   width: 100%;
+}
+
+.control-bar.has-primary-timeline .overflow-menu {
+  bottom: 104px;
 }
 
 .overflow-menu .timeline,

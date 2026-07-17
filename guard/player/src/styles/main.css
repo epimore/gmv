@@ -105,6 +105,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   box-shadow: 0 14px 36px rgba(0, 0, 0, .42);
   transition: opacity 180ms ease, visibility 180ms ease;
 }
+.has-playback-timeline .media-info-panel {
+  bottom: 112px;
+  max-height: calc(100% - 124px);
+}
 .media-info-row { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; }
 .media-info-panel span { color: var(--muted); font-size: 12px; }
 .media-info-panel b { overflow-wrap: anywhere; color: var(--text); font-size: 12px; font-weight: 600; }

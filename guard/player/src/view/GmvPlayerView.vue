@@ -2,7 +2,13 @@
   <section
     ref="playerRef"
     class="gmv-player"
-    :class="['is-' + viewState, { 'player-chrome-hidden': !controlsAreVisible }]"
+    :class="[
+      'is-' + viewState,
+      {
+        'player-chrome-hidden': !controlsAreVisible,
+        'has-playback-timeline': effectiveControls.items.includes('timeline'),
+      },
+    ]"
     @pointermove="notifyControlsActivity"
     @pointerdown="notifyControlsActivity"
     @pointerleave="handlePlayerPointerLeave"
