@@ -812,6 +812,7 @@ const playerSources = computed<GmvSource[]>(() => {
 const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.value, multiVisibleStart.value + multiGridSize.value).map((cell) => {
   const capabilities = multiCellCapabilities(cell);
   return {
+    cellId: cell.key,
     sources: cell.sources,
     title: cell.error ? cell.title + ' · ' + cell.error : cell.title,
     deviceId: cell.device_id,
@@ -821,7 +822,7 @@ const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.v
     mediaMode: cell.mode,
     streamId: cell.stream?.stream_id,
     mediaNodeId: cell.stream?.node_id,
-    sessionNodeId: cell.stream?.session_node_id,
+    sessionNodeId: cell.session_node_id,
     audioCodec: cell.stream?.audio_codec,
     poster: cell.poster,
     capabilities,

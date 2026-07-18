@@ -18,7 +18,7 @@
     <div class="grid-body" :style="gridBodyStyle">
       <div
         v-for="(_, index) in modelGrid"
-        :key="index"
+        :key="cellIdentity(index)"
         role="button"
         tabindex="0"
         class="grid-cell"
@@ -44,8 +44,8 @@
         </button>
         <GmvPlayerView
           v-if="cells[index]?.sources.length"
-          :ref="(instance) => setPlayerRef(index, instance)"
-          v-bind="cells[index]"
+          :ref="playerRefFor(cellIdentity(index))"
+          v-bind="playerProps(cells[index])"
           @snapshot="(payload) => emit('snapshot', { index, payload })"
           @snapshot-error="(payload) => emit('snapshotError', { index, payload })"
           @record-start="(payload) => emit('recordStart', { index, payload })"
@@ -81,6 +81,7 @@ import type { GmvAiBox, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerCont
 import GmvPlayerView from './GmvPlayerView.vue';
 
 export interface GmvGridCell {
+  cellId?: string;
   sources: GmvSource[];
   title?: string;
   deviceId?: string;
@@ -145,7 +146,8 @@ type PlayerInstance = ComponentPublicInstance & {
   confirmPlaybackState: (paused: boolean) => void;
   confirmPlaybackProgress: (timeMs: number) => void;
 };
-const playerRefs = new Map<number, PlayerInstance>();
+const playerRefs = new Map<string, PlayerInstance>();
+const playerRefBindings = new Map<string, (instance: unknown) => void>();
 const modelGrid = computed({
   get: () => props.gridSize ?? localGrid.value,
   set: (value: number) => {
@@ -180,21 +182,41 @@ function handleDragEnd() {
   draggingIndex.value = undefined;
 }
 
-function setPlayerRef(index: number, instance: unknown) {
-  if (instance) playerRefs.set(index, instance as PlayerInstance);
-  else playerRefs.delete(index);
+function cellIdentity(index: number) {
+  return props.cells[index]?.cellId || `grid-slot-${index}`;
+}
+
+function playerProps(cell: GmvGridCell | undefined): Omit<GmvGridCell, 'cellId'> {
+  if (!cell) return { sources: [] };
+  const { cellId: _, ...player } = cell;
+  return player;
+}
+
+function playerRefFor(cellId: string) {
+  const existing = playerRefBindings.get(cellId);
+  if (existing) return existing;
+  const binding = (instance: unknown) => {
+    if (instance) {
+      playerRefs.set(cellId, instance as PlayerInstance);
+    } else {
+      playerRefs.delete(cellId);
+      playerRefBindings.delete(cellId);
+    }
+  };
+  playerRefBindings.set(cellId, binding);
+  return binding;
 }
 
 function confirmPlaybackRate(index: number, rate: number) {
-  playerRefs.get(index)?.confirmPlaybackRate(rate);
+  playerRefs.get(cellIdentity(index))?.confirmPlaybackRate(rate);
 }
 
 function confirmPlaybackState(index: number, paused: boolean) {
-  playerRefs.get(index)?.confirmPlaybackState(paused);
+  playerRefs.get(cellIdentity(index))?.confirmPlaybackState(paused);
 }
 
 function confirmPlaybackProgress(index: number, timeMs: number) {
-  playerRefs.get(index)?.confirmPlaybackProgress(timeMs);
+  playerRefs.get(cellIdentity(index))?.confirmPlaybackProgress(timeMs);
 }
 
 defineExpose({ confirmPlaybackRate, confirmPlaybackState, confirmPlaybackProgress });

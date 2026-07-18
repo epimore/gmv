@@ -1,23 +1,35 @@
 import { mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import MultiGrid from "../../src/view/MultiGrid.vue";
+import GmvPlayerView from "../../src/view/GmvPlayerView.vue";
+
+const mpegtsMock = vi.hoisted(() => ({ createPlayer: vi.fn() }));
 
 vi.mock("mpegts.js", () => ({
   default: {
     getFeatureList: () => ({ mseLivePlayback: true }),
-    createPlayer: () => ({
-      attachMediaElement: vi.fn(),
-      load: vi.fn(),
-      play: vi.fn(() => Promise.resolve()),
-      pause: vi.fn(),
-      unload: vi.fn(),
-      detachMediaElement: vi.fn(),
-      destroy: vi.fn(),
-    }),
+    createPlayer: mpegtsMock.createPlayer,
   },
 }));
 
+function createMpegtsPlayer() {
+  return {
+    attachMediaElement: vi.fn(),
+    load: vi.fn(),
+    play: vi.fn(() => Promise.resolve()),
+    pause: vi.fn(),
+    unload: vi.fn(),
+    detachMediaElement: vi.fn(),
+    destroy: vi.fn(),
+  };
+}
+
 describe("MultiGrid output selector", () => {
+  beforeEach(() => {
+    mpegtsMock.createPlayer.mockReset();
+    mpegtsMock.createPlayer.mockImplementation(createMpegtsPlayer);
+  });
+
   it("在同一工具栏展示概要、宫格切换和外部操作", () => {
     const wrapper = mount(MultiGrid, {
       props: { gridSize: 4, cells: [] },
@@ -104,6 +116,36 @@ describe("MultiGrid output selector", () => {
     expect(wrapper.emitted("playbackRateChange")).toEqual([[{ index: 0, payload: { rate: 2 } }]]);
     expect(wrapper.emitted("playbackStateChange")).toEqual([[{ index: 0, payload: { paused: true } }]]);
     expect(wrapper.emitted("playbackProgress")).toEqual([[{ index: 0, payload: { mediaTimeMs: 12_000 } }]]);
+    wrapper.unmount();
+  });
+
+  it("reorders stable cells without reconnecting their media sources", async () => {
+    const cameraA = {
+      cellId: "session-a:device-a:channel-a",
+      title: "camera-a",
+      deviceId: "device-a",
+      channelId: "channel-a",
+      sources: [{ protocol: "flv" as const, url: "stream-a.flv" }],
+    };
+    const cameraB = {
+      cellId: "session-b:device-b:channel-b",
+      title: "camera-b",
+      deviceId: "device-b",
+      channelId: "channel-b",
+      sources: [{ protocol: "flv" as const, url: "stream-b.flv" }],
+    };
+    const wrapper = mount(MultiGrid, {
+      props: { gridSize: 4, cells: [cameraA, cameraB] },
+    });
+    await vi.waitFor(() => expect(mpegtsMock.createPlayer).toHaveBeenCalledTimes(2));
+    const playerInstances = wrapper.findAllComponents(GmvPlayerView).map((player) => player.vm.$.uid);
+
+    await wrapper.setProps({ cells: [cameraB, cameraA] });
+
+    const reorderedPlayers = wrapper.findAllComponents(GmvPlayerView);
+    expect(reorderedPlayers.map((player) => player.props("title"))).toEqual(["camera-b", "camera-a"]);
+    expect(reorderedPlayers.map((player) => player.vm.$.uid)).toEqual([playerInstances[1], playerInstances[0]]);
+    expect(mpegtsMock.createPlayer).toHaveBeenCalledTimes(2);
     wrapper.unmount();
   });
 });

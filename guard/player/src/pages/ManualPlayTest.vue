@@ -57,6 +57,7 @@ import GmvMultiGrid, { type GmvGridCell } from '../view/MultiGrid.vue';
 
 const cells = ref<GmvGridCell[]>(
   Array.from({ length: 16 }, (_, index) => ({
+    cellId: `manual-cell-${index + 1}`,
     sources: [],
     title: `画面 ${index + 1}`,
     deviceId: 'manual-device',
