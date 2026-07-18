@@ -48,7 +48,7 @@ describe("MultiGrid output selector", () => {
     wrapper.unmount();
   });
 
-  it("keeps media output selection scoped to the selected cell", async () => {
+  it("keeps live and playback output selection scoped to the selected cell", async () => {
     const wrapper = mount(MultiGrid, {
       props: {
         gridSize: 4,
@@ -66,6 +66,7 @@ describe("MultiGrid output selector", () => {
           },
           {
             title: "camera-b",
+            mediaMode: "playback",
             sources: [{ protocol: "flv", url: "stream-b.flv" }],
             controls: { items: ["outputType"], visibility: "always" },
             outputType: "flv",

@@ -326,7 +326,7 @@
               <span>{{ confText(channel.biz_enable, 1, '业务') }}</span>
             </div> -->
             <footer class="channel-actions">
-              <el-select :model-value="channelOutputType(channel)" class="channel-output-select" aria-label="直播播放方式"
+              <el-select :model-value="channelOutputType(channel)" class="channel-output-select" aria-label="播放格式"
                 @change="(value: LiveOutputType) => setChannelOutputType(channel, value)">
                 <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-select>
@@ -687,6 +687,7 @@ interface SelectedChannelRef {
   device_title: string;
   status_text: string;
   channel: GbChannelInfo;
+  output_type: LiveOutputType;
   playback_range?: [Date, Date];
   playback_locked?: boolean;
 }
@@ -772,7 +773,7 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
   if (playback && channel && canPlayback(channel)) items.push('timeline');
   const overflowItems: GmvPlayerControlsConfig['items'] = [];
-  if (!playback) overflowItems.push('outputType');
+  overflowItems.push('outputType');
   overflowItems.push('info');
   if (channel && canAudio(channel)) overflowItems.push('audio');
   if (!playback && channel && canPtz(channel)) overflowItems.push('ptz');
@@ -827,9 +828,9 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     poster: cell.poster,
     capabilities,
     controls: multiCellControls(capabilities),
-    outputType: cell.mode === 'live' ? cell.output_type : undefined,
-    outputOptions: cell.mode === 'live' ? liveOutputOptions : undefined,
-    outputSwitching: cell.mode === 'live' ? cell.output_switching : undefined,
+    outputType: cell.output_type,
+    outputOptions: liveOutputOptions,
+    outputSwitching: cell.output_switching,
     playbackDurationMs: playbackCellDurationMs(cell),
     playbackStartTimeMs: cell.mode === 'playback' && cell.playback_start_sec ? cell.playback_start_sec * 1_000 : undefined,
     playbackEndTimeMs: cell.mode === 'playback' && cell.playback_end_sec ? cell.playback_end_sec * 1_000 : undefined,
@@ -917,8 +918,7 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
 function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControlsConfig {
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
   if (capabilities.playback) items.push('timeline');
-  const overflowItems: GmvPlayerControlsConfig['items'] = ['info'];
-  if (!capabilities.playback) overflowItems.unshift('outputType');
+  const overflowItems: GmvPlayerControlsConfig['items'] = ['outputType', 'info'];
   if (capabilities.audio) overflowItems.push('audio');
   if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
@@ -1231,6 +1231,7 @@ async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
       device_title: device ? displayDeviceName(device) : channel.device_id,
       status_text: channelStatusText(channel),
       channel,
+      output_type: 'flv',
       playback_range: multiMode.value === 'playback' ? defaultRange : undefined,
       playback_locked: false,
     });
@@ -1247,6 +1248,10 @@ function restoreMultiPlaybackDefault(channel: SelectedChannelRef) {
   channel.playback_range = isValidPlaybackRange(multiDefaultRange.value)
     ? [new Date(multiDefaultRange.value[0]), new Date(multiDefaultRange.value[1])]
     : undefined;
+}
+function setSelectedMultiOutputType(key: string, outputType: LiveOutputType) {
+  const selected = selectedTreeChannelItems.value.find((item) => selectedChannelKey(item) === key);
+  if (selected) selected.output_type = outputType;
 }
 function multiPlaybackSelectionStatus(channel: SelectedChannelRef) {
   const cell = multiCells.value.find((item) => item.key === selectedChannelKey(channel));
@@ -1404,7 +1409,7 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     status: multiMode.value === 'live' ? 'reconnecting' : 'idle',
     channel: channel.channel,
     mode: multiMode.value,
-    output_type: channelOutputType(channel.channel),
+    output_type: channel.output_type,
   });
   if (multiMode.value === 'live') {
     const cell = multiCells.value.find((item) => item.key === key);
@@ -1439,7 +1444,7 @@ async function startMultiCell(cell: MultiViewCell) {
           playback_id: requestId,
           start_time_sec: cell.playback_position_sec ?? cell.playback_start_sec,
           end_time_sec: cell.playback_end_sec,
-          output_type: 'fmp4',
+          output_type: cell.output_type,
           audio_codec: 'aac',
         }, {
       signal: controller.signal,
@@ -1926,6 +1931,7 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
   if (!cell || !outputType || cell.output_switching || cell.output_type === outputType) return;
   if (!cell.stream?.stream_id) {
     setChannelOutputType(cell.channel, outputType);
+    setSelectedMultiOutputType(cell.key, outputType);
     upsertMultiCell({ ...cell, output_type: outputType });
     return;
   }
@@ -1958,6 +1964,7 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
       return;
     }
     setChannelOutputType(cell.channel, outputType);
+    setSelectedMultiOutputType(cell.key, outputType);
     upsertMultiCell({
       ...current,
       operation: undefined,
@@ -1973,6 +1980,7 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
     });
   } catch (error) {
     setChannelOutputType(cell.channel, previousType);
+    setSelectedMultiOutputType(cell.key, previousType);
     const current = multiCells.value.find((item) => item.key === cell.key) ?? cell;
     upsertMultiCell({
       ...current,
@@ -2010,6 +2018,7 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
   if (!pending || !cell.stream) return;
   await closeStreamOutput(cell.stream.stream_id, pending.next_output.output_id).catch(() => undefined);
   setChannelOutputType(cell.channel, pending.previous_type);
+  setSelectedMultiOutputType(cell.key, pending.previous_type);
   upsertMultiCell({
     ...cell,
     output_type: pending.previous_type,
@@ -2026,7 +2035,7 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
 async function handleMultiPlaybackSwitchCancel(event: { index: number }) {
   const cell = multiCellAtVisibleIndex(event.index);
   if (!cell) return;
-  if (cell.mode === 'playback' && cell.operation?.state === 'preparing') {
+  if (cell.mode === 'playback' && !cell.output_switching && cell.operation?.state === 'preparing') {
     const selected = selectedTreeChannelItems.value.find((item) => selectedChannelKey(item) === cell.key);
     if (selected) await stopConfirmedMultiPlayback(selected);
     ElMessage.info('已取消该通道回放启动');
@@ -2049,6 +2058,7 @@ async function handleMultiPlaybackSwitchCancel(event: { index: number }) {
   if (!cell || !pending || !cell.stream) return;
   await closeStreamOutput(cell.stream.stream_id, pending.next_output.output_id).catch(() => undefined);
   setChannelOutputType(cell.channel, pending.previous_type);
+  setSelectedMultiOutputType(cell.key, pending.previous_type);
   upsertMultiCell({
     ...cell,
     output_type: pending.previous_type,
@@ -2378,7 +2388,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       : await startGbPlayback(
           channel.device_id,
           channel.channel_id,
-          { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: 'fmp4', audio_codec: 'aac' },
+          { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: channelOutputType(channel), audio_codec: 'aac' },
           {
             signal: controller.signal,
             onUpdate: (operation) => {
