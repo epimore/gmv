@@ -17,28 +17,29 @@
 
     <div class="grid-body" :style="gridBodyStyle">
       <div
-        v-for="(_, index) in modelGrid"
+        v-for="(_, index) in cells"
         :key="cellIdentity(index)"
+        v-show="isVisibleCell(index)"
         role="button"
         tabindex="0"
         class="grid-cell"
-        :class="{ selected: selectedIndex === index }"
-        :draggable="!!cells[index]"
-        @click="selectedIndex = index"
+        :class="{ selected: selectedIndex === visibleIndex(index) }"
+        :draggable="isVisibleCell(index)"
+        @click="selectedIndex = visibleIndex(index)"
         @dblclick="modelGrid = 1"
         @dragstart="handleDragStart(index)"
         @dragover.prevent
         @drop="handleDrop(index)"
         @dragend="handleDragEnd"
-        @keydown.enter="selectedIndex = index"
-        @keydown.space.prevent="selectedIndex = index"
+        @keydown.enter="selectedIndex = visibleIndex(index)"
+        @keydown.space.prevent="selectedIndex = visibleIndex(index)"
       >
         <button
           v-if="cells[index]"
           type="button"
           class="grid-cell-close"
           aria-label="关闭画面"
-          @click.stop="emit('close', { index })"
+          @click.stop="emit('close', { index: visibleIndex(index) })"
         >
           ×
         </button>
@@ -46,30 +47,43 @@
           v-if="cells[index]?.sources.length"
           :ref="playerRefFor(cellIdentity(index))"
           v-bind="playerProps(cells[index])"
-          @snapshot="(payload) => emit('snapshot', { index, payload })"
-          @snapshot-error="(payload) => emit('snapshotError', { index, payload })"
-          @record-start="(payload) => emit('recordStart', { index, payload })"
-          @record-stop="(payload) => emit('recordStop', { index, payload })"
-          @ptz="(payload) => emit('ptz', { index, payload })"
-          @preset-call="(payload) => emit('presetCall', { index, payload })"
-          @preset-set="(payload) => emit('presetSet', { index, payload })"
-          @talk-start="() => emit('talkStart', { index })"
-          @talk-stop="() => emit('talkStop', { index })"
-          @playback-seek="(payload) => emit('playbackSeek', { index, payload })"
-          @playback-rate-change="(payload) => emit('playbackRateChange', { index, payload })"
-          @playback-state-change="(payload) => emit('playbackStateChange', { index, payload })"
-          @playback-progress="(payload) => emit('playbackProgress', { index, payload })"
-          @stream-switch="(payload) => emit('streamSwitch', { index, payload })"
-          @output-type-change="(outputType) => emit('outputTypeChange', { index, outputType })"
-          @playing="(payload) => emit('playing', { index, payload })"
-          @playback-error="(payload) => emit('playbackError', { index, payload })"
-          @playback-switch-cancel="() => emit('playbackSwitchCancel', { index })"
+          @snapshot="(payload) => emit('snapshot', { index: visibleIndex(index), payload })"
+          @snapshot-error="(payload) => emit('snapshotError', { index: visibleIndex(index), payload })"
+          @record-start="(payload) => emit('recordStart', { index: visibleIndex(index), payload })"
+          @record-stop="(payload) => emit('recordStop', { index: visibleIndex(index), payload })"
+          @ptz="(payload) => emit('ptz', { index: visibleIndex(index), payload })"
+          @preset-call="(payload) => emit('presetCall', { index: visibleIndex(index), payload })"
+          @preset-set="(payload) => emit('presetSet', { index: visibleIndex(index), payload })"
+          @talk-start="() => emit('talkStart', { index: visibleIndex(index) })"
+          @talk-stop="() => emit('talkStop', { index: visibleIndex(index) })"
+          @playback-seek="(payload) => emit('playbackSeek', { index: visibleIndex(index), payload })"
+          @playback-rate-change="(payload) => emit('playbackRateChange', { index: visibleIndex(index), payload })"
+          @playback-state-change="(payload) => emit('playbackStateChange', { index: visibleIndex(index), payload })"
+          @playback-progress="(payload) => emit('playbackProgress', { index: visibleIndex(index), payload })"
+          @stream-switch="(payload) => emit('streamSwitch', { index: visibleIndex(index), payload })"
+          @output-type-change="(outputType) => emit('outputTypeChange', { index: visibleIndex(index), outputType })"
+          @playing="(payload) => emit('playing', { index: visibleIndex(index), payload })"
+          @playback-error="(payload) => emit('playbackError', { index: visibleIndex(index), payload })"
+          @playback-switch-cancel="() => emit('playbackSwitchCancel', { index: visibleIndex(index) })"
         />
         <span v-else-if="cells[index]" class="empty-cell">
           <b>{{ cells[index]?.title || '等待播放' }}</b>
           <small>{{ cells[index]?.status === 'error' ? '播放失败' : cells[index]?.startupText || '正在请求播放' }}</small>
         </span>
-        <span v-else class="empty-cell">空画面 {{ index + 1 }}</span>
+      </div>
+      <div
+        v-for="slot in emptySlotCount"
+        :key="`empty-${pageStart}-${slot}`"
+        role="button"
+        tabindex="0"
+        class="grid-cell"
+        :class="{ selected: selectedIndex === visibleCellCount + slot - 1 }"
+        @click="selectedIndex = visibleCellCount + slot - 1"
+        @dblclick="modelGrid = 1"
+        @keydown.enter="selectedIndex = visibleCellCount + slot - 1"
+        @keydown.space.prevent="selectedIndex = visibleCellCount + slot - 1"
+      >
+        <span class="empty-cell">空画面 {{ visibleCellCount + slot }}</span>
       </div>
     </div>
   </section>
@@ -111,6 +125,7 @@ export interface GmvGridCell {
 const props = defineProps<{
   cells: GmvGridCell[];
   gridSize?: number;
+  visibleStart?: number;
 }>();
 
 const emit = defineEmits<{
@@ -155,6 +170,9 @@ const modelGrid = computed({
     emit('update:gridSize', value);
   },
 });
+const pageStart = computed(() => Math.max(0, props.visibleStart ?? 0));
+const visibleCellCount = computed(() => Math.min(modelGrid.value, Math.max(0, props.cells.length - pageStart.value)));
+const emptySlotCount = computed(() => modelGrid.value - visibleCellCount.value);
 const columnCount = computed(() => Math.sqrt(modelGrid.value));
 const gridBodyStyle = computed(() => ({
   display: 'grid',
@@ -167,15 +185,15 @@ watch(() => props.gridSize, (value) => {
 });
 
 function handleDragStart(index: number) {
-  if (!props.cells[index]) return;
+  if (!isVisibleCell(index)) return;
   draggingIndex.value = index;
 }
 
 function handleDrop(targetIndex: number) {
   const sourceIndex = draggingIndex.value;
   draggingIndex.value = undefined;
-  if (sourceIndex === undefined || sourceIndex === targetIndex || !props.cells[sourceIndex] || !props.cells[targetIndex]) return;
-  emit('reorder', { sourceIndex, targetIndex });
+  if (sourceIndex === undefined || sourceIndex === targetIndex || !isVisibleCell(sourceIndex) || !isVisibleCell(targetIndex)) return;
+  emit('reorder', { sourceIndex: visibleIndex(sourceIndex), targetIndex: visibleIndex(targetIndex) });
 }
 
 function handleDragEnd() {
@@ -184,6 +202,15 @@ function handleDragEnd() {
 
 function cellIdentity(index: number) {
   return props.cells[index]?.cellId || `grid-slot-${index}`;
+}
+
+function visibleIndex(index: number) {
+  return index - pageStart.value;
+}
+
+function isVisibleCell(index: number) {
+  const pageIndex = visibleIndex(index);
+  return pageIndex >= 0 && pageIndex < modelGrid.value;
 }
 
 function playerProps(cell: GmvGridCell | undefined): Omit<GmvGridCell, 'cellId'> {
@@ -208,15 +235,15 @@ function playerRefFor(cellId: string) {
 }
 
 function confirmPlaybackRate(index: number, rate: number) {
-  playerRefs.get(cellIdentity(index))?.confirmPlaybackRate(rate);
+  playerRefs.get(cellIdentity(pageStart.value + index))?.confirmPlaybackRate(rate);
 }
 
 function confirmPlaybackState(index: number, paused: boolean) {
-  playerRefs.get(cellIdentity(index))?.confirmPlaybackState(paused);
+  playerRefs.get(cellIdentity(pageStart.value + index))?.confirmPlaybackState(paused);
 }
 
 function confirmPlaybackProgress(index: number, timeMs: number) {
-  playerRefs.get(cellIdentity(index))?.confirmPlaybackProgress(timeMs);
+  playerRefs.get(cellIdentity(pageStart.value + index))?.confirmPlaybackProgress(timeMs);
 }
 
 defineExpose({ confirmPlaybackRate, confirmPlaybackState, confirmPlaybackProgress });

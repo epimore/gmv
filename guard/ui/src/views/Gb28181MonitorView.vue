@@ -220,7 +220,7 @@
 
     <GlassPanel class="span-12 multi-player-panel" :class="{ 'is-multi-fullscreen': multiFullscreen }">
       <div class="multi-player">
-        <GmvMultiGrid ref="multiGridRef" :grid-size="multiGridSize" :cells="multiGridCells" @update:grid-size="handleMultiGridSizeChange"
+        <GmvMultiGrid ref="multiGridRef" :grid-size="multiGridSize" :cells="multiGridCells" :visible-start="multiVisibleStart" @update:grid-size="handleMultiGridSizeChange"
           @snapshot="handleMultiSnapshot" @snapshot-error="handleMultiSnapshotError" @ptz="handleMultiPtz"
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
           @playback-rate-change="handleMultiPlaybackRateChange" @playback-state-change="handleMultiPlaybackStateChange"
@@ -809,7 +809,7 @@ const playerSources = computed<GmvSource[]>(() => {
     priority: 1,
   }];
 });
-const multiGridCells = computed(() => multiCells.value.slice(multiVisibleStart.value, multiVisibleStart.value + multiGridSize.value).map((cell) => {
+const multiGridCells = computed(() => multiCells.value.map((cell) => {
   const capabilities = multiCellCapabilities(cell);
   return {
     cellId: cell.key,

@@ -148,4 +148,35 @@ describe("MultiGrid output selector", () => {
     expect(mpegtsMock.createPlayer).toHaveBeenCalledTimes(2);
     wrapper.unmount();
   });
+
+  it("keeps players mounted while changing the visible page", async () => {
+    const cells = [
+      {
+        cellId: "session-a:device-a:channel-a",
+        title: "camera-a",
+        sources: [{ protocol: "flv" as const, url: "stream-a.flv" }],
+      },
+      {
+        cellId: "session-b:device-b:channel-b",
+        title: "camera-b",
+        sources: [{ protocol: "flv" as const, url: "stream-b.flv" }],
+      },
+    ];
+    const wrapper = mount(MultiGrid, {
+      props: { gridSize: 1, visibleStart: 0, cells },
+    });
+    await vi.waitFor(() => expect(mpegtsMock.createPlayer).toHaveBeenCalledTimes(2));
+    const playerInstances = wrapper.findAllComponents(GmvPlayerView).map((player) => player.vm.$.uid);
+
+    await wrapper.setProps({ visibleStart: 1 });
+
+    const gridCells = wrapper.findAll(".grid-cell");
+    expect(gridCells[0].attributes("style")).toContain("display: none");
+    expect(gridCells[1].attributes("style") || "").not.toContain("display: none");
+    expect(wrapper.findAllComponents(GmvPlayerView).map((player) => player.vm.$.uid)).toEqual(playerInstances);
+    expect(mpegtsMock.createPlayer).toHaveBeenCalledTimes(2);
+    await gridCells[1].get('[aria-label="关闭画面"]').trigger("click");
+    expect(wrapper.emitted("close")).toEqual([[{ index: 0 }]]);
+    wrapper.unmount();
+  });
 });
