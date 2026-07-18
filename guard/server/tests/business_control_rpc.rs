@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
 
-use gmv_guard_server::api::v2::control::BusinessControl;
+use gmv_guard_server::api::v2::control::{BusinessControl, DeviceStreamOptions};
 use gmv_guard_server::core::{
     ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState,
 };
@@ -320,6 +320,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                         "device.download".to_string(),
                         "device.talk".to_string(),
                         "device.ptz".to_string(),
+                        "protocol.gb28181".to_string(),
                     ],
                     endpoints: vec![grpc_endpoint(session_addr)],
                     host_metrics: Default::default(),
@@ -342,6 +343,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                         "device.download".to_string(),
                         "device.talk".to_string(),
                         "device.ptz".to_string(),
+                        "protocol.gb28181".to_string(),
                     ],
                     endpoints: vec![grpc_endpoint(session_addr)],
                     host_metrics: Default::default(),
@@ -405,6 +407,35 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .unwrap();
             assert_eq!(second_viewer.session_node_id, stream.session_node_id);
             assert_ne!(second_viewer.subscription_id, stream.subscription_id);
+
+            let targeted_live = control
+                .start_live_with_options(
+                    "op-live-rpc-session-b",
+                    "device-1",
+                    "channel-1",
+                    DeviceStreamOptions {
+                        session_node_id: "session-rpc-b".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(targeted_live.session_node_id, "session-rpc-b");
+            assert_ne!(targeted_live.stream_id, stream.stream_id);
+
+            let targeted_playback = control
+                .start_playback_with_options(
+                    "op-playback-rpc-session-b",
+                    "device-1",
+                    "channel-1",
+                    DeviceStreamOptions {
+                        session_node_id: "session-rpc-b".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(targeted_playback.session_node_id, "session-rpc-b");
 
             assert_eq!(
                 control

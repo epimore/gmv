@@ -1130,6 +1130,8 @@ struct PreviewRequest {
     request_id: String,
     channel_id: String,
     #[serde(default)]
+    session_node_id: String,
+    #[serde(default)]
     token: String,
     #[serde(default)]
     start_time_sec: u32,
@@ -1156,6 +1158,7 @@ struct PreviewRequest {
 
 fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
     DeviceStreamOptions {
+        session_node_id: request.session_node_id.clone(),
         token: request.token.clone(),
         start_time_sec: request.start_time_sec,
         end_time_sec: request.end_time_sec,
@@ -1426,6 +1429,13 @@ struct GbDeviceListQuery {
     registered_only: Option<bool>,
 }
 
+#[derive(Debug, Default, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbSessionNodeQuery {
+    #[serde(default)]
+    session_node_id: String,
+}
+
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 struct GbDeviceDeleteRequest {
@@ -1615,6 +1625,8 @@ struct GbSessionConfigResponse {
 #[serde(crate = "base::serde")]
 struct GbStreamRequest {
     request_id: String,
+    #[serde(default)]
+    session_node_id: String,
     #[serde(default)]
     token: String,
     #[serde(default)]
@@ -1930,10 +1942,11 @@ fn log_gb_device_request(path: &str, request: &GbDeviceRequest) {
 
 fn log_preview_request(path: &str, device_id: &str, request: &PreviewRequest) {
     debug!(
-        "{path}, req: device_id={}, request_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}",
+        "{path}, req: device_id={}, request_id={}, channel_id={}, session_node_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}",
         device_id,
         request.request_id,
         request.channel_id,
+        request.session_node_id,
         redacted(&request.token),
         request.start_time_sec,
         request.end_time_sec,
@@ -1968,6 +1981,7 @@ fn gb_preview_request(channel_id: String, request: GbStreamRequest) -> PreviewRe
     PreviewRequest {
         request_id: request.request_id,
         channel_id,
+        session_node_id: request.session_node_id,
         token: request.token,
         start_time_sec: request.start_time_sec,
         end_time_sec: request.end_time_sec,
@@ -2124,11 +2138,15 @@ async fn gb_channels(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(device_id): Path<String>,
+    Query(query): Query<GbSessionNodeQuery>,
 ) -> Result<Json<Vec<GbChannelResponse>>, HttpError> {
-    debug!("/api/v2/gb28181/devices/{{device_id}}/channels, req: device_id={device_id}");
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/channels, req: device_id={device_id}, session_node_id={}",
+        query.session_node_id
+    );
     require_role(&state.auth, &headers, Role::Viewer)?;
     let channels = BusinessControl::new(state.api.store())
-        .list_gb_channels(&device_id)
+        .list_gb_channels_for_session(&query.session_node_id, &device_id)
         .await?;
     Ok(Json(
         channels.into_iter().map(gb_channel_response).collect(),
@@ -2139,11 +2157,15 @@ async fn gb_resources(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(device_id): Path<String>,
+    Query(query): Query<GbSessionNodeQuery>,
 ) -> Result<Json<Vec<GbResourceResponse>>, HttpError> {
-    debug!("/api/v2/gb28181/devices/{{device_id}}/resources, req: device_id={device_id}");
+    debug!(
+        "/api/v2/gb28181/devices/{{device_id}}/resources, req: device_id={device_id}, session_node_id={}",
+        query.session_node_id
+    );
     require_role(&state.auth, &headers, Role::Viewer)?;
     let resources = BusinessControl::new(state.api.store())
-        .list_gb_resources(&device_id)
+        .list_gb_resources_for_session(&query.session_node_id, &device_id)
         .await?;
     Ok(Json(
         resources.into_iter().map(gb_resource_response).collect(),
@@ -4108,8 +4130,8 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuardError, HttpError, endpoint_with_playback_token, media_startup_timeout_ms,
-        playback_control_owner_matches, playback_token_from_endpoint,
+        GbStreamRequest, GuardError, HttpError, endpoint_with_playback_token, gb_preview_request,
+        media_startup_timeout_ms, playback_control_owner_matches, playback_token_from_endpoint,
     };
     use crate::auth::Role;
     use crate::store::model::PlaybackTicketRecord;
@@ -4179,5 +4201,26 @@ mod tests {
         ));
         assert!(media_startup_timeout_ms(Some(11_999), 12_000).is_err());
         assert!(media_startup_timeout_ms(Some(30_001), 12_000).is_err());
+    }
+
+    #[test]
+    fn gb_stream_request_preserves_explicit_session_node() {
+        let request = gb_preview_request(
+            "channel-1".to_string(),
+            GbStreamRequest {
+                request_id: "request-1".to_string(),
+                session_node_id: "session-b".to_string(),
+                token: String::new(),
+                start_time_sec: 0,
+                end_time_sec: 0,
+                trans_mode: String::new(),
+                output_type: "flv".to_string(),
+                audio_codec: "aac".to_string(),
+                startup_timeout_ms: None,
+                playback_id: String::new(),
+            },
+        );
+
+        assert_eq!(request.session_node_id, "session-b");
     }
 }

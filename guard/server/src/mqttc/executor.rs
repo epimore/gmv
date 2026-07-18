@@ -142,6 +142,7 @@ fn payload_string(payload: &Value, key: &str) -> Option<String> {
 
 fn device_stream_options(payload: &Value) -> DeviceStreamOptions {
     DeviceStreamOptions {
+        session_node_id: payload_string(payload, "session_node_id").unwrap_or_default(),
         token: payload_string(payload, "token").unwrap_or_default(),
         start_time_sec: payload_u32(payload, "start_time_sec"),
         end_time_sec: payload_u32(payload, "end_time_sec"),

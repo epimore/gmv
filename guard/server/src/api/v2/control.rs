@@ -61,6 +61,7 @@ pub struct GbDevicePage {
 
 #[derive(Debug, Clone, Default)]
 pub struct DeviceStreamOptions {
+    pub session_node_id: String,
     pub token: String,
     pub start_time_sec: u32,
     pub end_time_sec: u32,
@@ -577,6 +578,52 @@ impl BusinessControl {
         Ok(channels)
     }
 
+    pub async fn list_gb_channels_for_session(
+        &self,
+        session_node_id: &str,
+        device_id: &str,
+    ) -> GuardResult<Vec<GbChannel>> {
+        if session_node_id.trim().is_empty() {
+            return self.list_gb_channels(device_id).await;
+        }
+        let session = self.store.get_node(session_node_id).ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
+        })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable(
+                "session",
+                "list_gb_channels",
+                session_node_id,
+            ));
+        }
+        let mut client = self.session_client(&session).await?;
+        let request = ListGbChannelsRequest {
+            device_id: device_id.to_string(),
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "list_gb_channels",
+            &session.identity.node_id,
+            "",
+            device_id,
+        );
+        let mut response = edge.response(client.list_gb_channels(request).await)?;
+        edge.success();
+        response.channels.sort_by(|left, right| {
+            left.sort_no
+                .cmp(&right.sort_no)
+                .then_with(|| left.channel_id.cmp(&right.channel_id))
+        });
+        Ok(response.channels)
+    }
+
     pub async fn get_gb_channel(
         &self,
         device_id: &str,
@@ -695,6 +742,47 @@ impl BusinessControl {
             .await?
             .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?;
         let session = self.gb_session_for_device(&device, "list_gb_resources")?;
+        let mut client = self.session_client(&session).await?;
+        let request = ListGbResourcesRequest {
+            device_id: device_id.to_string(),
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "list_gb_resources",
+            &session.identity.node_id,
+            "",
+            device_id,
+        );
+        let response = edge.response(client.list_gb_resources(request).await)?;
+        edge.success();
+        Ok(response.resources)
+    }
+
+    pub async fn list_gb_resources_for_session(
+        &self,
+        session_node_id: &str,
+        device_id: &str,
+    ) -> GuardResult<Vec<GbResource>> {
+        if session_node_id.trim().is_empty() {
+            return self.list_gb_resources(device_id).await;
+        }
+        let session = self.store.get_node(session_node_id).ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
+        })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable(
+                "session",
+                "list_gb_resources",
+                session_node_id,
+            ));
+        }
         let mut client = self.session_client(&session).await?;
         let request = ListGbResourcesRequest {
             device_id: device_id.to_string(),
@@ -982,14 +1070,31 @@ impl BusinessControl {
         channel_id: &str,
         options: DeviceStreamOptions,
     ) -> GuardResult<StreamSummary> {
-        let input_key = kind.input_key(device_id, channel_id);
+        let requested_session_node_id = options.session_node_id.trim().to_string();
+        let select_session = || {
+            if requested_session_node_id.is_empty() {
+                self.select_node(NodeKind::Session, kind.session_capability())
+            } else {
+                self.select_session_node(
+                    &requested_session_node_id,
+                    kind.session_capability(),
+                    kind.action(),
+                )
+            }
+        };
+        let input_key = kind.input_key(device_id, channel_id).map(|key| {
+            if requested_session_node_id.is_empty() {
+                key
+            } else {
+                format!("session:{requested_session_node_id}:{key}")
+            }
+        });
         let session = match input_key.as_deref() {
             Some(key) => match self.store.get_stream_session_owner_by_input(key) {
                 Some(owner) => match self.session_node_for_owner(&owner) {
                     Ok(session) => session,
                     Err(_) if owner.stream_id.is_empty() => {
-                        let candidate =
-                            self.select_node(NodeKind::Session, kind.session_capability())?;
+                        let candidate = select_session()?;
                         let owner = self.store.replace_inactive_stream_input_owner(
                             key,
                             StreamSessionOwnerRecord {
@@ -1004,8 +1109,7 @@ impl BusinessControl {
                     Err(error) => return Err(error),
                 },
                 None => {
-                    let candidate =
-                        self.select_node(NodeKind::Session, kind.session_capability())?;
+                    let candidate = select_session()?;
                     let owner = self.store.claim_stream_input_owner(
                         key,
                         StreamSessionOwnerRecord {
@@ -1018,7 +1122,7 @@ impl BusinessControl {
                     self.session_node_for_owner(&owner)?
                 }
             },
-            None => self.select_node(NodeKind::Session, kind.session_capability())?,
+            None => select_session()?,
         };
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
@@ -1959,6 +2063,29 @@ impl BusinessControl {
             })
             .min_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id))
             .ok_or_else(|| GuardError::NotFound(format!("no {:?} node for {capability}", kind)))
+    }
+
+    fn select_session_node(
+        &self,
+        node_id: &str,
+        capability: &str,
+        action: &str,
+    ) -> GuardResult<NodeRecord> {
+        let node = self
+            .store
+            .get_node(node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 session node {node_id}")))?;
+        if !is_gb_session_node(&node) || !node.capabilities.iter().any(|item| item == capability) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {node_id} for {capability}"
+            )));
+        }
+        if node.connection != ConnectionState::Connected
+            || node.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable("session", action, node_id));
+        }
+        Ok(node)
     }
 }
 

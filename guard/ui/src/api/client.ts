@@ -269,7 +269,7 @@ export interface GbResourceConfirmationInfo { status: number; resource_kind: str
 export interface GbResourceInfo { device_id: string; resource_id: string; name: string; status: string; parent_id: string; type_code: string; enum_id: string; enum_name: string; suggested_kind: string; classification_mode: 'default' | 'manual' | 'manual_stale' | 'unknown' | 'conflict' | 'orphan'; effective_kind: string; effective_owner_scope: string; effective_owner_id: string; warning: string; biz_enable: number; owner_biz_enable: number; supported: boolean; available: boolean; unavailable_reason: string; confirmation: GbResourceConfirmationInfo | null }
 export interface GbResourceConfirmationPayload { request_id: string; resource_kind: 'video' | 'audio_input' | 'audio_output' | 'other'; owner_scope: 'device' | 'resource'; owner_id: string; remark?: string }
 export interface GbSnapshotInfo { session_id: string }
-export interface GbStreamPayload { request_id: string; token?: string; start_time_sec?: number; end_time_sec?: number; playback_id?: string; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
+export interface GbStreamPayload { request_id: string; session_node_id?: string; token?: string; start_time_sec?: number; end_time_sec?: number; playback_id?: string; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
 export interface GbBroadcastPayload extends GbStreamPayload { channel_id: string; talk_codec: 'PCMA'; talk_sample_rate: 8000; talk_channel_count: 1; talk_frame_duration_ms: 20 }
 
 const gbPath = (value: string) => encodeURIComponent(value);
@@ -291,8 +291,8 @@ export async function listGbDevices(pageSize = 500, sessionNodeId = '', domainId
 export const createGbDevice = (payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices', { method: 'POST', body: JSON.stringify(payload) });
 export const updateGbDevice = (deviceId: string, payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices/' + gbPath(deviceId), { method: 'POST', body: JSON.stringify(payload) });
 export const deleteGbDevice = (deviceId: string, sessionNodeId: string, domainId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId) + '/delete', { method: 'POST', body: JSON.stringify({ session_node_id: sessionNodeId, domain_id: domainId }) });
-export const listGbChannels = (deviceId: string) => request<GbChannelInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels');
-export const listGbResources = (deviceId: string) => request<GbResourceInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/resources');
+export const listGbChannels = (deviceId: string, sessionNodeId = '') => request<GbChannelInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels?session_node_id=' + gbPath(sessionNodeId));
+export const listGbResources = (deviceId: string, sessionNodeId = '') => request<GbResourceInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/resources?session_node_id=' + gbPath(sessionNodeId));
 export const saveGbResourceConfirmation = (deviceId: string, resourceId: string, payload: GbResourceConfirmationPayload) => request<GbResourceInfo>('/gb28181/devices/' + gbPath(deviceId) + '/resources/' + gbPath(resourceId) + '/confirmation', { method: 'POST', body: JSON.stringify(payload) });
 export const resetGbResourceConfirmation = (deviceId: string, resourceId: string, requestId: string) => request<GbResourceInfo>('/gb28181/devices/' + gbPath(deviceId) + '/resources/' + gbPath(resourceId) + '/confirmation/reset', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export const updateGbChannel = (deviceId: string, channelId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'POST', body: JSON.stringify(payload) });
