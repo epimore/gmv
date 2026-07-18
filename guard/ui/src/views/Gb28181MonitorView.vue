@@ -108,7 +108,6 @@
             <el-radio-button value="live">实时直播</el-radio-button>
             <el-radio-button value="playback">历史回放</el-radio-button>
           </el-radio-group>
-          <span>当前传输能力最多 {{ multiViewLimit }} 路{{ multiMode === 'playback' ? ' · 启动并发 1' : '' }}</span>
         </div>
         <div class="monitor-actions">
           <el-date-picker v-if="multiMode === 'playback'" v-model="multiDefaultRange" type="datetimerange"
@@ -124,7 +123,6 @@
               </div>
             </el-option>
           </el-select>
-          <el-button type="danger" plain :loading="multiStopping" @click="stopAllMultiStreams()">停止全部</el-button>
           <el-button type="primary" @click="backToDeviceListFromMulti">返回设备列表</el-button>
         </div>
       </div>
@@ -136,7 +134,7 @@
           <el-input v-model="treeDeviceId" style="width: 220px" clearable placeholder="设备 ID" />
           <el-input v-model="treeDeviceName" style="width: 220px" clearable placeholder="设备名称" />
           <el-button type="primary" :loading="treeLoading" @click="searchTreeDevices">查询</el-button>
-          <el-button :loading="treeLoading" @click="resetTreeDevices">重置</el-button>
+          <el-button :loading="treeLoading || multiStopping" @click="resetTreeDevices">重置</el-button>
         </div>
         <div v-loading="treeLoading" class="tree-device-list">
           <el-tree class="device-channel-tree" :data="treeDeviceNodes" :props="treeProps" node-key="key" lazy
@@ -170,7 +168,21 @@
       <el-empty v-else description="请选择信令节点" />
     </GlassPanel>
 
-    <GlassPanel class="span-7" title="已选通道" :subtitle="selectedTreeChannelSubtitle">
+    <GlassPanel class="span-7" title="已选通道">
+      <template #action>
+        <div class="selected-channel-capacity">
+          <span>{{ selectedTreeChannels.length }} / {{ multiViewLimit }}</span>
+          <el-tooltip v-if="multiViewLimit === 6" :visible="multiLimitHelpVisible"
+            content="当前访问链路未确认同时满足 HTTPS 与 HTTP/2，系统按 HTTP/1.1 的安全上限限制为 6 路；使用 HTTPS + HTTP/2 后，上限可提升至 16 路。"
+            placement="top-end">
+            <button type="button" class="multi-limit-help" aria-label="查看多画面上限为 6 路的原因"
+              @mouseenter="multiLimitHelpHovered = true" @mouseleave="multiLimitHelpHovered = false"
+              @click="multiLimitHelpPinned = !multiLimitHelpPinned" @blur="multiLimitHelpPinned = false">
+              <el-icon><QuestionFilled /></el-icon>
+            </button>
+          </el-tooltip>
+        </div>
+      </template>
       <div class="selected-channel-panel">
         <div class="selected-channel-list" :class="{ playback: multiMode === 'playback' }">
           <article v-for="(channel, index) in selectedTreeChannels" :key="channel.device_id + ':' + channel.channel_id"
@@ -178,10 +190,12 @@
             @dragstart="handleSelectedChannelDragStart(index)" @dragover.prevent @drop="handleSelectedChannelDrop(index)"
             @dragend="handleSelectedChannelDragEnd">
             <div class="selected-channel-main">
+              <span v-if="multiMode === 'playback'" class="selected-channel-index">{{ index + 1 }}.</span>
               <el-tooltip :content="selectedChannelTooltip(channel)" placement="top">
-                <b>{{ index + 1 }}. {{ channel.device_id }} · {{ channel.channel_id }}</b>
+                <b v-if="multiMode === 'playback'">{{ channel.device_id }} · {{ channel.channel_id }}</b>
+                <b v-else>{{ index + 1 }}. {{ channel.device_id }} · {{ channel.channel_id }}</b>
               </el-tooltip>
-              <span v-if="multiMode === 'playback'">{{ multiPlaybackSelectionStatus(channel) }}</span>
+              <span v-if="multiMode === 'playback'" class="selected-channel-status">{{ multiPlaybackSelectionStatus(channel) }}</span>
             </div>
             <div v-if="multiMode === 'playback'" class="selected-channel-playback">
               <el-date-picker v-model="channel.playback_range" type="datetimerange" range-separator="至"
@@ -197,7 +211,7 @@
                   @click="stopConfirmedMultiPlayback(channel)">停止并编辑</el-button>
               </div>
             </div>
-            <el-button type="danger" link @click="removeTreeChannel(channel)">移除</el-button>
+            <el-button class="selected-channel-remove" type="danger" link @click="removeTreeChannel(channel)">移除</el-button>
           </article>
           <el-empty v-if="!selectedTreeChannels.length" description="暂无已选通道" />
         </div>
@@ -472,6 +486,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { onBeforeRouteLeave } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { QuestionFilled } from '@element-plus/icons-vue';
 import {
   errorMessage,
   cancelMediaOperation,
@@ -601,6 +616,8 @@ const multiGridManual = ref(false);
 const multiFullscreen = ref(false);
 const multiPage = ref(1);
 const multiViewLimit = ref(6);
+const multiLimitHelpHovered = ref(false);
+const multiLimitHelpPinned = ref(false);
 const multiMode = ref<MultiMode>('live');
 const multiDefaultRange = ref<[Date, Date]>();
 const multiPlaybackQueue = ref<string[]>([]);
@@ -699,7 +716,7 @@ const deviceBroadcastReason = computed(() => selectedDevice.value?.monitor_statu
 const deviceBroadcastReasonText = computed(() => broadcastReasonText(deviceBroadcastReason.value));
 const ownerResourceOptions = computed(() => channels.value.filter((channel) => channel.channel_id !== resourceEditing.value?.resource_id));
 const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeChannelItems.value);
-const selectedTreeChannelSubtitle = computed(() => `${selectedTreeChannels.value.length}/${multiViewLimit.value}`);
+const multiLimitHelpVisible = computed(() => multiLimitHelpHovered.value || multiLimitHelpPinned.value);
 const treeProps = { label: 'label', isLeaf: 'leaf' };
 const treeDeviceNodes = computed<TreeNodeData[]>(() => treeDevices.value.map((device) => ({
   key: device.device_id,
@@ -1032,7 +1049,10 @@ async function handleMultiModeChange(value: string | number | boolean | undefine
   const previous = [...selectedTreeChannelItems.value];
   if (previous.length) {
     try {
-      await ElMessageBox.confirm('切换模式将停止当前全部画面，并保留目标模式仍可用的通道。', '切换多画面模式', {
+      const message = nextMode === 'playback'
+        ? '切换到历史回放将停止当前全部画面，切换后请先设置默认时段。'
+        : '切换模式将停止当前全部画面，并保留目标模式仍可用的通道。';
+      await ElMessageBox.confirm(message, '切换多画面模式', {
         confirmButtonText: '确认切换', cancelButtonText: '取消', type: 'warning',
       });
     } catch {
@@ -2726,8 +2746,40 @@ onBeforeUnmount(() => {
 }
 
 .multi-default-range {
-  width: 390px;
+  width: 340px;
   max-width: 100%;
+}
+
+.selected-channel-capacity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--cyan);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.multi-limit-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  color: var(--cyan);
+  background: transparent;
+  cursor: help;
+}
+
+.multi-limit-help:hover {
+  color: var(--el-color-primary-light-3);
+}
+
+.multi-limit-help:focus-visible {
+  border-radius: 50%;
+  color: var(--el-color-primary-light-3);
+  outline: 1px solid var(--component-border-strong);
 }
 
 .multi-player-actions {
@@ -3193,7 +3245,7 @@ onBeforeUnmount(() => {
 
 .selected-channel-item {
   display: grid;
-  grid-template-columns: minmax(150px, .8fr) minmax(360px, 1.6fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
   padding: 12px;
@@ -3204,11 +3256,23 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 
+.selected-channel-list.playback .selected-channel-item {
+  grid-template-areas:
+    "main remove"
+    "playback playback";
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 8px;
+}
+
 .selected-channel-main,
 .selected-channel-playback {
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+
+.selected-channel-main b {
+  font-size: 13px;
 }
 
 .selected-channel-playback :deep(.el-date-editor) {
@@ -3234,6 +3298,67 @@ onBeforeUnmount(() => {
 .selected-channel-item span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.selected-channel-list.playback .selected-channel-main {
+  grid-area: main;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.selected-channel-list.playback .selected-channel-main b {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-channel-list.playback .selected-channel-index,
+.selected-channel-list.playback .selected-channel-status {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.selected-channel-list.playback .selected-channel-index {
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+}
+
+.selected-channel-list.playback .selected-channel-playback {
+  grid-area: playback;
+  display: flex;
+  align-items: center;
+  padding-left: 32px;
+}
+
+.selected-channel-list.playback .selected-channel-playback :deep(.el-date-editor) {
+  flex: 0 1 330px;
+  width: 330px;
+  min-width: 280px;
+}
+
+.selected-channel-list.playback .selected-channel-actions {
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+.selected-channel-list.playback .selected-channel-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.selected-channel-list.playback .selected-channel-remove {
+  grid-area: remove;
+}
+
+.selected-channel-list:not(.playback) .selected-channel-main b {
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .multi-player-panel.is-multi-fullscreen {
