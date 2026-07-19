@@ -209,6 +209,7 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
         ("desired_rate_milli", "bigint NULL"),
         ("acknowledged_rate_milli", "bigint NULL"),
         ("playback_state", "varchar(16) NULL"),
+        ("pause_expire_at", "datetime(3) NULL"),
         ("last_control_operation_id", "varchar(128) NULL"),
     ];
     for (name, definition) in COLUMNS {
@@ -245,6 +246,7 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
         ("desired_rate_milli", "BIGINT NULL"),
         ("acknowledged_rate_milli", "BIGINT NULL"),
         ("playback_state", "VARCHAR(16) NULL"),
+        ("pause_expire_at", "DATETIME NULL"),
         ("last_control_operation_id", "VARCHAR(128) NULL"),
     ];
     for (name, definition) in COLUMNS {

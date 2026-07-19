@@ -5,6 +5,7 @@ use std::{
     time::Instant,
 };
 
+use base::chrono::{Duration as TimeDelta, Local};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error as log_error, info, warn};
@@ -663,11 +664,16 @@ impl SessionControl for SessionControlRpc {
                     None,
                     Some(rate_milli),
                     Some("PLAYING"),
+                    None,
                     &operation_id(request.operation.as_ref()),
                 )
                 .await
                 .map_err(storage_status)?
                 {
+                    hook_serv::clear_playback_pause_deadline(
+                        &stream_id,
+                        request.expected_generation,
+                    );
                     Ok(value)
                 } else {
                     Err(GlobalError::new_biz_error(
@@ -739,11 +745,13 @@ impl SessionControl for SessionControlRpc {
                     Some(request.position_sec),
                     None,
                     Some("PLAYING"),
+                    None,
                     &operation_id(request.operation.as_ref()),
                 )
                 .await
                 .map_err(storage_status)? =>
             {
+                hook_serv::clear_playback_pause_deadline(&stream_id, request.expected_generation);
                 Ok(value)
             }
             Ok(_) => Err(GlobalError::new_biz_error(
@@ -784,6 +792,13 @@ impl SessionControl for SessionControlRpc {
         }
         let result =
             api_serv::playback_state(&request.stream_id, state == PlaybackState::Paused).await;
+        let pause_expire_at = (state == PlaybackState::Paused).then(|| {
+            Local::now().naive_local()
+                + TimeDelta::seconds(
+                    crate::gb::SessionConf::get_session_by_conf().playback_pause_timeout_secs
+                        as i64,
+                )
+        });
         let result = match result {
             Ok(value)
                 if SipDialogSessionRepository::cas_ack_playback_control(
@@ -797,11 +812,24 @@ impl SessionControl for SessionControlRpc {
                     } else {
                         "PLAYING"
                     }),
+                    pause_expire_at,
                     &operation_id(request.operation.as_ref()),
                 )
                 .await
                 .map_err(storage_status)? =>
             {
+                if let Some(expire_at) = pause_expire_at {
+                    hook_serv::schedule_playback_pause_deadline(
+                        &request.stream_id,
+                        request.expected_generation.saturating_add(1),
+                        expire_at,
+                    );
+                } else {
+                    hook_serv::clear_playback_pause_deadline(
+                        &request.stream_id,
+                        request.expected_generation,
+                    );
+                }
                 Ok(value)
             }
             Ok(_) => Err(GlobalError::new_biz_error(

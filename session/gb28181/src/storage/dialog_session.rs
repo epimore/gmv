@@ -324,6 +324,13 @@ impl TryFrom<SipDialogSessionRow> for SipDialogSession {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaybackPauseLease {
+    pub state: String,
+    pub expire_at: Option<NaiveDateTime>,
+    pub generation: u64,
+}
+
 pub struct SipDialogSessionRepository;
 
 impl SipDialogSessionRepository {
@@ -602,6 +609,7 @@ impl SipDialogSessionRepository {
         position_sec: Option<u32>,
         rate_milli: Option<i64>,
         playback_state: Option<&str>,
+        pause_expire_at: Option<NaiveDateTime>,
         operation_id: &str,
     ) -> GlobalResult<bool> {
         validate_len(playback_id, 64, "playback_id")?;
@@ -616,10 +624,13 @@ impl SipDialogSessionRepository {
             return Ok(true);
         }
         let rows = db::execute!(
-            "UPDATE gb28181_sip_dialog_session SET              playback_generation=playback_generation+1,             acknowledged_position_sec=COALESCE(?,acknowledged_position_sec),             desired_rate_milli=COALESCE(?,desired_rate_milli),             acknowledged_rate_milli=COALESCE(?,acknowledged_rate_milli),             playback_state=COALESCE(?,playback_state),mansrtsp_cseq=local_cseq,             last_control_operation_id=?,version=version+1              WHERE stream_id=? AND playback_id=? AND session_type='PLAYBACK'              AND playback_generation=?",
+            "UPDATE gb28181_sip_dialog_session SET              playback_generation=playback_generation+1,             acknowledged_position_sec=COALESCE(?,acknowledged_position_sec),             desired_rate_milli=COALESCE(?,desired_rate_milli),             acknowledged_rate_milli=COALESCE(?,acknowledged_rate_milli),             playback_state=COALESCE(?,playback_state),             pause_expire_at=CASE WHEN ?='PAUSED' THEN ? WHEN ?='PLAYING' THEN NULL ELSE pause_expire_at END,             mansrtsp_cseq=local_cseq,last_control_operation_id=?,version=version+1              WHERE stream_id=? AND playback_id=? AND session_type='PLAYBACK'              AND playback_generation=?",
             position_sec.map(i64::from),
             rate_milli,
             rate_milli,
+            playback_state,
+            playback_state,
+            pause_expire_at,
             playback_state,
             operation_id,
             stream_id,
@@ -807,6 +818,33 @@ impl SipDialogSessionRepository {
         )
         .hand_log(|message| error!("{message}"))?;
         Ok(row.and_then(|(state,)| state))
+    }
+
+    pub async fn find_playback_pause_lease(
+        stream_id: &str,
+    ) -> GlobalResult<Option<PlaybackPauseLease>> {
+        validate_len(stream_id, 64, "stream_id")?;
+        #[cfg(test)]
+        if use_test_storage() {
+            return Ok(None);
+        }
+        let row: Option<(Option<String>, Option<NaiveDateTime>, Option<i64>)> =
+            db::fetch_optional_as!(
+                (Option<String>, Option<NaiveDateTime>, Option<i64>),
+                "SELECT playback_state,pause_expire_at,playback_generation FROM gb28181_sip_dialog_session WHERE stream_id=? AND session_type='PLAYBACK' AND state='ESTABLISHED'",
+                stream_id,
+            )
+            .hand_log(|message| error!("{message}"))?;
+        let Some((Some(state), expire_at, generation)) = row else {
+            return Ok(None);
+        };
+        let generation = u64::try_from(generation.unwrap_or_default())
+            .map_err(|_| invalid_data("invalid playback generation"))?;
+        Ok(Some(PlaybackPauseLease {
+            state,
+            expire_at,
+            generation,
+        }))
     }
 
     pub async fn find_by_call_id(call_id: &str) -> GlobalResult<Vec<SipDialogSession>> {

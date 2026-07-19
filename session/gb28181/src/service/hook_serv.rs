@@ -1,7 +1,9 @@
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use base::bytes::Bytes;
-use base::chrono::{Local, TimeZone};
+use base::chrono::{Local, NaiveDateTime, TimeZone};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
@@ -12,10 +14,11 @@ use gmv_domain::info::obj::{
 };
 
 use crate::gb::SessionConf;
+use crate::register::core::{Register, TimeScheduleKey};
 use crate::service::{KEY_STREAM_IN, dialog_recovery, stream_close, talk_close};
 use crate::state;
 use crate::state::DownloadConf;
-use crate::storage::dialog_session::SipDialogSessionRepository;
+use crate::storage::dialog_session::{PlaybackPauseLease, SipDialogSessionRepository};
 
 pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
     let key_stream_in_id = format!(
@@ -41,8 +44,8 @@ pub async fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRe
         return InTimeoutEventRes::CloseAll;
     }
 
-    match SipDialogSessionRepository::find_playback_state(&stream_id).await {
-        Ok(playback_state) if keep_alive_paused_playback(playback_state.as_deref()) => {
+    match SipDialogSessionRepository::find_playback_pause_lease(&stream_id).await {
+        Ok(lease) if keep_alive_paused_playback(lease.as_ref(), Local::now().naive_local()) => {
             debug!(
                 "stream input timeout kept alive: action=input_timeout, outcome=keep_alive, reason=playback_paused, stream_id={stream_id}"
             );
@@ -59,8 +62,81 @@ pub async fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRe
     InTimeoutEventRes::CloseAll
 }
 
-fn keep_alive_paused_playback(playback_state: Option<&str>) -> bool {
-    matches!(playback_state, Some("PAUSED"))
+fn keep_alive_paused_playback(lease: Option<&PlaybackPauseLease>, now: NaiveDateTime) -> bool {
+    lease.is_some_and(|lease| {
+        lease.state == "PAUSED" && lease.expire_at.is_some_and(|expire_at| expire_at > now)
+    })
+}
+
+pub fn schedule_playback_pause_deadline(
+    stream_id: &str,
+    generation: u64,
+    expire_at: NaiveDateTime,
+) {
+    let remaining_ms = expire_at
+        .signed_duration_since(Local::now().naive_local())
+        .num_milliseconds()
+        .max(1) as u64;
+    if let Err(err) = Register::scheduler().insert_register(
+        TimeScheduleKey::PlaybackPauseExpiry(Arc::from(stream_id), generation),
+        Duration::from_millis(remaining_ms),
+    ) {
+        error!(
+            "schedule playback pause deadline failed: outcome=close_all, stream_id={stream_id}, generation={generation}, err={err}"
+        );
+        stream_close::begin(stream_id.to_string());
+    }
+}
+
+pub fn clear_playback_pause_deadline(stream_id: &str, generation: u64) {
+    let _ = Register::scheduler().remove_register(&TimeScheduleKey::PlaybackPauseExpiry(
+        Arc::from(stream_id),
+        generation,
+    ));
+}
+
+pub async fn expire_playback_pause(stream_id: Arc<str>, generation: u64) {
+    match SipDialogSessionRepository::find_playback_pause_lease(&stream_id).await {
+        Ok(Some(lease)) if lease.state == "PAUSED" && lease.generation == generation => {
+            let now = Local::now().naive_local();
+            match lease.expire_at {
+                Some(expire_at) if expire_at > now => {
+                    schedule_playback_pause_deadline(&stream_id, generation, expire_at);
+                }
+                _ => {
+                    warn!(
+                        "playback pause lease expired: action=pause_expiry, outcome=close_all, stream_id={stream_id}, generation={generation}"
+                    );
+                    stream_close::begin(stream_id.to_string());
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                "query playback pause lease failed: action=pause_expiry, outcome=close_all, stream_id={stream_id}, generation={generation}, err={err}"
+            );
+            stream_close::begin(stream_id.to_string());
+        }
+    }
+}
+
+pub async fn restore_playback_pause_deadline(stream_id: &str) {
+    match SipDialogSessionRepository::find_playback_pause_lease(stream_id).await {
+        Ok(Some(lease)) if lease.state == "PAUSED" => match lease.expire_at {
+            Some(expire_at) if expire_at > Local::now().naive_local() => {
+                schedule_playback_pause_deadline(stream_id, lease.generation, expire_at);
+            }
+            _ => stream_close::begin(stream_id.to_string()),
+        },
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                "restore playback pause deadline failed: outcome=close_all, stream_id={stream_id}, err={err}"
+            );
+            stream_close::begin(stream_id.to_string());
+        }
+    }
 }
 
 pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
@@ -86,7 +162,18 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
         return OutputEventRes::CloseMuxer;
     }
 
-    stream_close::begin(out_stream_info.base_stream_info.stream_id);
+    let stream_id = out_stream_info.base_stream_info.stream_id;
+    match SipDialogSessionRepository::find_playback_pause_lease(&stream_id).await {
+        Ok(lease) if keep_alive_paused_playback(lease.as_ref(), Local::now().naive_local()) => {
+            return OutputEventRes::KeepMuxer;
+        }
+        Ok(_) => {}
+        Err(err) => error!(
+            "query playback pause lease on stream idle failed: stream_id={stream_id}, err={err}"
+        ),
+    }
+
+    stream_close::begin(stream_id);
 
     OutputEventRes::CloseAll
 }
@@ -295,11 +382,23 @@ fn invalid_file_name_error() -> GlobalError {
 #[cfg(test)]
 mod tests {
     use super::keep_alive_paused_playback;
+    use crate::storage::dialog_session::PlaybackPauseLease;
+    use base::chrono::{Duration, Local};
 
     #[test]
     fn input_timeout_only_keeps_acknowledged_paused_playback_alive() {
-        assert!(keep_alive_paused_playback(Some("PAUSED")));
-        assert!(!keep_alive_paused_playback(Some("PLAYING")));
-        assert!(!keep_alive_paused_playback(None));
+        let now = Local::now().naive_local();
+        let mut lease = PlaybackPauseLease {
+            state: "PAUSED".to_string(),
+            expire_at: Some(now + Duration::seconds(1)),
+            generation: 1,
+        };
+        assert!(keep_alive_paused_playback(Some(&lease), now));
+        lease.expire_at = Some(now);
+        assert!(!keep_alive_paused_playback(Some(&lease), now));
+        lease.state = "PLAYING".to_string();
+        lease.expire_at = Some(now + Duration::seconds(1));
+        assert!(!keep_alive_paused_playback(Some(&lease), now));
+        assert!(!keep_alive_paused_playback(None, now));
     }
 }

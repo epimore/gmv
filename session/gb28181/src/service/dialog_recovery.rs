@@ -155,6 +155,8 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
         );
         if session.state == DialogState::Terminating {
             crate::service::stream_close::begin(session.stream_id.clone());
+        } else if session.session_type == DialogSessionType::Playback {
+            crate::service::hook_serv::restore_playback_pause_deadline(&session.stream_id).await;
         }
         return Ok(());
     }

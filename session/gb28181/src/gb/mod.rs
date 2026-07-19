@@ -28,6 +28,12 @@ pub struct SessionConf {
     pub wan_ip: Ipv4Addr,
     pub lan_port: u16,
     pub wan_port: u16,
+    #[serde(default = "default_playback_pause_timeout_secs")]
+    pub playback_pause_timeout_secs: u64,
+}
+
+fn default_playback_pause_timeout_secs() -> u64 {
+    3_600
 }
 impl CheckFromConf for SessionConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
@@ -36,6 +42,12 @@ impl CheckFromConf for SessionConf {
             return Err(FieldCheckError::BizError(format!(
                 "domain_id must be 20 digits: {}",
                 self.domain_id
+            )));
+        }
+        if !(60..=86_400).contains(&self.playback_pause_timeout_secs) {
+            return Err(FieldCheckError::BizError(format!(
+                "playback_pause_timeout_secs must be in 60..=86400: {}",
+                self.playback_pause_timeout_secs
             )));
         }
         Ok(())
@@ -205,11 +217,18 @@ fn recovery_source_from_device(
 
 #[cfg(test)]
 mod tests {
-    use super::{RecoveryCandidate, recovery_source_from_device};
+    use super::{
+        RecoveryCandidate, default_playback_pause_timeout_secs, recovery_source_from_device,
+    };
     use crate::storage::entity::GmvDevice;
     use base::chrono::{Duration as TimeDelta, Local};
     use gmv_pjsip::SipTransportProtocol;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn playback_pause_hard_deadline_defaults_to_one_hour() {
+        assert_eq!(default_playback_pause_timeout_secs(), 3_600);
+    }
 
     #[test]
     fn recovery_source_uses_shorter_lease_and_registered_source_ip() {

@@ -135,9 +135,13 @@ export const stopStream = (streamId: string) => request<StreamSummary>('/streams
 export const releaseStream = (streamId: string, subscriptionId: string, requestId: string) => request<StreamSummary>('/streams/' + encodeURIComponent(streamId) + '/release', { method: 'POST', body: JSON.stringify({ request_id: requestId, subscription_id: subscriptionId }) });
 export const setStreamPlaybackSpeed = (streamId: string, speedRate: number) => request<{ accepted: boolean; speed_rate: number }>('/streams/' + encodeURIComponent(streamId) + '/speed', { method: 'POST', body: JSON.stringify({ speed_rate: speedRate }) });
 export interface PlaybackControlResponse { accepted: boolean; generation: number }
+export interface PlaybackPresenceHeartbeatItem { playback_id: string; stream_id: string; subscription_id: string; generation: number }
+export interface PlaybackPresenceHeartbeatResult { playback_id: string; stream_id: string; accepted: boolean; terminal: boolean; generation: number; presence_deadline_ms?: number }
+export interface PlaybackPresenceHeartbeatResponse { server_time_ms: number; items: PlaybackPresenceHeartbeatResult[] }
 export const seekGbPlayback = (playbackId: string, payload: { request_id: string; stream_id: string; position_sec: number; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/seek', { method: 'POST', body: JSON.stringify(payload) });
 export const setGbPlaybackSpeed = (playbackId: string, payload: { request_id: string; stream_id: string; speed_rate: number; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/speed', { method: 'POST', body: JSON.stringify(payload) });
 export const setGbPlaybackState = (playbackId: string, payload: { request_id: string; stream_id: string; paused: boolean; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/state', { method: 'POST', body: JSON.stringify(payload) });
+export const heartbeatGbPlaybackPresence = (items: PlaybackPresenceHeartbeatItem[]) => request<PlaybackPresenceHeartbeatResponse>('/playbacks/presence/heartbeat', { method: 'POST', body: JSON.stringify({ items }) });
 export const listStreamOutputs = (streamId: string) => request<StreamOutputSummary[]>('/streams/' + encodeURIComponent(streamId) + '/outputs');
 export const createStreamOutput = async (
   streamId: string,

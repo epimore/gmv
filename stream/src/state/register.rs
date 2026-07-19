@@ -102,6 +102,15 @@ fn live_output_contract(
     }
 }
 
+fn viewer_output_enum(output: &OutputKind) -> Option<OutputEnum> {
+    match output {
+        OutputKind::HttpFlv(_) => Some(OutputEnum::HttpFlv),
+        OutputKind::DashFmp4(_) => Some(OutputEnum::DashFmp4),
+        OutputKind::HlsFmp4(_) => Some(OutputEnum::HlsFmp4),
+        _ => None,
+    }
+}
+
 fn close_output_layers(
     output: &mut OutputLayer,
     muxer: &mut MuxerLayer,
@@ -281,6 +290,8 @@ fn stream_config_ready(
 pub enum TimeScheduleKey {
     RtpGateway(u32),
     OutSession(u64),
+    HlsViewer(Arc<str>, Arc<str>),
+    OutputFirstSubscriber(Arc<str>, OutputEnum, u64),
     UnknownStream(Arc<str>),
 }
 #[derive(Clone, Hash, Eq, PartialEq)]
@@ -323,6 +334,7 @@ impl UnknownStreamObservation {
 }
 pub struct StreamMetadata {
     pub ssrc: u32,
+    pub lifecycle_generation: u64,
     pub output_count: OutputCount,
     pub in_wait_timeout: u8,
     pub out_idle_timeout: u8,
@@ -350,6 +362,7 @@ impl StreamMetadata {
     ) -> Self {
         StreamMetadata {
             ssrc,
+            lifecycle_generation: next_id(),
             output_count: Default::default(),
             in_wait_timeout,
             out_idle_timeout,
@@ -433,6 +446,8 @@ pub struct Inner {
     //key:stream_id
     pub stream_metadata_map: DashMap<Arc<str>, StreamMetadata>,
     pub out_session_map: DashMap<u64, OutSession>,
+    pub hls_viewer_deadline_map: DashMap<(Arc<str>, Arc<str>), Instant>,
+    pub hls_lease_lock: Mutex<()>,
     pub unknown_stream_map: DashMap<Arc<str>, UnknownStreamObservation>,
     //key:(token,stream_id),value: key-OutputEnum,value-playCount
     pub user_token_map: DashMap<(Arc<str>, Arc<str>), DashMap<OutputEnum, u32>>,
@@ -450,6 +465,96 @@ impl Register {
             .inner
             .user_token_map
             .contains_key(user_token_stream_id)
+    }
+
+    fn first_subscriber_key(
+        stream_id: Arc<str>,
+        output_enum: OutputEnum,
+        lifecycle_generation: u64,
+    ) -> TimeScheduleKey {
+        TimeScheduleKey::OutputFirstSubscriber(stream_id, output_enum, lifecycle_generation)
+    }
+
+    fn schedule_first_subscriber(
+        inner: &Inner,
+        stream_id: Arc<str>,
+        output_enum: OutputEnum,
+        lifecycle_generation: u64,
+        out_idle_timeout: u8,
+    ) {
+        let timeout = out_idle_timeout.saturating_add(DEFAULT_OFFSET_SECOND);
+        let _ = inner.time_schedule.insert(
+            Self::first_subscriber_key(stream_id, output_enum, lifecycle_generation),
+            Duration::from_secs(u64::from(timeout)),
+        );
+    }
+
+    fn cancel_first_subscriber(
+        inner: &Inner,
+        stream_id: Arc<str>,
+        output_enum: OutputEnum,
+        lifecycle_generation: u64,
+    ) {
+        let _ = inner.time_schedule.delete(Self::first_subscriber_key(
+            stream_id,
+            output_enum,
+            lifecycle_generation,
+        ));
+    }
+
+    fn cleanup_stream_runtime(inner: &Inner, stream_id: &Arc<str>, lifecycle_generation: u64) {
+        for output_enum in [
+            OutputEnum::HttpFlv,
+            OutputEnum::DashFmp4,
+            OutputEnum::HlsFmp4,
+        ] {
+            Self::cancel_first_subscriber(
+                inner,
+                stream_id.clone(),
+                output_enum,
+                lifecycle_generation,
+            );
+        }
+        let out_session_ids: Vec<u64> = inner
+            .out_session_map
+            .iter()
+            .filter(|entry| entry.stream_id == *stream_id)
+            .map(|entry| *entry.key())
+            .collect();
+        for expire_id in out_session_ids {
+            inner.out_session_map.remove(&expire_id);
+            let _ = inner
+                .time_schedule
+                .delete(TimeScheduleKey::OutSession(expire_id));
+        }
+        let hls_keys: Vec<(Arc<str>, Arc<str>)> = inner
+            .hls_viewer_deadline_map
+            .iter()
+            .filter(|entry| entry.key().0 == *stream_id)
+            .map(|entry| entry.key().clone())
+            .collect();
+        for (stream_id, token) in hls_keys {
+            inner
+                .hls_viewer_deadline_map
+                .remove(&(stream_id.clone(), token.clone()));
+            let _ = inner
+                .time_schedule
+                .delete(TimeScheduleKey::HlsViewer(stream_id, token));
+        }
+        inner
+            .user_token_map
+            .retain(|(_, token_stream_id), _| token_stream_id != stream_id);
+    }
+
+    pub fn is_live_output_open(stream_id: &str, output_type: &str) -> bool {
+        let Ok((_, _, output_enum, _)) = live_output_contract(output_type) else {
+            return false;
+        };
+        Self::get()
+            .inner
+            .stream_metadata_map
+            .get(stream_id)
+            .is_some_and(|meta| meta.output.contains(output_enum))
     }
 
     //插入/移除muxer使用量
@@ -578,7 +683,10 @@ impl Register {
             }
             InTimeoutEventRes::CloseAll => {
                 let stream_id = Arc::from(state.base_stream_info.stream_id);
-                arc.stream_metadata_map.remove(&stream_id);
+                arc.stream_metadata_map.remove_if(&stream_id, |_, meta| {
+                    Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
+                    true
+                });
                 arc.rtp_gateway_map
                     .remove(&state.base_stream_info.rtp_info.ssrc);
             }
@@ -615,6 +723,12 @@ impl Register {
                             &mut meta.converter.muxer,
                             info.play_type,
                         );
+                        Self::cancel_first_subscriber(
+                            &arc,
+                            stream_id.clone(),
+                            info.play_type,
+                            meta.lifecycle_generation,
+                        );
                         let _ = publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer_enum))
                             .hand_log(|msg| info!("{msg}"));
                     }
@@ -622,16 +736,119 @@ impl Register {
             }
             OutputEventRes::CloseAll => {
                 let stream_id = Arc::from(info.base_stream_info.stream_id);
-                info!(
-                    "ssrc = {},stream id = {} close",
-                    info.base_stream_info.rtp_info.ssrc, stream_id
-                );
-                arc.stream_metadata_map.remove(&stream_id);
-                arc.rtp_gateway_map
-                    .remove(&info.base_stream_info.rtp_info.ssrc);
+                let removed = arc.stream_metadata_map.remove_if(&stream_id, |_, meta| {
+                    if meta.output_count.get_out_count() != 0 {
+                        return false;
+                    }
+                    Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
+                    true
+                });
+                if removed.is_some() {
+                    info!(
+                        "ssrc = {},stream id = {} close",
+                        info.base_stream_info.rtp_info.ssrc, stream_id
+                    );
+                    arc.rtp_gateway_map
+                        .remove(&info.base_stream_info.rtp_info.ssrc);
+                } else {
+                    base::log::debug!(
+                        "ignore stale stream idle close: stream_id={stream_id}, reason=active_output"
+                    );
+                }
             }
         }
     }
+
+    pub fn expire_first_subscriber(
+        stream_id: Arc<str>,
+        output_enum: OutputEnum,
+        lifecycle_generation: u64,
+        inner: &Inner,
+    ) {
+        let Some(meta) = inner.stream_metadata_map.get(&stream_id) else {
+            return;
+        };
+        if meta.lifecycle_generation != lifecycle_generation
+            || meta.output_count.get_muxer_size(output_enum) != 0
+            || !meta.output.contains(output_enum)
+        {
+            return;
+        }
+        let base_stream_info = Self::build_base_stream_info(
+            &meta,
+            inner.server_conf.name.clone(),
+            inner.server_conf.proxy_addr.clone(),
+            stream_id.to_string(),
+        );
+        let output_stream_info = OutputStreamInfo::new(
+            base_stream_info,
+            output_enum,
+            meta.output_count.get_out_count(),
+        );
+        drop(meta);
+        let _ = inner
+            .event_tx
+            .try_send((Event::Out(OutEvent::StreamIdle(output_stream_info)), None))
+            .hand_log(|msg| error!("{msg}"));
+    }
+
+    pub fn clean_hls_play_token(stream_id: Arc<str>, token: Arc<str>) {
+        let arc = Self::get().inner.clone();
+        let _lease_guard = arc.hls_lease_lock.lock();
+        let lease_key = (stream_id.clone(), token.clone());
+        if arc
+            .hls_viewer_deadline_map
+            .remove_if(&lease_key, |_, deadline| *deadline <= Instant::now())
+            .is_none()
+        {
+            return;
+        }
+        let mut user_token = None;
+        let removed = match arc.user_token_map.entry((token, stream_id.clone())) {
+            Entry::Occupied(occ) => {
+                let removed = occ.get().remove(&OutputEnum::HlsFmp4).is_some();
+                if removed && occ.get().is_empty() {
+                    let ((token, _), _) = occ.remove_entry();
+                    if !token.is_empty() {
+                        user_token = Some(token.to_string());
+                    }
+                }
+                removed
+            }
+            Entry::Vacant(_) => false,
+        };
+        if !removed {
+            return;
+        }
+        if let Some(meta) = arc.stream_metadata_map.get(&stream_id) {
+            let base_stream_info = Self::build_base_stream_info(
+                &meta,
+                arc.server_conf.name.clone(),
+                arc.server_conf.proxy_addr.clone(),
+                stream_id.to_string(),
+            );
+            if let Some(token) = user_token {
+                let play_info =
+                    StreamPlayInfo::new(base_stream_info.clone(), None, token, OutputEnum::HlsFmp4);
+                let _ = arc
+                    .event_tx
+                    .try_send((Event::Out(OutEvent::OffPlay(play_info)), None))
+                    .hand_log(|msg| error!("{msg}"));
+            }
+            if meta.output_count.subtract(OutputEnum::HlsFmp4) == 0 {
+                let output_stream_info = OutputStreamInfo::new(
+                    base_stream_info,
+                    OutputEnum::HlsFmp4,
+                    meta.output_count.get_out_count(),
+                );
+                let _ = arc
+                    .event_tx
+                    .try_send((Event::Out(OutEvent::StreamIdle(output_stream_info)), None))
+                    .hand_log(|msg| error!("{msg}"));
+            }
+        }
+    }
+
     pub fn clean_play_token(expire_id: u64) {
         let arc = Self::get().inner.clone();
 
@@ -742,21 +959,24 @@ impl Register {
         user_token: Arc<str>,
     ) -> GlobalResult<()> {
         let arc = Self::get().inner.clone();
-        match arc.stream_metadata_map.get(&stream_id) {
-            None => Err(GlobalError::new_biz_error(
+        let meta = arc.stream_metadata_map.get(&stream_id).ok_or_else(|| {
+            GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
                 "SSRC不存在或已超时丢弃",
                 |msg| error!("stream_id = {}; {msg}", stream_id),
-            ))?,
-            Some(meta) => {
-                meta.output_count.add(output_enum);
-            }
-        }
-        match arc.user_token_map.entry((user_token, stream_id)) {
+            )
+        })?;
+        let _hls_guard = (output_enum == OutputEnum::HlsFmp4).then(|| arc.hls_lease_lock.lock());
+        let mut added = true;
+        match arc
+            .user_token_map
+            .entry((user_token.clone(), stream_id.clone()))
+        {
             Entry::Occupied(occ) => match occ.get().entry(output_enum) {
-                Entry::Occupied(mut i_occ) => {
+                Entry::Occupied(mut i_occ) if output_enum != OutputEnum::HlsFmp4 => {
                     *i_occ.get_mut() += 1;
                 }
+                Entry::Occupied(_) => added = false,
                 Entry::Vacant(i_vac) => {
                     i_vac.insert(1);
                 }
@@ -766,6 +986,27 @@ impl Register {
                 map.insert(output_enum, 1);
                 vac.insert(map);
             }
+        }
+        if added {
+            let count = meta.output_count.add(output_enum);
+            if count == 1 {
+                Self::cancel_first_subscriber(
+                    &arc,
+                    stream_id.clone(),
+                    output_enum,
+                    meta.lifecycle_generation,
+                );
+            }
+        }
+        if output_enum == OutputEnum::HlsFmp4 {
+            let timeout = Duration::from_secs(u64::from(meta.out_idle_timeout));
+            arc.hls_viewer_deadline_map.insert(
+                (stream_id.clone(), user_token.clone()),
+                Instant::now() + timeout,
+            );
+            let _ = arc
+                .time_schedule
+                .insert(TimeScheduleKey::HlsViewer(stream_id, user_token), timeout);
         }
         Ok(())
     }
@@ -1052,7 +1293,7 @@ impl Register {
         output_type: &str,
         audio_codec: &str,
     ) -> GlobalResult<String> {
-        let (output_type, output_kind, _, suffix) = live_output_contract(output_type)?;
+        let (output_type, output_kind, output_enum, suffix) = live_output_contract(output_type)?;
         let requested_transcode = match audio_codec.trim().to_ascii_lowercase().as_str() {
             "" => None,
             "aac" => Some(TranscodeConfig {
@@ -1096,6 +1337,13 @@ impl Register {
                 publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Open(open))
                     .hand_log(|msg| error!("{msg}"))?;
             }
+            Self::schedule_first_subscriber(
+                &arc,
+                stream_id.clone(),
+                output_enum,
+                meta.lifecycle_generation,
+                meta.out_idle_timeout,
+            );
         }
         let base = Self::build_base_stream_info(
             &meta,
@@ -1122,6 +1370,7 @@ impl Register {
             return Ok(false);
         }
         let muxer = MuxerEnum::from_output_enum(output_enum);
+        Self::cancel_first_subscriber(&arc, stream_id, output_enum, meta.lifecycle_generation);
         publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer))
             .hand_log(|msg| error!("{msg}"))?;
         Ok(true)
@@ -1189,6 +1438,7 @@ impl Register {
                 ));
             }
             let output_kind = media_config.output;
+            let viewer_output = viewer_output_enum(&output_kind);
             if !meta.output.put_if_absent(output_kind.clone()) {
                 return Ok(ssrc);
             }
@@ -1220,6 +1470,15 @@ impl Register {
                 publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Open(open))
                     .hand_log(|msg| error!("{msg}"))?;
             }
+            if let Some(output_enum) = viewer_output {
+                Self::schedule_first_subscriber(
+                    &arc,
+                    stream_id.clone(),
+                    output_enum,
+                    meta.lifecycle_generation,
+                    meta.out_idle_timeout,
+                );
+            }
             drop(meta);
             if let Some(active_event) = active_event {
                 arc.event_tx
@@ -1228,6 +1487,7 @@ impl Register {
             }
             return Ok(ssrc);
         }
+        let viewer_output = viewer_output_enum(&media_config.output);
         let rtp_channel = RtpChannel::new(stream_id.clone());
         let converter = ConverterLayer::new(
             media_config.codec,
@@ -1249,6 +1509,17 @@ impl Register {
             .insert(time_schedule_key, RTP_INPUT_CHECK_INTERVAL);
         arc.rtp_gateway_map.insert(ssrc, rtp_channel);
         arc.stream_metadata_map.insert(stream_id.clone(), metadata);
+        if let Some(output_enum) = viewer_output
+            && let Some(meta) = arc.stream_metadata_map.get(&stream_id)
+        {
+            Self::schedule_first_subscriber(
+                &arc,
+                stream_id.clone(),
+                output_enum,
+                meta.lifecycle_generation,
+                meta.out_idle_timeout,
+            );
+        }
         //发送事件模拟触发消费输出流：如mp4录制;不监听output token,仅记录muxer资源;由rtp input超时清理资源
         if let Some(active_event) = event {
             let _ = arc
@@ -1274,6 +1545,8 @@ impl Register {
             event_tx,
             stream_metadata_map: Default::default(),
             out_session_map: Default::default(),
+            hls_viewer_deadline_map: Default::default(),
+            hls_lease_lock: Mutex::new(()),
             unknown_stream_map: Default::default(),
             user_token_map: Default::default(),
             server_conf,
@@ -1592,7 +1865,9 @@ mod unknown_stream_tests {
             let mut muxer = MuxerLayer::new(&output_kind);
 
             assert!(close_output_layers(&mut output, &mut muxer, output_enum));
+            assert!(!output.contains(output_enum));
             assert!(output.put_if_absent(output_kind.clone()));
+            assert!(output.contains(output_enum));
             muxer.put_if_absent(&output_kind);
 
             assert!(

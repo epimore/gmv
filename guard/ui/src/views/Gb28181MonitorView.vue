@@ -499,6 +499,7 @@ import {
   createStreamOutput,
   getMediaTransport,
   getGbSessionNodeConfig,
+  heartbeatGbPlaybackPresence,
   listGbChannelImages,
   listGbChannels,
   listGbDevicePage,
@@ -524,6 +525,7 @@ import {
   type GbSessionConfigInfo,
   type NodeInfo,
   type MediaOperationSummary,
+  type PlaybackPresenceHeartbeatItem,
   type StreamSummary,
   type StreamOutputSummary,
 } from '@/api/client';
@@ -594,6 +596,7 @@ const playbackRangeDialog = ref(false);
 const playbackRange = ref<[Date, Date]>();
 const pendingPlaybackChannel = ref<GbChannelInfo>();
 const playbackGeneration = ref(0);
+const singlePlaybackState = ref<'playing' | 'paused'>('playing');
 const playbackAnchorPositionSec = ref(0);
 const playbackAnchorMediaTimeMs = ref<number>();
 const playbackLastMediaTimeMs = ref<number>();
@@ -646,6 +649,8 @@ let singlePreviewAbort: AbortController | undefined;
 let singleOutputAbort: AbortController | undefined;
 let playRequestSeq = 0;
 let multiViewDisposed = false;
+let playbackPresenceTimer: number | undefined;
+let playbackPresenceInFlight = false;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 const canManageResources = computed(() => auth.session?.role === 'admin');
@@ -770,6 +775,128 @@ const multiControllableCells = computed(() => multiCells.value.filter((cell) => 
 const multiPauseActionLabel = computed(() => multiControllableCells.value.some((cell) => cell.playback_state !== 'paused') ? '统一暂停' : '统一继续');
 const playerStatus = computed(() => lastStream.value?.state === 'running' ? 'playing' : selectedChannel.value && channelOnline(selectedChannel.value) ? 'online' : 'idle');
 const playerPoster = computed(() => selectedChannel.value?.pic_url || undefined);
+
+function pausedPlaybackPresenceItems(): PlaybackPresenceHeartbeatItem[] {
+  const items: PlaybackPresenceHeartbeatItem[] = [];
+  const single = lastStream.value;
+  if (
+    singlePlaybackState.value === 'paused'
+    && single?.state === 'running'
+    && single.playback_id
+    && single.stream_id
+    && single.subscription_id
+  ) {
+    items.push({
+      playback_id: single.playback_id,
+      stream_id: single.stream_id,
+      subscription_id: single.subscription_id,
+      generation: playbackGeneration.value,
+    });
+  }
+  for (const cell of multiCells.value) {
+    const stream = cell.stream;
+    if (
+      cell.mode === 'playback'
+      && cell.playback_state === 'paused'
+      && stream?.state === 'running'
+      && stream.playback_id
+      && stream.stream_id
+      && stream.subscription_id
+    ) {
+      items.push({
+        playback_id: stream.playback_id,
+        stream_id: stream.stream_id,
+        subscription_id: stream.subscription_id,
+        generation: cell.playback_generation ?? 0,
+      });
+    }
+  }
+  return [...new Map(items.map((item) => [`${item.playback_id}:${item.stream_id}`, item])).values()];
+}
+
+const pausedPlaybackPresenceKey = computed(() => pausedPlaybackPresenceItems()
+  .map((item) => `${item.playback_id}:${item.stream_id}:${item.subscription_id}:${item.generation}`)
+  .sort()
+  .join('|'));
+
+function stopPlaybackPresenceHeartbeat() {
+  if (playbackPresenceTimer !== undefined) {
+    window.clearInterval(playbackPresenceTimer);
+    playbackPresenceTimer = undefined;
+  }
+}
+
+function syncPlaybackPresenceHeartbeat() {
+  if (multiViewDisposed || !pausedPlaybackPresenceKey.value) {
+    stopPlaybackPresenceHeartbeat();
+    return;
+  }
+  if (playbackPresenceTimer === undefined) {
+    playbackPresenceTimer = window.setInterval(() => {
+      void heartbeatPausedPlaybacks();
+    }, 60_000);
+  }
+}
+
+async function heartbeatPausedPlaybacks() {
+  const items = pausedPlaybackPresenceItems();
+  if (multiViewDisposed || !items.length || playbackPresenceInFlight) return;
+  playbackPresenceInFlight = true;
+  try {
+    const response = await heartbeatGbPlaybackPresence(items);
+    let terminalCount = 0;
+    for (const result of response.items) {
+      if (!result.terminal) continue;
+      const single = lastStream.value;
+      if (
+        single?.playback_id === result.playback_id
+        && single.stream_id === result.stream_id
+        && playbackGeneration.value === result.generation
+      ) {
+        lastStream.value = { ...single, endpoint: '', state: 'stopped' };
+        singleOutput.value = undefined;
+        singlePendingSwitch.value = undefined;
+        singleOutputSwitching.value = false;
+        singlePlaybackState.value = 'playing';
+        terminalCount += 1;
+      }
+      const cell = multiCells.value.find((item) =>
+        item.stream?.playback_id === result.playback_id
+        && item.stream.stream_id === result.stream_id
+        && (item.playback_generation ?? 0) === result.generation,
+      );
+      if (cell) {
+        upsertMultiCell({
+          ...cell,
+          stream: undefined,
+          sources: [],
+          output: undefined,
+          pending_switch: undefined,
+          output_switching: false,
+          playback_state: undefined,
+          status: 'stopped',
+          error: '暂停保活已超时，资源已释放',
+        });
+        terminalCount += 1;
+      }
+    }
+    if (terminalCount) ElMessage.warning(`${terminalCount} 路暂停回放因保活超时已释放`);
+  } catch {
+    // 网络恢复后由下一次周期或 online/pageshow 事件补发；服务端超时负责最终回收。
+  } finally {
+    playbackPresenceInFlight = false;
+    syncPlaybackPresenceHeartbeat();
+  }
+}
+
+function handlePlaybackPresenceWakeup() {
+  if (document.visibilityState === 'visible') void heartbeatPausedPlaybacks();
+}
+
+watch(pausedPlaybackPresenceKey, (key) => {
+  syncPlaybackPresenceHeartbeat();
+  if (key) void heartbeatPausedPlaybacks();
+});
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
   const hasAudio = streamHasAudio(lastStream.value);
@@ -1646,6 +1773,7 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     const operation = singleMediaOperation.value;
     if (closeDialog) playerDialog.value = false;
     lastStream.value = undefined;
+    singlePlaybackState.value = 'playing';
     singleOutput.value = undefined;
     singlePendingSwitch.value = undefined;
     singleOutputSwitching.value = false;
@@ -2432,6 +2560,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
     lastStream.value = stream;
     if (kind === 'playback') {
       playbackGeneration.value = stream.playback_generation ?? 0;
+      singlePlaybackState.value = 'playing';
       playbackAnchorPositionSec.value = stream.playback_start_time_sec ?? Math.floor(range![0].getTime() / 1000);
       playbackAnchorMediaTimeMs.value = undefined;
       playbackLastMediaTimeMs.value = undefined;
@@ -2622,6 +2751,7 @@ async function handlePlaybackRateChange({ rate }: { rate: number }) {
       expected_generation: playbackGeneration.value,
     });
     playbackGeneration.value = response.generation;
+    singlePlaybackState.value = 'playing';
     singlePlayerRef.value?.confirmPlaybackRate(rate);
     singlePlayerRef.value?.confirmPlaybackState(false);
     ElMessage.success(`回放倍速已切换为 ${rate}x`);
@@ -2648,6 +2778,7 @@ async function handlePlaybackSeek({ timeMs }: { timeMs: number }) {
         expected_generation: playbackGeneration.value,
       });
       playbackGeneration.value = response.generation;
+      singlePlaybackState.value = 'playing';
       playbackAnchorPositionSec.value = targetSec;
       playbackAnchorMediaTimeMs.value = undefined;
       playbackLastMediaTimeMs.value = undefined;
@@ -2674,6 +2805,7 @@ async function handlePlaybackStateChange({ paused }: { paused: boolean }) {
       expected_generation: playbackGeneration.value,
     });
     playbackGeneration.value = response.generation;
+    singlePlaybackState.value = paused ? 'paused' : 'playing';
     singlePlayerRef.value?.confirmPlaybackState(paused);
   } catch (error) {
     ElMessage.error(errorMessage(error, paused ? '暂停回放失败' : '继续回放失败'));
@@ -2701,6 +2833,7 @@ function handlePlaybackProgress({ mediaTimeMs }: { mediaTimeMs: number }) {
 
 async function finishPlaybackRange(stream: StreamSummary) {
   singlePlayerRef.value?.confirmPlaybackState(true);
+  singlePlaybackState.value = 'playing';
   await releaseViewerStream(stream).catch(() => undefined);
   if (lastStream.value?.stream_id === stream.stream_id) {
     lastStream.value = { ...stream, endpoint: '', state: 'stopped' };
@@ -2718,13 +2851,23 @@ async function handlePlayerPtz(command: GmvPtzCommand) {
 }
 
 onMounted(loadDevices);
+onMounted(() => {
+  window.addEventListener('online', handlePlaybackPresenceWakeup);
+  window.addEventListener('pageshow', handlePlaybackPresenceWakeup);
+  document.addEventListener('visibilitychange', handlePlaybackPresenceWakeup);
+});
 onBeforeRouteLeave(async () => {
   multiViewDisposed = true;
+  stopPlaybackPresenceHeartbeat();
   await stopBroadcast();
   await stopAllMultiStreams({ quiet: true });
 });
 onBeforeUnmount(() => {
   multiViewDisposed = true;
+  stopPlaybackPresenceHeartbeat();
+  window.removeEventListener('online', handlePlaybackPresenceWakeup);
+  window.removeEventListener('pageshow', handlePlaybackPresenceWakeup);
+  document.removeEventListener('visibilitychange', handlePlaybackPresenceWakeup);
   void stopBroadcast();
   void stopAllMultiStreams({ quiet: true });
   void stopCurrentStream();

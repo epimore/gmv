@@ -241,6 +241,7 @@ CREATE TABLE IF NOT EXISTS `gb28181_sip_dialog_session`  (
   `desired_rate_milli` bigint NULL DEFAULT NULL,
   `acknowledged_rate_milli` bigint NULL DEFAULT NULL,
   `playback_state` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `pause_expire_at` datetime(3) NULL DEFAULT NULL,
   `last_control_operation_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `contact_uri` varchar(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `route_set` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,

@@ -1,4 +1,4 @@
-use crate::io::http::out::{OutPlayKind, stream_user_token_check};
+use crate::io::http::out::{OutPlayKind, stream_user_token_authorize};
 use crate::io::http::{res_401, res_404};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
@@ -113,11 +113,18 @@ pub async fn m3u8_handler(
     query: &HashMap<String, String>,
     profile: PlaylistProfile,
 ) -> Response<Body> {
+    let directives = match profile {
+        PlaylistProfile::Standard => DeliveryDirectives::default(),
+        PlaylistProfile::LowLatency => match parse_delivery_directives(query) {
+            Ok(directives) => directives,
+            Err(()) => return status_response(StatusCode::BAD_REQUEST),
+        },
+    };
     let Some(base) = Register::get_base_stream_info_by_stream_id(stream_id.clone()) else {
         return res_404();
     };
     let ssrc = base.rtp_info.ssrc;
-    match stream_user_token_check(
+    match stream_user_token_authorize(
         OutputEnum::HlsFmp4,
         base,
         stream_id.clone(),
@@ -130,20 +137,6 @@ pub async fn m3u8_handler(
         OutPlayKind::Notfound => return res_404(),
         OutPlayKind::Play => {}
     }
-    Register::listen_output_timeout(
-        stream_id.clone(),
-        OutputEnum::HlsFmp4,
-        token.clone(),
-        addr,
-        0,
-    );
-    let directives = match profile {
-        PlaylistProfile::Standard => DeliveryDirectives::default(),
-        PlaylistProfile::LowLatency => match parse_delivery_directives(query) {
-            Ok(directives) => directives,
-            Err(()) => return status_response(StatusCode::BAD_REQUEST),
-        },
-    };
     let store = match ensure_store(ssrc).await {
         Some(store) => store,
         None => return res_404(),
@@ -154,6 +147,9 @@ pub async fn m3u8_handler(
     };
     if !directives_valid {
         return status_response(StatusCode::BAD_REQUEST);
+    }
+    if Register::insert_out_token(stream_id.clone(), OutputEnum::HlsFmp4, token.clone()).is_err() {
+        return res_404();
     }
     if profile == PlaylistProfile::LowLatency && !wait_for_playlist(&store, directives).await {
         return status_response(StatusCode::SERVICE_UNAVAILABLE);

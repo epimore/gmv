@@ -145,11 +145,24 @@ pub async fn stream_user_token_check(
     token: Arc<str>,
     addr: SocketAddr,
 ) -> OutPlayKind {
-    if Register::check_token(&(token.clone(), stream_id.clone())) {
-        match Register::insert_out_token(stream_id, out, token) {
+    match stream_user_token_authorize(out, bsi, stream_id.clone(), token.clone(), addr).await {
+        OutPlayKind::Play => match Register::insert_out_token(stream_id, out, token) {
             Ok(_) => OutPlayKind::Play,
             Err(_) => OutPlayKind::Notfound,
-        }
+        },
+        other => other,
+    }
+}
+
+pub async fn stream_user_token_authorize(
+    out: OutputEnum,
+    bsi: BaseStreamInfo,
+    stream_id: Arc<str>,
+    token: Arc<str>,
+    addr: SocketAddr,
+) -> OutPlayKind {
+    if Register::check_token(&(token.clone(), stream_id.clone())) {
+        OutPlayKind::Play
     } else {
         let play_info = StreamPlayInfo::new(bsi, Some(addr.to_string()), token.to_string(), out);
         let (tx, rx) = oneshot::channel();
@@ -158,12 +171,7 @@ pub async fn stream_user_token_check(
             .send((Event::Out(OutEvent::OnPlay(play_info)), Some(tx)))
             .await;
         match rx.await {
-            Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
-                match Register::insert_out_token(stream_id, out, token) {
-                    Ok(_) => OutPlayKind::Play,
-                    Err(_) => OutPlayKind::Notfound,
-                }
-            }
+            Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => OutPlayKind::Play,
             Ok(_) => OutPlayKind::Forbid,
             Err(_) => OutPlayKind::Notfound,
         }

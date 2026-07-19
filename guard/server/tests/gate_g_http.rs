@@ -13,7 +13,7 @@ use gmv_guard_server::operation::OperationService;
 use gmv_guard_server::outbox::OutboxRepository;
 use gmv_guard_server::store::InMemoryGuardStore;
 use gmv_guard_server::store::model::{
-    EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
+    EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState, PlaybackPresenceRecord,
 };
 use tower::ServiceExt;
 
@@ -188,6 +188,74 @@ fn media_transport_defaults_to_http1_and_six_views() {
             assert_eq!(body["scheme"], "http");
             assert_eq!(body["http_version"], "http/1.1");
             assert_eq!(body["multi_view_limit"], 6);
+        });
+}
+
+#[test]
+fn playback_presence_heartbeat_refreshes_only_matching_generation() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let (app, store) = app();
+            let (cookie, csrf) = login(&app, "operator").await;
+            let ui_session_token = cookie.split_once('=').unwrap().1.to_string();
+            store.upsert_playback_presence(PlaybackPresenceRecord {
+                playback_id: "playback-1".to_string(),
+                stream_id: "stream-1".to_string(),
+                subscription_id: "subscription-1".to_string(),
+                username: "operator".to_string(),
+                ui_session_token,
+                generation: 3,
+                expires_at_ms: i64::MAX,
+                control_in_flight: false,
+                closing: false,
+            });
+
+            let (status, _, body) = call(
+                &app,
+                write_request(
+                    "/api/v2/playbacks/presence/heartbeat",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "items": [{
+                            "playback_id": "playback-1",
+                            "stream_id": "stream-1",
+                            "subscription_id": "subscription-1",
+                            "generation": 3
+                        }]
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["items"][0]["accepted"], true);
+            assert_eq!(body["items"][0]["terminal"], false);
+            assert!(
+                body["items"][0]["presence_deadline_ms"].as_i64().unwrap()
+                    > body["server_time_ms"].as_i64().unwrap()
+            );
+
+            let (status, _, body) = call(
+                &app,
+                write_request(
+                    "/api/v2/playbacks/presence/heartbeat",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "items": [{
+                            "playback_id": "playback-1",
+                            "stream_id": "stream-1",
+                            "subscription_id": "subscription-1",
+                            "generation": 2
+                        }]
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["items"][0]["accepted"], false);
+            assert_eq!(body["items"][0]["terminal"], true);
         });
 }
 

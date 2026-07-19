@@ -191,6 +191,23 @@ pub mod output_layer {
                 OutputEnum::LocalTs => self.local_ts.take().is_some(),
             }
         }
+
+        pub fn contains(&self, output: OutputEnum) -> bool {
+            match output {
+                OutputEnum::HttpFlv => self.http_flv.is_some(),
+                OutputEnum::Rtmp => self.rtmp.is_some(),
+                OutputEnum::DashFmp4 => self.dash_fmp4.is_some(),
+                OutputEnum::DashMp4 => self.dash_mp4.is_some(),
+                OutputEnum::HlsFmp4 => self.hls_fmp4.is_some(),
+                OutputEnum::HlsTs => self.hls_ts.is_some(),
+                OutputEnum::Rtsp => self.rtsp.is_some(),
+                OutputEnum::Gb28181Frame => self.gb28181_frame.is_some(),
+                OutputEnum::Gb28181Ps => self.gb28181_ps.is_some(),
+                OutputEnum::WebRtc => self.web_rtc.is_some(),
+                OutputEnum::LocalMp4 => self.local_mp4.is_some(),
+                OutputEnum::LocalTs => self.local_ts.is_some(),
+            }
+        }
     }
 
     pub struct LocalTsLayer {

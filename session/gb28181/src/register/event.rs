@@ -11,7 +11,7 @@ use base::tokio_util::sync::CancellationToken;
 use crate::gb::sip::subscription;
 use crate::register::core::{Inner, Register, TimeScheduleKey};
 use crate::register::schedule::ScheduleKey;
-use crate::service::{stream_close, talk_close};
+use crate::service::{hook_serv, stream_close, talk_close};
 use crate::state::session::Cache as GeneralCache;
 use crate::storage::db_task::{self, DbTask};
 
@@ -145,6 +145,9 @@ async fn on_time_schedule(
                     .event_tx
                     .try_send(Event::RefreshCatalogSubscription(device_id, generation))
                     .hand_log(|msg| error!("{msg}"));
+            }
+            ScheduleKey::Register(TimeScheduleKey::PlaybackPauseExpiry(stream_id, generation)) => {
+                hook_serv::expire_playback_pause(stream_id, generation).await;
             }
             ScheduleKey::Register(TimeScheduleKey::OutSession(_)) => {}
             ScheduleKey::GeneralCache(key) => cache_keys.push(key),

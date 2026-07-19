@@ -38,6 +38,7 @@ pub enum TimeScheduleKey {
     StreamClosing(Arc<str>, u64),
     TalkClosing(Arc<str>, u64),
     CatalogSubscription(Arc<str>, u64),
+    PlaybackPauseExpiry(Arc<str>, u64),
     OutSession(u64),
 }
 

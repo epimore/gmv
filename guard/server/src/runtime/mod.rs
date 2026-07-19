@@ -2,6 +2,7 @@ pub mod control_rpc;
 pub mod event_forwarder;
 pub mod node_expirer;
 pub mod node_rpc;
+pub mod playback_presence;
 pub mod web;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

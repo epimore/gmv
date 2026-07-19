@@ -359,6 +359,21 @@ async fn on_time_schedule(inner: &Inner) {
                 TimeScheduleKey::OutSession(expire_id) => {
                     Register::clean_play_token(expire_id);
                 }
+                TimeScheduleKey::HlsViewer(stream_id, token) => {
+                    Register::clean_hls_play_token(stream_id, token);
+                }
+                TimeScheduleKey::OutputFirstSubscriber(
+                    stream_id,
+                    output_enum,
+                    lifecycle_generation,
+                ) => {
+                    Register::expire_first_subscriber(
+                        stream_id,
+                        output_enum,
+                        lifecycle_generation,
+                        inner,
+                    );
+                }
                 TimeScheduleKey::UnknownStream(key) => {
                     Register::expire_unknown_stream(key, inner);
                 }

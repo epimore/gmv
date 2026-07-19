@@ -903,6 +903,10 @@ impl StreamControlAdapter {
                 .outputs
                 .values()
                 .filter(|output| output.stream_id == request.stream_id)
+                .filter(|output| {
+                    self.media_tx.is_none()
+                        || Register::is_live_output_open(&output.stream_id, &output.output_type)
+                })
                 .map(OutputRuntime::info)
                 .collect(),
         }

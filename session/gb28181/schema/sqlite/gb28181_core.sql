@@ -213,6 +213,7 @@ CREATE TABLE IF NOT EXISTS gb28181_sip_dialog_session (
     desired_rate_milli BIGINT NULL,
     acknowledged_rate_milli BIGINT NULL,
     playback_state VARCHAR(16) NULL,
+    pause_expire_at DATETIME NULL,
     last_control_operation_id VARCHAR(128) NULL,
     contact_uri VARCHAR(256) NULL,
     route_set TEXT NULL,
