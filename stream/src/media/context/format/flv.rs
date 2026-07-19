@@ -337,6 +337,7 @@ impl FmtMuxer for FlvContext {
                 timestamp,
                 epoch: self.epoch,
                 seq: 0,
+                hls: None,
             }));
             Ok(())
         }

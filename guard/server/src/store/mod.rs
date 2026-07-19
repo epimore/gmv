@@ -133,6 +133,16 @@ impl InMemoryGuardStore {
             .cloned()
     }
 
+    pub fn has_playback_ticket_for_stream(&self, stream_id: &str, now_ms: i64) -> bool {
+        self.inner.read().playback_tickets.values().any(|ticket| {
+            ticket.stream_id == stream_id
+                && ticket.expires_at_ms > now_ms
+                && (!ticket.playback_id.is_empty()
+                    || ticket.playback_start_time_sec > 0
+                    || ticket.playback_end_time_sec > 0)
+        })
+    }
+
     pub fn revoke_playback_token(&self, token: &str) {
         self.inner.write().playback_tickets.remove(token);
     }
@@ -415,4 +425,39 @@ pub enum GuardStore {
     Mysql(mysql::MysqlStore),
     #[cfg(feature = "db-sqlite")]
     Sqlite(sqlite::SqliteStore),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::Role;
+
+    fn playback_ticket(token: &str, playback_id: &str, expires_at_ms: i64) -> PlaybackTicketRecord {
+        PlaybackTicketRecord {
+            token: token.to_string(),
+            stream_id: "stream-a".to_string(),
+            playback_id: playback_id.to_string(),
+            playback_start_time_sec: 0,
+            playback_end_time_sec: 0,
+            output_id: String::new(),
+            subscription_id: String::new(),
+            lease_id: String::new(),
+            route_id: String::new(),
+            username: String::new(),
+            ui_session_token: String::new(),
+            required_role: Role::Viewer,
+            expires_at_ms,
+        }
+    }
+
+    #[test]
+    fn live_access_ticket_does_not_mark_stream_as_playback() {
+        let store = InMemoryGuardStore::default();
+        store.upsert_playback_ticket(playback_ticket("live-token", "", 2_000));
+        assert!(!store.has_playback_ticket_for_stream("stream-a", 1_000));
+
+        store.upsert_playback_ticket(playback_ticket("playback-token", "playback-a", 2_000));
+        assert!(store.has_playback_ticket_for_stream("stream-a", 1_000));
+        assert!(!store.has_playback_ticket_for_stream("stream-a", 2_000));
+    }
 }

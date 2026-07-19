@@ -14,7 +14,9 @@ use gmv_domain::info::media_info::{MediaConfig, OutputAudioCodec};
 use gmv_domain::info::media_info_ext::MediaMap;
 use gmv_domain::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
 use gmv_domain::info::obj::{TalkAnswerReq, TalkInfo, TalkOpenReq, TalkStartModel, TalkStopModel};
-use gmv_domain::info::output::{DashFmp4Output, LocalMp4Output, OutputEnum, OutputKind};
+use gmv_domain::info::output::{
+    DashFmp4Output, HlsPlaylistProfile, LocalMp4Output, OutputEnum, OutputKind,
+};
 
 use crate::gb::SessionConf;
 use crate::gb::sip::command as sip_command;
@@ -905,12 +907,7 @@ async fn enable_invite_stream(
                     };
                     if stream_rpc::stream_online(&stream_node, &stream_key).await? {
                         if let Some(config) = custom_media_config {
-                            let output_type = match &config.output {
-                                OutputKind::HttpFlv(_) => "flv",
-                                OutputKind::DashFmp4(_) => "fmp4",
-                                OutputKind::HlsFmp4(_) => "hls",
-                                _ => "",
-                            };
+                            let output_type = live_output_type(&config.output).unwrap_or("");
                             let audio_codec = config
                                 .transcode
                                 .as_ref()
@@ -954,6 +951,34 @@ async fn enable_invite_stream(
             }
             Ok(res)
         }
+    }
+}
+
+fn live_output_type(output: &OutputKind) -> Option<&'static str> {
+    match output {
+        OutputKind::HttpFlv(_) => Some("flv"),
+        OutputKind::DashFmp4(_) => Some("fmp4"),
+        OutputKind::HlsFmp4(output) => Some(match output.playlist_profile {
+            HlsPlaylistProfile::Standard => "hls",
+            HlsPlaylistProfile::LowLatency => "ll_hls",
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod live_output_type_tests {
+    use super::*;
+    use gmv_domain::info::output::HlsFmp4Output;
+
+    #[test]
+    fn reused_live_stream_keeps_low_latency_hls_profile() {
+        let output = OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: Default::default(),
+            playlist_profile: HlsPlaylistProfile::LowLatency,
+        });
+
+        assert_eq!(live_output_type(&output), Some("ll_hls"));
     }
 }
 

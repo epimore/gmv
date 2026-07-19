@@ -9,7 +9,7 @@ use base::serde_json;
 use gmv_domain::info::codec::Codec;
 use gmv_domain::info::filter::Filter;
 use gmv_domain::info::media_info::TranscodeConfig;
-use gmv_domain::info::output::{HttpFlvOutput, OutputEnum, OutputKind};
+use gmv_domain::info::output::{HlsPlaylistProfile, HttpFlvOutput, OutputEnum, OutputKind};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
@@ -140,8 +140,12 @@ impl StreamInfo {
             Some(OutputKind::DashMp4(_)) => {
                 url = format!("{}.mpd", url);
             }
-            Some(OutputKind::HlsFmp4(_)) => {
-                url = format!("{}.m3u8", url);
+            Some(OutputKind::HlsFmp4(output)) => {
+                let suffix = match output.playlist_profile {
+                    HlsPlaylistProfile::Standard => "m3u8",
+                    HlsPlaylistProfile::LowLatency => "ll.m3u8",
+                };
+                url = format!("{url}.{suffix}");
             }
             Some(OutputKind::LocalMp4(_)) => {
                 url = format!("{}.mp4", url);
@@ -249,4 +253,34 @@ fn test1() {
     };
     let json = serde_json::to_string(&a).unwrap();
     println!("{}", json);
+}
+
+#[test]
+fn stream_info_keeps_hls_playlist_profile_in_endpoint() {
+    let standard = StreamInfo::build(
+        "stream-a".to_string(),
+        "https://example.test/play/stream-a".to_string(),
+        Some(OutputKind::HlsFmp4(
+            gmv_domain::info::output::HlsFmp4Output {
+                fmt: Default::default(),
+                playlist_profile: HlsPlaylistProfile::Standard,
+            },
+        )),
+    )
+    .unwrap();
+    let low_latency = StreamInfo::build(
+        "stream-a".to_string(),
+        "https://example.test/play/stream-a".to_string(),
+        Some(OutputKind::HlsFmp4(
+            gmv_domain::info::output::HlsFmp4Output {
+                fmt: Default::default(),
+                playlist_profile: HlsPlaylistProfile::LowLatency,
+            },
+        )),
+    )
+    .unwrap();
+
+    assert!(standard.url.ends_with(".m3u8"));
+    assert!(!standard.url.ends_with(".ll.m3u8"));
+    assert!(low_latency.url.ends_with(".ll.m3u8"));
 }

@@ -16,14 +16,14 @@ GmvPlayerView：GMV 自研 UI，负责安防场景交互、多画面、控制面
 - `GmvPlayerCore` 不依赖 Vue、Element Plus、业务 API、路由、状态管理。
 - `GmvPlayerView` 可以适配 Vue，但通过明确接口调用 Core，不直接绑定某个播放库。
 - HTTP-FLV、HTTP-FMP4、HLS-fMP4 分别由独立 engine 适配，外部只感知统一的 `GmvPlayer`。
-- 首期优先落地实时预览和 HTTP-FLV / HTTP-FMP4，HLS 在后端输出补齐后启用。
+- 当前已支持实时预览和 HTTP-FLV / HTTP-FMP4 / HLS-fMP4；HLS 同时提供普通与低延迟两个 playlist endpoint。
 
 ## 关键假设
 
 - 当前 `guard/ui` 是 Vue 3 + Vite + Element Plus。
 - 当前 GB28181 预览接口可返回 `StreamSummary.endpoint`。
-- 当前 GB28181 `output_type` 主要支持 `flv` 和 `fmp4`。
-- 当前 stream HLS HTTP handler 仍是未实现状态，因此 HLS 不作为首期强验收项。
+- 当前 GB28181 `output_type` 支持 `flv`、`fmp4`、普通 `hls` 和直播专用 `ll_hls`。
+- Stream 已实现普通 HLS 与 LL-HLS；两者共享 CMAF 媒体，播放器依据 endpoint 选择普通或低延迟配置。
 - 第一阶段只新增 player 子工程，不直接修改现有 GB28181 页面业务逻辑。
 
 ## 建议目录
@@ -117,7 +117,7 @@ export interface GmvEngine {
 
 - `FlvEngine`：使用 `mpegts.js`，用于 HTTP-FLV / WS-FLV。
 - `Fmp4Engine`：使用原生 `MediaSource + SourceBuffer + fetch ReadableStream`，用于 HTTP-FMP4 长连接流。
-- `HlsEngine`：使用 `hls.js`，Safari / iOS 使用原生 HLS。
+- `HlsEngine`：Apple Safari 或无 MSE 的原生 HLS 环境使用 `<video>` 原生路径；具备 MSE 的 Chromium 使用 `hls.js`，不只依赖 `canPlayType()` 的声明。只有 `.ll.m3u8` endpoint 启用 hls.js low-latency 模式，普通 `.m3u8` 保持兼容配置。
 - `CapabilityProbe`：统一探测 `MediaSource.isTypeSupported`、`MediaCapabilities.decodingInfo`、`video.canPlayType`、`mpegts.getFeatureList`、`Hls.isSupported`。
 
 ### Core 事件
@@ -462,13 +462,14 @@ export interface GmvPlayerViewActions {
 
 - 实现 `HlsEngine`。
 - Safari / iOS 使用 native HLS。
-- 等后端 HLS 输出补齐后接入。
+- 普通 `{stream_id}.m3u8` 与低延迟 `{stream_id}.ll.m3u8` 共享媒体数据。
 
 验收：
 
 - `.m3u8` 可播放。
 - 非 Safari 使用 hls.js。
 - Safari / iOS 使用 video 原生能力。
+- 普通 HLS 不启用 hls.js low-latency 模式；LL-HLS 启用 blocking reload 与低延迟追赶。
 
 ## 依赖建议
 
@@ -625,7 +626,7 @@ pnpm -C guard/ui build
 - HTTP-FMP4 要求服务端 init segment 在前，后续 moof / mdat 时间戳连续。
 - 多宫格会放大 CPU、内存、网络和解码压力，默认应限制同时播放路数。
 - 语音对讲涉及麦克风权限和双向媒体链路，应与视频播放单独实现。
-- HLS 当前后端未完成，不应作为首期强依赖。
+- LL-HLS 的最终兼容性仍需以最低支持 iOS、当前 iOS 和当前 macOS Safari 真机验证为准；桌面 Chromium/hls.js 测试不能替代 Apple 真机验收。
 
 ## 最小首期验收标准
 

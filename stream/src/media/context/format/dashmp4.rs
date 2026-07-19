@@ -253,6 +253,7 @@ impl DashCmafMp4Context {
                 timestamp,
                 epoch: self.epoch,
                 seq: 0,
+                hls: None,
             }));
             true
         }

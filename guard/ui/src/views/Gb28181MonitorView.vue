@@ -326,9 +326,13 @@
               <span>{{ confText(channel.biz_enable, 1, '业务') }}</span>
             </div> -->
             <footer class="channel-actions">
-              <el-select :model-value="channelOutputType(channel)" class="channel-output-select" aria-label="播放格式"
+              <el-select :model-value="channelOutputType(channel)" class="channel-output-select" aria-label="直播播放格式"
                 @change="(value: LiveOutputType) => setChannelOutputType(channel, value)">
                 <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
+              <el-select :model-value="channelPlaybackOutputType(channel)" class="channel-output-select" aria-label="回放播放格式"
+                @change="(value: PlaybackOutputType) => setChannelPlaybackOutputType(channel, value)">
+                <el-option v-for="option in playbackOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-select>
               <el-button-group class="channel-play-entry live">
                 <el-button class="channel-play-main" :disabled="!canPlayLive(channel) || playerRequesting"
@@ -385,7 +389,7 @@
             :poster="playerPoster" :capabilities="playerCapabilities"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
-            :output-type="channelOutputType(selectedChannel)" :output-options="liveOutputOptions"
+            :output-type="singlePlayerOutputType" :output-options="singlePlayerOutputOptions"
             :output-switching="singleOutputSwitching" @output-type-change="handleSingleOutputTypeChange"
             :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
             @snapshot="handleSingleSnapshot" @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz"
@@ -538,7 +542,8 @@ type MultiDeviceTreeInstance = {
   setCurrentKey: (key: string) => void;
 };
 const multiDeviceTreeRef = ref<MultiDeviceTreeInstance>();
-type LiveOutputType = 'flv' | 'hls' | 'fmp4';
+type LiveOutputType = 'flv' | 'hls' | 'll_hls' | 'fmp4';
+type PlaybackOutputType = Exclude<LiveOutputType, 'll_hls'>;
 type MultiMode = 'live' | 'playback';
 const monitorMode = ref<'devices' | 'multi'>('devices');
 const loading = ref(false);
@@ -611,6 +616,7 @@ const broadcastSession = ref<GbBroadcastSession>();
 const broadcastScopeId = ref('');
 const deviceSnapshotLoading = reactive<Record<string, boolean>>({});
 const channelOutputTypes = reactive<Record<string, LiveOutputType>>({});
+const channelPlaybackOutputTypes = reactive<Record<string, PlaybackOutputType>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
 const treeChannelLoading = reactive<Record<string, boolean>>({});
 const selectedTreeChannelKeys = ref<string[]>([]);
@@ -697,8 +703,12 @@ type TreeNodeData =
 const liveOutputOptions = [
   { value: 'flv', label: 'HTTP-FLV' },
   { value: 'hls', label: 'HLS-fMP4' },
+  { value: 'll_hls', label: 'LL-HLS' },
   { value: 'fmp4', label: 'HTTP-fMP4' },
 ] satisfies Array<{ value: LiveOutputType; label: string }>;
+const playbackOutputOptions = liveOutputOptions.filter(
+  (option): option is { value: PlaybackOutputType; label: string } => option.value !== 'll_hls',
+);
 
 const confOptions = [
   { label: '启用', value: 1 },
@@ -735,6 +745,14 @@ const treeDeviceNodes = computed<TreeNodeData[]>(() => treeDevices.value.map((de
 const selectedChannelTitle = computed(() => selectedChannel.value ? displayChannelName(selectedChannel.value) : '未选择通道');
 const deviceDetailTitle = computed(() => detailDevice.value ? '设备详情 · ' + displayDeviceName(detailDevice.value) : '设备详情');
 const playerDialogTitle = computed(() => lastAction.value ? lastAction.value + ' · ' + selectedChannelTitle.value : '播放窗口');
+const singlePlayerOutputType = computed(() => {
+  const channel = selectedChannel.value;
+  if (!channel) return 'flv';
+  return lastAction.value === '历史回放'
+    ? channelPlaybackOutputType(channel)
+    : channelOutputType(channel);
+});
+const singlePlayerOutputOptions = computed(() => lastAction.value === '历史回放' ? playbackOutputOptions : liveOutputOptions);
 const singleCheckpointReached = computed(() => {
   const operation = singleMediaOperation.value;
   return !!operation && operation.checkpoint_ms > 0 && operation.elapsed_ms >= operation.checkpoint_ms;
@@ -828,8 +846,8 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     poster: cell.poster,
     capabilities,
     controls: multiCellControls(capabilities),
-    outputType: cell.output_type,
-    outputOptions: liveOutputOptions,
+    outputType: cell.mode === 'playback' ? playbackSafeOutputType(cell.output_type) : cell.output_type,
+    outputOptions: cell.mode === 'playback' ? playbackOutputOptions : liveOutputOptions,
     outputSwitching: cell.output_switching,
     playbackDurationMs: playbackCellDurationMs(cell),
     playbackStartTimeMs: cell.mode === 'playback' && cell.playback_start_sec ? cell.playback_start_sec * 1_000 : undefined,
@@ -855,6 +873,13 @@ function displayChannelName(channel: GbChannelInfo) { return channel.alias_name 
 function channelOutputKey(channel: GbChannelInfo) { return `${channel.device_id}:${channel.channel_id}`; }
 function channelOutputType(channel: GbChannelInfo): LiveOutputType { return channelOutputTypes[channelOutputKey(channel)] ?? 'flv'; }
 function setChannelOutputType(channel: GbChannelInfo, outputType: LiveOutputType) { channelOutputTypes[channelOutputKey(channel)] = outputType; }
+function channelPlaybackOutputType(channel: GbChannelInfo): PlaybackOutputType { return channelPlaybackOutputTypes[channelOutputKey(channel)] ?? 'flv'; }
+function setChannelPlaybackOutputType(channel: GbChannelInfo, outputType: PlaybackOutputType) { channelPlaybackOutputTypes[channelOutputKey(channel)] = outputType; }
+function playbackSafeOutputType(outputType: LiveOutputType): PlaybackOutputType { return outputType === 'll_hls' ? 'hls' : outputType; }
+function setChannelOutputTypeForMode(channel: GbChannelInfo, mode: MultiMode, outputType: LiveOutputType) {
+  if (mode === 'playback') setChannelPlaybackOutputType(channel, playbackSafeOutputType(outputType));
+  else setChannelOutputType(channel, outputType);
+}
 function selectedChannelTooltip(channel: SelectedChannelRef) { return `${channel.session_node_id} · ${channel.device_title} · ${channel.title}`; }
 function autoMultiGridSize(count: number) {
   if (count <= 1) return 1;
@@ -1409,7 +1434,7 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     status: multiMode.value === 'live' ? 'reconnecting' : 'idle',
     channel: channel.channel,
     mode: multiMode.value,
-    output_type: channel.output_type,
+    output_type: multiMode.value === 'playback' ? playbackSafeOutputType(channel.output_type) : channel.output_type,
   });
   if (multiMode.value === 'live') {
     const cell = multiCells.value.find((item) => item.key === key);
@@ -1444,7 +1469,7 @@ async function startMultiCell(cell: MultiViewCell) {
           playback_id: requestId,
           start_time_sec: cell.playback_position_sec ?? cell.playback_start_sec,
           end_time_sec: cell.playback_end_sec,
-          output_type: cell.output_type,
+          output_type: playbackSafeOutputType(cell.output_type),
           audio_codec: 'aac',
         }, {
       signal: controller.signal,
@@ -1878,7 +1903,7 @@ async function setAllMultiPlaybackRate(value: number) {
 }
 
 function asLiveOutputType(value: string): LiveOutputType | undefined {
-  return value === 'flv' || value === 'hls' || value === 'fmp4' ? value : undefined;
+  return value === 'flv' || value === 'hls' || value === 'll_hls' || value === 'fmp4' ? value : undefined;
 }
 
 function isAbortError(error: unknown) {
@@ -1929,8 +1954,9 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
   const cell = multiCellAtVisibleIndex(event.index);
   const outputType = asLiveOutputType(event.outputType);
   if (!cell || !outputType || cell.output_switching || cell.output_type === outputType) return;
+  if (cell.mode === 'playback' && outputType === 'll_hls') return;
   if (!cell.stream?.stream_id) {
-    setChannelOutputType(cell.channel, outputType);
+    setChannelOutputTypeForMode(cell.channel, cell.mode, outputType);
     setSelectedMultiOutputType(cell.key, outputType);
     upsertMultiCell({ ...cell, output_type: outputType });
     return;
@@ -1963,7 +1989,7 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
       await closeStreamOutput(cell.stream.stream_id, nextOutput.output_id).catch(() => undefined);
       return;
     }
-    setChannelOutputType(cell.channel, outputType);
+    setChannelOutputTypeForMode(cell.channel, cell.mode, outputType);
     setSelectedMultiOutputType(cell.key, outputType);
     upsertMultiCell({
       ...current,
@@ -1979,7 +2005,7 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
       },
     });
   } catch (error) {
-    setChannelOutputType(cell.channel, previousType);
+    setChannelOutputTypeForMode(cell.channel, cell.mode, previousType);
     setSelectedMultiOutputType(cell.key, previousType);
     const current = multiCells.value.find((item) => item.key === cell.key) ?? cell;
     upsertMultiCell({
@@ -2017,7 +2043,7 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
   }
   if (!pending || !cell.stream) return;
   await closeStreamOutput(cell.stream.stream_id, pending.next_output.output_id).catch(() => undefined);
-  setChannelOutputType(cell.channel, pending.previous_type);
+  setChannelOutputTypeForMode(cell.channel, cell.mode, pending.previous_type);
   setSelectedMultiOutputType(cell.key, pending.previous_type);
   upsertMultiCell({
     ...cell,
@@ -2057,7 +2083,7 @@ async function handleMultiPlaybackSwitchCancel(event: { index: number }) {
   const pending = cell?.pending_switch;
   if (!cell || !pending || !cell.stream) return;
   await closeStreamOutput(cell.stream.stream_id, pending.next_output.output_id).catch(() => undefined);
-  setChannelOutputType(cell.channel, pending.previous_type);
+  setChannelOutputTypeForMode(cell.channel, cell.mode, pending.previous_type);
   setSelectedMultiOutputType(cell.key, pending.previous_type);
   upsertMultiCell({
     ...cell,
@@ -2245,7 +2271,10 @@ async function handleSingleOutputTypeChange(value: string) {
   const channel = selectedChannel.value;
   const stream = lastStream.value;
   if (!outputType || !channel || !stream?.stream_id || singleOutputSwitching.value) return;
-  const previousType = channelOutputType(channel);
+  if (lastAction.value === '历史回放' && outputType === 'll_hls') return;
+  const previousType = lastAction.value === '历史回放'
+    ? channelPlaybackOutputType(channel)
+    : channelOutputType(channel);
   if (previousType === outputType) return;
   const controller = new AbortController();
   singleOutputAbort?.abort();
@@ -2278,7 +2307,7 @@ async function handleSingleOutputTypeChange(value: string) {
     };
     singleOutput.value = nextOutput;
     singleMediaOperation.value = undefined;
-    setChannelOutputType(channel, outputType);
+    setChannelOutputTypeForMode(channel, lastAction.value === '历史回放' ? 'playback' : 'live', outputType);
     lastStream.value = { ...stream, endpoint: nextOutput.endpoint };
   } catch (error) {
     singleMediaOperation.value = undefined;
@@ -2306,7 +2335,7 @@ async function handleSinglePlaybackError(event: { message: string }) {
   const channel = selectedChannel.value;
   if (!pending || !stream || !channel) return;
   await closeStreamOutput(stream.stream_id, pending.next_output.output_id).catch(() => undefined);
-  setChannelOutputType(channel, pending.previous_type);
+  setChannelOutputTypeForMode(channel, lastAction.value === '历史回放' ? 'playback' : 'live', pending.previous_type);
   singleOutput.value = pending.previous_output;
   singlePendingSwitch.value = undefined;
   singleOutputSwitching.value = false;
@@ -2329,7 +2358,7 @@ async function handleSinglePlaybackSwitchCancel() {
   }
   if (!pending || !stream || !channel) return;
   await closeStreamOutput(stream.stream_id, pending.next_output.output_id).catch(() => undefined);
-  setChannelOutputType(channel, pending.previous_type);
+  setChannelOutputTypeForMode(channel, lastAction.value === '历史回放' ? 'playback' : 'live', pending.previous_type);
   singleOutput.value = pending.previous_output;
   singlePendingSwitch.value = undefined;
   singleOutputSwitching.value = false;
@@ -2388,7 +2417,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       : await startGbPlayback(
           channel.device_id,
           channel.channel_id,
-          { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: channelOutputType(channel), audio_codec: 'aac' },
+          { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: channelPlaybackOutputType(channel), audio_codec: 'aac' },
           {
             signal: controller.signal,
             onUpdate: (operation) => {
@@ -2919,6 +2948,7 @@ onBeforeUnmount(() => {
 
 .channel-play-entry {
   display: flex;
+  grid-column: span 2;
   width: 100%;
   min-width: 0;
 }

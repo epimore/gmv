@@ -2967,7 +2967,8 @@ async fn create_stream_output(
         };
         return Ok((status, Json(summary)));
     }
-    BusinessControl::new(state.api.store()).validate_stream_output_target(&stream_id)?;
+    BusinessControl::new(state.api.store())
+        .validate_stream_output_target(&stream_id, &request.output_type)?;
     let hard_timeout_ms = media_startup_timeout_ms(
         request.startup_timeout_ms,
         output_startup_timeout_ms(&request.output_type),
@@ -3014,7 +3015,7 @@ async fn create_stream_output(
             }
             Err(_) => {
                 let output_type = request.output_type.trim().to_ascii_lowercase();
-                if matches!(output_type.as_str(), "flv" | "fmp4" | "hls") {
+                if matches!(output_type.as_str(), "flv" | "fmp4" | "hls" | "ll_hls") {
                     let _ = BusinessControl::new(task_state.api.store())
                         .close_stream_output(
                             &format!("timeout-{task_operation_id}"),
@@ -3126,7 +3127,7 @@ async fn create_stream_output(
 }
 
 fn output_startup_timeout_ms(output_type: &str) -> u64 {
-    if output_type.eq_ignore_ascii_case("hls") {
+    if output_type.eq_ignore_ascii_case("hls") || output_type.eq_ignore_ascii_case("ll_hls") {
         12_000
     } else {
         10_000

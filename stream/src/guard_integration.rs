@@ -762,7 +762,7 @@ impl StreamControlAdapter {
                     endpoints: vec![],
                     error: Some(error(
                         "unsupported_output_type",
-                        "output_type must be flv, fmp4, or hls",
+                        "output_type must be flv, fmp4, hls, or ll_hls",
                     )),
                     output: None,
                 };
@@ -867,7 +867,9 @@ impl StreamControlAdapter {
         }
         self.outputs.remove(&request.output_id);
         let still_referenced = self.outputs.values().any(|output| {
-            output.stream_id == runtime.stream_id && output.output_type == runtime.output_type
+            output.stream_id == runtime.stream_id
+                && output_resource_type(&output.output_type)
+                    == output_resource_type(&runtime.output_type)
         });
         if !still_referenced
             && self.media_tx.is_some()
@@ -1116,6 +1118,7 @@ fn normalize_live_output_type(output_type: &str) -> Option<&'static str> {
         "flv" | "http_flv" => Some("flv"),
         "fmp4" | "dash_fmp4" => Some("fmp4"),
         "hls" | "hls_fmp4" => Some("hls"),
+        "ll_hls" => Some("ll_hls"),
         _ => None,
     }
 }
@@ -1124,8 +1127,18 @@ fn live_output_type_from_kind(output: &OutputKind) -> Option<&'static str> {
     match output {
         OutputKind::HttpFlv(_) => Some("flv"),
         OutputKind::DashFmp4(_) => Some("fmp4"),
-        OutputKind::HlsFmp4(_) => Some("hls"),
+        OutputKind::HlsFmp4(output) => Some(match output.playlist_profile {
+            gmv_domain::info::output::HlsPlaylistProfile::Standard => "hls",
+            gmv_domain::info::output::HlsPlaylistProfile::LowLatency => "ll_hls",
+        }),
         _ => None,
+    }
+}
+
+fn output_resource_type(output_type: &str) -> &str {
+    match output_type {
+        "hls" | "ll_hls" => "hls",
+        value => value,
     }
 }
 
@@ -1162,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn same_input_supports_three_formats_and_multi_user_independent_close() {
+    fn same_input_supports_four_formats_and_multi_user_independent_close() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -1187,7 +1200,7 @@ mod tests {
         assert_eq!(started.state, StreamState::Receiving as i32);
 
         let mut output_ids = HashMap::new();
-        for output_type in ["flv", "hls", "fmp4"] {
+        for output_type in ["flv", "hls", "ll_hls", "fmp4"] {
             let output = control.create_output(CreateOutputRequest {
                 operation: Some(operation(&format!("create-{output_type}"))),
                 stream_id: "stream-a".to_string(),
@@ -1198,7 +1211,7 @@ mod tests {
             assert!(output.error.is_none(), "failed to create {output_type}");
             output_ids.insert(output_type, output.output_id);
         }
-        assert_eq!(control.outputs.len(), 3);
+        assert_eq!(control.outputs.len(), 4);
 
         let second_hls = control.create_output(CreateOutputRequest {
             operation: Some(operation("create-hls-user-2")),
@@ -1209,7 +1222,7 @@ mod tests {
         });
         assert!(second_hls.error.is_none());
         assert_ne!(second_hls.output_id, output_ids["hls"]);
-        assert_eq!(control.outputs.len(), 4);
+        assert_eq!(control.outputs.len(), 5);
 
         let closed = control.close_output(CloseOutputRequest {
             operation: Some(operation("close-hls")),
@@ -1217,7 +1230,7 @@ mod tests {
             stream_id: "stream-a".to_string(),
         });
         assert!(closed.closed);
-        assert_eq!(control.outputs.len(), 3);
+        assert_eq!(control.outputs.len(), 4);
         assert!(
             control
                 .outputs
@@ -1231,7 +1244,13 @@ mod tests {
             stream_id: "stream-a".to_string(),
         });
         assert!(closed.closed);
-        assert_eq!(control.outputs.len(), 2);
+        assert_eq!(control.outputs.len(), 3);
+        assert!(
+            control
+                .outputs
+                .values()
+                .any(|output| output.output_type == "ll_hls")
+        );
         assert!(
             control
                 .outputs
@@ -1244,6 +1263,7 @@ mod tests {
                 .values()
                 .any(|output| output.output_type == "fmp4")
         );
+        assert_eq!(output_resource_type("hls"), output_resource_type("ll_hls"));
     }
 
     #[test]

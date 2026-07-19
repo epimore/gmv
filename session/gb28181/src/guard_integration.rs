@@ -17,7 +17,7 @@ use gmv_domain::info::obj::{
     TalkClosedEvent, TalkStartModel, TalkStopModel, UnknownStreamEvent,
 };
 use gmv_domain::info::output::{
-    DashFmp4Output, HlsFmp4Output, HttpFlvOutput, LocalMp4Output, OutputKind,
+    DashFmp4Output, HlsFmp4Output, HlsPlaylistProfile, HttpFlvOutput, LocalMp4Output, OutputKind,
 };
 use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
@@ -2124,7 +2124,18 @@ fn custom_media_config(
         }),
         "hls" | "hls_fmp4" => OutputKind::HlsFmp4(HlsFmp4Output {
             fmt: CMaf::default(),
+            playlist_profile: HlsPlaylistProfile::Standard,
         }),
+        "ll_hls" if stream_type == "live" => OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: CMaf::default(),
+            playlist_profile: HlsPlaylistProfile::LowLatency,
+        }),
+        "ll_hls" => {
+            return Err(error(
+                "OUTPUT_NOT_ALLOWED_FOR_PLAYBACK",
+                "ll_hls output is only allowed for live preview",
+            ));
+        }
         "mp4" if stream_type == "download" => OutputKind::LocalMp4(LocalMp4Output {
             fmt: Mp4::default(),
             path: String::new(),
@@ -2139,7 +2150,7 @@ fn custom_media_config(
         _ => {
             return Err(error(
                 "UNSUPPORTED_OUTPUT_TYPE",
-                "output_type must be flv, fmp4, hls, or mp4",
+                "output_type must be flv, fmp4, hls, ll_hls, or mp4",
             ));
         }
     };
@@ -2410,5 +2421,33 @@ mod tests {
             control.guard_unavailable_event("op-1", "stream-1").payload,
             Some(node_to_guard_message::Payload::Event(_))
         ));
+    }
+
+    #[test]
+    fn ll_hls_is_live_only_while_standard_hls_remains_available_for_playback() {
+        let live = custom_media_config("live", "ll_hls", "aac")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            live.output,
+            OutputKind::HlsFmp4(HlsFmp4Output {
+                playlist_profile: HlsPlaylistProfile::LowLatency,
+                ..
+            })
+        ));
+
+        let playback = custom_media_config("playback", "hls", "aac")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            playback.output,
+            OutputKind::HlsFmp4(HlsFmp4Output {
+                playlist_profile: HlsPlaylistProfile::Standard,
+                ..
+            })
+        ));
+
+        let error = custom_media_config("playback", "ll_hls", "aac").unwrap_err();
+        assert_eq!(error.code, "OUTPUT_NOT_ALLOWED_FOR_PLAYBACK");
     }
 }

@@ -517,6 +517,7 @@ impl H265FlvContext {
             timestamp,
             epoch,
             seq: 0,
+            hls: None,
         };
 
         tx.send(Arc::new(mux_packet)).map_err(|e| {

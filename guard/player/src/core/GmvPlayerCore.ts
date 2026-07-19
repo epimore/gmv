@@ -177,8 +177,17 @@ export class GmvPlayerCore {
     }
 
     const engine = factory();
-    await engine.attach(this.video, source);
-    return engine;
+    this.engine = engine;
+    try {
+      await engine.attach(this.video, source);
+      return engine;
+    } catch (error) {
+      if (this.engine === engine) {
+        this.engine = undefined;
+        engine.destroy();
+      }
+      throw error;
+    }
   }
 
   private pickCandidates(sources: GmvSource[]): GmvSource[] {
@@ -234,13 +243,15 @@ export class GmvPlayerCore {
     };
     const onError = (event: Event) => {
       if (this.destroyed) return;
+      const message = event instanceof ErrorEvent && event.message
+        ? event.message
+        : this.video.error?.message ?? 'video error';
+      const recovered = this.engine?.recoverMediaError?.() ?? false;
+      if (recovered) return;
       this.clearStallWatch();
       this.clearStartupWatch();
       this.clearStablePlaybackTimer();
       this.clearVideoFrameWatch();
-      const message = event instanceof ErrorEvent && event.message
-        ? event.message
-        : this.video.error?.message ?? 'video error';
       this.emitError(GmvErrorCode.StreamReadFailed, message, this.activeSource);
       void this.reconnect('video-error');
     };

@@ -515,10 +515,20 @@ impl MediaContext {
             }
             context.write_packet(pkt, ts)?;
         }
-        if let Some(context) = &mut muxer.hls_mp4 {
-            if epoch == ProcessResult::Discontinuity {
-                context.epoch = Instant::now();
+        if epoch == ProcessResult::Discontinuity {
+            if let Some(mut context) = muxer.hls_mp4.take() {
+                let pkt_tx = context.pkt_tx.clone();
+                context.flush();
+                let next_segment_seq = context.next_segment_seq();
+                muxer.hls_mp4 = HlsFmp4Context::init_context(&self.demuxer_context, pkt_tx)
+                    .ok()
+                    .map(|mut context| {
+                        context.set_segment_seq(next_segment_seq);
+                        context
+                    });
             }
+        }
+        if let Some(context) = &mut muxer.hls_mp4 {
             context.write_packet(pkt, ts)?;
         }
         Ok(())

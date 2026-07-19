@@ -342,6 +342,7 @@ impl FmtMuxer for Mp4Context {
                 timestamp,
                 epoch: self.epoch,
                 seq: 0,
+                hls: None,
             };
 
             let _ = self.pkt_tx.send(Arc::new(mux_packet));
@@ -373,6 +374,7 @@ impl FmtMuxer for Mp4Context {
                 timestamp: self.last_timestamp,
                 epoch: self.epoch,
                 seq: 0,
+                hls: None,
             };
             let _ = self.pkt_tx.send(Arc::new(mux_packet));
         }

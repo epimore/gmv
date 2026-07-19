@@ -14,6 +14,12 @@ export class BrowserProbe {
     return video.canPlayType('application/vnd.apple.mpegurl') !== '';
   }
 
+  static shouldUseNativeHls(video: HTMLVideoElement): boolean {
+    if (!this.canNativeHls(video)) return false;
+    if (!this.canUseMse()) return true;
+    return typeof navigator !== 'undefined' && navigator.vendor === 'Apple Computer, Inc.';
+  }
+
   static canPlayFmp4(source: GmvSource): boolean {
     if (!this.canUseMse()) return false;
     if (!source.mimeCodec) return true;

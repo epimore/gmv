@@ -29,6 +29,16 @@ pub struct MuxPacket {
     pub timestamp: u64,
     pub epoch: Instant,
     pub seq: usize,
+    pub hls: Option<HlsPart>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HlsPart {
+    pub segment_seq: usize,
+    pub part_seq: usize,
+    pub duration_us: u64,
+    pub segment_complete: bool,
+    pub init_segment: Option<Bytes>,
 }
 
 const MUX_PACKET_REPLAY_LIMIT: usize = 256;
@@ -197,6 +207,7 @@ mod tests {
             timestamp: seq as u64,
             epoch,
             seq,
+            hls: None,
         })
     }
 

@@ -35,7 +35,7 @@ export interface LeaseInfo { lease_id: string; route_id: string; resource_id: st
 export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
 export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
 export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; subscription_id?: string; session_node_id?: string; session_instance_id?: string; playback_id?: string; playback_generation?: number; playback_start_time_sec?: number; playback_end_time_sec?: number; state: 'running' | 'stopped' | 'failed' }
-export interface StreamOutputSummary { output_id: string; stream_id: string; output_type: 'flv' | 'hls' | 'fmp4'; endpoint: string; state: 'preparing' | 'ready' | 'closed' | 'failed' }
+export interface StreamOutputSummary { output_id: string; stream_id: string; output_type: 'flv' | 'hls' | 'll_hls' | 'fmp4'; endpoint: string; state: 'preparing' | 'ready' | 'closed' | 'failed' }
 export type MediaOperationState = 'preparing' | 'ready' | 'failed' | 'cancelled';
 export interface MediaOperationError { code: string; message: string; user_message: string; retryable: boolean }
 export interface MediaOperationSummary<T = unknown> {

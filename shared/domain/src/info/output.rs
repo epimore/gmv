@@ -72,10 +72,21 @@ pub struct HlsTsOutput {
     pub fmt: HlsTs,
 }
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, Eq, PartialEq)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+pub enum HlsPlaylistProfile {
+    #[default]
+    Standard,
+    LowLatency,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
 pub struct HlsFmp4Output {
     pub fmt: CMaf,
+    #[serde(default)]
+    pub playlist_profile: HlsPlaylistProfile,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
@@ -89,6 +100,24 @@ pub struct DashFmp4Output {
 #[serde(crate = "base::serde")]
 pub struct DashMp4Output {
     pub fmt: CMaf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_hls_output_defaults_to_standard_playlist() {
+        let mut value = base::serde_json::to_value(HlsFmp4Output {
+            fmt: CMaf::default(),
+            playlist_profile: HlsPlaylistProfile::LowLatency,
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("playlist_profile");
+
+        let output: HlsFmp4Output = base::serde_json::from_value(value).unwrap();
+        assert_eq!(output.playlist_profile, HlsPlaylistProfile::Standard);
+    }
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]

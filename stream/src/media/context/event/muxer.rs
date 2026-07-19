@@ -86,7 +86,12 @@ impl MuxerEvent {
                 MuxerEnum::RtpPs => muxer_context.rtp_ps = None,
                 MuxerEnum::RtpEnc => muxer_context.rtp_enc = None,
                 MuxerEnum::DashMp4 => muxer_context.dash_mp4 = None,
-                MuxerEnum::HlsMp4 => muxer_context.hls_mp4 = None,
+                MuxerEnum::HlsMp4 => {
+                    if let Some(hls_mp4_ctx) = &mut muxer_context.hls_mp4 {
+                        hls_mp4_ctx.flush();
+                    }
+                    muxer_context.hls_mp4 = None;
+                }
             },
         }
     }

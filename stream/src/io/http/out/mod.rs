@@ -35,7 +35,7 @@ async fn handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response<Body> {
-    debug!("stream play:stream_id: {}, param: {:?}", stream_id, map);
+    debug!("stream play: stream_id={stream_id}");
     let token: Arc<str> = match map.remove("gmv-token") {
         None => {
             return res_401();
@@ -51,10 +51,20 @@ async fn handler(
                     info!("flv stream play:stream_id: {}, param: {:?}", stream_id, map);
                     flv::handler(id, token, addr).await
                 }
-                "m3u8" => hls::m3u8_handler(id, token, addr).await,
-                "hmp4" => hls::init_mp4_handler(id, token).await,
+                "m3u8" => {
+                    let (id, profile) = match id.strip_suffix(".ll") {
+                        Some(id) => (Arc::from(id), hls::PlaylistProfile::LowLatency),
+                        None => (id, hls::PlaylistProfile::Standard),
+                    };
+                    hls::m3u8_handler(id, token, addr, &map, profile).await
+                }
+                "hmp4" => hls::init_mp4_handler(id, token, &map).await,
                 "m4s"
-                    if id
+                    if id.rsplit_once("-part-").is_some_and(|(_, suffix)| {
+                        suffix.split_once('-').is_some_and(|(segment, part)| {
+                            segment.parse::<u64>().is_ok() && part.parse::<u64>().is_ok()
+                        })
+                    }) || id
                         .rsplit_once('-')
                         .is_some_and(|(_, sequence)| sequence.parse::<u64>().is_ok()) =>
                 {

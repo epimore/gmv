@@ -668,6 +668,7 @@ mod tests {
     fn hls_fmp4_uses_its_dedicated_muxer_layer() {
         let layer = MuxerLayer::new(&OutputKind::HlsFmp4(HlsFmp4Output {
             fmt: CMaf::default(),
+            playlist_profile: Default::default(),
         }));
 
         assert!(layer.hls_mp4.is_some());

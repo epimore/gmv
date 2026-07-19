@@ -1507,8 +1507,26 @@ impl BusinessControl {
             .collect())
     }
 
-    pub fn validate_stream_output_target(&self, stream_id: &str) -> GuardResult<()> {
-        self.stream_node_for_resource(stream_id).map(|_| ())
+    pub fn validate_stream_output_target(
+        &self,
+        stream_id: &str,
+        output_type: &str,
+    ) -> GuardResult<()> {
+        self.stream_node_for_resource(stream_id)?;
+        if output_type.trim().eq_ignore_ascii_case("ll_hls")
+            && self
+                .store
+                .has_playback_ticket_for_stream(stream_id, now_ms())
+        {
+            return Err(user_error(
+                "OUTPUT_NOT_ALLOWED_FOR_PLAYBACK",
+                "ll_hls output is only allowed for live preview",
+                "LL-HLS 仅支持直播，请在回放中使用普通 HLS",
+                false,
+                BTreeMap::new(),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn close_stream_output(

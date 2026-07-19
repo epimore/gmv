@@ -33,6 +33,7 @@ export interface GmvEngine {
   attach(video: HTMLVideoElement, source: GmvSource): Promise<void> | void;
   play(): Promise<void> | void;
   pause(): void;
+  recoverMediaError?(): boolean;
   destroy(): void;
 }
 

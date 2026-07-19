@@ -38,7 +38,7 @@ use gmv_domain::info::obj::{
     RegisterStreamInfo, RtpInfo, StreamKey, StreamPlayInfo, StreamState, UnknownStreamEvent,
 };
 use gmv_domain::info::output::{
-    DashFmp4Output, HlsFmp4Output, HttpFlvOutput, OutputEnum, OutputKind,
+    DashFmp4Output, HlsFmp4Output, HlsPlaylistProfile, HttpFlvOutput, OutputEnum, OutputKind,
 };
 use log::{error, info, warn};
 use parking_lot::Mutex;
@@ -80,13 +80,23 @@ fn live_output_contract(
             "hls",
             OutputKind::HlsFmp4(HlsFmp4Output {
                 fmt: CMaf::default(),
+                playlist_profile: HlsPlaylistProfile::Standard,
             }),
             OutputEnum::HlsFmp4,
             "m3u8",
         )),
+        "ll_hls" => Ok((
+            "ll_hls",
+            OutputKind::HlsFmp4(HlsFmp4Output {
+                fmt: CMaf::default(),
+                playlist_profile: HlsPlaylistProfile::LowLatency,
+            }),
+            OutputEnum::HlsFmp4,
+            "ll.m3u8",
+        )),
         _ => Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidRequest.code(),
-            "output_type must be flv, fmp4, or hls",
+            "output_type must be flv, fmp4, hls, or ll_hls",
             |msg| error!("{msg}: output_type={output_type}"),
         )),
     }
@@ -1501,6 +1511,7 @@ mod unknown_stream_tests {
     use base::bus::mpsc::TypedMessageBus;
     use base::net::state::Protocol;
     use gmv_domain::info::media_info_ext::MediaExt;
+    use gmv_domain::info::output::{HlsFmp4Output, HlsPlaylistProfile, OutputKind};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -1575,7 +1586,7 @@ mod unknown_stream_tests {
 
     #[test]
     fn live_outputs_can_reopen_after_idle_close() {
-        for output_type in ["flv", "fmp4", "hls"] {
+        for output_type in ["flv", "fmp4", "hls", "ll_hls"] {
             let (_, output_kind, output_enum, _) = live_output_contract(output_type).unwrap();
             let mut output = OutputLayer::new(output_kind.clone());
             let mut muxer = MuxerLayer::new(&output_kind);
@@ -1591,5 +1602,30 @@ mod unknown_stream_tests {
                 "{output_type} muxer should reopen after idle close"
             );
         }
+    }
+
+    #[test]
+    fn hls_profiles_share_muxer_but_keep_distinct_playlist_endpoints() {
+        let (_, standard, standard_enum, standard_suffix) = live_output_contract("hls").unwrap();
+        let (_, low_latency, low_latency_enum, low_latency_suffix) =
+            live_output_contract("ll_hls").unwrap();
+
+        assert_eq!(standard_enum, low_latency_enum);
+        assert_eq!(standard_suffix, "m3u8");
+        assert_eq!(low_latency_suffix, "ll.m3u8");
+        assert!(matches!(
+            standard,
+            OutputKind::HlsFmp4(HlsFmp4Output {
+                playlist_profile: HlsPlaylistProfile::Standard,
+                ..
+            })
+        ));
+        assert!(matches!(
+            low_latency,
+            OutputKind::HlsFmp4(HlsFmp4Output {
+                playlist_profile: HlsPlaylistProfile::LowLatency,
+                ..
+            })
+        ));
     }
 }
