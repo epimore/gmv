@@ -9,22 +9,41 @@ const session = {
 };
 
 const routes = [
-  ['/dashboard', '总览'],
-  ['/nodes', '节点'],
+  ['/dashboard', 'Dashboard'],
+  ['/nodes', '节点监控'],
   ['/devices', '设备'],
   ['/gb28181/register', '注册管理'],
   ['/gb28181/monitor', '监控信息'],
-  ['/streams', '流媒体'],
+  ['/streams', '流媒监控'],
   ['/ai', '智能分析'],
-  ['/allocations', '调度与租约'],
   ['/events', '事件中心'],
-  ['/integrations', '集成'],
-  ['/system', '系统'],
+  ['/integrations', '三方集成'],
+  ['/system', '系统健康'],
 ] as const;
 
 async function mockAuth(page: Page, initiallyAuthenticated = false) {
   let authenticated = initiallyAuthenticated;
+  const readBodies = new Map<string, unknown>([
+    ['/api/v2/dashboard', { node_count: 0, event_count: 0, next_after_id: null }],
+    ['/api/v2/events', { items: [], next_after_id: null }],
+    ['/api/v2/devices', []],
+    ['/api/v2/streams', []],
+    ['/api/v2/ai/tasks', []],
+    ['/api/v2/leases', []],
+    ['/api/v2/integrations/outbox', []],
+    ['/api/v2/runtime/status', { guard_available: true, streams: 0, running_streams: 0, ai_tasks: 0, running_ai_tasks: 0, ptz_commands: 0 }],
+    ['/api/v2/media/transport', { scheme: 'http', http_version: 'http/1.1', multi_view_limit: 6 }],
+  ]);
 
+  await page.route('**/api/v2/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = readBodies.get(path);
+    if (body === undefined) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+  });
   await page.route('**/api/v2/auth/session', async (route) => {
     await route.fulfill({
       status: authenticated ? 200 : 401,
@@ -79,16 +98,18 @@ test('未登录禁止 URL 直达，登录后恢复目标页面并可退出', asy
   await page.getByLabel('密码').fill('secret');
   await page.getByRole('button', { name: '安全登录' }).click();
   await expect(page).toHaveURL((url) => url.pathname === '/nodes');
-  await expect(page.getByText('舰桥管理员 · admin')).toBeVisible();
+  const userMenu = page.getByRole('button', { name: /舰桥管理员 admin/ });
+  await expect(userMenu).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole('heading', { name: '节点', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '节点监控', level: 1 })).toBeVisible();
 
-  await page.getByRole('button', { name: '退出登录' }).click();
+  await userMenu.click();
+  await page.getByRole('menuitem', { name: '退出登录' }).click();
   await expect(page).toHaveURL((url) => url.pathname === '/login');
 
   await page.goto('/system');
-  await expect(page).toHaveURL((url) => url.pathname === '/login' && url.searchParams.get('redirect') === '/system');
+  await expect(page).toHaveURL((url) => url.pathname === '/login' && url.searchParams.get('redirect') === '/system/health');
 });
 
 test('密码框按 Enter 可提交登录', async ({ page }) => {
@@ -127,7 +148,7 @@ test('已登录会话可访问中文页面与移动端布局', async ({ page }) 
   }
 
   await page.goto('/dashboard');
-  await expect(page.getByRole('heading', { name: '总览', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible();
   const layout = await page.evaluate(() => ({
     innerWidth: window.innerWidth,
     scrollWidth: document.documentElement.scrollWidth,
