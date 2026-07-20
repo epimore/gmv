@@ -211,6 +211,10 @@ fn recovery_source_from_device(
         device_id: device.device_id.clone(),
         remote_address: remote_addr.ip().to_string(),
         protocol,
+        registration_call_id: device.registration_call_id.clone(),
+        registration_cseq: device
+            .registration_cseq
+            .and_then(|value| u32::try_from(value).ok()),
         deadline: monotonic_now + Duration::from_millis(ttl_ms),
     })
 }

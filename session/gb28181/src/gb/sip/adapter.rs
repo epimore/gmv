@@ -61,9 +61,9 @@ pub fn base_association_from_pjsip(association: &SipAssociation) -> Association 
     )
 }
 
-pub fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
+pub async fn apply_business_event(event: &GbSipEvent) -> GlobalResult<()> {
     match event {
-        GbSipEvent::Register(event) => apply_register_event(event),
+        GbSipEvent::Register(event) => apply_register_event(event).await,
         GbSipEvent::Message(event) => apply_message_event(event),
         GbSipEvent::IncomingInvite(event) => {
             info!(
@@ -107,14 +107,10 @@ fn apply_bye_event(event: &GbByeEvent) -> GlobalResult<()> {
     Ok(())
 }
 
-fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
+async fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
     let device_id: Arc<str> = Arc::from(event.device_id.as_str());
     if event.is_unregister() {
         Register::remove_device(&device_id);
-        GeneralCache::reset_device_state(&event.device_id);
-        db_task::submit(DbTask::ExpireDeviceOnline {
-            device_id: event.device_id.clone(),
-        });
         return Ok(());
     }
 
@@ -137,14 +133,52 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
     );
     session.set_gb_version(event.gb_version.clone());
     session.set_registration_identity(event.call_id.clone(), event.cseq);
+    if Register::get_device_session(&event.device_id).is_none()
+        && let Some(device) = GmvDevice::query_gmv_device_by_device_id(&event.device_id).await?
+        && device.registration_epoch_closed_at.is_none()
+    {
+        let now = Local::now().naive_local();
+        let registration_expire_at =
+            device.register_time + TimeDelta::seconds(i64::from(device.register_expires));
+        if registration_expire_at > now
+            && device
+                .online_expire_time
+                .is_some_and(|online_expire_time| online_expire_time > now)
+        {
+            if device.registration_call_id.as_deref() == Some(&event.call_id)
+                && device
+                    .registration_cseq
+                    .is_some_and(|cseq| cseq > i64::from(event.cseq))
+            {
+                warn!(
+                    "stale REGISTER ignored from durable ordering snapshot: device_id={}, call_id={}, cseq={}",
+                    event.device_id, event.call_id, event.cseq
+                );
+                return Ok(());
+            }
+            session.set_optional_registration_epoch_id(device.registration_epoch_id);
+            session.mark_registration_snapshot_restored();
+        }
+    }
     if event.support_lr {
         session.enable_lr();
     }
-    Register::register_device(device_id, session)?;
-    GeneralCache::catalog_subscription_remove(&event.device_id, None);
+    let outcome = Register::register_device(device_id, session)?;
+    if matches!(
+        outcome,
+        crate::register::core::RegisterOutcome::Stale
+            | crate::register::core::RegisterOutcome::Retransmission
+    ) {
+        return Ok(());
+    }
+    let current_session = Register::get_device_session(&event.device_id).ok_or_else(|| {
+        GlobalError::new_sys_error("registered device session disappeared", |msg| {
+            error!("{msg}")
+        })
+    })?;
 
     let now = Local::now().naive_local();
-    db_task::submit(DbTask::UpsertDevice(GmvDevice {
+    GmvDevice {
         device_id: event.device_id.clone(),
         transport: match event.association.protocol {
             SipTransportProtocol::Udp => "UDP",
@@ -154,6 +188,10 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
         .to_string(),
         register_expires: expires,
         register_time: now,
+        registration_call_id: Some(event.call_id.clone()),
+        registration_cseq: Some(i64::from(event.cseq)),
+        registration_epoch_id: current_session.registration_epoch_id.clone(),
+        registration_epoch_closed_at: None,
         online_expire_time: Some(
             now + TimeDelta::seconds(i64::from(heartbeat_sec).saturating_mul(3).saturating_add(1)),
         ),
@@ -161,9 +199,24 @@ fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
         contact_uri: event.contact.clone().unwrap_or_default(),
         enable_lr: u8::from(event.support_lr),
         gb_version: event.gb_version.clone(),
-    }));
+    }
+    .insert_single_gmv_device_by_register()
+    .await?;
 
-    schedule_post_online_sync(event.device_id.clone(), expires);
+    if !Register::mark_registration_ready(
+        &event.device_id,
+        current_session.registration_epoch_id.as_deref(),
+    ) {
+        return Err(GlobalError::new_sys_error(
+            "registered device session changed before persistence completed",
+            |msg| error!("device_id={}; {msg}", event.device_id),
+        ));
+    }
+
+    if outcome.needs_post_online_sync() {
+        GeneralCache::catalog_subscription_remove(&event.device_id, None);
+        schedule_post_online_sync(event.device_id.clone(), expires);
+    }
     Ok(())
 }
 

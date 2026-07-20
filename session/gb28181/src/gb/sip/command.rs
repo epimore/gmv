@@ -33,7 +33,8 @@ use crate::storage::dialog_session::{
 
 use super::adapter::pjsip_protocol_from_base;
 use super::invite::{
-    AcceptBroadcastInviteRequest, GbInviteAcceptedEvent, InvitePlayRequest, InviteStopRequest,
+    AcceptBroadcastInviteRequest, GbBroadcastInvite, GbInviteAcceptedEvent, InvitePlayRequest,
+    InviteStopRequest,
 };
 use super::message::{CreateDeviceMessageRequest, target_uri};
 use super::native_runtime::NativeSipRuntimeHandle;
@@ -410,8 +411,9 @@ pub async fn broadcast_notify_and_wait(
     device_id: &str,
     target_id: &str,
     sn: u32,
-) -> GlobalResult<super::invite::GbIncomingInviteEvent> {
+) -> GlobalResult<GbBroadcastInvite> {
     let (host, port, protocol) = connected_target(device_id)?;
+    let registration_epoch_id = Register::registration_epoch_id(device_id);
     let protocol = pjsip_protocol_from_base(protocol);
     let source_id = SessionConf::get_session_by_conf().domain_id;
     let response_key = BroadcastResponseKey {
@@ -472,7 +474,7 @@ pub async fn broadcast_notify_and_wait(
             ));
         }
     }
-    recv_with_timeout(invite_rx, INVITE_WAIT_TIMEOUT)
+    let invite = recv_with_timeout(invite_rx, INVITE_WAIT_TIMEOUT)
         .await
         .map_err(|reason| {
             SipRuntimeCache::global().remove_broadcast_invite_waiter(target_id);
@@ -483,7 +485,19 @@ pub async fn broadcast_notify_and_wait(
                     error!("device_id={device_id}; target_id={target_id}; {msg}; reason={reason}")
                 },
             )
-        })
+        })?;
+    if !Register::registration_epoch_matches(device_id, registration_epoch_id.as_deref()) {
+        reject_broadcast_invite(&invite.call_id, 481, "Registration epoch changed");
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "device registration epoch changed during broadcast setup",
+            |msg| error!("device_id={device_id}; target_id={target_id}; {msg}"),
+        ));
+    }
+    Ok(GbBroadcastInvite {
+        invite,
+        registration_epoch_id,
+    })
 }
 
 fn reject_buffered_broadcast_invite(
@@ -510,8 +524,22 @@ pub fn reject_broadcast_invite(call_id: &str, status_code: u16, reason: &str) {
 }
 
 pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> GlobalResult<()> {
+    if !Register::registration_epoch_matches(&req.device_id, req.registration_epoch_id.as_deref()) {
+        reject_broadcast_invite(&req.invite.call_id, 481, "Registration epoch changed");
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "device registration epoch changed before broadcast INVITE acceptance",
+            |msg| {
+                error!(
+                    "device_id={}; call_id={}; {msg}",
+                    req.device_id, req.invite.call_id
+                )
+            },
+        ));
+    }
     let snapshot = &req.invite.dialog_snapshot;
     let signal_node_id = SessionConf::get_session_by_conf().domain_id;
+    let registration_epoch_id = req.registration_epoch_id.clone();
     let now = Local::now().naive_local();
     let session = SipDialogSession {
         stream_id: req.talk_id.clone(),
@@ -521,6 +549,7 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         signal_node_id: signal_node_id.clone(),
         media_node_id: req.media_node_id,
         ssrc: Some(format!("{:010}", req.ssrc)),
+        registration_epoch_id: registration_epoch_id.clone(),
         call_id: req.invite.call_id.clone(),
         local_uri: snapshot.local_uri.clone(),
         remote_uri: snapshot.remote_uri.clone(),
@@ -544,6 +573,20 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
     if let Err(err) = SipDialogSessionRepository::insert_inviting(&session).await {
         reject_broadcast_invite(&req.invite.call_id, 500, "Persist broadcast dialog failed");
         return Err(err);
+    }
+    if !Register::registration_epoch_matches(&req.device_id, registration_epoch_id.as_deref()) {
+        mark_inviting_terminal(&req.talk_id, &signal_node_id, DialogState::Orphan).await;
+        reject_broadcast_invite(&req.invite.call_id, 481, "Registration epoch changed");
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "device registration epoch changed while persisting broadcast INVITE",
+            |msg| {
+                error!(
+                    "talk_id={}; call_id={}; {msg}",
+                    req.talk_id, req.invite.call_id
+                )
+            },
+        ));
     }
     let sdp = format!(
         "v=0\r\no={source} 0 0 IN IP4 {ip}\r\ns=Play\r\nc=IN IP4 {ip}\r\nt=0 0\r\nm=audio {port} RTP/AVP {pt}\r\na=sendonly\r\na=rtpmap:{pt} PCMA/8000/1\r\nf=v/////a/1/8/1\r\ny={ssrc:010}\r\n",
@@ -580,6 +623,7 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
     match SipDialogSessionRepository::cas_mark_established(
         &req.talk_id,
         &signal_node_id,
+        registration_epoch_id.as_deref(),
         0,
         &fields,
     )
@@ -617,7 +661,31 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
             return Err(err);
         }
     }
-    SipRuntimeCache::global().restore_stream_index(req.invite.call_id.clone(), req.talk_id.clone());
+    if !SipRuntimeCache::global().restore_stream_index_for_registration_epoch(
+        &req.device_id,
+        registration_epoch_id.as_deref(),
+        req.invite.call_id.clone(),
+        req.talk_id.clone(),
+    ) {
+        rollback_established_invite(
+            &req.device_id,
+            &req.talk_id,
+            &signal_node_id,
+            &req.invite.call_id,
+            DialogState::Orphan,
+        )
+        .await;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "device registration epoch changed while establishing broadcast INVITE",
+            |msg| {
+                error!(
+                    "talk_id={}; call_id={}; {msg}",
+                    req.talk_id, req.invite.call_id
+                )
+            },
+        ));
+    }
     Ok(())
 }
 
@@ -839,6 +907,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
     };
     let signal_node_id = conf.domain_id.clone();
     let now = Local::now().naive_local();
+    let registration_epoch_id = session.registration_epoch_id.clone();
     SipDialogSessionRepository::insert_inviting(&SipDialogSession {
         stream_id: stream_id.clone(),
         device_id: device_id.clone(),
@@ -847,6 +916,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
         signal_node_id: signal_node_id.clone(),
         media_node_id: req.media_node_id.clone(),
         ssrc: Some(format_gb_ssrc(req.ssrc)),
+        registration_epoch_id: registration_epoch_id.clone(),
         call_id: identity.call_id.clone(),
         local_uri: invite.from_uri.clone(),
         remote_uri: invite.target_uri.clone(),
@@ -875,6 +945,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
             channel_id: req.channel_id.clone(),
             stream_id: stream_id.clone(),
             ssrc: Some(req.ssrc),
+            registration_epoch_id: registration_epoch_id.clone(),
         },
         INVITE_WAIT_TIMEOUT,
     );
@@ -886,6 +957,21 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
     match recv_with_timeout(rx, INVITE_WAIT_TIMEOUT).await {
         Ok(Ok(event)) => {
             let snapshot = &event.dialog_snapshot;
+            if !Register::registration_epoch_matches(&device_id, registration_epoch_id.as_deref()) {
+                rollback_established_invite(
+                    &device_id,
+                    &stream_id,
+                    &signal_node_id,
+                    &event.call_id,
+                    DialogState::Orphan,
+                )
+                .await;
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "device registration epoch changed during INVITE",
+                    |msg| error!("stream_id={stream_id}; call_id={}; {msg}", event.call_id),
+                ));
+            }
             if snapshot.call_id != identity.call_id
                 || snapshot.local_tag != identity.local_tag
                 || snapshot.local_cseq != identity.local_cseq
@@ -921,6 +1007,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
             match SipDialogSessionRepository::cas_mark_established(
                 &stream_id,
                 &signal_node_id,
+                registration_epoch_id.as_deref(),
                 0,
                 &fields,
             )
@@ -1469,6 +1556,21 @@ async fn reserve_durable_dialog_request(
     let Some(session) = SipDialogSessionRepository::find_by_stream_id(stream_id).await? else {
         return Ok(None);
     };
+    if !Register::registration_epoch_matches(
+        &session.device_id,
+        session.registration_epoch_id.as_deref(),
+    ) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "durable SIP dialog registration epoch is no longer active",
+            |msg| {
+                error!(
+                    "stream_id={stream_id}; device_id={}; registration_epoch_id={:?}; {msg}",
+                    session.device_id, session.registration_epoch_id
+                )
+            },
+        ));
+    }
     let current_node_id = SessionConf::get_session_by_conf().domain_id;
     if session.signal_node_id != current_node_id {
         return Err(GlobalError::new_biz_error(

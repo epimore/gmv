@@ -50,6 +50,7 @@ async fn subscribe_catalog_once(device_id: &str, expires: u32) -> GlobalResult<(
         operation_id,
         NativeSubscriptionMetadata {
             device_id: device_id.to_string(),
+            registration_epoch_id: session.registration_epoch_id.clone(),
             event: CATALOG_EVENT.to_string(),
             expires,
             remote_target: remote_target.clone(),

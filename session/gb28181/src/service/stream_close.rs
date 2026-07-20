@@ -152,6 +152,29 @@ pub(crate) fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
 }
 
 pub(crate) async fn finalize_durable_dialog_as_orphan(resource_kind: &str, resource_id: &str) {
+    finalize_durable_dialog_as_orphan_inner(resource_kind, resource_id, None, false).await;
+}
+
+pub(crate) async fn finalize_durable_dialog_as_orphan_for_epoch(
+    resource_kind: &str,
+    resource_id: &str,
+    expected_registration_epoch_id: Option<&str>,
+) {
+    finalize_durable_dialog_as_orphan_inner(
+        resource_kind,
+        resource_id,
+        expected_registration_epoch_id,
+        true,
+    )
+    .await;
+}
+
+async fn finalize_durable_dialog_as_orphan_inner(
+    resource_kind: &str,
+    resource_id: &str,
+    expected_registration_epoch_id: Option<&str>,
+    enforce_registration_epoch: bool,
+) {
     let session = match SipDialogSessionRepository::find_by_stream_id(resource_id).await {
         Ok(Some(session)) => session,
         Ok(None) => return,
@@ -162,6 +185,15 @@ pub(crate) async fn finalize_durable_dialog_as_orphan(resource_kind: &str, resou
             return;
         }
     };
+    if enforce_registration_epoch
+        && session.registration_epoch_id.as_deref() != expected_registration_epoch_id
+    {
+        debug!(
+            "skip stale epoch dialog force finalize: resource_kind={resource_kind}, resource_id={resource_id}, expected_registration_epoch_id={:?}, current_registration_epoch_id={:?}",
+            expected_registration_epoch_id, session.registration_epoch_id
+        );
+        return;
+    }
     if !matches!(
         session.state,
         DialogState::Inviting | DialogState::Established | DialogState::Terminating
@@ -240,6 +272,7 @@ mod tests {
                     signal_node_id: "session-1".into(),
                     media_node_id: "media-1".into(),
                     ssrc: Some("0100000001".into()),
+                    registration_epoch_id: None,
                     call_id: "force-finalizer-call".into(),
                     local_uri: "sip:platform@127.0.0.1:5060".into(),
                     remote_uri: "sip:device@127.0.0.1:15060".into(),

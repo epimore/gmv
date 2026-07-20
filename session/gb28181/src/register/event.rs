@@ -13,13 +13,11 @@ use crate::register::core::{Inner, Register, TimeScheduleKey};
 use crate::register::schedule::ScheduleKey;
 use crate::service::{hook_serv, stream_close, talk_close};
 use crate::state::session::Cache as GeneralCache;
-use crate::storage::db_task::{self, DbTask};
 
 const MAX_WORKER_POOL: usize = 128;
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum Event {
-    DeviceOffline(Arc<str>),
     RefreshCatalogSubscription(Arc<str>, u64),
     OutSession(u64),
 }
@@ -83,11 +81,6 @@ async fn handle_rx_event(rx: &mut Receiver<Event>, semaphore: Arc<Semaphore>) ->
 
 async fn hand_event(event: Event) {
     match event {
-        Event::DeviceOffline(device_id) => {
-            db_task::submit(DbTask::ExpireDeviceOnline {
-                device_id: device_id.to_string(),
-            });
-        }
         Event::RefreshCatalogSubscription(device_id, generation) => {
             let _ = subscription::refresh_catalog_subscription(device_id, generation)
                 .await
@@ -109,12 +102,8 @@ async fn on_time_schedule(
             | ScheduleKey::Register(TimeScheduleKey::DeviceRegistration(device_id)) => {
                 warn!("device {} expired, removing session", device_id);
                 if let Some(session) = Register::remove_device_by_inner(&device_id, inner) {
-                    GeneralCache::reset_device_state(device_id.as_ref());
+                    Register::close_removed_session(&device_id, &session, "lease_expired");
                     Register::close_tcp_if_needed(&session);
-                    let _ = inner
-                        .event_tx
-                        .try_send(Event::DeviceOffline(device_id))
-                        .hand_log(|msg| error!("{msg}"));
                 }
             }
             ScheduleKey::Register(TimeScheduleKey::DeviceReconnect(device_id, generation)) => {

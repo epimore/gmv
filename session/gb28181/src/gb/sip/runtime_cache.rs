@@ -19,6 +19,7 @@ use gmv_pjsip::message::{extract_tag, extract_uri};
 
 use super::bye::GbByeEvent;
 use super::invite::{GbIncomingInviteEvent, GbInviteAcceptedEvent};
+use crate::register::core::Register;
 use crate::state::session::Cache;
 
 static SIP_RUNTIME_CACHE: Lazy<SipRuntimeCache> = Lazy::new(SipRuntimeCache::default);
@@ -150,6 +151,7 @@ pub struct NativeInviteMetadata {
     pub channel_id: String,
     pub stream_id: String,
     pub ssrc: Option<u32>,
+    pub registration_epoch_id: Option<String>,
 }
 
 struct NativeInviteWaiter {
@@ -161,6 +163,7 @@ struct NativeInviteWaiter {
 #[derive(Clone, Debug)]
 pub struct NativeSubscriptionMetadata {
     pub device_id: String,
+    pub registration_epoch_id: Option<String>,
     pub event: String,
     pub expires: u32,
     pub remote_target: String,
@@ -491,6 +494,12 @@ impl SipRuntimeCache {
         pending: &NativeSubscriptionMetadata,
         response: &SipResponseMetadata,
     ) -> bool {
+        if !Register::registration_epoch_matches(
+            &pending.device_id,
+            pending.registration_epoch_id.as_deref(),
+        ) {
+            return false;
+        }
         let (Some(call_id), Some(cseq), Some(from_header), Some(to_header)) = (
             response.call_id.clone(),
             response.cseq,
@@ -680,6 +689,25 @@ impl SipRuntimeCache {
 
     pub fn restore_stream_index(&self, call_id: String, stream_id: String) {
         self.call_stream_index.insert(call_id, stream_id);
+    }
+
+    pub fn restore_stream_index_for_registration_epoch(
+        &self,
+        device_id: &str,
+        registration_epoch_id: Option<&str>,
+        call_id: String,
+        stream_id: String,
+    ) -> bool {
+        if !Register::registration_epoch_matches(device_id, registration_epoch_id) {
+            return false;
+        }
+        self.call_stream_index
+            .insert(call_id.clone(), stream_id.clone());
+        if Register::registration_epoch_matches(device_id, registration_epoch_id) {
+            return true;
+        }
+        self.remove_stream_indexes(&stream_id, Some(&call_id));
+        false
     }
 
     pub fn cleanup_expired(&self) -> RuntimeCleanupReport {
@@ -898,6 +926,7 @@ mod tests {
             2,
             NativeSubscriptionMetadata {
                 device_id: "device".into(),
+                registration_epoch_id: None,
                 event: "Catalog".into(),
                 expires: 3600,
                 remote_target: "sip:device@127.0.0.1:5060".into(),
@@ -911,6 +940,7 @@ mod tests {
                 channel_id: "channel".into(),
                 stream_id: "stream".into(),
                 ssrc: Some(1),
+                registration_epoch_id: None,
             },
             ttl,
         );

@@ -60,6 +60,8 @@ pub struct NativeRecoverySource {
     pub device_id: String,
     pub remote_address: String,
     pub protocol: SipTransportProtocol,
+    pub registration_call_id: Option<String>,
+    pub registration_cseq: Option<u32>,
     pub deadline: Instant,
 }
 
@@ -510,6 +512,8 @@ impl NativeSipRuntimeService {
                                         device_id: source.device_id,
                                         remote_address: source.remote_address,
                                         protocol: source.protocol,
+                                        registration_call_id: source.registration_call_id,
+                                        registration_cseq: source.registration_cseq,
                                         ttl,
                                     };
                                     if let Err(err) =
@@ -798,7 +802,7 @@ async fn run_native_business_events(
                     );
                 }
             }
-            if let Err(err) = apply_business_event(&business_event) {
+            if let Err(err) = apply_business_event(&business_event).await {
                 warn!("apply native SIP business event failed: {err}");
             }
         }

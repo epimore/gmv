@@ -20,11 +20,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const INSERT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,\
-signal_node_id,media_node_id,ssrc,call_id,local_uri,remote_uri,local_tag,remote_tag,\
+signal_node_id,media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,\
 local_cseq,remote_cseq,contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,\
 state,established_at,last_seen_at,expire_at,version,created_at,updated_at";
 const SELECT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,signal_node_id,\
-media_node_id,ssrc,call_id,local_uri,remote_uri,local_tag,remote_tag,local_cseq,remote_cseq,\
+media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,local_cseq,remote_cseq,\
 contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,last_seen_at,\
 expire_at,version,created_at,updated_at";
 const MAX_PAGE_SIZE: u32 = 1_000;
@@ -156,6 +156,7 @@ pub struct SipDialogSession {
     pub signal_node_id: String,
     pub media_node_id: String,
     pub ssrc: Option<String>,
+    pub registration_epoch_id: Option<String>,
     pub call_id: String,
     pub local_uri: String,
     pub remote_uri: String,
@@ -185,6 +186,11 @@ impl SipDialogSession {
         validate_len(&self.signal_node_id, 64, "signal_node_id")?;
         validate_len(&self.media_node_id, 64, "media_node_id")?;
         validate_optional_len(self.ssrc.as_deref(), 16, "ssrc")?;
+        validate_optional_len(
+            self.registration_epoch_id.as_deref(),
+            36,
+            "registration_epoch_id",
+        )?;
         validate_len(&self.call_id, 128, "call_id")?;
         validate_sip_uri(&self.local_uri, 256, "local_uri")?;
         validate_sip_uri(&self.remote_uri, 256, "remote_uri")?;
@@ -266,6 +272,7 @@ struct SipDialogSessionRow {
     signal_node_id: String,
     media_node_id: String,
     ssrc: Option<String>,
+    registration_epoch_id: Option<String>,
     call_id: String,
     local_uri: String,
     remote_uri: String,
@@ -299,6 +306,7 @@ impl TryFrom<SipDialogSessionRow> for SipDialogSession {
             signal_node_id: row.signal_node_id,
             media_node_id: row.media_node_id,
             ssrc: row.ssrc,
+            registration_epoch_id: row.registration_epoch_id,
             call_id: row.call_id,
             local_uri: row.local_uri,
             remote_uri: row.remote_uri,
@@ -361,7 +369,7 @@ impl SipDialogSessionRepository {
         db::execute!(
             sqlx::AssertSqlSafe(format!(
                 "INSERT INTO gb28181_sip_dialog_session ({INSERT_COLUMNS}) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )),
             &session.stream_id,
             &session.device_id,
@@ -370,6 +378,7 @@ impl SipDialogSessionRepository {
             &session.signal_node_id,
             &session.media_node_id,
             &session.ssrc,
+            &session.registration_epoch_id,
             &session.call_id,
             &session.local_uri,
             &session.remote_uri,
@@ -397,6 +406,7 @@ impl SipDialogSessionRepository {
     pub async fn cas_mark_established(
         stream_id: &str,
         signal_node_id: &str,
+        expected_registration_epoch_id: Option<&str>,
         expected_version: i64,
         fields: &EstablishedDialogFields,
     ) -> GlobalResult<bool> {
@@ -417,6 +427,7 @@ impl SipDialogSessionRepository {
             if session.version != expected_version
                 || session.state != DialogState::Inviting
                 || session.signal_node_id != signal_node_id
+                || session.registration_epoch_id.as_deref() != expected_registration_epoch_id
                 || fields.established_at < session.created_at
                 || fields.updated_at < session.updated_at
             {
@@ -444,6 +455,7 @@ impl SipDialogSessionRepository {
              contact_uri=?,route_set=?,local_sip_addr=?,remote_sip_addr=?,state='ESTABLISHED',\
              established_at=?,last_seen_at=?,expire_at=?,updated_at=?,version=version+1 \
              WHERE stream_id=? AND signal_node_id=? AND state='INVITING' AND version=? \
+             AND ((registration_epoch_id IS NULL AND ? IS NULL) OR registration_epoch_id=?) \
              AND created_at<=? AND updated_at<=?",
             &fields.remote_tag,
             fields.local_cseq,
@@ -459,6 +471,8 @@ impl SipDialogSessionRepository {
             stream_id,
             signal_node_id,
             expected_version,
+            expected_registration_epoch_id,
+            expected_registration_epoch_id,
             fields.established_at,
             fields.updated_at,
         )
@@ -875,6 +889,48 @@ impl SipDialogSessionRepository {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    pub async fn find_active_by_device_epoch(
+        device_id: &str,
+        registration_epoch_id: Option<&str>,
+    ) -> GlobalResult<Vec<SipDialogSession>> {
+        validate_len(device_id, 32, "device_id")?;
+        validate_optional_len(registration_epoch_id, 36, "registration_epoch_id")?;
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut sessions = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .filter(|session| {
+                    session.device_id == device_id
+                        && session.registration_epoch_id.as_deref() == registration_epoch_id
+                        && matches!(
+                            session.state,
+                            DialogState::Inviting
+                                | DialogState::Established
+                                | DialogState::Terminating
+                        )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            sessions.sort_by(|left, right| left.stream_id.cmp(&right.stream_id));
+            return Ok(sessions);
+        }
+        let rows = db::fetch_all_as!(
+            SipDialogSessionRow,
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session \
+                 WHERE device_id=? AND ((registration_epoch_id IS NULL AND ? IS NULL) OR registration_epoch_id=?) \
+                 AND state IN ('INVITING','ESTABLISHED','TERMINATING') ORDER BY stream_id"
+            )),
+            device_id,
+            registration_epoch_id,
+            registration_epoch_id,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
     pub async fn find_active_by_media_ssrc_before(
         signal_node_id: &str,
         media_node_id: &str,
@@ -1143,6 +1199,7 @@ mod tests {
             signal_node_id: "session-1".into(),
             media_node_id: "media-1".into(),
             ssrc: Some("1100000001".into()),
+            registration_epoch_id: None,
             call_id: format!("call-{stream_id}"),
             local_uri: "sip:platform@127.0.0.1:5060".into(),
             remote_uri: "sip:device@127.0.0.1:15060".into(),
@@ -1163,6 +1220,84 @@ mod tests {
             created_at: at(1_000),
             updated_at: at(1_000),
         }
+    }
+
+    #[test]
+    fn dialog_establishment_and_lookup_are_fenced_by_registration_epoch() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let _guard = enable_dialog_test_storage();
+            let mut session = inviting("epoch-stream");
+            session.registration_epoch_id = Some("epoch-a".into());
+            SipDialogSessionRepository::insert_inviting(&session)
+                .await
+                .expect("insert epoch dialog");
+            SipDialogSessionRepository::insert_inviting(&inviting("legacy-stream"))
+                .await
+                .expect("insert legacy dialog");
+            let established = EstablishedDialogFields {
+                remote_tag: "remote-tag".into(),
+                local_cseq: 10,
+                remote_cseq: Some(20),
+                contact_uri: Some("sip:device@127.0.0.1:15060".into()),
+                route_set: Vec::new(),
+                local_sip_addr: "127.0.0.1:5060".into(),
+                remote_sip_addr: "127.0.0.1:15060".into(),
+                established_at: at(1_100),
+                last_seen_at: at(1_100),
+                expire_at: at(28_801_100),
+                updated_at: at(1_100),
+            };
+
+            assert!(
+                !SipDialogSessionRepository::cas_mark_established(
+                    "epoch-stream",
+                    "session-1",
+                    Some("epoch-b"),
+                    0,
+                    &established,
+                )
+                .await
+                .expect("reject stale epoch")
+            );
+            assert!(
+                SipDialogSessionRepository::cas_mark_established(
+                    "epoch-stream",
+                    "session-1",
+                    Some("epoch-a"),
+                    0,
+                    &established,
+                )
+                .await
+                .expect("establish current epoch")
+            );
+            assert_eq!(
+                SipDialogSessionRepository::find_active_by_device_epoch(
+                    &session.device_id,
+                    Some("epoch-a"),
+                )
+                .await
+                .expect("find epoch dialogs")
+                .len(),
+                1
+            );
+            assert!(
+                SipDialogSessionRepository::find_active_by_device_epoch(
+                    &session.device_id,
+                    Some("epoch-b"),
+                )
+                .await
+                .expect("exclude other epoch")
+                .is_empty()
+            );
+            assert_eq!(
+                SipDialogSessionRepository::find_active_by_device_epoch(&session.device_id, None)
+                    .await
+                    .expect("find legacy epoch dialogs")
+                    .len(),
+                1
+            );
+        });
     }
 
     #[test]
@@ -1204,6 +1339,7 @@ mod tests {
                 SipDialogSessionRepository::cas_mark_established(
                     "stream-1",
                     "session-1",
+                    None,
                     0,
                     &established,
                 )
@@ -1214,6 +1350,7 @@ mod tests {
                 !SipDialogSessionRepository::cas_mark_established(
                     "stream-1",
                     "session-1",
+                    None,
                     0,
                     &established,
                 )

@@ -211,6 +211,7 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
         ("playback_state", "varchar(16) NULL"),
         ("pause_expire_at", "datetime(3) NULL"),
         ("last_control_operation_id", "varchar(128) NULL"),
+        ("registration_epoch_id", "varchar(36) NULL"),
     ];
     for (name, definition) in COLUMNS {
         if !existing.iter().any(|column| column == name) {
@@ -221,6 +222,42 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
             .await
             .hand_log(|msg| error!("{msg}"))?;
         }
+    }
+    let device_existing: Vec<String> = base_db::sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='gb28181_device'",
+    )
+    .fetch_all(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    const DEVICE_COLUMNS: &[(&str, &str)] = &[
+        ("registration_call_id", "varchar(128) NULL"),
+        ("registration_cseq", "bigint NULL"),
+        ("registration_epoch_id", "varchar(36) NULL"),
+        ("registration_epoch_closed_at", "datetime(3) NULL"),
+    ];
+    for (name, definition) in DEVICE_COLUMNS {
+        if !device_existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_device ADD COLUMN {name} {definition}"
+            )))
+            .execute(mysql_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    let epoch_index_exists: Option<i64> = base_db::sqlx::query_scalar(
+        "SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='gb28181_sip_dialog_session' AND index_name='idx_gmv_sip_dialog_device_epoch_state' LIMIT 1",
+    )
+    .fetch_optional(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    if epoch_index_exists.is_none() {
+        base_db::sqlx::query(
+            "CREATE INDEX idx_gmv_sip_dialog_device_epoch_state ON gb28181_sip_dialog_session (device_id, registration_epoch_id, state)",
+        )
+        .execute(mysql_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
     }
     Ok(())
 }
@@ -248,6 +285,7 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
         ("playback_state", "VARCHAR(16) NULL"),
         ("pause_expire_at", "DATETIME NULL"),
         ("last_control_operation_id", "VARCHAR(128) NULL"),
+        ("registration_epoch_id", "VARCHAR(36) NULL"),
     ];
     for (name, definition) in COLUMNS {
         if !existing.iter().any(|column| column == name) {
@@ -259,6 +297,36 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
             .hand_log(|msg| error!("{msg}"))?;
         }
     }
+    let device_rows = base_db::sqlx::query("PRAGMA table_info(gb28181_device)")
+        .fetch_all(sqlite_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    let device_existing: Vec<String> = device_rows
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    const DEVICE_COLUMNS: &[(&str, &str)] = &[
+        ("registration_call_id", "VARCHAR(128) NULL"),
+        ("registration_cseq", "BIGINT NULL"),
+        ("registration_epoch_id", "VARCHAR(36) NULL"),
+        ("registration_epoch_closed_at", "DATETIME NULL"),
+    ];
+    for (name, definition) in DEVICE_COLUMNS {
+        if !device_existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_device ADD COLUMN {name} {definition}"
+            )))
+            .execute(sqlite_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    base_db::sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_device_epoch_state ON gb28181_sip_dialog_session (device_id, registration_epoch_id, state)",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
     Ok(())
 }
 

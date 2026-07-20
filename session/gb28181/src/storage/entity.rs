@@ -214,6 +214,10 @@ pub struct GmvDevice {
     pub transport: String,
     pub register_expires: u32,
     pub register_time: NaiveDateTime,
+    pub registration_call_id: Option<String>,
+    pub registration_cseq: Option<i64>,
+    pub registration_epoch_id: Option<String>,
+    pub registration_epoch_closed_at: Option<NaiveDateTime>,
     pub online_expire_time: Option<NaiveDateTime>,
     pub local_addr: String,
     pub contact_uri: String,
@@ -227,6 +231,10 @@ struct GmvDeviceRow {
     transport: String,
     register_expires: i64,
     register_time: NaiveDateTime,
+    registration_call_id: Option<String>,
+    registration_cseq: Option<i64>,
+    registration_epoch_id: Option<String>,
+    registration_epoch_closed_at: Option<NaiveDateTime>,
     online_expire_time: Option<NaiveDateTime>,
     local_addr: String,
     contact_uri: String,
@@ -246,6 +254,10 @@ device_id,\
 COALESCE(transport,'UDP') AS transport,\
 COALESCE(register_expires,3600) AS register_expires,\
 COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time,\
+registration_call_id,\
+registration_cseq,\
+registration_epoch_id,\
+registration_epoch_closed_at,\
 online_expire_time,\
 COALESCE(local_addr,'') AS local_addr,\
 COALESCE(contact_uri,'') AS contact_uri,\
@@ -257,6 +269,10 @@ d.device_id AS device_id,\
 COALESCE(d.transport,'UDP') AS transport,\
 COALESCE(d.register_expires,3600) AS register_expires,\
 COALESCE(d.register_time,CURRENT_TIMESTAMP) AS register_time,\
+d.registration_call_id AS registration_call_id,\
+d.registration_cseq AS registration_cseq,\
+d.registration_epoch_id AS registration_epoch_id,\
+d.registration_epoch_closed_at AS registration_epoch_closed_at,\
 d.online_expire_time AS online_expire_time,\
 COALESCE(d.local_addr,'') AS local_addr,\
 COALESCE(d.contact_uri,'') AS contact_uri,\
@@ -269,6 +285,10 @@ device_id,\
 COALESCE(transport,'UDP') AS transport,\
 COALESCE(register_expires,3600) AS register_expires,\
 COALESCE(register_time,CURRENT_TIMESTAMP) AS register_time,\
+registration_call_id,\
+registration_cseq,\
+registration_epoch_id,\
+registration_epoch_closed_at,\
 online_expire_time,\
 COALESCE(local_addr,'') AS local_addr,\
 COALESCE(contact_uri,'') AS contact_uri,\
@@ -285,6 +305,10 @@ impl TryFrom<GmvDeviceRow> for GmvDevice {
             transport: row.transport,
             register_expires: decode_u32(row.register_expires, "register_expires")?,
             register_time: row.register_time,
+            registration_call_id: row.registration_call_id,
+            registration_cseq: row.registration_cseq,
+            registration_epoch_id: row.registration_epoch_id,
+            registration_epoch_closed_at: row.registration_epoch_closed_at,
             online_expire_time: row.online_expire_time,
             local_addr: row.local_addr,
             contact_uri: row.contact_uri,
@@ -393,6 +417,10 @@ impl GmvDevice {
                     transport: row.transport,
                     register_expires: row.register_expires as u32,
                     register_time: row.register_time,
+                    registration_call_id: row.registration_call_id,
+                    registration_cseq: row.registration_cseq,
+                    registration_epoch_id: row.registration_epoch_id,
+                    registration_epoch_closed_at: row.registration_epoch_closed_at,
                     online_expire_time: row.online_expire_time,
                     local_addr: row.local_addr,
                     contact_uri: row.contact_uri,
@@ -441,16 +469,24 @@ impl GmvDevice {
         let sql = match db::backend() {
             db::SessionDatabaseBackend::Mysql => {
                 r#"insert into gb28181_device (device_id,transport,register_expires,
-        register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?)
+        register_time,registration_call_id,registration_cseq,registration_epoch_id,registration_epoch_closed_at,
+        online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE transport=VALUES(transport),register_expires=VALUES(register_expires),
-        register_time=VALUES(register_time),online_expire_time=VALUES(online_expire_time),local_addr=VALUES(local_addr),
+        register_time=VALUES(register_time),registration_call_id=VALUES(registration_call_id),
+        registration_cseq=VALUES(registration_cseq),registration_epoch_id=VALUES(registration_epoch_id),
+        registration_epoch_closed_at=VALUES(registration_epoch_closed_at),
+        online_expire_time=VALUES(online_expire_time),local_addr=VALUES(local_addr),
         contact_uri=VALUES(contact_uri),enable_lr=VALUES(enable_lr),gb_version=VALUES(gb_version)"#
             }
             db::SessionDatabaseBackend::Sqlite => {
                 r#"insert into gb28181_device (device_id,transport,register_expires,
-        register_time,online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?)
+        register_time,registration_call_id,registration_cseq,registration_epoch_id,registration_epoch_closed_at,
+        online_expire_time,local_addr,contact_uri,enable_lr,gb_version) values (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(device_id) DO UPDATE SET transport=excluded.transport,register_expires=excluded.register_expires,
-        register_time=excluded.register_time,online_expire_time=excluded.online_expire_time,local_addr=excluded.local_addr,
+        register_time=excluded.register_time,registration_call_id=excluded.registration_call_id,
+        registration_cseq=excluded.registration_cseq,registration_epoch_id=excluded.registration_epoch_id,
+        registration_epoch_closed_at=excluded.registration_epoch_closed_at,
+        online_expire_time=excluded.online_expire_time,local_addr=excluded.local_addr,
         contact_uri=excluded.contact_uri,enable_lr=excluded.enable_lr,gb_version=excluded.gb_version"#
             }
         };
@@ -460,6 +496,10 @@ impl GmvDevice {
             &self.transport,
             self.register_expires,
             &self.register_time,
+            &self.registration_call_id,
+            self.registration_cseq,
+            &self.registration_epoch_id,
+            &self.registration_epoch_closed_at,
             &self.online_expire_time,
             &self.local_addr,
             &self.contact_uri,
@@ -468,6 +508,42 @@ impl GmvDevice {
         )
         .hand_log(|msg| error!("{msg}"))?;
         Ok(())
+    }
+
+    pub async fn close_registration_epoch(
+        device_id: &str,
+        registration_epoch_id: Option<&str>,
+    ) -> GlobalResult<bool> {
+        let now = Local::now().naive_local();
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(device) = storage.devices.get_mut(device_id) else {
+                return Ok(false);
+            };
+            if device.registration_epoch_id.as_deref() != registration_epoch_id
+                || device.registration_epoch_closed_at.is_some()
+            {
+                return Ok(false);
+            }
+            device.registration_epoch_closed_at = Some(now);
+            device.online_expire_time = Some(now);
+            return Ok(true);
+        }
+        let rows = db::execute!(
+            "UPDATE gb28181_device SET registration_epoch_closed_at=?,online_expire_time=? \
+             WHERE device_id=? AND ((registration_epoch_id IS NULL AND ? IS NULL) OR registration_epoch_id=?) \
+             AND registration_epoch_closed_at IS NULL",
+            now,
+            now,
+            device_id,
+            registration_epoch_id,
+            registration_epoch_id,
+        )
+        .hand_log(|msg| error!("{msg}"))?;
+        Ok(rows == 1)
     }
 
     pub async fn expire_online_by_device_id(device_id: &str) -> GlobalResult<()> {
@@ -914,6 +990,79 @@ mod tests {
         println!("{}", time_str1);
         let time_str2 = now.naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
         println!("{}", time_str2);
+    }
+
+    #[test]
+    fn closing_registration_epoch_is_compare_and_set() {
+        let _test_lock = TEST_STORAGE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = enable_test_storage(GmvOauth {
+            device_id: "device".into(),
+            ..GmvOauth::default()
+        });
+        let now = Local::now().naive_local();
+        test_storage()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .devices
+            .insert(
+                "device".into(),
+                GmvDevice {
+                    device_id: "device".into(),
+                    registration_epoch_id: Some("epoch-a".into()),
+                    online_expire_time: Some(now),
+                    ..GmvDevice::default()
+                },
+            );
+
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                assert!(
+                    !GmvDevice::close_registration_epoch("device", Some("epoch-b"))
+                        .await
+                        .expect("reject other epoch")
+                );
+                assert!(
+                    GmvDevice::close_registration_epoch("device", Some("epoch-a"))
+                        .await
+                        .expect("close current epoch")
+                );
+                assert!(
+                    !GmvDevice::close_registration_epoch("device", Some("epoch-a"))
+                        .await
+                        .expect("close is idempotent")
+                );
+                {
+                    let mut storage = test_storage()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let device = storage.devices.get_mut("device").expect("device");
+                    device.registration_epoch_id = None;
+                    device.registration_epoch_closed_at = None;
+                }
+                assert!(
+                    GmvDevice::close_registration_epoch("device", None)
+                        .await
+                        .expect("close legacy epoch")
+                );
+                {
+                    let mut storage = test_storage()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let device = storage.devices.get_mut("device").expect("device");
+                    device.registration_epoch_id = Some("epoch-b".into());
+                    device.registration_epoch_closed_at = None;
+                }
+                assert!(
+                    !GmvDevice::close_registration_epoch("device", None)
+                        .await
+                        .expect("legacy close must not affect new epoch")
+                );
+            });
     }
 
     #[test]

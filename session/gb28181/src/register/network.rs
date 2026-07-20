@@ -15,6 +15,15 @@ pub struct RebindResult {
     pub reconnect_generation: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistrationClass {
+    Refresh,
+    Retransmission,
+    BindingReplacement,
+    Rebind,
+    Stale,
+}
+
 //transport
 #[derive(Default)]
 pub struct Network {
@@ -198,6 +207,7 @@ impl Network {
         self.session.get(device_id).and_then(|session| {
             if !session.connected.load(Ordering::Relaxed)
                 || session.association_expire.load(Ordering::Relaxed)
+                || !session.registration_is_ready()
             {
                 return None;
             }
@@ -222,6 +232,9 @@ pub struct DeviceSession {
     pub contact_uri: String, // 来自 REGISTER Contact
     pub registration_call_id: String,
     pub registration_cseq: u32,
+    pub registration_epoch_id: Option<String>,
+    pub registration_snapshot_restored: bool,
+    pub registration_ready: AtomicBool,
     pub association: Association,
     pub connected: AtomicBool,
     pub connection_generation: AtomicU64,
@@ -244,6 +257,9 @@ impl DeviceSession {
             contact_uri,
             registration_call_id: String::new(),
             registration_cseq: 0,
+            registration_epoch_id: None,
+            registration_snapshot_restored: false,
+            registration_ready: AtomicBool::new(false),
             association,
             connected: AtomicBool::new(true),
             connection_generation: AtomicU64::new(0),
@@ -268,15 +284,48 @@ impl DeviceSession {
         self.registration_cseq = cseq;
     }
 
-    pub fn registration_generation_changed(&self, next: &Self) -> bool {
-        let transport_changed =
-            self.association != next.association || !self.connected.load(Ordering::Acquire);
-        !self.registration_call_id.is_empty()
+    pub fn set_registration_epoch_id(&mut self, registration_epoch_id: String) {
+        self.registration_epoch_id = Some(registration_epoch_id);
+    }
+
+    pub fn set_optional_registration_epoch_id(&mut self, registration_epoch_id: Option<String>) {
+        self.registration_epoch_id = registration_epoch_id;
+    }
+
+    pub fn mark_registration_snapshot_restored(&mut self) {
+        self.registration_snapshot_restored = true;
+    }
+
+    pub fn mark_registration_ready(&self) {
+        self.registration_ready.store(true, Ordering::Release);
+    }
+
+    pub fn registration_is_ready(&self) -> bool {
+        self.registration_ready.load(Ordering::Acquire)
+    }
+
+    pub fn classify_registration(&self, next: &Self) -> RegistrationClass {
+        if !self.registration_call_id.is_empty()
             && self.registration_call_id == next.registration_call_id
             && self.registration_cseq > 0
             && next.registration_cseq > 0
-            && next.registration_cseq < self.registration_cseq
-            && transport_changed
+        {
+            if next.registration_cseq < self.registration_cseq {
+                return RegistrationClass::Stale;
+            }
+            if next.registration_cseq == self.registration_cseq {
+                return RegistrationClass::Retransmission;
+            }
+        }
+        if !self.registration_call_id.is_empty()
+            && self.registration_call_id != next.registration_call_id
+        {
+            return RegistrationClass::BindingReplacement;
+        }
+        if self.association != next.association || !self.connected.load(Ordering::Acquire) {
+            return RegistrationClass::Rebind;
+        }
+        RegistrationClass::Refresh
     }
 
     pub fn snapshot(&self) -> Self {
@@ -285,6 +334,9 @@ impl DeviceSession {
             contact_uri: self.contact_uri.clone(),
             registration_call_id: self.registration_call_id.clone(),
             registration_cseq: self.registration_cseq,
+            registration_epoch_id: self.registration_epoch_id.clone(),
+            registration_snapshot_restored: self.registration_snapshot_restored,
+            registration_ready: AtomicBool::new(self.registration_is_ready()),
             association: self.association.clone(),
             connected: AtomicBool::new(self.connected.load(Ordering::Relaxed)),
             connection_generation: AtomicU64::new(
@@ -309,7 +361,7 @@ impl DeviceSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceSession, Network};
+    use super::{DeviceSession, Network, RegistrationClass};
     use base::net::state::{Association, Protocol};
     use base::tokio::time::Instant;
     use std::sync::Arc;
@@ -324,12 +376,14 @@ mod tests {
     }
 
     fn session(association: Association) -> DeviceSession {
-        DeviceSession::build(
+        let session = DeviceSession::build(
             "sip:device@127.0.0.1:5060".to_string(),
             association,
             60,
             Duration::from_secs(3600),
-        )
+        );
+        session.mark_registration_ready();
+        session
     }
 
     #[test]
@@ -341,42 +395,77 @@ mod tests {
     }
 
     #[test]
-    fn changed_register_call_id_does_not_mark_new_generation() {
+    fn pending_registration_is_not_available_for_outbound_commands() {
+        let network = Network::default();
+        let device_id: Arc<str> = Arc::from("device");
+        network.insert(
+            device_id.clone(),
+            DeviceSession::build(
+                "sip:device@127.0.0.1:5060".to_string(),
+                association(40000),
+                60,
+                Duration::from_secs(3600),
+            ),
+        );
+
+        assert!(network.connected_session(&device_id).is_none());
+        network
+            .session
+            .get(&device_id)
+            .expect("device session")
+            .mark_registration_ready();
+        assert!(network.connected_session(&device_id).is_some());
+    }
+
+    #[test]
+    fn changed_register_call_id_replaces_binding_without_new_epoch() {
         let mut current = session(association(40001));
         current.set_registration_identity("old-call-id".to_string(), 10);
         let mut next = session(association(40002));
         next.set_registration_identity("new-call-id".to_string(), 1);
 
-        assert!(!current.registration_generation_changed(&next));
+        assert_eq!(
+            current.classify_registration(&next),
+            RegistrationClass::BindingReplacement
+        );
     }
 
     #[test]
-    fn register_cseq_rollback_after_reconnect_marks_new_generation() {
+    fn register_cseq_rollback_after_reconnect_is_stale() {
         let mut current = session(association(40001));
         current.set_registration_identity("call-id".to_string(), 10);
         let mut next = session(association(40002));
         next.set_registration_identity("call-id".to_string(), 1);
 
-        assert!(current.registration_generation_changed(&next));
+        assert_eq!(
+            current.classify_registration(&next),
+            RegistrationClass::Stale
+        );
     }
 
     #[test]
-    fn register_cseq_rollback_on_same_connection_is_not_new_generation() {
+    fn register_cseq_rollback_on_same_connection_is_stale() {
         let mut current = session(association(40001));
         current.set_registration_identity("call-id".to_string(), 10);
         let mut next = session(association(40001));
         next.set_registration_identity("call-id".to_string(), 1);
 
-        assert!(!current.registration_generation_changed(&next));
+        assert_eq!(
+            current.classify_registration(&next),
+            RegistrationClass::Stale
+        );
     }
 
     #[test]
-    fn unknown_register_identity_does_not_mark_new_generation() {
+    fn unknown_register_identity_rebinds_without_new_epoch() {
         let current = session(association(40001));
         let mut next = session(association(40002));
         next.set_registration_identity("new-call-id".to_string(), 1);
 
-        assert!(!current.registration_generation_changed(&next));
+        assert_eq!(
+            current.classify_registration(&next),
+            RegistrationClass::Rebind
+        );
     }
 
     #[test]

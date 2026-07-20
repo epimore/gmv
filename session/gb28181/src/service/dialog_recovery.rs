@@ -70,6 +70,10 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
         mark_orphan(session).await?;
         return Ok(());
     }
+    if let Err(err) = validate_registration_epoch(session).await {
+        mark_orphan(session).await?;
+        return Err(err);
+    }
 
     let ssrc = session
         .ssrc
@@ -264,11 +268,40 @@ async fn ensure_udp_device_session(session: &SipDialogSession) -> GlobalResult<(
         oauth.heartbeat_sec_u8()?,
         Duration::from_secs(remaining),
     );
+    device_session.set_optional_registration_epoch_id(device.registration_epoch_id);
+    device_session.mark_registration_snapshot_restored();
+    device_session.set_registration_identity(
+        device.registration_call_id.unwrap_or_default(),
+        device
+            .registration_cseq
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_default(),
+    );
     device_session.set_gb_version(device.gb_version);
+    device_session.mark_registration_ready();
     if device.enable_lr != 0 {
         device_session.enable_lr();
     }
-    Register::register_device(Arc::from(session.device_id.as_str()), device_session)
+    Register::register_device(Arc::from(session.device_id.as_str()), device_session).map(|_| ())
+}
+
+async fn validate_registration_epoch(session: &SipDialogSession) -> GlobalResult<()> {
+    let device = GmvDevice::query_gmv_device_by_device_id(&session.device_id)
+        .await?
+        .ok_or_else(|| invalid_recovery(session, "device registration snapshot is missing"))?;
+    if device.registration_epoch_closed_at.is_some() {
+        return Err(invalid_recovery(
+            session,
+            "device registration epoch is closed",
+        ));
+    }
+    if device.registration_epoch_id != session.registration_epoch_id {
+        return Err(invalid_recovery(
+            session,
+            "durable dialog registration epoch mismatch",
+        ));
+    }
+    Ok(())
 }
 
 async fn mark_orphan(session: &SipDialogSession) -> GlobalResult<()> {

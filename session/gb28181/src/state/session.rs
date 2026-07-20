@@ -469,6 +469,15 @@ impl Cache {
             .collect()
     }
 
+    pub fn stream_ids_by_device(device_id: &str) -> Vec<String> {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .iter()
+            .filter_map(|stream| (stream.device_id == device_id).then(|| stream.key().clone()))
+            .collect()
+    }
+
     pub fn stream_close_complete(stream_id: &str, generation: u64) -> Option<StreamCloseInfo> {
         Self::stream_close_remove(stream_id, generation)
     }
@@ -795,6 +804,15 @@ impl Cache {
                 (talk.device_id == device_id && talk.closing_generation.is_some())
                     .then(|| talk.talk_id.clone())
             })
+            .collect()
+    }
+
+    pub fn talk_ids_by_device(device_id: &str) -> Vec<String> {
+        GENERAL_CACHE
+            .shared
+            .talk_map
+            .iter()
+            .filter_map(|talk| (talk.device_id == device_id).then(|| talk.key().clone()))
             .collect()
     }
 

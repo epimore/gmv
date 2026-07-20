@@ -60,6 +60,7 @@ pub struct GbIncomingInviteEvent {
 #[derive(Clone, Debug)]
 pub struct AcceptBroadcastInviteRequest {
     pub device_id: String,
+    pub registration_epoch_id: Option<String>,
     pub channel_id: String,
     pub talk_id: String,
     pub media_node_id: String,
@@ -68,6 +69,12 @@ pub struct AcceptBroadcastInviteRequest {
     pub ssrc: u32,
     pub payload_type: u8,
     pub invite: GbIncomingInviteEvent,
+}
+
+#[derive(Clone, Debug)]
+pub struct GbBroadcastInvite {
+    pub invite: GbIncomingInviteEvent,
+    pub registration_epoch_id: Option<String>,
 }
 
 impl GbIncomingInviteEvent {

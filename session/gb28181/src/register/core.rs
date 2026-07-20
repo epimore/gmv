@@ -15,10 +15,11 @@ use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
 use gmv_pjsip::{SipRegisteredSource, SipTransportProtocol};
 use parking_lot::Mutex;
+use uuid::Uuid;
 
 use crate::gb::sip::NativeSipRuntimeHandle;
 use crate::register::event::{self, Event};
-pub(crate) use crate::register::network::{DeviceSession, Network};
+pub(crate) use crate::register::network::{DeviceSession, Network, RegistrationClass};
 use crate::register::schedule::TimeScheduler;
 use crate::service::{stream_close, talk_close};
 use crate::state::session::Cache as GeneralCache;
@@ -61,6 +62,23 @@ enum DeviceRecoveryOutcome {
     Recovered { registration_expires: u32 },
     AlreadyLive,
     Superseded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegisterOutcome {
+    NewEpoch,
+    RecoveredEpoch,
+    Refresh,
+    Retransmission,
+    BindingReplacement,
+    Rebind,
+    Stale,
+}
+
+impl RegisterOutcome {
+    pub fn needs_post_online_sync(self) -> bool {
+        matches!(self, Self::NewEpoch | Self::RecoveredEpoch)
+    }
 }
 
 impl Register {
@@ -303,7 +321,23 @@ impl Register {
             oauth.heartbeat_sec_u8()?,
             Duration::from_secs(remaining),
         );
+        if device.registration_epoch_closed_at.is_some() {
+            return Err(invalid_device_lease(
+                device_id,
+                "device registration epoch is closed",
+            ));
+        }
+        session.set_optional_registration_epoch_id(device.registration_epoch_id);
+        session.mark_registration_snapshot_restored();
+        session.set_registration_identity(
+            device.registration_call_id.unwrap_or_default(),
+            device
+                .registration_cseq
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or_default(),
+        );
         session.set_gb_version(device.gb_version);
+        session.mark_registration_ready();
         if device.enable_lr != 0 {
             session.enable_lr();
         }
@@ -316,7 +350,10 @@ impl Register {
         }
     }
 
-    pub fn register_device(device_id: Arc<str>, ds: DeviceSession) -> GlobalResult<()> {
+    pub fn register_device(
+        device_id: Arc<str>,
+        ds: DeviceSession,
+    ) -> GlobalResult<RegisterOutcome> {
         let arc = Self::get().inner.clone();
         arc.recovering_devices.remove(&device_id);
         let _transition = arc.device_transition_lock.lock();
@@ -343,20 +380,48 @@ impl Register {
 
     fn register_device_by_inner(
         device_id: Arc<str>,
-        ds: DeviceSession,
+        mut ds: DeviceSession,
         arc: &Arc<Inner>,
-    ) -> GlobalResult<()> {
+    ) -> GlobalResult<RegisterOutcome> {
         let heartbeat_sec = ds.heartbeat_sec;
         let registration_duration = ds.registration_duration;
         let association = ds.association.clone();
-        let new_generation = arc
+        let registration_call_id = ds.registration_call_id.clone();
+        let registration_cseq = ds.registration_cseq;
+        let classification = arc
             .io_map
             .session
             .get(&device_id)
-            .is_some_and(|current| current.registration_generation_changed(&ds));
-        let ds = if new_generation {
-            ds
+            .map(|current| current.classify_registration(&ds));
+        if matches!(classification, Some(RegistrationClass::Stale)) {
+            warn!(
+                "stale REGISTER ignored: device_id={}, call_id={}, cseq={}",
+                device_id, ds.registration_call_id, ds.registration_cseq
+            );
+            return Ok(RegisterOutcome::Stale);
+        }
+        if matches!(classification, Some(RegistrationClass::Retransmission)) {
+            return Ok(RegisterOutcome::Retransmission);
+        }
+        let outcome = if let Some(current) = arc.io_map.session.get(&device_id) {
+            ds.registration_epoch_id = current.registration_epoch_id.clone();
+            if current.registration_is_ready() {
+                ds.mark_registration_ready();
+            }
+            match classification.unwrap_or(RegistrationClass::Refresh) {
+                RegistrationClass::Refresh => RegisterOutcome::Refresh,
+                RegistrationClass::BindingReplacement => RegisterOutcome::BindingReplacement,
+                RegistrationClass::Rebind => RegisterOutcome::Rebind,
+                RegistrationClass::Retransmission => RegisterOutcome::Retransmission,
+                RegistrationClass::Stale => RegisterOutcome::Stale,
+            }
+        } else if ds.registration_snapshot_restored {
+            RegisterOutcome::RecoveredEpoch
         } else {
+            ds.set_registration_epoch_id(Uuid::new_v4().to_string());
+            RegisterOutcome::NewEpoch
+        };
+        let ds = if matches!(outcome, RegisterOutcome::Rebind) {
             match arc.io_map.rebind_registration(&device_id, ds) {
                 Ok(generation) => {
                     let _ = Self::scheduler().remove_register(&TimeScheduleKey::DeviceReconnect(
@@ -375,13 +440,20 @@ impl Register {
                             registration_duration,
                         )
                         .hand_log(|e| error!("insert device registration timer failed: {e}"))?;
-                    sync_native_registered_source(device_id.as_ref(), &association);
+                    sync_native_registered_source(
+                        device_id.as_ref(),
+                        &association,
+                        &registration_call_id,
+                        registration_cseq,
+                    );
                     stream_close::retry_device(device_id.as_ref());
                     talk_close::retry_device(device_id.as_ref());
-                    return Ok(());
+                    return Ok(outcome);
                 }
                 Err(ds) => ds,
             }
+        } else {
+            ds
         };
 
         let previous_session = Self::remove_device_by_inner(&device_id, &arc);
@@ -393,14 +465,6 @@ impl Register {
                 Self::close_tcp_if_needed(&previous_session);
             }
         }
-        if new_generation {
-            warn!(
-                "new registration generation, cleanup old device state: device_id={}",
-                device_id
-            );
-            GeneralCache::reset_device_state(device_id.as_ref());
-        }
-
         let expires = heartbeat_timeout(ds.heartbeat_sec);
         Self::scheduler()
             .insert_register(TimeScheduleKey::Device3Heart(device_id.clone()), expires)
@@ -414,12 +478,17 @@ impl Register {
             .hand_log(|e| error!("insert device registration timer failed: {e}"))?;
 
         arc.io_map.insert(device_id.clone(), ds);
-        sync_native_registered_source(device_id.as_ref(), &association);
-        if !new_generation {
+        sync_native_registered_source(
+            device_id.as_ref(),
+            &association,
+            &registration_call_id,
+            registration_cseq,
+        );
+        if !matches!(outcome, RegisterOutcome::NewEpoch) {
             stream_close::retry_device(device_id.as_ref());
             talk_close::retry_device(device_id.as_ref());
         }
-        Ok(())
+        Ok(outcome)
     }
 
     pub fn remove_device_by_inner(device_id: &Arc<str>, inner: &Inner) -> Option<DeviceSession> {
@@ -447,8 +516,13 @@ impl Register {
         let inner = &Self::get().inner;
         inner.recovering_devices.remove(device_id);
         let _transition = inner.device_transition_lock.lock();
-        Self::remove_device_by_inner(device_id, inner);
-        GeneralCache::reset_device_state(device_id.as_ref());
+        let registration_epoch_id = Self::remove_device_by_inner(device_id, inner)
+            .and_then(|session| session.registration_epoch_id);
+        crate::service::dialog_epoch::close(
+            device_id.as_ref(),
+            registration_epoch_id,
+            "explicit_unregister",
+        );
     }
 
     pub fn detach_device_association(association: &Association) -> bool {
@@ -487,12 +561,24 @@ impl Register {
             device_id.clone(),
             generation,
         ));
-        GeneralCache::reset_device_state(device_id.as_ref());
-        let _ = inner
-            .event_tx
-            .try_send(Event::DeviceOffline(device_id.clone()))
-            .hand_log(|msg| error!("{msg}"));
+        crate::service::dialog_epoch::close(
+            device_id.as_ref(),
+            session.registration_epoch_id.clone(),
+            "reconnect_timeout",
+        );
         Some(session)
+    }
+
+    pub(crate) fn close_removed_session(
+        device_id: &Arc<str>,
+        session: &DeviceSession,
+        reason: &'static str,
+    ) {
+        crate::service::dialog_epoch::close(
+            device_id.as_ref(),
+            session.registration_epoch_id.clone(),
+            reason,
+        );
     }
 
     pub fn get_device_id_by_association(association: &Association) -> Option<Arc<str>> {
@@ -511,6 +597,37 @@ impl Register {
             .session
             .get(device_id)
             .map(|item| item.snapshot())
+    }
+
+    pub fn registration_epoch_id(device_id: &str) -> Option<String> {
+        Self::get_device_session(device_id).and_then(|session| session.registration_epoch_id)
+    }
+
+    pub fn registration_epoch_matches(
+        device_id: &str,
+        expected_registration_epoch_id: Option<&str>,
+    ) -> bool {
+        Self::get_device_session(device_id).is_some_and(|session| {
+            session.registration_epoch_id.as_deref() == expected_registration_epoch_id
+        })
+    }
+
+    pub fn mark_registration_ready(
+        device_id: &str,
+        expected_registration_epoch_id: Option<&str>,
+    ) -> bool {
+        Self::get()
+            .inner
+            .io_map
+            .session
+            .get(device_id)
+            .is_some_and(|session| {
+                if session.registration_epoch_id.as_deref() != expected_registration_epoch_id {
+                    return false;
+                }
+                session.mark_registration_ready();
+                true
+            })
     }
 
     pub fn get_connected_device_session(device_id: &str) -> Option<DeviceSession> {
@@ -614,7 +731,12 @@ fn invalid_device_lease(device_id: &str, message: &str) -> GlobalError {
     })
 }
 
-fn sync_native_registered_source(device_id: &str, association: &Association) {
+fn sync_native_registered_source(
+    device_id: &str,
+    association: &Association,
+    registration_call_id: &str,
+    registration_cseq: u32,
+) {
     let protocol = match association.protocol {
         Protocol::UDP => SipTransportProtocol::Udp,
         Protocol::TCP => SipTransportProtocol::Tcp,
@@ -627,6 +749,9 @@ fn sync_native_registered_source(device_id: &str, association: &Association) {
         device_id: device_id.to_string(),
         remote_address: association.remote_addr.ip().to_string(),
         protocol,
+        registration_call_id: (!registration_call_id.is_empty())
+            .then(|| registration_call_id.to_string()),
+        registration_cseq: (registration_cseq > 0).then_some(registration_cseq),
     }) {
         warn!("sync native SIP registered source failed: device_id={device_id}, err={err}");
     }

@@ -29,6 +29,10 @@ pub enum DbTask {
     ExpireDeviceOnline {
         device_id: String,
     },
+    CloseDeviceEpoch {
+        device_id: String,
+        registration_epoch_id: Option<String>,
+    },
     TouchDeviceHeartbeat {
         device_id: String,
     },
@@ -43,13 +47,14 @@ pub enum DbTask {
 enum DbOperation {
     UpsertDevice,
     ExpireDeviceOnline,
+    CloseDeviceEpoch,
     TouchDeviceHeartbeat,
     UpdateDeviceExtInfo,
     InsertDeviceCatalog,
 }
 
 impl DbOperation {
-    const COUNT: usize = 5;
+    const COUNT: usize = 6;
 
     fn index(self) -> usize {
         self as usize
@@ -59,6 +64,7 @@ impl DbOperation {
         match self {
             Self::UpsertDevice => "upsert_device",
             Self::ExpireDeviceOnline => "expire_device_online",
+            Self::CloseDeviceEpoch => "close_device_epoch",
             Self::TouchDeviceHeartbeat => "touch_device_heartbeat",
             Self::UpdateDeviceExtInfo => "update_device_ext_info",
             Self::InsertDeviceCatalog => "insert_device_catalog",
@@ -71,6 +77,7 @@ impl DbTask {
         match self {
             Self::UpsertDevice(_) => DbOperation::UpsertDevice,
             Self::ExpireDeviceOnline { .. } => DbOperation::ExpireDeviceOnline,
+            Self::CloseDeviceEpoch { .. } => DbOperation::CloseDeviceEpoch,
             Self::TouchDeviceHeartbeat { .. } => DbOperation::TouchDeviceHeartbeat,
             Self::UpdateDeviceExtInfo(_) => DbOperation::UpdateDeviceExtInfo,
             Self::InsertDeviceCatalog { .. } => DbOperation::InsertDeviceCatalog,
@@ -210,6 +217,12 @@ async fn handle_task(task: DbTask) -> Result<DbOperation, (DbOperation, GlobalEr
                 .await
                 .map(|_| ())
         }
+        DbTask::CloseDeviceEpoch {
+            device_id,
+            registration_epoch_id,
+        } => GmvDevice::close_registration_epoch(&device_id, registration_epoch_id.as_deref())
+            .await
+            .map(|_| ()),
         DbTask::TouchDeviceHeartbeat { device_id } => {
             GmvDevice::refresh_online_expire_time_by_device_id(&device_id)
                 .await

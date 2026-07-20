@@ -383,16 +383,18 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
     };
 
     let sn = crate::gb::sip::sequence::next_sn();
-    let invite = match sip_command::broadcast_notify_and_wait(device_id, &target_id, sn).await {
-        Ok(invite) => invite,
-        Err(err) => {
-            cleanup_talk_open(&stream_node, &talk_id).await;
-            crate::guard_integration::fail_stream_lease(&allocation, "broadcast notify failed")
-                .await;
-            return Err(err);
-        }
-    };
-    let answer = match parse_broadcast_invite(&invite) {
+    let broadcast_invite =
+        match sip_command::broadcast_notify_and_wait(device_id, &target_id, sn).await {
+            Ok(invite) => invite,
+            Err(err) => {
+                cleanup_talk_open(&stream_node, &talk_id).await;
+                crate::guard_integration::fail_stream_lease(&allocation, "broadcast notify failed")
+                    .await;
+                return Err(err);
+            }
+        };
+    let invite = &broadcast_invite.invite;
+    let answer = match parse_broadcast_invite(invite) {
         Ok(answer) => answer,
         Err(err) => {
             sip_command::reject_broadcast_invite(&invite.call_id, 488, "Unsupported broadcast SDP");
@@ -437,6 +439,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
     }
     if let Err(err) = sip_command::accept_broadcast_invite(AcceptBroadcastInviteRequest {
         device_id: device_id.clone(),
+        registration_epoch_id: broadcast_invite.registration_epoch_id,
         channel_id: channel_id.clone(),
         talk_id: talk_id.clone(),
         media_node_id: node_name.clone(),
