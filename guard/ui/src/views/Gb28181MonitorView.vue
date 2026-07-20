@@ -368,9 +368,53 @@
       <el-empty v-else description="暂无封面" />
     </el-dialog>
 
-    <el-dialog v-model="playbackRangeDialog" title="选择历史回放时段" width="560px">
-      <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
-        start-placeholder="开始时间" end-placeholder="结束时间" :clearable="true" style="width: 100%" />
+    <el-dialog v-model="playbackRangeDialog" title="选择历史回放时段" width="760px">
+      <div class="record-dialog-content">
+        <div class="record-playback-range">
+          <b>回放时段</b>
+          <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
+            start-placeholder="回放开始时间" end-placeholder="回放结束时间" :clearable="true" style="width: 100%" />
+        </div>
+        <el-divider />
+        <section class="device-record-panel" v-loading="recordLoading">
+          <div class="device-record-head">
+            <div>
+              <b>设备录像片段</b>
+              <small v-if="recordState?.current_batch">最近更新：{{ formatTime(recordState.current_batch.created_at_ms) }}</small>
+              <small v-else>尚未查询设备录像</small>
+            </div>
+            <el-button type="primary" plain :loading="recordUpdating" :disabled="recordUpdateDisabled"
+              @click="updateDeviceRecords">
+              {{ recordRetryAfterSec > 0 ? `${recordRetryAfterSec}秒后可更新` : recordQuerying ? '更新中' : '更新' }}
+            </el-button>
+          </div>
+          <div class="record-shortcuts">
+            <el-button :type="recordRangeMode === 'week' ? 'primary' : 'default'" @click="selectRecordShortcut('week')">近一周</el-button>
+            <el-button :type="recordRangeMode === 'month' ? 'primary' : 'default'" @click="selectRecordShortcut('month')">近一月</el-button>
+            <el-button :type="recordRangeMode === 'custom' ? 'primary' : 'default'" @click="recordRangeMode = 'custom'">自定义</el-button>
+          </div>
+          <el-date-picker v-model="recordQueryRange" type="datetimerange" range-separator="至"
+            start-placeholder="检索开始时间" end-placeholder="检索结束时间" :clearable="true" style="width: 100%"
+            @change="recordRangeMode = 'custom'" />
+          <el-alert v-if="recordQuerying" class="record-state-alert" type="info" :closable="false" show-icon
+            title="设备录像正在更新，当前仍展示上一次完整结果" />
+          <el-alert v-else-if="recordState?.attempt_batch?.status === 'FAILED'" class="record-state-alert" type="error"
+            :closable="false" show-icon title="设备录像更新失败，可立即重试；上一次完整结果未受影响" />
+          <div v-if="recordState?.current_batch" class="record-current-range">
+            查询范围：{{ formatRecordRange(recordState.current_batch.start_time_sec, recordState.current_batch.end_time_sec) }}
+          </div>
+          <div class="record-segment-list">
+            <button v-for="segment in recordState?.segments || []" :key="segment.segment_id" type="button"
+              class="record-segment" @click="selectRecordSegment(segment)">
+              <span>{{ formatRecordRange(segment.start_time_sec, segment.end_time_sec) }}</span>
+              <small>{{ segment.name || segment.record_type || '设备录像' }}</small>
+            </button>
+            <el-empty v-if="recordState?.current_batch?.status === 'EMPTY'" description="所选范围暂无设备录像" :image-size="56" />
+            <el-empty v-else-if="recordState?.current_batch?.status === 'READY' && !recordState.segments.length" description="当前批次没有可展示片段" :image-size="56" />
+            <el-empty v-else-if="!recordState?.current_batch && !recordQuerying" description="选择检索范围并点击更新" :image-size="56" />
+          </div>
+        </section>
+      </div>
       <template #footer>
         <el-button @click="playbackRangeDialog = false">取消</el-button>
         <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始回放</el-button>
@@ -499,12 +543,14 @@ import {
   createStreamOutput,
   getMediaTransport,
   getGbSessionNodeConfig,
+  getGbChannelRecords,
   heartbeatGbPlaybackPresence,
   listGbChannelImages,
   listGbChannels,
   listGbDevicePage,
   listGbResources,
   listNodes,
+  queryGbChannelRecords,
   releaseStream,
   resetGbResourceConfirmation,
   saveGbResourceConfirmation,
@@ -519,8 +565,10 @@ import {
   type GbChannelImageInfo,
   type GbChannelInfo,
   type GbChannelPayload,
+  type GbChannelRecordsInfo,
   type GbDeviceInfo,
   type GbPtzPayload,
+  type GbRecordSegmentInfo,
   type GbResourceInfo,
   type GbSessionConfigInfo,
   type NodeInfo,
@@ -595,6 +643,17 @@ const coverUrl = ref('');
 const playbackRangeDialog = ref(false);
 const playbackRange = ref<[Date, Date]>();
 const pendingPlaybackChannel = ref<GbChannelInfo>();
+const recordQueryRange = ref<[Date, Date]>();
+const recordRangeMode = ref<'week' | 'month' | 'custom'>('custom');
+const recordState = ref<GbChannelRecordsInfo>();
+const recordLoading = ref(false);
+const recordUpdating = ref(false);
+const recordNowMs = ref(Date.now());
+let recordPollTimer: number | undefined;
+let recordClockTimer: number | undefined;
+let recordClockOffsetMs = 0;
+let recordLoadGeneration = 0;
+let lastFailedRecordBatchId = '';
 const playbackGeneration = ref(0);
 const singlePlaybackState = ref<'playing' | 'paused'>('playing');
 const playbackAnchorPositionSec = ref(0);
@@ -654,6 +713,9 @@ let playbackPresenceInFlight = false;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 const canManageResources = computed(() => auth.session?.role === 'admin');
+const recordQuerying = computed(() => recordState.value?.attempt_batch?.status === 'QUERYING');
+const recordRetryAfterSec = computed(() => Math.max(0, Math.ceil(((recordState.value?.next_query_at_ms || 0) - recordNowMs.value) / 1000)));
+const recordUpdateDisabled = computed(() => !canOperate.value || recordQuerying.value || recordUpdating.value || recordRetryAfterSec.value > 0);
 const resourceForm = reactive({ resource_kind: 'audio_output' as 'video' | 'audio_input' | 'audio_output' | 'other', owner_scope: 'device' as 'device' | 'resource', owner_id: '', remark: '' });
 
 type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
@@ -2495,10 +2557,152 @@ async function handleSinglePlaybackSwitchCancel() {
 }
 
 function requestPlayback(channel: GbChannelInfo) {
+  stopRecordPolling();
   pendingPlaybackChannel.value = channel;
   playbackRange.value = undefined;
+  recordQueryRange.value = undefined;
+  recordRangeMode.value = 'custom';
+  recordState.value = undefined;
+  recordLoading.value = false;
+  recordUpdating.value = false;
+  recordClockOffsetMs = 0;
+  lastFailedRecordBatchId = '';
   playbackRangeDialog.value = true;
+  startRecordClock();
+  void loadDeviceRecords(channel);
 }
+
+function selectRecordShortcut(mode: 'week' | 'month') {
+  const end = new Date();
+  const start = new Date(end);
+  if (mode === 'week') {
+    start.setTime(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  } else {
+    const targetMonth = end.getMonth() - 1;
+    const day = end.getDate();
+    start.setDate(1);
+    start.setMonth(targetMonth);
+    const lastDay = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+    start.setDate(Math.min(day, lastDay));
+  }
+  recordRangeMode.value = mode;
+  recordQueryRange.value = [start, end];
+}
+
+function validRecordRange(range?: [Date, Date]) {
+  if (!range || range[0].getTime() >= range[1].getTime()) return false;
+  return range[1].getTime() - range[0].getTime() <= 366 * 24 * 60 * 60 * 1000;
+}
+
+function formatRecordRange(startSec: number, endSec: number) {
+  return `${new Date(startSec * 1000).toLocaleString()} 至 ${new Date(endSec * 1000).toLocaleString()}`;
+}
+
+function selectRecordSegment(segment: GbRecordSegmentInfo) {
+  playbackRange.value = [new Date(segment.start_time_sec * 1000), new Date(segment.end_time_sec * 1000)];
+}
+
+async function updateDeviceRecords() {
+  const channel = pendingPlaybackChannel.value;
+  const range = recordQueryRange.value;
+  const sessionNodeId = selectedDevice.value?.session_node_id || selectedListNodeId.value;
+  if (!channel || !sessionNodeId) {
+    ElMessage.error('当前设备缺少可用的 Session 节点');
+    return;
+  }
+  if (!range || range[0].getTime() >= range[1].getTime()) {
+    ElMessage.warning('请先选择录像检索时段');
+    return;
+  }
+  if (!validRecordRange(range)) {
+    ElMessage.warning('录像检索时间跨度不能超过366天');
+    return;
+  }
+  recordLoadGeneration += 1;
+  const generation = recordLoadGeneration;
+  recordUpdating.value = true;
+  try {
+    const state = await queryGbChannelRecords(channel.device_id, channel.channel_id, {
+      request_id: `ui-record-query-${Date.now()}`,
+      session_node_id: sessionNodeId,
+      start_time_sec: Math.floor(range[0].getTime() / 1000),
+      end_time_sec: Math.floor(range[1].getTime() / 1000),
+    });
+    if (generation !== recordLoadGeneration || pendingPlaybackChannel.value?.device_id !== channel.device_id
+      || pendingPlaybackChannel.value?.channel_id !== channel.channel_id) return;
+    applyRecordState(state, true);
+    ElMessage.success('设备录像更新任务已创建');
+  } catch (error) {
+    if (generation === recordLoadGeneration) {
+      ElMessage.error(errorMessage(error, '设备录像更新失败'));
+      void loadDeviceRecords(channel);
+    }
+  } finally {
+    if (generation === recordLoadGeneration) recordUpdating.value = false;
+  }
+}
+
+async function loadDeviceRecords(channel: GbChannelInfo, quiet = false) {
+  const sessionNodeId = selectedDevice.value?.session_node_id || selectedListNodeId.value;
+  if (!sessionNodeId) return;
+  const generation = recordLoadGeneration;
+  if (!quiet) recordLoading.value = true;
+  try {
+    const state = await getGbChannelRecords(channel.device_id, channel.channel_id, sessionNodeId);
+    if (generation !== recordLoadGeneration || pendingPlaybackChannel.value?.device_id !== channel.device_id
+      || pendingPlaybackChannel.value?.channel_id !== channel.channel_id) return;
+    applyRecordState(state, quiet);
+  } catch (error) {
+    if (!quiet && generation === recordLoadGeneration) {
+      ElMessage.error(errorMessage(error, '读取设备录像片段失败'));
+    }
+    if (quiet && generation === recordLoadGeneration) scheduleRecordPoll();
+  } finally {
+    if (!quiet && generation === recordLoadGeneration) recordLoading.value = false;
+  }
+}
+
+function applyRecordState(state: GbChannelRecordsInfo, notifyFailure: boolean) {
+  recordState.value = state;
+  recordClockOffsetMs = state.server_time_ms > 0 ? state.server_time_ms - Date.now() : 0;
+  recordNowMs.value = Date.now() + recordClockOffsetMs;
+  const failedBatchId = state.attempt_batch?.status === 'FAILED' ? state.attempt_batch.batch_id : '';
+  if (notifyFailure && failedBatchId && failedBatchId !== lastFailedRecordBatchId) {
+    ElMessage.error('设备录像更新失败，可立即重试；上一次结果已保留');
+  }
+  lastFailedRecordBatchId = failedBatchId;
+  scheduleRecordPoll();
+}
+
+function scheduleRecordPoll() {
+  if (recordPollTimer !== undefined) window.clearTimeout(recordPollTimer);
+  recordPollTimer = undefined;
+  if (!playbackRangeDialog.value || !recordQuerying.value) return;
+  recordPollTimer = window.setTimeout(async () => {
+    const channel = pendingPlaybackChannel.value;
+    if (channel) await loadDeviceRecords(channel, true);
+  }, 2000);
+}
+
+function startRecordClock() {
+  if (recordClockTimer !== undefined) window.clearInterval(recordClockTimer);
+  recordNowMs.value = Date.now() + recordClockOffsetMs;
+  recordClockTimer = window.setInterval(() => {
+    recordNowMs.value = Date.now() + recordClockOffsetMs;
+  }, 1000);
+}
+
+function stopRecordPolling() {
+  recordLoadGeneration += 1;
+  if (recordPollTimer !== undefined) window.clearTimeout(recordPollTimer);
+  if (recordClockTimer !== undefined) window.clearInterval(recordClockTimer);
+  recordPollTimer = undefined;
+  recordClockTimer = undefined;
+}
+
+watch(playbackRangeDialog, (open) => {
+  if (!open) stopRecordPolling();
+});
 
 async function confirmPlaybackRange() {
   const channel = pendingPlaybackChannel.value;
@@ -2864,6 +3068,7 @@ onBeforeRouteLeave(async () => {
 });
 onBeforeUnmount(() => {
   multiViewDisposed = true;
+  stopRecordPolling();
   stopPlaybackPresenceHeartbeat();
   window.removeEventListener('online', handlePlaybackPresenceWakeup);
   window.removeEventListener('pageshow', handlePlaybackPresenceWakeup);
@@ -2875,6 +3080,79 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.record-dialog-content,
+.record-playback-range,
+.device-record-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.record-playback-range b,
+.device-record-head b {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.device-record-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.device-record-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.device-record-head small,
+.record-current-range,
+.record-segment small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.record-shortcuts {
+  display: flex;
+  gap: 8px;
+}
+
+.record-shortcuts .el-button + .el-button {
+  margin-left: 0;
+}
+
+.record-state-alert {
+  margin-top: 2px;
+}
+
+.record-current-range {
+  overflow-wrap: anywhere;
+}
+
+.record-segment-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.record-segment {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--component-border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--component-bg-soft);
+  text-align: left;
+  cursor: pointer;
+}
+
+.record-segment:hover {
+  border-color: var(--cyan);
+}
+
 .node-option {
   display: flex;
   align-items: center;

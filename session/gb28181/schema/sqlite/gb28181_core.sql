@@ -105,6 +105,32 @@ CREATE TABLE IF NOT EXISTS gb28181_device_channel_conf (
 
 CREATE INDEX IF NOT EXISTS idx_gb28181_dcc_sort ON gb28181_device_channel_conf (device_id, sort_no, channel_id);
 
+CREATE TABLE IF NOT EXISTS gb28181_device_record_segment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id VARCHAR(20) NOT NULL,
+    channel_id VARCHAR(20) NOT NULL,
+    batch_id VARCHAR(128) NOT NULL,
+    item_no INTEGER NOT NULL,
+    row_type INTEGER NOT NULL,
+    status INTEGER NULL,
+    start_time_sec BIGINT NOT NULL,
+    end_time_sec BIGINT NOT NULL,
+    remote_device_id VARCHAR(20) NULL,
+    name VARCHAR(255) NULL,
+    file_path VARCHAR(1024) NULL,
+    address VARCHAR(255) NULL,
+    secrecy INTEGER NULL,
+    record_type VARCHAR(32) NULL,
+    recorder_id VARCHAR(64) NULL,
+    file_size BIGINT NULL,
+    create_time BIGINT NOT NULL,
+    UNIQUE (device_id, channel_id, batch_id, item_no),
+    FOREIGN KEY (device_id, channel_id) REFERENCES gb28181_device_channel (device_id, channel_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_gb28181_record_state ON gb28181_device_record_segment (device_id, channel_id, row_type, status, create_time);
+CREATE INDEX IF NOT EXISTS idx_gb28181_record_batch_time ON gb28181_device_record_segment (device_id, channel_id, batch_id, start_time_sec, end_time_sec);
+
 CREATE TABLE IF NOT EXISTS gb28181_enum_code (
     id VARCHAR(32) NOT NULL PRIMARY KEY,
     parent_id VARCHAR(32) NULL,

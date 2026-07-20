@@ -4,6 +4,7 @@ pub mod dialog_recovery;
 pub mod edge_serv;
 pub mod hook_serv;
 pub mod playback_presence;
+pub mod record_query;
 pub mod stream_close;
 pub mod stream_rpc;
 mod talk;

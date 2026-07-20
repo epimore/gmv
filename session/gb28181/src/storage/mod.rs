@@ -1,5 +1,6 @@
 pub mod db;
 pub mod db_task;
+pub mod device_record;
 pub mod dialog_session;
 pub mod entity;
 pub mod guard_query;

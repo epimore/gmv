@@ -14,6 +14,29 @@ use encoding_rs::{Encoding, GB18030, GBK, UTF_8};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordInfoItem {
+    pub device_id: String,
+    pub name: String,
+    pub file_path: String,
+    pub address: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub secrecy: i64,
+    pub record_type: String,
+    pub recorder_id: String,
+    pub file_size: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordInfoResponse {
+    pub sn: u32,
+    pub device_id: String,
+    pub sum_num: usize,
+    pub list_num: usize,
+    pub items: Vec<RecordInfoItem>,
+}
+
 #[derive(Clone, Copy)]
 enum XmlEncoding {
     Utf8,
@@ -100,6 +123,139 @@ pub fn parse_items(xml: &[u8]) -> GlobalResult<Vec<(String, String)>> {
         }
     }
     Ok(items)
+}
+
+pub fn parse_record_info_response(xml: &[u8]) -> GlobalResult<RecordInfoResponse> {
+    let encoding = detect_encoding(xml);
+    let (decoded, _, had_errors) = encoding.encoding().decode(xml);
+    if had_errors {
+        return Err(SysErr(anyhow!("invalid GB28181 RecordInfo XML encoding")));
+    }
+    let mut reader = Reader::from_str(&decoded);
+    reader.trim_text(true);
+    reader.expand_empty_elements(true);
+    let mut response = RecordInfoResponse::default();
+    let mut cmd_type = String::new();
+    let mut current_tag = String::new();
+    let mut current_item: Option<RecordInfoItem> = None;
+    let mut list_num = None;
+    let mut sum_num_seen = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(tag)) => {
+                let name = std::str::from_utf8(tag.name().as_ref())
+                    .hand_log(|msg| error!("{msg}"))?
+                    .to_string();
+                if name == "RecordList" {
+                    for attribute in tag.attributes() {
+                        let attribute = attribute.hand_log(|msg| error!("{msg}"))?;
+                        if attribute.key.as_ref() == b"Num" {
+                            let value = attribute
+                                .decode_and_unescape_value(&reader)
+                                .hand_log(|msg| error!("{msg}"))?;
+                            list_num = Some(parse_usize("RecordList Num", value.as_ref())?);
+                        }
+                    }
+                } else if name == "Item" {
+                    current_item = Some(RecordInfoItem::default());
+                }
+                current_tag = name;
+            }
+            Ok(Event::Text(text)) => {
+                let value = text
+                    .unescape()
+                    .hand_log(|msg| error!("{msg}"))?
+                    .trim()
+                    .to_string();
+                if let Some(item) = current_item.as_mut() {
+                    match current_tag.as_str() {
+                        "DeviceID" => item.device_id = value,
+                        "Name" => item.name = value,
+                        "FilePath" => item.file_path = value,
+                        "Address" => item.address = value,
+                        "StartTime" => item.start_time = value,
+                        "EndTime" => item.end_time = value,
+                        "Secrecy" => item.secrecy = parse_i64("Item Secrecy", &value)?,
+                        "Type" => item.record_type = value,
+                        "RecorderID" => item.recorder_id = value,
+                        "FileSize" => item.file_size = parse_i64("Item FileSize", &value)?,
+                        _ => {}
+                    }
+                } else {
+                    match current_tag.as_str() {
+                        "CmdType" => cmd_type = value,
+                        "SN" => response.sn = parse_u32("SN", &value)?,
+                        "DeviceID" => response.device_id = value,
+                        "SumNum" => {
+                            response.sum_num = parse_usize("SumNum", &value)?;
+                            sum_num_seen = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::End(tag)) => {
+                if tag.name().as_ref() == b"Item"
+                    && let Some(item) = current_item.take()
+                {
+                    response.items.push(item);
+                }
+                current_tag.clear();
+            }
+            Ok(Event::Eof) => break,
+            Err(err) => {
+                return Err(SysErr(anyhow!(
+                    "invalid GB28181 RecordInfo XML at position {}: {err}",
+                    reader.buffer_position()
+                )));
+            }
+            _ => {}
+        }
+    }
+    if cmd_type != "RecordInfo" {
+        return Err(SysErr(anyhow!("RecordInfo response CmdType is invalid")));
+    }
+    if response.sn == 0 || response.device_id.is_empty() {
+        return Err(SysErr(anyhow!(
+            "RecordInfo response identity is incomplete"
+        )));
+    }
+    if !sum_num_seen {
+        return Err(SysErr(anyhow!("RecordInfo SumNum is required")));
+    }
+    response.list_num = list_num.ok_or_else(|| SysErr(anyhow!("RecordList Num is required")))?;
+    if response.list_num != response.items.len() {
+        return Err(SysErr(anyhow!(
+            "RecordList Num does not match Item count: num={}, items={}",
+            response.list_num,
+            response.items.len()
+        )));
+    }
+    if response.sum_num < response.items.len() {
+        return Err(SysErr(anyhow!(
+            "RecordInfo SumNum is smaller than response Item count"
+        )));
+    }
+    Ok(response)
+}
+
+fn parse_u32(field: &str, value: &str) -> GlobalResult<u32> {
+    value
+        .parse::<u32>()
+        .map_err(|_| SysErr(anyhow!("invalid RecordInfo {field}: {value}")))
+}
+
+fn parse_usize(field: &str, value: &str) -> GlobalResult<usize> {
+    value
+        .parse::<usize>()
+        .map_err(|_| SysErr(anyhow!("invalid RecordInfo {field}: {value}")))
+}
+
+fn parse_i64(field: &str, value: &str) -> GlobalResult<i64> {
+    value
+        .parse::<i64>()
+        .map_err(|_| SysErr(anyhow!("invalid RecordInfo {field}: {value}")))
 }
 
 pub fn value<'a>(items: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -377,7 +533,7 @@ mod tests {
     use super::{
         RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID, SPLIT_CLASS, build_broadcast_notify,
         build_catalog_subscription, build_config_download_query, build_cruise_track_query,
-        encode_document, parse_items,
+        encode_document, parse_items, parse_record_info_response,
     };
     use encoding_rs::GBK;
 
@@ -445,5 +601,29 @@ mod tests {
         assert!(broadcast.contains("<CmdType>Broadcast</CmdType>"));
         assert!(broadcast.contains("<SourceID>34020000001360000001</SourceID>"));
         assert!(broadcast.contains("<TargetID>34020000001370000001</TargetID>"));
+    }
+
+    #[test]
+    fn parses_record_info_list_num_and_items() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<Response><CmdType>RecordInfo</CmdType><SN>42</SN>
+<DeviceID>34020000001320000001</DeviceID><SumNum>2</SumNum>
+<RecordList Num="2">
+<Item><DeviceID>34020000001320000001</DeviceID><Name>a</Name><FilePath>/a</FilePath><Address>x</Address><StartTime>2026-07-20T01:00:00</StartTime><EndTime>2026-07-20T02:00:00</EndTime><Secrecy>0</Secrecy><Type>time</Type><RecorderID>r1</RecorderID><FileSize>10</FileSize></Item>
+<Item><DeviceID>34020000001320000001</DeviceID><Name>b</Name><FilePath>/b</FilePath><StartTime>2026-07-20T03:00:00</StartTime><EndTime>2026-07-20T04:00:00</EndTime><Secrecy>0</Secrecy><Type>alarm</Type></Item>
+</RecordList></Response>"#;
+        let response = parse_record_info_response(xml).expect("parse RecordInfo");
+        assert_eq!(response.sn, 42);
+        assert_eq!(response.sum_num, 2);
+        assert_eq!(response.list_num, 2);
+        assert_eq!(response.items.len(), 2);
+        assert_eq!(response.items[0].file_path, "/a");
+        assert_eq!(response.items[1].record_type, "alarm");
+    }
+
+    #[test]
+    fn rejects_record_info_num_mismatch() {
+        let xml = br#"<Response><CmdType>RecordInfo</CmdType><SN>1</SN><DeviceID>1</DeviceID><SumNum>1</SumNum><RecordList Num="0"><Item><DeviceID>1</DeviceID></Item></RecordList></Response>"#;
+        assert!(parse_record_info_response(xml).is_err());
     }
 }

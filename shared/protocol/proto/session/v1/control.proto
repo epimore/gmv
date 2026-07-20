@@ -26,6 +26,8 @@ service SessionControl {
   rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
   rpc UpdateGbChannel(UpdateGbChannelRequest) returns (UpdateGbChannelResponse);
   rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
+  rpc GetGbChannelRecords(GetGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
+  rpc QueryGbChannelRecords(QueryGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
   rpc ListGbResources(ListGbResourcesRequest) returns (ListGbResourcesResponse);
   rpc SaveGbResourceConfirmation(SaveGbResourceConfirmationRequest) returns (GbResourceResponse);
   rpc ResetGbResourceConfirmation(ResetGbResourceConfirmationRequest) returns (GbResourceResponse);
@@ -357,6 +359,52 @@ message GbChannelImage {
   string channel_id = 3;
   string image_url = 4;
   int64 created_at_ms = 5;
+}
+
+message GetGbChannelRecordsRequest {
+  string device_id = 1;
+  string channel_id = 2;
+}
+
+message QueryGbChannelRecordsRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  int64 start_time_sec = 4;
+  int64 end_time_sec = 5;
+}
+
+message GetGbChannelRecordsResponse {
+  GbRecordQueryBatch current_batch = 1;
+  GbRecordQueryBatch attempt_batch = 2;
+  repeated GbRecordSegment segments = 3;
+  int64 next_query_at_ms = 4;
+  int64 server_time_ms = 5;
+}
+
+message GbRecordQueryBatch {
+  string batch_id = 1;
+  string status = 2;
+  int64 start_time_sec = 3;
+  int64 end_time_sec = 4;
+  int64 created_at_ms = 5;
+}
+
+message GbRecordSegment {
+  int64 segment_id = 1;
+  string batch_id = 2;
+  string device_id = 3;
+  string channel_id = 4;
+  string remote_device_id = 5;
+  string name = 6;
+  string file_path = 7;
+  string address = 8;
+  int64 start_time_sec = 9;
+  int64 end_time_sec = 10;
+  int64 secrecy = 11;
+  string record_type = 12;
+  string recorder_id = 13;
+  int64 file_size = 14;
 }
 
 message ListGbResourcesRequest {

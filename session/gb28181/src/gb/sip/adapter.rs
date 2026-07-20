@@ -270,7 +270,6 @@ pub(crate) fn schedule_post_online_sync(device_id: String, expires: u32) {
 }
 
 fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
-    let items = super::xml::parse_items(&event.body)?;
     let business_device_id = event
         .device_id
         .as_deref()
@@ -279,6 +278,20 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
         .source_device_id
         .as_deref()
         .or(event.device_id.as_deref());
+    if matches!(&event.kind, GbMessageKind::RecordInfo) {
+        let Some(parent_device_id) = validate_message_source(event, source_device_id)? else {
+            return Ok(());
+        };
+        let response = super::xml::parse_record_info_response(&event.body)?;
+        if !SipRuntimeCache::global().complete_record_info(parent_device_id, response) {
+            debug!(
+                "RecordInfo response has no active waiter: device_id={parent_device_id}, call_id={:?}, sn={:?}, channel_id={:?}",
+                event.call_id, event.xml_sn, event.xml_device_id
+            );
+        }
+        return Ok(());
+    }
+    let items = super::xml::parse_items(&event.body)?;
 
     match event.kind {
         GbMessageKind::Keepalive => {

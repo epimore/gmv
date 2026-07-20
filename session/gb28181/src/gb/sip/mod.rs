@@ -42,6 +42,7 @@ pub async fn run_cleanup_task(cancel_token: base::tokio_util::sync::Cancellation
                     || report.bye_waiters > 0
                     || report.response_waiters > 0
                     || report.native_response_waiters > 0
+                    || report.record_info_waiters > 0
                 {
                     debug!("sip business waiter cleanup: {report:?}");
                 }

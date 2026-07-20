@@ -22,16 +22,18 @@ use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionC
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
     DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
-    GbChannel, GbDevice, GbResource, GbResourceResponse, GetGbChannelRequest, GetGbChannelResponse,
-    GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
-    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
-    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
-    ListGbResourcesResponse, PlaybackControlResponse, PlaybackPresenceHeartbeat,
-    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
-    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
-    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SetPlaybackStateRequest,
-    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
-    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+    GbChannel, GbDevice, GbRecordQueryBatch, GbResource, GbResourceResponse,
+    GetGbChannelRecordsRequest, GetGbChannelRecordsResponse, GetGbChannelRequest,
+    GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
+    GetSessionConfigResponse, ListGbChannelImagesRequest, ListGbChannelImagesResponse,
+    ListGbChannelsRequest, ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse,
+    ListGbResourcesRequest, ListGbResourcesResponse, PlaybackControlResponse,
+    PlaybackPresenceHeartbeat, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
+    RefreshPlaybackPresenceResponse, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
+    SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
+    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -216,6 +218,72 @@ fn gb28181_snapshot_image_uses_session_rpc() {
                 .await
                 .unwrap();
             assert_eq!(session_id, "snapshot-session");
+        });
+}
+
+#[test]
+fn gb28181_record_query_uses_selected_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            RegistryService::new(store.clone())
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-record",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let control = BusinessControl::new(store);
+            let current = control
+                .get_gb_channel_records(
+                    "session-gb-record",
+                    "34020000001110000001",
+                    "34020000001320000001",
+                )
+                .await
+                .unwrap();
+            assert_eq!(current.server_time_ms, 1_000);
+            assert!(current.attempt_batch.is_none());
+
+            let querying = control
+                .query_gb_channel_records(
+                    "session-gb-record",
+                    "record-operation",
+                    "34020000001110000001",
+                    "34020000001320000001",
+                    100,
+                    200,
+                )
+                .await
+                .unwrap();
+            let attempt = querying.attempt_batch.expect("querying batch");
+            assert_eq!(attempt.batch_id, "record-operation");
+            assert_eq!(attempt.status, "QUERYING");
+            assert_eq!((attempt.start_time_sec, attempt.end_time_sec), (100, 200));
         });
 }
 
@@ -877,6 +945,42 @@ impl SessionControl for FakeSession {
     ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
         Ok(tonic::Response::new(ListGbChannelImagesResponse {
             images: vec![],
+        }))
+    }
+
+    async fn get_gb_channel_records(
+        &self,
+        _request: tonic::Request<GetGbChannelRecordsRequest>,
+    ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetGbChannelRecordsResponse {
+            current_batch: None,
+            attempt_batch: None,
+            segments: vec![],
+            next_query_at_ms: 0,
+            server_time_ms: 1_000,
+        }))
+    }
+
+    async fn query_gb_channel_records(
+        &self,
+        request: tonic::Request<QueryGbChannelRecordsRequest>,
+    ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(GetGbChannelRecordsResponse {
+            current_batch: None,
+            attempt_batch: Some(GbRecordQueryBatch {
+                batch_id: request
+                    .operation
+                    .map(|operation| operation.operation_id)
+                    .unwrap_or_default(),
+                status: "QUERYING".to_string(),
+                start_time_sec: request.start_time_sec,
+                end_time_sec: request.end_time_sec,
+                created_at_ms: 1_000,
+            }),
+            segments: vec![],
+            next_query_at_ms: 301_000,
+            server_time_ms: 1_000,
         }))
     }
 

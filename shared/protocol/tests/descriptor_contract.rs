@@ -146,6 +146,51 @@ fn session_resource_override_rpcs_are_stable() {
 }
 
 #[test]
+fn session_record_query_contract_is_stable() {
+    let descriptor = descriptor();
+    let session = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.session.v1"))
+        .unwrap();
+    let service = session
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("SessionControl"))
+        .unwrap();
+    let methods = service
+        .method
+        .iter()
+        .filter_map(|method| method.name.as_deref())
+        .collect::<Vec<_>>();
+    for method in ["GetGbChannelRecords", "QueryGbChannelRecords"] {
+        assert!(methods.contains(&method), "missing SessionControl.{method}");
+    }
+    let response = session
+        .message_type
+        .iter()
+        .find(|message| message.name.as_deref() == Some("GetGbChannelRecordsResponse"))
+        .unwrap();
+    for (field, number) in [
+        ("current_batch", 1),
+        ("attempt_batch", 2),
+        ("segments", 3),
+        ("next_query_at_ms", 4),
+        ("server_time_ms", 5),
+    ] {
+        assert_eq!(
+            response
+                .field
+                .iter()
+                .find(|item| item.name.as_deref() == Some(field))
+                .unwrap()
+                .number,
+            Some(number)
+        );
+    }
+}
+
+#[test]
 fn node_heartbeat_contains_structured_host_metrics() {
     let descriptor = descriptor();
     let guard = descriptor

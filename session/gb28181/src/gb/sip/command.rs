@@ -714,14 +714,16 @@ pub async fn query_device_info(device_id: &str, sn: u32) -> GlobalResult<()> {
 }
 
 pub async fn query_record_info(
-    device_id: &str,
+    parent_device_id: &str,
+    channel_id: &str,
     sn: u32,
     start_time: &str,
     end_time: &str,
 ) -> GlobalResult<()> {
-    let (host, port, proto) = connected_target(device_id)?;
+    let (host, port, proto) = connected_target(parent_device_id)?;
     send_native_message_and_wait(CreateDeviceMessageRequest::record_info_query(
-        device_id.to_string(),
+        parent_device_id.to_string(),
+        channel_id,
         host,
         port,
         pjsip_protocol_from_base(proto),

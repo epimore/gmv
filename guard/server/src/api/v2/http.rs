@@ -15,7 +15,9 @@ use base::exception::GlobalError;
 use base::log::debug;
 use gmv_protocol::session::v1::{
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
-    GbResource as RpcGbResource, PlaybackPresenceHeartbeat, ResetGbResourceConfirmationRequest,
+    GbRecordQueryBatch as RpcGbRecordQueryBatch, GbRecordSegment as RpcGbRecordSegment,
+    GbResource as RpcGbResource, GetGbChannelRecordsResponse as RpcGbChannelRecordsResponse,
+    PlaybackPresenceHeartbeat, ResetGbResourceConfirmationRequest,
     SaveGbResourceConfirmationRequest,
 };
 use std::collections::BTreeMap;
@@ -144,6 +146,14 @@ pub fn router(state: HttpState) -> Router {
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/images",
             get(gb_channel_images).post(gb_snapshot_image),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/records",
+            get(gb_channel_records),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/records/query",
+            post(query_gb_channel_records),
         )
         .route(
             "/gb28181/devices/{device_id}/broadcast/start",
@@ -1774,6 +1784,54 @@ struct GbSnapshotResponse {
     session_id: String,
 }
 
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbRecordQueryRequest {
+    request_id: String,
+    session_node_id: String,
+    start_time_sec: i64,
+    end_time_sec: i64,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbRecordQueryBatchResponse {
+    batch_id: String,
+    status: String,
+    start_time_sec: i64,
+    end_time_sec: i64,
+    created_at_ms: i64,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbRecordSegmentResponse {
+    segment_id: i64,
+    batch_id: String,
+    device_id: String,
+    channel_id: String,
+    remote_device_id: String,
+    name: String,
+    file_path: String,
+    address: String,
+    start_time_sec: i64,
+    end_time_sec: i64,
+    secrecy: i64,
+    record_type: String,
+    recorder_id: String,
+    file_size: i64,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbChannelRecordsResponse {
+    current_batch: Option<GbRecordQueryBatchResponse>,
+    attempt_batch: Option<GbRecordQueryBatchResponse>,
+    segments: Vec<GbRecordSegmentResponse>,
+    next_query_at_ms: i64,
+    server_time_ms: i64,
+}
+
 fn default_biz_enable() -> i64 {
     1
 }
@@ -1890,6 +1948,49 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
         sort_no: record.sort_no,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+fn gb_channel_records_response(record: RpcGbChannelRecordsResponse) -> GbChannelRecordsResponse {
+    GbChannelRecordsResponse {
+        current_batch: record.current_batch.map(gb_record_batch_response),
+        attempt_batch: record.attempt_batch.map(gb_record_batch_response),
+        segments: record
+            .segments
+            .into_iter()
+            .map(gb_record_segment_response)
+            .collect(),
+        next_query_at_ms: record.next_query_at_ms,
+        server_time_ms: record.server_time_ms,
+    }
+}
+
+fn gb_record_batch_response(record: RpcGbRecordQueryBatch) -> GbRecordQueryBatchResponse {
+    GbRecordQueryBatchResponse {
+        batch_id: record.batch_id,
+        status: record.status,
+        start_time_sec: record.start_time_sec,
+        end_time_sec: record.end_time_sec,
+        created_at_ms: record.created_at_ms,
+    }
+}
+
+fn gb_record_segment_response(record: RpcGbRecordSegment) -> GbRecordSegmentResponse {
+    GbRecordSegmentResponse {
+        segment_id: record.segment_id,
+        batch_id: record.batch_id,
+        device_id: record.device_id,
+        channel_id: record.channel_id,
+        remote_device_id: record.remote_device_id,
+        name: record.name,
+        file_path: record.file_path,
+        address: record.address,
+        start_time_sec: record.start_time_sec,
+        end_time_sec: record.end_time_sec,
+        secrecy: record.secrecy,
+        record_type: record.record_type,
+        recorder_id: record.recorder_id,
+        file_size: record.file_size,
     }
 }
 
@@ -2360,6 +2461,61 @@ async fn gb_channel_images(
         .await?;
     Ok(Json(
         images.into_iter().map(gb_channel_image_response).collect(),
+    ))
+}
+
+async fn gb_channel_records(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id)): Path<(String, String)>,
+    Query(query): Query<GbSessionNodeQuery>,
+) -> Result<Json<GbChannelRecordsResponse>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    if query.session_node_id.trim().is_empty() {
+        return Err(HttpError::bad_request("session_node_id is required"));
+    }
+    let records = BusinessControl::new(state.api.store())
+        .get_gb_channel_records(&query.session_node_id, &device_id, &channel_id)
+        .await?;
+    Ok(Json(gb_channel_records_response(records)))
+}
+
+async fn query_gb_channel_records(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id)): Path<(String, String)>,
+    Json(request): Json<GbRecordQueryRequest>,
+) -> Result<(StatusCode, Json<GbChannelRecordsResponse>), HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    if request.request_id.trim().is_empty() {
+        return Err(HttpError::bad_request("request_id is required"));
+    }
+    if request.session_node_id.trim().is_empty() {
+        return Err(HttpError::bad_request("session_node_id is required"));
+    }
+    if request.start_time_sec <= 0 || request.end_time_sec <= request.start_time_sec {
+        return Err(HttpError::bad_request(
+            "record_query_range_required: valid start_time_sec and end_time_sec are required",
+        ));
+    }
+    if request.end_time_sec.saturating_sub(request.start_time_sec) > 366 * 24 * 60 * 60 {
+        return Err(HttpError::bad_request(
+            "record_query_range_too_large: maximum range is 366 days",
+        ));
+    }
+    let records = BusinessControl::new(state.api.store())
+        .query_gb_channel_records(
+            &request.session_node_id,
+            &request.request_id,
+            &device_id,
+            &channel_id,
+            request.start_time_sec,
+            request.end_time_sec,
+        )
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(gb_channel_records_response(records)),
     ))
 }
 

@@ -33,15 +33,17 @@ use gmv_protocol::guard::v1::{
 use gmv_protocol::session::v1::{
     ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
     DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
-    GbChannel, GbChannelImage, GbDevice, GbResource, GbResourceConfirmation, GbResourceResponse,
-    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
-    GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
-    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
-    ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
-    PlaybackControlResponse, PlaybackPresenceHeartbeatResult, PlaybackState,
-    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
-    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
-    SessionHookRequest, SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
+    GbChannel, GbChannelImage, GbDevice, GbRecordQueryBatch, GbRecordSegment, GbResource,
+    GbResourceConfirmation, GbResourceResponse, GetGbChannelRecordsRequest,
+    GetGbChannelRecordsResponse, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest,
+    GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
+    ListGbResourcesResponse, PlaybackControlResponse, PlaybackPresenceHeartbeatResult,
+    PlaybackState, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
+    RefreshPlaybackPresenceResponse, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SessionHookRequest,
+    SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
     SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
     StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
     UpdateGbDeviceRequest, UpdateGbDeviceResponse, session_control_server::SessionControl,
@@ -52,7 +54,9 @@ use gmv_protocol::stream::v1::{
 };
 use tonic::transport::Channel;
 
-use crate::service::{api_serv, edge_serv, hook_serv, playback_presence, stream_close, stream_rpc};
+use crate::service::{
+    api_serv, edge_serv, hook_serv, playback_presence, record_query, stream_close, stream_rpc,
+};
 use crate::state::model::{
     DeviceChannelIdent, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
     PtzControlModel, SnapshotImage, TransMode,
@@ -1340,6 +1344,48 @@ impl SessionControl for SessionControlRpc {
         Ok(tonic::Response::new(ListGbChannelImagesResponse { images }))
     }
 
+    async fn get_gb_channel_records(
+        &self,
+        request: tonic::Request<GetGbChannelRecordsRequest>,
+    ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        debug!("session_control.get_gb_channel_records, req:{request:?}");
+        let state = crate::storage::device_record::RecordState::get(
+            &request.device_id,
+            &request.channel_id,
+            Local::now().timestamp_millis(),
+        )
+        .await
+        .map_err(storage_status)?;
+        Ok(tonic::Response::new(gb_record_state_proto(state)))
+    }
+
+    async fn query_gb_channel_records(
+        &self,
+        request: tonic::Request<QueryGbChannelRecordsRequest>,
+    ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let request_id = operation_id(request.operation.as_ref());
+        debug!(
+            "session_control.query_gb_channel_records, req: request_id={}, device_id={}, channel_id={}, start_time_sec={}, end_time_sec={}",
+            request_id,
+            request.device_id,
+            request.channel_id,
+            request.start_time_sec,
+            request.end_time_sec
+        );
+        let state = record_query::start(
+            request.device_id,
+            request.channel_id,
+            request_id,
+            request.start_time_sec,
+            request.end_time_sec,
+        )
+        .await
+        .map_err(storage_status)?;
+        Ok(tonic::Response::new(gb_record_state_proto(state)))
+    }
+
     async fn list_gb_resources(
         &self,
         request: tonic::Request<ListGbResourcesRequest>,
@@ -2152,6 +2198,56 @@ fn gb_channel_image_proto(row: crate::storage::guard_query::GbChannelImageView) 
         channel_id: row.channel_id,
         image_url: row.image_url,
         created_at_ms: datetime_ms(row.created_at),
+    }
+}
+
+fn gb_record_state_proto(
+    state: crate::storage::device_record::RecordState,
+) -> GetGbChannelRecordsResponse {
+    GetGbChannelRecordsResponse {
+        current_batch: state.current_batch.map(gb_record_batch_proto),
+        attempt_batch: state.attempt_batch.map(gb_record_batch_proto),
+        segments: state
+            .segments
+            .into_iter()
+            .map(gb_record_segment_proto)
+            .collect(),
+        next_query_at_ms: state.next_query_at_ms,
+        server_time_ms: state.server_time_ms,
+    }
+}
+
+fn gb_record_batch_proto(
+    batch: crate::storage::device_record::RecordQueryBatch,
+) -> GbRecordQueryBatch {
+    let status = batch.status_name().to_string();
+    GbRecordQueryBatch {
+        batch_id: batch.batch_id,
+        status,
+        start_time_sec: batch.start_time_sec,
+        end_time_sec: batch.end_time_sec,
+        created_at_ms: batch.created_at_ms,
+    }
+}
+
+fn gb_record_segment_proto(
+    segment: crate::storage::device_record::RecordSegment,
+) -> GbRecordSegment {
+    GbRecordSegment {
+        segment_id: segment.segment_id,
+        batch_id: segment.batch_id,
+        device_id: segment.device_id,
+        channel_id: segment.channel_id,
+        remote_device_id: segment.remote_device_id,
+        name: segment.name,
+        file_path: segment.file_path,
+        address: segment.address,
+        start_time_sec: segment.start_time_sec,
+        end_time_sec: segment.end_time_sec,
+        secrecy: segment.secrecy,
+        record_type: segment.record_type,
+        recorder_id: segment.recorder_id,
+        file_size: segment.file_size,
     }
 }
 

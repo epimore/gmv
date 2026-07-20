@@ -289,7 +289,8 @@ impl CreateDeviceMessageRequest {
     }
 
     pub fn record_info_query(
-        device_id: impl Into<String>,
+        transport_device_id: impl Into<String>,
+        query_channel_id: &str,
         device_host: impl Into<String>,
         device_port: u16,
         protocol: SipTransportProtocol,
@@ -297,9 +298,15 @@ impl CreateDeviceMessageRequest {
         start_time: &str,
         end_time: &str,
     ) -> Self {
-        let device_id = device_id.into();
-        let body = xml::build_record_info_query(sn, &device_id, start_time, end_time);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        let transport_device_id = transport_device_id.into();
+        let body = xml::build_record_info_query(sn, query_channel_id, start_time, end_time);
+        Self::xml(
+            transport_device_id,
+            device_host,
+            device_port,
+            protocol,
+            body,
+        )
     }
 
     pub fn preset_query(

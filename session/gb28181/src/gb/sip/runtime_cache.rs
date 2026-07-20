@@ -10,7 +10,7 @@ use std::{fmt, result};
 
 use base::dashmap::DashMap;
 use base::once_cell::sync::Lazy;
-use base::tokio::sync::oneshot;
+use base::tokio::sync::{mpsc, oneshot};
 use base::tokio::time::{self, Instant};
 use gmv_pjsip::SipDialogSnapshot;
 use gmv_pjsip::SipMethod;
@@ -19,6 +19,7 @@ use gmv_pjsip::message::{extract_tag, extract_uri};
 
 use super::bye::GbByeEvent;
 use super::invite::{GbIncomingInviteEvent, GbInviteAcceptedEvent};
+use super::xml::RecordInfoResponse;
 use crate::register::core::Register;
 use crate::state::session::Cache;
 
@@ -34,7 +35,21 @@ pub struct SipRuntimeCache {
     native_subscription_waiters: DashMap<u64, NativeSubscriptionWaiter>,
     broadcast_response_waiters: DashMap<BroadcastResponseKey, BroadcastResponseWaiter>,
     broadcast_invite_waiters: DashMap<String, BroadcastInviteWaiter>,
+    record_info_waiters: DashMap<RecordInfoKey, RecordInfoWaiter>,
     call_stream_index: DashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct RecordInfoKey {
+    pub parent_device_id: String,
+    pub channel_id: String,
+    pub sn: u32,
+}
+
+struct RecordInfoWaiter {
+    deadline: Instant,
+    registration_epoch_id: Option<String>,
+    tx: mpsc::UnboundedSender<RecordInfoResponse>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -178,6 +193,57 @@ struct NativeSubscriptionWaiter {
 impl SipRuntimeCache {
     pub fn global() -> &'static Self {
         &SIP_RUNTIME_CACHE
+    }
+
+    pub fn insert_record_info_waiter(
+        &self,
+        key: RecordInfoKey,
+        registration_epoch_id: Option<String>,
+        ttl: Duration,
+    ) -> mpsc::UnboundedReceiver<RecordInfoResponse> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.record_info_waiters.insert(
+            key,
+            RecordInfoWaiter {
+                deadline: Instant::now() + ttl,
+                registration_epoch_id,
+                tx,
+            },
+        );
+        rx
+    }
+
+    pub fn complete_record_info(
+        &self,
+        parent_device_id: &str,
+        response: RecordInfoResponse,
+    ) -> bool {
+        let key = RecordInfoKey {
+            parent_device_id: parent_device_id.to_string(),
+            channel_id: response.device_id.clone(),
+            sn: response.sn,
+        };
+        let Some(waiter) = self.record_info_waiters.get(&key) else {
+            return false;
+        };
+        if !Register::registration_epoch_matches(
+            parent_device_id,
+            waiter.registration_epoch_id.as_deref(),
+        ) {
+            drop(waiter);
+            self.record_info_waiters.remove(&key);
+            return false;
+        }
+        let sent = waiter.tx.send(response).is_ok();
+        drop(waiter);
+        if !sent {
+            self.record_info_waiters.remove(&key);
+        }
+        sent
+    }
+
+    pub fn remove_record_info_waiter(&self, key: &RecordInfoKey) {
+        self.record_info_waiters.remove(key);
     }
 
     pub fn insert_broadcast_response_waiter(
@@ -716,6 +782,7 @@ impl SipRuntimeCache {
         let mut bye_waiters = 0;
         let mut response_waiters = 0;
         let mut native_response_waiters = 0;
+        let mut record_info_waiters = 0;
 
         let expired_invites = self
             .invite_waiters
@@ -800,12 +867,23 @@ impl SipRuntimeCache {
         for key in expired_broadcast_invites {
             self.broadcast_invite_waiters.remove(&key);
         }
+        let expired_record_info = self
+            .record_info_waiters
+            .iter()
+            .filter_map(|item| (item.deadline <= now).then(|| item.key().clone()))
+            .collect::<Vec<_>>();
+        for key in expired_record_info {
+            if self.record_info_waiters.remove(&key).is_some() {
+                record_info_waiters += 1;
+            }
+        }
 
         RuntimeCleanupReport {
             invite_waiters,
             bye_waiters,
             response_waiters,
             native_response_waiters,
+            record_info_waiters,
         }
     }
 }
@@ -833,6 +911,7 @@ pub struct RuntimeCleanupReport {
     pub bye_waiters: usize,
     pub response_waiters: usize,
     pub native_response_waiters: usize,
+    pub record_info_waiters: usize,
 }
 
 pub async fn recv_with_timeout<T>(

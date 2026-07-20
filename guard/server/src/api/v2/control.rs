@@ -11,14 +11,14 @@ use gmv_protocol::common::v1::{
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
     ControlPtzRequest, CreateGbDeviceRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
-    GbChannelImage, GbDevice, GbResource, GetGbChannelRequest, GetGbDeviceRequest,
-    GetSessionConfigRequest, ListGbChannelImagesRequest, ListGbChannelsRequest,
-    ListGbDevicesRequest, ListGbResourcesRequest, PlaybackPresenceHeartbeat,
-    PlaybackPresenceHeartbeatResult, PlaybackState, RefreshPlaybackPresenceRequest,
-    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
-    SetPlaybackSpeedRequest, SetPlaybackStateRequest, SnapshotImageRequest,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
-    UpdateGbDeviceRequest,
+    GbChannelImage, GbDevice, GbResource, GetGbChannelRecordsRequest, GetGbChannelRecordsResponse,
+    GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest, ListGbChannelImagesRequest,
+    ListGbChannelsRequest, ListGbDevicesRequest, ListGbResourcesRequest, PlaybackPresenceHeartbeat,
+    PlaybackPresenceHeartbeatResult, PlaybackState, QueryGbChannelRecordsRequest,
+    RefreshPlaybackPresenceRequest, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
+    SetPlaybackStateRequest, SnapshotImageRequest, StartDeviceStreamRequest,
+    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbDeviceRequest,
 };
 use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
 use gmv_protocol::stream::v1::{
@@ -735,6 +735,95 @@ impl BusinessControl {
         }
         images.sort_by_key(|image| std::cmp::Reverse(image.created_at_ms));
         Ok(images)
+    }
+
+    pub async fn get_gb_channel_records(
+        &self,
+        session_node_id: &str,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GuardResult<GetGbChannelRecordsResponse> {
+        let session = self.store.get_node(session_node_id).ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
+        })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable(
+                "session",
+                "get_gb_channel_records",
+                session_node_id,
+            ));
+        }
+        let mut client = self.session_client(&session).await?;
+        let request = GetGbChannelRecordsRequest {
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "get_gb_channel_records",
+            &session.identity.node_id,
+            "",
+            channel_id,
+        );
+        let response = edge.response(client.get_gb_channel_records(request).await)?;
+        edge.success();
+        Ok(response)
+    }
+
+    pub async fn query_gb_channel_records(
+        &self,
+        session_node_id: &str,
+        operation_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        start_time_sec: i64,
+        end_time_sec: i64,
+    ) -> GuardResult<GetGbChannelRecordsResponse> {
+        let session = self.store.get_node(session_node_id).ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
+        })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable(
+                "session",
+                "query_gb_channel_records",
+                session_node_id,
+            ));
+        }
+        let mut client = self.session_client(&session).await?;
+        let request = QueryGbChannelRecordsRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: String::new(),
+            }),
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            start_time_sec,
+            end_time_sec,
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "query_gb_channel_records",
+            &session.identity.node_id,
+            operation_id,
+            channel_id,
+        );
+        let response = edge.response(client.query_gb_channel_records(request).await)?;
+        edge.success();
+        Ok(response)
     }
 
     pub async fn list_gb_resources(&self, device_id: &str) -> GuardResult<Vec<GbResource>> {

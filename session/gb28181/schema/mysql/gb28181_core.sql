@@ -98,6 +98,35 @@ CREATE TABLE IF NOT EXISTS `gb28181_device_channel_conf`  (
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '通道业务配置表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for gb28181_device_record_segment
+-- ----------------------------
+CREATE TABLE IF NOT EXISTS `gb28181_device_record_segment` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `batch_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `item_no` int NOT NULL,
+  `row_type` tinyint UNSIGNED NOT NULL COMMENT '0-query,1-segment',
+  `status` tinyint UNSIGNED NULL COMMENT '0-querying,1-ready,2-empty,3-failed',
+  `start_time_sec` bigint NOT NULL,
+  `end_time_sec` bigint NOT NULL,
+  `remote_device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  `file_path` varchar(1024) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  `address` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  `secrecy` int NULL,
+  `record_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  `recorder_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  `file_size` bigint NULL,
+  `create_time` bigint NOT NULL COMMENT 'epoch milliseconds',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_gb28181_record_batch_item` (`device_id`,`channel_id`,`batch_id`,`item_no`) USING BTREE,
+  INDEX `idx_gb28181_record_state` (`device_id`,`channel_id`,`row_type`,`status`,`create_time`) USING BTREE,
+  INDEX `idx_gb28181_record_batch_time` (`device_id`,`channel_id`,`batch_id`,`start_time_sec`,`end_time_sec`) USING BTREE,
+  CONSTRAINT `fk_gb28181_record_channel` FOREIGN KEY (`device_id`,`channel_id`) REFERENCES `gb28181_device_channel` (`device_id`,`channel_id`) ON DELETE CASCADE ON UPDATE RESTRICT
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '设备端录像查询当前批次及片段' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 CREATE TABLE IF NOT EXISTS `gb28181_enum_code` (
   `id` varchar(32) NOT NULL,
   `parent_id` varchar(32) NULL DEFAULT NULL,

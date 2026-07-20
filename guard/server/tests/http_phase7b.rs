@@ -124,6 +124,81 @@ fn gb28181_device_create_post_route_is_registered() {
 }
 
 #[test]
+fn gb28181_record_routes_enforce_viewer_operator_and_csrf_boundaries() {
+    run_async(async {
+        let app = test_app(InMemoryGuardStore::default());
+        let path = "/api/v2/gb28181/devices/device-1/channels/channel-1/records";
+
+        let (status, _, _) = request(
+            &app,
+            Request::get(format!("{path}?session_node_id=missing"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (viewer_cookie, viewer_csrf) = login(&app, "viewer").await;
+        let (status, _, _) = request(
+            &app,
+            Request::get(format!("{path}?session_node_id=missing"))
+                .header(COOKIE, &viewer_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let query_body = json!({
+            "request_id": "record-query-1",
+            "session_node_id": "missing",
+            "start_time_sec": 100,
+            "end_time_sec": 200
+        })
+        .to_string();
+        let (status, _, _) = request(
+            &app,
+            Request::post(format!("{path}/query"))
+                .header(ORIGIN, ORIGIN_VALUE)
+                .header(COOKIE, &viewer_cookie)
+                .header("x-csrf-token", &viewer_csrf)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(query_body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (operator_cookie, operator_csrf) = login(&app, "operator").await;
+        let (status, _, body) = request(
+            &app,
+            Request::post(format!("{path}/query"))
+                .header(ORIGIN, ORIGIN_VALUE)
+                .header(COOKIE, &operator_cookie)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(query_body.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "csrf_invalid");
+
+        let (status, _, _) = request(
+            &app,
+            Request::post(format!("{path}/query"))
+                .header(ORIGIN, ORIGIN_VALUE)
+                .header(COOKIE, &operator_cookie)
+                .header("x-csrf-token", &operator_csrf)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(query_body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    });
+}
+
+#[test]
 fn nodes_expose_session_protocol_and_service_metadata() {
     run_async(async {
         let store = InMemoryGuardStore::default();

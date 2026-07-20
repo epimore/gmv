@@ -273,6 +273,11 @@ export interface GbResourceConfirmationInfo { status: number; resource_kind: str
 export interface GbResourceInfo { device_id: string; resource_id: string; name: string; status: string; parent_id: string; type_code: string; enum_id: string; enum_name: string; suggested_kind: string; classification_mode: 'default' | 'manual' | 'manual_stale' | 'unknown' | 'conflict' | 'orphan'; effective_kind: string; effective_owner_scope: string; effective_owner_id: string; warning: string; biz_enable: number; owner_biz_enable: number; supported: boolean; available: boolean; unavailable_reason: string; confirmation: GbResourceConfirmationInfo | null }
 export interface GbResourceConfirmationPayload { request_id: string; resource_kind: 'video' | 'audio_input' | 'audio_output' | 'other'; owner_scope: 'device' | 'resource'; owner_id: string; remark?: string }
 export interface GbSnapshotInfo { session_id: string }
+export type GbRecordQueryStatus = 'QUERYING' | 'READY' | 'EMPTY' | 'FAILED';
+export interface GbRecordQueryBatchInfo { batch_id: string; status: GbRecordQueryStatus; start_time_sec: number; end_time_sec: number; created_at_ms: number }
+export interface GbRecordSegmentInfo { segment_id: number; batch_id: string; device_id: string; channel_id: string; remote_device_id: string; name: string; file_path: string; address: string; start_time_sec: number; end_time_sec: number; secrecy: number; record_type: string; recorder_id: string; file_size: number }
+export interface GbChannelRecordsInfo { current_batch: GbRecordQueryBatchInfo | null; attempt_batch: GbRecordQueryBatchInfo | null; segments: GbRecordSegmentInfo[]; next_query_at_ms: number; server_time_ms: number }
+export interface GbRecordQueryPayload { request_id: string; session_node_id: string; start_time_sec: number; end_time_sec: number }
 export interface GbStreamPayload { request_id: string; session_node_id?: string; token?: string; start_time_sec?: number; end_time_sec?: number; playback_id?: string; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
 export interface GbBroadcastPayload extends GbStreamPayload { channel_id: string; talk_codec: 'PCMA'; talk_sample_rate: 8000; talk_channel_count: 1; talk_frame_duration_ms: 20 }
 
@@ -301,6 +306,8 @@ export const saveGbResourceConfirmation = (deviceId: string, resourceId: string,
 export const resetGbResourceConfirmation = (deviceId: string, resourceId: string, requestId: string) => request<GbResourceInfo>('/gb28181/devices/' + gbPath(deviceId) + '/resources/' + gbPath(resourceId) + '/confirmation/reset', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export const updateGbChannel = (deviceId: string, channelId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'POST', body: JSON.stringify(payload) });
 export const listGbChannelImages = (deviceId: string, channelId: string) => request<GbChannelImageInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/images');
+export const getGbChannelRecords = (deviceId: string, channelId: string, sessionNodeId: string) => request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records?session_node_id=' + gbPath(sessionNodeId));
+export const queryGbChannelRecords = (deviceId: string, channelId: string, payload: GbRecordQueryPayload) => request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records/query', { method: 'POST', body: JSON.stringify(payload) });
 export async function startGbPreview(
   deviceId: string,
   channelId: string,
