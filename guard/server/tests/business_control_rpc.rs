@@ -26,19 +26,20 @@ use gmv_protocol::session::v1::{
     GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
     ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
-    ListGbResourcesResponse, PlaybackControlResponse, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
-    SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
-    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+    ListGbResourcesResponse, PlaybackControlResponse, PlaybackPresenceHeartbeat,
+    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SetPlaybackStateRequest,
+    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest, StopDeviceStreamRequest,
+    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
     GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, QueryStreamRequest,
-    QueryStreamResponse, StartReceiveRequest, StartReceiveResponse, StopReceiveRequest,
-    StopReceiveResponse, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState,
-    StreamUnitResponse,
+    QueryStreamResponse, ReleaseSubscriptionOutputsRequest, ReleaseSubscriptionOutputsResponse,
+    StartReceiveRequest, StartReceiveResponse, StopReceiveRequest, StopReceiveResponse,
+    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
 };
 
 #[test]
@@ -436,6 +437,18 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .await
                 .unwrap();
             assert_eq!(targeted_playback.session_node_id, "session-rpc-b");
+            let (server_time_ms, presence) = control
+                .refresh_playback_presences(vec![PlaybackPresenceHeartbeat {
+                    playback_id: targeted_playback.playback_id.clone(),
+                    stream_id: targeted_playback.stream_id.clone(),
+                    subscription_id: targeted_playback.subscription_id.clone(),
+                    generation: targeted_playback.playback_generation,
+                }])
+                .await
+                .unwrap();
+            assert_eq!(server_time_ms, 1_000);
+            assert_eq!(presence.len(), 1);
+            assert!(presence[0].accepted);
 
             assert_eq!(
                 control
@@ -728,6 +741,30 @@ impl SessionControl for FakeSession {
         }))
     }
 
+    async fn refresh_playback_presence(
+        &self,
+        request: tonic::Request<RefreshPlaybackPresenceRequest>,
+    ) -> Result<tonic::Response<RefreshPlaybackPresenceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(RefreshPlaybackPresenceResponse {
+            server_time_ms: 1_000,
+            items: request
+                .items
+                .into_iter()
+                .map(
+                    |item| gmv_protocol::session::v1::PlaybackPresenceHeartbeatResult {
+                        playback_id: item.playback_id,
+                        stream_id: item.stream_id,
+                        accepted: true,
+                        terminal: false,
+                        generation: item.generation,
+                        presence_deadline_ms: Some(182_000),
+                    },
+                )
+                .collect(),
+        }))
+    }
+
     async fn control_ptz(
         &self,
         _request: tonic::Request<ControlPtzRequest>,
@@ -960,6 +997,16 @@ impl StreamControl for FakeStream {
             closed: true,
             error: None,
             output: None,
+        }))
+    }
+
+    async fn release_subscription_outputs(
+        &self,
+        _request: tonic::Request<ReleaseSubscriptionOutputsRequest>,
+    ) -> Result<tonic::Response<ReleaseSubscriptionOutputsResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ReleaseSubscriptionOutputsResponse {
+            closed_output_ids: vec![],
+            error: None,
         }))
     }
 

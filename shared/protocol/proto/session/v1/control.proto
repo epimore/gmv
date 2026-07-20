@@ -14,6 +14,7 @@ service SessionControl {
   rpc SetPlaybackSpeed(SetPlaybackSpeedRequest) returns (SetPlaybackSpeedResponse);
   rpc SeekPlayback(SeekPlaybackRequest) returns (PlaybackControlResponse);
   rpc SetPlaybackState(SetPlaybackStateRequest) returns (PlaybackControlResponse);
+  rpc RefreshPlaybackPresence(RefreshPlaybackPresenceRequest) returns (RefreshPlaybackPresenceResponse);
   rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
   rpc SnapshotImage(SnapshotImageRequest) returns (SnapshotImageResponse);
   rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
@@ -102,6 +103,32 @@ message SetPlaybackStateRequest {
   string stream_id = 3;
   PlaybackState state = 4;
   uint64 expected_generation = 5;
+  string subscription_id = 6;
+}
+
+message RefreshPlaybackPresenceRequest {
+  repeated PlaybackPresenceHeartbeat items = 1;
+}
+
+message PlaybackPresenceHeartbeat {
+  string playback_id = 1;
+  string stream_id = 2;
+  string subscription_id = 3;
+  uint64 generation = 4;
+}
+
+message RefreshPlaybackPresenceResponse {
+  int64 server_time_ms = 1;
+  repeated PlaybackPresenceHeartbeatResult items = 2;
+}
+
+message PlaybackPresenceHeartbeatResult {
+  string playback_id = 1;
+  string stream_id = 2;
+  bool accepted = 3;
+  bool terminal = 4;
+  uint64 generation = 5;
+  optional int64 presence_deadline_ms = 6;
 }
 
 message PlaybackControlResponse {

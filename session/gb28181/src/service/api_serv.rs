@@ -59,6 +59,7 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
         device_id,
         channel_id,
         &am,
+        &token,
         play_live_model.custom_media_config.as_ref(),
     )
     .await?
@@ -662,7 +663,7 @@ fn playback_stream_device(stream_id: &String) -> GlobalResult<String> {
 async fn start_invite_stream(
     device_id: &String,
     channel_id: &String,
-    _token: &String,
+    token: &String,
     am: AccessMode,
     st: u32,
     et: u32,
@@ -711,7 +712,7 @@ async fn start_invite_stream(
     .await?;
     let stream_node = allocation.node.clone();
     let node_name = stream_node.name.clone();
-    if let Err(err) = stream_rpc::init_media(&stream_node, &msc).await {
+    if let Err(err) = stream_rpc::init_media(&stream_node, &msc, token).await {
         crate::guard_integration::fail_stream_lease(&allocation, "init_media failed").await;
         return Err(err);
     }
@@ -888,6 +889,7 @@ async fn enable_invite_stream(
     device_id: &String,
     channel_id: &String,
     am: &AccessMode,
+    subscription_id: &str,
     custom_media_config: Option<&CustomMediaConfig>,
 ) -> GlobalResult<Option<(String, String)>> {
     match state::session::Cache::device_map_get_invite_info(device_id, channel_id, am) {
@@ -921,6 +923,7 @@ async fn enable_invite_stream(
                                     &stream_id,
                                     output_type,
                                     audio_codec,
+                                    subscription_id,
                                 )
                                 .await?;
                             } else {
@@ -937,6 +940,7 @@ async fn enable_invite_stream(
                                         output: config.output.clone(),
                                         session_hook_endpoint: None,
                                     },
+                                    subscription_id,
                                 )
                                 .await?;
                             }

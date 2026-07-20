@@ -29,7 +29,8 @@ use gmv_protocol::guard::v1::{
 use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
     GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, OutputInfo, OutputState,
-    QueryStreamRequest, QueryStreamResponse, StartReceiveRequest, StartReceiveResponse,
+    QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
+    ReleaseSubscriptionOutputsResponse, StartReceiveRequest, StartReceiveResponse,
     StopReceiveRequest, StopReceiveResponse, StreamBoolResponse, StreamJsonRequest,
     StreamJsonResponse, StreamState, StreamUnitResponse, stream_control_server::StreamControl,
 };
@@ -42,6 +43,7 @@ use crate::state::register::Register;
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_CHANNEL: OnceLock<RpcChannelConfig> = OnceLock::new();
 static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const TERMINAL_SUBSCRIPTION_RETENTION_MS: i64 = 3_600_000;
 
 pub fn init_guard_event_sender(sender: NodeEventSender) {
     let _ = GUARD_EVENT_SENDER.set(sender);
@@ -410,6 +412,25 @@ impl StreamControl for StreamControlRpc {
         Ok(tonic::Response::new(control.close_output(request)))
     }
 
+    async fn release_subscription_outputs(
+        &self,
+        request: tonic::Request<ReleaseSubscriptionOutputsRequest>,
+    ) -> Result<tonic::Response<ReleaseSubscriptionOutputsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.release_subscription_outputs, req: stream_id={}, subscription_id={}",
+            request.stream_id,
+            request.subscription_id
+        );
+        let mut control = self
+            .inner
+            .lock()
+            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        Ok(tonic::Response::new(
+            control.release_subscription_outputs(request),
+        ))
+    }
+
     async fn get_playback_endpoints(
         &self,
         request: tonic::Request<GetPlaybackEndpointsRequest>,
@@ -593,6 +614,7 @@ pub struct StreamControlAdapter {
     receive_endpoint: Endpoint,
     streams: HashMap<String, StreamRuntime>,
     outputs: HashMap<String, OutputRuntime>,
+    terminal_subscriptions: HashMap<(String, String), i64>,
     media_tx: Option<mpsc::Sender<u32>>,
 }
 
@@ -611,6 +633,7 @@ struct OutputRuntime {
     output_type: String,
     endpoint: String,
     state: OutputState,
+    subscription_id: String,
 }
 
 impl OutputRuntime {
@@ -621,6 +644,7 @@ impl OutputRuntime {
             output_type: self.output_type.clone(),
             endpoint: self.endpoint.clone(),
             state: self.state as i32,
+            subscription_id: self.subscription_id.clone(),
         }
     }
 }
@@ -632,6 +656,7 @@ impl StreamControlAdapter {
             receive_endpoint,
             streams: HashMap::new(),
             outputs: HashMap::new(),
+            terminal_subscriptions: HashMap::new(),
             media_tx: None,
         }
     }
@@ -735,6 +760,22 @@ impl StreamControlAdapter {
     }
 
     pub fn create_output(&mut self, request: CreateOutputRequest) -> CreateOutputResponse {
+        self.prune_terminal_subscriptions(now_ms());
+        if !request.subscription_id.is_empty()
+            && self
+                .terminal_subscriptions
+                .contains_key(&(request.stream_id.clone(), request.subscription_id.clone()))
+        {
+            return CreateOutputResponse {
+                output_id: String::new(),
+                endpoints: vec![],
+                error: Some(error(
+                    "subscription_terminal",
+                    "stream subscription is terminal",
+                )),
+                output: None,
+            };
+        }
         if request.endpoint_mode == EndpointMode::Multi as i32 {
             return CreateOutputResponse {
                 output_id: String::new(),
@@ -783,6 +824,17 @@ impl StreamControlAdapter {
             .unwrap_or(&request.stream_id);
         let output_id = format!("out-{output_type}-{operation_id}");
         if let Some(mut existing) = self.outputs.get(&output_id).cloned() {
+            if existing.subscription_id != request.subscription_id {
+                return CreateOutputResponse {
+                    output_id: String::new(),
+                    endpoints: self.playback_endpoints(),
+                    error: Some(error(
+                        "idempotency_conflict",
+                        "output operation belongs to another subscription",
+                    )),
+                    output: None,
+                };
+            }
             if self.media_tx.is_some() {
                 match Register::create_live_output(
                     &request.stream_id,
@@ -836,6 +888,7 @@ impl StreamControlAdapter {
             output_type: output_type.to_string(),
             endpoint,
             state: OutputState::Ready,
+            subscription_id: request.subscription_id,
         };
         let output = runtime.info();
         self.outputs.insert(output_id.clone(), runtime);
@@ -893,6 +946,60 @@ impl StreamControlAdapter {
         }
     }
 
+    pub fn release_subscription_outputs(
+        &mut self,
+        request: ReleaseSubscriptionOutputsRequest,
+    ) -> ReleaseSubscriptionOutputsResponse {
+        if request.stream_id.is_empty() || request.subscription_id.is_empty() {
+            return ReleaseSubscriptionOutputsResponse {
+                closed_output_ids: vec![],
+                error: Some(error(
+                    "invalid_subscription",
+                    "stream_id and subscription_id are required",
+                )),
+            };
+        }
+        let now_ms = now_ms();
+        self.prune_terminal_subscriptions(now_ms);
+        self.terminal_subscriptions.insert(
+            (request.stream_id.clone(), request.subscription_id.clone()),
+            now_ms.saturating_add(TERMINAL_SUBSCRIPTION_RETENTION_MS),
+        );
+        let output_ids = self
+            .outputs
+            .values()
+            .filter(|output| {
+                output.stream_id == request.stream_id
+                    && output.subscription_id == request.subscription_id
+            })
+            .map(|output| output.output_id.clone())
+            .collect::<Vec<_>>();
+        let mut closed_output_ids = Vec::with_capacity(output_ids.len());
+        for output_id in output_ids {
+            let response = self.close_output(CloseOutputRequest {
+                operation: request.operation.clone(),
+                output_id: output_id.clone(),
+                stream_id: request.stream_id.clone(),
+            });
+            if let Some(error) = response.error {
+                return ReleaseSubscriptionOutputsResponse {
+                    closed_output_ids,
+                    error: Some(error),
+                };
+            }
+            closed_output_ids.push(output_id);
+        }
+        ReleaseSubscriptionOutputsResponse {
+            closed_output_ids,
+            error: None,
+        }
+    }
+
+    fn prune_terminal_subscriptions(&mut self, now_ms: i64) {
+        self.terminal_subscriptions
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+    }
+
     pub fn get_playback_endpoints(
         &self,
         request: GetPlaybackEndpointsRequest,
@@ -924,6 +1031,7 @@ impl StreamControlAdapter {
                 };
             }
         };
+        let subscription_id = request.subscription_id;
         let result = decode_payload::<MediaConfig>(&request.payload_json).and_then(|value| {
             let stream_id = value.stream_id.clone();
             let output_type = live_output_type_from_kind(&value.output);
@@ -946,6 +1054,7 @@ impl StreamControlAdapter {
                         output_type: output_type.to_string(),
                         endpoint,
                         state: OutputState::Ready,
+                        subscription_id,
                     });
             }
             media_tx.try_send(ssrc).map_err(|err| {
@@ -1146,6 +1255,14 @@ fn output_resource_type(output_type: &str) -> &str {
     }
 }
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
+}
+
 pub fn operation(operation_id: &str) -> OperationRef {
     OperationRef {
         operation_id: operation_id.to_string(),
@@ -1211,6 +1328,7 @@ mod tests {
                 output_type: output_type.to_string(),
                 endpoint_mode: EndpointMode::Single as i32,
                 audio_codec: "aac".to_string(),
+                subscription_id: "subscription-1".to_string(),
             });
             assert!(output.error.is_none(), "failed to create {output_type}");
             output_ids.insert(output_type, output.output_id);
@@ -1223,6 +1341,7 @@ mod tests {
             output_type: "hls".to_string(),
             endpoint_mode: EndpointMode::Single as i32,
             audio_codec: "aac".to_string(),
+            subscription_id: "subscription-2".to_string(),
         });
         assert!(second_hls.error.is_none());
         assert_ne!(second_hls.output_id, output_ids["hls"]);
@@ -1268,6 +1387,78 @@ mod tests {
                 .any(|output| output.output_type == "fmp4")
         );
         assert_eq!(output_resource_type("hls"), output_resource_type("ll_hls"));
+    }
+
+    #[test]
+    fn subscription_release_is_scoped_and_blocks_late_output_creation() {
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            false,
+            30000,
+        );
+        let mut control = StreamControlAdapter::new(
+            node.identity.clone(),
+            endpoint("rtp", "rtp", "127.0.0.1", 30000),
+        );
+        control.start_receive(StartReceiveRequest {
+            operation: Some(operation("start-live")),
+            stream_id: "stream-a".to_string(),
+            route_id: "route-a".to_string(),
+            lease_id: "lease-a".to_string(),
+            expected_stream: Some(node.identity),
+            preferred_endpoints: vec![],
+        });
+        for (operation_id, subscription_id) in [
+            ("create-user-1", "subscription-1"),
+            ("create-user-2", "subscription-2"),
+        ] {
+            let output = control.create_output(CreateOutputRequest {
+                operation: Some(operation(operation_id)),
+                stream_id: "stream-a".to_string(),
+                output_type: "hls".to_string(),
+                endpoint_mode: EndpointMode::Single as i32,
+                audio_codec: "aac".to_string(),
+                subscription_id: subscription_id.to_string(),
+            });
+            assert!(output.error.is_none());
+        }
+
+        let released = control.release_subscription_outputs(ReleaseSubscriptionOutputsRequest {
+            operation: Some(operation("release-user-1")),
+            stream_id: "stream-a".to_string(),
+            subscription_id: "subscription-1".to_string(),
+        });
+        assert!(released.error.is_none());
+        assert_eq!(released.closed_output_ids.len(), 1);
+        assert_eq!(control.outputs.len(), 1);
+        assert_eq!(
+            control.outputs.values().next().unwrap().subscription_id,
+            "subscription-2"
+        );
+        let repeated = control.release_subscription_outputs(ReleaseSubscriptionOutputsRequest {
+            operation: Some(operation("release-user-1-retry")),
+            stream_id: "stream-a".to_string(),
+            subscription_id: "subscription-1".to_string(),
+        });
+        assert!(repeated.error.is_none());
+        assert!(repeated.closed_output_ids.is_empty());
+
+        let late = control.create_output(CreateOutputRequest {
+            operation: Some(operation("late-user-1")),
+            stream_id: "stream-a".to_string(),
+            output_type: "flv".to_string(),
+            endpoint_mode: EndpointMode::Single as i32,
+            audio_codec: "aac".to_string(),
+            subscription_id: "subscription-1".to_string(),
+        });
+        assert_eq!(
+            late.error.as_ref().map(|error| error.code.as_str()),
+            Some("subscription_terminal")
+        );
     }
 
     #[test]
@@ -1322,6 +1513,7 @@ mod tests {
             output_type: "flv".to_string(),
             endpoint_mode: EndpointMode::Single as i32,
             audio_codec: "aac".to_string(),
+            subscription_id: "subscription-1".to_string(),
         });
         assert!(output.error.is_none());
         assert_eq!(
@@ -1350,6 +1542,7 @@ mod tests {
                     output_type: "rtp".to_string(),
                     endpoint_mode: EndpointMode::Multi as i32,
                     audio_codec: "aac".to_string(),
+                    subscription_id: "subscription-1".to_string(),
                 })
                 .error
                 .is_some()

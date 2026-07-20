@@ -107,6 +107,7 @@ pub async fn expire_playback_pause(stream_id: Arc<str>, generation: u64) {
                     warn!(
                         "playback pause lease expired: action=pause_expiry, outcome=close_all, stream_id={stream_id}, generation={generation}"
                     );
+                    crate::service::playback_presence::clear_for_stream(&stream_id);
                     stream_close::begin(stream_id.to_string());
                 }
             }
@@ -126,6 +127,11 @@ pub async fn restore_playback_pause_deadline(stream_id: &str) {
         Ok(Some(lease)) if lease.state == "PAUSED" => match lease.expire_at {
             Some(expire_at) if expire_at > Local::now().naive_local() => {
                 schedule_playback_pause_deadline(stream_id, lease.generation, expire_at);
+                crate::service::playback_presence::restore(
+                    &lease.playback_id,
+                    stream_id,
+                    lease.generation,
+                );
             }
             _ => stream_close::begin(stream_id.to_string()),
         },
@@ -389,6 +395,7 @@ mod tests {
     fn input_timeout_only_keeps_acknowledged_paused_playback_alive() {
         let now = Local::now().naive_local();
         let mut lease = PlaybackPauseLease {
+            playback_id: "playback-a".to_string(),
             state: "PAUSED".to_string(),
             expire_at: Some(now + Duration::seconds(1)),
             generation: 1,

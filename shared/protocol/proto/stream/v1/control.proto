@@ -10,6 +10,7 @@ service StreamControl {
   rpc QueryStream(QueryStreamRequest) returns (QueryStreamResponse);
   rpc CreateOutput(CreateOutputRequest) returns (CreateOutputResponse);
   rpc CloseOutput(CloseOutputRequest) returns (CloseOutputResponse);
+  rpc ReleaseSubscriptionOutputs(ReleaseSubscriptionOutputsRequest) returns (ReleaseSubscriptionOutputsResponse);
   rpc GetPlaybackEndpoints(GetPlaybackEndpointsRequest) returns (GetPlaybackEndpointsResponse);
 
   rpc InitMedia(StreamJsonRequest) returns (StreamUnitResponse);
@@ -71,6 +72,7 @@ message CreateOutputRequest {
   string output_type = 3;
   gmv.common.v1.EndpointMode endpoint_mode = 4;
   string audio_codec = 5;
+  string subscription_id = 6;
 }
 
 message CreateOutputResponse {
@@ -92,6 +94,17 @@ message CloseOutputResponse {
   OutputInfo output = 3;
 }
 
+message ReleaseSubscriptionOutputsRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string subscription_id = 3;
+}
+
+message ReleaseSubscriptionOutputsResponse {
+  repeated string closed_output_ids = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
 message GetPlaybackEndpointsRequest {
   string stream_id = 1;
 }
@@ -107,6 +120,7 @@ message OutputInfo {
   string output_type = 3;
   string endpoint = 4;
   OutputState state = 5;
+  string subscription_id = 6;
 }
 
 enum OutputState {
@@ -128,6 +142,7 @@ enum StreamState {
 
 message StreamJsonRequest {
   bytes payload_json = 1;
+  string subscription_id = 2;
 }
 
 message StreamUnitResponse {

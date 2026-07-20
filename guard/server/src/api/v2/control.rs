@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use gmv_nodec::error::META_GLOBAL_CODE;
@@ -13,7 +13,8 @@ use gmv_protocol::session::v1::{
     ControlPtzRequest, CreateGbDeviceRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
     GbChannelImage, GbDevice, GbResource, GetGbChannelRequest, GetGbDeviceRequest,
     GetSessionConfigRequest, ListGbChannelImagesRequest, ListGbChannelsRequest,
-    ListGbDevicesRequest, ListGbResourcesRequest, PlaybackState,
+    ListGbDevicesRequest, ListGbResourcesRequest, PlaybackPresenceHeartbeat,
+    PlaybackPresenceHeartbeatResult, PlaybackState, RefreshPlaybackPresenceRequest,
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
     SetPlaybackSpeedRequest, SetPlaybackStateRequest, SnapshotImageRequest,
     StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
@@ -1437,6 +1438,7 @@ impl BusinessControl {
         stream_id: &str,
         output_type: &str,
         audio_codec: &str,
+        subscription_id: &str,
     ) -> GuardResult<StreamOutputSummary> {
         let stream = self.stream_node_for_resource(stream_id)?;
         let stream_grpc = grpc_uri(&stream)?;
@@ -1450,6 +1452,7 @@ impl BusinessControl {
             output_type: output_type.to_string(),
             endpoint_mode: EndpointMode::Single as i32,
             audio_codec: audio_codec.to_string(),
+            subscription_id: subscription_id.to_string(),
         };
         let edge = RpcEdge::new(
             "stream",
@@ -1701,6 +1704,7 @@ impl BusinessControl {
         stream_id: &str,
         paused: bool,
         expected_generation: u64,
+        subscription_id: &str,
     ) -> GuardResult<u64> {
         let session = self.session_for_stream(stream_id)?;
         let mut client =
@@ -1719,6 +1723,7 @@ impl BusinessControl {
                     PlaybackState::Playing as i32
                 },
                 expected_generation,
+                subscription_id: subscription_id.to_string(),
             })
             .await
             .map_err(|error| GuardError::Conflict(format!("playback state RPC failed: {error}")))?
@@ -1739,6 +1744,37 @@ impl BusinessControl {
             ));
         }
         Ok(response.generation)
+    }
+
+    pub async fn refresh_playback_presences(
+        &self,
+        items: Vec<PlaybackPresenceHeartbeat>,
+    ) -> GuardResult<(i64, Vec<PlaybackPresenceHeartbeatResult>)> {
+        let mut groups = HashMap::<String, (NodeRecord, Vec<PlaybackPresenceHeartbeat>)>::new();
+        for item in items {
+            let session = self.session_for_stream(&item.stream_id)?;
+            groups
+                .entry(session.identity.node_id.clone())
+                .or_insert_with(|| (session, Vec::new()))
+                .1
+                .push(item);
+        }
+        let mut server_time_ms = 0;
+        let mut results = Vec::new();
+        for (_, (session, items)) in groups {
+            let mut client =
+                SessionControlClient::new(connect_rpc(&grpc_uri(&session)?, "session").await?);
+            let response = client
+                .refresh_playback_presence(RefreshPlaybackPresenceRequest { items })
+                .await
+                .map_err(|error| {
+                    GuardError::Conflict(format!("playback presence heartbeat RPC failed: {error}"))
+                })?
+                .into_inner();
+            server_time_ms = server_time_ms.max(response.server_time_ms);
+            results.extend(response.items);
+        }
+        Ok((server_time_ms, results))
     }
 
     pub async fn ptz(

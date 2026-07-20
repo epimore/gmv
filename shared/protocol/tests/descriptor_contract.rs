@@ -125,9 +125,24 @@ fn session_resource_override_rpcs_are_stable() {
         "ListGbResources",
         "SaveGbResourceConfirmation",
         "ResetGbResourceConfirmation",
+        "RefreshPlaybackPresence",
     ] {
         assert!(methods.contains(&method), "missing SessionControl.{method}");
     }
+    let set_state = session
+        .message_type
+        .iter()
+        .find(|message| message.name.as_deref() == Some("SetPlaybackStateRequest"))
+        .unwrap();
+    assert_eq!(
+        set_state
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some("subscription_id"))
+            .unwrap()
+            .number,
+        Some(6)
+    );
 }
 
 #[test]
@@ -182,6 +197,10 @@ fn stream_output_lifecycle_contract_is_stable() {
             .number
     };
     assert_eq!(field_number("CreateOutputRequest", "audio_codec"), Some(5));
+    assert_eq!(
+        field_number("CreateOutputRequest", "subscription_id"),
+        Some(6)
+    );
     assert_eq!(field_number("CreateOutputResponse", "output"), Some(4));
     assert_eq!(field_number("CloseOutputRequest", "stream_id"), Some(3));
     assert_eq!(
@@ -190,4 +209,9 @@ fn stream_output_lifecycle_contract_is_stable() {
     );
     assert_eq!(field_number("OutputInfo", "output_id"), Some(1));
     assert_eq!(field_number("OutputInfo", "state"), Some(5));
+    assert_eq!(field_number("OutputInfo", "subscription_id"), Some(6));
+    assert_eq!(
+        field_number("StreamJsonRequest", "subscription_id"),
+        Some(2)
+    );
 }

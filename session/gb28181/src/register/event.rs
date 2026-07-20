@@ -149,6 +149,12 @@ async fn on_time_schedule(
             ScheduleKey::Register(TimeScheduleKey::PlaybackPauseExpiry(stream_id, generation)) => {
                 hook_serv::expire_playback_pause(stream_id, generation).await;
             }
+            ScheduleKey::Register(TimeScheduleKey::PlaybackPresenceExpiry(
+                playback_id,
+                generation,
+            )) => {
+                crate::service::playback_presence::expire(playback_id, generation).await;
+            }
             ScheduleKey::Register(TimeScheduleKey::OutSession(_)) => {}
             ScheduleKey::GeneralCache(key) => cache_keys.push(key),
         }

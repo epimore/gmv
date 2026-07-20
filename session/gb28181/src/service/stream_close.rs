@@ -10,6 +10,7 @@ use crate::state::session::{Cache, StreamByeCommand};
 use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
 
 pub fn begin(stream_id: String) {
+    crate::service::playback_presence::clear_for_stream(&stream_id);
     let Some(start) = Cache::stream_close_begin(&stream_id) else {
         return;
     };

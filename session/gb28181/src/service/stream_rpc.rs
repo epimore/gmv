@@ -12,8 +12,9 @@ use gmv_domain::info::obj::{
 use gmv_nodec::error as node_error;
 use gmv_protocol::common::v1::{EndpointMode, ErrorDetail, OperationRef};
 use gmv_protocol::stream::v1::{
-    CreateOutputRequest, OutputInfo, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse,
-    StreamUnitResponse, stream_control_client::StreamControlClient,
+    CreateOutputRequest, OutputInfo, ReleaseSubscriptionOutputsRequest, StreamBoolResponse,
+    StreamJsonRequest, StreamJsonResponse, StreamUnitResponse,
+    stream_control_client::StreamControlClient,
 };
 use std::time::{Duration, Instant};
 
@@ -82,6 +83,7 @@ async fn client(node: &StreamNode) -> GlobalResult<StreamControlClient<Channel>>
 fn request<T: Serialize>(value: &T) -> GlobalResult<StreamJsonRequest> {
     Ok(StreamJsonRequest {
         payload_json: serde_json::to_vec(value).hand_log(|msg| error!("{msg}"))?,
+        subscription_id: String::new(),
     })
 }
 
@@ -129,9 +131,14 @@ fn rpc_status(error: tonic::Status, action: &str) -> GlobalError {
     )
 }
 
-pub async fn init_media(node: &StreamNode, value: &MediaConfig) -> GlobalResult<()> {
+pub async fn init_media(
+    node: &StreamNode,
+    value: &MediaConfig,
+    subscription_id: &str,
+) -> GlobalResult<()> {
     let mut client = client(node).await?;
-    let request = request(value)?;
+    let mut request = request(value)?;
+    request.subscription_id = subscription_id.to_string();
     base::log::debug!(
         "session rpc client outbound: method=stream_control.init_media, node={}, req: payload_bytes={}",
         node.name,
@@ -151,6 +158,7 @@ pub async fn create_output(
     stream_id: &str,
     output_type: &str,
     audio_codec: &str,
+    subscription_id: &str,
 ) -> GlobalResult<OutputInfo> {
     let mut client = client(node).await?;
     let request = CreateOutputRequest {
@@ -162,6 +170,7 @@ pub async fn create_output(
         output_type: output_type.to_string(),
         endpoint_mode: EndpointMode::Single as i32,
         audio_codec: audio_codec.to_string(),
+        subscription_id: subscription_id.to_string(),
     };
     base::log::debug!(
         "session rpc client outbound: method=stream_control.create_output, node={}, stream_id={}, output_type={}",
@@ -184,6 +193,31 @@ pub async fn create_output(
             |msg| error!("{msg}: stream_id={stream_id}, output_type={output_type}"),
         )
     })
+}
+
+pub async fn release_subscription_outputs(
+    node: &StreamNode,
+    operation_id: &str,
+    stream_id: &str,
+    subscription_id: &str,
+) -> GlobalResult<Vec<String>> {
+    let mut client = client(node).await?;
+    let response = client
+        .release_subscription_outputs(ReleaseSubscriptionOutputsRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            stream_id: stream_id.to_string(),
+            subscription_id: subscription_id.to_string(),
+        })
+        .await
+        .map_err(|error| rpc_status(error, "release_subscription_outputs"))?
+        .into_inner();
+    if let Some(error) = response.error {
+        return Err(error_detail(error, "release_subscription_outputs"));
+    }
+    Ok(response.closed_output_ids)
 }
 
 pub async fn init_media_ext(node: &StreamNode, value: &MediaMap) -> GlobalResult<()> {

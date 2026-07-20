@@ -15,7 +15,7 @@ use base::exception::GlobalError;
 use base::log::debug;
 use gmv_protocol::session::v1::{
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
-    GbResource as RpcGbResource, ResetGbResourceConfirmationRequest,
+    GbResource as RpcGbResource, PlaybackPresenceHeartbeat, ResetGbResourceConfirmationRequest,
     SaveGbResourceConfirmationRequest,
 };
 use std::collections::BTreeMap;
@@ -45,7 +45,7 @@ use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
 use crate::store::model::{
     EventRecord, LeaseRecord, NodeRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
-    PLAYBACK_PRESENCE_TTL_MS, PLAYBACK_TOKEN_TTL_MS, PlaybackPresenceRecord, PlaybackTicketRecord,
+    PLAYBACK_TOKEN_TTL_MS, PlaybackTicketRecord,
 };
 use crate::store::persistent::UserRepository;
 
@@ -1205,13 +1205,7 @@ fn issue_playback_ticket(
         required_role,
         expires_at_ms: now_ms + PLAYBACK_TOKEN_TTL_MS,
     };
-    if !state
-        .api
-        .store()
-        .upsert_playback_ticket_unless_subscription_closing(ticket)
-    {
-        return Err(GuardError::Conflict("playback subscription is closing".to_string()).into());
-    }
+    state.api.store().upsert_playback_ticket(ticket);
     stream.endpoint = endpoint_with_playback_token(&stream.endpoint, &token);
     Ok(stream)
 }
@@ -1255,13 +1249,7 @@ fn issue_stream_output_ticket(
         required_role: Role::Viewer,
         expires_at_ms: now_ms + PLAYBACK_TOKEN_TTL_MS,
     };
-    if !state
-        .api
-        .store()
-        .upsert_playback_ticket_unless_subscription_closing(ticket)
-    {
-        return Err(GuardError::Conflict("playback subscription is closing".to_string()).into());
-    }
+    state.api.store().upsert_playback_ticket(ticket);
     output.endpoint = endpoint_with_playback_token(&output.endpoint, &token);
     Ok(output)
 }
@@ -3002,14 +2990,6 @@ async fn create_stream_output(
     );
     let (ui_session_token, session) =
         require_write_with_token(&state.auth, &headers, Role::Operator)?;
-    if !request.subscription_id.is_empty()
-        && state
-            .api
-            .store()
-            .is_playback_subscription_closing(&stream_id, &request.subscription_id)
-    {
-        return Err(GuardError::Conflict("playback subscription is closing".to_string()).into());
-    }
     let operation_id = request.request_id;
     if let Ok(existing) = state.api.get_operation(&operation_id) {
         require_operation_owner(&existing, &session)?;
@@ -3059,6 +3039,7 @@ async fn create_stream_output(
                 &stream_id,
                 &request.output_type,
                 &request.audio_codec,
+                &request.subscription_id,
             ),
         )
         .await;
@@ -3462,10 +3443,6 @@ async fn stop_stream(
             state
                 .api
                 .store()
-                .clear_playback_presences_for_stream(&stream_id);
-            state
-                .api
-                .store()
                 .revoke_playback_tickets_for_stream(&stream_id);
             let result = base::serde_json::to_value(&stream)
                 .map_err(|error| HttpError::internal(format!("serialize stop result: {error}")))?;
@@ -3529,10 +3506,6 @@ async fn release_stream(
         .await;
     match result {
         Ok(stream) => {
-            state
-                .api
-                .store()
-                .clear_playback_presences_for_subscription(&stream_id, &request.subscription_id);
             state
                 .api
                 .store()
@@ -3603,20 +3576,7 @@ async fn seek_playback(
             "playback seek position is outside the selected range",
         ));
     }
-    let store = state.api.store();
-    let control_started_at_ms = http_now_ms()?;
-    if !store.begin_playback_presence_control(
-        &playback_id,
-        &request.stream_id,
-        request.expected_generation,
-        control_started_at_ms,
-    ) {
-        return Err(GuardError::Conflict(
-            "playback presence is closing or another control is in progress".to_string(),
-        )
-        .into());
-    }
-    let result = BusinessControl::new(store.clone())
+    let generation = BusinessControl::new(state.api.store())
         .seek_playback(
             &request.request_id,
             &playback_id,
@@ -3624,16 +3584,7 @@ async fn seek_playback(
             request.position_sec,
             request.expected_generation,
         )
-        .await;
-    if result.is_err() {
-        store.finish_playback_presence_control(
-            &playback_id,
-            &request.stream_id,
-            request.expected_generation,
-        );
-    }
-    let generation = result?;
-    store.clear_playback_presence(&playback_id, &request.stream_id);
+        .await?;
     Ok(Json(PlaybackControlHttpResponse {
         accepted: true,
         generation,
@@ -3647,20 +3598,7 @@ async fn set_versioned_playback_speed(
     Json(request): Json<VersionedPlaybackSpeedRequest>,
 ) -> Result<Json<PlaybackControlHttpResponse>, HttpError> {
     require_playback_control(&state, &headers, &playback_id, &request.stream_id)?;
-    let store = state.api.store();
-    let control_started_at_ms = http_now_ms()?;
-    if !store.begin_playback_presence_control(
-        &playback_id,
-        &request.stream_id,
-        request.expected_generation,
-        control_started_at_ms,
-    ) {
-        return Err(GuardError::Conflict(
-            "playback presence is closing or another control is in progress".to_string(),
-        )
-        .into());
-    }
-    let result = BusinessControl::new(store.clone())
+    let generation = BusinessControl::new(state.api.store())
         .set_playback_speed_versioned(
             &request.request_id,
             &playback_id,
@@ -3668,16 +3606,7 @@ async fn set_versioned_playback_speed(
             request.speed_rate,
             request.expected_generation,
         )
-        .await;
-    if result.is_err() {
-        store.finish_playback_presence_control(
-            &playback_id,
-            &request.stream_id,
-            request.expected_generation,
-        );
-    }
-    let generation = result?;
-    store.clear_playback_presence(&playback_id, &request.stream_id);
+        .await?;
     Ok(Json(PlaybackControlHttpResponse {
         accepted: true,
         generation,
@@ -3691,52 +3620,16 @@ async fn set_playback_state(
     Json(request): Json<PlaybackStateRequest>,
 ) -> Result<Json<PlaybackControlHttpResponse>, HttpError> {
     let ticket = require_playback_control(&state, &headers, &playback_id, &request.stream_id)?;
-    let control_started_at_ms = http_now_ms()?;
-    let store = state.api.store();
-    if !store.begin_playback_presence_control(
-        &playback_id,
-        &request.stream_id,
-        request.expected_generation,
-        control_started_at_ms,
-    ) {
-        return Err(GuardError::Conflict(
-            "playback presence is closing or another control is in progress".to_string(),
-        )
-        .into());
-    }
-    let result = BusinessControl::new(store.clone())
+    let generation = BusinessControl::new(state.api.store())
         .set_playback_state(
             &request.request_id,
             &playback_id,
             &request.stream_id,
             request.paused,
             request.expected_generation,
+            &ticket.subscription_id,
         )
-        .await;
-    if result.is_err() {
-        store.finish_playback_presence_control(
-            &playback_id,
-            &request.stream_id,
-            request.expected_generation,
-        );
-    }
-    let generation = result?;
-    if request.paused {
-        let pause_accepted_at_ms = http_now_ms().unwrap_or(control_started_at_ms);
-        store.upsert_playback_presence(PlaybackPresenceRecord {
-            playback_id: playback_id.clone(),
-            stream_id: request.stream_id.clone(),
-            subscription_id: ticket.subscription_id,
-            username: ticket.username,
-            ui_session_token: ticket.ui_session_token,
-            generation,
-            expires_at_ms: pause_accepted_at_ms.saturating_add(PLAYBACK_PRESENCE_TTL_MS),
-            control_in_flight: false,
-            closing: false,
-        });
-    } else {
-        store.clear_playback_presence(&playback_id, &request.stream_id);
-    }
+        .await?;
     Ok(Json(PlaybackControlHttpResponse {
         accepted: true,
         generation,
@@ -3756,35 +3649,42 @@ async fn heartbeat_playback_presence(
     }
     let (ui_session_token, session) =
         require_write_with_token(&state.auth, &headers, Role::Operator)?;
-    let now_ms = http_now_ms()?;
-    let expires_at_ms = now_ms.saturating_add(PLAYBACK_PRESENCE_TTL_MS);
     let store = state.api.store();
-    let items = request
-        .items
-        .into_iter()
-        .map(|item| {
-            let accepted_deadline = store.refresh_playback_presence(
-                &item.playback_id,
-                &item.stream_id,
-                &item.subscription_id,
-                &session.username,
-                &ui_session_token,
-                item.generation,
-                now_ms,
-                expires_at_ms,
-            );
-            PlaybackPresenceHeartbeatResult {
+    let mut rpc_items = Vec::with_capacity(request.items.len());
+    for item in request.items {
+        let ticket = store
+            .find_playback_control_ticket(&item.playback_id, &item.stream_id)
+            .filter(|ticket| {
+                playback_control_owner_matches(ticket, &session.username, &ui_session_token)
+                    && ticket.subscription_id == item.subscription_id
+            });
+        if ticket.is_some() {
+            rpc_items.push(PlaybackPresenceHeartbeat {
                 playback_id: item.playback_id,
                 stream_id: item.stream_id,
-                accepted: accepted_deadline.is_some(),
-                terminal: accepted_deadline.is_none(),
+                subscription_id: item.subscription_id,
                 generation: item.generation,
-                presence_deadline_ms: accepted_deadline,
-            }
+            });
+        } else {
+            return Err(HttpError::forbidden("playback presence owner not found"));
+        }
+    }
+    let (server_time_ms, rpc_results) = BusinessControl::new(store)
+        .refresh_playback_presences(rpc_items)
+        .await?;
+    let items = rpc_results
+        .into_iter()
+        .map(|item| PlaybackPresenceHeartbeatResult {
+            playback_id: item.playback_id,
+            stream_id: item.stream_id,
+            accepted: item.accepted,
+            terminal: item.terminal,
+            generation: item.generation,
+            presence_deadline_ms: item.presence_deadline_ms,
         })
         .collect();
     Ok(Json(PlaybackPresenceHeartbeatResponse {
-        server_time_ms: now_ms,
+        server_time_ms,
         items,
     }))
 }

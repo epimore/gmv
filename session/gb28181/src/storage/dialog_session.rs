@@ -326,6 +326,7 @@ impl TryFrom<SipDialogSessionRow> for SipDialogSession {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaybackPauseLease {
+    pub playback_id: String,
     pub state: String,
     pub expire_at: Option<NaiveDateTime>,
     pub generation: u64,
@@ -828,19 +829,20 @@ impl SipDialogSessionRepository {
         if use_test_storage() {
             return Ok(None);
         }
-        let row: Option<(Option<String>, Option<NaiveDateTime>, Option<i64>)> =
+        let row: Option<(Option<String>, Option<String>, Option<NaiveDateTime>, Option<i64>)> =
             db::fetch_optional_as!(
-                (Option<String>, Option<NaiveDateTime>, Option<i64>),
-                "SELECT playback_state,pause_expire_at,playback_generation FROM gb28181_sip_dialog_session WHERE stream_id=? AND session_type='PLAYBACK' AND state='ESTABLISHED'",
+                (Option<String>, Option<String>, Option<NaiveDateTime>, Option<i64>),
+                "SELECT playback_id,playback_state,pause_expire_at,playback_generation FROM gb28181_sip_dialog_session WHERE stream_id=? AND session_type='PLAYBACK' AND state='ESTABLISHED'",
                 stream_id,
             )
             .hand_log(|message| error!("{message}"))?;
-        let Some((Some(state), expire_at, generation)) = row else {
+        let Some((Some(playback_id), Some(state), expire_at, generation)) = row else {
             return Ok(None);
         };
         let generation = u64::try_from(generation.unwrap_or_default())
             .map_err(|_| invalid_data("invalid playback generation"))?;
         Ok(Some(PlaybackPauseLease {
+            playback_id,
             state,
             expire_at,
             generation,

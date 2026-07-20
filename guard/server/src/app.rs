@@ -127,7 +127,6 @@ pub async fn start_guard(
         }),
     };
     let _node_expirer = node_expirer::spawn(registry.clone(), config.grpc.heartbeat_timeout_ms);
-    let _playback_presence_expirer = crate::runtime::playback_presence::spawn(api_store.clone());
     let event_forwarder = if config.integrations.mqtt.enabled {
         spawn_mqtt_runtime(&config, &persistent, operations.clone(), api_store.clone())?
     } else {

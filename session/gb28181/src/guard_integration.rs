@@ -38,9 +38,10 @@ use gmv_protocol::session::v1::{
     GetSessionConfigRequest, GetSessionConfigResponse, ListGbChannelImagesRequest,
     ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
     ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
-    PlaybackControlResponse, PlaybackState, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SessionHookRequest,
-    SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
+    PlaybackControlResponse, PlaybackPresenceHeartbeatResult, PlaybackState,
+    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SessionHookRequest, SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
     SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
     StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
     UpdateGbDeviceRequest, UpdateGbDeviceResponse, session_control_server::SessionControl,
@@ -51,7 +52,7 @@ use gmv_protocol::stream::v1::{
 };
 use tonic::transport::Channel;
 
-use crate::service::{api_serv, edge_serv, hook_serv, stream_close};
+use crate::service::{api_serv, edge_serv, hook_serv, playback_presence, stream_close, stream_rpc};
 use crate::state::model::{
     DeviceChannelIdent, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
     PtzControlModel, SnapshotImage, TransMode,
@@ -268,6 +269,23 @@ pub async fn release_stream_lease(lease: GuardLease) {
                 lease.lease_id
             )
         });
+}
+
+async fn release_subscription_outputs(
+    stream_id: &str,
+    subscription_id: &str,
+    operation_id: &str,
+) -> GlobalResult<Vec<String>> {
+    let Some((node_id, _)) =
+        crate::state::session::Cache::stream_map_query_node(&stream_id.to_string())
+    else {
+        return Ok(Vec::new());
+    };
+    let node = match StreamNodeRegistry::get(&node_id) {
+        Some(node) => node,
+        None => ensure_stream_node(&node_id).await?,
+    };
+    stream_rpc::release_subscription_outputs(&node, operation_id, stream_id, subscription_id).await
 }
 
 fn stream_node_from_allocation(allocation: &AllocateStreamResponse) -> GlobalResult<StreamNode> {
@@ -597,6 +615,25 @@ impl SessionControl for SessionControlRpc {
             Some(lock) => Some(lock.lock().await),
             None => None,
         };
+        if !force {
+            if let Err(err) = release_subscription_outputs(
+                &request.stream_id,
+                &request.subscription_id,
+                &operation_id(request.operation.as_ref()),
+            )
+            .await
+            {
+                return Ok(tonic::Response::new(device_response(
+                    &request.stream_id,
+                    DeviceStreamState::Running,
+                    Some(gmv_nodec::error::global_error_detail(
+                        "stream_output_release_failed",
+                        &err,
+                    )),
+                )));
+            }
+            playback_presence::clear_for_subscription(&request.stream_id, &request.subscription_id);
+        }
         let state = if crate::state::session::Cache::talk_map_get(&request.stream_id).is_some() {
             api_serv::talk_stop(
                 TalkStopModel {
@@ -645,6 +682,27 @@ impl SessionControl for SessionControlRpc {
         let request = request.into_inner();
         debug!("session_control.set_playback_speed, req:{request:?}");
         let stream_id = request.stream_id.clone();
+        let _presence_control = if request.playback_id.is_empty() {
+            None
+        } else {
+            match playback_presence::acquire_control(
+                &request.playback_id,
+                &stream_id,
+                request.expected_generation,
+            ) {
+                Some(guard) => Some(guard),
+                None => {
+                    return Ok(tonic::Response::new(SetPlaybackSpeedResponse {
+                        accepted: false,
+                        error: Some(error(
+                            "playback_presence_terminal",
+                            "playback presence is closing or expired",
+                        )),
+                        generation: request.expected_generation,
+                    }));
+                }
+            }
+        };
         let result = api_serv::speed(
             PlaySpeedModel {
                 streamId: request.stream_id,
@@ -674,6 +732,7 @@ impl SessionControl for SessionControlRpc {
                         &stream_id,
                         request.expected_generation,
                     );
+                    playback_presence::clear(&request.playback_id, &stream_id);
                     Ok(value)
                 } else {
                     Err(GlobalError::new_biz_error(
@@ -710,6 +769,23 @@ impl SessionControl for SessionControlRpc {
         let request = request.into_inner();
         debug!("session_control.seek_playback, req:{request:?}");
         let stream_id = request.stream_id.clone();
+        let Some(_presence_control) = playback_presence::acquire_control(
+            &request.playback_id,
+            &stream_id,
+            request.expected_generation,
+        ) else {
+            return Ok(tonic::Response::new(PlaybackControlResponse {
+                accepted: false,
+                error: Some(error(
+                    "playback_presence_terminal",
+                    "playback presence is closing or expired",
+                )),
+                generation: request.expected_generation,
+                acknowledged_position_sec: request.position_sec,
+                acknowledged_speed_rate: 0.0,
+                state: PlaybackState::Paused as i32,
+            }));
+        };
         let playback_range =
             SipDialogSessionRepository::find_playback_range(&stream_id, &request.playback_id)
                 .await
@@ -752,6 +828,7 @@ impl SessionControl for SessionControlRpc {
                 .map_err(storage_status)? =>
             {
                 hook_serv::clear_playback_pause_deadline(&stream_id, request.expected_generation);
+                playback_presence::clear(&request.playback_id, &stream_id);
                 Ok(value)
             }
             Ok(_) => Err(GlobalError::new_biz_error(
@@ -790,6 +867,36 @@ impl SessionControl for SessionControlRpc {
                 state: PlaybackState::Unspecified as i32,
             }));
         }
+        if state == PlaybackState::Paused && request.subscription_id.is_empty() {
+            return Ok(tonic::Response::new(PlaybackControlResponse {
+                accepted: false,
+                error: Some(error(
+                    "invalid_subscription",
+                    "subscription_id is required when pausing playback",
+                )),
+                generation: request.expected_generation,
+                acknowledged_position_sec: 0,
+                acknowledged_speed_rate: 0.0,
+                state: PlaybackState::Unspecified as i32,
+            }));
+        }
+        let Some(_presence_control) = playback_presence::acquire_control(
+            &request.playback_id,
+            &request.stream_id,
+            request.expected_generation,
+        ) else {
+            return Ok(tonic::Response::new(PlaybackControlResponse {
+                accepted: false,
+                error: Some(error(
+                    "playback_presence_terminal",
+                    "playback presence is closing or expired",
+                )),
+                generation: request.expected_generation,
+                acknowledged_position_sec: 0,
+                acknowledged_speed_rate: 0.0,
+                state: PlaybackState::Paused as i32,
+            }));
+        };
         let result =
             api_serv::playback_state(&request.stream_id, state == PlaybackState::Paused).await;
         let pause_expire_at = (state == PlaybackState::Paused).then(|| {
@@ -824,11 +931,18 @@ impl SessionControl for SessionControlRpc {
                         request.expected_generation.saturating_add(1),
                         expire_at,
                     );
+                    playback_presence::initialize(
+                        &request.playback_id,
+                        &request.stream_id,
+                        &request.subscription_id,
+                        request.expected_generation.saturating_add(1),
+                    );
                 } else {
                     hook_serv::clear_playback_pause_deadline(
                         &request.stream_id,
                         request.expected_generation,
                     );
+                    playback_presence::clear(&request.playback_id, &request.stream_id);
                 }
                 Ok(value)
             }
@@ -841,6 +955,50 @@ impl SessionControl for SessionControlRpc {
         };
         let response = playback_control_response(result, request.expected_generation, 0, state);
         Ok(tonic::Response::new(response))
+    }
+
+    async fn refresh_playback_presence(
+        &self,
+        request: tonic::Request<RefreshPlaybackPresenceRequest>,
+    ) -> Result<tonic::Response<RefreshPlaybackPresenceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let server_time_ms = playback_presence::now_ms();
+        let mut items = Vec::with_capacity(request.items.len());
+        for item in request.items {
+            let lease = SipDialogSessionRepository::find_playback_pause_lease(&item.stream_id)
+                .await
+                .map_err(storage_status)?;
+            let valid = lease.is_some_and(|lease| {
+                lease.playback_id == item.playback_id
+                    && lease.state == "PAUSED"
+                    && lease.generation == item.generation
+                    && lease
+                        .expire_at
+                        .is_some_and(|expire_at| expire_at > Local::now().naive_local())
+            });
+            let presence_deadline_ms = valid.then(|| {
+                playback_presence::refresh(
+                    &item.playback_id,
+                    &item.stream_id,
+                    &item.subscription_id,
+                    item.generation,
+                    server_time_ms,
+                )
+            });
+            let presence_deadline_ms = presence_deadline_ms.flatten();
+            items.push(PlaybackPresenceHeartbeatResult {
+                playback_id: item.playback_id,
+                stream_id: item.stream_id,
+                accepted: presence_deadline_ms.is_some(),
+                terminal: presence_deadline_ms.is_none(),
+                generation: item.generation,
+                presence_deadline_ms,
+            });
+        }
+        Ok(tonic::Response::new(RefreshPlaybackPresenceResponse {
+            server_time_ms,
+            items,
+        }))
     }
 
     async fn control_ptz(

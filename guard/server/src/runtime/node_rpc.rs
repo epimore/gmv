@@ -21,7 +21,7 @@ use gmv_protocol::guard::v1::{
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::auth::AuthState;
-use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind};
+use crate::core::{GuardError, HealthState, NodeIdentity, NodeKind, RouteState};
 use crate::registry::{HeartbeatReport, RegisterDecision, RegisterRequest, RegistryService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
 use crate::runtime::event_forwarder::EventForwarder;
@@ -509,6 +509,9 @@ async fn apply_event(
         priority,
         payload: payload.clone(),
     })?;
+    if inserted && topic == "session.playback_presence_terminal" {
+        apply_playback_presence_terminal(store, &payload)?;
+    }
     if inserted && let Some(forwarder) = forwarder {
         forwarder
             .forward(event_id.clone(), topic.clone(), payload)
@@ -530,6 +533,39 @@ async fn apply_event(
             priority,
             payload_bytes
         );
+    }
+    Ok(())
+}
+
+#[derive(base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct PlaybackPresenceTerminalEvent {
+    stream_id: String,
+    subscription_id: String,
+    #[serde(default)]
+    stream_stopped: bool,
+}
+
+fn apply_playback_presence_terminal(
+    store: &InMemoryGuardStore,
+    payload: &[u8],
+) -> Result<(), GuardError> {
+    let event: PlaybackPresenceTerminalEvent =
+        base::serde_json::from_slice(payload).map_err(|err| {
+            GuardError::InvalidConfig(format!(
+                "decode playback presence terminal event failed: {err}"
+            ))
+        })?;
+    store.revoke_playback_tickets_for_subscription(&event.stream_id, &event.subscription_id);
+    if event.stream_stopped {
+        store.revoke_playback_tickets_for_stream(&event.stream_id);
+        for route in store.routes().into_iter().filter(|route| {
+            route.resource_id == event.stream_id && route.state != RouteState::Closed
+        }) {
+            let mut route = route;
+            route.state = RouteState::Closed;
+            store.upsert_route(route);
+        }
     }
     Ok(())
 }
