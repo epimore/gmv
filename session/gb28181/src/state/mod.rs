@@ -216,13 +216,36 @@ impl StreamNodeRegistry {
 #[conf(prefix = "server.download", check)]
 pub struct DownloadConf {
     pub storage_path: String,
+    #[serde(default = "default_storage_id")]
+    pub storage_id: String,
+    #[serde(default = "default_min_free_bytes")]
+    pub min_free_bytes: u64,
+    #[serde(default = "default_access_ticket_idle_ttl_secs")]
+    pub access_ticket_idle_ttl_secs: u64,
+    #[serde(default = "default_access_ticket_max_ttl_secs")]
+    pub access_ticket_max_ttl_secs: u64,
 }
+serde_default!(
+    default_storage_id,
+    String,
+    "cloud-recording-main".to_string()
+);
+serde_default!(default_min_free_bytes, u64, 2 * 1024 * 1024 * 1024);
+serde_default!(default_access_ticket_idle_ttl_secs, u64, 300);
+serde_default!(default_access_ticket_max_ttl_secs, u64, 21_600);
 impl CheckFromConf for DownloadConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         let dc = DownloadConf::conf();
         fs::create_dir_all(&dc.storage_path).map_err(|e| {
             FieldCheckError::BizError(format!("create download dir failed: {}", e.to_string()))
         })?;
+        if dc.access_ticket_idle_ttl_secs == 0
+            || dc.access_ticket_max_ttl_secs < dc.access_ticket_idle_ttl_secs
+        {
+            return Err(FieldCheckError::BizError(
+                "server.download access ticket TTL 配置无效".to_string(),
+            ));
+        }
         Ok(())
     }
 }

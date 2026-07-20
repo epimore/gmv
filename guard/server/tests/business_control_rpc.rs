@@ -20,19 +20,22 @@ use gmv_protocol::avai::v1::{
 use gmv_protocol::common::v1::PageResponse;
 use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
+    CloudRecordingResponse, ControlPtzRequest, ControlPtzResponse, CreateCloudRecordingRequest,
+    CreateGbDeviceRequest, CreateGbDeviceResponse, DeleteCloudRecordingRequest,
     DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
     GbChannel, GbDevice, GbRecordQueryBatch, GbResource, GbResourceResponse,
-    GetGbChannelRecordsRequest, GetGbChannelRecordsResponse, GetGbChannelRequest,
-    GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
-    GetSessionConfigResponse, ListGbChannelImagesRequest, ListGbChannelImagesResponse,
-    ListGbChannelsRequest, ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse,
-    ListGbResourcesRequest, ListGbResourcesResponse, PlaybackControlResponse,
-    PlaybackPresenceHeartbeat, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
-    RefreshPlaybackPresenceResponse, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
-    SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
-    StartDeviceStreamRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    GetCloudRecordingRequest, GetGbChannelRecordsRequest, GetGbChannelRecordsResponse,
+    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
+    GetSessionConfigRequest, GetSessionConfigResponse, IssueCloudRecordingAccessRequest,
+    IssueCloudRecordingAccessResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
+    ListGbResourcesResponse, PlaybackControlResponse, PlaybackPresenceHeartbeat,
+    QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SetPlaybackStateRequest,
+    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
+    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
     UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
@@ -709,6 +712,48 @@ struct FakeSession;
 
 #[tonic::async_trait]
 impl SessionControl for FakeSession {
+    async fn create_cloud_recording(
+        &self,
+        _request: tonic::Request<CreateCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn list_cloud_recordings(
+        &self,
+        _request: tonic::Request<ListCloudRecordingsRequest>,
+    ) -> Result<tonic::Response<ListCloudRecordingsResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn get_cloud_recording(
+        &self,
+        _request: tonic::Request<GetCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn stop_cloud_recording(
+        &self,
+        _request: tonic::Request<StopCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn delete_cloud_recording(
+        &self,
+        _request: tonic::Request<DeleteCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn issue_cloud_recording_access(
+        &self,
+        _request: tonic::Request<IssueCloudRecordingAccessRequest>,
+    ) -> Result<tonic::Response<IssueCloudRecordingAccessResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
     async fn start_live(
         &self,
         request: tonic::Request<StartDeviceStreamRequest>,

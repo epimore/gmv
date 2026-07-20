@@ -259,6 +259,117 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
         .await
         .hand_log(|msg| error!("{msg}"))?;
     }
+    ensure_mysql_cloud_recording_columns().await?;
+    Ok(())
+}
+
+#[cfg(feature = "db-mysql")]
+async fn ensure_mysql_cloud_recording_columns() -> GlobalResult<()> {
+    let existing: Vec<String> = base_db::sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='gb28181_record'",
+    )
+    .fetch_all(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    const COLUMNS: &[(&str, &str)] = &[
+        ("request_id", "varchar(128) NULL"),
+        ("session_node_id", "varchar(64) NULL"),
+        ("stream_id", "varchar(64) NULL"),
+        ("status", "varchar(16) NULL"),
+        ("file_state", "varchar(16) NULL"),
+        ("recorded_duration_ms", "bigint unsigned NOT NULL DEFAULT 0"),
+        ("current_size_bytes", "bigint unsigned NOT NULL DEFAULT 0"),
+        ("terminal_reason", "varchar(64) NULL"),
+        ("error_code", "varchar(64) NULL"),
+        ("error_message", "varchar(255) NULL"),
+        ("started_at", "datetime NULL"),
+        ("finished_at", "datetime NULL"),
+        ("deleted_at", "datetime NULL"),
+        ("version", "bigint unsigned NOT NULL DEFAULT 0"),
+    ];
+    for (name, definition) in COLUMNS {
+        if !existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_record ADD COLUMN {name} {definition}"
+            )))
+            .execute(mysql_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    base_db::sqlx::query(
+        "UPDATE gb28181_record SET status=CASE state WHEN 1 THEN 'COMPLETED' WHEN 2 THEN 'PARTIAL' WHEN 3 THEN 'FAILED' ELSE 'RUNNING' END WHERE status IS NULL",
+    )
+    .execute(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    base_db::sqlx::query(
+        "UPDATE gb28181_record r SET file_state=CASE WHEN EXISTS(SELECT 1 FROM gb28181_file_info f WHERE f.biz_id=r.biz_id AND COALESCE(f.is_del,0)=0) THEN 'READY' WHEN r.status='RUNNING' THEN 'WRITING' ELSE 'NONE' END WHERE file_state IS NULL",
+    )
+    .execute(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    for (name, columns, unique) in [
+        ("idx_gb28181_record_request_id", "request_id", true),
+        (
+            "idx_gb28181_record_channel_status",
+            "device_id, channel_id, status, ct DESC",
+            false,
+        ),
+        ("idx_gb28181_record_stream_id", "stream_id", false),
+    ] {
+        let found: Option<i64> = base_db::sqlx::query_scalar(
+            "SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='gb28181_record' AND index_name=? LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(mysql_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+        if found.is_none() {
+            let unique = if unique { "UNIQUE " } else { "" };
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "CREATE {unique}INDEX {name} ON gb28181_record ({columns})"
+            )))
+            .execute(mysql_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    let file_existing: Vec<String> = base_db::sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='gb28181_file_info'",
+    )
+    .fetch_all(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    for (name, definition) in [
+        ("storage_id", "varchar(64) NULL"),
+        ("file_state", "varchar(16) NULL"),
+        ("duration_ms", "bigint unsigned NOT NULL DEFAULT 0"),
+        ("mime_type", "varchar(64) NULL"),
+    ] {
+        if !file_existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_file_info ADD COLUMN {name} {definition}"
+            )))
+            .execute(mysql_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    let file_index: Option<i64> = base_db::sqlx::query_scalar(
+        "SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='gb28181_file_info' AND index_name='idx_gb28181_file_biz_id' LIMIT 1",
+    )
+    .fetch_optional(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    if file_index.is_none() {
+        base_db::sqlx::query(
+            "CREATE INDEX idx_gb28181_file_biz_id ON gb28181_file_info (biz_id, is_del, id DESC)",
+        )
+        .execute(mysql_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    }
     Ok(())
 }
 
@@ -323,6 +434,106 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
     }
     base_db::sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_device_epoch_state ON gb28181_sip_dialog_session (device_id, registration_epoch_id, state)",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    ensure_sqlite_cloud_recording_columns().await?;
+    Ok(())
+}
+
+#[cfg(feature = "db-sqlite")]
+async fn ensure_sqlite_cloud_recording_columns() -> GlobalResult<()> {
+    use base_db::sqlx::Row;
+    let rows = base_db::sqlx::query("PRAGMA table_info(gb28181_record)")
+        .fetch_all(sqlite_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    let existing: Vec<String> = rows
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    const COLUMNS: &[(&str, &str)] = &[
+        ("request_id", "VARCHAR(128) NULL"),
+        ("session_node_id", "VARCHAR(64) NULL"),
+        ("stream_id", "VARCHAR(64) NULL"),
+        ("status", "VARCHAR(16) NULL"),
+        ("file_state", "VARCHAR(16) NULL"),
+        ("recorded_duration_ms", "BIGINT NOT NULL DEFAULT 0"),
+        ("current_size_bytes", "BIGINT NOT NULL DEFAULT 0"),
+        ("terminal_reason", "VARCHAR(64) NULL"),
+        ("error_code", "VARCHAR(64) NULL"),
+        ("error_message", "VARCHAR(255) NULL"),
+        ("started_at", "DATETIME NULL"),
+        ("finished_at", "DATETIME NULL"),
+        ("deleted_at", "DATETIME NULL"),
+        ("version", "BIGINT NOT NULL DEFAULT 0"),
+    ];
+    for (name, definition) in COLUMNS {
+        if !existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_record ADD COLUMN {name} {definition}"
+            )))
+            .execute(sqlite_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    base_db::sqlx::query(
+        "UPDATE gb28181_record SET status=CASE state WHEN 1 THEN 'COMPLETED' WHEN 2 THEN 'PARTIAL' WHEN 3 THEN 'FAILED' ELSE 'RUNNING' END WHERE status IS NULL",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    base_db::sqlx::query(
+        "UPDATE gb28181_record SET file_state=CASE WHEN EXISTS(SELECT 1 FROM gb28181_file_info f WHERE f.biz_id=gb28181_record.biz_id AND COALESCE(f.is_del,0)=0) THEN 'READY' WHEN status='RUNNING' THEN 'WRITING' ELSE 'NONE' END WHERE file_state IS NULL",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    base_db::sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_gb28181_record_request_id ON gb28181_record (request_id)",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    base_db::sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_gb28181_record_channel_status ON gb28181_record (device_id, channel_id, status, ct DESC)",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    base_db::sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_gb28181_record_stream_id ON gb28181_record (stream_id)",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    let file_rows = base_db::sqlx::query("PRAGMA table_info(gb28181_file_info)")
+        .fetch_all(sqlite_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    let file_existing: Vec<String> = file_rows
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    for (name, definition) in [
+        ("storage_id", "VARCHAR(64) NULL"),
+        ("file_state", "VARCHAR(16) NULL"),
+        ("duration_ms", "BIGINT NOT NULL DEFAULT 0"),
+        ("mime_type", "VARCHAR(64) NULL"),
+    ] {
+        if !file_existing.iter().any(|column| column == name) {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE gb28181_file_info ADD COLUMN {name} {definition}"
+            )))
+            .execute(sqlite_pool())
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
+        }
+    }
+    base_db::sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_gb28181_file_biz_id ON gb28181_file_info (biz_id, is_del, id DESC)",
     )
     .execute(sqlite_pool())
     .await

@@ -195,12 +195,17 @@ CREATE TABLE IF NOT EXISTS `gb28181_file_info`  (
   `file_format` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '文件格式',
   `dir_path` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '(相对)存储路径',
   `abs_path` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '绝对路径',
+  `storage_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '共享存储标识',
+  `file_state` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '文件状态',
+  `duration_ms` bigint UNSIGNED NOT NULL DEFAULT 0 COMMENT '媒体时长毫秒',
+  `mime_type` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `note` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '注释',
   `is_del` int NULL DEFAULT 0 COMMENT '是否删除;1-是，0-否；默认0',
   `create_time` datetime NULL DEFAULT NULL COMMENT '创建时间',
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `dc_index`(`device_id` ASC, `channel_id` ASC) USING BTREE,
-  INDEX `idx_device_channel_id`(`device_id` ASC, `channel_id` ASC, `id` DESC) USING BTREE
+  INDEX `idx_device_channel_id`(`device_id` ASC, `channel_id` ASC, `id` DESC) USING BTREE,
+  INDEX `idx_gb28181_file_biz_id`(`biz_id` ASC, `is_del` ASC, `id` DESC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 16866 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '文件信息' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -234,6 +239,9 @@ CREATE TABLE IF NOT EXISTS `gb28181_oauth`  (
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS `gb28181_record`  (
   `biz_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '业务id',
+  `request_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '创建幂等键',
+  `session_node_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '所属Session节点',
+  `stream_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '录制期媒体流ID',
   `device_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '设备编号',
   `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道编号',
   `user_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '用户id',
@@ -244,7 +252,21 @@ CREATE TABLE IF NOT EXISTS `gb28181_record`  (
   `state` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '录制状态：0=进行，1=完成，2=录制部分，3=失败',
   `lt` datetime NULL DEFAULT NULL COMMENT '最后更新时间',
   `stream_app_name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '流媒体名称',
-  PRIMARY KEY (`biz_id`) USING BTREE
+  `status` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '任务状态',
+  `file_state` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '文件状态',
+  `recorded_duration_ms` bigint UNSIGNED NOT NULL DEFAULT 0,
+  `current_size_bytes` bigint UNSIGNED NOT NULL DEFAULT 0,
+  `terminal_reason` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `error_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `error_message` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `started_at` datetime NULL DEFAULT NULL,
+  `finished_at` datetime NULL DEFAULT NULL,
+  `deleted_at` datetime NULL DEFAULT NULL,
+  `version` bigint UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (`biz_id`) USING BTREE,
+  UNIQUE INDEX `idx_gb28181_record_request_id` (`request_id` ASC) USING BTREE,
+  INDEX `idx_gb28181_record_channel_status` (`device_id` ASC, `channel_id` ASC, `status` ASC, `ct` DESC) USING BTREE,
+  INDEX `idx_gb28181_record_stream_id` (`stream_id` ASC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '云端录像' ROW_FORMAT = Dynamic;
 
 -- ----------------------------

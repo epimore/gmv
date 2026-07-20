@@ -204,6 +204,7 @@ const emit = defineEmits<{
   snapshotError: [{ message: string }];
   recordStart: [{ deviceId?: string; channelId?: string }];
   recordStop: [{ deviceId?: string; channelId?: string }];
+  cloudRecordRequest: [];
   ptz: [GmvPtzCommand];
   presetCall: [{ presetId: string }];
   presetSet: [{ presetId: string }];
@@ -813,6 +814,9 @@ function handleControlAction(action: GmvPlayerControlAction) {
       break;
     case 'record-toggle':
       toggleRecord();
+      break;
+    case 'cloud-record-request':
+      emit('cloudRecordRequest');
       break;
     case 'talk-toggle':
       toggleTalk();

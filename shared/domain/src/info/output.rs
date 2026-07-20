@@ -45,6 +45,10 @@ pub struct LocalMp4Output {
     pub path: String,
     #[serde(default)]
     pub token: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub min_free_bytes: u64,
 }
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]

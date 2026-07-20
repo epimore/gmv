@@ -20,6 +20,7 @@ axum = { version = "0.8", features = ["ws"] }
 axum-server = { workspace = true, features = ["tls-rustls"] }
 rtp-types = "0.1"
 socket2 = "0.6"
+fs2 = "0.4"
 
 # 共享依赖
 parking_lot.workspace = true

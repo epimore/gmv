@@ -13,6 +13,7 @@ use base::tokio_util::sync::CancellationToken;
 use gmv_domain::info::res::Resp;
 use std::net::SocketAddr;
 
+pub(crate) mod cloud_recording;
 mod edge;
 
 #[derive(Debug, Deserialize)]
@@ -98,7 +99,9 @@ impl Http {
 }
 
 pub(crate) fn routes() -> Router {
-    Router::new().nest("/edge", edge::routes())
+    Router::new()
+        .nest("/edge", edge::routes())
+        .merge(cloud_recording::routes())
 }
 
 pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {

@@ -75,4 +75,8 @@ server:
         enable: false #是否开启告警事件上报guard，默认false
         priority: 4 #告警等级 1-4,默认最低4
     download:
-        storage_path: ./videos/down #云端录像下载临时存储地址；guard统一管理业务记录，session只保留本地输出路径
+        storage_path: ./videos/down #云端录像共享存储根目录；Session持有任务、文件读取与删除事实
+        storage_id: cloud-recording-main
+        min_free_bytes: 2147483648
+        access_ticket_idle_ttl_secs: 300
+        access_ticket_max_ttl_secs: 21600

@@ -134,6 +134,31 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
 }
 
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
+    download_inner(play_back_model, token, None, false).await
+}
+
+pub async fn download_for_task(
+    play_back_model: PlayBackModel,
+    token: String,
+    task_id: Option<&str>,
+) -> GlobalResult<StreamInfo> {
+    download_inner(play_back_model, token, task_id, false).await
+}
+
+pub async fn download_for_task_with_setup_lock(
+    play_back_model: PlayBackModel,
+    token: String,
+    task_id: &str,
+) -> GlobalResult<StreamInfo> {
+    download_inner(play_back_model, token, Some(task_id), true).await
+}
+
+async fn download_inner(
+    play_back_model: PlayBackModel,
+    token: String,
+    task_id: Option<&str>,
+    setup_lock_held: bool,
+) -> GlobalResult<StreamInfo> {
     let device_id = &play_back_model.device_id;
     if !Register::has_session(device_id) {
         return Err(GlobalError::new_biz_error(
@@ -145,9 +170,15 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     let channel_id = play_back_model.channel_id.as_ref().unwrap_or(device_id);
     let am = AccessMode::Down;
     let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
-    let _setup_guard = setup_lock.lock().await;
+    let _setup_guard = if setup_lock_held {
+        None
+    } else {
+        Some(setup_lock.lock().await)
+    };
 
-    if crate::guard_integration::guard_record_running(device_id, channel_id).await? {
+    if task_id.is_none()
+        && crate::guard_integration::guard_record_running(device_id, channel_id).await?
+    {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::AlreadyExists.code(),
             "任务已存在",
@@ -183,6 +214,10 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
                 fmt: Mp4::default(),
                 path: abs_path.clone(),
                 token: Some(token.clone()),
+                file_name: task_id.map(ToString::to_string),
+                min_free_bytes: task_id
+                    .map(|_| DownloadConf::get_download_conf().min_free_bytes)
+                    .unwrap_or_default(),
             }),
             codec: None,
             transcode: None,
@@ -192,6 +227,10 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
         OutputKind::LocalMp4(output) => {
             output.path = abs_path;
             output.token = Some(token.clone());
+            if let Some(task_id) = task_id {
+                output.file_name = Some(task_id.to_string());
+                output.min_free_bytes = DownloadConf::get_download_conf().min_free_bytes;
+            }
         }
         _ => {
             return Err(GlobalError::new_biz_error(
@@ -214,13 +253,15 @@ pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalRe
     )
     .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token.clone());
-    if let Err(err) = crate::guard_integration::guard_record_started(
-        &stream_id, device_id, channel_id, st as i64, et as i64, 1, &node_name,
-    )
-    .await
-    {
-        stream_close::begin(stream_id.clone());
-        return Err(err);
+    if task_id.is_none() {
+        if let Err(err) = crate::guard_integration::guard_record_started(
+            &stream_id, device_id, channel_id, st as i64, et as i64, 1, &node_name,
+        )
+        .await
+        {
+            stream_close::begin(stream_id.clone());
+            return Err(err);
+        }
     }
     let info =
         StreamInfo::build_with_codecs(stream_id, proxy_addr, output, video_codec, audio_codec)?;

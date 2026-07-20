@@ -411,11 +411,18 @@ impl StreamMetadata {
                 None
             }
             OutputKind::LocalMp4(info) => {
+                let file_name = info
+                    .file_name
+                    .filter(|value| !value.trim().is_empty())
+                    .map(Arc::<str>::from)
+                    .unwrap_or_else(|| stream_id.clone());
                 let context = LocalStoreMp4Context {
                     path: info.path,
                     token: info.token,
                     ssrc,
-                    file_name: stream_id.clone(),
+                    stream_id: stream_id.clone(),
+                    file_name,
+                    min_free_bytes: info.min_free_bytes,
                     pkt_rx: self.converter.muxer.get_rx(MuxerEnum::Mp4).unwrap(),
                     record_event_tx: event_tx,
                     inner_event_rx: self

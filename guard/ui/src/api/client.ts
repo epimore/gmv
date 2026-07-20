@@ -278,6 +278,18 @@ export interface GbRecordQueryBatchInfo { batch_id: string; status: GbRecordQuer
 export interface GbRecordSegmentInfo { segment_id: number; batch_id: string; device_id: string; channel_id: string; remote_device_id: string; name: string; file_path: string; address: string; start_time_sec: number; end_time_sec: number; secrecy: number; record_type: string; recorder_id: string; file_size: number }
 export interface GbChannelRecordsInfo { current_batch: GbRecordQueryBatchInfo | null; attempt_batch: GbRecordQueryBatchInfo | null; segments: GbRecordSegmentInfo[]; next_query_at_ms: number; server_time_ms: number }
 export interface GbRecordQueryPayload { request_id: string; session_node_id: string; start_time_sec: number; end_time_sec: number }
+export type CloudRecordingStatus = 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'STOPPED' | 'PARTIAL' | 'FAILED' | 'DELETING' | 'DELETED';
+export type CloudRecordingFileState = 'NONE' | 'WRITING' | 'READY' | 'MISSING' | 'DELETED';
+export interface CloudRecordingSummary {
+  task_id: string; request_id: string; session_node_id: string; device_id: string; channel_id: string;
+  start_time_sec: number; end_time_sec: number; requested_duration_sec: number; status: CloudRecordingStatus;
+  file_state: CloudRecordingFileState; progress_percent: number; recorded_duration_ms: number; progress_stale: boolean;
+  current_size_bytes: number; final_size_bytes: number; file_format: string; requested_by: string;
+  created_at_ms: number; started_at_ms: number; finished_at_ms: number; updated_at_ms: number;
+  error_code: string; error_message: string; can_stop: boolean; can_play: boolean; can_download: boolean; can_delete: boolean;
+}
+export interface CloudRecordingList { items: CloudRecordingSummary[]; total: number; page: number; page_size: number }
+export interface CloudRecordingAccess { url: string; expires_at_ms: number; content_type: string; file_name: string; file_size: number }
 export interface GbStreamPayload { request_id: string; session_node_id?: string; token?: string; start_time_sec?: number; end_time_sec?: number; playback_id?: string; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
 export interface GbBroadcastPayload extends GbStreamPayload { channel_id: string; talk_codec: 'PCMA'; talk_sample_rate: 8000; talk_channel_count: 1; talk_frame_duration_ms: 20 }
 
@@ -308,6 +320,12 @@ export const updateGbChannel = (deviceId: string, channelId: string, payload: Gb
 export const listGbChannelImages = (deviceId: string, channelId: string) => request<GbChannelImageInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/images');
 export const getGbChannelRecords = (deviceId: string, channelId: string, sessionNodeId: string) => request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records?session_node_id=' + gbPath(sessionNodeId));
 export const queryGbChannelRecords = (deviceId: string, channelId: string, payload: GbRecordQueryPayload) => request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records/query', { method: 'POST', body: JSON.stringify(payload) });
+export const createCloudRecording = (deviceId: string, channelId: string, payload: { request_id: string; session_node_id: string; start_time_sec: number; end_time_sec: number }) => request<CloudRecordingSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/cloud-recordings', { method: 'POST', body: JSON.stringify(payload) });
+export const listCloudRecordings = (deviceId: string, channelId: string, sessionNodeId: string, page = 1, pageSize = 50) => request<CloudRecordingList>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/cloud-recordings?session_node_id=' + gbPath(sessionNodeId) + '&page=' + page + '&page_size=' + pageSize);
+export const getCloudRecording = (taskId: string) => request<CloudRecordingSummary>('/gb28181/cloud-recordings/' + gbPath(taskId));
+export const stopCloudRecording = (taskId: string, requestId: string) => request<CloudRecordingSummary>('/gb28181/cloud-recordings/' + gbPath(taskId) + '/stop', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
+export const deleteCloudRecording = (taskId: string, requestId: string) => request<CloudRecordingSummary>('/gb28181/cloud-recordings/' + gbPath(taskId) + '/delete', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
+export const issueCloudRecordingAccess = (taskId: string, mode: 'inline' | 'attachment') => request<CloudRecordingAccess>('/gb28181/cloud-recordings/' + gbPath(taskId) + '/access', { method: 'POST', body: JSON.stringify({ mode }) });
 export async function startGbPreview(
   deviceId: string,
   channelId: string,

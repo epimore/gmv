@@ -10,15 +10,19 @@ use gmv_protocol::common::v1::{
 };
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, CreateGbDeviceRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
-    GbChannelImage, GbDevice, GbResource, GetGbChannelRecordsRequest, GetGbChannelRecordsResponse,
-    GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest, ListGbChannelImagesRequest,
-    ListGbChannelsRequest, ListGbDevicesRequest, ListGbResourcesRequest, PlaybackPresenceHeartbeat,
+    CloudRecordingSummary, ControlPtzRequest, CreateCloudRecordingRequest, CreateGbDeviceRequest,
+    DeleteCloudRecordingRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
+    GbChannelImage, GbDevice, GbResource, GetCloudRecordingRequest, GetGbChannelRecordsRequest,
+    GetGbChannelRecordsResponse, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
+    IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    ListCloudRecordingsRequest, ListGbChannelImagesRequest, ListGbChannelsRequest,
+    ListGbDevicesRequest, ListGbResourcesRequest, PlaybackPresenceHeartbeat,
     PlaybackPresenceHeartbeatResult, PlaybackState, QueryGbChannelRecordsRequest,
     RefreshPlaybackPresenceRequest, ResetGbResourceConfirmationRequest,
     SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
     SetPlaybackStateRequest, SnapshotImageRequest, StartDeviceStreamRequest,
-    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbDeviceRequest,
+    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbDeviceRequest,
 };
 use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
 use gmv_protocol::stream::v1::{
@@ -176,6 +180,221 @@ impl<'a> RpcEdge<'a> {
 }
 
 impl BusinessControl {
+    pub async fn create_cloud_recording(
+        &self,
+        request: CreateCloudRecordingRequest,
+    ) -> GuardResult<CloudRecordingSummary> {
+        let session = self
+            .store
+            .get_node(&request.session_node_id)
+            .ok_or_else(|| {
+                GuardError::NotFound(format!("session node {}", request.session_node_id))
+            })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {}",
+                request.session_node_id
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable(
+                "session",
+                "create_cloud_recording",
+                &session.identity.node_id,
+            ));
+        }
+        let operation_id = request.request_id.clone();
+        let resource_id = format!("{}:{}", request.device_id, request.channel_id);
+        let mut client = self.session_client(&session).await?;
+        let edge = RpcEdge::new(
+            "session",
+            "create_cloud_recording",
+            &session.identity.node_id,
+            &operation_id,
+            &resource_id,
+        );
+        let response = edge.response(client.create_cloud_recording(request).await)?;
+        let recording = response.recording.ok_or_else(|| {
+            edge.invalid_response("empty_cloud_recording");
+            GuardError::Conflict("session returned empty cloud recording".to_string())
+        })?;
+        edge.success();
+        Ok(recording)
+    }
+
+    pub async fn list_cloud_recordings(
+        &self,
+        session_node_id: &str,
+        request: ListCloudRecordingsRequest,
+    ) -> GuardResult<(Vec<CloudRecordingSummary>, u64, u32, u32)> {
+        let session = self
+            .store
+            .get_node(session_node_id)
+            .ok_or_else(|| GuardError::NotFound(format!("session node {session_node_id}")))?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected
+            || session.scheduling != SchedulingState::Enabled
+        {
+            return Err(node_unavailable(
+                "session",
+                "list_cloud_recordings",
+                session_node_id,
+            ));
+        }
+        let mut client = self.session_client(&session).await?;
+        let resource_id = request.device_id.clone();
+        let edge = RpcEdge::new(
+            "session",
+            "list_cloud_recordings",
+            session_node_id,
+            "",
+            &resource_id,
+        );
+        let response = edge.response(client.list_cloud_recordings(request).await)?;
+        edge.success();
+        Ok((
+            response.recordings,
+            response.total,
+            response.page,
+            response.page_size,
+        ))
+    }
+
+    pub async fn get_cloud_recording(&self, task_id: &str) -> GuardResult<CloudRecordingSummary> {
+        self.cloud_recording_session(task_id)
+            .await
+            .map(|value| value.1)
+    }
+
+    pub async fn stop_cloud_recording(
+        &self,
+        task_id: &str,
+        request_id: &str,
+    ) -> GuardResult<CloudRecordingSummary> {
+        let (session, _) = self.cloud_recording_session(task_id).await?;
+        let mut client = self.session_client(&session).await?;
+        let edge = RpcEdge::new(
+            "session",
+            "stop_cloud_recording",
+            &session.identity.node_id,
+            request_id,
+            task_id,
+        );
+        let response = edge.response(
+            client
+                .stop_cloud_recording(StopCloudRecordingRequest {
+                    operation: Some(OperationRef {
+                        operation_id: request_id.to_string(),
+                        idempotency_key: request_id.to_string(),
+                    }),
+                    task_id: task_id.to_string(),
+                    request_id: request_id.to_string(),
+                })
+                .await,
+        )?;
+        edge.success();
+        response.recording.ok_or_else(|| {
+            GuardError::Conflict("session returned empty cloud recording".to_string())
+        })
+    }
+
+    pub async fn delete_cloud_recording(
+        &self,
+        task_id: &str,
+        request_id: &str,
+    ) -> GuardResult<CloudRecordingSummary> {
+        let (session, _) = self.cloud_recording_session(task_id).await?;
+        let mut client = self.session_client(&session).await?;
+        let edge = RpcEdge::new(
+            "session",
+            "delete_cloud_recording",
+            &session.identity.node_id,
+            request_id,
+            task_id,
+        );
+        let response = edge.response(
+            client
+                .delete_cloud_recording(DeleteCloudRecordingRequest {
+                    operation: Some(OperationRef {
+                        operation_id: request_id.to_string(),
+                        idempotency_key: request_id.to_string(),
+                    }),
+                    task_id: task_id.to_string(),
+                    request_id: request_id.to_string(),
+                })
+                .await,
+        )?;
+        edge.success();
+        response.recording.ok_or_else(|| {
+            GuardError::Conflict("session returned empty cloud recording".to_string())
+        })
+    }
+
+    pub async fn issue_cloud_recording_access(
+        &self,
+        task_id: &str,
+        operation_id: &str,
+        mode: &str,
+    ) -> GuardResult<IssueCloudRecordingAccessResponse> {
+        let (session, _) = self.cloud_recording_session(task_id).await?;
+        let mut client = self.session_client(&session).await?;
+        let edge = RpcEdge::new(
+            "session",
+            "issue_cloud_recording_access",
+            &session.identity.node_id,
+            operation_id,
+            task_id,
+        );
+        let response = edge.response(
+            client
+                .issue_cloud_recording_access(IssueCloudRecordingAccessRequest {
+                    operation: Some(OperationRef {
+                        operation_id: operation_id.to_string(),
+                        idempotency_key: String::new(),
+                    }),
+                    task_id: task_id.to_string(),
+                    mode: mode.to_string(),
+                })
+                .await,
+        )?;
+        edge.success();
+        Ok(response)
+    }
+
+    async fn cloud_recording_session(
+        &self,
+        task_id: &str,
+    ) -> GuardResult<(NodeRecord, CloudRecordingSummary)> {
+        for session in self.session_nodes() {
+            let Ok(mut client) = self.session_client(&session).await else {
+                continue;
+            };
+            match client
+                .get_cloud_recording(GetCloudRecordingRequest {
+                    task_id: task_id.to_string(),
+                })
+                .await
+            {
+                Ok(response) => {
+                    if let Some(recording) = response.into_inner().recording {
+                        return Ok((session, recording));
+                    }
+                }
+                Err(status) if status.code() == tonic::Code::NotFound => continue,
+                Err(status) => {
+                    return Err(node_rpc_status("session", "get_cloud_recording", status));
+                }
+            }
+        }
+        Err(GuardError::NotFound(format!("cloud recording {task_id}")))
+    }
+
     pub fn new(store: InMemoryGuardStore) -> Self {
         Self { store }
     }

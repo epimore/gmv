@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('录像片段弹窗只在点击更新后发起设备查询', async ({ page }) => {
   let recordQueries = 0;
+  let cloudRecordingLists = 0;
   let recordQueryRange: { start_time_sec: number; end_time_sec: number } | undefined;
   const session = {
     username: 'operator',
@@ -67,6 +68,10 @@ test('录像片段弹窗只在点击更新后发起设备查询', async ({ page 
       status = 202;
       body = { ...current, attempt_batch: { batch_id: 'new', status: 'QUERYING', start_time_sec: 1_753_000_000, end_time_sec: 1_753_003_600, created_at_ms: Date.now() } };
     } else if (path.endsWith('/records')) body = current;
+    else if (path.endsWith('/cloud-recordings')) {
+      cloudRecordingLists += 1;
+      body = { items: [], total: 0, page: 1, page_size: 50 };
+    }
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
   });
 
@@ -87,4 +92,9 @@ test('录像片段弹窗只在点击更新后发起设备查询', async ({ page 
   await expect.poll(() => recordQueries).toBe(1);
   expect(recordQueryRange!.end_time_sec - recordQueryRange!.start_time_sec).toBe(7 * 24 * 60 * 60);
   await expect(page.getByText('设备录像正在更新，当前仍展示上一次完整结果')).toBeVisible();
+
+  await page.getByRole('button', { name: '云端录像', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '云端录像' })).toBeVisible();
+  await expect.poll(() => cloudRecordingLists).toBe(1);
+  await expect(page.getByText('暂无云端录像任务')).toBeVisible();
 });

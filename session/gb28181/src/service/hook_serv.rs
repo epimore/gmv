@@ -359,22 +359,18 @@ fn get_path(path_file_name: &str) -> GlobalResult<(String, String, String, Strin
         .to_str()
         .ok_or_else(invalid_file_name_error)?
         .to_string();
-    let p_path = path.parent().ok_or_else(invalid_file_name_error)?;
-    let l_path1 = p_path.file_name().ok_or_else(invalid_file_name_error)?;
-    let p_path = p_path.parent().ok_or_else(invalid_file_name_error)?;
-    let l_path2 = p_path.file_name().ok_or_else(invalid_file_name_error)?;
-    let d_path = DownloadConf::get_download_conf().storage_path;
-    let dir_path = Path::new(&d_path)
-        .join(l_path2)
-        .join(l_path1)
+    let parent = path.parent().ok_or_else(invalid_file_name_error)?;
+    let storage_root = Path::new(&DownloadConf::get_download_conf().storage_path)
+        .canonicalize()
+        .hand_log(|msg| error!("{msg}"))?;
+    let canonical_parent = parent.canonicalize().hand_log(|msg| error!("{msg}"))?;
+    let dir_path = canonical_parent
+        .strip_prefix(&storage_root)
+        .map_err(|_| invalid_file_name_error())?
         .to_str()
         .ok_or_else(invalid_file_name_error)?
         .to_string();
-    let abs_path = p_path
-        .to_str()
-        .ok_or_else(invalid_file_name_error)?
-        .to_string();
-    Ok((abs_path, dir_path, biz_id, extension))
+    Ok((String::new(), dir_path, biz_id, extension))
 }
 
 fn invalid_file_name_error() -> GlobalError {

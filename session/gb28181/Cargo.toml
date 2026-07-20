@@ -27,6 +27,7 @@ parking_lot.workspace = true
 regex.workspace = true
 url.workspace = true
 uuid.workspace = true
+fs2 = "0.4"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

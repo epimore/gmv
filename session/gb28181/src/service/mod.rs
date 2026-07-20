@@ -1,4 +1,5 @@
 pub mod api_serv;
+pub mod cloud_recording;
 pub mod dialog_epoch;
 pub mod dialog_recovery;
 pub mod edge_serv;

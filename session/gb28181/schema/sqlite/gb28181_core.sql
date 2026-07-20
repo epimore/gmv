@@ -197,6 +197,10 @@ CREATE TABLE IF NOT EXISTS gb28181_file_info (
     file_format VARCHAR(32) NULL,
     dir_path VARCHAR(255) NOT NULL,
     abs_path VARCHAR(255) NULL,
+    storage_id VARCHAR(64) NULL,
+    file_state VARCHAR(16) NULL,
+    duration_ms BIGINT NOT NULL DEFAULT 0,
+    mime_type VARCHAR(64) NULL,
     note VARCHAR(128) NULL,
     is_del INTEGER NULL DEFAULT 0,
     create_time DATETIME NULL
@@ -204,9 +208,13 @@ CREATE TABLE IF NOT EXISTS gb28181_file_info (
 
 CREATE INDEX IF NOT EXISTS idx_gb28181_file_dc ON gb28181_file_info (device_id, channel_id);
 CREATE INDEX IF NOT EXISTS idx_gb28181_file_device_channel_id ON gb28181_file_info (device_id, channel_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_gb28181_file_biz_id ON gb28181_file_info (biz_id, is_del, id DESC);
 
 CREATE TABLE IF NOT EXISTS gb28181_record (
     biz_id VARCHAR(128) NOT NULL PRIMARY KEY,
+    request_id VARCHAR(128) NULL,
+    session_node_id VARCHAR(64) NULL,
+    stream_id VARCHAR(64) NULL,
     device_id VARCHAR(20) NOT NULL,
     channel_id VARCHAR(20) NOT NULL,
     user_id VARCHAR(32) NULL,
@@ -216,8 +224,23 @@ CREATE TABLE IF NOT EXISTS gb28181_record (
     ct DATETIME NULL,
     state INTEGER NULL,
     lt DATETIME NULL,
-    stream_app_name VARCHAR(64) NULL
+    stream_app_name VARCHAR(64) NULL,
+    status VARCHAR(16) NULL,
+    file_state VARCHAR(16) NULL,
+    recorded_duration_ms BIGINT NOT NULL DEFAULT 0,
+    current_size_bytes BIGINT NOT NULL DEFAULT 0,
+    terminal_reason VARCHAR(64) NULL,
+    error_code VARCHAR(64) NULL,
+    error_message VARCHAR(255) NULL,
+    started_at DATETIME NULL,
+    finished_at DATETIME NULL,
+    deleted_at DATETIME NULL,
+    version BIGINT NOT NULL DEFAULT 0
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gb28181_record_request_id ON gb28181_record (request_id);
+CREATE INDEX IF NOT EXISTS idx_gb28181_record_channel_status ON gb28181_record (device_id, channel_id, status, ct DESC);
+CREATE INDEX IF NOT EXISTS idx_gb28181_record_stream_id ON gb28181_record (stream_id);
 
 CREATE TABLE IF NOT EXISTS gb28181_sip_dialog_session (
     stream_id VARCHAR(64) NOT NULL PRIMARY KEY,

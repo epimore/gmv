@@ -157,6 +157,14 @@
           {{ state.recording ? "停录像" : "录像" }}
         </button>
         <button
+          v-else-if="control === 'cloudRecord'"
+          type="button"
+          aria-label="打开云端录像"
+          @click="emitSimple('cloud-record-request')"
+        >
+          云端录像
+        </button>
+        <button
           v-else-if="control === 'talk'"
           type="button"
           :disabled="capabilities.talk === false"
@@ -300,6 +308,14 @@
           @click="emitSimple('record-toggle', true)"
         >
           {{ state.recording ? "停录像" : "录像" }}
+        </button>
+        <button
+          v-else-if="control === 'cloudRecord'"
+          type="button"
+          aria-label="打开云端录像"
+          @click="emitSimple('cloud-record-request', true)"
+        >
+          云端录像
         </button>
         <button
           v-else-if="control === 'talk'"
@@ -643,6 +659,7 @@ function emitSimple(
         | "fullscreen-toggle"
         | "ptz-toggle"
         | "record-toggle"
+        | "cloud-record-request"
         | "talk-toggle";
     }
   >["type"],

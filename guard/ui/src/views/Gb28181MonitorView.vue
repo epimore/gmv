@@ -417,6 +417,7 @@
       </div>
       <template #footer>
         <el-button @click="playbackRangeDialog = false">取消</el-button>
+        <el-button :disabled="!pendingPlaybackChannel" @click="openCloudRecordings(pendingPlaybackChannel)">云端录像</el-button>
         <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始回放</el-button>
       </template>
     </el-dialog>
@@ -438,6 +439,7 @@
             :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
             @snapshot="handleSingleSnapshot" @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz"
             @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
+            @cloud-record-request="openCloudRecordings(selectedChannel)"
             @playback-switch-cancel="handleSinglePlaybackSwitchCancel"
             @playback-rate-change="handlePlaybackRateChange" @playback-seek="handlePlaybackSeek"
             @playback-state-change="handlePlaybackStateChange" @playback-progress="handlePlaybackProgress" />
@@ -452,6 +454,44 @@
       </div>
       <el-empty v-else description="选择在线通道后播放" />
     </el-dialog>
+
+    <el-drawer v-model="cloudRecordingDrawer" title="云端录像" size="760px" class="cloud-recording-drawer">
+      <div class="cloud-recording-content" v-loading="cloudRecordingLoading">
+        <div class="cloud-recording-toolbar">
+          <div>
+            <b>{{ cloudRecordingChannelTitle }}</b>
+            <small v-if="playbackRange">当前选择：{{ formatRecordRange(Math.floor(playbackRange[0].getTime() / 1000), Math.floor(playbackRange[1].getTime() / 1000)) }}</small>
+          </div>
+          <div>
+            <el-button :loading="cloudRecordingCreating" :disabled="!canOperate || !playbackRange"
+              type="primary" @click="createSelectedCloudRecording">创建当前时段任务</el-button>
+            <el-button :loading="cloudRecordingLoading" @click="loadCloudRecordings">刷新</el-button>
+          </div>
+        </div>
+        <el-table :data="cloudRecordings" empty-text="暂无云端录像任务">
+          <el-table-column label="下载时段" min-width="205">
+            <template #default="{ row }">{{ formatRecordRange(row.start_time_sec, row.end_time_sec) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }"><el-tag :type="cloudStatusTag(row.status)">{{ cloudStatusText(row.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="进度" width="130">
+            <template #default="{ row }"><el-progress :percentage="row.progress_percent" :stroke-width="8" /></template>
+          </el-table-column>
+          <el-table-column label="文件大小" width="110">
+            <template #default="{ row }">{{ formatBytes(row.final_size_bytes || row.current_size_bytes) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="235" fixed="right">
+            <template #default="{ row }">
+              <el-button v-if="row.can_stop" type="warning" link :disabled="!canOperate" @click="stopCloudTask(row)">停止</el-button>
+              <el-button type="primary" link :disabled="!row.can_play" @click="playCloudTask(row)">播放</el-button>
+              <el-button type="primary" link :disabled="!row.can_download" @click="downloadCloudTask(row)">下载</el-button>
+              <el-button type="danger" link :disabled="!canOperate || !row.can_delete" @click="deleteCloudTask(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </el-drawer>
 
     <el-drawer v-model="configDrawer" title="相机业务配置" size="420px" class="camera-config-drawer" destroy-on-close>
       <el-form :model="configForm" label-width="110px" class="config-form">
@@ -540,15 +580,19 @@ import {
   cancelMediaOperation,
   closeStreamOutput,
   continueMediaOperation,
+  createCloudRecording,
   createStreamOutput,
+  deleteCloudRecording,
   getMediaTransport,
   getGbSessionNodeConfig,
   getGbChannelRecords,
   heartbeatGbPlaybackPresence,
+  issueCloudRecordingAccess,
   listGbChannelImages,
   listGbChannels,
   listGbDevicePage,
   listGbResources,
+  listCloudRecordings,
   listNodes,
   queryGbChannelRecords,
   releaseStream,
@@ -560,6 +604,7 @@ import {
   setGbPlaybackState,
   startGbPlayback,
   startGbPreview,
+  stopCloudRecording,
   takeGbSnapshot,
   updateGbChannel,
   type GbChannelImageInfo,
@@ -571,6 +616,8 @@ import {
   type GbRecordSegmentInfo,
   type GbResourceInfo,
   type GbSessionConfigInfo,
+  type CloudRecordingStatus,
+  type CloudRecordingSummary,
   type NodeInfo,
   type MediaOperationSummary,
   type PlaybackPresenceHeartbeatItem,
@@ -643,6 +690,12 @@ const coverUrl = ref('');
 const playbackRangeDialog = ref(false);
 const playbackRange = ref<[Date, Date]>();
 const pendingPlaybackChannel = ref<GbChannelInfo>();
+const cloudRecordingDrawer = ref(false);
+const cloudRecordingLoading = ref(false);
+const cloudRecordingCreating = ref(false);
+const cloudRecordingChannel = ref<GbChannelInfo>();
+const cloudRecordings = ref<CloudRecordingSummary[]>([]);
+let cloudRecordingPollTimer: number | undefined;
 const recordQueryRange = ref<[Date, Date]>();
 const recordRangeMode = ref<'week' | 'month' | 'custom'>('custom');
 const recordState = ref<GbChannelRecordsInfo>();
@@ -713,6 +766,10 @@ let playbackPresenceInFlight = false;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 const canManageResources = computed(() => auth.session?.role === 'admin');
+const cloudRecordingChannelTitle = computed(() => {
+  const channel = cloudRecordingChannel.value;
+  return channel ? `${displayChannelName(channel)} · ${channel.channel_id}` : '当前通道';
+});
 const recordQuerying = computed(() => recordState.value?.attempt_batch?.status === 'QUERYING');
 const recordRetryAfterSec = computed(() => Math.max(0, Math.ceil(((recordState.value?.next_query_at_ms || 0) - recordNowMs.value) / 1000)));
 const recordUpdateDisabled = computed(() => !canOperate.value || recordQuerying.value || recordUpdating.value || recordRetryAfterSec.value > 0);
@@ -985,6 +1042,7 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   if (channel && canAudio(channel)) overflowItems.push('audio');
   if (!playback && channel && canPtz(channel)) overflowItems.push('ptz');
   if (playback && channel && canPlayback(channel)) overflowItems.push('playbackRate');
+  if (playback && channel) overflowItems.push('cloudRecord');
   return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000, playbackRates: [0.5, 1, 2, 4] };
 });
 const playbackDurationMs = computed(() => {
@@ -2704,6 +2762,145 @@ watch(playbackRangeDialog, (open) => {
   if (!open) stopRecordPolling();
 });
 
+watch(cloudRecordingDrawer, (open) => {
+  if (cloudRecordingPollTimer !== undefined) window.clearTimeout(cloudRecordingPollTimer);
+  cloudRecordingPollTimer = undefined;
+  if (open) void loadCloudRecordings();
+});
+
+function cloudSessionNodeId(): string {
+  return lastStream.value?.session_node_id || selectedDevice.value?.session_node_id || selectedListNodeId.value;
+}
+
+function openCloudRecordings(channel?: GbChannelInfo) {
+  const target = channel || selectedChannel.value || pendingPlaybackChannel.value;
+  if (!target) {
+    ElMessage.warning('请先选择通道');
+    return;
+  }
+  cloudRecordingChannel.value = target;
+  if (playbackRangeDialog.value) playbackRangeDialog.value = false;
+  cloudRecordingDrawer.value = true;
+}
+
+async function loadCloudRecordings() {
+  const channel = cloudRecordingChannel.value;
+  const sessionNodeId = cloudSessionNodeId();
+  if (!cloudRecordingDrawer.value || !channel || !sessionNodeId || cloudRecordingLoading.value) return;
+  cloudRecordingLoading.value = true;
+  try {
+    const result = await listCloudRecordings(channel.device_id, channel.channel_id, sessionNodeId);
+    cloudRecordings.value = result.items;
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '云端录像列表加载失败'));
+  } finally {
+    cloudRecordingLoading.value = false;
+  }
+  if (cloudRecordingDrawer.value && cloudRecordings.value.some((item) => ['STARTING', 'RUNNING', 'STOPPING'].includes(item.status))) {
+    cloudRecordingPollTimer = window.setTimeout(() => void loadCloudRecordings(), 2000);
+  }
+}
+
+async function createSelectedCloudRecording() {
+  const channel = cloudRecordingChannel.value;
+  const range = playbackRange.value;
+  const sessionNodeId = cloudSessionNodeId();
+  if (!channel || !range || !sessionNodeId) {
+    ElMessage.warning('请选择有效的录像时段');
+    return;
+  }
+  const startTimeSec = Math.floor(range[0].getTime() / 1000);
+  const endTimeSec = Math.floor(range[1].getTime() / 1000);
+  if (startTimeSec >= endTimeSec || endTimeSec - startTimeSec > 7200) {
+    ElMessage.warning('云端录像时段必须大于 0 且不超过 2 小时');
+    return;
+  }
+  cloudRecordingCreating.value = true;
+  try {
+    await createCloudRecording(channel.device_id, channel.channel_id, {
+      request_id: `ui-cloud-recording-${Date.now()}`,
+      session_node_id: sessionNodeId,
+      start_time_sec: startTimeSec,
+      end_time_sec: endTimeSec,
+    });
+    ElMessage.success('云端录像任务已创建');
+    await loadCloudRecordings();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '云端录像任务创建失败'));
+  } finally {
+    cloudRecordingCreating.value = false;
+  }
+}
+
+async function stopCloudTask(task: CloudRecordingSummary) {
+  try {
+    await stopCloudRecording(task.task_id, `ui-cloud-recording-stop-${Date.now()}`);
+    ElMessage.success('已提交停止请求，正在封装可播放文件');
+    await loadCloudRecordings();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '停止云端录像失败'));
+  }
+}
+
+async function deleteCloudTask(task: CloudRecordingSummary) {
+  try {
+    await ElMessageBox.confirm('将物理删除服务器上的录像文件，是否继续？', '删除云端录像', { type: 'warning' });
+    await deleteCloudRecording(task.task_id, `ui-cloud-recording-delete-${Date.now()}`);
+    ElMessage.success('云端录像文件已删除');
+    await loadCloudRecordings();
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return;
+    ElMessage.error(errorMessage(error, '删除云端录像失败'));
+  }
+}
+
+async function playCloudTask(task: CloudRecordingSummary) {
+  const tab = window.open('about:blank', '_blank');
+  try {
+    const access = await issueCloudRecordingAccess(task.task_id, 'inline');
+    if (tab) tab.location.href = access.url;
+    else window.open(access.url, '_blank');
+  } catch (error) {
+    tab?.close();
+    ElMessage.error(errorMessage(error, '获取录像播放地址失败'));
+  }
+}
+
+async function downloadCloudTask(task: CloudRecordingSummary) {
+  try {
+    const access = await issueCloudRecordingAccess(task.task_id, 'attachment');
+    const link = document.createElement('a');
+    link.href = access.url;
+    link.download = access.file_name;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '获取录像下载地址失败'));
+  }
+}
+
+function cloudStatusText(status: CloudRecordingStatus): string {
+  return ({ STARTING: '启动中', RUNNING: '下载中', STOPPING: '停止中', COMPLETED: '已完成', STOPPED: '已停止', PARTIAL: '部分完成', FAILED: '失败', DELETING: '删除中', DELETED: '已删除' })[status];
+}
+
+function cloudStatusTag(status: CloudRecordingStatus): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  if (status === 'COMPLETED') return 'success';
+  if (status === 'FAILED') return 'danger';
+  if (status === 'STOPPED' || status === 'PARTIAL') return 'warning';
+  if (status === 'RUNNING' || status === 'STARTING') return 'primary';
+  return 'info';
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 async function confirmPlaybackRange() {
   const channel = pendingPlaybackChannel.value;
   const range = playbackRange.value;
@@ -3069,6 +3266,7 @@ onBeforeRouteLeave(async () => {
 onBeforeUnmount(() => {
   multiViewDisposed = true;
   stopRecordPolling();
+  if (cloudRecordingPollTimer !== undefined) window.clearTimeout(cloudRecordingPollTimer);
   stopPlaybackPresenceHeartbeat();
   window.removeEventListener('online', handlePlaybackPresenceWakeup);
   window.removeEventListener('pageshow', handlePlaybackPresenceWakeup);
@@ -3085,6 +3283,27 @@ onBeforeUnmount(() => {
 .device-record-panel {
   display: grid;
   gap: 12px;
+}
+
+.cloud-recording-content {
+  display: grid;
+  gap: 16px;
+}
+
+.cloud-recording-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cloud-recording-toolbar > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.cloud-recording-toolbar small {
+  color: var(--muted);
 }
 
 .record-playback-range b,

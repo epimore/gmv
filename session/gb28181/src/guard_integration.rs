@@ -31,23 +31,26 @@ use gmv_protocol::guard::v1::{
     node_to_guard_message,
 };
 use gmv_protocol::session::v1::{
-    ControlPtzRequest, ControlPtzResponse, CreateGbDeviceRequest, CreateGbDeviceResponse,
-    DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
-    GbChannel, GbChannelImage, GbDevice, GbRecordQueryBatch, GbRecordSegment, GbResource,
-    GbResourceConfirmation, GbResourceResponse, GetGbChannelRecordsRequest,
+    CloudRecordingFileState, CloudRecordingResponse, CloudRecordingStatus, CloudRecordingSummary,
+    ControlPtzRequest, ControlPtzResponse, CreateCloudRecordingRequest, CreateGbDeviceRequest,
+    CreateGbDeviceResponse, DeleteCloudRecordingRequest, DeleteGbDeviceRequest,
+    DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState, GbChannel, GbChannelImage,
+    GbDevice, GbRecordQueryBatch, GbRecordSegment, GbResource, GbResourceConfirmation,
+    GbResourceResponse, GetCloudRecordingRequest, GetGbChannelRecordsRequest,
     GetGbChannelRecordsResponse, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest,
     GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
-    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
-    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
-    ListGbResourcesResponse, PlaybackControlResponse, PlaybackPresenceHeartbeatResult,
-    PlaybackState, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
-    RefreshPlaybackPresenceResponse, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SessionHookRequest,
-    SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
+    IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    ListCloudRecordingsRequest, ListCloudRecordingsResponse, ListGbChannelImagesRequest,
+    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
+    ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
+    PlaybackControlResponse, PlaybackPresenceHeartbeatResult, PlaybackState,
+    QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SessionHookRequest, SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
     SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
-    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
-    UpdateGbDeviceRequest, UpdateGbDeviceResponse, session_control_server::SessionControl,
-    session_hook_server::SessionHook,
+    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+    session_control_server::SessionControl, session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
@@ -477,6 +480,7 @@ impl SessionGuardNode {
                 "device.live".to_string(),
                 "device.playback".to_string(),
                 "device.download".to_string(),
+                "device.cloud_recording".to_string(),
                 "device.talk".to_string(),
                 "device.ptz".to_string(),
                 "protocol.gb28181".to_string(),
@@ -570,6 +574,109 @@ impl SessionControlRpc {
 
 #[tonic::async_trait]
 impl SessionControl for SessionControlRpc {
+    async fn create_cloud_recording(
+        &self,
+        request: tonic::Request<CreateCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let node_id = self.session_node_id()?;
+        if request.session_node_id != node_id {
+            return Err(tonic::Status::failed_precondition("stale_instance"));
+        }
+        let record =
+            crate::service::cloud_recording::create(crate::service::cloud_recording::CreateInput {
+                request_id: &request.request_id,
+                session_node_id: &request.session_node_id,
+                device_id: &request.device_id,
+                channel_id: &request.channel_id,
+                requested_by: &request.requested_by,
+                start_time_sec: request.start_time_sec,
+                end_time_sec: request.end_time_sec,
+            })
+            .await
+            .map_err(storage_status)?;
+        Ok(tonic::Response::new(CloudRecordingResponse {
+            recording: Some(cloud_recording_proto(record)),
+        }))
+    }
+
+    async fn list_cloud_recordings(
+        &self,
+        request: tonic::Request<ListCloudRecordingsRequest>,
+    ) -> Result<tonic::Response<ListCloudRecordingsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let page = request.page.max(1);
+        let page_size = request.page_size.clamp(1, 100);
+        let (records, total) = crate::service::cloud_recording::list(
+            &request.device_id,
+            &request.channel_id,
+            page,
+            page_size,
+            request.include_deleted,
+        )
+        .await
+        .map_err(storage_status)?;
+        Ok(tonic::Response::new(ListCloudRecordingsResponse {
+            recordings: records.into_iter().map(cloud_recording_proto).collect(),
+            total,
+            page,
+            page_size,
+        }))
+    }
+
+    async fn get_cloud_recording(
+        &self,
+        request: tonic::Request<GetCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        let record =
+            crate::service::cloud_recording::get_with_progress(&request.into_inner().task_id)
+                .await
+                .map_err(storage_status)?;
+        Ok(tonic::Response::new(CloudRecordingResponse {
+            recording: Some(cloud_recording_proto(record)),
+        }))
+    }
+
+    async fn stop_cloud_recording(
+        &self,
+        request: tonic::Request<StopCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        let record = crate::service::cloud_recording::stop(&request.into_inner().task_id)
+            .await
+            .map_err(storage_status)?;
+        Ok(tonic::Response::new(CloudRecordingResponse {
+            recording: Some(cloud_recording_proto(record)),
+        }))
+    }
+
+    async fn delete_cloud_recording(
+        &self,
+        request: tonic::Request<DeleteCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        let record = crate::service::cloud_recording::delete(&request.into_inner().task_id)
+            .await
+            .map_err(storage_status)?;
+        Ok(tonic::Response::new(CloudRecordingResponse {
+            recording: Some(cloud_recording_proto(record)),
+        }))
+    }
+
+    async fn issue_cloud_recording_access(
+        &self,
+        request: tonic::Request<IssueCloudRecordingAccessRequest>,
+    ) -> Result<tonic::Response<IssueCloudRecordingAccessResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let issued =
+            crate::http::cloud_recording::issue_ticket(&request.task_id, &request.mode).await?;
+        Ok(tonic::Response::new(IssueCloudRecordingAccessResponse {
+            url: issued.url,
+            expires_at_ms: issued.expires_at_ms,
+            content_type: issued.content_type,
+            file_name: issued.file_name,
+            file_size: issued.file_size,
+        }))
+    }
+
     async fn start_live(
         &self,
         request: tonic::Request<StartDeviceStreamRequest>,
@@ -2298,8 +2405,116 @@ fn datetime_ms(value: Option<base::chrono::NaiveDateTime>) -> i64 {
         .unwrap_or_default()
 }
 
+fn cloud_recording_proto(
+    record: crate::storage::recording::CloudRecording,
+) -> CloudRecordingSummary {
+    use crate::storage::recording as storage;
+
+    let status = storage::normalized_status(&record).to_string();
+    let start_time_sec = storage::epoch_sec(record.st.as_deref());
+    let end_time_sec = storage::epoch_sec(record.et.as_deref());
+    let requested_duration_sec =
+        u64::try_from(end_time_sec.saturating_sub(start_time_sec)).unwrap_or_default();
+    let recorded_duration_ms = u64::try_from(record.recorded_duration_ms).unwrap_or_default();
+    let current_size_bytes = u64::try_from(record.current_size_bytes).unwrap_or_default();
+    let progress_percent = if requested_duration_sec == 0 {
+        0
+    } else {
+        u32::try_from(
+            recorded_duration_ms
+                .saturating_div(1_000)
+                .saturating_mul(100)
+                .saturating_div(requested_duration_sec)
+                .min(100),
+        )
+        .unwrap_or(100)
+    };
+    let status_value = match status.as_str() {
+        storage::STATUS_STARTING => CloudRecordingStatus::Starting,
+        storage::STATUS_RUNNING => CloudRecordingStatus::Running,
+        storage::STATUS_STOPPING => CloudRecordingStatus::Stopping,
+        storage::STATUS_COMPLETED => CloudRecordingStatus::Completed,
+        storage::STATUS_STOPPED => CloudRecordingStatus::Stopped,
+        storage::STATUS_PARTIAL => CloudRecordingStatus::Partial,
+        storage::STATUS_FAILED => CloudRecordingStatus::Failed,
+        storage::STATUS_DELETING => CloudRecordingStatus::Deleting,
+        storage::STATUS_DELETED => CloudRecordingStatus::Deleted,
+        _ => CloudRecordingStatus::Unspecified,
+    };
+    let file_state = record
+        .file_state
+        .as_deref()
+        .unwrap_or(storage::FILE_NONE)
+        .to_string();
+    let file_state_value = match file_state.as_str() {
+        storage::FILE_NONE => CloudRecordingFileState::None,
+        storage::FILE_WRITING => CloudRecordingFileState::Writing,
+        storage::FILE_READY => CloudRecordingFileState::Ready,
+        storage::FILE_MISSING => CloudRecordingFileState::Missing,
+        storage::FILE_DELETED => CloudRecordingFileState::Deleted,
+        _ => CloudRecordingFileState::Unspecified,
+    };
+    let active = matches!(
+        status.as_str(),
+        storage::STATUS_STARTING | storage::STATUS_RUNNING | storage::STATUS_STOPPING
+    );
+    let ready = file_state == storage::FILE_READY;
+    let terminal = matches!(
+        status.as_str(),
+        storage::STATUS_COMPLETED
+            | storage::STATUS_STOPPED
+            | storage::STATUS_PARTIAL
+            | storage::STATUS_FAILED
+    );
+    let updated_at_ms = storage::epoch_ms(record.lt.as_deref());
+    let progress_stale = active
+        && updated_at_ms > 0
+        && Local::now()
+            .timestamp_millis()
+            .saturating_sub(updated_at_ms)
+            > 15_000;
+    CloudRecordingSummary {
+        task_id: record.task_id,
+        request_id: record.request_id.unwrap_or_default(),
+        session_node_id: record.session_node_id.unwrap_or_default(),
+        device_id: record.device_id,
+        channel_id: record.channel_id,
+        start_time_sec,
+        end_time_sec,
+        requested_duration_sec,
+        status: status_value as i32,
+        file_state: file_state_value as i32,
+        progress_percent,
+        recorded_duration_ms,
+        progress_stale,
+        current_size_bytes,
+        final_size_bytes: if ready { current_size_bytes } else { 0 },
+        file_format: if ready {
+            "mp4".to_string()
+        } else {
+            String::new()
+        },
+        requested_by: record.user_id.unwrap_or_default(),
+        created_at_ms: storage::epoch_ms(record.ct.as_deref()),
+        started_at_ms: storage::epoch_ms(record.started_at.as_deref()),
+        finished_at_ms: storage::epoch_ms(record.finished_at.as_deref()),
+        updated_at_ms,
+        error_code: record.error_code.unwrap_or_default(),
+        error_message: record.error_message.unwrap_or_default(),
+        can_stop: active && status != storage::STATUS_STOPPING,
+        can_play: ready,
+        can_download: ready,
+        can_delete: terminal,
+        stream_id: String::new(),
+    }
+}
+
 fn storage_status(error: GlobalError) -> tonic::Status {
     gmv_nodec::error::global_error_status(&error)
+}
+
+pub(crate) fn storage_status_public(error: GlobalError) -> tonic::Status {
+    storage_status(error)
 }
 
 fn stream_response(
@@ -2422,6 +2637,8 @@ fn custom_media_config(
             fmt: Mp4::default(),
             path: String::new(),
             token: None,
+            file_name: None,
+            min_free_bytes: 0,
         }),
         "mp4" => {
             return Err(error(

@@ -100,6 +100,7 @@ export type GmvPlayerControl =
   | 'fullscreen'
   | 'ptz'
   | 'record'
+  | 'cloudRecord'
   | 'talk'
   | 'streamSwitch'
   | 'playbackRate'
@@ -147,6 +148,7 @@ export type GmvPlayerControlAction =
   | { type: 'fullscreen-toggle' }
   | { type: 'ptz-toggle' }
   | { type: 'record-toggle' }
+  | { type: 'cloud-record-request' }
   | { type: 'talk-toggle' }
   | { type: 'stream-switch'; sourceUrl: string }
   | { type: 'rate-change'; rate: number }

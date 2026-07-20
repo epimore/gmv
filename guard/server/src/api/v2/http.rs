@@ -14,10 +14,12 @@ use base::err;
 use base::exception::GlobalError;
 use base::log::debug;
 use gmv_protocol::session::v1::{
+    CloudRecordingFileState, CloudRecordingStatus,
+    CloudRecordingSummary as RpcCloudRecordingSummary, CreateCloudRecordingRequest,
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
     GbRecordQueryBatch as RpcGbRecordQueryBatch, GbRecordSegment as RpcGbRecordSegment,
     GbResource as RpcGbResource, GetGbChannelRecordsResponse as RpcGbChannelRecordsResponse,
-    PlaybackPresenceHeartbeat, ResetGbResourceConfirmationRequest,
+    ListCloudRecordingsRequest, PlaybackPresenceHeartbeat, ResetGbResourceConfirmationRequest,
     SaveGbResourceConfirmationRequest,
 };
 use std::collections::BTreeMap;
@@ -154,6 +156,26 @@ pub fn router(state: HttpState) -> Router {
         .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/records/query",
             post(query_gb_channel_records),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings",
+            get(list_cloud_recordings).post(create_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}",
+            get(get_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}/stop",
+            post(stop_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}/delete",
+            post(delete_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}/access",
+            post(issue_cloud_recording_access),
         )
         .route(
             "/gb28181/devices/{device_id}/broadcast/start",
@@ -1658,6 +1680,97 @@ struct GbStreamRequest {
 
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
+struct CloudRecordingCreateRequest {
+    request_id: String,
+    session_node_id: String,
+    start_time_sec: i64,
+    end_time_sec: i64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct CloudRecordingListQuery {
+    session_node_id: String,
+    #[serde(default = "default_page")]
+    page: u32,
+    #[serde(default = "default_cloud_recording_page_size")]
+    page_size: u32,
+}
+
+fn default_page() -> u32 {
+    1
+}
+
+fn default_cloud_recording_page_size() -> u32 {
+    50
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct CloudRecordingActionRequest {
+    request_id: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct CloudRecordingAccessRequest {
+    #[serde(default)]
+    mode: String,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct CloudRecordingSummary {
+    task_id: String,
+    request_id: String,
+    session_node_id: String,
+    device_id: String,
+    channel_id: String,
+    start_time_sec: i64,
+    end_time_sec: i64,
+    requested_duration_sec: u64,
+    status: String,
+    file_state: String,
+    progress_percent: u32,
+    recorded_duration_ms: u64,
+    progress_stale: bool,
+    current_size_bytes: u64,
+    final_size_bytes: u64,
+    file_format: String,
+    requested_by: String,
+    created_at_ms: i64,
+    started_at_ms: i64,
+    finished_at_ms: i64,
+    updated_at_ms: i64,
+    error_code: String,
+    error_message: String,
+    can_stop: bool,
+    can_play: bool,
+    can_download: bool,
+    can_delete: bool,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct CloudRecordingListResponse {
+    items: Vec<CloudRecordingSummary>,
+    total: u64,
+    page: u32,
+    page_size: u32,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct CloudRecordingAccessResponse {
+    url: String,
+    expires_at_ms: i64,
+    content_type: String,
+    file_name: String,
+    file_size: u64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
 struct PlaybackSpeedRequest {
     speed_rate: f32,
 }
@@ -2559,6 +2672,182 @@ async fn gb_snapshot_image(
             let _ = state.api.fail_operation(&operation_id, error.clone());
             Err(HttpError::from_operation(error, &operation_id))
         }
+    }
+}
+
+async fn create_cloud_recording(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id)): Path<(String, String)>,
+    Json(request): Json<CloudRecordingCreateRequest>,
+) -> Result<(StatusCode, Json<CloudRecordingSummary>), HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    if request.request_id.trim().is_empty() || request.session_node_id.trim().is_empty() {
+        return Err(HttpError::bad_request(
+            "request_id and session_node_id are required",
+        ));
+    }
+    let recording = BusinessControl::new(state.api.store())
+        .create_cloud_recording(CreateCloudRecordingRequest {
+            operation: Some(gmv_protocol::common::v1::OperationRef {
+                operation_id: request.request_id.clone(),
+                idempotency_key: request.request_id.clone(),
+            }),
+            request_id: request.request_id,
+            session_node_id: request.session_node_id,
+            device_id,
+            channel_id,
+            start_time_sec: request.start_time_sec,
+            end_time_sec: request.end_time_sec,
+            requested_by: session.username,
+        })
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(cloud_recording_summary(recording)),
+    ))
+}
+
+async fn list_cloud_recordings(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id)): Path<(String, String)>,
+    Query(query): Query<CloudRecordingListQuery>,
+) -> Result<Json<CloudRecordingListResponse>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let (items, total, page, page_size) = BusinessControl::new(state.api.store())
+        .list_cloud_recordings(
+            &query.session_node_id,
+            ListCloudRecordingsRequest {
+                device_id,
+                channel_id,
+                page: query.page,
+                page_size: query.page_size,
+                include_deleted: false,
+            },
+        )
+        .await?;
+    Ok(Json(CloudRecordingListResponse {
+        items: items.into_iter().map(cloud_recording_summary).collect(),
+        total,
+        page,
+        page_size,
+    }))
+}
+
+async fn get_cloud_recording(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(task_id): Path<String>,
+) -> Result<Json<CloudRecordingSummary>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let recording = BusinessControl::new(state.api.store())
+        .get_cloud_recording(&task_id)
+        .await?;
+    Ok(Json(cloud_recording_summary(recording)))
+}
+
+async fn stop_cloud_recording(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(task_id): Path<String>,
+    Json(request): Json<CloudRecordingActionRequest>,
+) -> Result<Json<CloudRecordingSummary>, HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    let recording = BusinessControl::new(state.api.store())
+        .stop_cloud_recording(&task_id, &request.request_id)
+        .await?;
+    Ok(Json(cloud_recording_summary(recording)))
+}
+
+async fn delete_cloud_recording(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(task_id): Path<String>,
+    Json(request): Json<CloudRecordingActionRequest>,
+) -> Result<Json<CloudRecordingSummary>, HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    let recording = BusinessControl::new(state.api.store())
+        .delete_cloud_recording(&task_id, &request.request_id)
+        .await?;
+    Ok(Json(cloud_recording_summary(recording)))
+}
+
+async fn issue_cloud_recording_access(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(task_id): Path<String>,
+    Json(request): Json<CloudRecordingAccessRequest>,
+) -> Result<Json<CloudRecordingAccessResponse>, HttpError> {
+    require_write(&state.auth, &headers, Role::Viewer)?;
+    let operation_id = format!("cloud-access-{}", Uuid::new_v4());
+    let access = BusinessControl::new(state.api.store())
+        .issue_cloud_recording_access(&task_id, &operation_id, &request.mode)
+        .await?;
+    Ok(Json(CloudRecordingAccessResponse {
+        url: access.url,
+        expires_at_ms: access.expires_at_ms,
+        content_type: access.content_type,
+        file_name: access.file_name,
+        file_size: access.file_size,
+    }))
+}
+
+fn cloud_recording_summary(recording: RpcCloudRecordingSummary) -> CloudRecordingSummary {
+    let status = CloudRecordingStatus::try_from(recording.status)
+        .map(|status| match status {
+            CloudRecordingStatus::Starting => "STARTING",
+            CloudRecordingStatus::Running => "RUNNING",
+            CloudRecordingStatus::Stopping => "STOPPING",
+            CloudRecordingStatus::Completed => "COMPLETED",
+            CloudRecordingStatus::Stopped => "STOPPED",
+            CloudRecordingStatus::Partial => "PARTIAL",
+            CloudRecordingStatus::Failed => "FAILED",
+            CloudRecordingStatus::Deleting => "DELETING",
+            CloudRecordingStatus::Deleted => "DELETED",
+            CloudRecordingStatus::Unspecified => "UNSPECIFIED",
+        })
+        .unwrap_or("UNSPECIFIED")
+        .to_string();
+    let file_state = CloudRecordingFileState::try_from(recording.file_state)
+        .map(|state| match state {
+            CloudRecordingFileState::None => "NONE",
+            CloudRecordingFileState::Writing => "WRITING",
+            CloudRecordingFileState::Ready => "READY",
+            CloudRecordingFileState::Missing => "MISSING",
+            CloudRecordingFileState::Deleted => "DELETED",
+            CloudRecordingFileState::Unspecified => "UNSPECIFIED",
+        })
+        .unwrap_or("UNSPECIFIED")
+        .to_string();
+    CloudRecordingSummary {
+        task_id: recording.task_id,
+        request_id: recording.request_id,
+        session_node_id: recording.session_node_id,
+        device_id: recording.device_id,
+        channel_id: recording.channel_id,
+        start_time_sec: recording.start_time_sec,
+        end_time_sec: recording.end_time_sec,
+        requested_duration_sec: recording.requested_duration_sec,
+        status,
+        file_state,
+        progress_percent: recording.progress_percent,
+        recorded_duration_ms: recording.recorded_duration_ms,
+        progress_stale: recording.progress_stale,
+        current_size_bytes: recording.current_size_bytes,
+        final_size_bytes: recording.final_size_bytes,
+        file_format: recording.file_format,
+        requested_by: recording.requested_by,
+        created_at_ms: recording.created_at_ms,
+        started_at_ms: recording.started_at_ms,
+        finished_at_ms: recording.finished_at_ms,
+        updated_at_ms: recording.updated_at_ms,
+        error_code: recording.error_code,
+        error_message: recording.error_message,
+        can_stop: recording.can_stop,
+        can_play: recording.can_play,
+        can_download: recording.can_download,
+        can_delete: recording.can_delete,
     }
 }
 

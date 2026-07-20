@@ -24,7 +24,7 @@ use gmv_domain::info::output::OutputEnum;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STORE_MP4_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1));
 
@@ -46,7 +46,9 @@ pub struct LocalStoreMp4Context {
     pub token: Option<String>,
     pub ssrc: u32,
 
-    pub file_name: Arc<str>,       //stream_id
+    pub stream_id: Arc<str>,
+    pub file_name: Arc<str>, //云端录像 task_id；旧调用默认为 stream_id
+    pub min_free_bytes: u64,
     pub pkt_rx: MuxPacketReceiver, //数据接收端，当发送端drop，即录制完成
     pub record_event_tx: mpsc::Sender<(Event, Option<oneshot::Sender<EventRes>>)>, //用于主动发送录制报错、录制结束
     pub inner_event_rx: TypedReceiver<Mp4OutputInnerEvent>, //获取当前录制信息
@@ -76,7 +78,7 @@ impl LocalStoreMp4Context {
                         );
                     }
                     let info = StreamRecordInfo {
-                        stream_id: Some(self.file_name.to_string()),
+                        stream_id: Some(self.stream_id.to_string()),
                         path_file_name: Some(path_file_name),
                         file_size: self.file_size as u64,
                         timestamp: self.ts as u32,
@@ -90,7 +92,7 @@ impl LocalStoreMp4Context {
                 }
                 Err(_) => {
                     let mut info = StreamRecordInfo::default();
-                    info.stream_id = Some(self.file_name.to_string());
+                    info.stream_id = Some(self.stream_id.to_string());
                     info.state = if self.state == 0 { 3 } else { self.state };
                     info.file_size = self.file_size as u64;
                     info.timestamp = self.ts as u32;
@@ -119,17 +121,21 @@ impl LocalStoreMp4Context {
 
         // 2. 创建文件
         let file_path = dir_path.join(self.file_name.as_ref()).with_extension("mp4");
-        let mut file = fs::File::create(&file_path)
+        let part_path = file_path.with_extension("mp4.part");
+        let mut file = fs::File::create(&part_path)
             .await
             .hand_log(|msg| error!("{msg}"))?;
 
         // 3. 处理第一个关键帧,并写入头信息
         if !self.handle_first_key_frame(&mut file).await? {
+            drop(file);
+            let _ = fs::remove_file(&part_path).await;
             return Ok(());
         }
 
         // 4. 持续接收数据包写入 + 监听录制过程信息获取事件
         let mut inner_closed = false;
+        let mut last_space_check = Instant::now();
         loop {
             tokio::select! {
                 pkt_opt = self.pkt_rx.recv() => {
@@ -138,6 +144,32 @@ impl LocalStoreMp4Context {
                             file.write_all(&pkt.data).await.hand_log(|msg| error!("{msg}"))?;
                             self.ts = pkt.timestamp;
                             self.file_size += pkt.data.len();
+                            if self.min_free_bytes > 0 && last_space_check.elapsed() >= Duration::from_secs(5) {
+                                last_space_check = Instant::now();
+                                match fs2::available_space(&dir_path) {
+                                    Ok(available) if available <= self.min_free_bytes => {
+                                        self.state = 2;
+                                        warn!(
+                                            "mp4 recording stopped at storage watermark: stage=recording, outcome=partial, reason=disk_space_low, stream_id={}, ssrc={}, available_bytes={}, watermark_bytes={}",
+                                            self.stream_id,
+                                            self.ssrc,
+                                            available,
+                                            self.min_free_bytes
+                                        );
+                                        break;
+                                    }
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        self.state = 2;
+                                        warn!(
+                                            "mp4 storage availability check failed: stage=recording, outcome=partial, reason=storage_unavailable, stream_id={}, ssrc={}, err={err}",
+                                            self.stream_id,
+                                            self.ssrc
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -157,16 +189,25 @@ impl LocalStoreMp4Context {
                     match inner_event_res {
                         Ok(inner_event) => match inner_event {
                             Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
-                                let info = StreamRecordInfo { stream_id: Some(self.file_name.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
+                                let info = StreamRecordInfo { stream_id: Some(self.stream_id.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
                                 let _ = record_info_tx.send(info);
                             }
-                            Mp4OutputInnerEvent::Close => {break;}
+                            Mp4OutputInnerEvent::Close => {
+                                self.state = 2;
+                                break;
+                            }
                         },
                         Err(_) => inner_closed = true,
                     }
                 }
             }
         }
+        file.flush().await.hand_log(|msg| error!("{msg}"))?;
+        file.sync_all().await.hand_log(|msg| error!("{msg}"))?;
+        drop(file);
+        fs::rename(&part_path, &file_path)
+            .await
+            .hand_log(|msg| error!("{msg}"))?;
         Ok(())
     }
 
@@ -211,7 +252,7 @@ impl LocalStoreMp4Context {
                     match inner_event_res {
                         Ok(inner_event) => match inner_event {
                             Mp4OutputInnerEvent::StoreInfo(record_info_tx) => {
-                                let info = StreamRecordInfo { stream_id: Some(self.file_name.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
+                                let info = StreamRecordInfo { stream_id: Some(self.stream_id.to_string()), path_file_name: None, file_size: self.file_size as u64, timestamp: self.ts as u32, state: self.state };
                                 let _ = record_info_tx.send(info);
                             }
                             Mp4OutputInnerEvent::Close => {
