@@ -21,32 +21,31 @@ http:
 
 db:
     backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
+    pool:
+        max_connections: 16 # 最大连接数；按节点实际并发监控后调整
+        min_connections: 0 # 空闲时不预占数据库连接
+        connection_timeout_sec: 8
+        max_lifetime_sec: 1800
+        idle_timeout_sec: 60
+        check_health: false
     sqlite:
         path: ./sqlite/session-gb28181.db
-        max_connections: 16
     mysql:
-        host_or_ip: 127.0.0.1
+        host: 127.0.0.1
         port: 3306
-        db_name: gmv
-        user: root
+        database: gmv
+        username: root
         pass_crypto_enable: false #密码是否加密，默认不加密
         pass: zaq12345 #密码的密文
+        ssl_mode: disabled # disabled|preferred|required|verify_ca|verify_identity
         attrs:
             log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
-            log_slow_sql_timeout: 30 #以警告的等级记录超时30秒的sql,默认1秒
+            log_slow_sql_timeout_sec: 3 #以警告等级记录超过3秒的SQL
             timezone: "+8:00"
             charset: utf8mb4
-            ssl_level: 0 #加密等级,默认1,取值[0,1],0-不加密,1-可选加密：服务端支持则加密、否则不加密,2-必选加密,服务端不支持则不建立连接,3-满足2外还需验证主机名,4-满足2外还需验证CA证书
-            ssl_ca_crt_file: path/to/ca.crt #CA 证书 ssl_level:3 生效
-            ssl_ca_client_cert_file: path/to/client.crt #SSL 客户端证书 ssl_level:3 生效
-            ssl_ca_client_key_file: path/to/client.key #SSL 客户端密钥 ssl_level:3 生效
-        pool:
-            max_connections: 100 # 默认100,最大连接池值,即峰值时,操作进行排队
-            min_connections: 10 # 默认等同于max_size,最小连接池值,即空闲时也维持
-            connection_timeout: 8 # 默认8秒,获取连接超时时间(最大255)
-            max_lifetime: 1800 # 默认1800 秒,连接最大存活时间
-            idle_timeout: 60 # 默认60 秒,连接空闲回收
-            check_health: false # 默认false,连接池维持健康测试
+            # ssl_ca_crt_file: path/to/ca.crt
+            # ssl_client_cert_file: path/to/client.crt
+            # ssl_client_key_file: path/to/client.key
 guard:
     endpoint: http://127.0.0.1:18080 # guard 内部gRPC地址，session向guard注册、上报事件、申请路由
 

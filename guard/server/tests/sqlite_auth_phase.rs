@@ -86,29 +86,7 @@ fn sqlite_users_drive_login_roles_session_revocation_and_disable() {
             std::fs::write(
                 &config_path,
                 format!(
-                    r#"db:
-  mysql:
-    host_or_ip: 127.0.0.1
-    port: 3306
-    db_name: gmv
-    user: gmv
-    pass_crypto_enable: false
-    pass: ""
-    attrs:
-      log_global_sql_level: debug
-      log_slow_sql_timeout: 30
-      timezone: "+8:00"
-      charset: utf8mb4
-      ssl_level: 0
-    pool:
-      max_connections: 10
-      min_connections: 0
-      connection_timeout: 8
-      max_lifetime: 1800
-      idle_timeout: 60
-      check_health: false
-
-log:
+                    r#"log:
   level: info
   prefix: guard-auth-test
   store_path: {}

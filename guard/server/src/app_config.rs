@@ -392,6 +392,11 @@ impl PoolConfig {
                 "guard.database.pool connection limits are invalid".to_string(),
             ));
         }
+        if self.connection_timeout_sec == 0 {
+            return Err(GuardError::InvalidConfig(
+                "guard.database.pool.connection_timeout_sec must be positive".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -435,6 +440,8 @@ pub struct MysqlConfig {
     pub pass: String,
     #[serde(default)]
     pub ssl_mode: MysqlSslMode,
+    #[serde(default)]
+    pub attrs: MysqlAttrsConfig,
 }
 
 impl MysqlConfig {
@@ -442,11 +449,16 @@ impl MysqlConfig {
         if self.host.trim().is_empty()
             || self.database.trim().is_empty()
             || self.username.trim().is_empty()
+            || self.port == 0
             || self.pass.is_empty()
         {
             return Err(GuardError::InvalidConfig(
                 "guard.database.mysql connection fields are required".to_string(),
             ));
+        }
+        self.attrs.validate()?;
+        if self.pass_crypto_enable {
+            self.password()?;
         }
         Ok(())
     }
@@ -458,6 +470,35 @@ impl MysqlConfig {
         } else {
             Ok(self.pass.clone())
         }
+    }
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct MysqlAttrsConfig {
+    pub log_global_sql_level: Option<String>,
+    pub log_slow_sql_timeout_sec: Option<u64>,
+    pub timezone: Option<String>,
+    pub charset: Option<String>,
+    pub ssl_ca_crt_file: Option<PathBuf>,
+    pub ssl_client_cert_file: Option<PathBuf>,
+    pub ssl_client_key_file: Option<PathBuf>,
+}
+
+impl MysqlAttrsConfig {
+    fn validate(&self) -> GuardResult<()> {
+        if self.log_slow_sql_timeout_sec == Some(0) {
+            return Err(GuardError::InvalidConfig(
+                "guard.database.mysql.attrs.log_slow_sql_timeout_sec must be positive".to_string(),
+            ));
+        }
+        if self.ssl_client_cert_file.is_some() != self.ssl_client_key_file.is_some() {
+            return Err(GuardError::InvalidConfig(
+                "guard.database.mysql.attrs ssl_client_cert_file and ssl_client_key_file must be configured together"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -795,6 +836,26 @@ mod tests {
         config.tls.enabled = false;
         config.bind_addr = "0.0.0.0:18080".parse().unwrap();
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn database_pool_rejects_zero_connection_timeout() {
+        let config = PoolConfig {
+            connection_timeout_sec: 0,
+            ..PoolConfig::default()
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn example_database_config_deserializes() {
+        let yaml: base::serde_yaml::Value =
+            base::serde_yaml::from_str(include_str!("../config.yml")).unwrap();
+        let guard = yaml.get("guard").cloned().unwrap();
+        let config: GuardAppConfig = base::serde_yaml::from_value(guard).unwrap();
+
+        config.database.pool.validate().unwrap();
     }
 
     #[test]

@@ -1,8 +1,8 @@
 #[cfg(feature = "db-sqlite")]
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(feature = "db-sqlite")]
-use std::sync::LazyLock;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use base::cfg_lib::conf;
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
@@ -10,16 +10,20 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use base::serde::Deserialize;
 use base::serde_default;
-#[cfg(feature = "db-sqlite")]
+use base::utils::crypto::default_decrypt;
 use base_db::dbx::DatabasePoolConfig;
 #[cfg(feature = "db-mysql")]
-use base_db::dbx::mysqlx;
+use base_db::dbx::mysqlx::build_mysql_pool;
 #[cfg(feature = "db-sqlite")]
 use base_db::dbx::sqlitex::{SqliteConnectionConfig, build_sqlite_pool};
+#[cfg(feature = "db-mysql")]
+use base_db::sqlx::ConnectOptions;
 #[cfg(feature = "db-mysql")]
 use base_db::sqlx::MySqlPool;
 #[cfg(feature = "db-sqlite")]
 use base_db::sqlx::SqlitePool;
+#[cfg(feature = "db-mysql")]
+use base_db::sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
@@ -44,7 +48,10 @@ pub struct SessionDatabaseConfig {
     #[serde(default = "default_backend")]
     pub backend: SessionDatabaseBackend,
     #[serde(default)]
+    pub pool: SessionPoolConfig,
+    #[serde(default)]
     pub sqlite: SessionSqliteConfig,
+    pub mysql: Option<SessionMysqlConfig>,
 }
 
 serde_default!(
@@ -55,19 +62,149 @@ serde_default!(
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
+pub struct SessionPoolConfig {
+    #[serde(default = "default_pool_max_connections")]
+    pub max_connections: u32,
+    #[serde(default)]
+    pub min_connections: u32,
+    #[serde(default = "default_pool_connection_timeout_sec")]
+    pub connection_timeout_sec: u64,
+    #[serde(default = "default_pool_max_lifetime_sec")]
+    pub max_lifetime_sec: u64,
+    #[serde(default = "default_pool_idle_timeout_sec")]
+    pub idle_timeout_sec: u64,
+    #[serde(default)]
+    pub check_health: bool,
+}
+
+impl Default for SessionPoolConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: default_pool_max_connections(),
+            min_connections: 0,
+            connection_timeout_sec: default_pool_connection_timeout_sec(),
+            max_lifetime_sec: default_pool_max_lifetime_sec(),
+            idle_timeout_sec: default_pool_idle_timeout_sec(),
+            check_health: false,
+        }
+    }
+}
+
+impl SessionPoolConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_connections == 0 || self.min_connections > self.max_connections {
+            return Err("db.pool连接数配置无效".to_string());
+        }
+        if self.connection_timeout_sec == 0 {
+            return Err("db.pool.connection_timeout_sec必须大于0".to_string());
+        }
+        Ok(())
+    }
+
+    fn to_base_db(&self) -> DatabasePoolConfig {
+        DatabasePoolConfig {
+            max_size: self.max_connections,
+            min_idle: Some(self.min_connections),
+            connection_timeout: Duration::from_secs(self.connection_timeout_sec),
+            max_lifetime: Some(Duration::from_secs(self.max_lifetime_sec)),
+            idle_timeout: Some(Duration::from_secs(self.idle_timeout_sec)),
+            test_on_check_out: self.check_health,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(crate = "base::serde")]
 pub struct SessionSqliteConfig {
     #[serde(default = "default_sqlite_path")]
     pub path: PathBuf,
-    #[serde(default = "default_sqlite_max_connections")]
-    pub max_connections: u32,
 }
 
 impl Default for SessionSqliteConfig {
     fn default() -> Self {
         Self {
             path: default_sqlite_path(),
-            max_connections: default_sqlite_max_connections(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct SessionMysqlConfig {
+    pub host: String,
+    #[serde(default = "default_mysql_port")]
+    pub port: u16,
+    pub database: String,
+    pub username: String,
+    #[serde(default)]
+    pub pass_crypto_enable: bool,
+    pub pass: String,
+    #[serde(default)]
+    pub ssl_mode: SessionMysqlSslMode,
+    #[serde(default)]
+    pub attrs: SessionMysqlAttrsConfig,
+}
+
+impl SessionMysqlConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.host.trim().is_empty()
+            || self.port == 0
+            || self.database.trim().is_empty()
+            || self.username.trim().is_empty()
+            || self.pass.is_empty()
+        {
+            return Err("db.mysql连接字段不能为空".to_string());
+        }
+        self.attrs.validate()?;
+        if self.pass_crypto_enable {
+            self.password()?;
+        }
+        Ok(())
+    }
+
+    fn password(&self) -> Result<String, String> {
+        if self.pass_crypto_enable {
+            default_decrypt(&self.pass).map_err(|error| error.to_string())
+        } else {
+            Ok(self.pass.clone())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+pub enum SessionMysqlSslMode {
+    Disabled,
+    #[default]
+    Preferred,
+    Required,
+    VerifyCa,
+    VerifyIdentity,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct SessionMysqlAttrsConfig {
+    pub log_global_sql_level: Option<String>,
+    pub log_slow_sql_timeout_sec: Option<u64>,
+    pub timezone: Option<String>,
+    pub charset: Option<String>,
+    pub ssl_ca_crt_file: Option<PathBuf>,
+    pub ssl_client_cert_file: Option<PathBuf>,
+    pub ssl_client_key_file: Option<PathBuf>,
+}
+
+impl SessionMysqlAttrsConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.log_slow_sql_timeout_sec == Some(0) {
+            return Err("db.mysql.attrs.log_slow_sql_timeout_sec必须大于0".to_string());
+        }
+        if self.ssl_client_cert_file.is_some() != self.ssl_client_key_file.is_some() {
+            return Err(
+                "db.mysql.attrs.ssl_client_cert_file和ssl_client_key_file必须同时配置".to_string(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -75,8 +212,24 @@ fn default_sqlite_path() -> PathBuf {
     PathBuf::from("./session-gb28181.db")
 }
 
-fn default_sqlite_max_connections() -> u32 {
+fn default_pool_max_connections() -> u32 {
     16
+}
+
+fn default_pool_connection_timeout_sec() -> u64 {
+    8
+}
+
+fn default_pool_max_lifetime_sec() -> u64 {
+    1800
+}
+
+fn default_pool_idle_timeout_sec() -> u64 {
+    60
+}
+
+fn default_mysql_port() -> u16 {
+    3306
 }
 
 impl CheckFromConf for SessionDatabaseConfig {
@@ -91,11 +244,19 @@ impl CheckFromConf for SessionDatabaseConfig {
                 "当前二进制未启用 SQLite 数据库支持".to_string(),
             ));
         }
+        self.pool.validate().map_err(FieldCheckError::BizError)?;
         if self.backend == SessionDatabaseBackend::Sqlite && self.sqlite.path.as_os_str().is_empty()
         {
             return Err(FieldCheckError::BizError(
                 "db.sqlite.path不能为空".to_string(),
             ));
+        }
+        if self.backend == SessionDatabaseBackend::Mysql {
+            self.mysql
+                .as_ref()
+                .ok_or_else(|| FieldCheckError::BizError("db.mysql不能为空".to_string()))?
+                .validate()
+                .map_err(FieldCheckError::BizError)?;
         }
         Ok(())
     }
@@ -108,20 +269,16 @@ impl SessionDatabaseConfig {
 }
 
 #[cfg(feature = "db-sqlite")]
-static SQLITE_POOL: LazyLock<SqlitePool> = LazyLock::new(|| {
-    let config = SessionDatabaseConfig::get();
-    let mut pool = DatabasePoolConfig::default();
-    pool.max_size = config.sqlite.max_connections;
-    pool.min_idle = Some(0);
-    ensure_sqlite_parent(&config.sqlite.path)
-        .expect("invalid session sqlite directory configuration");
-    build_sqlite_pool(SqliteConnectionConfig::new(config.sqlite.path), pool)
-        .expect("invalid session sqlite pool configuration")
-});
+static SQLITE_POOL: OnceLock<SqlitePool> = OnceLock::new();
+
+#[cfg(feature = "db-mysql")]
+static MYSQL_POOL: OnceLock<MySqlPool> = OnceLock::new();
 
 #[cfg(feature = "db-sqlite")]
 pub fn sqlite_pool() -> &'static SqlitePool {
-    &*SQLITE_POOL
+    SQLITE_POOL
+        .get()
+        .expect("session SQLite pool must be initialized before use")
 }
 
 pub fn backend() -> SessionDatabaseBackend {
@@ -146,7 +303,108 @@ fn ensure_sqlite_parent(path: &Path) -> GlobalResult<()> {
 
 #[cfg(feature = "db-mysql")]
 pub fn mysql_pool() -> &'static MySqlPool {
-    mysqlx::get_conn_by_pool()
+    MYSQL_POOL
+        .get()
+        .expect("session MySQL pool must be initialized before use")
+}
+
+#[cfg(feature = "db-sqlite")]
+fn initialize_sqlite_pool(config: &SessionDatabaseConfig) -> GlobalResult<()> {
+    if SQLITE_POOL.get().is_some() {
+        return Ok(());
+    }
+    ensure_sqlite_parent(&config.sqlite.path)?;
+    let pool = build_sqlite_pool(
+        SqliteConnectionConfig::new(&config.sqlite.path),
+        config.pool.to_base_db(),
+    )
+    .map_err(|error| database_config_error(error.to_string()))?;
+    SQLITE_POOL
+        .set(pool)
+        .map_err(|_| database_config_error("session SQLite连接池重复初始化"))
+}
+
+#[cfg(feature = "db-mysql")]
+fn initialize_mysql_pool(config: &SessionDatabaseConfig) -> GlobalResult<()> {
+    if MYSQL_POOL.get().is_some() {
+        return Ok(());
+    }
+    let mysql = config
+        .mysql
+        .as_ref()
+        .ok_or_else(|| database_config_error("db.mysql不能为空"))?;
+    let password = mysql.password().map_err(database_config_error)?;
+    let options = MySqlConnectOptions::new()
+        .host(&mysql.host)
+        .port(mysql.port)
+        .database(&mysql.database)
+        .pipes_as_concat(false)
+        .username(&mysql.username)
+        .password(&password)
+        .ssl_mode(match mysql.ssl_mode {
+            SessionMysqlSslMode::Disabled => MySqlSslMode::Disabled,
+            SessionMysqlSslMode::Preferred => MySqlSslMode::Preferred,
+            SessionMysqlSslMode::Required => MySqlSslMode::Required,
+            SessionMysqlSslMode::VerifyCa => MySqlSslMode::VerifyCa,
+            SessionMysqlSslMode::VerifyIdentity => MySqlSslMode::VerifyIdentity,
+        });
+    let options = apply_mysql_attributes(options, &mysql.attrs);
+    let pool = build_mysql_pool(options, config.pool.to_base_db())
+        .map_err(|error| database_config_error(error.to_string()))?;
+    MYSQL_POOL
+        .set(pool)
+        .map_err(|_| database_config_error("session MySQL连接池重复初始化"))
+}
+
+#[cfg(feature = "db-mysql")]
+fn apply_mysql_attributes(
+    mut options: MySqlConnectOptions,
+    attrs: &SessionMysqlAttrsConfig,
+) -> MySqlConnectOptions {
+    if let Some(level) = &attrs.log_global_sql_level {
+        options = options.log_statements(base::logger::level_filter(level));
+    }
+    if let Some(timeout_sec) = attrs.log_slow_sql_timeout_sec {
+        options = options.log_slow_statements(
+            base::log::LevelFilter::Warn,
+            Duration::from_secs(timeout_sec),
+        );
+    }
+    if let Some(timezone) = &attrs.timezone {
+        options = options.timezone(Some(timezone.clone()));
+    }
+    if let Some(charset) = &attrs.charset {
+        options = options.charset(charset);
+    }
+    if let Some(path) = attrs
+        .ssl_ca_crt_file
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        options = options.ssl_ca(path);
+    }
+    if let Some(path) = attrs
+        .ssl_client_cert_file
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        options = options.ssl_client_cert(path);
+    }
+    if let Some(path) = attrs
+        .ssl_client_key_file
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        options = options.ssl_client_key(path);
+    }
+    options
+}
+
+fn database_config_error(message: impl Into<String>) -> GlobalError {
+    GlobalError::new_sys_error(
+        &format!("session数据库配置无效: {}", message.into()),
+        |msg| error!("{msg}"),
+    )
 }
 
 #[cfg(feature = "db-sqlite")]
@@ -163,9 +421,11 @@ const MYSQL_SCHEMA: &str = concat!(
 );
 
 pub async fn initialize() -> GlobalResult<()> {
-    match backend() {
+    let config = SessionDatabaseConfig::get();
+    match config.backend {
         #[cfg(feature = "db-mysql")]
         SessionDatabaseBackend::Mysql => {
+            initialize_mysql_pool(&config)?;
             base_db::sqlx::raw_sql(MYSQL_SCHEMA)
                 .execute(mysql_pool())
                 .await
@@ -178,6 +438,7 @@ pub async fn initialize() -> GlobalResult<()> {
         }
         #[cfg(feature = "db-sqlite")]
         SessionDatabaseBackend::Sqlite => {
+            initialize_sqlite_pool(&config)?;
             base_db::sqlx::raw_sql(SQLITE_SCHEMA)
                 .execute(sqlite_pool())
                 .await
@@ -585,6 +846,43 @@ mod tests {
                 .join("gmv-session-gb28181-sqlite-parent")
                 .join(unique.to_string()),
         );
+    }
+
+    #[test]
+    fn database_pool_rejects_invalid_limits_and_timeout() {
+        let invalid_limits = SessionPoolConfig {
+            max_connections: 1,
+            min_connections: 2,
+            ..SessionPoolConfig::default()
+        };
+        assert!(invalid_limits.validate().is_err());
+
+        let invalid_timeout = SessionPoolConfig {
+            connection_timeout_sec: 0,
+            ..SessionPoolConfig::default()
+        };
+        assert!(invalid_timeout.validate().is_err());
+    }
+
+    #[test]
+    fn mysql_client_certificate_requires_private_key() {
+        let attrs = SessionMysqlAttrsConfig {
+            ssl_client_cert_file: Some(PathBuf::from("client.crt")),
+            ..SessionMysqlAttrsConfig::default()
+        };
+
+        assert!(attrs.validate().is_err());
+    }
+
+    #[test]
+    fn example_database_config_deserializes_and_validates() {
+        let yaml: base::serde_yaml::Value =
+            base::serde_yaml::from_str(include_str!("../../config.yml")).unwrap();
+        let database = yaml.get("db").cloned().unwrap();
+        let config: SessionDatabaseConfig = base::serde_yaml::from_value(database).unwrap();
+
+        config.pool.validate().unwrap();
+        config.mysql.as_ref().unwrap().validate().unwrap();
     }
 
     #[test]

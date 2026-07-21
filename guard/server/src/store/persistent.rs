@@ -6,11 +6,13 @@ use base_db::dbx::mysqlx::build_mysql_pool;
 #[cfg(feature = "db-sqlite")]
 use base_db::dbx::sqlitex::{SqliteConnectionConfig, build_sqlite_pool};
 #[cfg(feature = "db-mysql")]
+use base_db::sqlx::ConnectOptions;
+#[cfg(feature = "db-mysql")]
 use base_db::sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
 
-#[cfg(feature = "db-mysql")]
-use crate::app_config::MysqlSslMode as ConfigSslMode;
 use crate::app_config::{DatabaseBackend, GuardAppConfig};
+#[cfg(feature = "db-mysql")]
+use crate::app_config::{MysqlAttrsConfig, MysqlSslMode as ConfigSslMode};
 use crate::auth::{Role, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
 use crate::outbox::OutboxRepository;
@@ -126,6 +128,7 @@ impl PersistentStore {
                         ConfigSslMode::VerifyCa => MySqlSslMode::VerifyCa,
                         ConfigSslMode::VerifyIdentity => MySqlSslMode::VerifyIdentity,
                     });
+                let options = apply_mysql_attributes(options, &mysql.attrs);
                 let pool = build_mysql_pool(options, config.database.pool.to_base_db())
                     .map_err(database_error)?;
                 Ok(Self::Mysql(MysqlStore::new(pool)))
@@ -206,6 +209,50 @@ impl PersistentStore {
             Self::Sqlite(store) => OutboxRepository::from(store.clone()),
         }
     }
+}
+
+#[cfg(feature = "db-mysql")]
+fn apply_mysql_attributes(
+    mut options: MySqlConnectOptions,
+    attrs: &MysqlAttrsConfig,
+) -> MySqlConnectOptions {
+    if let Some(level) = &attrs.log_global_sql_level {
+        options = options.log_statements(base::logger::level_filter(level));
+    }
+    if let Some(timeout_sec) = attrs.log_slow_sql_timeout_sec {
+        options = options.log_slow_statements(
+            base::log::LevelFilter::Warn,
+            std::time::Duration::from_secs(timeout_sec),
+        );
+    }
+    if let Some(timezone) = &attrs.timezone {
+        options = options.timezone(Some(timezone.clone()));
+    }
+    if let Some(charset) = &attrs.charset {
+        options = options.charset(charset);
+    }
+    if let Some(path) = attrs
+        .ssl_ca_crt_file
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        options = options.ssl_ca(path);
+    }
+    if let Some(path) = attrs
+        .ssl_client_cert_file
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        options = options.ssl_client_cert(path);
+    }
+    if let Some(path) = attrs
+        .ssl_client_key_file
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        options = options.ssl_client_key(path);
+    }
+    options
 }
 
 #[cfg(feature = "db-sqlite")]
