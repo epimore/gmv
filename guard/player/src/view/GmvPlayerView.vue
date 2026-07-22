@@ -205,6 +205,7 @@ const emit = defineEmits<{
   recordStart: [{ deviceId?: string; channelId?: string }];
   recordStop: [{ deviceId?: string; channelId?: string }];
   cloudRecordRequest: [];
+  cloudRecordCreate: [{ startTimeMs: number; endTimeMs: number }];
   ptz: [GmvPtzCommand];
   presetCall: [{ presetId: string }];
   presetSet: [{ presetId: string }];
@@ -817,6 +818,9 @@ function handleControlAction(action: GmvPlayerControlAction) {
       break;
     case 'cloud-record-request':
       emit('cloudRecordRequest');
+      break;
+    case 'cloud-record-create':
+      emit('cloudRecordCreate', { startTimeMs: action.startTimeMs, endTimeMs: action.endTimeMs });
       break;
     case 'talk-toggle':
       toggleTalk();

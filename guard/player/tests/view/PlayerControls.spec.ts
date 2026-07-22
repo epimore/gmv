@@ -72,6 +72,71 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
+  it("截取模式使用两个可交叉滑块，并只允许至少两分钟的有序范围", async () => {
+    const timelineStartTimeMs = new Date(2026, 6, 22, 10, 0, 0).getTime();
+    const wrapper = mountControls(
+      { items: ["playbackClip", "timeline"], visibility: "always" },
+      {
+        ...playingState,
+        seekMs: 0,
+        durationMs: 10 * 60 * 1_000,
+        timelineStartTimeMs,
+        timelineEndTimeMs: timelineStartTimeMs + 10 * 60 * 1_000,
+      },
+    );
+
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="回放操作模式"]').element.value).toBe("playback");
+    await wrapper.get('[aria-label="回放操作模式"]').setValue("clip");
+    expect(wrapper.find('[aria-label="回放进度"]').exists()).toBe(false);
+    expect(wrapper.findAll('.clip-range')).toHaveLength(2);
+
+    await wrapper.setProps({
+      state: {
+        ...wrapper.props('state'),
+        seekMs: 1_000,
+      },
+    });
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="回放操作模式"]').element.value).toBe("clip");
+
+    await wrapper.get('[aria-label="截取滑块一"]').setValue(120_000);
+    await wrapper.get('[aria-label="截取滑块二"]').setValue(60_000);
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="创建截取录像"]').element.disabled).toBe(true);
+
+    await wrapper.get('[aria-label="截取滑块一"]').setValue(240_000);
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="创建截取录像"]').element.disabled).toBe(false);
+    await wrapper.get('[aria-label="创建截取录像"]').trigger("click");
+
+    expect(wrapper.emitted("action")?.at(-1)).toEqual([{
+      type: "cloud-record-create",
+      startTimeMs: timelineStartTimeMs + 60_000,
+      endTimeMs: timelineStartTimeMs + 240_000,
+    }]);
+    wrapper.unmount();
+  });
+
+  it("播放器将快捷截取动作映射为云端录像创建事件", async () => {
+    const timelineStartTimeMs = new Date(2026, 6, 22, 10, 0, 0).getTime();
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        mediaMode: "playback",
+        playbackDurationMs: 5 * 60 * 1_000,
+        playbackStartTimeMs: timelineStartTimeMs,
+        playbackEndTimeMs: timelineStartTimeMs + 5 * 60 * 1_000,
+        capabilities: { playback: true },
+        controls: { items: ["playbackClip", "timeline"], visibility: "always" },
+      },
+    });
+
+    await wrapper.get('[aria-label="回放操作模式"]').setValue("clip");
+    await wrapper.get('[aria-label="创建截取录像"]').trigger("click");
+
+    expect(wrapper.emitted("cloudRecordCreate")).toEqual([[
+      { startTimeMs: timelineStartTimeMs, endTimeMs: timelineStartTimeMs + 2 * 60 * 1_000 },
+    ]]);
+    wrapper.unmount();
+  });
+
   it("未传旧 controlsVisible 时使用新的 controls 配置", () => {
     const wrapper = mount(GmvPlayerView, {
       props: {

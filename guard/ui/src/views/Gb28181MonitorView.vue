@@ -112,7 +112,7 @@
         <div class="monitor-actions">
           <el-date-picker v-if="multiMode === 'playback'" v-model="multiDefaultRange" type="datetimerange"
             range-separator="至" start-placeholder="默认开始时间" end-placeholder="默认结束时间"
-            :clearable="true" class="multi-default-range" />
+            format="YYYY-MM-DD HH:mm:ss" :clearable="true" class="multi-default-range" />
           <el-select v-model="selectedMultiNodeId" filterable placeholder="选择 Session 节点" class="multi-node-select"
             :loading="listNodeLoading" @change="selectMultiNode">
             <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
@@ -200,7 +200,7 @@
             <div v-if="multiMode === 'playback'" class="selected-channel-playback">
               <el-date-picker v-model="channel.playback_range" type="datetimerange" range-separator="至"
                 start-placeholder="开始时间" end-placeholder="结束时间" :clearable="true"
-                :disabled="channel.playback_locked" size="small" />
+                format="YYYY-MM-DD HH:mm:ss" :disabled="channel.playback_locked" size="small" />
               <div class="selected-channel-actions">
                 <el-button size="small" :disabled="channel.playback_locked || !isValidPlaybackRange(multiDefaultRange)" @click="restoreMultiPlaybackDefault(channel)">恢复默认</el-button>
                 <el-button size="small" type="primary" :disabled="channel.playback_locked || !isValidPlaybackRange(channel.playback_range)"
@@ -225,6 +225,7 @@
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
           @playback-rate-change="handleMultiPlaybackRateChange" @playback-state-change="handleMultiPlaybackStateChange"
           @playback-seek="handleMultiPlaybackSeek" @playback-progress="handleMultiPlaybackProgress"
+          @cloud-record-create="handleMultiCloudRecordCreate"
           @playback-error="handleMultiPlaybackError"
           @playback-switch-cancel="handleMultiPlaybackSwitchCancel"
           @close="handleMultiClose" @reorder="handleMultiReorder">
@@ -373,7 +374,8 @@
         <div class="record-playback-range">
           <b>回放时段</b>
           <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
-            start-placeholder="回放开始时间" end-placeholder="回放结束时间" :clearable="true" style="width: 100%" />
+            start-placeholder="回放开始时间" end-placeholder="回放结束时间" format="YYYY-MM-DD HH:mm:ss"
+            :clearable="true" style="width: 100%" />
         </div>
         <el-divider />
         <section class="device-record-panel" v-loading="recordLoading">
@@ -394,7 +396,8 @@
             <el-button :type="recordRangeMode === 'custom' ? 'primary' : 'default'" @click="recordRangeMode = 'custom'">自定义</el-button>
           </div>
           <el-date-picker v-model="recordQueryRange" type="datetimerange" range-separator="至"
-            start-placeholder="检索开始时间" end-placeholder="检索结束时间" :clearable="true" style="width: 100%"
+            start-placeholder="检索开始时间" end-placeholder="检索结束时间" format="YYYY-MM-DD HH:mm:ss"
+            :clearable="true" style="width: 100%"
             @change="recordRangeMode = 'custom'" />
           <el-alert v-if="recordQuerying" class="record-state-alert" type="info" :closable="false" show-icon
             title="设备录像正在更新，当前仍展示上一次完整结果" />
@@ -440,6 +443,7 @@
             @snapshot="handleSingleSnapshot" @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz"
             @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
             @cloud-record-request="openCloudRecordings(selectedChannel)"
+            @cloud-record-create="handleSingleCloudRecordCreate"
             @playback-switch-cancel="handleSinglePlaybackSwitchCancel"
             @playback-rate-change="handlePlaybackRateChange" @playback-seek="handlePlaybackSeek"
             @playback-state-change="handlePlaybackStateChange" @playback-progress="handlePlaybackProgress" />
@@ -455,38 +459,49 @@
       <el-empty v-else description="选择在线通道后播放" />
     </el-dialog>
 
-    <el-drawer v-model="cloudRecordingDrawer" title="云端录像" size="760px" class="cloud-recording-drawer">
+    <el-drawer v-model="cloudRecordingDrawer" title="云端录像" size="900px" class="cloud-recording-drawer">
       <div class="cloud-recording-content" v-loading="cloudRecordingLoading">
         <div class="cloud-recording-toolbar">
-          <div>
-            <b>{{ cloudRecordingChannelTitle }}</b>
-            <small v-if="playbackRange">当前选择：{{ formatRecordRange(Math.floor(playbackRange[0].getTime() / 1000), Math.floor(playbackRange[1].getTime() / 1000)) }}</small>
-          </div>
-          <div>
-            <el-button :loading="cloudRecordingCreating" :disabled="!canOperate || !playbackRange"
-              type="primary" @click="createSelectedCloudRecording">创建当前时段任务</el-button>
-            <el-button :loading="cloudRecordingLoading" @click="loadCloudRecordings">刷新</el-button>
-          </div>
+          <b>{{ cloudRecordingChannelTitle }}</b>
+          <el-button :loading="cloudRecordingLoading" @click="loadCloudRecordings">刷新</el-button>
+        </div>
+        <div class="cloud-recording-create-form">
+          <label>
+            <span>开始时间</span>
+            <el-date-picker v-model="cloudRecordingStartTime" type="datetime" format="YYYY-MM-DD HH:mm:ss"
+              placeholder="请选择开始时间" :clearable="true" />
+          </label>
+          <label>
+            <span>结束时间</span>
+            <el-date-picker v-model="cloudRecordingEndTime" type="datetime" format="YYYY-MM-DD HH:mm:ss"
+              placeholder="请选择结束时间" :clearable="true" />
+          </label>
+          <el-button :loading="cloudRecordingCreating" :disabled="!canOperate || !cloudRecordingStartTime || !cloudRecordingEndTime"
+            type="primary" @click="createSelectedCloudRecording">创建</el-button>
         </div>
         <el-table :data="cloudRecordings" empty-text="暂无云端录像任务">
-          <el-table-column label="下载时段" min-width="205">
+          <el-table-column label="下载时段" min-width="320">
             <template #default="{ row }">{{ formatRecordRange(row.start_time_sec, row.end_time_sec) }}</template>
           </el-table-column>
-          <el-table-column label="状态" width="100">
+          <el-table-column label="状态" width="90">
             <template #default="{ row }"><el-tag :type="cloudStatusTag(row.status)">{{ cloudStatusText(row.status) }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="进度" width="130">
+          <el-table-column label="进度" width="115">
             <template #default="{ row }"><el-progress :percentage="row.progress_percent" :stroke-width="8" /></template>
           </el-table-column>
-          <el-table-column label="文件大小" width="110">
+          <el-table-column label="文件大小" width="105" align="center" class-name="cloud-file-column"
+            label-class-name="cloud-file-column">
             <template #default="{ row }">{{ formatBytes(row.final_size_bytes || row.current_size_bytes) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="235" fixed="right">
+          <el-table-column label="操作" width="190" fixed="right" align="center" class-name="cloud-actions-column"
+            label-class-name="cloud-actions-column">
             <template #default="{ row }">
-              <el-button v-if="row.can_stop" type="warning" link :disabled="!canOperate" @click="stopCloudTask(row)">停止</el-button>
-              <el-button type="primary" link :disabled="!row.can_play" @click="playCloudTask(row)">播放</el-button>
-              <el-button type="primary" link :disabled="!row.can_download" @click="downloadCloudTask(row)">下载</el-button>
-              <el-button type="danger" link :disabled="!canOperate || !row.can_delete" @click="deleteCloudTask(row)">删除</el-button>
+              <div class="cloud-recording-actions">
+                <el-button v-if="row.can_stop" type="warning" link :disabled="!canOperate" @click="stopCloudTask(row)">停止</el-button>
+                <el-button type="primary" link :disabled="!row.can_play" @click="playCloudTask(row)">播放</el-button>
+                <el-button type="primary" link :disabled="!row.can_download" @click="downloadCloudTask(row)">下载</el-button>
+                <el-button type="danger" link :disabled="!canOperate || !row.can_delete" @click="deleteCloudTask(row)">删除</el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -629,6 +644,7 @@ import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
 import { GmvMultiGrid, GmvPlayerView, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
+import { formatDateTime } from '@/utils/dateTime';
 
 const auth = useAuthStore();
 const singlePlayerRef = ref<InstanceType<typeof GmvPlayerView>>();
@@ -694,8 +710,9 @@ const cloudRecordingDrawer = ref(false);
 const cloudRecordingLoading = ref(false);
 const cloudRecordingCreating = ref(false);
 const cloudRecordingChannel = ref<GbChannelInfo>();
+const cloudRecordingStartTime = ref<Date>();
+const cloudRecordingEndTime = ref<Date>();
 const cloudRecordings = ref<CloudRecordingSummary[]>([]);
-let cloudRecordingPollTimer: number | undefined;
 const recordQueryRange = ref<[Date, Date]>();
 const recordRangeMode = ref<'week' | 'month' | 'custom'>('custom');
 const recordState = ref<GbChannelRecordsInfo>();
@@ -1035,7 +1052,10 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const channel = selectedChannel.value;
   const playback = lastAction.value === '历史回放';
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
-  if (playback && channel && canPlayback(channel)) items.push('timeline');
+  if (playback && channel && canPlayback(channel)) {
+    if (canOperate.value) items.splice(1, 0, 'playbackClip');
+    items.push('timeline');
+  }
   const overflowItems: GmvPlayerControlsConfig['items'] = [];
   overflowItems.push('outputType');
   overflowItems.push('info');
@@ -1188,9 +1208,15 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
   };
 }
 function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControlsConfig {
-  const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
-  if (capabilities.playback) items.push('timeline');
+  const items: GmvPlayerControlsConfig['items'] = ['play'];
   const overflowItems: GmvPlayerControlsConfig['items'] = ['outputType', 'info'];
+  if (capabilities.playback) {
+    if (canOperate.value) items.push('playbackClip');
+    items.push('timeline');
+    overflowItems.push('snapshot', 'fullscreen');
+  } else {
+    items.push('snapshot', 'fullscreen');
+  }
   if (capabilities.audio) overflowItems.push('audio');
   if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
@@ -1227,8 +1253,7 @@ function streamSourceLabel(codec: GmvCodec | undefined, hasAudio: boolean) {
   return `默认${hasAudio ? '音视频' : '静音'} · ${codec?.toUpperCase() || 'AUTO'}`;
 }
 function formatTime(value: number) {
-  if (!value) return '-';
-  return new Date(value).toLocaleString();
+  return formatDateTime(value);
 }
 function resourceKindText(kind: string) {
   return ({ video: '视频资源', audio_input: '语音输入', audio_output: '语音输出', other: '其它', unknown: '未知' } as Record<string, string>)[kind] || kind || '未知';
@@ -1983,6 +2008,11 @@ function handleSingleSnapshot(event: { fileName: string }) {
 function handleSingleSnapshotError(event: { message: string }) {
   ElMessage.error(event.message);
 }
+async function handleSingleCloudRecordCreate(event: { startTimeMs: number; endTimeMs: number }) {
+  const channel = selectedChannel.value;
+  const sessionNodeId = lastStream.value?.session_node_id || selectedDevice.value?.session_node_id;
+  if (channel && sessionNodeId) await createQuickCloudRecording(channel, sessionNodeId, event);
+}
 async function handleMultiClose(event: { index: number }) {
   const cell = multiCellAtVisibleIndex(event.index);
   if (!cell) return;
@@ -2117,6 +2147,10 @@ async function handleMultiPlaybackProgress(event: { index: number; payload: { me
     return;
   }
   upsertMultiCell({ ...cell, playback_position_sec: positionSec });
+}
+async function handleMultiCloudRecordCreate(event: { index: number; payload: { startTimeMs: number; endTimeMs: number } }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (cell) await createQuickCloudRecording(cell.channel, cell.session_node_id, event.payload);
 }
 async function toggleAllMultiPlayback() {
   if (multiBulkBusy.value || multiPlaybackStarting.value) {
@@ -2653,7 +2687,7 @@ function validRecordRange(range?: [Date, Date]) {
 }
 
 function formatRecordRange(startSec: number, endSec: number) {
-  return `${new Date(startSec * 1000).toLocaleString()} 至 ${new Date(endSec * 1000).toLocaleString()}`;
+  return `${formatDateTime(startSec * 1000)} 至 ${formatDateTime(endSec * 1000)}`;
 }
 
 function selectRecordSegment(segment: GbRecordSegmentInfo) {
@@ -2763,8 +2797,6 @@ watch(playbackRangeDialog, (open) => {
 });
 
 watch(cloudRecordingDrawer, (open) => {
-  if (cloudRecordingPollTimer !== undefined) window.clearTimeout(cloudRecordingPollTimer);
-  cloudRecordingPollTimer = undefined;
   if (open) void loadCloudRecordings();
 });
 
@@ -2779,6 +2811,8 @@ function openCloudRecordings(channel?: GbChannelInfo) {
     return;
   }
   cloudRecordingChannel.value = target;
+  cloudRecordingStartTime.value = undefined;
+  cloudRecordingEndTime.value = undefined;
   if (playbackRangeDialog.value) playbackRangeDialog.value = false;
   cloudRecordingDrawer.value = true;
 }
@@ -2796,40 +2830,65 @@ async function loadCloudRecordings() {
   } finally {
     cloudRecordingLoading.value = false;
   }
-  if (cloudRecordingDrawer.value && cloudRecordings.value.some((item) => ['STARTING', 'RUNNING', 'STOPPING'].includes(item.status))) {
-    cloudRecordingPollTimer = window.setTimeout(() => void loadCloudRecordings(), 2000);
-  }
 }
 
 async function createSelectedCloudRecording() {
   const channel = cloudRecordingChannel.value;
-  const range = playbackRange.value;
+  const startTime = cloudRecordingStartTime.value;
+  const endTime = cloudRecordingEndTime.value;
   const sessionNodeId = cloudSessionNodeId();
-  if (!channel || !range || !sessionNodeId) {
+  if (!channel || !startTime || !endTime || !sessionNodeId) {
     ElMessage.warning('请选择有效的录像时段');
     return;
   }
-  const startTimeSec = Math.floor(range[0].getTime() / 1000);
-  const endTimeSec = Math.floor(range[1].getTime() / 1000);
+  const startTimeSec = Math.floor(startTime.getTime() / 1000);
+  const endTimeSec = Math.floor(endTime.getTime() / 1000);
   if (startTimeSec >= endTimeSec || endTimeSec - startTimeSec > 7200) {
     ElMessage.warning('云端录像时段必须大于 0 且不超过 2 小时');
     return;
   }
   cloudRecordingCreating.value = true;
   try {
-    await createCloudRecording(channel.device_id, channel.channel_id, {
-      request_id: `ui-cloud-recording-${Date.now()}`,
-      session_node_id: sessionNodeId,
-      start_time_sec: startTimeSec,
-      end_time_sec: endTimeSec,
-    });
-    ElMessage.success('云端录像任务已创建');
+    await submitCloudRecording(channel, sessionNodeId, startTimeSec, endTimeSec);
     await loadCloudRecordings();
   } catch (error) {
     ElMessage.error(errorMessage(error, '云端录像任务创建失败'));
   } finally {
     cloudRecordingCreating.value = false;
   }
+}
+
+async function createQuickCloudRecording(
+  channel: GbChannelInfo,
+  sessionNodeId: string,
+  range: { startTimeMs: number; endTimeMs: number },
+) {
+  if (!canOperate.value) return;
+  const startTimeSec = Math.floor(Math.min(range.startTimeMs, range.endTimeMs) / 1_000);
+  const endTimeSec = Math.floor(Math.max(range.startTimeMs, range.endTimeMs) / 1_000);
+  if (endTimeSec - startTimeSec < 120) {
+    ElMessage.warning('截取时长不能少于 2 分钟');
+    return;
+  }
+  if (endTimeSec - startTimeSec > 7200) {
+    ElMessage.warning('截取时长不能超过 2 小时');
+    return;
+  }
+  try {
+    await submitCloudRecording(channel, sessionNodeId, startTimeSec, endTimeSec);
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '云端录像任务创建失败'));
+  }
+}
+
+async function submitCloudRecording(channel: GbChannelInfo, sessionNodeId: string, startTimeSec: number, endTimeSec: number) {
+  await createCloudRecording(channel.device_id, channel.channel_id, {
+    request_id: `ui-cloud-recording-${Date.now()}-${channel.channel_id}`,
+    session_node_id: sessionNodeId,
+    start_time_sec: startTimeSec,
+    end_time_sec: endTimeSec,
+  });
+  ElMessage.success('云端录像任务已创建');
 }
 
 async function stopCloudTask(task: CloudRecordingSummary) {
@@ -3266,7 +3325,6 @@ onBeforeRouteLeave(async () => {
 onBeforeUnmount(() => {
   multiViewDisposed = true;
   stopRecordPolling();
-  if (cloudRecordingPollTimer !== undefined) window.clearTimeout(cloudRecordingPollTimer);
   stopPlaybackPresenceHeartbeat();
   window.removeEventListener('online', handlePlaybackPresenceWakeup);
   window.removeEventListener('pageshow', handlePlaybackPresenceWakeup);
@@ -3297,13 +3355,46 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-.cloud-recording-toolbar > div:first-child {
+.cloud-recording-create-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.cloud-recording-create-form label {
   display: grid;
   gap: 4px;
 }
 
-.cloud-recording-toolbar small {
+.cloud-recording-create-form label > span {
   color: var(--muted);
+  font-size: 12px;
+}
+
+.cloud-recording-create-form .el-date-editor {
+  width: 100%;
+}
+
+.cloud-recording-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.cloud-recording-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+:deep(.cloud-actions-column) {
+  border-left: 1px solid var(--component-border);
+}
+
+@media (max-width: 760px) {
+  .cloud-recording-create-form {
+    grid-template-columns: 1fr;
+  }
 }
 
 .record-playback-range b,

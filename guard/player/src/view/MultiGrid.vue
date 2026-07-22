@@ -60,6 +60,7 @@
           @playback-rate-change="(payload) => emit('playbackRateChange', { index: visibleIndex(index), payload })"
           @playback-state-change="(payload) => emit('playbackStateChange', { index: visibleIndex(index), payload })"
           @playback-progress="(payload) => emit('playbackProgress', { index: visibleIndex(index), payload })"
+          @cloud-record-create="(payload) => emit('cloudRecordCreate', { index: visibleIndex(index), payload })"
           @stream-switch="(payload) => emit('streamSwitch', { index: visibleIndex(index), payload })"
           @output-type-change="(outputType) => emit('outputTypeChange', { index: visibleIndex(index), outputType })"
           @playing="(payload) => emit('playing', { index: visibleIndex(index), payload })"
@@ -143,6 +144,7 @@ const emit = defineEmits<{
   playbackRateChange: [{ index: number; payload: { rate: number } }];
   playbackStateChange: [{ index: number; payload: { paused: boolean } }];
   playbackProgress: [{ index: number; payload: { mediaTimeMs: number } }];
+  cloudRecordCreate: [{ index: number; payload: { startTimeMs: number; endTimeMs: number } }];
   streamSwitch: [{ index: number; payload: { source: GmvSource } }];
   outputTypeChange: [{ index: number; outputType: string }];
   playing: [{ index: number; payload: { source?: GmvSource } }];

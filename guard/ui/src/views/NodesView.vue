@@ -31,7 +31,7 @@
         <div class="kv-item"><span>协议</span><b>{{ selected?.protocol || "-" }}</b></div>
         <div class="kv-item"><span>实例</span><b class="code">{{ selected?.instance_id || '-' }}</b></div>
         <div class="kv-item"><span>连接</span><b>{{ selected?.connection || '-' }}</b></div>
-        <div class="kv-item"><span>最后心跳</span><b>{{ formatTime(selected?.last_seen_at_ms) }}</b></div>
+        <div class="kv-item"><span>最后心跳</span><b>{{ formatDateTime(selected?.last_seen_at_ms) }}</b></div>
         <div class="kv-item"><span>能力</span><b>{{ selected?.capabilities.join(', ') || '-' }}</b></div>
         <div class="kv-item"><span>内存</span><b>{{ formatBytes(selected?.host_metrics.memory_used_bytes) }} / {{ formatBytes(selected?.host_metrics.memory_total_bytes) }}</b></div>
         <div class="kv-item"><span>进程 RSS</span><b>{{ formatBytes(selected?.host_metrics.process_resident_memory_bytes) }}</b></div>
@@ -52,6 +52,7 @@ import MetricCard from '@/components/MetricCard.vue';
 import OrbitChart from '@/components/OrbitChart.vue';
 import StatusPill from '@/components/StatusPill.vue';
 import { lineOption } from '@/data/charts';
+import { formatDateTime } from '@/utils/dateTime';
 const nodes = ref<NodeInfo[]>([]); const selected = ref<NodeInfo>(); const loading = ref(false);
 const readyCount = computed(() => nodes.value.filter((item) => item.health === 'READY').length);
 const drainingCount = computed(() => nodes.value.filter((item) => item.health === 'DRAINING').length);
@@ -59,7 +60,6 @@ const unsyncedCount = computed(() => nodes.value.filter((item) => item.schedulin
 const pendingLeaseCount = computed(() => nodes.value.reduce((sum, item) => sum + item.pending_leases, 0));
 const capacityChart = computed(() => lineOption('CPU 使用率', nodes.value.map((item) => item.host_metrics.cpu_usage_percent), nodes.value.map((item) => item.node_id), '#a875ff'));
 const businessMetrics = computed(() => selected.value ? Object.entries(selected.value.business_metrics).map(([key, value]) => key + '=' + value).join(', ') || '-' : '-');
-function formatTime(value?: number) { return value ? new Date(value).toLocaleString('zh-CN') : '-'; }
 function memoryPercent(node: NodeInfo) { return node.host_metrics.memory_total_bytes ? Math.round(node.host_metrics.memory_used_bytes / node.host_metrics.memory_total_bytes * 100) : 0; }
 function formatBytes(value?: number) { if (!value) return '0 B'; const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return (value / 1024 ** index).toFixed(index ? 1 : 0) + ' ' + units[index]; }
 function formatRate(value: number) { return formatBytes(value) + '/s'; }

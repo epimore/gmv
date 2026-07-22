@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
 
-test('录像片段弹窗只在点击更新后发起设备查询', async ({ page }) => {
+test('录像查询仅按用户操作发起，并保留云端录像手动刷新', async ({ page }) => {
   let recordQueries = 0;
   let cloudRecordingLists = 0;
+  let cloudRecordingCreateRange: { start_time_sec: number; end_time_sec: number } | undefined;
   let recordQueryRange: { start_time_sec: number; end_time_sec: number } | undefined;
   const session = {
     username: 'operator',
@@ -48,6 +49,16 @@ test('录像片段弹窗只在点击更新后发起设备查询', async ({ page 
       start_time_sec: 1_753_000_000, end_time_sec: 1_753_001_800, secrecy: 0, record_type: 'time', recorder_id: '', file_size: 0 }],
     next_query_at_ms: 0, server_time_ms: Date.now(),
   };
+  const cloudRecording = {
+    task_id: 'cloud-task-1', request_id: 'cloud-request-1', session_node_id: 'session-1',
+    device_id: device.device_id, channel_id: channel.channel_id,
+    start_time_sec: 1_753_000_000, end_time_sec: 1_753_001_800, requested_duration_sec: 1_800,
+    status: 'RUNNING', file_state: 'WRITING', progress_percent: 50, recorded_duration_ms: 900_000,
+    progress_stale: false, current_size_bytes: 1_024, final_size_bytes: 0, file_format: 'mp4',
+    requested_by: session.username, created_at_ms: Date.now(), started_at_ms: Date.now(), finished_at_ms: 0,
+    updated_at_ms: Date.now(), error_code: '', error_message: '', can_stop: true, can_play: false,
+    can_download: false, can_delete: false,
+  };
 
   await page.route('**/api/v2/**', async (route) => {
     const request = route.request();
@@ -68,9 +79,12 @@ test('录像片段弹窗只在点击更新后发起设备查询', async ({ page 
       status = 202;
       body = { ...current, attempt_batch: { batch_id: 'new', status: 'QUERYING', start_time_sec: 1_753_000_000, end_time_sec: 1_753_003_600, created_at_ms: Date.now() } };
     } else if (path.endsWith('/records')) body = current;
-    else if (path.endsWith('/cloud-recordings')) {
+    else if (path.endsWith('/cloud-recordings') && request.method() === 'POST') {
+      cloudRecordingCreateRange = request.postDataJSON();
+      body = cloudRecording;
+    } else if (path.endsWith('/cloud-recordings')) {
       cloudRecordingLists += 1;
-      body = { items: [], total: 0, page: 1, page_size: 50 };
+      body = { items: [cloudRecording], total: 1, page: 1, page_size: 50 };
     }
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
   });
@@ -96,5 +110,22 @@ test('录像片段弹窗只在点击更新后发起设备查询', async ({ page 
   await page.getByRole('button', { name: '云端录像', exact: true }).click();
   await expect(page.getByRole('heading', { name: '云端录像' })).toBeVisible();
   await expect.poll(() => cloudRecordingLists).toBe(1);
-  await expect(page.getByText('暂无云端录像任务')).toBeVisible();
+  await expect(page.getByPlaceholder('请选择开始时间')).toBeVisible();
+  await expect(page.getByPlaceholder('请选择结束时间')).toBeVisible();
+  await expect(page.getByRole('button', { name: '创建当前时段任务' })).toHaveCount(0);
+  await expect(page.getByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 至 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/).last()).toBeVisible();
+  await expect(page.getByText('开始时间', { exact: true })).toHaveCount(1);
+  await expect(page.getByText('结束时间', { exact: true })).toHaveCount(1);
+  await page.waitForTimeout(2_200);
+  expect(cloudRecordingLists).toBe(1);
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect.poll(() => cloudRecordingLists).toBe(2);
+  const cloudRecordingTimeInputs = page.locator('.cloud-recording-create-form input');
+  await cloudRecordingTimeInputs.nth(0).fill('2026-07-22 00:00:00');
+  await cloudRecordingTimeInputs.nth(0).press('Enter');
+  await cloudRecordingTimeInputs.nth(1).fill('2026-07-22 00:08:00');
+  await cloudRecordingTimeInputs.nth(1).press('Enter');
+  await page.getByRole('button', { name: '创建', exact: true }).click();
+  await expect.poll(() => cloudRecordingCreateRange).toBeTruthy();
+  expect(cloudRecordingCreateRange!.end_time_sec - cloudRecordingCreateRange!.start_time_sec).toBe(8 * 60);
 });

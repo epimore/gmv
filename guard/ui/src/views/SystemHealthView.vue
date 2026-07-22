@@ -15,8 +15,7 @@
         <el-table-column label="状态" width="130"><template #default="{ row }">
             <StatusPill :label="row.state.toUpperCase()" :tone="row.state" />
           </template></el-table-column>
-        <el-table-column label="到期时间"><template #default="{ row }">{{ new
-          Date(row.expires_at_ms).toLocaleString('zh-CN') }}</template></el-table-column>
+        <el-table-column label="到期时间"><template #default="{ row }">{{ formatDateTime(row.expires_at_ms) }}</template></el-table-column>
       </el-table>
     </GlassPanel>
   </div>
@@ -30,6 +29,7 @@ import GlassPanel from '@/components/GlassPanel.vue';
 import OrbitChart from '@/components/OrbitChart.vue';
 import StatusPill from '@/components/StatusPill.vue';
 import { graphOption, radarOption } from '@/data/charts';
+import { formatDateTime } from '@/utils/dateTime';
 
 const loading = ref(false);
 const leases = ref<LeaseInfo[]>([]);

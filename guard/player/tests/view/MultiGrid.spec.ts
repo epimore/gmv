@@ -112,11 +112,13 @@ describe("MultiGrid output selector", () => {
     player.vm.$emit("playbackRateChange", { rate: 2 });
     player.vm.$emit("playbackStateChange", { paused: true });
     player.vm.$emit("playbackProgress", { mediaTimeMs: 12_000 });
+    player.vm.$emit("cloudRecordCreate", { startTimeMs: 10_000, endTimeMs: 130_000 });
     await wrapper.vm.$nextTick();
 
     expect(wrapper.emitted("playbackRateChange")).toEqual([[{ index: 0, payload: { rate: 2 } }]]);
     expect(wrapper.emitted("playbackStateChange")).toEqual([[{ index: 0, payload: { paused: true } }]]);
     expect(wrapper.emitted("playbackProgress")).toEqual([[{ index: 0, payload: { mediaTimeMs: 12_000 } }]]);
+    expect(wrapper.emitted("cloudRecordCreate")).toEqual([[{ index: 0, payload: { startTimeMs: 10_000, endTimeMs: 130_000 } }]]);
     wrapper.unmount();
   });
 

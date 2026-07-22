@@ -24,6 +24,7 @@
             {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
           </span>
           <input
+            v-if="timelineMode === 'playback'"
             :value="state.seekMs"
             type="range"
             min="0"
@@ -38,6 +39,37 @@
             @pointercancel="endInteraction"
             @change="emitSeek($event)"
           />
+          <template v-else>
+            <span class="clip-selection" :style="clipSelectionStyle" aria-hidden="true"></span>
+            <input
+              class="clip-range clip-range-a"
+              :value="clipHandleAMs"
+              type="range"
+              min="0"
+              :max="state.durationMs"
+              step="1000"
+              :disabled="capabilities.playback === false"
+              aria-label="截取滑块一"
+              @pointerdown="beginInteraction"
+              @pointerup="endInteraction"
+              @pointercancel="endInteraction"
+              @input="setClipHandleA"
+            />
+            <input
+              class="clip-range clip-range-b"
+              :value="clipHandleBMs"
+              type="range"
+              min="0"
+              :max="state.durationMs"
+              step="1000"
+              :disabled="capabilities.playback === false"
+              aria-label="截取滑块二"
+              @pointerdown="beginInteraction"
+              @pointerup="endInteraction"
+              @pointercancel="endInteraction"
+              @input="setClipHandleB"
+            />
+          </template>
           <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
             <span
               v-for="tick in timelineTicks"
@@ -193,6 +225,22 @@
         >
           <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}x</option>
         </select>
+        <span v-else-if="control === 'playbackClip'" class="playback-clip-controls">
+          <select v-model="timelineMode" aria-label="回放操作模式">
+            <option value="playback">回放</option>
+            <option value="clip">截取</option>
+          </select>
+          <button
+            v-if="timelineMode === 'clip'"
+            type="button"
+            :disabled="!clipRangeValid || capabilities.playback === false"
+            :title="clipRangeHint"
+            aria-label="创建截取录像"
+            @click="emitCloudRecordCreate()"
+          >
+            DOWN
+          </button>
+        </span>
         <div v-else-if="control === 'presets'" class="preset-box">
           <input
             v-model="presetId"
@@ -346,6 +394,22 @@
         >
           <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}x</option>
         </select>
+        <span v-else-if="control === 'playbackClip'" class="playback-clip-controls">
+          <select v-model="timelineMode" aria-label="回放操作模式">
+            <option value="playback">回放</option>
+            <option value="clip">截取</option>
+          </select>
+          <button
+            v-if="timelineMode === 'clip'"
+            type="button"
+            :disabled="!clipRangeValid || capabilities.playback === false"
+            :title="clipRangeHint"
+            aria-label="创建截取录像"
+            @click="emitCloudRecordCreate(true)"
+          >
+            DOWN
+          </button>
+        </span>
         <div
           v-else-if="control === 'timeline'"
           class="timeline"
@@ -361,6 +425,7 @@
               {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
             </span>
             <input
+              v-if="timelineMode === 'playback'"
               :value="state.seekMs"
               type="range"
               min="0"
@@ -375,6 +440,37 @@
               @pointercancel="endInteraction"
               @change="emitSeek($event, true)"
             />
+            <template v-else>
+              <span class="clip-selection" :style="clipSelectionStyle" aria-hidden="true"></span>
+              <input
+                class="clip-range clip-range-a"
+                :value="clipHandleAMs"
+                type="range"
+                min="0"
+                :max="state.durationMs"
+                step="1000"
+                :disabled="capabilities.playback === false"
+                aria-label="截取滑块一"
+                @pointerdown="beginInteraction"
+                @pointerup="endInteraction"
+                @pointercancel="endInteraction"
+                @input="setClipHandleA"
+              />
+              <input
+                class="clip-range clip-range-b"
+                :value="clipHandleBMs"
+                type="range"
+                min="0"
+                :max="state.durationMs"
+                step="1000"
+                :disabled="capabilities.playback === false"
+                aria-label="截取滑块二"
+                @pointerdown="beginInteraction"
+                @pointerup="endInteraction"
+                @pointercancel="endInteraction"
+                @input="setClipHandleB"
+              />
+            </template>
             <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
               <span
                 v-for="tick in timelineTicks"
@@ -485,9 +581,15 @@ const focusWithin = ref(false);
 const interactionActive = ref(false);
 const presetId = ref("1");
 const jumpSeconds = ref(10);
+const timelineMode = ref<"playback" | "clip">("playback");
+const clipHandleAMs = ref(0);
+const clipHandleBMs = ref(0);
 const hoverTimelineTimeMs = ref<number>();
 const hoverTimelineLeft = ref(0);
 let hideTimer: number | undefined;
+
+const CLIP_MIN_DURATION_MS = 2 * 60 * 1_000;
+const CLIP_MAX_DURATION_MS = 2 * 60 * 60 * 1_000;
 
 const visibility = computed(() => props.config.visibility ?? "auto");
 const renderControls = computed(() => visibility.value !== "hidden");
@@ -496,6 +598,28 @@ const playbackRates = computed(() =>
 );
 const timelineStartTimeMs = computed(() => props.state.timelineStartTimeMs);
 const timelineEndTimeMs = computed(() => props.state.timelineEndTimeMs);
+const clipStartMs = computed(() => Math.min(clipHandleAMs.value, clipHandleBMs.value));
+const clipEndMs = computed(() => Math.max(clipHandleAMs.value, clipHandleBMs.value));
+const clipDurationMs = computed(() => clipEndMs.value - clipStartMs.value);
+const clipRangeValid = computed(() =>
+  timelineStartTimeMs.value !== undefined
+  && clipDurationMs.value >= CLIP_MIN_DURATION_MS
+  && clipDurationMs.value <= CLIP_MAX_DURATION_MS
+  && clipEndMs.value <= props.state.durationMs,
+);
+const clipRangeHint = computed(() => {
+  if (timelineStartTimeMs.value === undefined) return "缺少回放时间范围";
+  if (clipDurationMs.value < CLIP_MIN_DURATION_MS) return "截取时长不能少于 2 分钟";
+  if (clipDurationMs.value > CLIP_MAX_DURATION_MS) return "截取时长不能超过 2 小时";
+  return `${formatTimelineTooltip(timelineStartTimeMs.value! + clipStartMs.value)} 至 ${formatTimelineTooltip(timelineStartTimeMs.value! + clipEndMs.value)}`;
+});
+const clipSelectionStyle = computed(() => {
+  const durationMs = Math.max(1, props.state.durationMs || 0);
+  return {
+    left: `${clipStartMs.value / durationMs * 100}%`,
+    width: `${clipDurationMs.value / durationMs * 100}%`,
+  };
+});
 const timelineTicks = computed(() => {
   const start = timelineStartTimeMs.value;
   const end = timelineEndTimeMs.value;
@@ -520,10 +644,25 @@ watch(
   syncVisibility,
   { immediate: true },
 );
+watch(timelineMode, (mode) => {
+  if (mode === "clip") resetClipRange();
+});
 watch(interactionActive, () => {
   if (canAutoHide.value) scheduleHide();
   else clearHideTimer();
 });
+watch(
+  [
+    () => props.state.timelineStartTimeMs,
+    () => props.state.timelineEndTimeMs,
+    () => props.state.durationMs,
+  ],
+  () => {
+    timelineMode.value = "playback";
+    resetClipRange();
+  },
+  { immediate: true },
+);
 watch(overflowItems, (items) => {
   if (!items.length) closeOverflow(false);
 });
@@ -679,6 +818,37 @@ function emitRateChange(event: Event, fromOverflow = false) {
   afterAction(fromOverflow);
 }
 
+function resetClipRange() {
+  const durationMs = Math.max(0, props.state.durationMs || 0);
+  if (durationMs < CLIP_MIN_DURATION_MS) {
+    clipHandleAMs.value = 0;
+    clipHandleBMs.value = durationMs;
+    return;
+  }
+  const startMs = Math.min(Math.max(0, props.state.seekMs), durationMs - CLIP_MIN_DURATION_MS);
+  clipHandleAMs.value = startMs;
+  clipHandleBMs.value = startMs + CLIP_MIN_DURATION_MS;
+}
+
+function setClipHandleA(event: Event) {
+  clipHandleAMs.value = Number((event.target as HTMLInputElement).value);
+}
+
+function setClipHandleB(event: Event) {
+  clipHandleBMs.value = Number((event.target as HTMLInputElement).value);
+}
+
+function emitCloudRecordCreate(fromOverflow = false) {
+  const startTimeMs = timelineStartTimeMs.value;
+  if (!clipRangeValid.value || startTimeMs === undefined) return;
+  emit("action", {
+    type: "cloud-record-create",
+    startTimeMs: startTimeMs + clipStartMs.value,
+    endTimeMs: startTimeMs + clipEndMs.value,
+  });
+  afterAction(fromOverflow);
+}
+
 function emitOutputTypeChange(event: Event, fromOverflow = false) {
   emit("action", { type: "output-type-change", outputType: (event.target as HTMLSelectElement).value });
   afterAction(fromOverflow);
@@ -817,6 +987,23 @@ button.active {
   color: var(--accent);
 }
 
+.playback-clip-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.playback-clip-controls select,
+.playback-clip-controls button {
+  height: 32px;
+}
+
+.playback-clip-controls button {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .more-button {
   min-width: 52px;
 }
@@ -870,6 +1057,61 @@ button.active {
   left: 0;
   width: 100%;
   margin: 0;
+}
+
+.clip-selection {
+  position: absolute;
+  top: 23px;
+  z-index: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #38bdf8);
+  pointer-events: none;
+}
+
+.timeline-track input.clip-range {
+  z-index: 2;
+  appearance: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+.timeline-track input.clip-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+
+.timeline-track input.clip-range::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  margin-top: -6px;
+  appearance: none;
+  border: 2px solid #06142d;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.35);
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.timeline-track input.clip-range-b::-webkit-slider-thumb {
+  background: #38bdf8;
+}
+
+.timeline-track input.clip-range::-moz-range-track {
+  height: 4px;
+  background: transparent;
+}
+
+.timeline-track input.clip-range::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: 2px solid #06142d;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.35);
+  pointer-events: auto;
+  cursor: ew-resize;
 }
 
 .timeline-tooltip {

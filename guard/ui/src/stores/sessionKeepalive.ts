@@ -1,5 +1,6 @@
 import { currentSession, errorMessage } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { formatDateTime } from '@/utils/dateTime';
 import { defineStore } from 'pinia';
 
 const DEFAULT_KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
@@ -56,7 +57,7 @@ export const useSessionKeepaliveStore = defineStore('sessionKeepalive', {
       try {
         const session = await currentSession();
         useAuthStore().updateSession(session);
-        this.lastSync = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+        this.lastSync = formatDateTime(new Date());
         this.lastError = '';
       } catch (error) {
         this.lastError = errorMessage(error, '会话保活失败');

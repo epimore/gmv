@@ -104,6 +104,7 @@ export type GmvPlayerControl =
   | 'talk'
   | 'streamSwitch'
   | 'playbackRate'
+  | 'playbackClip'
   | 'timeline'
   | 'presets';
 
@@ -152,6 +153,7 @@ export type GmvPlayerControlAction =
   | { type: 'talk-toggle' }
   | { type: 'stream-switch'; sourceUrl: string }
   | { type: 'rate-change'; rate: number }
+  | { type: 'cloud-record-create'; startTimeMs: number; endTimeMs: number }
   | { type: 'seek'; timeMs: number }
   | { type: 'preset-call'; presetId: string }
   | { type: 'preset-set'; presetId: string };
