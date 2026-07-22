@@ -160,3 +160,19 @@ test('已登录会话可访问中文页面与移动端布局', async ({ page }) 
   expect(layout.mainLeft).toBe(0);
   expect(layout.mainWidth).toBe(layout.innerWidth);
 });
+
+test('多画面工作台已选通道空状态居中', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.goto('/gb28181/monitor');
+  await page.getByRole('button', { name: '多画面工作台', exact: true }).click();
+
+  const list = page.locator('.selected-channel-list.empty');
+  const empty = list.locator('.el-empty');
+  await expect(empty).toBeVisible();
+  await expect(empty).toContainText('暂无已选通道');
+  const [listBox, emptyBox] = await Promise.all([list.boundingBox(), empty.boundingBox()]);
+  expect(listBox).not.toBeNull();
+  expect(emptyBox).not.toBeNull();
+  expect(Math.abs((listBox!.x + listBox!.width / 2) - (emptyBox!.x + emptyBox!.width / 2))).toBeLessThan(2);
+  expect(Math.abs((listBox!.y + listBox!.height / 2) - (emptyBox!.y + emptyBox!.height / 2))).toBeLessThan(2);
+});

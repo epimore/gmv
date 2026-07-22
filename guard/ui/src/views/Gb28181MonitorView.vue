@@ -184,7 +184,7 @@
         </div>
       </template>
       <div class="selected-channel-panel">
-        <div class="selected-channel-list" :class="{ playback: multiMode === 'playback' }">
+        <div class="selected-channel-list" :class="{ playback: multiMode === 'playback', empty: !selectedTreeChannels.length }">
           <article v-for="(channel, index) in selectedTreeChannels" :key="selectedChannelKey(channel)"
             class="selected-channel-item" :class="{ dragging: draggingTreeChannelIndex === index }" draggable="true"
             @dragstart="handleSelectedChannelDragStart(index)" @dragover.prevent @drop="handleSelectedChannelDrop(index)"
@@ -488,11 +488,11 @@
       <el-empty v-else description="选择在线通道后播放" />
     </el-dialog>
 
-    <el-drawer v-model="cloudRecordingDrawer" title="下载" size="900px" class="cloud-recording-drawer">
+    <el-drawer v-model="cloudRecordingDrawer" title="设备录像下载" size="900px" class="cloud-recording-drawer">
       <template #header>
         <div class="cloud-recording-drawer-title">
-          <h2>下载</h2>
-          <span>云端录像</span>
+          <h2>设备录像下载</h2>
+          <span>下载任务</span>
         </div>
       </template>
       <div class="cloud-recording-content" v-loading="cloudRecordingLoading">
@@ -500,6 +500,7 @@
           <b>{{ cloudRecordingChannelTitle }}</b>
           <el-button :loading="cloudRecordingLoading" @click="loadCloudRecordings">刷新</el-button>
         </div>
+        <p class="cloud-recording-description">将设备历史录像下载到平台，完成后可在线播放或下载到本地。</p>
         <div class="cloud-recording-create-form">
           <label>
             <span>开始时间</span>
@@ -512,9 +513,9 @@
               placeholder="请选择结束时间" :clearable="true" />
           </label>
           <el-button :loading="cloudRecordingCreating" :disabled="!canOperate || !cloudRecordingStartTime || !cloudRecordingEndTime"
-            type="primary" @click="createSelectedCloudRecording">创建</el-button>
+            type="primary" @click="createSelectedCloudRecording">开始下载</el-button>
         </div>
-        <el-table :data="cloudRecordings" empty-text="暂无下载任务">
+        <el-table :data="cloudRecordings" empty-text="暂无录像下载任务">
           <el-table-column label="下载时段" min-width="320">
             <template #default="{ row }">{{ formatRecordRange(row.start_time_sec, row.end_time_sec) }}</template>
           </el-table-column>
@@ -528,13 +529,13 @@
             label-class-name="cloud-file-column">
             <template #default="{ row }">{{ formatBytes(row.final_size_bytes || row.current_size_bytes) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="190" fixed="right" align="center" class-name="cloud-actions-column"
+          <el-table-column label="操作" width="220" fixed="right" align="center" class-name="cloud-actions-column"
             label-class-name="cloud-actions-column">
             <template #default="{ row }">
               <div class="cloud-recording-actions">
-                <el-button v-if="row.can_stop" type="warning" link :disabled="!canOperate" @click="stopCloudTask(row)">停止</el-button>
+                <el-button v-if="row.can_stop" type="warning" link :disabled="!canOperate" @click="stopCloudTask(row)">停止下载</el-button>
                 <el-button type="primary" link :disabled="!row.can_play" @click="playCloudTask(row)">播放</el-button>
-                <el-button type="primary" link :disabled="!row.can_download" @click="downloadCloudTask(row)">下载</el-button>
+                <el-button type="primary" link :disabled="!row.can_download" @click="downloadCloudTask(row)">本地下载</el-button>
                 <el-button type="danger" link :disabled="!canOperate || !row.can_delete" @click="deleteCloudTask(row)">删除</el-button>
               </div>
             </template>
@@ -3537,6 +3538,12 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
+.cloud-recording-description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .cloud-recording-create-form {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
@@ -4209,6 +4216,15 @@ onBeforeUnmount(() => {
 
 .selected-channel-list.playback {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.selected-channel-list.empty {
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  align-content: center;
+  height: auto;
+  min-height: 428px;
+  overflow: hidden;
 }
 
 .selected-channel-item {

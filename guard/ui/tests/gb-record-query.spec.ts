@@ -196,8 +196,10 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   await playbackRangeDialog.locator('.el-dialog__headerbtn').click();
   await expect(playbackRangeDialog).toBeHidden();
   await page.locator('.channel-card').getByRole('button', { name: '下载', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
-  await expect(page.locator('.cloud-recording-drawer-title').getByText('云端录像', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '设备录像下载', exact: true })).toBeVisible();
+  await expect(page.locator('.cloud-recording-drawer-title').getByText('下载任务', { exact: true })).toBeVisible();
+  await expect(page.getByText('将设备历史录像下载到平台，完成后可在线播放或下载到本地。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '本地下载', exact: true })).toBeVisible();
   await expect.poll(() => cloudRecordingLists).toBe(1);
   await expect(page.getByPlaceholder('请选择开始时间')).toBeVisible();
   await expect(page.getByPlaceholder('请选择结束时间')).toBeVisible();
@@ -214,12 +216,12 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   await cloudRecordingTimeInputs.nth(0).press('Enter');
   await cloudRecordingTimeInputs.nth(1).fill('2026-07-22 00:08:00');
   await cloudRecordingTimeInputs.nth(1).press('Enter');
-  await page.getByRole('button', { name: '创建', exact: true }).click();
+  await page.getByRole('button', { name: '开始下载', exact: true }).click();
   await expect.poll(() => cloudRecordingCreateRange).toBeTruthy();
   expect(cloudRecordingCreateRange!.end_time_sec - cloudRecordingCreateRange!.start_time_sec).toBe(8 * 60);
 
   await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
-  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeHidden();
+  await expect(page.getByRole('heading', { name: '设备录像下载', exact: true })).toBeHidden();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
   await page.locator('.record-output-select').click();
   await page.getByRole('option', { name: 'HLS-fMP4', exact: true }).click();
@@ -235,7 +237,7 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   await createClip.click();
 
   await expect.poll(() => cloudRecordingCreateRange).toBeTruthy();
-  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '设备录像下载', exact: true })).toBeVisible();
   const lockedDown = page.getByRole('button', { name: '截取录像创建中' });
   await expect(lockedDown).toBeDisabled();
   await expect(lockedDown.locator('.clip-down-spinner')).toBeVisible();
