@@ -4,6 +4,7 @@ export { default as GmvMultiGrid } from './view/MultiGrid.vue';
 export { default as GmvPlayerControls } from './view/PlayerControls.vue';
 export type {
   GmvAiBox,
+  GmvCloudRecordRange,
   GmvCodec,
   GmvControlsVisibility,
   GmvDeviceStatus,

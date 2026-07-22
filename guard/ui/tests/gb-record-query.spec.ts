@@ -59,6 +59,14 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
     updated_at_ms: Date.now(), error_code: '', error_message: '', can_stop: true, can_play: false,
     can_download: false, can_delete: false,
   };
+  const playbackStream = {
+    stream_id: 'playback-stream-1', device_id: device.device_id, channel_id: channel.channel_id,
+    node_id: 'stream-node-1', lease_id: 'lease-1', endpoint: '/test-playback.flv',
+    subscription_id: 'subscription-1', session_node_id: 'session-1', session_instance_id: 'instance-1',
+    playback_id: 'playback-1', playback_generation: 1,
+    playback_start_time_sec: current.segments[0].start_time_sec,
+    playback_end_time_sec: current.segments[0].end_time_sec, state: 'running',
+  };
 
   await page.route('**/api/v2/**', async (route) => {
     const request = route.request();
@@ -72,6 +80,13 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
     else if (path === '/api/v2/gb28181/devices') body = { items: [device], total: 1, page: 1, page_size: 20 };
     else if (path.endsWith('/channels')) body = [channel];
     else if (path.endsWith('/resources')) body = [resource];
+    else if (path.endsWith('/playback') && request.method() === 'POST') {
+      body = {
+        operation_id: 'playback-operation-1', state: 'ready', stage: 'ready', elapsed_ms: 10,
+        last_progress_at_ms: Date.now(), checkpoint_ms: 8_000, hard_timeout_ms: 30_000,
+        can_continue: false, result: playbackStream, error: null,
+      };
+    }
     else if (path.endsWith('/records/query')) {
       recordQueries += 1;
       recordQueryRange = request.postDataJSON();
@@ -128,4 +143,22 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
   await page.getByRole('button', { name: '创建', exact: true }).click();
   await expect.poll(() => cloudRecordingCreateRange).toBeTruthy();
   expect(cloudRecordingCreateRange!.end_time_sec - cloudRecordingCreateRange!.start_time_sec).toBe(8 * 60);
+
+  await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
+  await page.locator('.channel-play-main', { hasText: '回放' }).click();
+  await page.locator('.record-segment').first().click();
+  await page.getByRole('button', { name: '开始回放' }).click();
+  await expect(page.getByRole('dialog', { name: /^历史回放 ·/ })).toBeVisible();
+  await expect(page.getByLabel('回放进度')).toHaveAttribute('max', String(30 * 60 * 1_000));
+  await page.getByLabel('回放操作模式').selectOption('clip');
+  cloudRecordingCreateRange = undefined;
+  const createClip = page.getByRole('button', { name: '创建截取录像' });
+  await expect(createClip).toBeEnabled();
+  await createClip.click();
+
+  await expect.poll(() => cloudRecordingCreateRange).toBeTruthy();
+  await expect(page.getByRole('heading', { name: '云端录像' })).toBeVisible();
+  const lockedDown = page.getByRole('button', { name: '截取录像创建中' });
+  await expect(lockedDown).toBeDisabled();
+  await expect(lockedDown.locator('.clip-down-spinner')).toBeVisible();
 });

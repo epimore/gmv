@@ -118,6 +118,11 @@ export interface GmvPlayerControlsConfig {
   playbackRates?: number[];
 }
 
+export interface GmvCloudRecordRange {
+  startTimeMs: number;
+  endTimeMs: number;
+}
+
 export interface GmvPlayerControlsState {
   playbackState: GmvDeviceStatus;
   audioEnabled: boolean;
@@ -131,6 +136,7 @@ export interface GmvPlayerControlsState {
   durationMs: number;
   timelineStartTimeMs?: number;
   timelineEndTimeMs?: number;
+  cloudRecordLockedRange?: GmvCloudRecordRange;
   selectedSourceUrl: string;
   selectedOutputType: string;
 }

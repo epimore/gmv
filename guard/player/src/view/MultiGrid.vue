@@ -92,7 +92,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, type ComponentPublicInstance } from 'vue';
-import type { GmvAiBox, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
+import type { GmvAiBox, GmvCloudRecordRange, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
 import GmvPlayerView from './GmvPlayerView.vue';
 
 export interface GmvGridCell {
@@ -121,6 +121,7 @@ export interface GmvGridCell {
   playbackDurationMs?: number;
   playbackStartTimeMs?: number;
   playbackEndTimeMs?: number;
+  cloudRecordLockedRange?: GmvCloudRecordRange;
 }
 
 const props = defineProps<{

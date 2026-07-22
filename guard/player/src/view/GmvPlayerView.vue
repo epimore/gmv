@@ -139,6 +139,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { GmvPlayerCore } from '../core/GmvPlayerCore';
 import type {
   GmvAiBox,
+  GmvCloudRecordRange,
   GmvDeviceStatus,
   GmvMediaMode,
   GmvOsdItem,
@@ -185,6 +186,7 @@ const props = withDefaults(
     playbackDurationMs?: number;
     playbackStartTimeMs?: number;
     playbackEndTimeMs?: number;
+    cloudRecordLockedRange?: GmvCloudRecordRange;
     /** @deprecated 请使用 controls.visibility。 */
     controlsVisible?: boolean;
   }>(),
@@ -320,6 +322,7 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
   durationMs: props.playbackDurationMs ?? 86_400_000,
   timelineStartTimeMs: props.playbackStartTimeMs,
   timelineEndTimeMs: props.playbackEndTimeMs,
+  cloudRecordLockedRange: props.cloudRecordLockedRange,
   selectedSourceUrl: selectedSourceUrl.value,
   selectedOutputType: props.outputType ?? '',
 }));

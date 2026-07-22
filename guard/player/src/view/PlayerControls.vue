@@ -238,11 +238,13 @@
           <span v-if="timelineMode === 'clip'" class="clip-down-tip" :title="clipRangeHint">
             <button
               type="button"
-              :disabled="!clipRangeValid || capabilities.playback === false"
-              aria-label="创建截取录像"
+              :disabled="!clipRangeValid || clipRangeLocked || capabilities.playback === false"
+              :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'"
+              :aria-busy="clipRangeLocked"
               @click="emitCloudRecordCreate()"
             >
-              DOWN
+              <span v-if="clipRangeLocked" class="clip-down-spinner" aria-hidden="true"></span>
+              <template v-else>DOWN</template>
             </button>
           </span>
         </span>
@@ -407,11 +409,13 @@
           <span v-if="timelineMode === 'clip'" class="clip-down-tip" :title="clipRangeHint">
             <button
               type="button"
-              :disabled="!clipRangeValid || capabilities.playback === false"
-              aria-label="创建截取录像"
+              :disabled="!clipRangeValid || clipRangeLocked || capabilities.playback === false"
+              :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'"
+              :aria-busy="clipRangeLocked"
               @click="emitCloudRecordCreate(true)"
             >
-              DOWN
+              <span v-if="clipRangeLocked" class="clip-down-spinner" aria-hidden="true"></span>
+              <template v-else>DOWN</template>
             </button>
           </span>
         </span>
@@ -617,10 +621,18 @@ const clipRangeValid = computed(() =>
   && clipDurationMs.value <= CLIP_MAX_DURATION_MS
   && clipEndMs.value <= props.state.durationMs,
 );
+const clipRangeLocked = computed(() => {
+  const start = timelineStartTimeMs.value;
+  const locked = props.state.cloudRecordLockedRange;
+  if (start === undefined || !locked) return false;
+  return locked.startTimeMs === start + clipStartMs.value
+    && locked.endTimeMs === start + clipEndMs.value;
+});
 const clipRangeHint = computed(() => {
   if (timelineStartTimeMs.value === undefined) return "缺少回放时间范围";
   if (clipDurationMs.value < CLIP_MIN_DURATION_MS) return "截取时长不能少于 2 分钟";
   if (clipDurationMs.value > CLIP_MAX_DURATION_MS) return "截取时长不能超过 2 小时";
+  if (clipRangeLocked.value) return "该截取时段已提交，请调整开始或结束时间";
   return `${formatTimelineTooltip(timelineStartTimeMs.value! + clipStartMs.value)} 至 ${formatTimelineTooltip(timelineStartTimeMs.value! + clipEndMs.value)}`;
 });
 const clipSelectionStyle = computed(() => {
@@ -1015,8 +1027,25 @@ button.active {
 }
 
 .playback-clip-controls button {
+  min-width: 54px;
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.clip-down-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(34, 211, 238, 0.35);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: clip-down-spin 700ms linear infinite;
+}
+
+@keyframes clip-down-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .more-button {
@@ -1091,7 +1120,7 @@ button.active {
   z-index: 1;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent), #38bdf8);
+  background: linear-gradient(90deg, #fbbf24, #fb7185);
   pointer-events: none;
 }
 
@@ -1108,20 +1137,21 @@ button.active {
 }
 
 .timeline-track input.clip-range::-webkit-slider-thumb {
-  width: 15px;
-  height: 15px;
-  margin-top: -6px;
+  width: 18px;
+  height: 22px;
+  margin-top: -9px;
   appearance: none;
-  border: 2px solid #06142d;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.35);
+  border: 0;
+  border-radius: 0;
+  background: #fbbf24;
+  clip-path: polygon(0 0, 100% 0, 60% 38%, 60% 100%, 40% 100%, 40% 38%);
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
   pointer-events: auto;
   cursor: ew-resize;
 }
 
 .timeline-track input.clip-range-b::-webkit-slider-thumb {
-  background: #38bdf8;
+  background: #fb7185;
 }
 
 .timeline-track input.clip-range::-moz-range-track {
@@ -1130,14 +1160,19 @@ button.active {
 }
 
 .timeline-track input.clip-range::-moz-range-thumb {
-  width: 15px;
-  height: 15px;
-  border: 2px solid #06142d;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.35);
+  width: 18px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: #fbbf24;
+  clip-path: polygon(0 0, 100% 0, 60% 38%, 60% 100%, 40% 100%, 40% 38%);
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
   pointer-events: auto;
   cursor: ew-resize;
+}
+
+.timeline-track input.clip-range-b::-moz-range-thumb {
+  background: #fb7185;
 }
 
 .timeline-tooltip {

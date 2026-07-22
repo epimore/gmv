@@ -2417,7 +2417,9 @@ fn cloud_recording_proto(
         u64::try_from(end_time_sec.saturating_sub(start_time_sec)).unwrap_or_default();
     let recorded_duration_ms = u64::try_from(record.recorded_duration_ms).unwrap_or_default();
     let current_size_bytes = u64::try_from(record.current_size_bytes).unwrap_or_default();
-    let progress_percent = if requested_duration_sec == 0 {
+    let progress_percent = if status == storage::STATUS_COMPLETED {
+        100
+    } else if requested_duration_sec == 0 {
         0
     } else {
         u32::try_from(
@@ -2735,6 +2737,50 @@ mod tests {
     use super::*;
     use gmv_protocol::common::v1::Endpoint;
     use gmv_protocol::session::v1::session_hook_server::SessionHook;
+
+    fn cloud_recording(
+        status: &str,
+        recorded_duration_ms: i64,
+    ) -> crate::storage::recording::CloudRecording {
+        crate::storage::recording::CloudRecording {
+            task_id: "task-1".to_string(),
+            request_id: Some("request-1".to_string()),
+            session_node_id: Some("session-1".to_string()),
+            stream_id: Some("stream-1".to_string()),
+            stream_node: Some("stream-node-1".to_string()),
+            device_id: "device-1".to_string(),
+            channel_id: "channel-1".to_string(),
+            user_id: Some("operator".to_string()),
+            st: Some("2026-07-22 10:00:00".to_string()),
+            et: Some("2026-07-22 10:01:40".to_string()),
+            ct: Some("2026-07-22 10:00:00".to_string()),
+            state: Some(1),
+            status: Some(status.to_string()),
+            file_state: Some(crate::storage::recording::FILE_READY.to_string()),
+            recorded_duration_ms,
+            current_size_bytes: 1_024,
+            started_at: Some("2026-07-22 10:00:00".to_string()),
+            finished_at: Some("2026-07-22 10:01:39".to_string()),
+            lt: Some("2026-07-22 10:01:39".to_string()),
+            error_code: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn completed_cloud_recording_reports_one_hundred_percent() {
+        let completed = cloud_recording_proto(cloud_recording(
+            crate::storage::recording::STATUS_COMPLETED,
+            99_000,
+        ));
+        let partial = cloud_recording_proto(cloud_recording(
+            crate::storage::recording::STATUS_PARTIAL,
+            99_000,
+        ));
+
+        assert_eq!(completed.progress_percent, 100);
+        assert_eq!(partial.progress_percent, 99);
+    }
 
     #[test]
     fn playback_seek_uses_npt_offset_from_selected_start() {

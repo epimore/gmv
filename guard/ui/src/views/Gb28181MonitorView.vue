@@ -437,6 +437,7 @@
             :poster="playerPoster" :capabilities="playerCapabilities"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
+            :cloud-record-locked-range="singleCloudRecordLockedRange"
             :output-type="singlePlayerOutputType" :output-options="singlePlayerOutputOptions"
             :output-switching="singleOutputSwitching" @output-type-change="handleSingleOutputTypeChange"
             :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
@@ -642,7 +643,7 @@ import {
 import { startGbMicrophoneBroadcast, type GbBroadcastSession } from '@/audio/gbBroadcast';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { GmvMultiGrid, GmvPlayerView, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
+import { GmvMultiGrid, GmvPlayerView, type GmvCloudRecordRange, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
 import { formatDateTime } from '@/utils/dateTime';
 
@@ -710,9 +711,11 @@ const cloudRecordingDrawer = ref(false);
 const cloudRecordingLoading = ref(false);
 const cloudRecordingCreating = ref(false);
 const cloudRecordingChannel = ref<GbChannelInfo>();
+const cloudRecordingSessionNodeId = ref('');
 const cloudRecordingStartTime = ref<Date>();
 const cloudRecordingEndTime = ref<Date>();
 const cloudRecordings = ref<CloudRecordingSummary[]>([]);
+const singleCloudRecordLockedRange = ref<GmvCloudRecordRange>();
 const recordQueryRange = ref<[Date, Date]>();
 const recordRangeMode = ref<'week' | 'month' | 'custom'>('custom');
 const recordState = ref<GbChannelRecordsInfo>();
@@ -816,6 +819,7 @@ interface MultiViewCell {
   playback_rate?: number;
   playback_ack_rate?: number;
   playback_state?: 'playing' | 'paused';
+  cloud_record_locked_range?: GmvCloudRecordRange;
   output?: StreamOutputSummary;
   output_switching?: boolean;
   pending_switch?: {
@@ -1119,6 +1123,7 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     playbackDurationMs: playbackCellDurationMs(cell),
     playbackStartTimeMs: cell.mode === 'playback' && cell.playback_start_sec ? cell.playback_start_sec * 1_000 : undefined,
     playbackEndTimeMs: cell.mode === 'playback' && cell.playback_end_sec ? cell.playback_end_sec * 1_000 : undefined,
+    cloudRecordLockedRange: cell.cloud_record_locked_range,
     startupText: cell.operation ? mediaOperationText(cell.operation) : undefined,
     startupCanCancel: !!cell.operation && cell.operation.checkpoint_ms > 0 && cell.operation.elapsed_ms >= cell.operation.checkpoint_ms,
   };
@@ -2011,7 +2016,14 @@ function handleSingleSnapshotError(event: { message: string }) {
 async function handleSingleCloudRecordCreate(event: { startTimeMs: number; endTimeMs: number }) {
   const channel = selectedChannel.value;
   const sessionNodeId = lastStream.value?.session_node_id || selectedDevice.value?.session_node_id;
-  if (channel && sessionNodeId) await createQuickCloudRecording(channel, sessionNodeId, event);
+  if (!channel || !sessionNodeId) return;
+  const range = normalizedCloudRecordRange(event);
+  if (sameCloudRecordRange(singleCloudRecordLockedRange.value, range)) return;
+  singleCloudRecordLockedRange.value = range;
+  const created = await createQuickCloudRecording(channel, sessionNodeId, range);
+  if (!created && sameCloudRecordRange(singleCloudRecordLockedRange.value, range)) {
+    singleCloudRecordLockedRange.value = undefined;
+  }
 }
 async function handleMultiClose(event: { index: number }) {
   const cell = multiCellAtVisibleIndex(event.index);
@@ -2150,7 +2162,17 @@ async function handleMultiPlaybackProgress(event: { index: number; payload: { me
 }
 async function handleMultiCloudRecordCreate(event: { index: number; payload: { startTimeMs: number; endTimeMs: number } }) {
   const cell = multiCellAtVisibleIndex(event.index);
-  if (cell) await createQuickCloudRecording(cell.channel, cell.session_node_id, event.payload);
+  if (!cell) return;
+  const range = normalizedCloudRecordRange(event.payload);
+  if (sameCloudRecordRange(cell.cloud_record_locked_range, range)) return;
+  upsertMultiCell({ ...cell, cloud_record_locked_range: range });
+  const created = await createQuickCloudRecording(cell.channel, cell.session_node_id, range);
+  if (!created) {
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (current && sameCloudRecordRange(current.cloud_record_locked_range, range)) {
+      upsertMultiCell({ ...current, cloud_record_locked_range: undefined });
+    }
+  }
 }
 async function toggleAllMultiPlayback() {
   if (multiBulkBusy.value || multiPlaybackStarting.value) {
@@ -2798,23 +2820,30 @@ watch(playbackRangeDialog, (open) => {
 
 watch(cloudRecordingDrawer, (open) => {
   if (open) void loadCloudRecordings();
+  else cloudRecordingSessionNodeId.value = '';
 });
 
 function cloudSessionNodeId(): string {
-  return lastStream.value?.session_node_id || selectedDevice.value?.session_node_id || selectedListNodeId.value;
+  return cloudRecordingSessionNodeId.value || lastStream.value?.session_node_id || selectedDevice.value?.session_node_id || selectedListNodeId.value;
 }
 
-function openCloudRecordings(channel?: GbChannelInfo) {
+function openCloudRecordings(channel?: GbChannelInfo, sessionNodeId?: string) {
   const target = channel || selectedChannel.value || pendingPlaybackChannel.value;
   if (!target) {
     ElMessage.warning('请先选择通道');
     return;
   }
+  const alreadyOpen = cloudRecordingDrawer.value;
   cloudRecordingChannel.value = target;
+  cloudRecordingSessionNodeId.value = sessionNodeId
+    || lastStream.value?.session_node_id
+    || selectedDevice.value?.session_node_id
+    || selectedListNodeId.value;
   cloudRecordingStartTime.value = undefined;
   cloudRecordingEndTime.value = undefined;
   if (playbackRangeDialog.value) playbackRangeDialog.value = false;
   cloudRecordingDrawer.value = true;
+  if (alreadyOpen) void loadCloudRecordings();
 }
 
 async function loadCloudRecordings() {
@@ -2862,23 +2891,37 @@ async function createQuickCloudRecording(
   channel: GbChannelInfo,
   sessionNodeId: string,
   range: { startTimeMs: number; endTimeMs: number },
-) {
-  if (!canOperate.value) return;
+): Promise<boolean> {
+  if (!canOperate.value) return false;
   const startTimeSec = Math.floor(Math.min(range.startTimeMs, range.endTimeMs) / 1_000);
   const endTimeSec = Math.floor(Math.max(range.startTimeMs, range.endTimeMs) / 1_000);
   if (endTimeSec - startTimeSec < 120) {
     ElMessage.warning('截取时长不能少于 2 分钟');
-    return;
+    return false;
   }
   if (endTimeSec - startTimeSec > 7200) {
     ElMessage.warning('截取时长不能超过 2 小时');
-    return;
+    return false;
   }
   try {
     await submitCloudRecording(channel, sessionNodeId, startTimeSec, endTimeSec);
+    openCloudRecordings(channel, sessionNodeId);
+    return true;
   } catch (error) {
     ElMessage.error(errorMessage(error, '云端录像任务创建失败'));
+    return false;
   }
+}
+
+function normalizedCloudRecordRange(range: GmvCloudRecordRange): GmvCloudRecordRange {
+  return {
+    startTimeMs: Math.min(range.startTimeMs, range.endTimeMs),
+    endTimeMs: Math.max(range.startTimeMs, range.endTimeMs),
+  };
+}
+
+function sameCloudRecordRange(left: GmvCloudRecordRange | undefined, right: GmvCloudRecordRange) {
+  return left?.startTimeMs === right.startTimeMs && left.endTimeMs === right.endTimeMs;
 }
 
 async function submitCloudRecording(channel: GbChannelInfo, sessionNodeId: string, startTimeSec: number, endTimeSec: number) {
@@ -2977,6 +3020,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
   const requestSeq = playRequestSeq + 1;
   playRequestSeq = requestSeq;
   selectedChannel.value = channel;
+  singleCloudRecordLockedRange.value = undefined;
   lastAction.value = action;
   showImages.value = false;
   playerDialog.value = true;

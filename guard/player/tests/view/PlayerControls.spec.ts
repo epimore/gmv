@@ -172,6 +172,36 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
+  it("已提交时段未变化时 DOWN 转圈且不能重复提交", async () => {
+    const timelineStartTimeMs = new Date(2026, 6, 22, 10, 0, 0).getTime();
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        mediaMode: "playback",
+        playbackDurationMs: 5 * 60 * 1_000,
+        playbackStartTimeMs: timelineStartTimeMs,
+        playbackEndTimeMs: timelineStartTimeMs + 5 * 60 * 1_000,
+        cloudRecordLockedRange: {
+          startTimeMs: timelineStartTimeMs,
+          endTimeMs: timelineStartTimeMs + 2 * 60 * 1_000,
+        },
+        capabilities: { playback: true },
+        controls: { items: ["playbackClip", "timeline"], visibility: "always" },
+      },
+    });
+
+    await wrapper.get('[aria-label="回放操作模式"]').setValue("clip");
+    const lockedButton = wrapper.get<HTMLButtonElement>('[aria-label="截取录像创建中"]');
+    expect(lockedButton.element.disabled).toBe(true);
+    expect(lockedButton.attributes("aria-busy")).toBe("true");
+    expect(wrapper.find(".clip-down-spinner").exists()).toBe(true);
+
+    await wrapper.get('[aria-label="截取滑块二"]').setValue(3 * 60 * 1_000);
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="创建截取录像"]').element.disabled).toBe(false);
+    expect(wrapper.find(".clip-down-spinner").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("未传旧 controlsVisible 时使用新的 controls 配置", () => {
     const wrapper = mount(GmvPlayerView, {
       props: {
