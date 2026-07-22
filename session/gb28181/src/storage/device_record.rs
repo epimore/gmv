@@ -101,7 +101,8 @@ impl RecordState {
         .hand_log(|msg| error!("{msg}"))?;
         let rows = db::fetch_all_as!(
             RecordRow,
-            r#"SELECT id,device_id,channel_id,batch_id,item_no,row_type,status,
+            r#"SELECT id,device_id,channel_id,batch_id,item_no,
+                      CAST(row_type AS SIGNED) AS row_type,CAST(status AS SIGNED) AS status,
                       start_time_sec,end_time_sec,remote_device_id,name,file_path,address,
                       secrecy,record_type,recorder_id,file_size,create_time
                  FROM gb28181_device_record_segment
@@ -123,7 +124,8 @@ impl RecordState {
             if let Some(current) = current_row.filter(|row| row.status == Some(STATUS_READY)) {
                 db::fetch_all_as!(
                     RecordRow,
-                    r#"SELECT id,device_id,channel_id,batch_id,item_no,row_type,status,
+                    r#"SELECT id,device_id,channel_id,batch_id,item_no,
+                          CAST(row_type AS SIGNED) AS row_type,CAST(status AS SIGNED) AS status,
                           start_time_sec,end_time_sec,remote_device_id,name,file_path,address,
                           secrecy,record_type,recorder_id,file_size,create_time
                      FROM gb28181_device_record_segment
@@ -194,7 +196,8 @@ impl RecordState {
         }
         let recent = db::fetch_optional_as!(
             RecordRow,
-            r#"SELECT id,device_id,channel_id,batch_id,item_no,row_type,status,
+            r#"SELECT id,device_id,channel_id,batch_id,item_no,
+                      CAST(row_type AS SIGNED) AS row_type,CAST(status AS SIGNED) AS status,
                       start_time_sec,end_time_sec,remote_device_id,name,file_path,address,
                       secrecy,record_type,recorder_id,file_size,create_time
                  FROM gb28181_device_record_segment

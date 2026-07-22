@@ -66,9 +66,9 @@ guard:
     #   host: 127.0.0.1
     #   port: 3306
     #   database: gmv
-    #   username: gmv
+    #   username: root
     #   pass_crypto_enable: false
-    #   pass: ""
+    #   pass: "zaq12345"
     #   ssl_mode: preferred # disabled | preferred | required | verify_ca | verify_identity
     #   attrs:
     #     log_global_sql_level: debug
