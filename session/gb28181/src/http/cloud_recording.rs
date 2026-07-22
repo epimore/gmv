@@ -109,15 +109,34 @@ pub async fn issue_ticket(task_id: &str, mode: &str) -> Result<IssuedAccess, ton
     let session = SessionConf::get_session_by_conf();
     let http = Http::get_http_by_conf();
     Ok(IssuedAccess {
-        url: format!(
-            "http://{}:{}/cloud-recordings/{}/file?token={}",
-            session.wan_ip, http.port, task_id, token
+        url: build_access_url(
+            &conf.public_base_url,
+            &session.wan_ip.to_string(),
+            http.port,
+            task_id,
+            &token,
         ),
         expires_at_ms: idle_expires_at_ms,
         content_type: "video/mp4".to_string(),
         file_name: format!("{}.{}", file.file_name, file_format.trim_start_matches('.')),
         file_size: metadata.len(),
     })
+}
+
+fn build_access_url(
+    public_base_url: &str,
+    wan_ip: &str,
+    http_port: u16,
+    task_id: &str,
+    token: &str,
+) -> String {
+    let configured_base = public_base_url.trim();
+    let base_url = if configured_base.is_empty() {
+        format!("http://{wan_ip}:{http_port}")
+    } else {
+        configured_base.trim_end_matches('/').to_string()
+    };
+    format!("{base_url}/cloud-recordings/{task_id}/file?token={token}")
 }
 
 async fn serve_recording(
@@ -254,7 +273,29 @@ fn ticket_status(code: BaseErrorCode, message: &str) -> tonic::Status {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_range;
+    use super::{build_access_url, parse_range};
+
+    #[test]
+    fn builds_access_url_from_public_base_url() {
+        assert_eq!(
+            build_access_url(
+                "https://gmv.example.com/recordings/session-1/",
+                "192.0.2.10",
+                28567,
+                "task-1",
+                "token-1",
+            ),
+            "https://gmv.example.com/recordings/session-1/cloud-recordings/task-1/file?token=token-1"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_session_http_address() {
+        assert_eq!(
+            build_access_url("", "192.0.2.10", 28567, "task-1", "token-1"),
+            "http://192.0.2.10:28567/cloud-recordings/task-1/file?token=token-1"
+        );
+    }
 
     #[test]
     fn parses_single_byte_ranges() {

@@ -76,6 +76,7 @@ server:
     download:
         storage_path: ./videos/down #云端录像共享存储根目录；Session持有任务、文件读取与删除事实
         storage_id: cloud-recording-main
+        public_base_url: "" #公网代理前缀，例如 https://gmv.example.com/recordings/session-1；留空则使用Session直连地址
         min_free_bytes: 2147483648
         access_ticket_idle_ttl_secs: 300
         access_ticket_max_ttl_secs: 21600

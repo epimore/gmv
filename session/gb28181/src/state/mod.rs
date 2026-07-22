@@ -218,6 +218,8 @@ pub struct DownloadConf {
     pub storage_path: String,
     #[serde(default = "default_storage_id")]
     pub storage_id: String,
+    #[serde(default)]
+    pub public_base_url: String,
     #[serde(default = "default_min_free_bytes")]
     pub min_free_bytes: u64,
     #[serde(default = "default_access_ticket_idle_ttl_secs")]
@@ -244,6 +246,14 @@ impl CheckFromConf for DownloadConf {
         {
             return Err(FieldCheckError::BizError(
                 "server.download access ticket TTL 配置无效".to_string(),
+            ));
+        }
+        let public_base_url = dc.public_base_url.trim();
+        if !public_base_url.is_empty()
+            && !(public_base_url.starts_with("http://") || public_base_url.starts_with("https://"))
+        {
+            return Err(FieldCheckError::BizError(
+                "server.download.public_base_url必须是http或https地址".to_string(),
             ));
         }
         Ok(())
