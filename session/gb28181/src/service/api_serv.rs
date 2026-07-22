@@ -93,31 +93,22 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
 
 pub async fn download_info_by_stream_id(
     info: StreamQo,
+    stream_node: Option<&str>,
     _token: String,
 ) -> GlobalResult<StreamRecordInfo> {
-    let (stream_server, ssrc) = session::Cache::stream_map_query_node_ssrc(&info.stream_id)
-        .ok_or_else(|| {
-            GlobalError::new_biz_error(
-                BaseErrorCode::InvalidRequest.code(),
-                "无效的媒体流ID",
-                |msg| error!("{msg}"),
-            )
-        })?;
+    let (stream_server, ssrc) = download_stream_route(&info.stream_id, stream_node)?;
     let node = crate::guard_integration::ensure_stream_node(&stream_server).await?;
     let output_enum = info.media_type.unwrap_or(OutputEnum::LocalMp4);
     stream_rpc::record_info(&node, &StreamInfoQo { ssrc, output_enum }).await
 }
 
-pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bool> {
+pub async fn download_stop(
+    stream_id: String,
+    stream_node: Option<&str>,
+    _token: String,
+) -> GlobalResult<bool> {
     if id_builder::de_stream_id(&stream_id).is_ok() {
-        let (stream_server, ssrc) = session::Cache::stream_map_query_node_ssrc(&stream_id)
-            .ok_or_else(|| {
-                GlobalError::new_biz_error(
-                    BaseErrorCode::InvalidRequest.code(),
-                    "无效的媒体流ID",
-                    |msg| error!("{msg}"),
-                )
-            })?;
+        let (stream_server, ssrc) = download_stream_route(&stream_id, stream_node)?;
         stream_close::begin(stream_id.clone());
         let node = crate::guard_integration::ensure_stream_node(&stream_server).await?;
         stream_rpc::close_output(
@@ -131,6 +122,30 @@ pub async fn download_stop(stream_id: String, _token: String) -> GlobalResult<bo
         return Ok(true);
     }
     Ok(false)
+}
+
+fn download_stream_route(
+    stream_id: &String,
+    stream_node: Option<&str>,
+) -> GlobalResult<(String, u32)> {
+    if let Some(route) = session::Cache::stream_map_query_node_ssrc(stream_id) {
+        return Ok(route);
+    }
+    let (_, _, ssrc) = id_builder::de_stream_id(stream_id)?;
+    let ssrc = ssrc.parse::<u32>().map_err(|_| invalid_stream_route())?;
+    let stream_node = stream_node
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(invalid_stream_route)?;
+    Ok((stream_node.to_string(), ssrc))
+}
+
+fn invalid_stream_route() -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::InvalidRequest.code(),
+        "无效的媒体流ID",
+        |msg| error!("{msg}"),
+    )
 }
 
 pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
@@ -1027,6 +1042,24 @@ mod live_output_type_tests {
         });
 
         assert_eq!(live_output_type(&output), Some("ll_hls"));
+    }
+}
+
+#[cfg(test)]
+mod download_stream_route_tests {
+    use super::download_stream_route;
+    use crate::utils::id_builder;
+
+    #[test]
+    fn falls_back_to_persisted_stream_node_and_decoded_ssrc() {
+        let stream_id =
+            id_builder::en_stream_id("34020000001110000009", "34020000001320000102", "0123456789")
+                .expect("build stream id");
+
+        assert_eq!(
+            download_stream_route(&stream_id, Some("stream-node-1")).expect("resolve route"),
+            ("stream-node-1".to_string(), 123_456_789),
+        );
     }
 }
 

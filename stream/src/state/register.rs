@@ -422,6 +422,7 @@ impl StreamMetadata {
                     ssrc,
                     stream_id: stream_id.clone(),
                     file_name,
+                    session_hook_endpoint: self.session_hook_endpoint.clone(),
                     min_free_bytes: info.min_free_bytes,
                     pkt_rx: self.converter.muxer.get_rx(MuxerEnum::Mp4).unwrap(),
                     record_event_tx: event_tx,

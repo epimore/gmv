@@ -60,7 +60,7 @@ pub enum OutEvent {
     StreamUnknown(UnknownStreamEvent),
     OnPlay(StreamPlayInfo),
     OffPlay(StreamPlayInfo),
-    EndRecord(StreamRecordInfo),
+    EndRecord(StreamRecordInfo, Option<String>),
 }
 pub enum EventRes {
     Out(OutEventRes),
@@ -271,15 +271,23 @@ impl Event {
                     }
                 }
             }
-            OutEvent::EndRecord(info) => {
-                let response = match info.stream_id.as_deref() {
-                    Some(stream_id) => {
-                        Self::call_session_hook_by_stream_id(stream_id, "stream.end_record", &info)
+            OutEvent::EndRecord(info, session_hook_endpoint) => {
+                let response = if let Some(endpoint) = session_hook_endpoint.as_deref() {
+                    call_session_hook_rpc(endpoint, "stream.end_record", &info).await
+                } else {
+                    match info.stream_id.as_deref() {
+                        Some(stream_id) => {
+                            Self::call_session_hook_by_stream_id(
+                                stream_id,
+                                "stream.end_record",
+                                &info,
+                            )
                             .await
-                    }
-                    None => {
-                        warn!("end_record stream_id missing");
-                        None
+                        }
+                        None => {
+                            warn!("end_record stream_id missing");
+                            None
+                        }
                     }
                 };
                 if Self::accepted(response.as_ref()) {

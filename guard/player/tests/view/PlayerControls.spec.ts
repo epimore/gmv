@@ -89,6 +89,19 @@ describe("PlayerControls", () => {
     await wrapper.get('[aria-label="回放操作模式"]').setValue("clip");
     expect(wrapper.find('[aria-label="回放进度"]').exists()).toBe(false);
     expect(wrapper.findAll('.clip-range')).toHaveLength(2);
+    expect(wrapper.find('.timeline-rail').exists()).toBe(true);
+
+    const firstHandle = wrapper.get<HTMLInputElement>('[aria-label="截取滑块一"]');
+    vi.spyOn(firstHandle.element, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      width: 600,
+    } as DOMRect);
+    firstHandle.element.dispatchEvent(new MouseEvent("pointermove", {
+      bubbles: true,
+      clientX: 120,
+    }));
+    await nextTick();
+    expect(wrapper.get('.timeline-tooltip').text()).toBe("2026-07-22 10:02:00");
 
     await wrapper.setProps({
       state: {
@@ -101,6 +114,7 @@ describe("PlayerControls", () => {
     await wrapper.get('[aria-label="截取滑块一"]').setValue(120_000);
     await wrapper.get('[aria-label="截取滑块二"]').setValue(60_000);
     expect(wrapper.get<HTMLButtonElement>('[aria-label="创建截取录像"]').element.disabled).toBe(true);
+    expect(wrapper.get('.clip-down-tip').attributes('title')).toBe("截取时长不能少于 2 分钟");
 
     await wrapper.get('[aria-label="截取滑块一"]').setValue(240_000);
     expect(wrapper.get<HTMLButtonElement>('[aria-label="创建截取录像"]').element.disabled).toBe(false);
@@ -111,6 +125,27 @@ describe("PlayerControls", () => {
       startTimeMs: timelineStartTimeMs + 60_000,
       endTimeMs: timelineStartTimeMs + 240_000,
     }]);
+    wrapper.unmount();
+  });
+
+  it("截取范围超过两小时时 DOWN 不可用并提示原因", async () => {
+    const timelineStartTimeMs = new Date(2026, 6, 22, 10, 0, 0).getTime();
+    const wrapper = mountControls(
+      { items: ["playbackClip", "timeline"], visibility: "always" },
+      {
+        ...playingState,
+        durationMs: 3 * 60 * 60 * 1_000,
+        timelineStartTimeMs,
+        timelineEndTimeMs: timelineStartTimeMs + 3 * 60 * 60 * 1_000,
+      },
+    );
+
+    await wrapper.get('[aria-label="回放操作模式"]').setValue("clip");
+    await wrapper.get('[aria-label="截取滑块一"]').setValue(0);
+    await wrapper.get('[aria-label="截取滑块二"]').setValue(2 * 60 * 60 * 1_000 + 1_000);
+
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="创建截取录像"]').element.disabled).toBe(true);
+    expect(wrapper.get('.clip-down-tip').attributes('title')).toBe("截取时长不能超过 2 小时");
     wrapper.unmount();
   });
 

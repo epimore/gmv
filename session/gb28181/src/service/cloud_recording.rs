@@ -148,7 +148,7 @@ pub async fn stop(task_id: &str) -> GlobalResult<CloudRecording> {
         recording::claim_stop(task_id).await?;
     }
     if let Some(stream_id) = record.stream_id.filter(|value| !value.is_empty()) {
-        api_serv::download_stop(stream_id, String::new()).await?;
+        api_serv::download_stop(stream_id, record.stream_node.as_deref(), String::new()).await?;
     } else {
         recording::finish_stopped_without_file(task_id).await?;
     }
@@ -206,7 +206,10 @@ pub fn storage_root() -> GlobalResult<PathBuf> {
 }
 
 async fn refresh_progress(record: &CloudRecording) {
-    if recording::normalized_status(record) != recording::STATUS_RUNNING {
+    if !matches!(
+        recording::normalized_status(record),
+        recording::STATUS_RUNNING | recording::STATUS_STOPPING
+    ) {
         return;
     }
     let Some(stream_id) = record.stream_id.as_ref().filter(|value| !value.is_empty()) else {
@@ -217,6 +220,7 @@ async fn refresh_progress(record: &CloudRecording) {
             stream_id: stream_id.clone(),
             media_type: Some(OutputEnum::LocalMp4),
         },
+        record.stream_node.as_deref(),
         String::new(),
     )
     .await

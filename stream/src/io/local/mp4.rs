@@ -48,6 +48,7 @@ pub struct LocalStoreMp4Context {
 
     pub stream_id: Arc<str>,
     pub file_name: Arc<str>, //云端录像 task_id；旧调用默认为 stream_id
+    pub session_hook_endpoint: Option<String>,
     pub min_free_bytes: u64,
     pub pkt_rx: MuxPacketReceiver, //数据接收端，当发送端drop，即录制完成
     pub record_event_tx: mpsc::Sender<(Event, Option<oneshot::Sender<EventRes>>)>, //用于主动发送录制报错、录制结束
@@ -86,7 +87,13 @@ impl LocalStoreMp4Context {
                     };
                     let _ = self
                         .record_event_tx
-                        .send((Event::Out(OutEvent::EndRecord(info)), None))
+                        .send((
+                            Event::Out(OutEvent::EndRecord(
+                                info,
+                                self.session_hook_endpoint.clone(),
+                            )),
+                            None,
+                        ))
                         .await
                         .hand_log(|msg| error!("{msg}"));
                 }
@@ -99,7 +106,13 @@ impl LocalStoreMp4Context {
                     info.path_file_name = Some(format!("{}/mp4/{}.mp4", self.path, self.file_name));
                     let _ = self
                         .record_event_tx
-                        .send((Event::Out(OutEvent::EndRecord(info)), None))
+                        .send((
+                            Event::Out(OutEvent::EndRecord(
+                                info,
+                                self.session_hook_endpoint.clone(),
+                            )),
+                            None,
+                        ))
                         .await
                         .hand_log(|msg| error!("{msg}"));
                 }

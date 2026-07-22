@@ -16,6 +16,7 @@
       <div class="timeline primary-timeline" :class="{ disabled: capabilities.playback === false }">
         <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
         <span class="timeline-track">
+          <span class="timeline-rail" aria-hidden="true"></span>
           <span
             v-if="hoverTimelineTimeMs !== undefined"
             class="timeline-tooltip"
@@ -51,6 +52,8 @@
               :disabled="capabilities.playback === false"
               aria-label="截取滑块一"
               @pointerdown="beginInteraction"
+              @pointermove="updateTimelineHover"
+              @pointerleave="clearTimelineHover"
               @pointerup="endInteraction"
               @pointercancel="endInteraction"
               @input="setClipHandleA"
@@ -65,6 +68,8 @@
               :disabled="capabilities.playback === false"
               aria-label="截取滑块二"
               @pointerdown="beginInteraction"
+              @pointermove="updateTimelineHover"
+              @pointerleave="clearTimelineHover"
               @pointerup="endInteraction"
               @pointercancel="endInteraction"
               @input="setClipHandleB"
@@ -230,16 +235,16 @@
             <option value="playback">回放</option>
             <option value="clip">截取</option>
           </select>
-          <button
-            v-if="timelineMode === 'clip'"
-            type="button"
-            :disabled="!clipRangeValid || capabilities.playback === false"
-            :title="clipRangeHint"
-            aria-label="创建截取录像"
-            @click="emitCloudRecordCreate()"
-          >
-            DOWN
-          </button>
+          <span v-if="timelineMode === 'clip'" class="clip-down-tip" :title="clipRangeHint">
+            <button
+              type="button"
+              :disabled="!clipRangeValid || capabilities.playback === false"
+              aria-label="创建截取录像"
+              @click="emitCloudRecordCreate()"
+            >
+              DOWN
+            </button>
+          </span>
         </span>
         <div v-else-if="control === 'presets'" class="preset-box">
           <input
@@ -399,16 +404,16 @@
             <option value="playback">回放</option>
             <option value="clip">截取</option>
           </select>
-          <button
-            v-if="timelineMode === 'clip'"
-            type="button"
-            :disabled="!clipRangeValid || capabilities.playback === false"
-            :title="clipRangeHint"
-            aria-label="创建截取录像"
-            @click="emitCloudRecordCreate(true)"
-          >
-            DOWN
-          </button>
+          <span v-if="timelineMode === 'clip'" class="clip-down-tip" :title="clipRangeHint">
+            <button
+              type="button"
+              :disabled="!clipRangeValid || capabilities.playback === false"
+              aria-label="创建截取录像"
+              @click="emitCloudRecordCreate(true)"
+            >
+              DOWN
+            </button>
+          </span>
         </span>
         <div
           v-else-if="control === 'timeline'"
@@ -417,6 +422,7 @@
         >
           <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
           <span class="timeline-track">
+            <span class="timeline-rail" aria-hidden="true"></span>
             <span
               v-if="hoverTimelineTimeMs !== undefined"
               class="timeline-tooltip"
@@ -452,6 +458,8 @@
                 :disabled="capabilities.playback === false"
                 aria-label="截取滑块一"
                 @pointerdown="beginInteraction"
+                @pointermove="updateTimelineHover"
+                @pointerleave="clearTimelineHover"
                 @pointerup="endInteraction"
                 @pointercancel="endInteraction"
                 @input="setClipHandleA"
@@ -466,6 +474,8 @@
                 :disabled="capabilities.playback === false"
                 aria-label="截取滑块二"
                 @pointerdown="beginInteraction"
+                @pointermove="updateTimelineHover"
+                @pointerleave="clearTimelineHover"
                 @pointerup="endInteraction"
                 @pointercancel="endInteraction"
                 @input="setClipHandleB"
@@ -995,8 +1005,13 @@ button.active {
 }
 
 .playback-clip-controls select,
-.playback-clip-controls button {
+.playback-clip-controls button,
+.clip-down-tip {
   height: 32px;
+}
+
+.clip-down-tip {
+  display: inline-flex;
 }
 
 .playback-clip-controls button {
@@ -1049,6 +1064,17 @@ button.active {
   flex: 1 1 auto;
   min-width: 220px;
   height: 48px;
+}
+
+.timeline-rail {
+  position: absolute;
+  top: 23px;
+  right: 0;
+  left: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.38);
+  pointer-events: none;
 }
 
 .timeline-track input {

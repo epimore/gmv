@@ -63,6 +63,7 @@ pub struct CloudRecording {
     pub request_id: Option<String>,
     pub session_node_id: Option<String>,
     pub stream_id: Option<String>,
+    pub stream_node: Option<String>,
     pub device_id: String,
     pub channel_id: String,
     pub user_id: Option<String>,
@@ -111,12 +112,12 @@ pub async fn running_record_exists(device_id: &str, channel_id: &str) -> GlobalR
 }
 
 pub async fn find_by_request_id(request_id: &str) -> GlobalResult<Option<CloudRecording>> {
-    db::fetch_optional_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.request_id=?", request_id,)
+    db::fetch_optional_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.stream_app_name AS stream_node,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.request_id=?", request_id,)
         .hand_log(|msg| error!("{msg}"))
 }
 
 pub async fn get(task_id: &str) -> GlobalResult<Option<CloudRecording>> {
-    db::fetch_optional_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.biz_id=?", task_id,)
+    db::fetch_optional_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.stream_app_name AS stream_node,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.biz_id=?", task_id,)
         .hand_log(|msg| error!("{msg}"))
 }
 
@@ -130,7 +131,7 @@ pub async fn list(
     let offset = i64::from(page.saturating_sub(1).saturating_mul(page_size));
     let limit = i64::from(page_size);
     let (rows, count) = if include_deleted {
-        let rows = db::fetch_all_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.device_id=? AND r.channel_id=? ORDER BY r.ct DESC LIMIT ? OFFSET ?", device_id, channel_id, limit, offset,)
+        let rows = db::fetch_all_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.stream_app_name AS stream_node,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.device_id=? AND r.channel_id=? ORDER BY r.ct DESC LIMIT ? OFFSET ?", device_id, channel_id, limit, offset,)
             .hand_log(|msg| error!("{msg}"))?;
         let count = db::fetch_optional_as!(
             (i64,),
@@ -143,7 +144,7 @@ pub async fn list(
         .0;
         (rows, count)
     } else {
-        let rows = db::fetch_all_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.device_id=? AND r.channel_id=? AND COALESCE(r.status,'')<>'DELETED' ORDER BY r.ct DESC LIMIT ? OFFSET ?", device_id, channel_id, limit, offset,)
+        let rows = db::fetch_all_as!(CloudRecording, "SELECT r.biz_id AS task_id,r.request_id,r.session_node_id,r.stream_id,r.stream_app_name AS stream_node,r.device_id,r.channel_id,r.user_id,CAST(r.st AS CHAR) AS st,CAST(r.et AS CHAR) AS et,CAST(r.ct AS CHAR) AS ct,CAST(r.state AS SIGNED) AS state,r.status,r.file_state,CAST(COALESCE(r.recorded_duration_ms,0) AS SIGNED) AS recorded_duration_ms,CAST(COALESCE(r.current_size_bytes,0) AS SIGNED) AS current_size_bytes,CAST(r.started_at AS CHAR) AS started_at,CAST(r.finished_at AS CHAR) AS finished_at,CAST(r.lt AS CHAR) AS lt,r.error_code,r.error_message FROM gb28181_record r WHERE r.device_id=? AND r.channel_id=? AND COALESCE(r.status,'')<>'DELETED' ORDER BY r.ct DESC LIMIT ? OFFSET ?", device_id, channel_id, limit, offset,)
             .hand_log(|msg| error!("{msg}"))?;
         let count = db::fetch_optional_as!((i64,), "SELECT COUNT(*) FROM gb28181_record WHERE device_id=? AND channel_id=? AND COALESCE(status,'')<>'DELETED'", device_id, channel_id,)
             .hand_log(|msg| error!("{msg}"))?.unwrap_or((0,)).0;
