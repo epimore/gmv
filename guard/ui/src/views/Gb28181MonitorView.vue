@@ -381,16 +381,9 @@
     </el-dialog>
 
     <el-dialog v-model="playbackRangeDialog" title="历史回放" width="980px">
-      <template #header>
-        <div class="record-dialog-tabs">
-          <span class="record-dialog-tab active">历史回放</span>
-          <el-button class="record-dialog-tab" text :disabled="!pendingPlaybackChannel"
-            @click="openCloudRecordings(pendingPlaybackChannel)">下载</el-button>
-        </div>
-      </template>
       <div class="record-dialog-content">
-        <section class="record-playback-panel">
-          <b>回放时段选择</b>
+        <section class="record-functional-block record-playback-panel">
+          <h3>历史回放</h3>
           <div class="record-playback-controls">
             <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
               start-placeholder="回放开始时间" end-placeholder="回放结束时间" format="YYYY-MM-DD HH:mm:ss"
@@ -403,10 +396,9 @@
             <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始播放</el-button>
           </div>
         </section>
-        <el-divider />
-        <section class="device-record-panel">
+        <section class="record-functional-block device-record-panel">
           <div class="device-record-head">
-            <b>设备录像片段</b>
+            <h3>设备录像片段</h3>
             <el-tag v-if="recordState?.current_batch" size="small" effect="plain">
               最近更新：{{ formatTime(recordState.current_batch.created_at_ms) }}
             </el-tag>
@@ -3492,41 +3484,18 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.record-dialog-content,
-.record-playback-panel,
-.device-record-panel {
+.record-dialog-content {
+  display: grid;
+  gap: 16px;
+}
+
+.record-functional-block {
   display: grid;
   gap: 12px;
-}
-
-.record-dialog-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.record-dialog-tab {
-  position: relative;
-  min-height: 32px;
-  padding: 0 14px;
-  color: var(--muted);
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.record-dialog-tab.active {
-  color: var(--text);
-}
-
-.record-dialog-tab.active::after {
-  position: absolute;
-  right: 14px;
-  bottom: -5px;
-  left: 14px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--cyan);
-  content: '';
+  padding: 18px;
+  border: 1px solid var(--component-border);
+  border-radius: 12px;
+  background: var(--component-bg-soft);
 }
 
 .record-playback-controls {
@@ -3610,10 +3579,10 @@ onBeforeUnmount(() => {
   }
 }
 
-.record-playback-panel b,
-.device-record-head b {
+.record-functional-block h3 {
+  margin: 0;
   color: var(--text);
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .device-record-head {

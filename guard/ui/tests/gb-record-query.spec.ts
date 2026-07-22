@@ -150,8 +150,11 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   await page.locator('.camera-config-drawer .el-drawer__close-btn').click();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
 
-  await expect(page.getByText('回放时段选择')).toBeVisible();
-  await expect(page.getByText('设备录像片段', { exact: true })).toBeVisible();
+  const playbackRangeDialog = page.getByRole('dialog', { name: '历史回放', exact: true });
+  await expect(playbackRangeDialog.locator('.record-functional-block')).toHaveCount(2);
+  await expect(playbackRangeDialog.locator('.record-playback-panel').getByRole('heading', { name: '历史回放' })).toBeVisible();
+  await expect(playbackRangeDialog.locator('.device-record-panel').getByRole('heading', { name: '设备录像片段' })).toBeVisible();
+  await expect(playbackRangeDialog.getByRole('button', { name: '下载', exact: true })).toHaveCount(0);
   await expect(page.getByText('30分钟')).toBeVisible();
   await expect(page.getByRole('button', { name: '自定义' })).toHaveCount(0);
   await expect.poll(() => recordLists.length).toBe(1);
@@ -190,7 +193,9 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   expect(recordQueryRange!.end_time_sec - recordQueryRange!.start_time_sec).toBe(7 * 24 * 60 * 60);
   await expect(page.getByText('设备录像正在更新，当前仍展示上一次完整结果')).toBeVisible();
 
-  await page.locator('.record-dialog-tabs').getByRole('button', { name: '下载', exact: true }).click();
+  await playbackRangeDialog.locator('.el-dialog__headerbtn').click();
+  await expect(playbackRangeDialog).toBeHidden();
+  await page.locator('.channel-card').getByRole('button', { name: '下载', exact: true }).click();
   await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
   await expect(page.locator('.cloud-recording-drawer-title').getByText('云端录像', { exact: true })).toBeVisible();
   await expect.poll(() => cloudRecordingLists).toBe(1);
@@ -213,12 +218,6 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   await expect.poll(() => cloudRecordingCreateRange).toBeTruthy();
   expect(cloudRecordingCreateRange!.end_time_sec - cloudRecordingCreateRange!.start_time_sec).toBe(8 * 60);
 
-  await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
-  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeHidden();
-  const cloudListsBeforeShortcut = cloudRecordingLists;
-  await page.locator('.channel-card').getByRole('button', { name: '下载', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
-  await expect.poll(() => cloudRecordingLists).toBe(cloudListsBeforeShortcut + 1);
   await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
   await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeHidden();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
