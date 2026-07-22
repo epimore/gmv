@@ -1457,10 +1457,14 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!("session_control.get_gb_channel_records, req:{request:?}");
-        let state = crate::storage::device_record::RecordState::get(
+        let state = crate::storage::device_record::RecordState::get_page(
             &request.device_id,
             &request.channel_id,
             Local::now().timestamp_millis(),
+            request.start_time_sec,
+            request.end_time_sec,
+            request.page,
+            request.page_size,
         )
         .await
         .map_err(storage_status)?;
@@ -2321,6 +2325,9 @@ fn gb_record_state_proto(
             .collect(),
         next_query_at_ms: state.next_query_at_ms,
         server_time_ms: state.server_time_ms,
+        total: state.total,
+        page: state.page,
+        page_size: state.page_size,
     }
 }
 

@@ -166,6 +166,29 @@ fn session_record_query_contract_is_stable() {
     for method in ["GetGbChannelRecords", "QueryGbChannelRecords"] {
         assert!(methods.contains(&method), "missing SessionControl.{method}");
     }
+    let request = session
+        .message_type
+        .iter()
+        .find(|message| message.name.as_deref() == Some("GetGbChannelRecordsRequest"))
+        .unwrap();
+    for (field, number) in [
+        ("device_id", 1),
+        ("channel_id", 2),
+        ("start_time_sec", 3),
+        ("end_time_sec", 4),
+        ("page", 5),
+        ("page_size", 6),
+    ] {
+        assert_eq!(
+            request
+                .field
+                .iter()
+                .find(|item| item.name.as_deref() == Some(field))
+                .unwrap()
+                .number,
+            Some(number)
+        );
+    }
     let response = session
         .message_type
         .iter()
@@ -177,6 +200,9 @@ fn session_record_query_contract_is_stable() {
         ("segments", 3),
         ("next_query_at_ms", 4),
         ("server_time_ms", 5),
+        ("total", 6),
+        ("page", 7),
+        ("page_size", 8),
     ] {
         assert_eq!(
             response

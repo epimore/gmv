@@ -369,60 +369,80 @@
       <el-empty v-else description="暂无封面" />
     </el-dialog>
 
-    <el-dialog v-model="playbackRangeDialog" title="选择历史回放时段" width="760px">
-      <div class="record-dialog-content">
-        <div class="record-playback-range">
-          <b>回放时段</b>
-          <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
-            start-placeholder="回放开始时间" end-placeholder="回放结束时间" format="YYYY-MM-DD HH:mm:ss"
-            :clearable="true" style="width: 100%" />
+    <el-dialog v-model="playbackRangeDialog" title="历史回放" width="980px">
+      <template #header>
+        <div class="record-dialog-tabs">
+          <span class="record-dialog-tab active">历史回放</span>
+          <el-button class="record-dialog-tab" text :disabled="!pendingPlaybackChannel"
+            @click="openCloudRecordings(pendingPlaybackChannel)">云端录像</el-button>
         </div>
+      </template>
+      <div class="record-dialog-content">
+        <section class="record-playback-panel">
+          <b>回放时段选择</b>
+          <div class="record-playback-controls">
+            <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
+              start-placeholder="回放开始时间" end-placeholder="回放结束时间" format="YYYY-MM-DD HH:mm:ss"
+              :clearable="true" style="width: 100%" />
+            <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始播放</el-button>
+          </div>
+        </section>
         <el-divider />
-        <section class="device-record-panel" v-loading="recordLoading">
+        <section class="device-record-panel">
           <div class="device-record-head">
-            <div>
-              <b>设备录像片段</b>
-              <small v-if="recordState?.current_batch">最近更新：{{ formatTime(recordState.current_batch.created_at_ms) }}</small>
-              <small v-else>尚未查询设备录像</small>
-            </div>
+            <b>设备录像片段</b>
+            <el-tag v-if="recordState?.current_batch" size="small" effect="plain">
+              最近更新：{{ formatTime(recordState.current_batch.created_at_ms) }}
+            </el-tag>
+            <el-tag v-else size="small" type="info" effect="plain">尚未更新</el-tag>
+            <small v-if="recordState?.current_batch">
+              更新范围：{{ formatRecordRange(recordState.current_batch.start_time_sec, recordState.current_batch.end_time_sec) }}
+            </small>
+          </div>
+          <div class="record-update-controls">
+            <el-button :type="recordRangeMode === 'week' ? 'primary' : 'default'" @click="selectRecordShortcut('week')">近一周</el-button>
+            <el-button :type="recordRangeMode === 'month' ? 'primary' : 'default'" @click="selectRecordShortcut('month')">近一月</el-button>
+            <el-date-picker v-model="recordUpdateRange" type="datetimerange" range-separator="至"
+              start-placeholder="更新开始时间" end-placeholder="更新结束时间" format="YYYY-MM-DD HH:mm:ss"
+              :clearable="true" @change="recordRangeMode = 'custom'" />
             <el-button type="primary" plain :loading="recordUpdating" :disabled="recordUpdateDisabled"
               @click="updateDeviceRecords">
               {{ recordRetryAfterSec > 0 ? `${recordRetryAfterSec}秒后可更新` : recordQuerying ? '更新中' : '更新' }}
             </el-button>
           </div>
-          <div class="record-shortcuts">
-            <el-button :type="recordRangeMode === 'week' ? 'primary' : 'default'" @click="selectRecordShortcut('week')">近一周</el-button>
-            <el-button :type="recordRangeMode === 'month' ? 'primary' : 'default'" @click="selectRecordShortcut('month')">近一月</el-button>
-            <el-button :type="recordRangeMode === 'custom' ? 'primary' : 'default'" @click="recordRangeMode = 'custom'">自定义</el-button>
-          </div>
-          <el-date-picker v-model="recordQueryRange" type="datetimerange" range-separator="至"
-            start-placeholder="检索开始时间" end-placeholder="检索结束时间" format="YYYY-MM-DD HH:mm:ss"
-            :clearable="true" style="width: 100%"
-            @change="recordRangeMode = 'custom'" />
           <el-alert v-if="recordQuerying" class="record-state-alert" type="info" :closable="false" show-icon
             title="设备录像正在更新，当前仍展示上一次完整结果" />
           <el-alert v-else-if="recordState?.attempt_batch?.status === 'FAILED'" class="record-state-alert" type="error"
             :closable="false" show-icon title="设备录像更新失败，可立即重试；上一次完整结果未受影响" />
-          <div v-if="recordState?.current_batch" class="record-current-range">
-            查询范围：{{ formatRecordRange(recordState.current_batch.start_time_sec, recordState.current_batch.end_time_sec) }}
-          </div>
-          <div class="record-segment-list">
-            <button v-for="segment in recordState?.segments || []" :key="segment.segment_id" type="button"
-              class="record-segment" @click="selectRecordSegment(segment)">
-              <span>{{ formatRecordRange(segment.start_time_sec, segment.end_time_sec) }}</span>
-              <small>{{ segment.name || segment.record_type || '设备录像' }}</small>
-            </button>
-            <el-empty v-if="recordState?.current_batch?.status === 'EMPTY'" description="所选范围暂无设备录像" :image-size="56" />
-            <el-empty v-else-if="recordState?.current_batch?.status === 'READY' && !recordState.segments.length" description="当前批次没有可展示片段" :image-size="56" />
-            <el-empty v-else-if="!recordState?.current_batch && !recordQuerying" description="选择检索范围并点击更新" :image-size="56" />
-          </div>
+
+          <section class="record-database-panel" v-loading="recordLoading">
+            <div class="record-database-query">
+              <span>数据库查询</span>
+              <el-date-picker v-model="recordFilterStartTime" type="datetime" placeholder="查询开始时间"
+                format="YYYY-MM-DD HH:mm:ss" :clearable="true" />
+              <span>至</span>
+              <el-date-picker v-model="recordFilterEndTime" type="datetime" placeholder="查询结束时间"
+                format="YYYY-MM-DD HH:mm:ss" :clearable="true" />
+              <el-button type="primary" @click="queryDeviceRecords">查询</el-button>
+            </div>
+            <el-table class="record-segment-table" :data="recordState?.segments || []" height="280"
+              empty-text="数据库中暂无符合条件的录像片段" @row-click="selectRecordSegment">
+              <el-table-column label="序号" width="72" align="center">
+                <template #default="scope">{{ recordSequence(scope.$index) }}</template>
+              </el-table-column>
+              <el-table-column label="设备录像片段的时段" min-width="440">
+                <template #default="scope">{{ formatRecordRange(scope.row.start_time_sec, scope.row.end_time_sec) }}</template>
+              </el-table-column>
+              <el-table-column label="时长" width="120">
+                <template #default="scope">{{ formatRecordDuration(scope.row.start_time_sec, scope.row.end_time_sec) }}</template>
+              </el-table-column>
+            </el-table>
+            <el-pagination v-if="recordTotal > recordPageSize" class="record-pagination" background
+              layout="total, prev, pager, next" :total="recordTotal" :page-size="recordPageSize"
+              :current-page="recordPage" @current-change="changeRecordPage" />
+          </section>
         </section>
       </div>
-      <template #footer>
-        <el-button @click="playbackRangeDialog = false">取消</el-button>
-        <el-button :disabled="!pendingPlaybackChannel" @click="openCloudRecordings(pendingPlaybackChannel)">云端录像</el-button>
-        <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始回放</el-button>
-      </template>
     </el-dialog>
 
     <el-dialog v-model="playerDialog" :title="playerDialogTitle" width="960px" class="monitor-player-dialog"
@@ -716,8 +736,12 @@ const cloudRecordingStartTime = ref<Date>();
 const cloudRecordingEndTime = ref<Date>();
 const cloudRecordings = ref<CloudRecordingSummary[]>([]);
 const singleCloudRecordLockedRange = ref<GmvCloudRecordRange>();
-const recordQueryRange = ref<[Date, Date]>();
+const recordUpdateRange = ref<[Date, Date]>();
 const recordRangeMode = ref<'week' | 'month' | 'custom'>('custom');
+const recordFilterStartTime = ref<Date>();
+const recordFilterEndTime = ref<Date>();
+const recordPage = ref(1);
+const recordPageSize = ref(10);
 const recordState = ref<GbChannelRecordsInfo>();
 const recordLoading = ref(false);
 const recordUpdating = ref(false);
@@ -793,6 +817,7 @@ const cloudRecordingChannelTitle = computed(() => {
 const recordQuerying = computed(() => recordState.value?.attempt_batch?.status === 'QUERYING');
 const recordRetryAfterSec = computed(() => Math.max(0, Math.ceil(((recordState.value?.next_query_at_ms || 0) - recordNowMs.value) / 1000)));
 const recordUpdateDisabled = computed(() => !canOperate.value || recordQuerying.value || recordUpdating.value || recordRetryAfterSec.value > 0);
+const recordTotal = computed(() => recordState.value?.total || 0);
 const resourceForm = reactive({ resource_kind: 'audio_output' as 'video' | 'audio_input' | 'audio_output' | 'other', owner_scope: 'device' as 'device' | 'resource', owner_id: '', remark: '' });
 
 type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
@@ -2674,8 +2699,11 @@ function requestPlayback(channel: GbChannelInfo) {
   stopRecordPolling();
   pendingPlaybackChannel.value = channel;
   playbackRange.value = undefined;
-  recordQueryRange.value = undefined;
+  recordUpdateRange.value = undefined;
   recordRangeMode.value = 'custom';
+  recordFilterStartTime.value = undefined;
+  recordFilterEndTime.value = undefined;
+  recordPage.value = 1;
   recordState.value = undefined;
   recordLoading.value = false;
   recordUpdating.value = false;
@@ -2700,7 +2728,7 @@ function selectRecordShortcut(mode: 'week' | 'month') {
     start.setDate(Math.min(day, lastDay));
   }
   recordRangeMode.value = mode;
-  recordQueryRange.value = [start, end];
+  recordUpdateRange.value = [start, end];
 }
 
 function validRecordRange(range?: [Date, Date]) {
@@ -2712,13 +2740,25 @@ function formatRecordRange(startSec: number, endSec: number) {
   return `${formatDateTime(startSec * 1000)} 至 ${formatDateTime(endSec * 1000)}`;
 }
 
+function formatRecordDuration(startSec: number, endSec: number) {
+  const durationSec = Math.max(0, endSec - startSec);
+  const formatValue = (value: number) => String(Number(value.toFixed(2)));
+  if (durationSec < 60 * 60) return `${formatValue(durationSec / 60)}分钟`;
+  if (durationSec > 24 * 60 * 60) return `${formatValue(durationSec / 24 / 60 / 60)}天`;
+  return `${formatValue(durationSec / 60 / 60)}小时`;
+}
+
+function recordSequence(index: number) {
+  return (recordPage.value - 1) * recordPageSize.value + index + 1;
+}
+
 function selectRecordSegment(segment: GbRecordSegmentInfo) {
   playbackRange.value = [new Date(segment.start_time_sec * 1000), new Date(segment.end_time_sec * 1000)];
 }
 
 async function updateDeviceRecords() {
   const channel = pendingPlaybackChannel.value;
-  const range = recordQueryRange.value;
+  const range = recordUpdateRange.value;
   const sessionNodeId = selectedDevice.value?.session_node_id || selectedListNodeId.value;
   if (!channel || !sessionNodeId) {
     ElMessage.error('当前设备缺少可用的 Session 节点');
@@ -2744,7 +2784,14 @@ async function updateDeviceRecords() {
     });
     if (generation !== recordLoadGeneration || pendingPlaybackChannel.value?.device_id !== channel.device_id
       || pendingPlaybackChannel.value?.channel_id !== channel.channel_id) return;
-    applyRecordState(state, true);
+    const current = recordState.value;
+    applyRecordState({
+      ...state,
+      segments: current?.segments || [],
+      total: current?.total || 0,
+      page: current?.page || recordPage.value,
+      page_size: current?.page_size || recordPageSize.value,
+    }, true);
     ElMessage.success('设备录像更新任务已创建');
   } catch (error) {
     if (generation === recordLoadGeneration) {
@@ -2762,7 +2809,13 @@ async function loadDeviceRecords(channel: GbChannelInfo, quiet = false) {
   const generation = recordLoadGeneration;
   if (!quiet) recordLoading.value = true;
   try {
-    const state = await getGbChannelRecords(channel.device_id, channel.channel_id, sessionNodeId);
+    const state = await getGbChannelRecords(channel.device_id, channel.channel_id, {
+      session_node_id: sessionNodeId,
+      start_time_sec: recordFilterStartTime.value ? Math.floor(recordFilterStartTime.value.getTime() / 1000) : undefined,
+      end_time_sec: recordFilterEndTime.value ? Math.floor(recordFilterEndTime.value.getTime() / 1000) : undefined,
+      page: recordPage.value,
+      page_size: recordPageSize.value,
+    });
     if (generation !== recordLoadGeneration || pendingPlaybackChannel.value?.device_id !== channel.device_id
       || pendingPlaybackChannel.value?.channel_id !== channel.channel_id) return;
     applyRecordState(state, quiet);
@@ -2777,7 +2830,14 @@ async function loadDeviceRecords(channel: GbChannelInfo, quiet = false) {
 }
 
 function applyRecordState(state: GbChannelRecordsInfo, notifyFailure: boolean) {
-  recordState.value = state;
+  recordPage.value = state.page || recordPage.value;
+  recordPageSize.value = state.page_size || recordPageSize.value;
+  recordState.value = {
+    ...state,
+    total: state.total ?? state.segments.length,
+    page: state.page || recordPage.value,
+    page_size: state.page_size || recordPageSize.value,
+  };
   recordClockOffsetMs = state.server_time_ms > 0 ? state.server_time_ms - Date.now() : 0;
   recordNowMs.value = Date.now() + recordClockOffsetMs;
   const failedBatchId = state.attempt_batch?.status === 'FAILED' ? state.attempt_batch.batch_id : '';
@@ -2786,6 +2846,26 @@ function applyRecordState(state: GbChannelRecordsInfo, notifyFailure: boolean) {
   }
   lastFailedRecordBatchId = failedBatchId;
   scheduleRecordPoll();
+}
+
+async function queryDeviceRecords() {
+  const channel = pendingPlaybackChannel.value;
+  if (!channel) return;
+  const start = recordFilterStartTime.value?.getTime();
+  const end = recordFilterEndTime.value?.getTime();
+  if (start !== undefined && end !== undefined && start > end) {
+    ElMessage.warning('数据库查询开始时间不能晚于结束时间');
+    return;
+  }
+  recordPage.value = 1;
+  await loadDeviceRecords(channel);
+}
+
+async function changeRecordPage(page: number) {
+  const channel = pendingPlaybackChannel.value;
+  if (!channel) return;
+  recordPage.value = page;
+  await loadDeviceRecords(channel);
 }
 
 function scheduleRecordPoll() {
@@ -3381,10 +3461,46 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .record-dialog-content,
-.record-playback-range,
+.record-playback-panel,
 .device-record-panel {
   display: grid;
   gap: 12px;
+}
+
+.record-dialog-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.record-dialog-tab {
+  position: relative;
+  min-height: 32px;
+  padding: 0 14px;
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.record-dialog-tab.active {
+  color: var(--text);
+}
+
+.record-dialog-tab.active::after {
+  position: absolute;
+  right: 14px;
+  bottom: -5px;
+  left: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--cyan);
+  content: '';
+}
+
+.record-playback-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
 }
 
 .cloud-recording-content {
@@ -3441,7 +3557,7 @@ onBeforeUnmount(() => {
   }
 }
 
-.record-playback-range b,
+.record-playback-panel b,
 .device-record-head b {
   color: var(--text);
   font-size: 14px;
@@ -3450,28 +3566,25 @@ onBeforeUnmount(() => {
 .device-record-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
-.device-record-head > div {
-  display: grid;
-  gap: 4px;
-}
-
-.device-record-head small,
-.record-current-range,
-.record-segment small {
+.device-record-head small {
+  min-width: 0;
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
-.record-shortcuts {
-  display: flex;
+.record-update-controls {
+  display: grid;
+  grid-template-columns: auto auto minmax(430px, 1fr) auto;
+  align-items: center;
   gap: 8px;
 }
 
-.record-shortcuts .el-button + .el-button {
+.record-update-controls .el-button + .el-button {
   margin-left: 0;
 }
 
@@ -3479,32 +3592,42 @@ onBeforeUnmount(() => {
   margin-top: 2px;
 }
 
-.record-current-range {
-  overflow-wrap: anywhere;
-}
-
-.record-segment-list {
+.record-database-panel {
   display: grid;
-  gap: 8px;
-  max-height: 260px;
-  overflow: auto;
-}
-
-.record-segment {
-  display: grid;
-  gap: 4px;
-  width: 100%;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 14px;
   border: 1px solid var(--component-border);
-  border-radius: 8px;
-  color: var(--text);
+  border-radius: 10px;
   background: var(--component-bg-soft);
-  text-align: left;
+}
+
+.record-database-query {
+  display: grid;
+  grid-template-columns: auto minmax(210px, 1fr) auto minmax(210px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.record-segment-table :deep(.el-table__row) {
   cursor: pointer;
 }
 
-.record-segment:hover {
-  border-color: var(--cyan);
+.record-pagination {
+  justify-self: end;
+}
+
+@media (max-width: 900px) {
+  .record-update-controls,
+  .record-database-query {
+    grid-template-columns: 1fr;
+  }
+
+  .record-update-controls .el-date-editor,
+  .record-database-query .el-date-editor {
+    width: 100%;
+  }
 }
 
 .node-option {

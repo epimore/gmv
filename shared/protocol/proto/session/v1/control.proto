@@ -370,6 +370,10 @@ message GbChannelImage {
 message GetGbChannelRecordsRequest {
   string device_id = 1;
   string channel_id = 2;
+  int64 start_time_sec = 3;
+  int64 end_time_sec = 4;
+  uint32 page = 5;
+  uint32 page_size = 6;
 }
 
 message QueryGbChannelRecordsRequest {
@@ -386,6 +390,9 @@ message GetGbChannelRecordsResponse {
   repeated GbRecordSegment segments = 3;
   int64 next_query_at_ms = 4;
   int64 server_time_ms = 5;
+  int64 total = 6;
+  uint32 page = 7;
+  uint32 page_size = 8;
 }
 
 message GbRecordQueryBatch {

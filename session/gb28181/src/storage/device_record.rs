@@ -88,10 +88,31 @@ pub struct RecordState {
     pub segments: Vec<RecordSegment>,
     pub next_query_at_ms: i64,
     pub server_time_ms: i64,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
 }
 
 impl RecordState {
     pub async fn get(device_id: &str, channel_id: &str, now_ms: i64) -> GlobalResult<Self> {
+        Self::get_page(device_id, channel_id, now_ms, 0, 0, 1, 50).await
+    }
+
+    pub async fn get_page(
+        device_id: &str,
+        channel_id: &str,
+        now_ms: i64,
+        start_time_sec: i64,
+        end_time_sec: i64,
+        page: u32,
+        page_size: u32,
+    ) -> GlobalResult<Self> {
+        let page = page.max(1);
+        let page_size = if page_size == 0 {
+            50
+        } else {
+            page_size.min(100)
+        };
         db::execute!(
             "UPDATE gb28181_device_record_segment SET status=3 WHERE device_id=? AND channel_id=? AND row_type=0 AND status=0 AND create_time<=?",
             device_id,
@@ -120,9 +141,28 @@ impl RecordState {
             .find(|row| matches!(row.status, Some(STATUS_QUERYING) | Some(STATUS_FAILED)))
             .map(query_batch);
         let current_batch = current_row.map(query_batch);
-        let segments =
+        let (segments, total) =
             if let Some(current) = current_row.filter(|row| row.status == Some(STATUS_READY)) {
-                db::fetch_all_as!(
+                let total = db::fetch_optional_as!(
+                    ExistsRow,
+                    r#"SELECT CAST(COUNT(*) AS SIGNED) AS value
+                         FROM gb28181_device_record_segment
+                        WHERE device_id=? AND channel_id=? AND batch_id=? AND row_type=1
+                          AND (?<=0 OR start_time_sec>=?)
+                          AND (?<=0 OR start_time_sec<=?)"#,
+                    device_id,
+                    channel_id,
+                    &current.batch_id,
+                    start_time_sec,
+                    start_time_sec,
+                    end_time_sec,
+                    end_time_sec,
+                )
+                .hand_log(|msg| error!("{msg}"))?
+                .map(|row| row.value)
+                .unwrap_or_default();
+                let offset = i64::from(page.saturating_sub(1)) * i64::from(page_size);
+                let segments = db::fetch_all_as!(
                     RecordRow,
                     r#"SELECT id,device_id,channel_id,batch_id,item_no,
                           CAST(row_type AS SIGNED) AS row_type,CAST(status AS SIGNED) AS status,
@@ -130,17 +170,27 @@ impl RecordState {
                           secrecy,record_type,recorder_id,file_size,create_time
                      FROM gb28181_device_record_segment
                     WHERE device_id=? AND channel_id=? AND batch_id=? AND row_type=1
-                    ORDER BY start_time_sec,end_time_sec,item_no"#,
+                      AND (?<=0 OR start_time_sec>=?)
+                      AND (?<=0 OR start_time_sec<=?)
+                    ORDER BY start_time_sec DESC,end_time_sec DESC,item_no DESC
+                    LIMIT ? OFFSET ?"#,
                     device_id,
                     channel_id,
                     &current.batch_id,
+                    start_time_sec,
+                    start_time_sec,
+                    end_time_sec,
+                    end_time_sec,
+                    i64::from(page_size),
+                    offset,
                 )
                 .hand_log(|msg| error!("{msg}"))?
                 .into_iter()
                 .map(record_segment)
-                .collect()
+                .collect();
+                (segments, total)
             } else {
-                Vec::new()
+                (Vec::new(), 0)
             };
         let next_query_at_ms = rows
             .iter()
@@ -155,6 +205,9 @@ impl RecordState {
             segments,
             next_query_at_ms,
             server_time_ms: now_ms,
+            total,
+            page,
+            page_size,
         })
     }
 

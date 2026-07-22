@@ -1469,6 +1469,17 @@ struct GbSessionNodeQuery {
     session_node_id: String,
 }
 
+#[derive(Debug, Default, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbRecordListQuery {
+    #[serde(default)]
+    session_node_id: String,
+    start_time_sec: Option<i64>,
+    end_time_sec: Option<i64>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+}
+
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 struct GbDeviceDeleteRequest {
@@ -1943,6 +1954,9 @@ struct GbChannelRecordsResponse {
     segments: Vec<GbRecordSegmentResponse>,
     next_query_at_ms: i64,
     server_time_ms: i64,
+    total: i64,
+    page: u32,
+    page_size: u32,
 }
 
 fn default_biz_enable() -> i64 {
@@ -2075,6 +2089,9 @@ fn gb_channel_records_response(record: RpcGbChannelRecordsResponse) -> GbChannel
             .collect(),
         next_query_at_ms: record.next_query_at_ms,
         server_time_ms: record.server_time_ms,
+        total: record.total,
+        page: record.page,
+        page_size: record.page_size,
     }
 }
 
@@ -2581,14 +2598,45 @@ async fn gb_channel_records(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
-    Query(query): Query<GbSessionNodeQuery>,
+    Query(query): Query<GbRecordListQuery>,
 ) -> Result<Json<GbChannelRecordsResponse>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
     if query.session_node_id.trim().is_empty() {
         return Err(HttpError::bad_request("session_node_id is required"));
     }
+    if query.start_time_sec.is_some_and(|value| value <= 0)
+        || query.end_time_sec.is_some_and(|value| value <= 0)
+    {
+        return Err(HttpError::bad_request(
+            "record time filters must be positive",
+        ));
+    }
+    if query
+        .start_time_sec
+        .zip(query.end_time_sec)
+        .is_some_and(|(start, end)| start > end)
+    {
+        return Err(HttpError::bad_request(
+            "start_time_sec must not be later than end_time_sec",
+        ));
+    }
+    let page = query.page.unwrap_or(1);
+    let page_size = query.page_size.unwrap_or(10);
+    if page == 0 || page_size == 0 || page_size > 100 {
+        return Err(HttpError::bad_request(
+            "page must be positive and page_size must be between 1 and 100",
+        ));
+    }
     let records = BusinessControl::new(state.api.store())
-        .get_gb_channel_records(&query.session_node_id, &device_id, &channel_id)
+        .get_gb_channel_records(
+            &query.session_node_id,
+            &device_id,
+            &channel_id,
+            query.start_time_sec.unwrap_or_default(),
+            query.end_time_sec.unwrap_or_default(),
+            page,
+            page_size,
+        )
         .await?;
     Ok(Json(gb_channel_records_response(records)))
 }

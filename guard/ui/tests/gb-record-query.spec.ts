@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('录像查询仅按用户操作发起，并保留云端录像手动刷新', async ({ page }) => {
   let recordQueries = 0;
+  const recordLists: URLSearchParams[] = [];
   let cloudRecordingLists = 0;
   let cloudRecordingCreateRange: { start_time_sec: number; end_time_sec: number } | undefined;
   let recordQueryRange: { start_time_sec: number; end_time_sec: number } | undefined;
@@ -47,7 +48,7 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
     segments: [{ segment_id: 1, batch_id: 'old', device_id: device.device_id, channel_id: channel.channel_id,
       remote_device_id: channel.channel_id, name: '定时录像', file_path: '/record/1', address: '',
       start_time_sec: 1_753_000_000, end_time_sec: 1_753_001_800, secrecy: 0, record_type: 'time', recorder_id: '', file_size: 0 }],
-    next_query_at_ms: 0, server_time_ms: Date.now(),
+    next_query_at_ms: 0, server_time_ms: Date.now(), total: 21, page: 1, page_size: 10,
   };
   const cloudRecording = {
     task_id: 'cloud-task-1', request_id: 'cloud-request-1', session_node_id: 'session-1',
@@ -93,7 +94,15 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
       expect(request.headers()['x-csrf-token']).toBe(session.csrf_token);
       status = 202;
       body = { ...current, attempt_batch: { batch_id: 'new', status: 'QUERYING', start_time_sec: 1_753_000_000, end_time_sec: 1_753_003_600, created_at_ms: Date.now() } };
-    } else if (path.endsWith('/records')) body = current;
+    } else if (path.endsWith('/records')) {
+      const url = new URL(request.url());
+      recordLists.push(url.searchParams);
+      body = {
+        ...current,
+        page: Number(url.searchParams.get('page') || 1),
+        page_size: Number(url.searchParams.get('page_size') || 10),
+      };
+    }
     else if (path.endsWith('/cloud-recordings') && request.method() === 'POST') {
       cloudRecordingCreateRange = request.postDataJSON();
       body = cloudRecording;
@@ -108,9 +117,35 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
   await page.getByRole('button', { name: '相机' }).click();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
 
-  await expect(page.getByText('设备录像片段')).toBeVisible();
-  await expect(page.getByText('定时录像')).toBeVisible();
+  await expect(page.getByText('回放时段选择')).toBeVisible();
+  await expect(page.getByText('设备录像片段', { exact: true })).toBeVisible();
+  await expect(page.getByText('30分钟')).toBeVisible();
+  await expect(page.getByRole('button', { name: '自定义' })).toHaveCount(0);
+  await expect.poll(() => recordLists.length).toBe(1);
+  expect(recordLists[0].get('start_time_sec')).toBeNull();
+  expect(recordLists[0].get('end_time_sec')).toBeNull();
   expect(recordQueries).toBe(0);
+
+  await page.locator('.record-pagination .btn-next').click();
+  await expect.poll(() => recordLists.length).toBe(2);
+  expect(recordLists.at(-1)!.get('page')).toBe('2');
+
+  const databaseTimeInputs = page.locator('.record-database-query input');
+  await databaseTimeInputs.nth(0).fill('2026-07-21 00:00:00');
+  await databaseTimeInputs.nth(0).press('Enter');
+  await page.getByRole('button', { name: '查询', exact: true }).click();
+  await expect.poll(() => recordLists.length).toBe(3);
+  expect(recordLists.at(-1)!.get('page')).toBe('1');
+  expect(recordLists.at(-1)!.get('start_time_sec')).toBeTruthy();
+  expect(recordLists.at(-1)!.get('end_time_sec')).toBeNull();
+
+  await databaseTimeInputs.nth(0).clear();
+  await databaseTimeInputs.nth(1).fill('2026-07-22 00:00:00');
+  await databaseTimeInputs.nth(1).press('Enter');
+  await page.getByRole('button', { name: '查询', exact: true }).click();
+  await expect.poll(() => recordLists.length).toBe(4);
+  expect(recordLists.at(-1)!.get('start_time_sec')).toBeNull();
+  expect(recordLists.at(-1)!.get('end_time_sec')).toBeTruthy();
 
   await page.getByRole('button', { name: '更新', exact: true }).click();
   await expect(page.getByText('请先选择录像检索时段')).toBeVisible();
@@ -146,8 +181,8 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
 
   await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
-  await page.locator('.record-segment').first().click();
-  await page.getByRole('button', { name: '开始回放' }).click();
+  await page.locator('.record-segment-table .el-table__body tr').first().click();
+  await page.getByRole('button', { name: '开始播放' }).click();
   await expect(page.getByRole('dialog', { name: /^历史回放 ·/ })).toBeVisible();
   await expect(page.getByLabel('回放进度')).toHaveAttribute('max', String(30 * 60 * 1_000));
   await page.getByLabel('回放操作模式').selectOption('clip');

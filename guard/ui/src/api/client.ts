@@ -276,8 +276,9 @@ export interface GbSnapshotInfo { session_id: string }
 export type GbRecordQueryStatus = 'QUERYING' | 'READY' | 'EMPTY' | 'FAILED';
 export interface GbRecordQueryBatchInfo { batch_id: string; status: GbRecordQueryStatus; start_time_sec: number; end_time_sec: number; created_at_ms: number }
 export interface GbRecordSegmentInfo { segment_id: number; batch_id: string; device_id: string; channel_id: string; remote_device_id: string; name: string; file_path: string; address: string; start_time_sec: number; end_time_sec: number; secrecy: number; record_type: string; recorder_id: string; file_size: number }
-export interface GbChannelRecordsInfo { current_batch: GbRecordQueryBatchInfo | null; attempt_batch: GbRecordQueryBatchInfo | null; segments: GbRecordSegmentInfo[]; next_query_at_ms: number; server_time_ms: number }
+export interface GbChannelRecordsInfo { current_batch: GbRecordQueryBatchInfo | null; attempt_batch: GbRecordQueryBatchInfo | null; segments: GbRecordSegmentInfo[]; next_query_at_ms: number; server_time_ms: number; total: number; page: number; page_size: number }
 export interface GbRecordQueryPayload { request_id: string; session_node_id: string; start_time_sec: number; end_time_sec: number }
+export interface GbRecordListParams { session_node_id: string; start_time_sec?: number; end_time_sec?: number; page?: number; page_size?: number }
 export type CloudRecordingStatus = 'STARTING' | 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'STOPPED' | 'PARTIAL' | 'FAILED' | 'DELETING' | 'DELETED';
 export type CloudRecordingFileState = 'NONE' | 'WRITING' | 'READY' | 'MISSING' | 'DELETED';
 export interface CloudRecordingSummary {
@@ -318,7 +319,16 @@ export const saveGbResourceConfirmation = (deviceId: string, resourceId: string,
 export const resetGbResourceConfirmation = (deviceId: string, resourceId: string, requestId: string) => request<GbResourceInfo>('/gb28181/devices/' + gbPath(deviceId) + '/resources/' + gbPath(resourceId) + '/confirmation/reset', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export const updateGbChannel = (deviceId: string, channelId: string, payload: GbChannelPayload) => request<GbChannelInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId), { method: 'POST', body: JSON.stringify(payload) });
 export const listGbChannelImages = (deviceId: string, channelId: string) => request<GbChannelImageInfo[]>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/images');
-export const getGbChannelRecords = (deviceId: string, channelId: string, sessionNodeId: string) => request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records?session_node_id=' + gbPath(sessionNodeId));
+export const getGbChannelRecords = (deviceId: string, channelId: string, params: GbRecordListParams) => {
+  const query = new URLSearchParams({
+    session_node_id: params.session_node_id,
+    page: String(params.page || 1),
+    page_size: String(params.page_size || 10),
+  });
+  if (params.start_time_sec) query.set('start_time_sec', String(params.start_time_sec));
+  if (params.end_time_sec) query.set('end_time_sec', String(params.end_time_sec));
+  return request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records?' + query);
+};
 export const queryGbChannelRecords = (deviceId: string, channelId: string, payload: GbRecordQueryPayload) => request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records/query', { method: 'POST', body: JSON.stringify(payload) });
 export const createCloudRecording = (deviceId: string, channelId: string, payload: { request_id: string; session_node_id: string; start_time_sec: number; end_time_sec: number }) => request<CloudRecordingSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/cloud-recordings', { method: 'POST', body: JSON.stringify(payload) });
 export const listCloudRecordings = (deviceId: string, channelId: string, sessionNodeId: string, page = 1, pageSize = 50) => request<CloudRecordingList>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/cloud-recordings?session_node_id=' + gbPath(sessionNodeId) + '&page=' + page + '&page_size=' + pageSize);

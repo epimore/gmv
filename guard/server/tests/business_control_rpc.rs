@@ -266,10 +266,15 @@ fn gb28181_record_query_uses_selected_session_rpc() {
                     "session-gb-record",
                     "34020000001110000001",
                     "34020000001320000001",
+                    100,
+                    200,
+                    2,
+                    10,
                 )
                 .await
                 .unwrap();
             assert_eq!(current.server_time_ms, 1_000);
+            assert_eq!((current.page, current.page_size), (2, 10));
             assert!(current.attempt_batch.is_none());
 
             let querying = control
@@ -995,14 +1000,18 @@ impl SessionControl for FakeSession {
 
     async fn get_gb_channel_records(
         &self,
-        _request: tonic::Request<GetGbChannelRecordsRequest>,
+        request: tonic::Request<GetGbChannelRecordsRequest>,
     ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
+        let request = request.into_inner();
         Ok(tonic::Response::new(GetGbChannelRecordsResponse {
             current_batch: None,
             attempt_batch: None,
             segments: vec![],
             next_query_at_ms: 0,
             server_time_ms: 1_000,
+            total: 0,
+            page: request.page,
+            page_size: request.page_size,
         }))
     }
 
@@ -1026,6 +1035,9 @@ impl SessionControl for FakeSession {
             segments: vec![],
             next_query_at_ms: 301_000,
             server_time_ms: 1_000,
+            total: 0,
+            page: 1,
+            page_size: 50,
         }))
     }
 

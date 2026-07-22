@@ -961,6 +961,10 @@ impl BusinessControl {
         session_node_id: &str,
         device_id: &str,
         channel_id: &str,
+        start_time_sec: i64,
+        end_time_sec: i64,
+        page: u32,
+        page_size: u32,
     ) -> GuardResult<GetGbChannelRecordsResponse> {
         let session = self.store.get_node(session_node_id).ok_or_else(|| {
             GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
@@ -983,6 +987,10 @@ impl BusinessControl {
         let request = GetGbChannelRecordsRequest {
             device_id: device_id.to_string(),
             channel_id: channel_id.to_string(),
+            start_time_sec,
+            end_time_sec,
+            page,
+            page_size,
         };
         let edge = RpcEdge::new(
             "session",
