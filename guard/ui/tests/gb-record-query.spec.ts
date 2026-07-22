@@ -1,11 +1,13 @@
 import { expect, test } from '@playwright/test';
 
-test('录像查询仅按用户操作发起，并保留云端录像手动刷新', async ({ page }) => {
+test('录像查询仅按用户操作发起，并保留下载任务手动刷新', async ({ page }) => {
   let recordQueries = 0;
   const recordLists: URLSearchParams[] = [];
   let cloudRecordingLists = 0;
   let cloudRecordingCreateRange: { start_time_sec: number; end_time_sec: number } | undefined;
   let recordQueryRange: { start_time_sec: number; end_time_sec: number } | undefined;
+  let previewOutputType = '';
+  let playbackOutputType = '';
   const session = {
     username: 'operator',
     nickname: '值班员',
@@ -68,6 +70,11 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
     playback_start_time_sec: current.segments[0].start_time_sec,
     playback_end_time_sec: current.segments[0].end_time_sec, state: 'running',
   };
+  const previewStream = {
+    ...playbackStream,
+    stream_id: 'preview-stream-1', endpoint: '/test-preview/index.m3u8',
+    playback_id: null, playback_generation: null, playback_start_time_sec: null, playback_end_time_sec: null,
+  };
 
   await page.route('**/api/v2/**', async (route) => {
     const request = route.request();
@@ -81,7 +88,15 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
     else if (path === '/api/v2/gb28181/devices') body = { items: [device], total: 1, page: 1, page_size: 20 };
     else if (path.endsWith('/channels')) body = [channel];
     else if (path.endsWith('/resources')) body = [resource];
-    else if (path.endsWith('/playback') && request.method() === 'POST') {
+    else if (path.endsWith('/preview') && request.method() === 'POST') {
+      previewOutputType = request.postDataJSON().output_type;
+      body = {
+        operation_id: 'preview-operation-1', state: 'ready', stage: 'ready', elapsed_ms: 10,
+        last_progress_at_ms: Date.now(), checkpoint_ms: 8_000, hard_timeout_ms: 30_000,
+        can_continue: false, result: previewStream, error: null,
+      };
+    } else if (path.endsWith('/playback') && request.method() === 'POST') {
+      playbackOutputType = request.postDataJSON().output_type;
       body = {
         operation_id: 'playback-operation-1', state: 'ready', stage: 'ready', elapsed_ms: 10,
         last_progress_at_ms: Date.now(), checkpoint_ms: 8_000, hard_timeout_ms: 30_000,
@@ -115,6 +130,24 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
 
   await page.goto('/gb28181/monitor');
   await page.getByRole('button', { name: '相机' }).click();
+  await page.locator('.channel-live-dropdown').getByRole('button', { name: '直播', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'LL-HLS', exact: true }).click();
+  await expect.poll(() => previewOutputType).toBe('ll_hls');
+  await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeVisible();
+  await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
+  const channelCard = page.locator('.channel-card');
+  const actionRows = await channelCard.locator('.channel-actions').evaluate((footer) =>
+    [...footer.children].map((child) => (child as HTMLElement).offsetTop),
+  );
+  expect(actionRows).toHaveLength(6);
+  expect(new Set(actionRows).size).toBe(2);
+  await expect(channelCard.getByRole('button', { name: '广播', exact: true })).toHaveCount(0);
+  await expect(channelCard.getByRole('button', { name: '配置', exact: true })).toHaveCount(0);
+  await channelCard.getByRole('button', { name: '更多', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: '广播', exact: true })).toBeVisible();
+  await page.getByRole('menuitem', { name: '配置', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '相机业务配置' })).toBeVisible();
+  await page.locator('.camera-config-drawer .el-drawer__close-btn').click();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
 
   await expect(page.getByText('回放时段选择')).toBeVisible();
@@ -157,8 +190,9 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
   expect(recordQueryRange!.end_time_sec - recordQueryRange!.start_time_sec).toBe(7 * 24 * 60 * 60);
   await expect(page.getByText('设备录像正在更新，当前仍展示上一次完整结果')).toBeVisible();
 
-  await page.getByRole('button', { name: '云端录像', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '云端录像' })).toBeVisible();
+  await page.locator('.record-dialog-tabs').getByRole('button', { name: '下载', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
+  await expect(page.locator('.cloud-recording-drawer-title').getByText('云端录像', { exact: true })).toBeVisible();
   await expect.poll(() => cloudRecordingLists).toBe(1);
   await expect(page.getByPlaceholder('请选择开始时间')).toBeVisible();
   await expect(page.getByPlaceholder('请选择结束时间')).toBeVisible();
@@ -180,9 +214,19 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
   expect(cloudRecordingCreateRange!.end_time_sec - cloudRecordingCreateRange!.start_time_sec).toBe(8 * 60);
 
   await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
+  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeHidden();
+  const cloudListsBeforeShortcut = cloudRecordingLists;
+  await page.locator('.channel-card').getByRole('button', { name: '下载', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
+  await expect.poll(() => cloudRecordingLists).toBe(cloudListsBeforeShortcut + 1);
+  await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
+  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeHidden();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
+  await page.locator('.record-output-select').click();
+  await page.getByRole('option', { name: 'HLS-fMP4', exact: true }).click();
   await page.locator('.record-segment-table .el-table__body tr').first().click();
   await page.getByRole('button', { name: '开始播放' }).click();
+  await expect.poll(() => playbackOutputType).toBe('hls');
   await expect(page.getByRole('dialog', { name: /^历史回放 ·/ })).toBeVisible();
   await expect(page.getByLabel('回放进度')).toHaveAttribute('max', String(30 * 60 * 1_000));
   await page.getByLabel('回放操作模式').selectOption('clip');
@@ -192,7 +236,7 @@ test('录像查询仅按用户操作发起，并保留云端录像手动刷新',
   await createClip.click();
 
   await expect.poll(() => cloudRecordingCreateRange).toBeTruthy();
-  await expect(page.getByRole('heading', { name: '云端录像' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '下载', exact: true })).toBeVisible();
   const lockedDown = page.getByRole('button', { name: '截取录像创建中' });
   await expect(lockedDown).toBeDisabled();
   await expect(lockedDown.locator('.clip-down-spinner')).toBeVisible();

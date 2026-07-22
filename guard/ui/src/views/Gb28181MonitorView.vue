@@ -327,17 +327,19 @@
               <span>{{ confText(channel.biz_enable, 1, '业务') }}</span>
             </div> -->
             <footer class="channel-actions">
-              <el-select :model-value="channelOutputType(channel)" class="channel-output-select" aria-label="直播播放格式"
-                @change="(value: LiveOutputType) => setChannelOutputType(channel, value)">
-                <el-option v-for="option in liveOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
-              </el-select>
-              <el-select :model-value="channelPlaybackOutputType(channel)" class="channel-output-select" aria-label="回放播放格式"
-                @change="(value: PlaybackOutputType) => setChannelPlaybackOutputType(channel, value)">
-                <el-option v-for="option in playbackOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
-              </el-select>
               <el-button-group class="channel-play-entry live">
-                <el-button class="channel-play-main" :disabled="!canPlayLive(channel) || playerRequesting"
-                  :loading="isPlayRequesting('preview', channel)" @click="startPlay('preview', channel)">直播</el-button>
+                <el-dropdown class="channel-live-dropdown" trigger="click" :disabled="!canPlayLive(channel) || playerRequesting"
+                  @command="(value: LiveOutputType) => startLive(channel, value)">
+                  <el-button class="channel-play-main" :disabled="!canPlayLive(channel) || playerRequesting"
+                    :loading="isPlayRequesting('preview', channel)">直播</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-for="option in liveOutputOptions" :key="option.value" :command="option.value">
+                        {{ option.label }}
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
                 <el-button class="channel-multi-tag" aria-label="加入多画面直播" :disabled="!canPlayLive(channel)"
                   @click="focusChannelInMultiView(channel, 'live')">·多</el-button>
               </el-button-group>
@@ -347,15 +349,24 @@
                 <el-button class="channel-multi-tag" aria-label="加入多画面回放" :disabled="!canPlayback(channel)"
                   @click="focusChannelInMultiView(channel, 'playback')">·多</el-button>
               </el-button-group>
-              <el-button class="channel-second-row" :disabled="!canSnapshot(channel)" :loading="deviceSnapshotLoading[channel.channel_id]"
+              <el-button @click="openCloudRecordings(channel)">下载</el-button>
+              <el-button :disabled="!canSnapshot(channel)" :loading="deviceSnapshotLoading[channel.channel_id]"
                 @click="requestDeviceSnapshot(channel)">抓拍</el-button>
               <el-button :disabled="!canViewImages(channel)" @click="openImages(channel)">图集</el-button>
-              <el-tooltip :content="channelBroadcastReason(channel)" placement="top" :disabled="canBroadcastChannel(channel)">
-                <el-button type="warning" :disabled="!canOperate || !canBroadcastChannel(channel) || !!broadcastSession"
-                  :loading="broadcastStarting && broadcastScopeId === channel.channel_id"
-                  @click="startBroadcast(channel.channel_id)">广播</el-button>
-              </el-tooltip>
-              <el-button :disabled="!canOperate" @click="openConfig(channel)">配置</el-button>
+              <el-dropdown class="channel-more-dropdown" trigger="click"
+                @command="(command: string) => handleChannelMoreCommand(channel, command)">
+                <el-button>更多</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="broadcast"
+                      :disabled="!canOperate || !canBroadcastChannel(channel) || !!broadcastSession"
+                      :title="channelBroadcastReason(channel)">
+                      {{ broadcastStarting && broadcastScopeId === channel.channel_id ? '广播启动中' : '广播' }}
+                    </el-dropdown-item>
+                    <el-dropdown-item command="config" :disabled="!canOperate">配置</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </footer>
           </article>
         </div>
@@ -374,7 +385,7 @@
         <div class="record-dialog-tabs">
           <span class="record-dialog-tab active">历史回放</span>
           <el-button class="record-dialog-tab" text :disabled="!pendingPlaybackChannel"
-            @click="openCloudRecordings(pendingPlaybackChannel)">云端录像</el-button>
+            @click="openCloudRecordings(pendingPlaybackChannel)">下载</el-button>
         </div>
       </template>
       <div class="record-dialog-content">
@@ -384,6 +395,11 @@
             <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
               start-placeholder="回放开始时间" end-placeholder="回放结束时间" format="YYYY-MM-DD HH:mm:ss"
               :clearable="true" style="width: 100%" />
+            <el-select :model-value="pendingPlaybackChannel ? channelPlaybackOutputType(pendingPlaybackChannel) : 'flv'"
+              class="record-output-select" aria-label="回放播放格式"
+              @change="(value: PlaybackOutputType) => pendingPlaybackChannel && setChannelPlaybackOutputType(pendingPlaybackChannel, value)">
+              <el-option v-for="option in playbackOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
             <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始播放</el-button>
           </div>
         </section>
@@ -480,7 +496,13 @@
       <el-empty v-else description="选择在线通道后播放" />
     </el-dialog>
 
-    <el-drawer v-model="cloudRecordingDrawer" title="云端录像" size="900px" class="cloud-recording-drawer">
+    <el-drawer v-model="cloudRecordingDrawer" title="下载" size="900px" class="cloud-recording-drawer">
+      <template #header>
+        <div class="cloud-recording-drawer-title">
+          <h2>下载</h2>
+          <span>云端录像</span>
+        </div>
+      </template>
       <div class="cloud-recording-content" v-loading="cloudRecordingLoading">
         <div class="cloud-recording-toolbar">
           <b>{{ cloudRecordingChannelTitle }}</b>
@@ -500,7 +522,7 @@
           <el-button :loading="cloudRecordingCreating" :disabled="!canOperate || !cloudRecordingStartTime || !cloudRecordingEndTime"
             type="primary" @click="createSelectedCloudRecording">创建</el-button>
         </div>
-        <el-table :data="cloudRecordings" empty-text="暂无云端录像任务">
+        <el-table :data="cloudRecordings" empty-text="暂无下载任务">
           <el-table-column label="下载时段" min-width="320">
             <template #default="{ row }">{{ formatRecordRange(row.start_time_sec, row.end_time_sec) }}</template>
           </el-table-column>
@@ -2714,6 +2736,16 @@ function requestPlayback(channel: GbChannelInfo) {
   void loadDeviceRecords(channel);
 }
 
+async function startLive(channel: GbChannelInfo, outputType: LiveOutputType) {
+  setChannelOutputType(channel, outputType);
+  await startPlay('preview', channel);
+}
+
+function handleChannelMoreCommand(channel: GbChannelInfo, command: string) {
+  if (command === 'broadcast') void startBroadcast(channel.channel_id);
+  else if (command === 'config') openConfig(channel);
+}
+
 function selectRecordShortcut(mode: 'week' | 'month') {
   const end = new Date();
   const start = new Date(end);
@@ -2935,7 +2967,7 @@ async function loadCloudRecordings() {
     const result = await listCloudRecordings(channel.device_id, channel.channel_id, sessionNodeId);
     cloudRecordings.value = result.items;
   } catch (error) {
-    ElMessage.error(errorMessage(error, '云端录像列表加载失败'));
+    ElMessage.error(errorMessage(error, '下载列表加载失败'));
   } finally {
     cloudRecordingLoading.value = false;
   }
@@ -2953,7 +2985,7 @@ async function createSelectedCloudRecording() {
   const startTimeSec = Math.floor(startTime.getTime() / 1000);
   const endTimeSec = Math.floor(endTime.getTime() / 1000);
   if (startTimeSec >= endTimeSec || endTimeSec - startTimeSec > 7200) {
-    ElMessage.warning('云端录像时段必须大于 0 且不超过 2 小时');
+    ElMessage.warning('下载时段必须大于 0 且不超过 2 小时');
     return;
   }
   cloudRecordingCreating.value = true;
@@ -2961,7 +2993,7 @@ async function createSelectedCloudRecording() {
     await submitCloudRecording(channel, sessionNodeId, startTimeSec, endTimeSec);
     await loadCloudRecordings();
   } catch (error) {
-    ElMessage.error(errorMessage(error, '云端录像任务创建失败'));
+    ElMessage.error(errorMessage(error, '下载任务创建失败'));
   } finally {
     cloudRecordingCreating.value = false;
   }
@@ -2988,7 +3020,7 @@ async function createQuickCloudRecording(
     openCloudRecordings(channel, sessionNodeId);
     return true;
   } catch (error) {
-    ElMessage.error(errorMessage(error, '云端录像任务创建失败'));
+    ElMessage.error(errorMessage(error, '下载任务创建失败'));
     return false;
   }
 }
@@ -3011,7 +3043,7 @@ async function submitCloudRecording(channel: GbChannelInfo, sessionNodeId: strin
     start_time_sec: startTimeSec,
     end_time_sec: endTimeSec,
   });
-  ElMessage.success('云端录像任务已创建');
+  ElMessage.success('下载任务已创建');
 }
 
 async function stopCloudTask(task: CloudRecordingSummary) {
@@ -3020,19 +3052,19 @@ async function stopCloudTask(task: CloudRecordingSummary) {
     ElMessage.success('已提交停止请求，正在封装可播放文件');
     await loadCloudRecordings();
   } catch (error) {
-    ElMessage.error(errorMessage(error, '停止云端录像失败'));
+    ElMessage.error(errorMessage(error, '停止下载失败'));
   }
 }
 
 async function deleteCloudTask(task: CloudRecordingSummary) {
   try {
-    await ElMessageBox.confirm('将物理删除服务器上的录像文件，是否继续？', '删除云端录像', { type: 'warning' });
+    await ElMessageBox.confirm('将物理删除服务器上的录像文件，是否继续？', '删除下载', { type: 'warning' });
     await deleteCloudRecording(task.task_id, `ui-cloud-recording-delete-${Date.now()}`);
-    ElMessage.success('云端录像文件已删除');
+    ElMessage.success('下载文件已删除');
     await loadCloudRecordings();
   } catch (error) {
     if (error === 'cancel' || error === 'close') return;
-    ElMessage.error(errorMessage(error, '删除云端录像失败'));
+    ElMessage.error(errorMessage(error, '删除下载失败'));
   }
 }
 
@@ -3499,13 +3531,34 @@ onBeforeUnmount(() => {
 
 .record-playback-controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 150px auto;
   gap: 10px;
+}
+
+.record-output-select {
+  width: 150px;
 }
 
 .cloud-recording-content {
   display: grid;
   gap: 16px;
+}
+
+.cloud-recording-drawer-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.cloud-recording-drawer-title h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.cloud-recording-drawer-title span {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .cloud-recording-toolbar {
@@ -3857,6 +3910,20 @@ onBeforeUnmount(() => {
   padding: 7px 9px;
 }
 
+.channel-live-dropdown {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.channel-live-dropdown .channel-play-main {
+  width: 100%;
+}
+
+.channel-more-dropdown,
+.channel-more-dropdown .el-button {
+  width: 100%;
+}
+
 .channel-play-entry .channel-play-main {
   flex: 1 1 auto;
   min-width: 0;
@@ -3879,16 +3946,6 @@ onBeforeUnmount(() => {
 
 .channel-play-entry .el-button:not(.is-disabled):hover {
   filter: brightness(1.18);
-}
-
-.channel-second-row {
-  grid-column-start: 1;
-}
-
-.channel-output-select {
-  grid-column: span 2;
-  width: 100%;
-  min-width: 0;
 }
 
 :deep(.monitor-player-dialog .el-dialog__body) {

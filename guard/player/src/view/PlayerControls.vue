@@ -196,10 +196,10 @@
         <button
           v-else-if="control === 'cloudRecord'"
           type="button"
-          aria-label="打开云端录像"
+          aria-label="打开下载"
           @click="emitSimple('cloud-record-request')"
         >
-          云端录像
+          下载
         </button>
         <button
           v-else-if="control === 'talk'"
@@ -367,10 +367,10 @@
         <button
           v-else-if="control === 'cloudRecord'"
           type="button"
-          aria-label="打开云端录像"
+          aria-label="打开下载"
           @click="emitSimple('cloud-record-request', true)"
         >
-          云端录像
+          下载
         </button>
         <button
           v-else-if="control === 'talk'"

@@ -57,7 +57,7 @@ afterEach(() => {
 });
 
 describe("PlayerControls", () => {
-  it("云端录像使用独立一次性 action 并关闭更多菜单", async () => {
+  it("下载入口使用独立一次性 action 并关闭更多菜单", async () => {
     const wrapper = mountControls({
       items: ["play"],
       overflowItems: ["cloudRecord"],
@@ -65,7 +65,7 @@ describe("PlayerControls", () => {
     });
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
-    await wrapper.get('[aria-label="打开云端录像"]').trigger("click");
+    await wrapper.get('[aria-label="打开下载"]').trigger("click");
 
     expect(wrapper.emitted("action")?.at(-1)).toEqual([{ type: "cloud-record-request" }]);
     expect(wrapper.find(".overflow-menu").exists()).toBe(false);
