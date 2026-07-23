@@ -732,13 +732,34 @@ async fn run_native_business_events(
                 SipRuntimeEventKind::OutboundResponse => {
                     if let Some(status) = event.status_code {
                         if event.method.as_deref() == Some("INVITE") {
-                            SipRuntimeCache::global().complete_native_invite(
+                            let completed = SipRuntimeCache::global().complete_native_invite(
                                 operation_id,
                                 event.call_id.clone().unwrap_or_default(),
                                 status,
                                 String::from_utf8_lossy(&event.body).into_owned(),
                                 event.dialog_snapshot.clone(),
                             );
+                            if !completed
+                                && (200..300).contains(&status)
+                                && let Some(call_id) = event.call_id.clone()
+                            {
+                                let bye_operation_id = runtime.next_operation_id();
+                                if let Err(err) = runtime.send_dialog_request(SipDialogRequest {
+                                    operation_id: bye_operation_id,
+                                    method: gmv_pjsip::SipDialogMethod::Bye,
+                                    call_id: call_id.clone(),
+                                    content_type: None,
+                                    body: Vec::new(),
+                                }) {
+                                    error!(
+                                        "late INVITE 2xx compensation BYE failed: call_id={call_id}, operation_id={bye_operation_id}, err={err}"
+                                    );
+                                } else {
+                                    info!(
+                                        "late INVITE 2xx compensated with BYE: call_id={call_id}, operation_id={bye_operation_id}"
+                                    );
+                                }
+                            }
                         } else {
                             let metadata = response_metadata(&event);
                             if event.method.as_deref() == Some("SUBSCRIBE") {

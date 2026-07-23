@@ -39,6 +39,83 @@ pub struct StreamSummary {
     pub state: StreamSummaryState,
 }
 
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct ActiveStreamMonitorItem {
+    pub stream_id: String,
+    pub session_node_id: String,
+    pub session_instance_id: String,
+    pub stream_node_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: String,
+    pub state: String,
+    pub dialog_state: String,
+    pub media_state: String,
+    pub media_ready: bool,
+    pub created_at_ms: i64,
+    pub established_at_ms: i64,
+    pub started_at_ms: i64,
+    pub diagnostic_reason: String,
+    pub session_type: String,
+    pub viewer_count: u32,
+    pub viewer_formats: Vec<ActiveStreamViewerFormat>,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct ActiveStreamViewerFormat {
+    pub media_format: String,
+    pub viewer_count: u32,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct ActiveStreamMonitorPage {
+    pub items: Vec<ActiveStreamMonitorItem>,
+    pub next_after_id: String,
+    pub server_time_ms: i64,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct StreamHistoryMonitorItem {
+    pub stream_id: String,
+    pub session_node_id: String,
+    pub stream_node_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: String,
+    pub session_type: String,
+    pub state: String,
+    pub created_at_ms: i64,
+    pub established_at_ms: i64,
+    pub terminated_at_ms: i64,
+    pub duration_ms: i64,
+    pub terminal_reason: String,
+    pub error_code: String,
+    pub legacy_terminal_time: bool,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct StreamHistoryMonitorPage {
+    pub items: Vec<StreamHistoryMonitorItem>,
+    pub total: u64,
+    pub page: u32,
+    pub page_size: u32,
+    pub server_time_ms: i64,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct MonitoredStreamStopResponse {
+    pub stream_id: String,
+    pub state: String,
+    pub session_node_id: String,
+    pub session_instance_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
 pub enum StreamOutputState {

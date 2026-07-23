@@ -4,6 +4,7 @@ use crate::core::{
 use crate::registry::health::scheduling_for_health;
 use crate::store::InMemoryGuardStore;
 use crate::store::model::{EndpointRecord, HostMetricsRecord, NodeRecord};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct RegisterRequest {
@@ -50,6 +51,7 @@ pub struct HeartbeatReport {
 pub struct RegistryService {
     store: InMemoryGuardStore,
     policy: RegistryPolicy,
+    register_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 impl RegistryService {
@@ -58,7 +60,11 @@ impl RegistryService {
     }
 
     pub fn with_policy(store: InMemoryGuardStore, policy: RegistryPolicy) -> Self {
-        let service = Self { store, policy };
+        let service = Self {
+            store,
+            policy,
+            register_lock: Arc::new(parking_lot::Mutex::new(())),
+        };
         if service.policy.node_check_enabled {
             service.seed_allowed_nodes();
         }
@@ -93,9 +99,21 @@ impl RegistryService {
     }
 
     pub fn register(&self, request: RegisterRequest) -> GuardResult<RegisterDecision> {
+        let _register_guard = self.register_lock.lock();
         request.identity.validate()?;
         validate_endpoints(&request.endpoints)?;
         self.validate_policy(&request)?;
+        if request.identity.kind == NodeKind::Session
+            && request
+                .config
+                .get("protocol")
+                .is_some_and(|value| value == "gb28181")
+            && request.config.get("domain_id") != Some(&request.identity.node_id)
+        {
+            return Err(GuardError::InvalidIdentity(
+                "GB28181 session node_id must equal domain_id".to_string(),
+            ));
+        }
         let existing = self.store.get_node(&request.identity.node_id);
         let decision = match existing.as_ref() {
             None => RegisterDecision::Accepted,
@@ -109,7 +127,8 @@ impl RegistryService {
                 RegisterDecision::Reconnected
             }
             Some(existing)
-                if existing.connection == ConnectionState::Connected && !request.takeover =>
+                if existing.connection == ConnectionState::Connected
+                    && (!request.takeover || request.identity.kind == NodeKind::Session) =>
             {
                 return Err(GuardError::Conflict(format!(
                     "node {} already has active instance {}",
@@ -237,4 +256,38 @@ fn validate_endpoints(endpoints: &[EndpointRecord]) -> GuardResult<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(instance_id: &str, kind: NodeKind, takeover: bool) -> RegisterRequest {
+        RegisterRequest {
+            identity: NodeIdentity::new("domain-1", instance_id, kind),
+            capabilities: Vec::new(),
+            endpoints: Vec::new(),
+            host_metrics: HostMetricsRecord::default(),
+            zone: None,
+            now_ms: 1,
+            takeover,
+            config: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn connected_session_domain_rejects_takeover() {
+        let registry = RegistryService::new(InMemoryGuardStore::default());
+        assert_eq!(
+            registry
+                .register(request("instance-a", NodeKind::Session, false))
+                .expect("register session"),
+            RegisterDecision::Accepted
+        );
+        assert!(
+            registry
+                .register(request("instance-b", NodeKind::Session, true))
+                .is_err()
+        );
+    }
 }

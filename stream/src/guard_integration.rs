@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock},
     time::Instant,
@@ -32,7 +32,8 @@ use gmv_protocol::stream::v1::{
     QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
     ReleaseSubscriptionOutputsResponse, StartReceiveRequest, StartReceiveResponse,
     StopReceiveRequest, StopReceiveResponse, StreamBoolResponse, StreamJsonRequest,
-    StreamJsonResponse, StreamState, StreamUnitResponse, stream_control_server::StreamControl,
+    StreamJsonResponse, StreamState, StreamUnitResponse, ViewerFormatCount,
+    stream_control_server::StreamControl,
 };
 use tonic::transport::Channel;
 
@@ -747,6 +748,7 @@ impl StreamControlAdapter {
             .get(&request.stream_id)
             .map(|stream| stream.state)
             .unwrap_or(StreamState::Stopped);
+        let (viewer_count, viewer_formats) = self.viewer_stats(&request.stream_id);
         QueryStreamResponse {
             stream_id: request.stream_id,
             state: state as i32,
@@ -756,7 +758,34 @@ impl StreamControlAdapter {
             source_position_ms: 0,
             media_ready: state == StreamState::Receiving,
             terminal_reason: String::new(),
+            viewer_count,
+            viewer_formats,
         }
+    }
+
+    fn viewer_stats(&self, stream_id: &str) -> (u32, Vec<ViewerFormatCount>) {
+        let mut viewers = HashSet::new();
+        let mut formats = BTreeMap::<String, HashSet<String>>::new();
+        for output in self.outputs.values().filter(|output| {
+            output.stream_id == stream_id
+                && matches!(output.state, OutputState::Preparing | OutputState::Ready)
+                && !output.subscription_id.is_empty()
+        }) {
+            viewers.insert(output.subscription_id.clone());
+            formats
+                .entry(output.output_type.clone())
+                .or_default()
+                .insert(output.subscription_id.clone());
+        }
+        let viewer_count = u32::try_from(viewers.len()).unwrap_or(u32::MAX);
+        let viewer_formats = formats
+            .into_iter()
+            .map(|(media_format, subscriptions)| ViewerFormatCount {
+                media_format,
+                viewer_count: u32::try_from(subscriptions.len()).unwrap_or(u32::MAX),
+            })
+            .collect();
+        (viewer_count, viewer_formats)
     }
 
     pub fn create_output(&mut self, request: CreateOutputRequest) -> CreateOutputResponse {
@@ -1346,6 +1375,18 @@ mod tests {
         assert!(second_hls.error.is_none());
         assert_ne!(second_hls.output_id, output_ids["hls"]);
         assert_eq!(control.outputs.len(), 5);
+        let monitored = control.query_stream(QueryStreamRequest {
+            stream_id: "stream-a".to_string(),
+        });
+        assert_eq!(monitored.viewer_count, 2);
+        assert_eq!(
+            monitored
+                .viewer_formats
+                .iter()
+                .map(|item| (item.media_format.as_str(), item.viewer_count))
+                .collect::<Vec<_>>(),
+            vec![("flv", 1), ("fmp4", 1), ("hls", 2), ("ll_hls", 1)]
+        );
 
         let closed = control.close_output(CloseOutputRequest {
             operation: Some(operation("close-hls")),

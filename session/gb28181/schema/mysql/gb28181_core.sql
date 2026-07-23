@@ -306,6 +306,9 @@ CREATE TABLE IF NOT EXISTS `gb28181_sip_dialog_session`  (
   `transport` varchar(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'UDP/TCP/TLS',
   `state` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'INVITING/ESTABLISHED/TERMINATING/TERMINATED/ORPHAN',
   `established_at` datetime(3) NULL DEFAULT NULL,
+  `terminated_at` datetime(3) NULL DEFAULT NULL,
+  `terminal_reason` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `error_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `last_seen_at` datetime(3) NOT NULL,
   `expire_at` datetime(3) NOT NULL,
   `version` bigint NOT NULL DEFAULT 0,
@@ -317,5 +320,6 @@ CREATE TABLE IF NOT EXISTS `gb28181_sip_dialog_session`  (
   INDEX `idx_gmv_sip_dialog_owner_state_expire`(`signal_node_id` ASC, `state` ASC, `expire_at` ASC) USING BTREE,
   INDEX `idx_gmv_sip_dialog_owner_ssrc_state_expire`(`signal_node_id` ASC, `ssrc` ASC, `state` ASC, `expire_at` ASC) USING BTREE,
   INDEX `idx_gmv_sip_dialog_owner`(`signal_node_id` ASC, `state` ASC, `stream_id` ASC) USING BTREE,
-  INDEX `idx_gmv_sip_dialog_ssrc`(`signal_node_id` ASC, `media_node_id` ASC, `ssrc` ASC, `state` ASC, `expire_at` ASC) USING BTREE
+  INDEX `idx_gmv_sip_dialog_ssrc`(`signal_node_id` ASC, `media_node_id` ASC, `ssrc` ASC, `state` ASC, `expire_at` ASC) USING BTREE,
+  INDEX `idx_gmv_sip_dialog_history`(`signal_node_id` ASC, `state` ASC, `terminated_at` DESC, `stream_id` DESC) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;

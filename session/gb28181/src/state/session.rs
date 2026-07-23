@@ -35,6 +35,7 @@ pub struct StreamByeCommand {
     pub device_id: String,
     pub call_id: String,
     pub seq: u32,
+    pub terminal_reason: String,
 }
 
 pub struct StreamCloseStart {
@@ -102,6 +103,7 @@ pub struct TalkSessionState {
     pub closing_generation: Option<u64>,
     pub bye_inflight_seq: Option<u32>,
     pub close_last_error: Option<String>,
+    pub close_terminal_reason: Option<String>,
     pub guard_lease: Option<GuardLease>,
 }
 
@@ -117,6 +119,7 @@ pub struct TalkByeCommand {
     pub device_id: String,
     pub call_id: String,
     pub seq: u32,
+    pub terminal_reason: String,
 }
 
 pub struct TalkCloseInfo {
@@ -422,10 +425,10 @@ impl Cache {
             .and_then(|mut stream| stream.guard_lease.take())
     }
 
-    pub fn stream_close_begin(stream_id: &str) -> Option<StreamCloseStart> {
+    pub fn stream_close_begin(stream_id: &str, terminal_reason: &str) -> Option<StreamCloseStart> {
         let mut stream = GENERAL_CACHE.shared.stream_map.get_mut(stream_id)?;
         let generation = STREAM_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let newly_started = stream.begin_close(generation);
+        let newly_started = stream.begin_close(generation, terminal_reason);
         Some(StreamCloseStart {
             generation: stream.closing_generation()?,
             device_id: stream.device_id.clone(),
@@ -435,13 +438,14 @@ impl Cache {
 
     pub fn stream_close_take_bye(stream_id: &str) -> Option<StreamByeCommand> {
         let mut stream = GENERAL_CACHE.shared.stream_map.get_mut(stream_id)?;
-        let (generation, seq) = stream.take_bye()?;
+        let (generation, seq, terminal_reason) = stream.take_bye()?;
         Some(StreamByeCommand {
             stream_id: stream_id.to_string(),
             generation,
             device_id: stream.device_id.clone(),
             call_id: stream.call_id.clone(),
             seq,
+            terminal_reason,
         })
     }
 
@@ -742,13 +746,14 @@ impl Cache {
         }
     }
 
-    pub fn talk_close_begin(talk_id: &str) -> Option<TalkCloseStart> {
+    pub fn talk_close_begin(talk_id: &str, terminal_reason: &str) -> Option<TalkCloseStart> {
         let mut talk = GENERAL_CACHE.shared.talk_map.get_mut(talk_id)?;
         let newly_started = talk.closing_generation.is_none();
         if newly_started {
             talk.closing_generation = Some(TALK_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed));
             talk.bye_inflight_seq = None;
             talk.close_last_error = None;
+            talk.close_terminal_reason = Some(terminal_reason.to_string());
         }
         Some(TalkCloseStart {
             generation: talk.closing_generation?,
@@ -771,6 +776,10 @@ impl Cache {
             device_id: talk.device_id.clone(),
             call_id: talk.call_id.clone(),
             seq: talk.seq,
+            terminal_reason: talk
+                .close_terminal_reason
+                .clone()
+                .unwrap_or_else(|| "session_close".to_string()),
         })
     }
 
@@ -1358,11 +1367,12 @@ enum StreamLifecycle {
         generation: u64,
         inflight_seq: Option<u32>,
         last_error: Option<String>,
+        terminal_reason: String,
     },
 }
 
 impl StreamTable {
-    fn begin_close(&mut self, generation: u64) -> bool {
+    fn begin_close(&mut self, generation: u64, terminal_reason: &str) -> bool {
         if matches!(self.lifecycle, StreamLifecycle::Closing { .. }) {
             return false;
         }
@@ -1370,14 +1380,16 @@ impl StreamTable {
             generation,
             inflight_seq: None,
             last_error: None,
+            terminal_reason: terminal_reason.to_string(),
         };
         true
     }
 
-    fn take_bye(&mut self) -> Option<(u64, u32)> {
+    fn take_bye(&mut self) -> Option<(u64, u32, String)> {
         let StreamLifecycle::Closing {
             generation,
             inflight_seq,
+            terminal_reason,
             ..
         } = &mut self.lifecycle
         else {
@@ -1388,7 +1400,7 @@ impl StreamTable {
         }
         self.seq = self.seq.saturating_add(1);
         *inflight_seq = Some(self.seq);
-        Some((*generation, self.seq))
+        Some((*generation, self.seq, terminal_reason.clone()))
     }
 
     fn mark_bye_failed(
@@ -1401,6 +1413,7 @@ impl StreamTable {
             generation,
             inflight_seq,
             last_error,
+            ..
         } = &mut self.lifecycle
         else {
             return false;
@@ -1616,8 +1629,8 @@ mod tests {
     fn closing_stream_allows_only_one_bye_in_flight() {
         let mut table = stream_table();
 
-        assert!(table.begin_close(11));
-        assert_eq!(table.take_bye(), Some((11, 8)));
+        assert!(table.begin_close(11, "manual_stop"));
+        assert_eq!(table.take_bye(), Some((11, 8, "manual_stop".to_string())));
         assert_eq!(table.take_bye(), None);
     }
 
@@ -1625,20 +1638,20 @@ mod tests {
     fn failed_bye_can_retry_with_next_cseq() {
         let mut table = stream_table();
 
-        assert!(table.begin_close(11));
-        assert_eq!(table.take_bye(), Some((11, 8)));
+        assert!(table.begin_close(11, "session_close"));
+        assert_eq!(table.take_bye(), Some((11, 8, "session_close".to_string())));
         assert!(table.mark_bye_failed(11, 8, "tcp closed".to_string()));
-        assert_eq!(table.take_bye(), Some((11, 9)));
+        assert_eq!(table.take_bye(), Some((11, 9, "session_close".to_string())));
     }
 
     #[test]
     fn stale_bye_failure_does_not_clear_new_inflight_bye() {
         let mut table = stream_table();
 
-        assert!(table.begin_close(11));
-        assert_eq!(table.take_bye(), Some((11, 8)));
+        assert!(table.begin_close(11, "session_close"));
+        assert_eq!(table.take_bye(), Some((11, 8, "session_close".to_string())));
         assert!(table.mark_bye_failed(11, 8, "old tcp closed".to_string()));
-        assert_eq!(table.take_bye(), Some((11, 9)));
+        assert_eq!(table.take_bye(), Some((11, 9, "session_close".to_string())));
         assert!(!table.mark_bye_failed(11, 8, "old tcp closed".to_string()));
         assert_eq!(table.take_bye(), None);
     }
@@ -1647,8 +1660,8 @@ mod tests {
     fn repeated_close_keeps_original_generation() {
         let mut table = stream_table();
 
-        assert!(table.begin_close(11));
-        assert!(!table.begin_close(12));
+        assert!(table.begin_close(11, "manual_stop"));
+        assert!(!table.begin_close(12, "session_close"));
         assert!(table.is_closing_generation(11));
         assert!(!table.is_closing_generation(12));
     }
@@ -1829,14 +1842,16 @@ mod tests {
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,
+            close_terminal_reason: None,
             guard_lease: None,
         });
 
-        let start = Cache::talk_close_begin(&talk_id).unwrap();
+        let start = Cache::talk_close_begin(&talk_id, "session_close").unwrap();
         let command = Cache::talk_close_take_bye(&talk_id).unwrap();
 
         assert!(Cache::talk_map_get(&talk_id).is_some());
         assert_eq!(command.seq, 9);
+        assert_eq!(command.terminal_reason, "session_close");
         assert!(Cache::talk_close_complete(&talk_id, start.generation).is_some());
         assert!(Cache::talk_map_get(&talk_id).is_none());
     }

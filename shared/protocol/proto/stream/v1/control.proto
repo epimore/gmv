@@ -64,6 +64,13 @@ message QueryStreamResponse {
   uint64 source_position_ms = 6;
   bool media_ready = 7;
   string terminal_reason = 8;
+  uint32 viewer_count = 9;
+  repeated ViewerFormatCount viewer_formats = 10;
+}
+
+message ViewerFormatCount {
+  string media_format = 1;
+  uint32 viewer_count = 2;
 }
 
 message CreateOutputRequest {

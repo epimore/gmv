@@ -20,10 +20,8 @@ use crate::storage::entity::{GmvDevice, GmvOauth};
 
 const RECOVERY_PAGE_SIZE: u32 = 200;
 
-pub async fn run_startup_recovery() {
-    if let Err(err) = recover_owned_dialogs().await {
-        error!("startup durable dialog recovery failed: {err}");
-    }
+pub async fn run_startup_recovery() -> GlobalResult<()> {
+    recover_owned_dialogs().await
 }
 
 pub(crate) async fn recover_owned_dialogs() -> GlobalResult<()> {
@@ -63,9 +61,18 @@ pub(crate) async fn recover_owned_dialogs() -> GlobalResult<()> {
 
 pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<()> {
     let now = Local::now().naive_local();
-    if session.expire_at <= now
-        || session.state == DialogState::Inviting
-        || session.transport == DialogTransport::Tls
+    if session.state == DialogState::Inviting {
+        if session.created_at + TimeDelta::seconds(60) > now {
+            return Ok(());
+        }
+        if !cleanup_setup_media(session).await? {
+            return Ok(());
+        }
+        mark_orphan(session).await?;
+        return Ok(());
+    }
+    if session.transport == DialogTransport::Tls
+        || (session.state == DialogState::Terminating && session.expire_at <= now)
     {
         mark_orphan(session).await?;
         return Ok(());
@@ -92,6 +99,9 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
             mark_orphan(session).await?;
             return Ok(());
         }
+        if session.state == DialogState::Established {
+            touch_active_dialog(session).await?;
+        }
         if !Cache::talk_map_insert(crate::state::session::TalkSessionState {
             talk_id: session.stream_id.clone(),
             device_id: session.device_id.clone(),
@@ -104,6 +114,7 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
             closing_generation: None,
             bye_inflight_seq: None,
             close_last_error: None,
+            close_terminal_reason: None,
             guard_lease: None,
         }) {
             mark_orphan(session).await?;
@@ -131,6 +142,9 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
     }
 
     if media_online {
+        if session.state == DialogState::Established {
+            touch_active_dialog(session).await?;
+        }
         if !Cache::stream_map_insert_restored(
             session.stream_id.clone(),
             session.device_id.clone(),
@@ -191,6 +205,189 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
         crate::service::stream_close::begin(session.stream_id.clone());
     }
     Ok(())
+}
+
+pub async fn run_reconciliation(cancel: base::tokio_util::sync::CancellationToken) {
+    let signal_node_id = SessionConf::get_session_by_conf().domain_id;
+    let states = [
+        DialogState::Inviting,
+        DialogState::Established,
+        DialogState::Terminating,
+    ];
+    let mut cursor: Option<String> = None;
+    loop {
+        base::tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = base::tokio::time::sleep(Duration::from_secs(60)) => {}
+        }
+        let page = match SipDialogSessionRepository::page_owned_by_states(
+            &signal_node_id,
+            &states,
+            cursor.as_deref(),
+            RECOVERY_PAGE_SIZE,
+        )
+        .await
+        {
+            Ok(page) => page,
+            Err(err) => {
+                error!("dialog reconciliation scan failed: {err}");
+                continue;
+            }
+        };
+        if page.is_empty() {
+            cursor = None;
+            continue;
+        }
+        for dialog in &page {
+            match dialog.state {
+                DialogState::Inviting
+                    if dialog.created_at + TimeDelta::seconds(60) <= Local::now().naive_local() =>
+                {
+                    match cleanup_setup_media(dialog).await {
+                        Ok(true) => {
+                            if let Err(err) = mark_orphan(dialog).await {
+                                warn!(
+                                    "dialog setup reconciliation failed: stream_id={}, err={err}",
+                                    dialog.stream_id
+                                );
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            warn!(
+                                "dialog setup media cleanup will retry: stream_id={}, err={err}",
+                                dialog.stream_id
+                            );
+                        }
+                    }
+                }
+                DialogState::Terminating => {
+                    if dialog.session_type == DialogSessionType::Talk {
+                        crate::service::talk_close::begin(dialog.stream_id.clone());
+                    } else {
+                        crate::service::stream_close::begin(dialog.stream_id.clone());
+                    }
+                }
+                DialogState::Established => {
+                    let probe = if dialog.session_type == DialogSessionType::Talk {
+                        base::tokio::time::timeout(
+                            Duration::from_secs(3),
+                            query_talk_online(dialog),
+                        )
+                        .await
+                    } else if let Some(ssrc) = dialog
+                        .ssrc
+                        .as_deref()
+                        .and_then(|value| value.parse::<u32>().ok())
+                    {
+                        base::tokio::time::timeout(
+                            Duration::from_secs(3),
+                            query_media_online(dialog, ssrc),
+                        )
+                        .await
+                    } else {
+                        continue;
+                    };
+                    match probe {
+                        Ok(Ok(true)) => {
+                            if let Err(err) = touch_active_dialog(dialog).await {
+                                warn!(
+                                    "dialog activity refresh failed: stream_id={}, err={err}",
+                                    dialog.stream_id
+                                );
+                            }
+                        }
+                        Ok(Ok(false)) => {
+                            if let Err(err) = recover_dialog(dialog).await {
+                                warn!(
+                                    "dialog media reconciliation failed: stream_id={}, err={err}",
+                                    dialog.stream_id
+                                );
+                            }
+                        }
+                        Ok(Err(err)) => warn!(
+                            "dialog media probe failed and will retry: stream_id={}, err={err}",
+                            dialog.stream_id
+                        ),
+                        Err(_) => warn!(
+                            "dialog media probe timed out and will retry: stream_id={}",
+                            dialog.stream_id
+                        ),
+                    }
+                }
+                _ => {}
+            }
+        }
+        cursor = if page.len() < RECOVERY_PAGE_SIZE as usize {
+            None
+        } else {
+            page.last().map(|dialog| dialog.stream_id.clone())
+        };
+    }
+}
+
+async fn cleanup_setup_media(dialog: &SipDialogSession) -> GlobalResult<bool> {
+    let Some(node) = crate::state::StreamNodeRegistry::get(&dialog.media_node_id) else {
+        return Ok(false);
+    };
+    if dialog.session_type == DialogSessionType::Talk {
+        stream_rpc::talk_close(&node, &dialog.stream_id).await
+    } else {
+        stream_rpc::stop_receive(&node, &dialog.stream_id, "setup_deadline").await
+    }?;
+    Ok(true)
+}
+
+async fn touch_active_dialog(dialog: &SipDialogSession) -> GlobalResult<()> {
+    let now = Local::now().naive_local();
+    let _ = SipDialogSessionRepository::cas_touch(
+        &dialog.stream_id,
+        &dialog.signal_node_id,
+        dialog.version,
+        now,
+        now + TimeDelta::hours(8),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn run_history_retention(cancel: base::tokio_util::sync::CancellationToken) {
+    let conf = SessionConf::get_session_by_conf();
+    if conf.dialog_history_retention_days == 0 {
+        return;
+    }
+    loop {
+        let cutoff = Local::now().naive_local()
+            - TimeDelta::days(i64::from(conf.dialog_history_retention_days));
+        let mut deleted = 0_u64;
+        let mut batches = 0_u64;
+        loop {
+            match SipDialogSessionRepository::delete_terminal_before(&conf.domain_id, cutoff, 500)
+                .await
+            {
+                Ok(0) => break,
+                Ok(count) => {
+                    deleted += count;
+                    batches += 1;
+                }
+                Err(err) => {
+                    error!(
+                        "dialog history retention failed: retention_days={}, deleted={}, batches={}, err={err}",
+                        conf.dialog_history_retention_days, deleted, batches
+                    );
+                    break;
+                }
+            }
+        }
+        info!(
+            "dialog history retention completed: retention_days={}, cutoff={}, deleted={}, batches={}",
+            conf.dialog_history_retention_days, cutoff, deleted, batches
+        );
+        base::tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = base::tokio::time::sleep(Duration::from_secs(86_400)) => {}
+        }
+    }
 }
 
 async fn query_talk_online(session: &SipDialogSession) -> GlobalResult<bool> {
@@ -305,12 +502,14 @@ async fn validate_registration_epoch(session: &SipDialogSession) -> GlobalResult
 }
 
 async fn mark_orphan(session: &SipDialogSession) -> GlobalResult<()> {
-    let changed = SipDialogSessionRepository::cas_transition(
+    let changed = SipDialogSessionRepository::cas_mark_terminal(
         &session.stream_id,
         &session.signal_node_id,
         session.version,
         session.state,
         DialogState::Orphan,
+        "recovery_failed",
+        Some("RECOVERY_FAILED"),
         Local::now().naive_local(),
     )
     .await?;

@@ -27,16 +27,17 @@ use gmv_protocol::session::v1::{
     GetCloudRecordingRequest, GetGbChannelRecordsRequest, GetGbChannelRecordsResponse,
     GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
     GetSessionConfigRequest, GetSessionConfigResponse, IssueCloudRecordingAccessRequest,
-    IssueCloudRecordingAccessResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
-    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
-    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
-    ListGbResourcesResponse, PlaybackControlResponse, PlaybackPresenceHeartbeat,
-    QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
-    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
-    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SetPlaybackStateRequest,
-    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
-    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
-    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+    IssueCloudRecordingAccessResponse, ListActiveStreamsRequest, ListActiveStreamsResponse,
+    ListCloudRecordingsRequest, ListCloudRecordingsResponse, ListGbChannelImagesRequest,
+    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
+    ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
+    ListStreamHistoryRequest, ListStreamHistoryResponse, PlaybackControlResponse,
+    PlaybackPresenceHeartbeat, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
+    RefreshPlaybackPresenceResponse, ResetGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
+    SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
+    StartDeviceStreamRequest, StopCloudRecordingRequest, StopDeviceStreamRequest,
+    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -80,6 +81,7 @@ fn gb28181_create_device_uses_selected_session_rpc() {
                     config: HashMap::from([
                         ("service".to_string(), "session-gb28181".to_string()),
                         ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
                     ]),
                 })
                 .unwrap();
@@ -135,6 +137,7 @@ fn gb28181_session_node_config_uses_rpc_and_skips_offline_nodes() {
                     config: HashMap::from([
                         ("service".to_string(), "session-gb28181".to_string()),
                         ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
                     ]),
                 })
                 .unwrap();
@@ -206,6 +209,7 @@ fn gb28181_snapshot_image_uses_session_rpc() {
                     config: HashMap::from([
                         ("service".to_string(), "session-gb28181".to_string()),
                         ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
                     ]),
                 })
                 .unwrap();
@@ -256,6 +260,7 @@ fn gb28181_record_query_uses_selected_session_rpc() {
                     config: HashMap::from([
                         ("service".to_string(), "session-gb28181".to_string()),
                         ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-record".to_string()),
                     ]),
                 })
                 .unwrap();
@@ -327,6 +332,7 @@ fn gb28181_update_channel_uses_session_rpc() {
                     config: HashMap::from([
                         ("service".to_string(), "session-gb28181".to_string()),
                         ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
                     ]),
                 })
                 .unwrap();
@@ -471,6 +477,16 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .unwrap();
 
             let control = BusinessControl::new(store.clone());
+            let active = control
+                .list_active_streams("session-rpc", ListActiveStreamsRequest::default())
+                .await
+                .unwrap();
+            assert_eq!(active.server_time_ms, 1_001);
+            let history = control
+                .list_stream_history("session-rpc", ListStreamHistoryRequest::default())
+                .await
+                .unwrap();
+            assert_eq!(history.server_time_ms, 1_002);
             let stream = control
                 .start_live("op-live-rpc", "device-1", "channel-1")
                 .await
@@ -717,6 +733,38 @@ struct FakeSession;
 
 #[tonic::async_trait]
 impl SessionControl for FakeSession {
+    async fn list_active_streams(
+        &self,
+        request: tonic::Request<ListActiveStreamsRequest>,
+    ) -> Result<tonic::Response<ListActiveStreamsResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(ListActiveStreamsResponse {
+            server_time_ms: 1_001,
+            ..Default::default()
+        }))
+    }
+
+    async fn list_stream_history(
+        &self,
+        request: tonic::Request<ListStreamHistoryRequest>,
+    ) -> Result<tonic::Response<ListStreamHistoryResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(ListStreamHistoryResponse {
+            server_time_ms: 1_002,
+            ..Default::default()
+        }))
+    }
+
     async fn create_cloud_recording(
         &self,
         _request: tonic::Request<CreateCloudRecordingRequest>,
@@ -1135,6 +1183,8 @@ impl StreamControl for FakeStream {
             source_position_ms: 0,
             media_ready: true,
             terminal_reason: String::new(),
+            viewer_count: 0,
+            viewer_formats: vec![],
         }))
     }
 

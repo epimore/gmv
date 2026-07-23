@@ -11,6 +11,8 @@ service SessionControl {
   rpc StartDownload(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc ListActiveStreams(ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
+  rpc ListStreamHistory(ListStreamHistoryRequest) returns (ListStreamHistoryResponse);
   rpc SetPlaybackSpeed(SetPlaybackSpeedRequest) returns (SetPlaybackSpeedResponse);
   rpc SeekPlayback(SeekPlaybackRequest) returns (PlaybackControlResponse);
   rpc SetPlaybackState(SetPlaybackStateRequest) returns (PlaybackControlResponse);
@@ -81,6 +83,89 @@ message StopDeviceStreamRequest {
   string reason = 3;
   string subscription_id = 4;
   bool force = 5;
+  gmv.common.v1.NodeIdentity expected_session = 6;
+}
+
+message ListActiveStreamsRequest {
+  string after_stream_id = 1;
+  uint32 limit = 2;
+  string stream_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string state = 8;
+  gmv.common.v1.NodeIdentity expected_session = 9;
+}
+
+message ListActiveStreamsResponse {
+  repeated ActiveStreamItem items = 1;
+  string next_after_id = 2;
+  int64 server_time_ms = 3;
+}
+
+message ActiveStreamItem {
+  string stream_id = 1;
+  string session_node_id = 2;
+  string session_instance_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string state = 8;
+  string dialog_state = 9;
+  string media_state = 10;
+  bool media_ready = 11;
+  int64 created_at_ms = 12;
+  int64 established_at_ms = 13;
+  int64 started_at_ms = 14;
+  string diagnostic_reason = 15;
+  string session_type = 16;
+  uint32 viewer_count = 17;
+  repeated ActiveStreamViewerFormat viewer_formats = 18;
+}
+
+message ActiveStreamViewerFormat {
+  string media_format = 1;
+  uint32 viewer_count = 2;
+}
+
+message ListStreamHistoryRequest {
+  uint32 page = 1;
+  uint32 page_size = 2;
+  string stream_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string state = 8;
+  gmv.common.v1.NodeIdentity expected_session = 9;
+}
+
+message ListStreamHistoryResponse {
+  repeated StreamHistoryItem items = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+  int64 server_time_ms = 5;
+}
+
+message StreamHistoryItem {
+  string stream_id = 1;
+  string session_node_id = 2;
+  string stream_node_id = 3;
+  string device_id = 4;
+  string channel_id = 5;
+  string ssrc = 6;
+  string session_type = 7;
+  string state = 8;
+  int64 created_at_ms = 9;
+  int64 established_at_ms = 10;
+  int64 terminated_at_ms = 11;
+  int64 duration_ms = 12;
+  string terminal_reason = 13;
+  string error_code = 14;
+  bool legacy_terminal_time = 15;
 }
 
 message SetPlaybackSpeedRequest {

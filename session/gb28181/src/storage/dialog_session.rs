@@ -22,10 +22,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 const INSERT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,\
 signal_node_id,media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,\
 local_cseq,remote_cseq,contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,\
-state,established_at,last_seen_at,expire_at,version,created_at,updated_at";
+state,established_at,terminated_at,terminal_reason,error_code,last_seen_at,expire_at,version,created_at,updated_at";
 const SELECT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,signal_node_id,\
 media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,local_cseq,remote_cseq,\
-contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,last_seen_at,\
+contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,terminated_at,terminal_reason,error_code,last_seen_at,\
 expire_at,version,created_at,updated_at";
 const MAX_PAGE_SIZE: u32 = 1_000;
 
@@ -171,6 +171,9 @@ pub struct SipDialogSession {
     pub transport: DialogTransport,
     pub state: DialogState,
     pub established_at: Option<NaiveDateTime>,
+    pub terminated_at: Option<NaiveDateTime>,
+    pub terminal_reason: Option<String>,
+    pub error_code: Option<String>,
     pub last_seen_at: NaiveDateTime,
     pub expire_at: NaiveDateTime,
     pub version: i64,
@@ -191,6 +194,8 @@ impl SipDialogSession {
             36,
             "registration_epoch_id",
         )?;
+        validate_optional_len(self.terminal_reason.as_deref(), 64, "terminal_reason")?;
+        validate_optional_len(self.error_code.as_deref(), 64, "error_code")?;
         validate_len(&self.call_id, 128, "call_id")?;
         validate_sip_uri(&self.local_uri, 256, "local_uri")?;
         validate_sip_uri(&self.remote_uri, 256, "remote_uri")?;
@@ -287,6 +292,9 @@ struct SipDialogSessionRow {
     transport: String,
     state: String,
     established_at: Option<NaiveDateTime>,
+    terminated_at: Option<NaiveDateTime>,
+    terminal_reason: Option<String>,
+    error_code: Option<String>,
     last_seen_at: NaiveDateTime,
     expire_at: NaiveDateTime,
     version: i64,
@@ -321,6 +329,9 @@ impl TryFrom<SipDialogSessionRow> for SipDialogSession {
             transport: row.transport.parse()?,
             state: row.state.parse()?,
             established_at: row.established_at,
+            terminated_at: row.terminated_at,
+            terminal_reason: row.terminal_reason,
+            error_code: row.error_code,
             last_seen_at: row.last_seen_at,
             expire_at: row.expire_at,
             version: row.version,
@@ -338,6 +349,56 @@ pub struct PlaybackPauseLease {
     pub state: String,
     pub expire_at: Option<NaiveDateTime>,
     pub generation: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DialogMonitorFilter {
+    pub stream_id: String,
+    pub media_node_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: String,
+    pub state: String,
+}
+
+impl DialogMonitorFilter {
+    fn matches(&self, session: &SipDialogSession) -> bool {
+        (self.stream_id.is_empty() || session.stream_id == self.stream_id)
+            && (self.media_node_id.is_empty() || session.media_node_id == self.media_node_id)
+            && (self.device_id.is_empty() || session.device_id == self.device_id)
+            && (self.channel_id.is_empty() || session.channel_id == self.channel_id)
+            && (self.ssrc.is_empty() || session.ssrc.as_deref() == Some(self.ssrc.as_str()))
+            && (self.state.is_empty() || session.state.to_string() == self.state)
+    }
+
+    fn validate(&self) -> GlobalResult<()> {
+        validate_optional_len(
+            (!self.stream_id.is_empty()).then_some(self.stream_id.as_str()),
+            64,
+            "stream_id",
+        )?;
+        validate_optional_len(
+            (!self.media_node_id.is_empty()).then_some(self.media_node_id.as_str()),
+            64,
+            "media_node_id",
+        )?;
+        validate_optional_len(
+            (!self.device_id.is_empty()).then_some(self.device_id.as_str()),
+            32,
+            "device_id",
+        )?;
+        validate_optional_len(
+            (!self.channel_id.is_empty()).then_some(self.channel_id.as_str()),
+            32,
+            "channel_id",
+        )?;
+        validate_optional_len(
+            (!self.ssrc.is_empty()).then_some(self.ssrc.as_str()),
+            16,
+            "ssrc",
+        )?;
+        Ok(())
+    }
 }
 
 pub struct SipDialogSessionRepository;
@@ -369,7 +430,7 @@ impl SipDialogSessionRepository {
         db::execute!(
             sqlx::AssertSqlSafe(format!(
                 "INSERT INTO gb28181_sip_dialog_session ({INSERT_COLUMNS}) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )),
             &session.stream_id,
             &session.device_id,
@@ -393,6 +454,9 @@ impl SipDialogSessionRepository {
             session.transport.to_string(),
             session.state.to_string(),
             session.established_at,
+            session.terminated_at,
+            &session.terminal_reason,
+            &session.error_code,
             session.last_seen_at,
             session.expire_at,
             session.version,
@@ -548,6 +612,7 @@ impl SipDialogSessionRepository {
         validate_len(signal_node_id, 64, "signal_node_id")?;
         if expected_version < 0
             || expected_state.is_terminal()
+            || next_state.is_terminal()
             || !expected_state.can_transition_to(next_state)
         {
             return Err(invalid_data("invalid dialog state transition"));
@@ -583,6 +648,71 @@ impl SipDialogSessionRepository {
             expected_state.to_string(),
             expected_version,
             updated_at,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        Ok(rows == 1)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn cas_mark_terminal(
+        stream_id: &str,
+        signal_node_id: &str,
+        expected_version: i64,
+        expected_state: DialogState,
+        terminal_state: DialogState,
+        terminal_reason: &str,
+        error_code: Option<&str>,
+        terminated_at: NaiveDateTime,
+    ) -> GlobalResult<bool> {
+        validate_len(terminal_reason, 64, "terminal_reason")?;
+        validate_optional_len(error_code, 64, "error_code")?;
+        if expected_version < 0
+            || !terminal_state.is_terminal()
+            || expected_state.is_terminal()
+            || !expected_state.can_transition_to(terminal_state)
+            || (terminal_state == DialogState::Terminated && error_code.is_some())
+            || (terminal_state == DialogState::Orphan && error_code.is_none())
+        {
+            return Err(invalid_data("invalid terminal dialog transition"));
+        }
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(session) = storage.get_mut(stream_id) else {
+                return Ok(false);
+            };
+            if session.version != expected_version
+                || session.state != expected_state
+                || session.signal_node_id != signal_node_id
+                || terminated_at < session.updated_at
+            {
+                return Ok(false);
+            }
+            session.state = terminal_state;
+            session.terminated_at = Some(terminated_at);
+            session.terminal_reason = Some(terminal_reason.to_string());
+            session.error_code = error_code.map(ToString::to_string);
+            session.updated_at = terminated_at;
+            session.version += 1;
+            return Ok(true);
+        }
+        let rows = db::execute!(
+            "UPDATE gb28181_sip_dialog_session SET state=?,terminated_at=COALESCE(terminated_at,?),\
+             terminal_reason=COALESCE(terminal_reason,?),error_code=COALESCE(error_code,?),\
+             updated_at=?,version=version+1 WHERE stream_id=? AND signal_node_id=? AND state=?\
+             AND version=? AND updated_at<=?",
+            terminal_state.to_string(),
+            terminated_at,
+            terminal_reason,
+            error_code,
+            terminated_at,
+            stream_id,
+            signal_node_id,
+            expected_state.to_string(),
+            expected_version,
+            terminated_at,
         )
         .hand_log(|message| error!("{message}"))?;
         Ok(rows == 1)
@@ -1056,6 +1186,257 @@ impl SipDialogSessionRepository {
         .hand_log(|message| error!("{message}"))?;
         rows.into_iter().map(TryInto::try_into).collect()
     }
+
+    pub async fn page_active_for_monitor(
+        signal_node_id: &str,
+        after_stream_id: Option<&str>,
+        limit: u32,
+        filter: &DialogMonitorFilter,
+    ) -> GlobalResult<Vec<SipDialogSession>> {
+        validate_len(signal_node_id, 64, "signal_node_id")?;
+        validate_optional_len(after_stream_id, 64, "after_stream_id")?;
+        filter.validate()?;
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(invalid_data("invalid monitor page limit"));
+        }
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut sessions = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .filter(|session| {
+                    session.signal_node_id == signal_node_id
+                        && matches!(
+                            session.state,
+                            DialogState::Inviting
+                                | DialogState::Established
+                                | DialogState::Terminating
+                        )
+                        && after_stream_id.is_none_or(|cursor| session.stream_id.as_str() > cursor)
+                        && filter.matches(session)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            sessions.sort_by(|left, right| left.stream_id.cmp(&right.stream_id));
+            sessions.truncate(limit as usize);
+            return Ok(sessions);
+        }
+        macro_rules! build_query {
+            ($backend:ty, $pool:expr) => {{
+                let mut builder = sqlx::QueryBuilder::<$backend>::new(format!(
+                    "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session WHERE signal_node_id=",
+                ));
+                builder
+                    .push_bind(signal_node_id)
+                    .push(" AND state IN ('INVITING','ESTABLISHED','TERMINATING')");
+                if let Some(cursor) = after_stream_id {
+                    builder.push(" AND stream_id>").push_bind(cursor);
+                }
+                if !filter.stream_id.is_empty() {
+                    builder.push(" AND stream_id=").push_bind(&filter.stream_id);
+                }
+                if !filter.media_node_id.is_empty() {
+                    builder
+                        .push(" AND media_node_id=")
+                        .push_bind(&filter.media_node_id);
+                }
+                if !filter.device_id.is_empty() {
+                    builder.push(" AND device_id=").push_bind(&filter.device_id);
+                }
+                if !filter.channel_id.is_empty() {
+                    builder
+                        .push(" AND channel_id=")
+                        .push_bind(&filter.channel_id);
+                }
+                if !filter.ssrc.is_empty() {
+                    builder.push(" AND ssrc=").push_bind(&filter.ssrc);
+                }
+                builder.push(" ORDER BY stream_id LIMIT ").push_bind(limit);
+                builder
+                    .build_query_as::<SipDialogSessionRow>()
+                    .fetch_all($pool)
+                    .await
+            }};
+        }
+        let rows = match db::backend() {
+            #[cfg(feature = "db-mysql")]
+            db::SessionDatabaseBackend::Mysql => build_query!(MySql, db::mysql_pool()),
+            #[cfg(feature = "db-sqlite")]
+            db::SessionDatabaseBackend::Sqlite => build_query!(Sqlite, db::sqlite_pool()),
+            backend => return Err(db::backend_not_enabled_global(backend)),
+        }
+        .hand_log(|message| error!("{message}"))?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub async fn page_history_for_monitor(
+        signal_node_id: &str,
+        page: u32,
+        page_size: u32,
+        filter: &DialogMonitorFilter,
+    ) -> GlobalResult<(Vec<SipDialogSession>, u64)> {
+        validate_len(signal_node_id, 64, "signal_node_id")?;
+        filter.validate()?;
+        if page == 0 || page_size == 0 || page_size > 100 {
+            return Err(invalid_data("invalid history page"));
+        }
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut sessions = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .filter(|session| {
+                    session.signal_node_id == signal_node_id
+                        && session.state.is_terminal()
+                        && filter.matches(session)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            sessions.sort_by(|left, right| {
+                let left_at = left.terminated_at.unwrap_or(left.updated_at);
+                let right_at = right.terminated_at.unwrap_or(right.updated_at);
+                right_at
+                    .cmp(&left_at)
+                    .then_with(|| right.stream_id.cmp(&left.stream_id))
+            });
+            let total = sessions.len() as u64;
+            let offset = (page.saturating_sub(1) * page_size) as usize;
+            return Ok((
+                sessions
+                    .into_iter()
+                    .skip(offset)
+                    .take(page_size as usize)
+                    .collect(),
+                total,
+            ));
+        }
+        macro_rules! append_history_where {
+            ($builder:ident) => {{
+                $builder
+                    .push_bind(signal_node_id)
+                    .push(" AND state IN ('TERMINATED','ORPHAN')");
+                if !filter.state.is_empty() {
+                    $builder.push(" AND state=").push_bind(&filter.state);
+                }
+                if !filter.stream_id.is_empty() {
+                    $builder
+                        .push(" AND stream_id=")
+                        .push_bind(&filter.stream_id);
+                }
+                if !filter.media_node_id.is_empty() {
+                    $builder
+                        .push(" AND media_node_id=")
+                        .push_bind(&filter.media_node_id);
+                }
+                if !filter.device_id.is_empty() {
+                    $builder
+                        .push(" AND device_id=")
+                        .push_bind(&filter.device_id);
+                }
+                if !filter.channel_id.is_empty() {
+                    $builder
+                        .push(" AND channel_id=")
+                        .push_bind(&filter.channel_id);
+                }
+                if !filter.ssrc.is_empty() {
+                    $builder.push(" AND ssrc=").push_bind(&filter.ssrc);
+                }
+            }};
+        }
+        macro_rules! run_history {
+            ($backend:ty, $pool:expr) => {{
+                async {
+                    let mut transaction = $pool.begin().await?;
+                    let mut count_builder = sqlx::QueryBuilder::<$backend>::new(
+                        "SELECT COUNT(*) FROM gb28181_sip_dialog_session WHERE signal_node_id=",
+                    );
+                    append_history_where!(count_builder);
+                    let (total,): (i64,) = count_builder
+                        .build_query_as()
+                        .fetch_one(&mut *transaction)
+                        .await?;
+                    let mut item_builder = sqlx::QueryBuilder::<$backend>::new(format!(
+                        "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session WHERE signal_node_id="
+                    ));
+                    append_history_where!(item_builder);
+                    item_builder
+                        .push(" ORDER BY COALESCE(terminated_at,updated_at) DESC,stream_id DESC LIMIT ")
+                        .push_bind(page_size)
+                        .push(" OFFSET ")
+                        .push_bind((page - 1) * page_size);
+                    let rows = item_builder
+                        .build_query_as::<SipDialogSessionRow>()
+                        .fetch_all(&mut *transaction)
+                        .await?;
+                    transaction.commit().await?;
+                    Ok::<_, sqlx::Error>((rows, total))
+                }
+                .await
+            }};
+        }
+        let (rows, total) = match db::backend() {
+            #[cfg(feature = "db-mysql")]
+            db::SessionDatabaseBackend::Mysql => run_history!(MySql, db::mysql_pool()),
+            #[cfg(feature = "db-sqlite")]
+            db::SessionDatabaseBackend::Sqlite => run_history!(Sqlite, db::sqlite_pool()),
+            backend => return Err(db::backend_not_enabled_global(backend)),
+        }
+        .hand_log(|message| error!("{message}"))?;
+        let rows = rows
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<GlobalResult<Vec<_>>>()?;
+        Ok((rows, u64::try_from(total).unwrap_or_default()))
+    }
+
+    pub async fn delete_terminal_before(
+        signal_node_id: &str,
+        cutoff: NaiveDateTime,
+        limit: u32,
+    ) -> GlobalResult<u64> {
+        validate_len(signal_node_id, 64, "signal_node_id")?;
+        if limit == 0 || limit > MAX_PAGE_SIZE {
+            return Err(invalid_data("invalid retention batch limit"));
+        }
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let ids = storage
+                .values()
+                .filter(|session| {
+                    session.signal_node_id == signal_node_id
+                        && session.state.is_terminal()
+                        && session.terminated_at.unwrap_or(session.updated_at) < cutoff
+                })
+                .take(limit as usize)
+                .map(|session| session.stream_id.clone())
+                .collect::<Vec<_>>();
+            let deleted = ids.len() as u64;
+            for id in ids {
+                storage.remove(&id);
+            }
+            return Ok(deleted);
+        }
+        let rows = match db::backend() {
+            #[cfg(feature = "db-mysql")]
+            db::SessionDatabaseBackend::Mysql => db::execute!(
+                "DELETE FROM gb28181_sip_dialog_session WHERE signal_node_id=? AND state IN ('TERMINATED','ORPHAN') AND COALESCE(terminated_at,updated_at)<? LIMIT ?",
+                signal_node_id, cutoff, limit
+            ),
+            #[cfg(feature = "db-sqlite")]
+            db::SessionDatabaseBackend::Sqlite => db::execute!(
+                "DELETE FROM gb28181_sip_dialog_session WHERE stream_id IN (SELECT stream_id FROM gb28181_sip_dialog_session WHERE signal_node_id=? AND state IN ('TERMINATED','ORPHAN') AND COALESCE(terminated_at,updated_at)<? LIMIT ?)",
+                signal_node_id, cutoff, limit
+            ),
+            backend => return Err(db::backend_not_enabled_global(backend)),
+        }
+        .hand_log(|message| error!("{message}"))?;
+        Ok(rows)
+    }
 }
 
 fn route_set_to_json(route_set: &[String]) -> GlobalResult<Option<String>> {
@@ -1214,6 +1595,9 @@ mod tests {
             transport: DialogTransport::Udp,
             state: DialogState::Inviting,
             established_at: None,
+            terminated_at: None,
+            terminal_reason: None,
+            error_code: None,
             last_seen_at: at(1_000),
             expire_at: at(28_801_000),
             version: 0,
@@ -1393,12 +1777,14 @@ mod tests {
                 .expect("non-owner CSeq CAS loser")
             );
             assert!(
-                SipDialogSessionRepository::cas_transition(
+                SipDialogSessionRepository::cas_mark_terminal(
                     "stream-1",
                     "session-1",
                     3,
                     DialogState::Terminating,
                     DialogState::Terminated,
+                    "session_close",
+                    None,
                     at(1_400),
                 )
                 .await
@@ -1571,6 +1957,100 @@ mod tests {
 
             assert_eq!(loaded.len(), 20_000);
             assert!(loaded.windows(2).all(|pair| pair[0] < pair[1]));
+        });
+    }
+
+    #[test]
+    fn terminal_metadata_history_and_retention_are_owner_scoped() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let _guard = enable_dialog_test_storage();
+            let first = inviting("history-a");
+            let mut other_owner = inviting("history-b");
+            other_owner.signal_node_id = "session-2".into();
+            SipDialogSessionRepository::insert_inviting(&first)
+                .await
+                .expect("insert first");
+            SipDialogSessionRepository::insert_inviting(&other_owner)
+                .await
+                .expect("insert other owner");
+            assert!(
+                SipDialogSessionRepository::cas_mark_terminal(
+                    "history-a",
+                    "session-1",
+                    0,
+                    DialogState::Inviting,
+                    DialogState::Orphan,
+                    "invite_timeout",
+                    Some("INVITE_TIMEOUT"),
+                    at(2_000),
+                )
+                .await
+                .expect("mark terminal")
+            );
+            let (history, total) = SipDialogSessionRepository::page_history_for_monitor(
+                "session-1",
+                1,
+                20,
+                &DialogMonitorFilter::default(),
+            )
+            .await
+            .expect("history page");
+            assert_eq!(total, 1);
+            assert_eq!(
+                history[0].terminal_reason.as_deref(),
+                Some("invite_timeout")
+            );
+            assert_eq!(history[0].error_code.as_deref(), Some("INVITE_TIMEOUT"));
+            assert_eq!(
+                SipDialogSessionRepository::delete_terminal_before("session-1", at(3_000), 500)
+                    .await
+                    .expect("retention"),
+                1
+            );
+            assert!(
+                SipDialogSessionRepository::find_by_stream_id("history-b")
+                    .await
+                    .expect("other owner lookup")
+                    .is_some()
+            );
+        });
+    }
+
+    #[test]
+    fn active_monitor_filters_before_keyset_limit() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let _guard = enable_dialog_test_storage();
+            for index in 0..5 {
+                let mut session = inviting(&format!("monitor-{index}"));
+                session.device_id = if index % 2 == 0 {
+                    "device-a"
+                } else {
+                    "device-b"
+                }
+                .into();
+                SipDialogSessionRepository::insert_inviting(&session)
+                    .await
+                    .expect("insert monitor row");
+            }
+            let rows = SipDialogSessionRepository::page_active_for_monitor(
+                "session-1",
+                Some("monitor-0"),
+                2,
+                &DialogMonitorFilter {
+                    device_id: "device-a".into(),
+                    ..DialogMonitorFilter::default()
+                },
+            )
+            .await
+            .expect("active monitor page");
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.stream_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["monitor-2", "monitor-4"]
+            );
         });
     }
 }

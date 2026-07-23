@@ -31,6 +31,7 @@ pub struct InvitePlayRequest {
 pub struct InviteStopRequest {
     pub call_id: Option<String>,
     pub stream_id: Option<String>,
+    pub terminal_reason: String,
 }
 
 #[derive(Clone, Debug)]

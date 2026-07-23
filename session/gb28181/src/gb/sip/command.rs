@@ -4,6 +4,7 @@
 //! SIP bytes produced by `gmv_pjsip` and keeps small business waiters for APIs
 //! that need a synchronous result.
 
+use std::future::Future;
 use std::time::Duration;
 
 use base::chrono::{Duration as TimeDelta, Local};
@@ -564,6 +565,9 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         transport: dialog_transport(snapshot.protocol),
         state: DialogState::Inviting,
         established_at: None,
+        terminated_at: None,
+        terminal_reason: None,
+        error_code: None,
         last_seen_at: now,
         expire_at: now + TimeDelta::hours(DIALOG_EXPIRE_HOURS),
         version: 0,
@@ -867,7 +871,13 @@ pub async fn invite_play(req: InvitePlayRequest) -> GlobalResult<()> {
     )
 }
 
-pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInviteAcceptedEvent> {
+pub async fn invite_play_and_wait<F>(
+    req: InvitePlayRequest,
+    prepare_media: F,
+) -> GlobalResult<GbInviteAcceptedEvent>
+where
+    F: Future<Output = GlobalResult<()>>,
+{
     let device_id = req.device_id.clone();
     let stream_id = req.stream_id.clone();
     let Some(session) = Register::get_connected_device_session(&device_id) else {
@@ -933,6 +943,9 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
         transport: dialog_transport(protocol),
         state: DialogState::Inviting,
         established_at: None,
+        terminated_at: None,
+        terminal_reason: None,
+        error_code: None,
         last_seen_at: now,
         expire_at: now + TimeDelta::hours(DIALOG_EXPIRE_HOURS),
         version: 0,
@@ -940,6 +953,7 @@ pub async fn invite_play_and_wait(req: InvitePlayRequest) -> GlobalResult<GbInvi
         updated_at: now,
     })
     .await?;
+    prepare_media.await?;
     let rx = SipRuntimeCache::global().insert_native_invite_waiter(
         operation_id,
         NativeInviteMetadata {
@@ -1100,12 +1114,19 @@ fn dialog_transport(protocol: gmv_pjsip::SipTransportProtocol) -> DialogTranspor
 
 async fn mark_inviting_terminal(stream_id: &str, signal_node_id: &str, next_state: DialogState) {
     let updated_at = Local::now().naive_local();
-    match SipDialogSessionRepository::cas_transition(
+    let (terminal_reason, error_code) = if next_state == DialogState::Orphan {
+        ("invite_failed", Some("INVITE_FAILED"))
+    } else {
+        ("invite_not_established", None)
+    };
+    match SipDialogSessionRepository::cas_mark_terminal(
         stream_id,
         signal_node_id,
         0,
         DialogState::Inviting,
         next_state,
+        terminal_reason,
+        error_code,
         updated_at,
     )
     .await
@@ -1179,6 +1200,7 @@ async fn close_invite_after_answer_error(
         InviteStopRequest {
             call_id: Some(accepted.call_id.clone()),
             stream_id: Some(stream_id.to_string()),
+            terminal_reason: "start_commit_failed".to_string(),
         },
     )
     .await
@@ -1219,7 +1241,7 @@ async fn parse_media_ext_or_close(
     }
 }
 
-pub async fn play_live_invite_wait(
+pub async fn play_live_invite_wait<F>(
     device_id: &str,
     channel_id: &str,
     media_node_id: &str,
@@ -1228,36 +1250,43 @@ pub async fn play_live_invite_wait(
     trans_mode: TransMode,
     ssrc: &str,
     stream_id: &str,
-) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)> {
+    prepare_media: F,
+) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)>
+where
+    F: Future<Output = GlobalResult<()>>,
+{
     let (host, port, proto) = connected_target(device_id)?;
     let ssrc = normalize_gb_ssrc(ssrc)?;
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let protocol = transport_protocol(trans_mode, proto);
     let sdp = sdp::play_live(channel_id, media_ip, media_port, trans_mode, &ssrc, true);
-    let accepted = invite_play_and_wait(InvitePlayRequest {
-        device_id: device_id.to_string(),
-        channel_id: channel_id.to_string(),
-        stream_id: stream_id.to_string(),
-        media_node_id: media_node_id.to_string(),
-        session_type: DialogSessionType::Live,
-        device_host: host,
-        device_port: port,
-        media_ip: media_ip.to_string(),
-        media_port,
-        ssrc: ssrc_u32,
-        payload_type: 96,
-        protocol,
-        sdp: Some(sdp),
-        call_id: None,
-        cseq: None,
-        subject: None,
-    })
+    let accepted = invite_play_and_wait(
+        InvitePlayRequest {
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            stream_id: stream_id.to_string(),
+            media_node_id: media_node_id.to_string(),
+            session_type: DialogSessionType::Live,
+            device_host: host,
+            device_port: port,
+            media_ip: media_ip.to_string(),
+            media_port,
+            ssrc: ssrc_u32,
+            payload_type: 96,
+            protocol,
+            sdp: Some(sdp),
+            call_id: None,
+            cseq: None,
+            subject: None,
+        },
+        prepare_media,
+    )
     .await?;
     let ext = parse_media_ext_or_close(device_id, stream_id, &ssrc, &accepted).await?;
     Ok((accepted, ext))
 }
 
-pub async fn play_back_invite_wait(
+pub async fn play_back_invite_wait<F>(
     device_id: &str,
     channel_id: &str,
     media_node_id: &str,
@@ -1268,7 +1297,11 @@ pub async fn play_back_invite_wait(
     stream_id: &str,
     st: u32,
     et: u32,
-) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)> {
+    prepare_media: F,
+) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)>
+where
+    F: Future<Output = GlobalResult<()>>,
+{
     let (host, port, proto) = connected_target(device_id)?;
     let ssrc = normalize_gb_ssrc(ssrc)?;
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
@@ -1276,30 +1309,33 @@ pub async fn play_back_invite_wait(
     let sdp = sdp::playback(
         channel_id, media_ip, media_port, trans_mode, &ssrc, st, et, true,
     );
-    let accepted = invite_play_and_wait(InvitePlayRequest {
-        device_id: device_id.to_string(),
-        channel_id: channel_id.to_string(),
-        stream_id: stream_id.to_string(),
-        media_node_id: media_node_id.to_string(),
-        session_type: DialogSessionType::Playback,
-        device_host: host,
-        device_port: port,
-        media_ip: media_ip.to_string(),
-        media_port,
-        ssrc: ssrc_u32,
-        payload_type: 96,
-        protocol,
-        sdp: Some(sdp),
-        call_id: None,
-        cseq: None,
-        subject: None,
-    })
+    let accepted = invite_play_and_wait(
+        InvitePlayRequest {
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            stream_id: stream_id.to_string(),
+            media_node_id: media_node_id.to_string(),
+            session_type: DialogSessionType::Playback,
+            device_host: host,
+            device_port: port,
+            media_ip: media_ip.to_string(),
+            media_port,
+            ssrc: ssrc_u32,
+            payload_type: 96,
+            protocol,
+            sdp: Some(sdp),
+            call_id: None,
+            cseq: None,
+            subject: None,
+        },
+        prepare_media,
+    )
     .await?;
     let ext = parse_media_ext_or_close(device_id, stream_id, &ssrc, &accepted).await?;
     Ok((accepted, ext))
 }
 
-pub async fn download_invite_wait(
+pub async fn download_invite_wait<F>(
     device_id: &str,
     channel_id: &str,
     media_node_id: &str,
@@ -1311,7 +1347,11 @@ pub async fn download_invite_wait(
     st: u32,
     et: u32,
     speed: u8,
-) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)> {
+    prepare_media: F,
+) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)>
+where
+    F: Future<Output = GlobalResult<()>>,
+{
     let (host, port, proto) = connected_target(device_id)?;
     let ssrc = normalize_gb_ssrc(ssrc)?;
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
@@ -1319,30 +1359,38 @@ pub async fn download_invite_wait(
     let sdp = sdp::download(
         channel_id, media_ip, media_port, trans_mode, &ssrc, st, et, speed, true,
     );
-    let accepted = invite_play_and_wait(InvitePlayRequest {
-        device_id: device_id.to_string(),
-        channel_id: channel_id.to_string(),
-        stream_id: stream_id.to_string(),
-        media_node_id: media_node_id.to_string(),
-        session_type: DialogSessionType::Download,
-        device_host: host,
-        device_port: port,
-        media_ip: media_ip.to_string(),
-        media_port,
-        ssrc: ssrc_u32,
-        payload_type: 96,
-        protocol,
-        sdp: Some(sdp),
-        call_id: None,
-        cseq: None,
-        subject: None,
-    })
+    let accepted = invite_play_and_wait(
+        InvitePlayRequest {
+            device_id: device_id.to_string(),
+            channel_id: channel_id.to_string(),
+            stream_id: stream_id.to_string(),
+            media_node_id: media_node_id.to_string(),
+            session_type: DialogSessionType::Download,
+            device_host: host,
+            device_port: port,
+            media_ip: media_ip.to_string(),
+            media_port,
+            ssrc: ssrc_u32,
+            payload_type: 96,
+            protocol,
+            sdp: Some(sdp),
+            call_id: None,
+            cseq: None,
+            subject: None,
+        },
+        prepare_media,
+    )
     .await?;
     let ext = parse_media_ext_or_close(device_id, stream_id, &ssrc, &accepted).await?;
     Ok((accepted, ext))
 }
 
 pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> GlobalResult<()> {
+    let terminal_reason = if req.terminal_reason.trim().is_empty() {
+        "session_close"
+    } else {
+        req.terminal_reason.trim()
+    };
     let stream_id = req.stream_id.clone();
     let call_id = req
         .call_id
@@ -1388,12 +1436,14 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
     }
     if let (Some(stream_id), Some(reservation)) = (stream_id.as_deref(), reservation) {
         let updated_at = Local::now().naive_local();
-        let persisted = SipDialogSessionRepository::cas_transition(
+        let persisted = SipDialogSessionRepository::cas_mark_terminal(
             stream_id,
             &reservation.signal_node_id,
             reservation.version,
             DialogState::Terminating,
             DialogState::Terminated,
+            terminal_reason,
+            None,
             updated_at,
         )
         .await?;
@@ -1437,6 +1487,7 @@ pub async fn invite_stop_by_stream(stream_id: &str) -> GlobalResult<()> {
         InviteStopRequest {
             call_id: Some(call_id),
             stream_id: Some(stream_id.to_string()),
+            terminal_reason: "session_close".to_string(),
         },
     )
     .await

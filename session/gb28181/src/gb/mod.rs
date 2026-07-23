@@ -30,6 +30,8 @@ pub struct SessionConf {
     pub wan_port: u16,
     #[serde(default = "default_playback_pause_timeout_secs")]
     pub playback_pause_timeout_secs: u64,
+    #[serde(default)]
+    pub dialog_history_retention_days: u32,
 }
 
 fn default_playback_pause_timeout_secs() -> u64 {
@@ -48,6 +50,12 @@ impl CheckFromConf for SessionConf {
             return Err(FieldCheckError::BizError(format!(
                 "playback_pause_timeout_secs must be in 60..=86400: {}",
                 self.playback_pause_timeout_secs
+            )));
+        }
+        if self.dialog_history_retention_days > 36_500 {
+            return Err(FieldCheckError::BizError(format!(
+                "dialog_history_retention_days must be in 0..=36500: {}",
+                self.dialog_history_retention_days
             )));
         }
         Ok(())
@@ -93,8 +101,14 @@ impl SessionConf {
         native_runtime.install_global()?;
         Register::init(cancel_token.child_token())?;
         install_restart_recovery_sources(&native_runtime).await?;
+        crate::service::dialog_recovery::run_startup_recovery().await?;
         let handle = Handle::current();
-        handle.spawn(crate::service::dialog_recovery::run_startup_recovery());
+        handle.spawn(crate::service::dialog_recovery::run_reconciliation(
+            cancel_token.child_token(),
+        ));
+        handle.spawn(crate::service::dialog_recovery::run_history_retention(
+            cancel_token.child_token(),
+        ));
         handle.spawn(sip::auth::run_cleanup_task(cancel_token.child_token()));
         handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));
         let native_shutdown = cancel_token.child_token();

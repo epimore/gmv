@@ -217,6 +217,61 @@ fn session_record_query_contract_is_stable() {
 }
 
 #[test]
+fn session_stream_monitoring_contract_is_stable() {
+    let descriptor = descriptor();
+    let session = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.session.v1"))
+        .unwrap();
+    let service = session
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("SessionControl"))
+        .unwrap();
+    let methods = service
+        .method
+        .iter()
+        .filter_map(|method| method.name.as_deref())
+        .collect::<Vec<_>>();
+    for method in ["ListActiveStreams", "ListStreamHistory"] {
+        assert!(methods.contains(&method), "missing SessionControl.{method}");
+    }
+
+    let field_number = |message_name: &str, field_name: &str| {
+        session
+            .message_type
+            .iter()
+            .find(|message| message.name.as_deref() == Some(message_name))
+            .unwrap()
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some(field_name))
+            .unwrap()
+            .number
+    };
+    assert_eq!(
+        field_number("StopDeviceStreamRequest", "expected_session"),
+        Some(6)
+    );
+    assert_eq!(
+        field_number("ListActiveStreamsRequest", "expected_session"),
+        Some(9)
+    );
+    assert_eq!(
+        field_number("ListStreamHistoryRequest", "expected_session"),
+        Some(9)
+    );
+    assert_eq!(
+        field_number("StreamHistoryItem", "terminal_reason"),
+        Some(13)
+    );
+    assert_eq!(field_number("StreamHistoryItem", "error_code"), Some(14));
+    assert_eq!(field_number("ActiveStreamItem", "viewer_count"), Some(17));
+    assert_eq!(field_number("ActiveStreamItem", "viewer_formats"), Some(18));
+}
+
+#[test]
 fn node_heartbeat_contains_structured_host_metrics() {
     let descriptor = descriptor();
     let guard = descriptor
@@ -274,6 +329,11 @@ fn stream_output_lifecycle_contract_is_stable() {
     );
     assert_eq!(field_number("CreateOutputResponse", "output"), Some(4));
     assert_eq!(field_number("CloseOutputRequest", "stream_id"), Some(3));
+    assert_eq!(field_number("QueryStreamResponse", "viewer_count"), Some(9));
+    assert_eq!(
+        field_number("QueryStreamResponse", "viewer_formats"),
+        Some(10)
+    );
     assert_eq!(
         field_number("GetPlaybackEndpointsResponse", "outputs"),
         Some(2)

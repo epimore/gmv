@@ -14,15 +14,15 @@ use gmv_protocol::session::v1::{
     DeleteCloudRecordingRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
     GbChannelImage, GbDevice, GbResource, GetCloudRecordingRequest, GetGbChannelRecordsRequest,
     GetGbChannelRecordsResponse, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
-    IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
-    ListCloudRecordingsRequest, ListGbChannelImagesRequest, ListGbChannelsRequest,
-    ListGbDevicesRequest, ListGbResourcesRequest, PlaybackPresenceHeartbeat,
-    PlaybackPresenceHeartbeatResult, PlaybackState, QueryGbChannelRecordsRequest,
-    RefreshPlaybackPresenceRequest, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
-    SetPlaybackStateRequest, SnapshotImageRequest, StartDeviceStreamRequest,
-    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
-    UpdateGbDeviceRequest,
+    IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListCloudRecordingsRequest, ListGbChannelImagesRequest,
+    ListGbChannelsRequest, ListGbDevicesRequest, ListGbResourcesRequest, ListStreamHistoryRequest,
+    ListStreamHistoryResponse, PlaybackPresenceHeartbeat, PlaybackPresenceHeartbeatResult,
+    PlaybackState, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SetPlaybackSpeedRequest, SetPlaybackStateRequest, SnapshotImageRequest,
+    StartDeviceStreamRequest, StopCloudRecordingRequest, StopDeviceStreamRequest,
+    UpdateGbChannelRequest, UpdateGbDeviceRequest,
 };
 use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
 use gmv_protocol::stream::v1::{
@@ -264,6 +264,99 @@ impl BusinessControl {
             response.page,
             response.page_size,
         ))
+    }
+
+    pub async fn list_active_streams(
+        &self,
+        session_node_id: &str,
+        mut request: ListActiveStreamsRequest,
+    ) -> GuardResult<ListActiveStreamsResponse> {
+        let session = self.monitor_session_node(session_node_id)?;
+        request.expected_session = Some(proto_identity(&session.identity));
+        let mut client = self.session_client(&session).await?;
+        let resource_id = request.stream_id.clone();
+        let edge = RpcEdge::new(
+            "session",
+            "list_active_streams",
+            session_node_id,
+            "",
+            &resource_id,
+        );
+        let response = edge.response(client.list_active_streams(request).await)?;
+        edge.success();
+        Ok(response)
+    }
+
+    pub async fn list_stream_history(
+        &self,
+        session_node_id: &str,
+        mut request: ListStreamHistoryRequest,
+    ) -> GuardResult<ListStreamHistoryResponse> {
+        let session = self.monitor_session_node(session_node_id)?;
+        request.expected_session = Some(proto_identity(&session.identity));
+        let mut client = self.session_client(&session).await?;
+        let resource_id = request.stream_id.clone();
+        let edge = RpcEdge::new(
+            "session",
+            "list_stream_history",
+            session_node_id,
+            "",
+            &resource_id,
+        );
+        let response = edge.response(client.list_stream_history(request).await)?;
+        edge.success();
+        Ok(response)
+    }
+
+    pub async fn stop_monitored_stream(
+        &self,
+        session_node_id: &str,
+        operation_id: &str,
+        stream_id: &str,
+    ) -> GuardResult<gmv_protocol::session::v1::DeviceStreamResponse> {
+        let session = self.monitor_session_node(session_node_id)?;
+        let mut client = self.session_client(&session).await?;
+        let request = StopDeviceStreamRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            stream_id: stream_id.to_string(),
+            reason: "manual_stop".to_string(),
+            subscription_id: String::new(),
+            force: true,
+            expected_session: Some(proto_identity(&session.identity)),
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "stop_monitored_stream",
+            session_node_id,
+            operation_id,
+            stream_id,
+        );
+        let response = edge.response(client.stop_device_stream(request).await)?;
+        if let Some(error) = non_empty_error(response.error.clone()) {
+            edge.business_rejection(&error);
+            return Err(remote_error(
+                "session",
+                "stop_monitored_stream",
+                error,
+                "stream_stop_failed",
+                "停止视频流失败，请稍后重试",
+                true,
+            ));
+        }
+        if !matches!(
+            DeviceStreamState::try_from(response.state),
+            Ok(DeviceStreamState::Stopping | DeviceStreamState::Stopped)
+        ) {
+            edge.invalid_response("stream_not_stopping");
+            return Err(GuardError::Conflict(
+                "session did not accept stream stop".to_string(),
+            ));
+        }
+        edge.success();
+        Ok(response)
     }
 
     pub async fn get_cloud_recording(&self, task_id: &str) -> GuardResult<CloudRecordingSummary> {
@@ -1596,6 +1689,7 @@ impl BusinessControl {
             reason: "manual".to_string(),
             subscription_id: String::new(),
             force: true,
+            expected_session: None,
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.stop_device_stream, node={}, req:{request:?}",
@@ -1686,6 +1780,7 @@ impl BusinessControl {
             reason: "viewer_release".to_string(),
             subscription_id: subscription_id.to_string(),
             force: false,
+            expected_session: None,
         };
         let edge = RpcEdge::new(
             "session",
@@ -2419,6 +2514,30 @@ impl BusinessControl {
         Ok(SessionControlClient::new(
             connect_rpc(&session_grpc, "session").await?,
         ))
+    }
+
+    fn monitor_session_node(&self, session_node_id: &str) -> GuardResult<NodeRecord> {
+        if session_node_id.trim().is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "session_node_id is required".to_string(),
+            ));
+        }
+        let session = self.store.get_node(session_node_id).ok_or_else(|| {
+            GuardError::NotFound(format!("GB28181 session node {session_node_id}"))
+        })?;
+        if !is_gb_session_node(&session) {
+            return Err(GuardError::NotFound(format!(
+                "GB28181 session node {session_node_id}"
+            )));
+        }
+        if session.connection != ConnectionState::Connected {
+            return Err(node_unavailable(
+                "session",
+                "stream_monitor",
+                session_node_id,
+            ));
+        }
+        Ok(session)
     }
 
     fn select_node(&self, kind: NodeKind, capability: &str) -> GuardResult<NodeRecord> {

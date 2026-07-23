@@ -10,8 +10,12 @@ use crate::state::session::{Cache, StreamByeCommand};
 use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
 
 pub fn begin(stream_id: String) {
+    begin_with_reason(stream_id, "session_close");
+}
+
+pub fn begin_with_reason(stream_id: String, terminal_reason: &str) {
     crate::service::playback_presence::clear_for_stream(&stream_id);
-    let Some(start) = Cache::stream_close_begin(&stream_id) else {
+    let Some(start) = Cache::stream_close_begin(&stream_id, terminal_reason) else {
         return;
     };
     if !start.newly_started {
@@ -76,6 +80,7 @@ async fn send_bye(command: StreamByeCommand) {
         crate::gb::sip::InviteStopRequest {
             call_id: Some(command.call_id.clone()),
             stream_id: Some(command.stream_id.clone()),
+            terminal_reason: command.terminal_reason,
         },
     )
     .await;
@@ -204,12 +209,14 @@ async fn finalize_durable_dialog_as_orphan_inner(
         );
         return;
     }
-    match SipDialogSessionRepository::cas_transition(
+    match SipDialogSessionRepository::cas_mark_terminal(
         resource_id,
         &session.signal_node_id,
         session.version,
         session.state,
         DialogState::Orphan,
+        "recovery_failed",
+        Some("RECOVERY_FAILED"),
         Local::now().naive_local(),
     )
     .await
@@ -287,6 +294,9 @@ mod tests {
                     transport: DialogTransport::Udp,
                     state: DialogState::Inviting,
                     established_at: None,
+                    terminated_at: None,
+                    terminal_reason: None,
+                    error_code: None,
                     last_seen_at: now,
                     expire_at: now + Duration::hours(1),
                     version: 0,

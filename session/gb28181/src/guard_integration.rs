@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use base::chrono::{Duration as TimeDelta, Local};
+use base::chrono::{Duration as TimeDelta, Local, TimeZone};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error as log_error, info, warn};
@@ -31,24 +31,26 @@ use gmv_protocol::guard::v1::{
     node_to_guard_message,
 };
 use gmv_protocol::session::v1::{
-    CloudRecordingFileState, CloudRecordingResponse, CloudRecordingStatus, CloudRecordingSummary,
-    ControlPtzRequest, ControlPtzResponse, CreateCloudRecordingRequest, CreateGbDeviceRequest,
-    CreateGbDeviceResponse, DeleteCloudRecordingRequest, DeleteGbDeviceRequest,
-    DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState, GbChannel, GbChannelImage,
-    GbDevice, GbRecordQueryBatch, GbRecordSegment, GbResource, GbResourceConfirmation,
-    GbResourceResponse, GetCloudRecordingRequest, GetGbChannelRecordsRequest,
-    GetGbChannelRecordsResponse, GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest,
-    GetGbDeviceResponse, GetSessionConfigRequest, GetSessionConfigResponse,
-    IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    ActiveStreamItem, ActiveStreamViewerFormat, CloudRecordingFileState, CloudRecordingResponse,
+    CloudRecordingStatus, CloudRecordingSummary, ControlPtzRequest, ControlPtzResponse,
+    CreateCloudRecordingRequest, CreateGbDeviceRequest, CreateGbDeviceResponse,
+    DeleteCloudRecordingRequest, DeleteGbDeviceRequest, DeleteGbDeviceResponse,
+    DeviceStreamResponse, DeviceStreamState, GbChannel, GbChannelImage, GbDevice,
+    GbRecordQueryBatch, GbRecordSegment, GbResource, GbResourceConfirmation, GbResourceResponse,
+    GetCloudRecordingRequest, GetGbChannelRecordsRequest, GetGbChannelRecordsResponse,
+    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
+    GetSessionConfigRequest, GetSessionConfigResponse, IssueCloudRecordingAccessRequest,
+    IssueCloudRecordingAccessResponse, ListActiveStreamsRequest, ListActiveStreamsResponse,
     ListCloudRecordingsRequest, ListCloudRecordingsResponse, ListGbChannelImagesRequest,
     ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
     ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
-    PlaybackControlResponse, PlaybackPresenceHeartbeatResult, PlaybackState,
-    QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    ListStreamHistoryRequest, ListStreamHistoryResponse, PlaybackControlResponse,
+    PlaybackPresenceHeartbeatResult, PlaybackState, QueryGbChannelRecordsRequest,
+    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
     SessionHookRequest, SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
     SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
-    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    StopCloudRecordingRequest, StopDeviceStreamRequest, StreamHistoryItem, UpdateGbChannelRequest,
     UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
     session_control_server::SessionControl, session_hook_server::SessionHook,
 };
@@ -58,7 +60,8 @@ use gmv_protocol::stream::v1::{
 use tonic::transport::Channel;
 
 use crate::service::{
-    api_serv, edge_serv, hook_serv, playback_presence, record_query, stream_close, stream_rpc,
+    api_serv, dialog_recovery, edge_serv, hook_serv, playback_presence, record_query, stream_close,
+    stream_rpc,
 };
 use crate::state::model::{
     DeviceChannelIdent, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
@@ -66,7 +69,10 @@ use crate::state::model::{
 };
 use crate::state::session::GuardLease;
 use crate::state::{StreamNode, StreamNodeRegistry};
-use crate::storage::dialog_session::SipDialogSessionRepository;
+use crate::storage::dialog_session::{
+    DialogMonitorFilter, DialogSessionType, DialogState, SipDialogSession,
+    SipDialogSessionRepository,
+};
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -498,7 +504,7 @@ impl SessionGuardNode {
             startup_snapshot: Some(snapshot),
             host_metrics: None,
             zone: String::new(),
-            takeover: cfg!(debug_assertions),
+            takeover: false,
             config: self.config_summary(),
         }
     }
@@ -506,6 +512,7 @@ impl SessionGuardNode {
     fn config_summary(&self) -> HashMap<String, String> {
         HashMap::from([
             ("node_id".to_string(), self.identity.node_id.clone()),
+            ("domain_id".to_string(), self.identity.node_id.clone()),
             ("service".to_string(), "session-gb28181".to_string()),
             ("protocol".to_string(), "gb28181".to_string()),
             (
@@ -711,6 +718,57 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!("session_control.stop_device_stream, req:{request:?}");
+        let identity = self
+            .inner
+            .lock()
+            .map_err(|_| tonic::Status::internal("session control lock poisoned"))?
+            .identity
+            .clone();
+        if request.expected_session.is_some()
+            && (request.expected_session.as_ref().is_none_or(|expected| {
+                expected.node_id != identity.node_id || expected.instance_id != identity.instance_id
+            }))
+        {
+            return Err(tonic::Status::failed_precondition("stale_instance"));
+        }
+        let monitored_dialog = if request.expected_session.is_some() {
+            let dialog = SipDialogSessionRepository::find_by_stream_id(&request.stream_id)
+                .await
+                .map_err(storage_status)?
+                .ok_or_else(|| tonic::Status::not_found("stream dialog not found"))?;
+            if dialog.signal_node_id != identity.node_id {
+                return Err(tonic::Status::failed_precondition("wrong_session"));
+            }
+            if matches!(dialog.state, DialogState::Terminated | DialogState::Orphan) {
+                let mut response =
+                    device_response(&request.stream_id, DeviceStreamState::Stopped, None);
+                response.session_node_id = identity.node_id;
+                response.session_instance_id = identity.instance_id;
+                return Ok(tonic::Response::new(response));
+            }
+            Some(dialog)
+        } else {
+            None
+        };
+        if let Some(dialog) = monitored_dialog.as_ref()
+            && crate::state::session::Cache::talk_map_get(&request.stream_id).is_none()
+            && crate::state::session::Cache::stream_map_query_input(&request.stream_id).is_none()
+        {
+            if let Err(err) = dialog_recovery::recover_dialog(dialog).await {
+                return Ok(tonic::Response::new(device_error(err)));
+            }
+            if let Some(current) = SipDialogSessionRepository::find_by_stream_id(&request.stream_id)
+                .await
+                .map_err(storage_status)?
+                && matches!(current.state, DialogState::Terminated | DialogState::Orphan)
+            {
+                let mut response =
+                    device_response(&request.stream_id, DeviceStreamState::Stopped, None);
+                response.session_node_id = identity.node_id;
+                response.session_instance_id = identity.instance_id;
+                return Ok(tonic::Response::new(response));
+            }
+        }
         let force = request.force || request.subscription_id.is_empty();
         let setup_lock = (!force)
             .then(|| crate::state::session::Cache::stream_map_query_input(&request.stream_id))
@@ -746,11 +804,15 @@ impl SessionControl for SessionControlRpc {
             playback_presence::clear_for_subscription(&request.stream_id, &request.subscription_id);
         }
         let state = if crate::state::session::Cache::talk_map_get(&request.stream_id).is_some() {
-            api_serv::talk_stop(
+            api_serv::talk_stop_with_reason(
                 TalkStopModel {
                     talk_id: request.stream_id.clone(),
                 },
-                String::new(),
+                if request.reason == "manual_stop" {
+                    "manual_stop"
+                } else {
+                    "session_close"
+                },
             )
             .await
             .map(|_| DeviceStreamState::Stopped)
@@ -762,14 +824,28 @@ impl SessionControl for SessionControlRpc {
             ) {
                 Some(remaining) if remaining > 0 => Ok(DeviceStreamState::Running),
                 Some(_) => {
-                    stream_close::begin(request.stream_id.clone());
+                    stream_close::begin_with_reason(
+                        request.stream_id.clone(),
+                        "last_subscription_released",
+                    );
                     Ok(DeviceStreamState::Stopped)
                 }
                 None => Ok(DeviceStreamState::Stopped),
             }
         } else {
-            stream_close::begin(request.stream_id.clone());
-            Ok(DeviceStreamState::Stopped)
+            stream_close::begin_with_reason(
+                request.stream_id.clone(),
+                if request.reason == "manual_stop" {
+                    "manual_stop"
+                } else {
+                    "session_close"
+                },
+            );
+            Ok(if request.expected_session.is_some() {
+                DeviceStreamState::Stopping
+            } else {
+                DeviceStreamState::Stopped
+            })
         };
         let response = match state {
             Ok(state) => {
@@ -784,6 +860,153 @@ impl SessionControl for SessionControlRpc {
             Err(error) => error,
         };
         Ok(tonic::Response::new(response))
+    }
+
+    async fn list_active_streams(
+        &self,
+        request: tonic::Request<ListActiveStreamsRequest>,
+    ) -> Result<tonic::Response<ListActiveStreamsResponse>, tonic::Status> {
+        let mut request = request.into_inner();
+        let identity = self.monitor_identity(request.expected_session.as_ref())?;
+        trim_active_stream_request(&mut request);
+        let limit = if request.limit == 0 {
+            20
+        } else {
+            request.limit
+        };
+        if limit > 100 {
+            return Err(tonic::Status::invalid_argument("limit must be in 1..=100"));
+        }
+        if !request.state.is_empty()
+            && !matches!(
+                request.state.as_str(),
+                "starting" | "running" | "stopping" | "failed" | "unknown" | "conflict"
+            )
+        {
+            return Err(tonic::Status::invalid_argument(
+                "invalid active stream state",
+            ));
+        }
+        let filter = DialogMonitorFilter {
+            stream_id: request.stream_id,
+            media_node_id: request.stream_node_id,
+            device_id: request.device_id,
+            channel_id: request.channel_id,
+            ssrc: request.ssrc,
+            state: String::new(),
+        };
+        const MAX_SCAN: u32 = 200;
+        let candidates = SipDialogSessionRepository::page_active_for_monitor(
+            &identity.node_id,
+            (!request.after_stream_id.is_empty()).then_some(request.after_stream_id.as_str()),
+            MAX_SCAN,
+            &filter,
+        )
+        .await
+        .map_err(storage_status)?;
+        let exhausted = candidates.len() < MAX_SCAN as usize;
+        let last_scanned = candidates.last().map(|dialog| dialog.stream_id.clone());
+        let semaphore = Arc::new(base::tokio::sync::Semaphore::new(8));
+        let mut probes = base::tokio::task::JoinSet::new();
+        for dialog in candidates {
+            let identity = identity.clone();
+            let semaphore = semaphore.clone();
+            probes.spawn(async move {
+                let _permit = semaphore.acquire_owned().await.ok();
+                match base::tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    active_stream_item(&identity, &dialog),
+                )
+                .await
+                {
+                    Ok(item) => item,
+                    Err(_) => active_stream_item_with_status(
+                        &identity,
+                        &dialog,
+                        (
+                            "unknown".to_string(),
+                            "unknown".to_string(),
+                            false,
+                            "stream_rpc_timeout".to_string(),
+                            0,
+                            vec![],
+                        ),
+                    ),
+                }
+            });
+        }
+        let mut items = Vec::with_capacity(limit as usize + 1);
+        while let Some(result) = probes.join_next().await {
+            let item = result.map_err(|_| tonic::Status::internal("stream probe task failed"))?;
+            if request.state.is_empty() || item.state == request.state {
+                items.push(item);
+            }
+        }
+        items.sort_by(|left, right| left.stream_id.cmp(&right.stream_id));
+        let next_after_id = if items.len() > limit as usize {
+            items.truncate(limit as usize);
+            items
+                .last()
+                .map(|item| item.stream_id.clone())
+                .unwrap_or_default()
+        } else if !exhausted {
+            last_scanned.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        Ok(tonic::Response::new(ListActiveStreamsResponse {
+            items,
+            next_after_id,
+            server_time_ms: Local::now().timestamp_millis(),
+        }))
+    }
+
+    async fn list_stream_history(
+        &self,
+        request: tonic::Request<ListStreamHistoryRequest>,
+    ) -> Result<tonic::Response<ListStreamHistoryResponse>, tonic::Status> {
+        let mut request = request.into_inner();
+        let identity = self.monitor_identity(request.expected_session.as_ref())?;
+        trim_history_request(&mut request);
+        let page = request.page.max(1);
+        let page_size = if request.page_size == 0 {
+            20
+        } else {
+            request.page_size
+        };
+        if page_size > 100 {
+            return Err(tonic::Status::invalid_argument(
+                "page_size must be in 1..=100",
+            ));
+        }
+        if !request.state.is_empty() && !matches!(request.state.as_str(), "TERMINATED" | "ORPHAN") {
+            return Err(tonic::Status::invalid_argument(
+                "invalid history stream state",
+            ));
+        }
+        let filter = DialogMonitorFilter {
+            stream_id: request.stream_id,
+            media_node_id: request.stream_node_id,
+            device_id: request.device_id,
+            channel_id: request.channel_id,
+            ssrc: request.ssrc,
+            state: request.state,
+        };
+        let (dialogs, total) = SipDialogSessionRepository::page_history_for_monitor(
+            &identity.node_id,
+            page,
+            page_size,
+            &filter,
+        )
+        .await
+        .map_err(storage_status)?;
+        Ok(tonic::Response::new(ListStreamHistoryResponse {
+            items: dialogs.into_iter().map(history_stream_item).collect(),
+            total,
+            page,
+            page_size,
+            server_time_ms: Local::now().timestamp_millis(),
+        }))
     }
 
     async fn set_playback_speed(
@@ -1576,6 +1799,267 @@ impl SessionControlRpc {
             .map_err(|_| tonic::Status::internal("session control lock poisoned"))
             .map(|control| control.identity.node_id.clone())
     }
+
+    fn monitor_identity(
+        &self,
+        expected: Option<&NodeIdentity>,
+    ) -> Result<NodeIdentity, tonic::Status> {
+        let identity = self
+            .inner
+            .lock()
+            .map_err(|_| tonic::Status::internal("session control lock poisoned"))?
+            .identity
+            .clone();
+        let expected = expected
+            .ok_or_else(|| tonic::Status::invalid_argument("expected_session is required"))?;
+        if expected.node_id != identity.node_id || expected.instance_id != identity.instance_id {
+            return Err(tonic::Status::failed_precondition("stale_instance"));
+        }
+        Ok(identity)
+    }
+}
+
+fn trim_active_stream_request(request: &mut ListActiveStreamsRequest) {
+    request.after_stream_id = request.after_stream_id.trim().to_string();
+    request.stream_id = request.stream_id.trim().to_string();
+    request.stream_node_id = request.stream_node_id.trim().to_string();
+    request.device_id = request.device_id.trim().to_string();
+    request.channel_id = request.channel_id.trim().to_string();
+    request.ssrc = request.ssrc.trim().to_string();
+    request.state = request.state.trim().to_ascii_lowercase();
+}
+
+fn trim_history_request(request: &mut ListStreamHistoryRequest) {
+    request.stream_id = request.stream_id.trim().to_string();
+    request.stream_node_id = request.stream_node_id.trim().to_string();
+    request.device_id = request.device_id.trim().to_string();
+    request.channel_id = request.channel_id.trim().to_string();
+    request.ssrc = request.ssrc.trim().to_string();
+    request.state = request.state.trim().to_ascii_uppercase();
+}
+
+async fn active_stream_item(
+    identity: &NodeIdentity,
+    dialog: &SipDialogSession,
+) -> ActiveStreamItem {
+    let status = match dialog.state {
+        DialogState::Inviting => (
+            "starting".to_string(),
+            "unknown".to_string(),
+            false,
+            String::new(),
+            0,
+            vec![],
+        ),
+        DialogState::Terminating => (
+            "stopping".to_string(),
+            "unknown".to_string(),
+            false,
+            String::new(),
+            0,
+            vec![],
+        ),
+        DialogState::Established => probe_dialog_media(dialog).await,
+        DialogState::Terminated | DialogState::Orphan => (
+            "unknown".to_string(),
+            "stopped".to_string(),
+            false,
+            "terminal_dialog_excluded".to_string(),
+            0,
+            vec![],
+        ),
+    };
+    active_stream_item_with_status(identity, dialog, status)
+}
+
+fn active_stream_item_with_status(
+    identity: &NodeIdentity,
+    dialog: &SipDialogSession,
+    status: (
+        String,
+        String,
+        bool,
+        String,
+        u32,
+        Vec<ActiveStreamViewerFormat>,
+    ),
+) -> ActiveStreamItem {
+    let (state, media_state, media_ready, diagnostic_reason, viewer_count, viewer_formats) = status;
+    ActiveStreamItem {
+        stream_id: dialog.stream_id.clone(),
+        session_node_id: identity.node_id.clone(),
+        session_instance_id: identity.instance_id.clone(),
+        stream_node_id: dialog.media_node_id.clone(),
+        device_id: dialog.device_id.clone(),
+        channel_id: dialog.channel_id.clone(),
+        ssrc: dialog.ssrc.clone().unwrap_or_default(),
+        state,
+        dialog_state: dialog.state.to_string(),
+        media_state,
+        media_ready,
+        created_at_ms: local_datetime_ms(dialog.created_at),
+        established_at_ms: dialog
+            .established_at
+            .map(local_datetime_ms)
+            .unwrap_or_default(),
+        started_at_ms: local_datetime_ms(dialog.established_at.unwrap_or(dialog.created_at)),
+        diagnostic_reason,
+        session_type: dialog.session_type.to_string(),
+        viewer_count,
+        viewer_formats,
+    }
+}
+
+async fn probe_dialog_media(
+    dialog: &SipDialogSession,
+) -> (
+    String,
+    String,
+    bool,
+    String,
+    u32,
+    Vec<ActiveStreamViewerFormat>,
+) {
+    let Some(node) = StreamNodeRegistry::get(&dialog.media_node_id) else {
+        return (
+            "unknown".to_string(),
+            "unknown".to_string(),
+            false,
+            "stream_node_unavailable".to_string(),
+            0,
+            vec![],
+        );
+    };
+    if dialog.session_type == DialogSessionType::Talk {
+        return match stream_rpc::talk_online(&node, &dialog.stream_id).await {
+            Ok(true) => (
+                "running".to_string(),
+                "online".to_string(),
+                true,
+                String::new(),
+                0,
+                vec![],
+            ),
+            Ok(false) => (
+                "unknown".to_string(),
+                "stopped".to_string(),
+                false,
+                "media_not_running".to_string(),
+                0,
+                vec![],
+            ),
+            Err(_) => (
+                "unknown".to_string(),
+                "unknown".to_string(),
+                false,
+                "stream_rpc_unavailable".to_string(),
+                0,
+                vec![],
+            ),
+        };
+    }
+    match stream_rpc::query_stream(&node, &dialog.stream_id).await {
+        Ok(response) => {
+            let media_state =
+                ProtoStreamState::try_from(response.state).unwrap_or(ProtoStreamState::Unspecified);
+            let media_ready = response.media_ready;
+            let viewer_count = response.viewer_count;
+            let viewer_formats = response
+                .viewer_formats
+                .into_iter()
+                .map(|item| ActiveStreamViewerFormat {
+                    media_format: item.media_format,
+                    viewer_count: item.viewer_count,
+                })
+                .collect::<Vec<_>>();
+            match media_state {
+                ProtoStreamState::Receiving if media_ready => (
+                    "running".to_string(),
+                    "receiving".to_string(),
+                    true,
+                    String::new(),
+                    viewer_count,
+                    viewer_formats,
+                ),
+                ProtoStreamState::Failed => (
+                    "failed".to_string(),
+                    "failed".to_string(),
+                    false,
+                    "media_failed".to_string(),
+                    viewer_count,
+                    viewer_formats,
+                ),
+                ProtoStreamState::Starting => (
+                    "starting".to_string(),
+                    "starting".to_string(),
+                    media_ready,
+                    String::new(),
+                    viewer_count,
+                    viewer_formats,
+                ),
+                ProtoStreamState::Stopping => (
+                    "stopping".to_string(),
+                    "stopping".to_string(),
+                    false,
+                    String::new(),
+                    viewer_count,
+                    viewer_formats,
+                ),
+                ProtoStreamState::Receiving => (
+                    "unknown".to_string(),
+                    "receiving".to_string(),
+                    false,
+                    "media_not_ready".to_string(),
+                    viewer_count,
+                    viewer_formats,
+                ),
+                ProtoStreamState::Stopped | ProtoStreamState::Unspecified => (
+                    "unknown".to_string(),
+                    "stopped".to_string(),
+                    false,
+                    "media_not_running".to_string(),
+                    viewer_count,
+                    viewer_formats,
+                ),
+            }
+        }
+        Err(_) => (
+            "unknown".to_string(),
+            "unknown".to_string(),
+            false,
+            "stream_rpc_unavailable".to_string(),
+            0,
+            vec![],
+        ),
+    }
+}
+
+fn history_stream_item(dialog: SipDialogSession) -> StreamHistoryItem {
+    let legacy_terminal_time = dialog.terminated_at.is_none();
+    let ended_at = dialog.terminated_at.unwrap_or(dialog.updated_at);
+    let started_at = dialog.established_at.unwrap_or(dialog.created_at);
+    StreamHistoryItem {
+        stream_id: dialog.stream_id,
+        session_node_id: dialog.signal_node_id,
+        stream_node_id: dialog.media_node_id,
+        device_id: dialog.device_id,
+        channel_id: dialog.channel_id,
+        ssrc: dialog.ssrc.unwrap_or_default(),
+        session_type: dialog.session_type.to_string(),
+        state: dialog.state.to_string(),
+        created_at_ms: local_datetime_ms(dialog.created_at),
+        established_at_ms: dialog
+            .established_at
+            .map(local_datetime_ms)
+            .unwrap_or_default(),
+        terminated_at_ms: local_datetime_ms(ended_at),
+        duration_ms: (ended_at - started_at).num_milliseconds().max(0),
+        terminal_reason: dialog
+            .terminal_reason
+            .unwrap_or_else(|| "legacy_unknown".to_string()),
+        error_code: dialog.error_code.unwrap_or_default(),
+        legacy_terminal_time,
+    }
 }
 
 impl SessionControlRpc {
@@ -1724,14 +2208,17 @@ impl SessionControlRpc {
         .unwrap_or_else(device_error);
         if response.state == DeviceStreamState::Running as i32 {
             if stream_type == "playback" {
-                SipDialogSessionRepository::initialize_playback_control(
+                if let Err(err) = SipDialogSessionRepository::initialize_playback_control(
                     &response.stream_id,
                     &playback_id,
                     request.start_time_sec,
                     request.end_time_sec,
                 )
                 .await
-                .map_err(storage_status)?;
+                {
+                    stream_close::begin(response.stream_id.clone());
+                    return Err(storage_status(err));
+                }
             }
             response.subscription_id = subscription_id;
             response.session_node_id = identity.node_id;
@@ -2407,8 +2894,14 @@ fn datetime_string(value: Option<base::chrono::NaiveDateTime>) -> String {
 }
 
 fn datetime_ms(value: Option<base::chrono::NaiveDateTime>) -> i64 {
-    value
-        .map(|value| value.and_utc().timestamp_millis())
+    value.map(local_datetime_ms).unwrap_or_default()
+}
+
+fn local_datetime_ms(value: base::chrono::NaiveDateTime) -> i64 {
+    Local
+        .from_local_datetime(&value)
+        .earliest()
+        .map(|value| value.timestamp_millis())
         .unwrap_or_default()
 }
 

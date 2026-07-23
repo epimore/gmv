@@ -276,6 +276,9 @@ CREATE TABLE IF NOT EXISTS gb28181_sip_dialog_session (
     transport VARCHAR(8) NOT NULL,
     state VARCHAR(32) NOT NULL,
     established_at DATETIME NULL,
+    terminated_at DATETIME NULL,
+    terminal_reason VARCHAR(64) NULL,
+    error_code VARCHAR(64) NULL,
     last_seen_at DATETIME NOT NULL,
     expire_at DATETIME NOT NULL,
     version BIGINT NOT NULL DEFAULT 0,
@@ -289,3 +292,4 @@ CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_owner_state_expire ON gb28181_
 CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_owner_ssrc_state_expire ON gb28181_sip_dialog_session (signal_node_id, ssrc, state, expire_at);
 CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_owner ON gb28181_sip_dialog_session (signal_node_id, state, stream_id);
 CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_ssrc ON gb28181_sip_dialog_session (signal_node_id, media_node_id, ssrc, state, expire_at);
+CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_history ON gb28181_sip_dialog_session (signal_node_id, state, terminated_at DESC, stream_id DESC);

@@ -473,6 +473,9 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
         ("pause_expire_at", "datetime(3) NULL"),
         ("last_control_operation_id", "varchar(128) NULL"),
         ("registration_epoch_id", "varchar(36) NULL"),
+        ("terminated_at", "datetime(3) NULL"),
+        ("terminal_reason", "varchar(64) NULL"),
+        ("error_code", "varchar(64) NULL"),
     ];
     for (name, definition) in COLUMNS {
         if !existing.iter().any(|column| column == name) {
@@ -515,6 +518,20 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
     if epoch_index_exists.is_none() {
         base_db::sqlx::query(
             "CREATE INDEX idx_gmv_sip_dialog_device_epoch_state ON gb28181_sip_dialog_session (device_id, registration_epoch_id, state)",
+        )
+        .execute(mysql_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    }
+    let history_index_exists: Option<i64> = base_db::sqlx::query_scalar(
+        "SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='gb28181_sip_dialog_session' AND index_name='idx_gmv_sip_dialog_history' LIMIT 1",
+    )
+    .fetch_optional(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    if history_index_exists.is_none() {
+        base_db::sqlx::query(
+            "CREATE INDEX idx_gmv_sip_dialog_history ON gb28181_sip_dialog_session (signal_node_id, state, terminated_at DESC, stream_id DESC)",
         )
         .execute(mysql_pool())
         .await
@@ -658,6 +675,9 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
         ("pause_expire_at", "DATETIME NULL"),
         ("last_control_operation_id", "VARCHAR(128) NULL"),
         ("registration_epoch_id", "VARCHAR(36) NULL"),
+        ("terminated_at", "DATETIME NULL"),
+        ("terminal_reason", "VARCHAR(64) NULL"),
+        ("error_code", "VARCHAR(64) NULL"),
     ];
     for (name, definition) in COLUMNS {
         if !existing.iter().any(|column| column == name) {
@@ -695,6 +715,12 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
     }
     base_db::sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_device_epoch_state ON gb28181_sip_dialog_session (device_id, registration_epoch_id, state)",
+    )
+    .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    base_db::sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_history ON gb28181_sip_dialog_session (signal_node_id, state, terminated_at DESC, stream_id DESC)",
     )
     .execute(sqlite_pool())
     .await
@@ -917,6 +943,75 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "db-mysql", feature = "db-sqlite"))]
+    #[test]
+    fn dialog_schema_types_match_rust_model_on_both_backends() {
+        let mysql_start = MYSQL_SCHEMA
+            .find("CREATE TABLE IF NOT EXISTS `gb28181_sip_dialog_session`")
+            .expect("MySQL dialog table");
+        let mysql_tail = &MYSQL_SCHEMA[mysql_start..];
+        let mysql_end = mysql_tail.find(") ENGINE").expect("MySQL dialog end");
+        let mysql = mysql_tail[..mysql_end].to_ascii_lowercase();
+        let sqlite_start = SQLITE_SCHEMA
+            .find("CREATE TABLE IF NOT EXISTS gb28181_sip_dialog_session")
+            .expect("SQLite dialog table");
+        let sqlite_tail = &SQLITE_SCHEMA[sqlite_start..];
+        let sqlite_end = sqlite_tail.find("\n);").expect("SQLite dialog end");
+        let sqlite = sqlite_tail[..sqlite_end].to_ascii_lowercase();
+
+        for column in [
+            "stream_id",
+            "device_id",
+            "channel_id",
+            "session_type",
+            "signal_node_id",
+            "media_node_id",
+            "call_id",
+            "local_uri",
+            "remote_uri",
+            "local_tag",
+            "local_sip_addr",
+            "remote_sip_addr",
+            "transport",
+            "state",
+        ] {
+            assert!(mysql.contains(&format!("`{column}` varchar")));
+            assert!(sqlite.contains(&format!("{column} varchar")));
+        }
+        for column in [
+            "ssrc",
+            "registration_epoch_id",
+            "remote_tag",
+            "contact_uri",
+            "terminal_reason",
+            "error_code",
+        ] {
+            assert!(mysql.contains(&format!("`{column}` varchar")));
+            assert!(sqlite.contains(&format!("{column} varchar")));
+        }
+        for column in ["local_cseq", "remote_cseq", "version"] {
+            assert!(mysql.contains(&format!("`{column}` bigint")));
+            assert!(sqlite.contains(&format!("{column} bigint")));
+        }
+        for column in [
+            "established_at",
+            "terminated_at",
+            "last_seen_at",
+            "expire_at",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(mysql.contains(&format!("`{column}` datetime")));
+            assert!(sqlite.contains(&format!("{column} datetime")));
+        }
+        assert!(mysql.contains("`route_set` text"));
+        assert!(sqlite.contains("route_set text"));
+        assert!(
+            !mysql.contains("bigint unsigned"),
+            "SipDialogSessionRow uses i64 and must not decode MySQL BIGINT UNSIGNED"
+        );
+    }
+
     #[test]
     fn sqlite_schema_initializes_lowercase_database() {
         let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
@@ -944,6 +1039,73 @@ mod tests {
             assert!(names.contains(&"gb28181_sip_dialog_session".to_string()));
             assert!(names.contains(&"gb28181_enum_code".to_string()));
             assert!(names.contains(&"gb28181_resource_confirmation".to_string()));
+
+            let dialog_columns = base_db::sqlx::query(
+                "SELECT name FROM pragma_table_info('gb28181_sip_dialog_session')",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("read dialog columns")
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
+            for column in ["terminated_at", "terminal_reason", "error_code"] {
+                assert!(dialog_columns.iter().any(|item| item == column));
+            }
+
+            let history_index: i64 = base_db::sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_gb28181_sip_dialog_history'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read dialog history index");
+            assert_eq!(history_index, 1);
+
+            let now = base::chrono::Local::now().naive_local();
+            base_db::sqlx::query(
+                "INSERT INTO gb28181_sip_dialog_session (stream_id,device_id,channel_id,session_type,signal_node_id,media_node_id,ssrc,call_id,local_uri,remote_uri,local_tag,local_cseq,local_sip_addr,remote_sip_addr,transport,state,terminated_at,terminal_reason,last_seen_at,expire_at,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            )
+            .bind("schema-type-stream")
+            .bind("34020000001320000001")
+            .bind("34020000001320000002")
+            .bind("LIVE")
+            .bind("34020000002000000001")
+            .bind("stream-1")
+            .bind("0100000001")
+            .bind("schema-type-call")
+            .bind("sip:local@example.test")
+            .bind("sip:remote@example.test")
+            .bind("local-tag")
+            .bind(1_i64)
+            .bind("127.0.0.1:5060")
+            .bind("127.0.0.1:5061")
+            .bind("UDP")
+            .bind("TERMINATED")
+            .bind(now)
+            .bind("session_close")
+            .bind(now)
+            .bind(now + base::chrono::Duration::hours(8))
+            .bind(0_i64)
+            .bind(now)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .expect("insert dialog type contract row");
+            let row = base_db::sqlx::query_as::<
+                _,
+                (String, Option<String>, Option<base::chrono::NaiveDateTime>, i64, base::chrono::NaiveDateTime),
+            >(
+                "SELECT stream_id,terminal_reason,terminated_at,local_cseq,created_at FROM gb28181_sip_dialog_session WHERE stream_id=?",
+            )
+                .bind("schema-type-stream")
+                .fetch_one(&pool)
+                .await
+                .expect("decode dialog type contract row");
+            assert_eq!(row.0, "schema-type-stream");
+            assert_eq!(row.1.as_deref(), Some("session_close"));
+            assert_eq!(row.2, Some(now));
+            assert_eq!(row.3, 1);
+            assert_eq!(row.4, now);
 
             let enum_count: i64 = base_db::sqlx::query_scalar(
                 "SELECT COUNT(*) FROM gb28181_enum_code WHERE status=1",

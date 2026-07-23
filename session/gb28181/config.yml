@@ -63,6 +63,7 @@ server:
         wan_ip: 192.168.0.9 # 公网IP
         lan_port: 35600 #lan端口
         wan_port: 35600 #wan端口
+        dialog_history_retention_days: 0 #终态dialog保留天数，0表示永久保存
     pics:
         push_url: http://127.0.0.1:28567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
         storage_path: ./pics/raw

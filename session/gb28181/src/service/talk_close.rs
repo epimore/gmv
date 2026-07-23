@@ -9,7 +9,11 @@ use crate::service::stream_close::finalize_durable_dialog_as_orphan;
 use crate::state::session::{Cache, TalkByeCommand};
 
 pub fn begin(talk_id: String) -> bool {
-    let Some(start) = Cache::talk_close_begin(&talk_id) else {
+    begin_with_reason(talk_id, "session_close")
+}
+
+pub fn begin_with_reason(talk_id: String, terminal_reason: &str) -> bool {
+    let Some(start) = Cache::talk_close_begin(&talk_id, terminal_reason) else {
         return false;
     };
     if !start.newly_started {
@@ -67,6 +71,7 @@ async fn send_bye(command: TalkByeCommand) {
         crate::gb::sip::InviteStopRequest {
             call_id: Some(command.call_id.clone()),
             stream_id: Some(command.talk_id.clone()),
+            terminal_reason: command.terminal_reason,
         },
     )
     .await;

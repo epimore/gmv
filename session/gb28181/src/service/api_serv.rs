@@ -524,6 +524,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         closing_generation: None,
         bye_inflight_seq: None,
         close_last_error: None,
+        close_terminal_reason: None,
         guard_lease: Some(allocation.guard_lease()),
     };
     if !state::session::Cache::talk_map_insert(talk_state.clone()) {
@@ -532,6 +533,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             crate::gb::sip::InviteStopRequest {
                 call_id: Some(talk_state.call_id.clone()),
                 stream_id: Some(talk_id.clone()),
+                terminal_reason: "start_commit_failed".to_string(),
             },
         )
         .await;
@@ -556,10 +558,17 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
 }
 
 pub async fn talk_stop(model: TalkStopModel, _token: String) -> GlobalResult<bool> {
+    talk_stop_with_reason(model, "session_close").await
+}
+
+pub async fn talk_stop_with_reason(
+    model: TalkStopModel,
+    terminal_reason: &str,
+) -> GlobalResult<bool> {
     let Some(talk) = state::session::Cache::talk_map_get(&model.talk_id) else {
         return Ok(false);
     };
-    let started = talk_close::begin(model.talk_id);
+    let started = talk_close::begin_with_reason(model.talk_id, terminal_reason);
 
     if let Ok(stream_node) =
         crate::guard_integration::ensure_stream_node(&talk.stream_node_name).await
@@ -644,12 +653,14 @@ async fn persist_peer_dialog_terminated(call_id: &str) -> PeerDialogPersistence 
         ) {
             continue;
         }
-        match SipDialogSessionRepository::cas_transition(
+        match SipDialogSessionRepository::cas_mark_terminal(
             &session.stream_id,
             &session.signal_node_id,
             session.version,
             session.state,
             DialogState::Terminated,
+            "peer_bye",
+            None,
             Local::now().naive_local(),
         )
         .await
@@ -771,11 +782,7 @@ async fn start_invite_stream(
     .await?;
     let stream_node = allocation.node.clone();
     let node_name = stream_node.name.clone();
-    if let Err(err) = stream_rpc::init_media(&stream_node, &msc, token).await {
-        crate::guard_integration::fail_stream_lease(&allocation, "init_media failed").await;
-        return Err(err);
-    }
-
+    let prepare_media = stream_rpc::init_media(&stream_node, &msc, token);
     let invite_res = match am {
         AccessMode::Live => {
             sip_command::play_live_invite_wait(
@@ -787,6 +794,7 @@ async fn start_invite_stream(
                 trans_mode.unwrap_or(TransMode::Udp),
                 &ssrc,
                 &stream_id,
+                prepare_media,
             )
             .await
         }
@@ -802,6 +810,7 @@ async fn start_invite_stream(
                 &stream_id,
                 st,
                 et,
+                prepare_media,
             )
             .await
         }
@@ -818,6 +827,7 @@ async fn start_invite_stream(
                 st,
                 et,
                 1,
+                prepare_media,
             )
             .await
         }
@@ -851,6 +861,7 @@ async fn start_invite_stream(
             crate::gb::sip::InviteStopRequest {
                 call_id: Some(invite_accepted.call_id.clone()),
                 stream_id: Some(stream_id.clone()),
+                terminal_reason: "start_commit_failed".to_string(),
             },
         )
         .await;
@@ -878,6 +889,7 @@ async fn start_invite_stream(
             crate::gb::sip::InviteStopRequest {
                 call_id: Some(call_id),
                 stream_id: Some(stream_id.clone()),
+                terminal_reason: "start_commit_failed".to_string(),
             },
         )
         .await;
@@ -904,7 +916,11 @@ async fn start_invite_stream(
             am,
             msc,
         );
-        crate::guard_integration::confirm_stream_lease(&allocation).await?;
+        if let Err(err) = crate::guard_integration::confirm_stream_lease(&allocation).await {
+            stream_close::begin(stream_id.clone());
+            crate::guard_integration::fail_stream_lease(&allocation, "lease confirm failed").await;
+            return Err(err);
+        }
         return Ok((
             stream_id,
             node_name,

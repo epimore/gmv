@@ -12,9 +12,9 @@ use gmv_domain::info::obj::{
 use gmv_nodec::error as node_error;
 use gmv_protocol::common::v1::{EndpointMode, ErrorDetail, OperationRef};
 use gmv_protocol::stream::v1::{
-    CreateOutputRequest, OutputInfo, ReleaseSubscriptionOutputsRequest, StreamBoolResponse,
-    StreamJsonRequest, StreamJsonResponse, StreamUnitResponse,
-    stream_control_client::StreamControlClient,
+    CreateOutputRequest, OutputInfo, QueryStreamRequest, QueryStreamResponse,
+    ReleaseSubscriptionOutputsRequest, StopReceiveRequest, StreamBoolResponse, StreamJsonRequest,
+    StreamJsonResponse, StreamUnitResponse, stream_control_client::StreamControlClient,
 };
 use std::time::{Duration, Instant};
 
@@ -250,6 +250,38 @@ pub async fn stream_online(node: &StreamNode, value: &StreamKey) -> GlobalResult
         .map_err(|error| rpc_status(error, "stream_online"))?
         .into_inner();
     ensure_bool(response, "stream_online")
+}
+
+pub async fn query_stream(node: &StreamNode, stream_id: &str) -> GlobalResult<QueryStreamResponse> {
+    let mut client = client(node).await?;
+    let response = client
+        .query_stream(QueryStreamRequest {
+            stream_id: stream_id.to_string(),
+        })
+        .await
+        .map_err(|error| rpc_status(error, "query_stream"))?
+        .into_inner();
+    Ok(response)
+}
+
+pub async fn stop_receive(node: &StreamNode, stream_id: &str, reason: &str) -> GlobalResult<()> {
+    let mut client = client(node).await?;
+    let response = client
+        .stop_receive(StopReceiveRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("session-reconcile-{stream_id}"),
+                idempotency_key: stream_id.to_string(),
+            }),
+            stream_id: stream_id.to_string(),
+            reason: reason.to_string(),
+        })
+        .await
+        .map_err(|error| rpc_status(error, "stop_receive"))?
+        .into_inner();
+    match response.error {
+        None => Ok(()),
+        Some(error) => Err(error_detail(error, "stop_receive")),
+    }
 }
 
 pub async fn record_info(
