@@ -701,7 +701,7 @@ impl SipDialogSessionRepository {
         let rows = db::execute!(
             "UPDATE gb28181_sip_dialog_session SET state=?,terminated_at=COALESCE(terminated_at,?),\
              terminal_reason=COALESCE(terminal_reason,?),error_code=COALESCE(error_code,?),\
-             updated_at=?,version=version+1 WHERE stream_id=? AND signal_node_id=? AND state=?\
+             updated_at=?,version=version+1 WHERE stream_id=? AND signal_node_id=? AND state=? \
              AND version=? AND updated_at<=?",
             terminal_state.to_string(),
             terminated_at,
