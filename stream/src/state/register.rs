@@ -1048,6 +1048,22 @@ impl Register {
             stream_info
         })
     }
+
+    pub fn close_stream_by_id(stream_id: &str) -> bool {
+        let arc = Self::get().inner.clone();
+        let stream_id: Arc<str> = Arc::from(stream_id);
+        let Some((_, meta)) = arc.stream_metadata_map.remove(&stream_id) else {
+            return false;
+        };
+        Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
+        let _ = arc
+            .time_schedule
+            .delete(TimeScheduleKey::RtpGateway(meta.ssrc));
+        arc.rtp_gateway_map
+            .remove_if(&meta.ssrc, |_, channel| channel.stream_id == stream_id);
+        true
+    }
+
     pub fn is_exist(stream_key: StreamKey) -> bool {
         let StreamKey { stream_id, ssrc } = stream_key;
         let arc = Self::get().inner.clone();

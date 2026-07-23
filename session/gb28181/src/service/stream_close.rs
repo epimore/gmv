@@ -75,6 +75,12 @@ async fn send_bye(command: StreamByeCommand) {
     let generation = command.generation;
     let seq = command.seq;
     let device_id = command.device_id.clone();
+    stop_media_runtime(
+        &command.stream_id,
+        &command.stream_node_name,
+        &command.terminal_reason,
+    )
+    .await;
     let result = sip_command::invite_stop_by_device(
         &command.device_id,
         crate::gb::sip::InviteStopRequest {
@@ -145,13 +151,37 @@ pub(crate) fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
         );
         release_guard_lease(info.guard_lease);
         let stream_id = info.stream_id;
+        let stream_node_name = info.stream_node_name;
         base::tokio::spawn(async move {
+            stop_media_runtime(&stream_id, &stream_node_name, "force_cleanup").await;
             finalize_durable_dialog_as_orphan("stream", &stream_id).await;
         });
     } else {
         debug!(
             "ignore stale stream force cleanup: stream_id={}, generation={}",
             stream_id, generation
+        );
+    }
+}
+
+async fn stop_media_runtime(stream_id: &str, stream_node_name: &str, reason: &str) {
+    if stream_node_name.is_empty() {
+        return;
+    }
+    let node = match crate::guard_integration::ensure_stream_node(stream_node_name).await {
+        Ok(node) => node,
+        Err(err) => {
+            warn!(
+                "stream media cleanup deferred: stage=resolve_stream_node, outcome=unavailable, stream_id={}, stream_node={}, reason={}, error={}",
+                stream_id, stream_node_name, reason, err
+            );
+            return;
+        }
+    };
+    if let Err(err) = crate::service::stream_rpc::stop_receive(&node, stream_id, reason).await {
+        warn!(
+            "stream media cleanup failed: stage=stop_receive, outcome=failed, stream_id={}, stream_node={}, reason={}, error={}",
+            stream_id, stream_node_name, reason, err
         );
     }
 }

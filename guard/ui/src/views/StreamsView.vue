@@ -1,62 +1,69 @@
 <template>
   <div class="page-grid" v-loading="loading">
-    <GlassPanel class="span-12" title="当前运行资源监控" subtitle="业务事实来自所选 Session，Guard 仅鉴权与转发">
+    <GlassPanel class="span-12">
       <div class="toolbar stream-toolbar">
-        <el-select v-model="sessionNodeId" placeholder="请选择 Session 节点（必选）" clearable filterable style="width: 280px" @change="resetAndLoad">
-          <el-option v-for="node in sessionNodes" :key="node.instance_id" :label="node.display_name || node.node_id" :value="node.node_id">
-            <span>{{ node.display_name || node.node_id }}</span>
-            <span class="node-instance">{{ node.instance_id }}</span>
-          </el-option>
-        </el-select>
-        <el-input v-model="filters.stream_id" placeholder="流 ID" clearable />
-        <el-input v-model="filters.stream_node_id" placeholder="流媒体服务标识" clearable />
-        <el-input v-model="filters.device_id" placeholder="设备 ID" clearable />
-        <el-input v-model="filters.channel_id" placeholder="通道 ID" clearable />
-        <el-input v-model="filters.ssrc" placeholder="SSRC" clearable />
-        <el-select v-model="filters.state" placeholder="状态" clearable style="width: 150px">
-          <el-option v-for="state in stateOptions" :key="state.value" :label="state.label" :value="state.value" />
-        </el-select>
-        <el-button type="primary" :disabled="!sessionNodeId" @click="search">查询</el-button>
-        <el-button @click="resetFilters">重置</el-button>
-        <el-button :disabled="!sessionNodeId" @click="load">刷新</el-button>
+        <div class="stream-filter-row">
+          <el-select v-model="sessionNodeId" placeholder="请选择 Session 节点（必选）" clearable filterable @change="resetAndLoad">
+            <el-option v-for="node in sessionNodes" :key="node.node_id" :label="sessionNodeLabel(node)" :value="node.node_id" :disabled="!isNodeOnline(node)">
+              <div class="node-option" :class="{ offline: !isNodeOnline(node) }">
+                <span>{{ nodeKindLabel(node) }} · {{ node.node_id }}</span>
+                <span class="node-status">{{ isNodeOnline(node) ? '在线' : '离线' }}</span>
+              </div>
+            </el-option>
+          </el-select>
+          <el-input v-model="filters.stream_id" placeholder="流 ID" clearable />
+          <el-select v-model="filters.stream_node_id" placeholder="请选择流媒体服务" clearable filterable>
+            <el-option v-for="node in streamNodes" :key="node.node_id" :label="node.display_name || node.node_id" :value="node.node_id" />
+          </el-select>
+          <el-input v-model="filters.device_id" placeholder="设备 ID" clearable />
+        </div>
+        <div class="stream-filter-row">
+          <el-input v-model="filters.channel_id" placeholder="通道 ID" clearable />
+          <el-input v-model="filters.ssrc" placeholder="SSRC" clearable />
+          <el-select v-model="filters.state" placeholder="状态" clearable>
+            <el-option v-for="state in stateOptions" :key="state.value" :label="state.label" :value="state.value" />
+          </el-select>
+          <div class="stream-filter-actions">
+            <el-button type="primary" :disabled="!sessionNodeId" @click="search">查询</el-button>
+            <el-button @click="resetFilters">重置</el-button>
+          </div>
+        </div>
       </div>
-
-      <el-alert v-if="!sessionNodeId" title="请先选择 Session 节点；页面不会从 Guard route/lease 推断当前业务流。" type="info" :closable="false" show-icon />
 
       <el-tabs v-model="activeTab" @tab-change="tabChanged">
         <el-tab-pane label="当前运行" name="current">
           <el-table :data="activeRows" empty-text="暂无当前运行资源" height="520">
             <el-table-column prop="stream_id" label="流 ID" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="session_node_id" label="Session 服务" min-width="190" show-overflow-tooltip />
             <el-table-column prop="stream_node_id" label="流媒体服务" min-width="140" show-overflow-tooltip />
             <el-table-column prop="device_id" label="设备 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="channel_id" label="通道 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="ssrc" label="SSRC" width="120" />
-            <el-table-column label="状态" width="120"><template #default="{ row }"><StatusPill :label="row.state.toUpperCase()" :tone="row.state" /></template></el-table-column>
+            <el-table-column label="状态" width="120"><template #default="{ row }"><StatusPill :label="statusLabel(row.state)" :tone="row.state" /></template></el-table-column>
             <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at_ms) }}</template></el-table-column>
             <el-table-column label="持续时间" width="120"><template #default="{ row }">{{ formatDuration(Math.max(0, serverTimeMs - row.started_at_ms)) }}</template></el-table-column>
-            <el-table-column prop="viewer_count" label="观看人数" width="100" />
-            <el-table-column label="媒体格式" min-width="180"><template #default="{ row }">{{ formatViewerFormats(row) }}</template></el-table-column>
             <el-table-column label="诊断" min-width="160"><template #default="{ row }">{{ row.diagnostic_reason || '-' }}</template></el-table-column>
-            <el-table-column label="操作" fixed="right" width="100"><template #default="{ row }"><el-button link type="danger" :disabled="!canOperate || row.state === 'stopping'" @click="stop(row)">停止</el-button></template></el-table-column>
+            <el-table-column label="操作" fixed="right" width="140">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="showDetails(row)">详情</el-button>
+                <el-button link type="danger" :disabled="!canOperate || row.state === 'stopping'" @click="stop(row)">停止</el-button>
+              </template>
+            </el-table-column>
           </el-table>
           <div class="pager-row">
             <span v-if="activeRows.length === 0 && nextAfterId">本批无匹配，仍有后续数据</span>
             <span v-else>本页 {{ activeRows.length }} 条</span>
-            <el-button :disabled="cursorStack.length === 0" @click="previousCurrent">上一页</el-button>
-            <el-button :disabled="!nextAfterId" @click="nextCurrent">下一页</el-button>
+            <el-pagination :current-page="currentPage" :page-count="currentPageCount" layout="prev, pager, next" @current-change="currentPageChanged" />
           </div>
         </el-tab-pane>
 
         <el-tab-pane label="历史记录" name="history">
           <el-table :data="historyRows" empty-text="暂无历史记录" height="520">
             <el-table-column prop="stream_id" label="流 ID" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="session_node_id" label="Session 服务" min-width="190" show-overflow-tooltip />
             <el-table-column prop="stream_node_id" label="流媒体服务" min-width="140" show-overflow-tooltip />
             <el-table-column prop="device_id" label="设备 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="channel_id" label="通道 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="ssrc" label="SSRC" width="120" />
-            <el-table-column label="状态" width="120"><template #default="{ row }"><StatusPill :label="row.state" :tone="row.state.toLowerCase()" /></template></el-table-column>
+            <el-table-column label="状态" width="120"><template #default="{ row }"><StatusPill :label="statusLabel(row.state)" :tone="row.state.toLowerCase()" /></template></el-table-column>
             <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at_ms) }}</template></el-table-column>
             <el-table-column label="结束时间" width="180"><template #default="{ row }">{{ formatDateTime(row.terminated_at_ms) }}<span v-if="row.legacy_terminal_time"> *</span></template></el-table-column>
             <el-table-column label="持续时间" width="120"><template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template></el-table-column>
@@ -70,6 +77,14 @@
         </el-tab-pane>
       </el-tabs>
     </GlassPanel>
+
+    <el-dialog v-model="detailVisible" title="流详情" width="520px">
+      <el-descriptions v-if="detailRow" :column="1" border>
+        <el-descriptions-item label="流 ID">{{ detailRow.stream_id }}</el-descriptions-item>
+        <el-descriptions-item label="观看人数">{{ detailRow.viewer_count }}</el-descriptions-item>
+        <el-descriptions-item label="媒体格式">{{ formatViewerFormats(detailRow) }}</el-descriptions-item>
+      </el-descriptions>
+    </el-dialog>
   </div>
 </template>
 
@@ -91,30 +106,58 @@ const activeRows = ref<ActiveStreamMonitorItem[]>([]);
 const historyRows = ref<StreamHistoryMonitorItem[]>([]);
 const nextAfterId = ref('');
 const currentCursor = ref('');
-const cursorStack = ref<string[]>([]);
+const currentPage = ref(1);
+const currentPageCursors = ref<Record<number, string>>({ 1: '' });
 const historyPage = ref(1);
 const historyTotal = ref(0);
 const serverTimeMs = ref(Date.now());
+const detailVisible = ref(false);
+const detailRow = ref<ActiveStreamMonitorItem>();
+const requestInFlight = ref(false);
 const pageSize = 20;
 const filters = reactive<Required<StreamMonitorQuery>>({ stream_id: '', stream_node_id: '', device_id: '', channel_id: '', ssrc: '', state: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
-const sessionNodes = computed(() => nodes.value.filter((node) => node.kind.toLowerCase() === 'session' && node.protocol?.toLowerCase() === 'gb28181' && node.connection.toLowerCase() === 'connected'));
+const sessionNodes = computed(() => nodes.value
+  .filter(isGbSessionNode)
+  .sort((left, right) => Number(!isNodeOnline(left)) - Number(!isNodeOnline(right)) || left.node_id.localeCompare(right.node_id)));
+const streamNodes = computed(() => nodes.value.filter(isStreamNode));
+const currentPageCount = computed(() => currentPage.value + (nextAfterId.value ? 1 : 0));
 const stateOptions = computed(() => activeTab.value === 'current'
-  ? ['starting', 'running', 'stopping', 'failed', 'unknown', 'conflict'].map((value) => ({ value, label: value.toUpperCase() }))
-  : ['TERMINATED', 'ORPHAN'].map((value) => ({ value, label: value })));
+  ? [
+      { value: 'starting', label: '启动中' },
+      { value: 'running', label: '运行中' },
+      { value: 'stopping', label: '停止中' },
+      { value: 'failed', label: '失败' },
+      { value: 'unknown', label: '未知' },
+      { value: 'conflict', label: '冲突' },
+    ]
+  : [
+      { value: 'TERMINATED', label: '已终止' },
+      { value: 'ORPHAN', label: '异常终止' },
+    ]);
 
 function query(): StreamMonitorQuery { return { ...filters }; }
+function normalizeKind(value?: string | null) { return (value || '').trim().toLowerCase(); }
+function nodeKindLabel(node: NodeInfo) { return (node.kind || node.service || node.config?.service || 'node').toUpperCase(); }
+function isGbSessionNode(node: NodeInfo) { return normalizeKind(node.kind) === 'session-gb28181' || normalizeKind(node.service) === 'session-gb28181' || normalizeKind(node.protocol) === 'gb28181'; }
+function isStreamNode(node: NodeInfo) { return normalizeKind(node.kind) === 'stream' || normalizeKind(node.service) === 'stream'; }
+function isNodeOnline(node: NodeInfo) { return node.connection === 'CONNECTED' && node.scheduling === 'ENABLED'; }
+function sessionNodeLabel(node: NodeInfo) { return `${nodeKindLabel(node)} · ${node.node_id} · ${isNodeOnline(node) ? '在线' : '离线'}`; }
+function statusLabel(state: string): string { return ({ starting: '启动中', running: '运行中', stopping: '停止中', failed: '失败', unknown: '未知', conflict: '冲突', TERMINATED: '已终止', ORPHAN: '异常终止' } as Record<string, string>)[state] || state; }
 function formatDuration(ms: number): string { const seconds = Math.max(0, Math.floor(ms / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds % 3600 / 60); const remain = seconds % 60; return hours > 0 ? `${hours}时${minutes}分${remain}秒` : minutes > 0 ? `${minutes}分${remain}秒` : `${remain}秒`; }
 function formatViewerFormats(row: ActiveStreamMonitorItem): string { return row.viewer_formats.length > 0 ? row.viewer_formats.map((item) => `${item.media_format.toUpperCase()} ${item.viewer_count}`).join(' / ') : '-'; }
 function clearRows() { activeRows.value = []; historyRows.value = []; nextAfterId.value = ''; historyTotal.value = 0; }
-function resetPagination() { currentCursor.value = ''; cursorStack.value = []; historyPage.value = 1; }
-async function load() {
+function resetPagination() { currentCursor.value = ''; currentPage.value = 1; currentPageCursors.value = { 1: '' }; historyPage.value = 1; }
+async function load(showLoading = true) {
   if (!sessionNodeId.value) { clearRows(); return; }
-  loading.value = true;
+  if (requestInFlight.value) return;
+  requestInFlight.value = true;
+  if (showLoading) loading.value = true;
   try {
     if (activeTab.value === 'current') {
       const page = await listActiveStreamMonitor(sessionNodeId.value, query(), currentCursor.value, pageSize);
       activeRows.value = page.items; nextAfterId.value = page.next_after_id; serverTimeMs.value = page.server_time_ms;
+      if (page.next_after_id) currentPageCursors.value[currentPage.value + 1] = page.next_after_id;
     } else {
       const page = await listStreamHistoryMonitor(sessionNodeId.value, query(), historyPage.value, pageSize);
       historyRows.value = page.items; historyTotal.value = page.total; serverTimeMs.value = page.server_time_ms;
@@ -122,14 +165,20 @@ async function load() {
       if (historyPage.value > lastPage) { historyPage.value = lastPage; await load(); }
     }
   } catch (error) { clearRows(); ElMessage.error(errorMessage(error, '流监控数据加载失败')); }
-  finally { loading.value = false; }
+  finally { requestInFlight.value = false; if (showLoading) loading.value = false; }
 }
 function search() { resetPagination(); load(); }
 function resetFilters() { Object.assign(filters, { stream_id: '', stream_node_id: '', device_id: '', channel_id: '', ssrc: '', state: '' }); search(); }
 function resetAndLoad() { resetPagination(); clearRows(); load(); }
 function tabChanged() { filters.state = ''; resetPagination(); clearRows(); load(); }
-function nextCurrent() { if (!nextAfterId.value) return; cursorStack.value.push(currentCursor.value); currentCursor.value = nextAfterId.value; load(); }
-function previousCurrent() { const cursor = cursorStack.value.pop(); if (cursor === undefined) return; currentCursor.value = cursor; load(); }
+function currentPageChanged(page: number) {
+  const cursor = currentPageCursors.value[page];
+  if (cursor === undefined) return;
+  currentPage.value = page;
+  currentCursor.value = cursor;
+  load();
+}
+function showDetails(row: ActiveStreamMonitorItem) { detailRow.value = row; detailVisible.value = true; }
 async function stop(row: ActiveStreamMonitorItem) {
   try {
     await ElMessageBox.confirm(`确认向设备补偿停止流 ${row.stream_id}？`, '停止当前流', { type: 'warning', confirmButtonText: '确认停止', cancelButtonText: '取消' });
@@ -139,14 +188,21 @@ async function stop(row: ActiveStreamMonitorItem) {
   } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error, '停止失败')); }
 }
 const clockTimer = window.setInterval(() => { serverTimeMs.value += 1000; }, 1000);
-onBeforeUnmount(() => window.clearInterval(clockTimer));
+const stoppingPollTimer = window.setInterval(() => {
+  if (activeTab.value === 'current' && sessionNodeId.value && activeRows.value.some((row) => row.state === 'stopping')) void load(false);
+}, 2000);
+onBeforeUnmount(() => { window.clearInterval(clockTimer); window.clearInterval(stoppingPollTimer); });
 onMounted(async () => { try { nodes.value = await listNodes(); } catch (error) { ElMessage.error(errorMessage(error, 'Session 节点加载失败')); } });
 </script>
 
 <style scoped>
-.stream-toolbar { display: grid; grid-template-columns: minmax(240px, 1.4fr) repeat(5, minmax(130px, 1fr)) 150px auto auto auto; gap: 10px; margin-bottom: 14px; }
-.stream-toolbar .el-input { min-width: 0; }
-.node-instance { float: right; margin-left: 16px; color: var(--el-text-color-secondary); font-size: 12px; }
+.stream-toolbar { display: flex; flex-direction: column; align-items: stretch; gap: 10px; width: 100%; box-sizing: border-box; padding: 0 16px; margin-bottom: 14px; }
+.stream-filter-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; width: 100%; }
+.stream-filter-row .el-input, .stream-filter-row .el-select { min-width: 0; width: 100%; }
+.stream-filter-actions { display: flex; align-items: center; gap: 10px; }
+.node-option { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.node-option.offline { color: var(--el-text-color-secondary); }
+.node-status { flex: none; font-size: 12px; }
 .pager-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-height: 48px; color: var(--el-text-color-secondary); }
-@media (max-width: 1400px) { .stream-toolbar { grid-template-columns: repeat(4, minmax(150px, 1fr)); } }
+@media (max-width: 1000px) { .stream-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; } }
 </style>

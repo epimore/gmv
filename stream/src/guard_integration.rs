@@ -725,11 +725,14 @@ impl StreamControlAdapter {
     }
 
     pub fn stop_receive(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
+        if self.media_tx.is_some() {
+            Register::close_stream_by_id(&request.stream_id);
+        }
+        self.outputs
+            .retain(|_, output| output.stream_id != request.stream_id);
         match self.streams.get_mut(&request.stream_id) {
             Some(stream) => {
                 stream.state = StreamState::Stopped;
-                self.outputs
-                    .retain(|_, output| output.stream_id != request.stream_id);
                 StopReceiveResponse {
                     state: StreamState::Stopped as i32,
                     error: None,
@@ -743,11 +746,15 @@ impl StreamControlAdapter {
     }
 
     pub fn query_stream(&self, request: QueryStreamRequest) -> QueryStreamResponse {
-        let state = self
+        let modern_state = self
             .streams
             .get(&request.stream_id)
-            .map(|stream| stream.state)
-            .unwrap_or(StreamState::Stopped);
+            .map(|stream| stream.state);
+        let legacy_register_ts = self.media_tx.as_ref().and_then(|_| {
+            Register::get_base_stream_info_by_stream_id(Arc::from(request.stream_id.as_str()))
+                .map(|info| info.in_time)
+        });
+        let state = effective_stream_state(modern_state, legacy_register_ts);
         let (viewer_count, viewer_formats) = self.viewer_stats(&request.stream_id);
         QueryStreamResponse {
             stream_id: request.stream_id,
@@ -770,6 +777,8 @@ impl StreamControlAdapter {
             output.stream_id == stream_id
                 && matches!(output.state, OutputState::Preparing | OutputState::Ready)
                 && !output.subscription_id.is_empty()
+                && (self.media_tx.is_none()
+                    || Register::is_live_output_open(stream_id, &output.output_type))
         }) {
             viewers.insert(output.subscription_id.clone());
             formats
@@ -1292,6 +1301,20 @@ fn now_ms() -> i64 {
         })
 }
 
+fn effective_stream_state(
+    modern_state: Option<StreamState>,
+    legacy_register_ts: Option<u64>,
+) -> StreamState {
+    match modern_state {
+        Some(state) if state != StreamState::Stopped => state,
+        _ => match legacy_register_ts {
+            Some(0) => StreamState::Starting,
+            Some(_) => StreamState::Receiving,
+            None => StreamState::Stopped,
+        },
+    }
+}
+
 pub fn operation(operation_id: &str) -> OperationRef {
     OperationRef {
         operation_id: operation_id.to_string(),
@@ -1302,6 +1325,57 @@ pub fn operation(operation_id: &str) -> OperationRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_media_runtime_drives_stream_state() {
+        assert_eq!(effective_stream_state(None, Some(0)), StreamState::Starting);
+        assert_eq!(
+            effective_stream_state(None, Some(1)),
+            StreamState::Receiving
+        );
+        assert_eq!(
+            effective_stream_state(Some(StreamState::Stopped), Some(1)),
+            StreamState::Receiving
+        );
+        assert_eq!(effective_stream_state(None, None), StreamState::Stopped);
+    }
+
+    #[test]
+    fn stop_receive_removes_outputs_without_modern_stream_runtime() {
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            false,
+            30000,
+        );
+        let mut control = StreamControlAdapter::new(
+            node.identity,
+            endpoint("rtp", "rtp", "127.0.0.1", 30000),
+        );
+        control.outputs.insert(
+            "output-1".to_string(),
+            OutputRuntime {
+                output_id: "output-1".to_string(),
+                stream_id: "legacy-stream".to_string(),
+                output_type: "hls".to_string(),
+                endpoint: String::new(),
+                state: OutputState::Ready,
+                subscription_id: "subscription-1".to_string(),
+            },
+        );
+
+        let response = control.stop_receive(StopReceiveRequest {
+            operation: None,
+            stream_id: "legacy-stream".to_string(),
+            reason: "manual_stop".to_string(),
+        });
+
+        assert_eq!(response.state, StreamState::Stopped as i32);
+        assert!(control.outputs.is_empty());
+    }
 
     #[test]
     fn data_plane_output_creation_defers_stream_existence_to_register() {
