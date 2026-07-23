@@ -34,7 +34,7 @@ use crate::state::model::{
 use crate::state::session::AccessMode;
 use crate::state::session::TalkSessionState;
 use crate::state::{DownloadConf, StreamNode, session};
-use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
+use crate::storage::dialog_session::{DialogSessionType, DialogState, SipDialogSessionRepository};
 use crate::utils::id_builder;
 
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
@@ -582,10 +582,23 @@ pub async fn talk_stop_with_reason(
 pub async fn peer_dialog_terminated(call_id: String) -> bool {
     let persisted = persist_peer_dialog_terminated(&call_id).await;
     if let Some(stream) = state::session::Cache::stream_terminated_by_call_id(&call_id) {
-        info!(
-            "stream dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
-            stream.device_id, stream.channel_id, stream.stream_id, stream.ssrc, stream.call_id
-        );
+        let media_result = stream_close::stop_media_runtime(
+            &stream.stream_id,
+            &stream.stream_node_name,
+            "peer_bye",
+        )
+        .await;
+        if media_result.is_ok() {
+            info!(
+                "stream dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
+                stream.device_id, stream.channel_id, stream.stream_id, stream.ssrc, stream.call_id
+            );
+        } else {
+            warn!(
+                "stream dialog terminated by peer with pending media cleanup: outcome=media_cleanup_failed, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
+                stream.device_id, stream.channel_id, stream.stream_id, stream.ssrc, stream.call_id
+            );
+        }
         release_guard_lease(stream.guard_lease);
         return true;
     }
@@ -603,7 +616,22 @@ pub async fn peer_dialog_terminated(call_id: String) -> bool {
         return true;
     }
     if persisted.transitioned {
-        info!("durable dialog terminated by peer: outcome=peer_terminated, call_id={call_id}");
+        let mut media_cleanup_failed = false;
+        for (stream_id, media_node_id) in &persisted.streams_to_cleanup {
+            if stream_close::stop_media_runtime(stream_id, media_node_id, "peer_bye")
+                .await
+                .is_err()
+            {
+                media_cleanup_failed = true;
+            }
+        }
+        if media_cleanup_failed {
+            warn!(
+                "durable dialog terminated by peer with pending media cleanup: outcome=media_cleanup_failed, call_id={call_id}"
+            );
+        } else {
+            info!("durable dialog terminated by peer: outcome=peer_terminated, call_id={call_id}");
+        }
         true
     } else if persisted.matched {
         debug!("ignore duplicate or late peer BYE: outcome=duplicate_or_late, call_id={call_id}");
@@ -627,6 +655,7 @@ struct PeerDialogPersistence {
     matched: bool,
     transitioned: bool,
     lookup_failed: bool,
+    streams_to_cleanup: Vec<(String, String)>,
 }
 
 async fn persist_peer_dialog_terminated(call_id: &str) -> PeerDialogPersistence {
@@ -665,7 +694,14 @@ async fn persist_peer_dialog_terminated(call_id: &str) -> PeerDialogPersistence 
         )
         .await
         {
-            Ok(true) => result.transitioned = true,
+            Ok(true) => {
+                result.transitioned = true;
+                if session.session_type != DialogSessionType::Talk {
+                    result
+                        .streams_to_cleanup
+                        .push((session.stream_id.clone(), session.media_node_id.clone()));
+                }
+            }
             Ok(false) => {
                 match SipDialogSessionRepository::find_by_stream_id(&session.stream_id).await {
                     Ok(Some(current)) if current.state == DialogState::Terminated => {

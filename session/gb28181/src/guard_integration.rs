@@ -754,6 +754,51 @@ impl SessionControl for SessionControlRpc {
             && crate::state::session::Cache::talk_map_get(&request.stream_id).is_none()
             && crate::state::session::Cache::stream_map_query_input(&request.stream_id).is_none()
         {
+            if dialog.state == DialogState::Inviting {
+                let media_result = if dialog.session_type == DialogSessionType::Talk {
+                    match ensure_stream_node(&dialog.media_node_id).await {
+                        Ok(node) => stream_rpc::talk_close(&node, &dialog.stream_id)
+                            .await
+                            .map(|_| ()),
+                        Err(err) => Err(err),
+                    }
+                } else {
+                    stream_close::stop_media_runtime(
+                        &dialog.stream_id,
+                        &dialog.media_node_id,
+                        "manual_stop",
+                    )
+                    .await
+                };
+                let sip_result = crate::gb::sip::command::invite_stop_by_device(
+                    &dialog.device_id,
+                    crate::gb::sip::InviteStopRequest {
+                        call_id: Some(dialog.call_id.clone()),
+                        stream_id: Some(dialog.stream_id.clone()),
+                        terminal_reason: "manual_stop".to_string(),
+                    },
+                )
+                .await;
+                let result = match (media_result, sip_result) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(media), Ok(())) => Err(media),
+                    (Ok(()), Err(sip)) => Err(sip),
+                    (Err(media), Err(sip)) => {
+                        warn!(
+                            "inviting stream manual stop failed: stream_id={}, media_error={}, sip_error={}",
+                            dialog.stream_id, media, sip
+                        );
+                        Err(sip)
+                    }
+                };
+                let mut response = match result {
+                    Ok(()) => device_response(&request.stream_id, DeviceStreamState::Stopped, None),
+                    Err(err) => device_error(err),
+                };
+                response.session_node_id = identity.node_id;
+                response.session_instance_id = identity.instance_id;
+                return Ok(tonic::Response::new(response));
+            }
             if let Err(err) = dialog_recovery::recover_dialog(dialog).await {
                 return Ok(tonic::Response::new(device_error(err)));
             }

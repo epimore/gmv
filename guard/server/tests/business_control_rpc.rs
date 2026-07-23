@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
 
 use gmv_guard_server::api::v2::control::{BusinessControl, DeviceStreamOptions};
+use gmv_guard_server::api::v2::model::StreamSummaryState;
 use gmv_guard_server::core::{
     ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState,
 };
@@ -586,14 +587,13 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                     .state,
                 gmv_guard_server::api::v2::model::AiTaskSummaryState::Cancelled
             );
-            assert_eq!(
-                control
-                    .stop_stream("op-stop-rpc", &stream.stream_id)
-                    .await
-                    .unwrap()
-                    .stream_id,
-                stream.stream_id
-            );
+            let stopping = control
+                .stop_stream("op-stop-rpc", &stream.stream_id)
+                .await
+                .unwrap();
+            assert_eq!(stopping.stream_id, stream.stream_id);
+            assert_eq!(stopping.state, StreamSummaryState::Stopping);
+            assert!(store.get_stream_session_owner(&stream.stream_id).is_some());
 
             let operations = OperationService::default();
             let executor = MqttCommandExecutor::new(operations.clone(), store);
@@ -853,7 +853,7 @@ impl SessionControl for FakeSession {
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         Ok(tonic::Response::new(DeviceStreamResponse {
             stream_id: request.into_inner().stream_id,
-            state: DeviceStreamState::Stopped as i32,
+            state: DeviceStreamState::Stopping as i32,
             error: None,
             endpoint: String::new(),
             video_codec: String::new(),

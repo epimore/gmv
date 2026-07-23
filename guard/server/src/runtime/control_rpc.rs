@@ -307,6 +307,15 @@ impl GuardControlRpc {
                 .release(&request.lease_id, &request.expected_instance_id),
         }
         .map_err(status)?;
+        if matches!(transition, LeaseTransition::Release) {
+            for mut route in self.store.routes().into_iter().filter(|route| {
+                route.resource_id == lease.resource_id && route.state != RouteState::Closed
+            }) {
+                route.state = RouteState::Closed;
+                self.store.upsert_route(route);
+            }
+            self.store.remove_stream_session_owner(&lease.resource_id);
+        }
         Ok(Response::new(LeaseResponse {
             state: proto_lease_state(lease.state) as i32,
         }))

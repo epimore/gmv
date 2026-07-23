@@ -81,8 +81,8 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
 
             let confirmed = service
                 .confirm_lease(tonic::Request::new(LeaseRequest {
-                    lease_id: allocation.lease_id,
-                    route_id: allocation.route_id,
+                    lease_id: allocation.lease_id.clone(),
+                    route_id: allocation.route_id.clone(),
                     expected_instance_id: "inst-1".to_string(),
                     error: None,
                 }))
@@ -90,6 +90,26 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
                 .unwrap()
                 .into_inner();
             assert_eq!(confirmed.state, LeaseState::Confirmed as i32);
+
+            let released = service
+                .release_lease(tonic::Request::new(LeaseRequest {
+                    lease_id: allocation.lease_id,
+                    route_id: allocation.route_id.clone(),
+                    expected_instance_id: "inst-1".to_string(),
+                    error: None,
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(released.state, LeaseState::Released as i32);
+            let route = service
+                .query_route(tonic::Request::new(QueryRouteRequest {
+                    route_id: allocation.route_id,
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(route.state, RouteState::Closed as i32);
         });
 }
 

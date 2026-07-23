@@ -1667,6 +1667,17 @@ async fn reserve_durable_dialog_request(
             )
             .await?
         }
+        (SipDialogMethod::Bye, DialogState::Inviting) => {
+            SipDialogSessionRepository::cas_transition(
+                stream_id,
+                &session.signal_node_id,
+                session.version,
+                DialogState::Inviting,
+                DialogState::Terminating,
+                updated_at,
+            )
+            .await?
+        }
         _ => {
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidState.code(),

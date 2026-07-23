@@ -188,10 +188,7 @@ async function stop(row: ActiveStreamMonitorItem) {
   } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error, '停止失败')); }
 }
 const clockTimer = window.setInterval(() => { serverTimeMs.value += 1000; }, 1000);
-const stoppingPollTimer = window.setInterval(() => {
-  if (activeTab.value === 'current' && sessionNodeId.value && activeRows.value.some((row) => row.state === 'stopping')) void load(false);
-}, 2000);
-onBeforeUnmount(() => { window.clearInterval(clockTimer); window.clearInterval(stoppingPollTimer); });
+onBeforeUnmount(() => window.clearInterval(clockTimer));
 onMounted(async () => { try { nodes.value = await listNodes(); } catch (error) { ElMessage.error(errorMessage(error, 'Session 节点加载失败')); } });
 </script>
 

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use base::chrono::Local;
 use base::log::{debug, error, info, warn};
@@ -8,6 +9,8 @@ use crate::gb::sip::command as sip_command;
 use crate::register::core::{Register, TimeScheduleKey};
 use crate::state::session::{Cache, StreamByeCommand};
 use crate::storage::dialog_session::{DialogState, SipDialogSessionRepository};
+
+const CLOSE_WITHOUT_TRANSPORT_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub fn begin(stream_id: String) {
     begin_with_reason(stream_id, "session_close");
@@ -22,23 +25,19 @@ pub fn begin_with_reason(stream_id: String, terminal_reason: &str) {
         return;
     }
 
-    let Some(session) = Register::get_device_session(&start.device_id) else {
-        if Cache::stream_is_restored(&stream_id) {
-            warn!(
-                "restored stream close waiting for current device transport: \
-                 stream_id={stream_id}, device_id={}",
-                start.device_id
-            );
-            return;
-        }
+    let session = Register::get_device_session(&start.device_id);
+    if session.is_none() && !Cache::stream_is_restored(&stream_id) {
         force_cleanup(
             &stream_id,
             start.generation,
             "device registration unavailable",
         );
         return;
-    };
-    let close_timeout = session.reconnect_timeout(Instant::now());
+    }
+    let close_timeout = session
+        .as_ref()
+        .map(|session| session.reconnect_timeout(Instant::now()))
+        .unwrap_or(CLOSE_WITHOUT_TRANSPORT_TIMEOUT);
     if close_timeout.is_zero() {
         force_cleanup(&stream_id, start.generation, "close deadline expired");
         return;
@@ -51,6 +50,15 @@ pub fn begin_with_reason(stream_id: String, terminal_reason: &str) {
             &stream_id,
             start.generation,
             &format!("schedule close deadline failed: {err}"),
+        );
+        return;
+    }
+    if session.is_none() {
+        warn!(
+            "restored stream close waiting for current device transport: \
+             stream_id={stream_id}, device_id={}, close_timeout_secs={}",
+            start.device_id,
+            close_timeout.as_secs()
         );
         return;
     }
@@ -75,13 +83,13 @@ async fn send_bye(command: StreamByeCommand) {
     let generation = command.generation;
     let seq = command.seq;
     let device_id = command.device_id.clone();
-    stop_media_runtime(
+    let media_result = stop_media_runtime(
         &command.stream_id,
         &command.stream_node_name,
         &command.terminal_reason,
     )
     .await;
-    let result = sip_command::invite_stop_by_device(
+    let sip_result = sip_command::invite_stop_by_device(
         &command.device_id,
         crate::gb::sip::InviteStopRequest {
             call_id: Some(command.call_id.clone()),
@@ -91,8 +99,8 @@ async fn send_bye(command: StreamByeCommand) {
     )
     .await;
 
-    match result {
-        Ok(()) => {
+    match (media_result, sip_result) {
+        (Ok(()), Ok(())) => {
             if let Some(info) = Cache::stream_close_complete(&stream_id, generation) {
                 info!(
                     "stream close completed: stage=close_finalize, outcome=closed, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}, generation={}",
@@ -106,7 +114,15 @@ async fn send_bye(command: StreamByeCommand) {
                 release_guard_lease(info.guard_lease);
             }
         }
-        Err(err) => mark_failed(
+        (Err(err), Ok(())) => mark_failed(
+            &stream_id,
+            generation,
+            seq,
+            &device_id,
+            format!("media cleanup was not confirmed after SIP close: {err}"),
+            false,
+        ),
+        (_, Err(err)) => mark_failed(
             &stream_id,
             generation,
             seq,
@@ -153,8 +169,8 @@ pub(crate) fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
         let stream_id = info.stream_id;
         let stream_node_name = info.stream_node_name;
         base::tokio::spawn(async move {
-            stop_media_runtime(&stream_id, &stream_node_name, "force_cleanup").await;
-            finalize_durable_dialog_as_orphan("stream", &stream_id).await;
+            let _ = stop_media_runtime(&stream_id, &stream_node_name, "force_cleanup").await;
+            finalize_stream_close_as_orphan(&stream_id).await;
         });
     } else {
         debug!(
@@ -164,9 +180,17 @@ pub(crate) fn force_cleanup(stream_id: &str, generation: u64, reason: &str) {
     }
 }
 
-async fn stop_media_runtime(stream_id: &str, stream_node_name: &str, reason: &str) {
+pub(crate) async fn stop_media_runtime(
+    stream_id: &str,
+    stream_node_name: &str,
+    reason: &str,
+) -> base::exception::GlobalResult<()> {
     if stream_node_name.is_empty() {
-        return;
+        return Err(base::exception::GlobalError::new_biz_error(
+            base::err::BaseErrorCode::InvalidState.code(),
+            "stream media node is missing",
+            |msg| warn!("{msg}: stream_id={stream_id}, reason={reason}"),
+        ));
     }
     let node = match crate::guard_integration::ensure_stream_node(stream_node_name).await {
         Ok(node) => node,
@@ -175,19 +199,29 @@ async fn stop_media_runtime(stream_id: &str, stream_node_name: &str, reason: &st
                 "stream media cleanup deferred: stage=resolve_stream_node, outcome=unavailable, stream_id={}, stream_node={}, reason={}, error={}",
                 stream_id, stream_node_name, reason, err
             );
-            return;
+            return Err(err);
         }
     };
-    if let Err(err) = crate::service::stream_rpc::stop_receive(&node, stream_id, reason).await {
+    let result = crate::service::stream_rpc::stop_receive(&node, stream_id, reason).await;
+    if let Err(err) = &result {
         warn!(
             "stream media cleanup failed: stage=stop_receive, outcome=failed, stream_id={}, stream_node={}, reason={}, error={}",
             stream_id, stream_node_name, reason, err
         );
     }
+    result
 }
 
 pub(crate) async fn finalize_durable_dialog_as_orphan(resource_kind: &str, resource_id: &str) {
-    finalize_durable_dialog_as_orphan_inner(resource_kind, resource_id, None, false).await;
+    finalize_durable_dialog_as_orphan_inner(
+        resource_kind,
+        resource_id,
+        None,
+        false,
+        "recovery_failed",
+        "RECOVERY_FAILED",
+    )
+    .await;
 }
 
 pub(crate) async fn finalize_durable_dialog_as_orphan_for_epoch(
@@ -200,6 +234,20 @@ pub(crate) async fn finalize_durable_dialog_as_orphan_for_epoch(
         resource_id,
         expected_registration_epoch_id,
         true,
+        "recovery_failed",
+        "RECOVERY_FAILED",
+    )
+    .await;
+}
+
+async fn finalize_stream_close_as_orphan(stream_id: &str) {
+    finalize_durable_dialog_as_orphan_inner(
+        "stream",
+        stream_id,
+        None,
+        false,
+        "stream_close_failed",
+        "STREAM_CLOSE_FAILED",
     )
     .await;
 }
@@ -209,6 +257,8 @@ async fn finalize_durable_dialog_as_orphan_inner(
     resource_id: &str,
     expected_registration_epoch_id: Option<&str>,
     enforce_registration_epoch: bool,
+    terminal_reason: &str,
+    error_code: &str,
 ) {
     let session = match SipDialogSessionRepository::find_by_stream_id(resource_id).await {
         Ok(Some(session)) => session,
@@ -245,8 +295,8 @@ async fn finalize_durable_dialog_as_orphan_inner(
         session.version,
         session.state,
         DialogState::Orphan,
-        "recovery_failed",
-        Some("RECOVERY_FAILED"),
+        terminal_reason,
+        Some(error_code),
         Local::now().naive_local(),
     )
     .await
@@ -286,7 +336,7 @@ fn release_guard_lease(lease: Option<crate::state::session::GuardLease>) {
 
 #[cfg(test)]
 mod tests {
-    use super::finalize_durable_dialog_as_orphan;
+    use super::finalize_stream_close_as_orphan;
     use crate::storage::dialog_session::{
         DialogSessionType, DialogState, DialogTransport, SipDialogSession,
         SipDialogSessionRepository, enable_dialog_test_storage,
@@ -294,7 +344,7 @@ mod tests {
     use base::chrono::{Duration, Local};
 
     #[test]
-    fn force_finalizer_marks_active_durable_dialog_orphan() {
+    fn stream_close_finalizer_records_orphan_failure() {
         base::tokio::runtime::Runtime::new()
             .expect("runtime")
             .block_on(async {
@@ -336,16 +386,18 @@ mod tests {
                 .await
                 .expect("insert dialog");
 
-                finalize_durable_dialog_as_orphan("stream", stream_id).await;
+                finalize_stream_close_as_orphan(stream_id).await;
 
+                let dialog = SipDialogSessionRepository::find_by_stream_id(stream_id)
+                    .await
+                    .expect("find dialog")
+                    .expect("dialog");
+                assert_eq!(dialog.state, DialogState::Orphan);
                 assert_eq!(
-                    SipDialogSessionRepository::find_by_stream_id(stream_id)
-                        .await
-                        .expect("find dialog")
-                        .expect("dialog")
-                        .state,
-                    DialogState::Orphan
+                    dialog.terminal_reason.as_deref(),
+                    Some("stream_close_failed")
                 );
+                assert_eq!(dialog.error_code.as_deref(), Some("STREAM_CLOSE_FAILED"));
             });
     }
 }

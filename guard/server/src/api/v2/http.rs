@@ -4152,9 +4152,15 @@ async fn stop_stream(
                 .revoke_playback_tickets_for_stream(&stream_id);
             let result = base::serde_json::to_value(&stream)
                 .map_err(|error| HttpError::internal(format!("serialize stop result: {error}")))?;
-            state
-                .api
-                .succeed_operation_with_result(&operation_id, "stream stopped", result)?;
+            state.api.succeed_operation_with_result(
+                &operation_id,
+                if stream.state == StreamSummaryState::Stopped {
+                    "stream stopped"
+                } else {
+                    "stream stop accepted"
+                },
+                result,
+            )?;
             Ok(Json(stream))
         }
         Err(error) => {

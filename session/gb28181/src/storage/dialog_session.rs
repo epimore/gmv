@@ -111,7 +111,7 @@ impl DialogState {
             (self, next),
             (
                 Self::Inviting,
-                Self::Established | Self::Terminated | Self::Orphan
+                Self::Established | Self::Terminating | Self::Terminated | Self::Orphan
             ) | (
                 Self::Established,
                 Self::Terminating | Self::Terminated | Self::Orphan
@@ -1919,7 +1919,38 @@ mod tests {
         assert!(session.validate().is_err());
 
         assert!(DialogState::Inviting.can_transition_to(DialogState::Terminated));
+        assert!(DialogState::Inviting.can_transition_to(DialogState::Terminating));
         assert!(!DialogState::Terminated.can_transition_to(DialogState::Established));
+    }
+
+    #[test]
+    fn inviting_dialog_can_enter_terminating_for_manual_cancel() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let _guard = enable_dialog_test_storage();
+            SipDialogSessionRepository::insert_inviting(&inviting("manual-cancel"))
+                .await
+                .expect("insert inviting dialog");
+
+            assert!(
+                SipDialogSessionRepository::cas_transition(
+                    "manual-cancel",
+                    "session-1",
+                    0,
+                    DialogState::Inviting,
+                    DialogState::Terminating,
+                    at(1_001),
+                )
+                .await
+                .expect("begin manual cancel")
+            );
+            let current = SipDialogSessionRepository::find_by_stream_id("manual-cancel")
+                .await
+                .expect("find dialog")
+                .expect("dialog");
+            assert_eq!(current.state, DialogState::Terminating);
+            assert_eq!(current.version, 1);
+        });
     }
 
     #[test]

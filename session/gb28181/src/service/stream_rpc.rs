@@ -14,7 +14,8 @@ use gmv_protocol::common::v1::{EndpointMode, ErrorDetail, OperationRef};
 use gmv_protocol::stream::v1::{
     CreateOutputRequest, OutputInfo, QueryStreamRequest, QueryStreamResponse,
     ReleaseSubscriptionOutputsRequest, StopReceiveRequest, StreamBoolResponse, StreamJsonRequest,
-    StreamJsonResponse, StreamUnitResponse, stream_control_client::StreamControlClient,
+    StreamJsonResponse, StreamState, StreamUnitResponse,
+    stream_control_client::StreamControlClient,
 };
 use std::time::{Duration, Instant};
 
@@ -278,9 +279,25 @@ pub async fn stop_receive(node: &StreamNode, stream_id: &str, reason: &str) -> G
         .await
         .map_err(|error| rpc_status(error, "stop_receive"))?
         .into_inner();
-    match response.error {
-        None => Ok(()),
-        Some(error) => Err(error_detail(error, "stop_receive")),
+    if let Some(error) = response.error {
+        return Err(error_detail(error, "stop_receive"));
+    }
+    if StreamState::try_from(response.state) != Ok(StreamState::Stopped) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream stop was not confirmed",
+            |msg| error!("{msg}: stream_id={stream_id}, state={}", response.state),
+        ));
+    }
+    let current = query_stream(node, stream_id).await?;
+    if StreamState::try_from(current.state) == Ok(StreamState::Stopped) {
+        Ok(())
+    } else {
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream resource is still running after stop",
+            |msg| error!("{msg}: stream_id={stream_id}, state={}", current.state),
+        ))
     }
 }
 

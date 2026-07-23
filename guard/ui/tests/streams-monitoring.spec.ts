@@ -32,7 +32,7 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     viewer_count: 1, viewer_formats: [{ media_format: 'hls', viewer_count: 1 }],
   };
   let stopRequested = false;
-  let readsAfterStop = 0;
+  let activeListRequests = 0;
 
   await page.route('**/api/v2/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -40,11 +40,10 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     if (path === '/api/v2/auth/session') body = session;
     else if (path === '/api/v2/nodes') body = [offlineSessionNode, node, streamNode];
     else if (path === '/api/v2/gb28181/streams') {
+      activeListRequests += 1;
       const items = !stopRequested
         ? [active]
-        : readsAfterStop++ === 0
-          ? [{ ...active, state: 'stopping', dialog_state: 'TERMINATING', media_ready: false }]
-          : [];
+        : [{ ...active, state: 'stopping', dialog_state: 'TERMINATING', media_ready: false }];
       body = { items, next_after_id: '', server_time_ms: Date.now() };
     } else if (path === '/api/v2/gb28181/streams/stream-1/stop') {
       stopRequested = true;
@@ -101,5 +100,7 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await page.getByRole('button', { name: '停止', exact: true }).click();
   await page.getByRole('button', { name: '确认停止', exact: true }).click();
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('停止中', { exact: true })).toBeVisible();
-  await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText(active.stream_id, { exact: true })).toHaveCount(0, { timeout: 5_000 });
+  const requestsAfterStop = activeListRequests;
+  await page.waitForTimeout(2_200);
+  expect(activeListRequests).toBe(requestsAfterStop);
 });

@@ -1686,10 +1686,10 @@ impl BusinessControl {
                 idempotency_key: String::new(),
             }),
             stream_id: stream_id.to_string(),
-            reason: "manual".to_string(),
+            reason: "manual_stop".to_string(),
             subscription_id: String::new(),
             force: true,
-            expected_session: None,
+            expected_session: Some(proto_identity(&session.identity)),
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.stop_device_stream, node={}, req:{request:?}",
@@ -1714,25 +1714,33 @@ impl BusinessControl {
                 true,
             ));
         }
-        if response.state != DeviceStreamState::Stopped as i32 {
+        let state = DeviceStreamState::try_from(response.state).map_err(|_| {
+            edge.invalid_response("stream_stop_invalid_state");
+            GuardError::Conflict("session returned invalid stream stop state".to_string())
+        })?;
+        if !matches!(
+            state,
+            DeviceStreamState::Stopping | DeviceStreamState::Stopped
+        ) {
             edge.invalid_response("stream_not_stopped");
             return Err(GuardError::Conflict(
-                "session did not stop device stream".to_string(),
+                "session did not accept device stream stop".to_string(),
             ));
         }
         edge.success();
         let session_node_id = session.identity.node_id.clone();
         let session_instance_id = session.identity.instance_id.clone();
-        self.store.remove_stream_session_owner(stream_id);
-        if let Some(route) = self
-            .store
-            .routes()
-            .into_iter()
-            .find(|route| route.resource_id == stream_id && route.state != RouteState::Closed)
-            && let Some(mut stored_route) = self.store.get_route(&route.route_id)
-        {
-            stored_route.state = RouteState::Closed;
-            self.store.upsert_route(stored_route);
+        if state == DeviceStreamState::Stopped {
+            self.store.remove_stream_session_owner(stream_id);
+            if let Some(route) =
+                self.store.routes().into_iter().find(|route| {
+                    route.resource_id == stream_id && route.state != RouteState::Closed
+                })
+                && let Some(mut stored_route) = self.store.get_route(&route.route_id)
+            {
+                stored_route.state = RouteState::Closed;
+                self.store.upsert_route(stored_route);
+            }
         }
         Ok(StreamSummary {
             stream_id: stream_id.to_string(),
@@ -1752,7 +1760,11 @@ impl BusinessControl {
             playback_generation: 0,
             playback_start_time_sec: 0,
             playback_end_time_sec: 0,
-            state: StreamSummaryState::Stopped,
+            state: if state == DeviceStreamState::Stopped {
+                StreamSummaryState::Stopped
+            } else {
+                StreamSummaryState::Stopping
+            },
         })
     }
 
