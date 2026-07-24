@@ -181,7 +181,7 @@ function currentPageChanged(page: number) {
 function showDetails(row: ActiveStreamMonitorItem) { detailRow.value = row; detailVisible.value = true; }
 async function stop(row: ActiveStreamMonitorItem) {
   try {
-    await ElMessageBox.confirm(`确认向设备补偿停止流 ${row.stream_id}？`, '停止当前流', { type: 'warning', confirmButtonText: '确认停止', cancelButtonText: '取消' });
+    await ElMessageBox.confirm(`确认强制关闭设备媒体流 ${row.stream_id}？`, '停止当前流', { type: 'warning', confirmButtonText: '确认停止', cancelButtonText: '取消' });
     const response = await stopMonitoredStream(sessionNodeId.value, row.stream_id, `ui-stream-stop-${Date.now()}`);
     ElMessage.success(response.state === 'stopping' ? '停止请求已受理' : '流已处于终态');
     await load();
