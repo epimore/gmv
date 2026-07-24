@@ -1,7 +1,7 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use axum::body::Bytes;
 use base::exception::GlobalResult;
-use base::tokio::sync::broadcast;
+use base::tokio::sync::{broadcast, watch};
 use parking_lot::Mutex;
 use rsmpeg::ffi::AVPacket;
 use std::collections::VecDeque;
@@ -63,6 +63,7 @@ struct MuxPacketChannel {
     id: u64,
     tx: broadcast::Sender<Arc<MuxPacket>>,
     replay: Mutex<MuxPacketReplay>,
+    close: watch::Sender<bool>,
 }
 
 #[derive(Clone)]
@@ -73,11 +74,13 @@ pub struct MuxPacketSender {
 impl MuxPacketSender {
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity);
+        let (close, _) = watch::channel(false);
         Self {
             inner: Arc::new(MuxPacketChannel {
                 id: NEXT_MUX_PACKET_CHANNEL_ID.fetch_add(1, Ordering::Relaxed),
                 tx,
                 replay: Mutex::new(MuxPacketReplay::default()),
+                close,
             }),
         }
     }
@@ -87,6 +90,9 @@ impl MuxPacketSender {
         packet: Arc<MuxPacket>,
     ) -> Result<usize, broadcast::error::SendError<Arc<MuxPacket>>> {
         let mut replay = self.inner.replay.lock();
+        if *self.inner.close.borrow() {
+            return Ok(0);
+        }
         if replay.epoch.is_some_and(|epoch| epoch != packet.epoch) {
             replay.clear();
         }
@@ -123,7 +129,15 @@ impl MuxPacketSender {
             channel_id: self.inner.id,
             replay: replay.packets.clone(),
             rx,
+            close: self.inner.close.subscribe(),
         }
+    }
+
+    pub fn close(&self) {
+        if self.inner.close.send_replace(true) {
+            return;
+        }
+        self.inner.replay.lock().clear();
     }
 }
 
@@ -131,19 +145,45 @@ pub struct MuxPacketReceiver {
     channel_id: u64,
     replay: VecDeque<Arc<MuxPacket>>,
     rx: broadcast::Receiver<Arc<MuxPacket>>,
+    close: watch::Receiver<bool>,
 }
 
 impl MuxPacketReceiver {
     pub async fn recv(&mut self) -> Result<Arc<MuxPacket>, broadcast::error::RecvError> {
-        if let Some(packet) = self.replay.pop_front() {
-            return Ok(packet);
+        if *self.close.borrow() {
+            return Err(broadcast::error::RecvError::Closed);
         }
-        self.rx.recv().await
+        if let Some(packet) = self.replay.pop_front() {
+            return if *self.close.borrow() {
+                Err(broadcast::error::RecvError::Closed)
+            } else {
+                Ok(packet)
+            };
+        }
+        if *self.close.borrow() {
+            return Err(broadcast::error::RecvError::Closed);
+        }
+        let result = base::tokio::select! {
+            _ = self.close.changed() => Err(broadcast::error::RecvError::Closed),
+            result = self.rx.recv() => result,
+        };
+        if *self.close.borrow() {
+            Err(broadcast::error::RecvError::Closed)
+        } else {
+            result
+        }
     }
 
     pub fn try_recv(&mut self) -> Result<Arc<MuxPacket>, broadcast::error::TryRecvError> {
+        if *self.close.borrow() {
+            return Err(broadcast::error::TryRecvError::Closed);
+        }
         if let Some(packet) = self.replay.pop_front() {
-            return Ok(packet);
+            return if *self.close.borrow() {
+                Err(broadcast::error::TryRecvError::Closed)
+            } else {
+                Ok(packet)
+            };
         }
         self.rx.try_recv()
     }
@@ -252,6 +292,32 @@ mod tests {
         assert!(sender.send(live.clone()).is_ok());
         assert!(Arc::ptr_eq(&first.try_recv().unwrap(), &live));
         assert!(Arc::ptr_eq(&second.try_recv().unwrap(), &key));
+    }
+
+    #[test]
+    fn explicit_close_discards_replay_and_wakes_existing_receivers() {
+        base::tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                let sender = MuxPacketSender::new(4);
+                assert!(sender.send(packet(Instant::now(), 1, true)).is_ok());
+                let mut replay_receiver = sender.subscribe();
+                let mut waiting_receiver = sender.subscribe();
+                while waiting_receiver.try_recv().is_ok() {}
+                let waiter = base::tokio::spawn(async move { waiting_receiver.recv().await });
+                base::tokio::task::yield_now().await;
+
+                sender.close();
+
+                assert!(matches!(
+                    replay_receiver.try_recv(),
+                    Err(broadcast::error::TryRecvError::Closed)
+                ));
+                assert!(matches!(
+                    waiter.await.expect("receiver task should finish"),
+                    Err(broadcast::error::RecvError::Closed)
+                ));
+            });
     }
 
     #[test]

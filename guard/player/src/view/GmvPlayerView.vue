@@ -539,6 +539,18 @@ async function mountPlayer(sources = props.sources) {
       isLoading.value = false;
     }
   }));
+  playerStops[slot].push(core.on('ended', () => {
+    if (version !== playerLoadVersion || slot !== activeVideoSlot.value) return;
+    destroyPlayerSlot(slot);
+    activePlaybackReady.value = false;
+    activeSource.value = undefined;
+    selectedSourceUrl.value = '';
+    viewState.value = 'idle';
+    isLoading.value = false;
+    lastError.value = '';
+    startupProgress.value = undefined;
+    resetMediaStats();
+  }));
   playerStops[slot].push(core.on('reconnecting', () => {
     if (version === playerLoadVersion && !hasActivePlayback) {
       viewState.value = 'reconnecting';

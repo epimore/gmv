@@ -13,6 +13,7 @@ const hlsMock = vi.hoisted(() => ({
 
 vi.mock("mpegts.js", () => ({
   default: {
+    Events: { LOADING_COMPLETE: "loading_complete" },
     getFeatureList: () => ({ mseLivePlayback: true }),
     createPlayer: mpegtsMock.createPlayer,
   },
@@ -50,6 +51,8 @@ function createMpegtsPlayer() {
     unload: vi.fn(),
     detachMediaElement: vi.fn(),
     destroy: vi.fn(),
+    on: vi.fn(),
+    off: vi.fn(),
   };
 }
 
@@ -316,6 +319,24 @@ describe("GmvPlayerView make-before-break", () => {
     expect(wrapper.classes()).toContain("is-error");
     expect(wrapper.classes()).not.toContain("is-playing");
     expect(wrapper.text()).toContain("new stream failed");
+    wrapper.unmount();
+  });
+
+  it("直播输出结束后销毁播放器并清除旧画面", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: { sources: source("http://127.0.0.1/live.flv") },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const video = wrapper.find("video").element;
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    video.dispatchEvent(new Event("ended"));
+    await wrapper.vm.$nextTick();
+
+    expect(players[0].destroy).toHaveBeenCalledOnce();
+    expect(wrapper.classes()).toContain("is-idle");
+    expect(wrapper.classes()).not.toContain("is-playing");
     wrapper.unmount();
   });
 

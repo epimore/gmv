@@ -521,16 +521,36 @@ pub mod muxer_layer {
 
         pub fn close_by_muxer_type(&mut self, mt: MuxerEnum) {
             match mt {
-                MuxerEnum::Flv => self.flv = None,
-                MuxerEnum::Mp4 => self.mp4 = None,
+                MuxerEnum::Flv => {
+                    if let Some(layer) = self.flv.take() {
+                        layer.tx.close();
+                    }
+                }
+                MuxerEnum::Mp4 => {
+                    if let Some(layer) = self.mp4.take() {
+                        layer.tx.close();
+                    }
+                }
                 MuxerEnum::Ts => self.ts = None,
                 MuxerEnum::RtpFrame => self.rtp_frame = None,
                 MuxerEnum::RtpPs => self.rtp_ps = None,
                 MuxerEnum::RtpEnc => self.rtp_enc = None,
                 MuxerEnum::HlsTs => self.hls_ts = None,
-                MuxerEnum::DashMp4 => self.dash_mp4 = None,
-                MuxerEnum::FMp4 => self.fmp4 = None,
-                MuxerEnum::HlsMp4 => self.hls_mp4 = None,
+                MuxerEnum::DashMp4 => {
+                    if let Some(layer) = self.dash_mp4.take() {
+                        layer.tx.close();
+                    }
+                }
+                MuxerEnum::FMp4 => {
+                    if let Some(layer) = self.fmp4.take() {
+                        layer.tx.close();
+                    }
+                }
+                MuxerEnum::HlsMp4 => {
+                    if let Some(layer) = self.hls_mp4.take() {
+                        layer.tx.close();
+                    }
+                }
             }
         }
     }

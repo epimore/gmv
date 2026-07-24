@@ -7,6 +7,7 @@ const mpegtsMock = vi.hoisted(() => ({
 
 vi.mock("mpegts.js", () => ({
   default: {
+    Events: { LOADING_COMPLETE: "loading_complete" },
     getFeatureList: () => ({ mseLivePlayback: true }),
     createPlayer: mpegtsMock.createPlayer,
   },
@@ -16,6 +17,7 @@ import { GmvPlayerCore } from "../../src/core/GmvPlayerCore";
 import { FlvEngine } from "../../src/core/engines/FlvEngine";
 
 function createMpegtsPlayer(play: () => Promise<void> | void = () => Promise.resolve()) {
+  const listeners = new Map<string, Set<() => void>>();
   return {
     attachMediaElement: vi.fn(),
     load: vi.fn(),
@@ -24,6 +26,13 @@ function createMpegtsPlayer(play: () => Promise<void> | void = () => Promise.res
     unload: vi.fn(),
     detachMediaElement: vi.fn(),
     destroy: vi.fn(),
+    on: vi.fn((event: string, listener: () => void) => {
+      const eventListeners = listeners.get(event) ?? new Set();
+      eventListeners.add(listener);
+      listeners.set(event, eventListeners);
+    }),
+    off: vi.fn((event: string, listener: () => void) => listeners.get(event)?.delete(listener)),
+    emit: (event: string) => listeners.get(event)?.forEach((listener) => listener()),
   };
 }
 
@@ -62,6 +71,23 @@ describe("FlvEngine audio fallback", () => {
       enableWorkerForMSE: false,
     });
     engine.destroy();
+  });
+
+  it("HTTP-FLV 输出结束时通知播放器进入终态", async () => {
+    const core = new GmvPlayerCore({
+      video: testVideo(),
+      sources: [source(false)],
+      autoplay: true,
+      muted: true,
+    });
+    const onEnded = vi.fn();
+    core.on("ended", onEnded);
+
+    await core.load();
+    mpegtsMock.createPlayer.mock.results[0].value.emit("loading_complete");
+
+    expect(onEnded).toHaveBeenCalledOnce();
+    core.destroy();
   });
 
   it.each([undefined, true])("音频状态为 %s 时不强制覆盖媒体流探测结果", async (hasAudio) => {

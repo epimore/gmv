@@ -236,6 +236,14 @@ export class GmvPlayerCore {
       this.clearVideoFrameWatch();
       this.bus.emit('paused', undefined);
     };
+    const onEnded = () => {
+      if (this.destroyed) return;
+      this.clearStallWatch();
+      this.clearStartupWatch();
+      this.clearStablePlaybackTimer();
+      this.clearVideoFrameWatch();
+      this.bus.emit('ended', undefined);
+    };
     const onStalled = () => {
       if (this.destroyed) return;
       this.bus.emit('stalled', undefined);
@@ -257,11 +265,13 @@ export class GmvPlayerCore {
     };
     this.video.addEventListener('playing', onPlaying);
     this.video.addEventListener('pause', onPause);
+    this.video.addEventListener('ended', onEnded);
     this.video.addEventListener('stalled', onStalled);
     this.video.addEventListener('error', onError);
     this.videoCleanups.push(
       () => this.video.removeEventListener('playing', onPlaying),
       () => this.video.removeEventListener('pause', onPause),
+      () => this.video.removeEventListener('ended', onEnded),
       () => this.video.removeEventListener('stalled', onStalled),
       () => this.video.removeEventListener('error', onError),
     );

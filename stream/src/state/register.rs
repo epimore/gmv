@@ -1228,6 +1228,13 @@ impl Register {
                 |msg| error!("stream_id = {}; {msg}", stream_id),
             )
         })?;
+        if meta.closing.load(Ordering::Acquire) {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream is closing",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            ));
+        }
         let _hls_guard = (output_enum == OutputEnum::HlsFmp4).then(|| arc.hls_lease_lock.lock());
         let mut added = true;
         match arc
@@ -1289,17 +1296,20 @@ impl Register {
         BaseStreamInfo::new(rtp_info, stream_id, meta.register_ts)
     }
 
-    //返回BaseStreamInfo,user_count
+    //返回仍可播放的 BaseStreamInfo
     pub fn get_base_stream_info_by_stream_id(stream_id: Arc<str>) -> Option<BaseStreamInfo> {
         let arc = Self::get().inner.clone();
-        arc.stream_metadata_map.get(&stream_id).map(|meta| {
+        arc.stream_metadata_map.get(&stream_id).and_then(|meta| {
+            if meta.closing.load(Ordering::Acquire) {
+                return None;
+            }
             let stream_info = Self::build_base_stream_info(
                 &meta,
                 arc.server_conf.name.clone(),
                 arc.server_conf.proxy_addr.clone(),
                 stream_id.to_string(),
             );
-            stream_info
+            Some(stream_info)
         })
     }
 

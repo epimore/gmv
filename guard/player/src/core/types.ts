@@ -43,6 +43,7 @@ export interface GmvPlayerEvents {
   loading: undefined;
   playing: undefined;
   paused: undefined;
+  ended: undefined;
   stalled: undefined;
   reconnecting: { retry: number; reason: string };
   startupProgress: { stage: 'buffering_player'; elapsedMs: number; checkpointMs: number; hardTimeoutMs: number };

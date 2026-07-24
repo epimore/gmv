@@ -41,7 +41,10 @@ pub async fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRe
     let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, stream_id);
     let _ = state::session::Cache::notify_stream_wait(&key_stream_in_id, None);
     if state::session::Cache::stream_is_closing(&stream_id) {
-        return InTimeoutEventRes::CloseAll;
+        debug!(
+            "stream input timeout observation preserved: action=input_timeout, outcome=keep_alive, reason=stream_closing, stream_id={stream_id}"
+        );
+        return InTimeoutEventRes::KeepAlive;
     }
 
     match SipDialogSessionRepository::find_playback_pause_lease(&stream_id).await {
@@ -383,9 +386,11 @@ fn invalid_file_name_error() -> GlobalError {
 
 #[cfg(test)]
 mod tests {
-    use super::keep_alive_paused_playback;
+    use super::{keep_alive_paused_playback, stream_input_timeout};
+    use crate::state::session::{AccessMode, Cache};
     use crate::storage::dialog_session::PlaybackPauseLease;
     use base::chrono::{Duration, Local};
+    use gmv_domain::info::obj::{BaseStreamInfo, InTimeoutEventRes, RtpInfo, StreamState};
 
     #[test]
     fn input_timeout_only_keeps_acknowledged_paused_playback_alive() {
@@ -403,5 +408,40 @@ mod tests {
         lease.expire_at = Some(now + Duration::seconds(1));
         assert!(!keep_alive_paused_playback(Some(&lease), now));
         assert!(!keep_alive_paused_playback(None, now));
+    }
+
+    #[test]
+    fn input_timeout_preserves_observation_while_stream_is_closing() {
+        base::tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                let stream_id = "closing-input-timeout".to_string();
+                Cache::stream_map_remove(&stream_id, None);
+                Cache::stream_map_insert_info(
+                    stream_id.clone(),
+                    "device-id".to_string(),
+                    "channel-id".to_string(),
+                    200_000_016,
+                    String::new(),
+                    "stream-node".to_string(),
+                    "call-id".to_string(),
+                    1,
+                    AccessMode::Live,
+                );
+                Cache::stream_close_begin(&stream_id, "manual_stop")
+                    .expect("stream close should begin");
+                let response = stream_input_timeout(StreamState::new(
+                    BaseStreamInfo::new(
+                        RtpInfo::new(200_000_016, None, "stream-node".to_string(), String::new()),
+                        stream_id.clone(),
+                        0,
+                    ),
+                    0,
+                ))
+                .await;
+
+                assert!(matches!(response, InTimeoutEventRes::KeepAlive));
+                Cache::stream_map_remove(&stream_id, None);
+            });
     }
 }

@@ -6,6 +6,7 @@ import mpegts from 'mpegts.js';
 export class FlvEngine extends BaseEngine {
   readonly protocol = 'flv' as const;
   private player?: any;
+  private readonly handleLoadingComplete = () => this.video?.dispatchEvent(new Event('ended'));
 
   async attach(video: HTMLVideoElement, source: GmvSource): Promise<void> {
     this.video = video;
@@ -40,6 +41,7 @@ export class FlvEngine extends BaseEngine {
       },
     );
 
+    this.player.on?.(mpegts.Events.LOADING_COMPLETE, this.handleLoadingComplete);
     this.player.attachMediaElement(video);
     this.player.load();
   }
@@ -54,6 +56,7 @@ export class FlvEngine extends BaseEngine {
 
   destroy(): void {
     try {
+      this.player?.off?.(mpegts.Events.LOADING_COMPLETE, this.handleLoadingComplete);
       this.player?.pause?.();
       this.player?.unload?.();
       this.player?.detachMediaElement?.();
