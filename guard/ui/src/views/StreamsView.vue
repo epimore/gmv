@@ -89,7 +89,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { errorMessage, listActiveStreamMonitor, listNodes, listStreamHistoryMonitor, stopMonitoredStream, type ActiveStreamMonitorItem, type NodeInfo, type StreamHistoryMonitorItem, type StreamMonitorQuery } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
@@ -187,8 +187,6 @@ async function stop(row: ActiveStreamMonitorItem) {
     await load();
   } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error, '停止失败')); }
 }
-const clockTimer = window.setInterval(() => { serverTimeMs.value += 1000; }, 1000);
-onBeforeUnmount(() => window.clearInterval(clockTimer));
 onMounted(async () => { try { nodes.value = await listNodes(); } catch (error) { ElMessage.error(errorMessage(error, 'Session 节点加载失败')); } });
 </script>
 

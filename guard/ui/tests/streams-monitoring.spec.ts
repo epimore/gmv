@@ -23,12 +23,13 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     node_id: '34020000002000000002', instance_id: 'old-session-instance', connection: 'DISCONNECTED',
     display_name: '离线国标 Session',
   };
+  const monitorServerTimeMs = Date.now();
   const active = {
     stream_id: 'stream-1', session_node_id: node.node_id, session_instance_id: node.instance_id,
     stream_node_id: 'stream-node-1', device_id: 'device-1', channel_id: 'channel-1', ssrc: '0100000001',
     state: 'running', dialog_state: 'ESTABLISHED', media_state: 'receiving', media_ready: true,
-    created_at_ms: Date.now() - 10_000, established_at_ms: Date.now() - 9_000,
-    started_at_ms: Date.now() - 9_000, diagnostic_reason: '', session_type: 'LIVE',
+    created_at_ms: monitorServerTimeMs - 10_000, established_at_ms: monitorServerTimeMs - 9_000,
+    started_at_ms: monitorServerTimeMs - 9_000, diagnostic_reason: '', session_type: 'LIVE',
     viewer_count: 1, viewer_formats: [{ media_format: 'hls', viewer_count: 1 }],
   };
   let stopRequested = false;
@@ -44,7 +45,7 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
       const items = !stopRequested
         ? [active]
         : [{ ...active, state: 'stopping', dialog_state: 'TERMINATING', media_ready: false }];
-      body = { items, next_after_id: '', server_time_ms: Date.now() };
+      body = { items, next_after_id: '', server_time_ms: monitorServerTimeMs };
     } else if (path === '/api/v2/gb28181/streams/stream-1/stop') {
       stopRequested = true;
       body = { stream_id: active.stream_id, state: 'stopping', session_node_id: node.node_id, session_instance_id: node.instance_id };
@@ -67,6 +68,10 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('观看人数', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('媒体格式', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).locator('.el-pagination')).toBeVisible();
+  const duration = page.getByRole('tabpanel', { name: '当前运行' }).getByText('9秒', { exact: true });
+  await expect(duration).toBeVisible();
+  await page.waitForTimeout(1_200);
+  await expect(duration).toBeVisible();
   await page.getByRole('button', { name: '详情', exact: true }).click();
   const details = page.getByRole('dialog', { name: '流详情' });
   await expect(details.getByText('观看人数', { exact: true })).toBeVisible();
