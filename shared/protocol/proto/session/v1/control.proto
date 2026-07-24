@@ -12,6 +12,8 @@ service SessionControl {
   rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc ListActiveStreams(ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
+  rpc ListActiveStreamDialogs(ListActiveStreamDialogsRequest) returns (ListActiveStreamDialogsResponse);
+  rpc GetActiveStreamManagement(GetActiveStreamManagementRequest) returns (GetActiveStreamManagementResponse);
   rpc ListStreamHistory(ListStreamHistoryRequest) returns (ListStreamHistoryResponse);
   rpc SetPlaybackSpeed(SetPlaybackSpeedRequest) returns (SetPlaybackSpeedResponse);
   rpc SeekPlayback(SeekPlaybackRequest) returns (PlaybackControlResponse);
@@ -84,6 +86,7 @@ message StopDeviceStreamRequest {
   string subscription_id = 4;
   bool force = 5;
   gmv.common.v1.NodeIdentity expected_session = 6;
+  string stop_reason = 7;
 }
 
 message ListActiveStreamsRequest {
@@ -132,6 +135,58 @@ message ActiveStreamViewerFormat {
   uint32 viewer_count = 2;
 }
 
+message ListActiveStreamDialogsRequest {
+  uint32 page = 1;
+  uint32 page_size = 2;
+  string stream_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string dialog_state = 8;
+  gmv.common.v1.NodeIdentity expected_session = 9;
+}
+
+message ListActiveStreamDialogsResponse {
+  repeated ActiveStreamDialogItem items = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+  int64 server_time_ms = 5;
+}
+
+message ActiveStreamDialogItem {
+  string stream_id = 1;
+  string session_node_id = 2;
+  string session_instance_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string dialog_state = 8;
+  int64 created_at_ms = 9;
+  int64 established_at_ms = 10;
+  int64 started_at_ms = 11;
+  string session_type = 12;
+}
+
+message GetActiveStreamManagementRequest {
+  string stream_id = 1;
+  gmv.common.v1.NodeIdentity expected_session = 2;
+}
+
+enum ActiveStreamManagementState {
+  ACTIVE_STREAM_MANAGEMENT_STATE_UNSPECIFIED = 0;
+  ACTIVE_STREAM_MANAGEMENT_STATE_ACTIVE = 1;
+  ACTIVE_STREAM_MANAGEMENT_STATE_ENDED = 2;
+}
+
+message GetActiveStreamManagementResponse {
+  ActiveStreamManagementState state = 1;
+  ActiveStreamItem active = 2;
+  StreamHistoryItem ended = 3;
+}
+
 message ListStreamHistoryRequest {
   uint32 page = 1;
   uint32 page_size = 2;
@@ -169,6 +224,7 @@ message StreamHistoryItem {
   string error_code = 14;
   bool legacy_terminal_time = 15;
   string terminal_reason_label = 16;
+  string stop_reason = 17;
 }
 
 message SetPlaybackSpeedRequest {

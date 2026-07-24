@@ -31,22 +31,24 @@ use gmv_protocol::guard::v1::{
     node_to_guard_message,
 };
 use gmv_protocol::session::v1::{
-    ActiveStreamItem, ActiveStreamViewerFormat, CloudRecordingFileState, CloudRecordingResponse,
+    ActiveStreamDialogItem, ActiveStreamItem, ActiveStreamManagementState,
+    ActiveStreamViewerFormat, CloudRecordingFileState, CloudRecordingResponse,
     CloudRecordingStatus, CloudRecordingSummary, ControlPtzRequest, ControlPtzResponse,
     CreateCloudRecordingRequest, CreateGbDeviceRequest, CreateGbDeviceResponse,
     DeleteCloudRecordingRequest, DeleteGbDeviceRequest, DeleteGbDeviceResponse,
     DeviceStreamResponse, DeviceStreamState, GbChannel, GbChannelImage, GbDevice,
     GbRecordQueryBatch, GbRecordSegment, GbResource, GbResourceConfirmation, GbResourceResponse,
-    GetCloudRecordingRequest, GetGbChannelRecordsRequest, GetGbChannelRecordsResponse,
-    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
-    GetSessionConfigRequest, GetSessionConfigResponse, IssueCloudRecordingAccessRequest,
-    IssueCloudRecordingAccessResponse, ListActiveStreamsRequest, ListActiveStreamsResponse,
-    ListCloudRecordingsRequest, ListCloudRecordingsResponse, ListGbChannelImagesRequest,
-    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
-    ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
-    ListStreamHistoryRequest, ListStreamHistoryResponse, PlaybackControlResponse,
-    PlaybackPresenceHeartbeatResult, PlaybackState, QueryGbChannelRecordsRequest,
-    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    GetActiveStreamManagementRequest, GetActiveStreamManagementResponse, GetCloudRecordingRequest,
+    GetGbChannelRecordsRequest, GetGbChannelRecordsResponse, GetGbChannelRequest,
+    GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
+    GetSessionConfigResponse, IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
+    ListGbResourcesResponse, ListStreamHistoryRequest, ListStreamHistoryResponse,
+    PlaybackControlResponse, PlaybackPresenceHeartbeatResult, PlaybackState,
+    QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
     SessionHookRequest, SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
     SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
@@ -716,8 +718,26 @@ impl SessionControl for SessionControlRpc {
         &self,
         request: tonic::Request<StopDeviceStreamRequest>,
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
-        let request = request.into_inner();
-        debug!("session_control.stop_device_stream, req:{request:?}");
+        let mut request = request.into_inner();
+        request.stop_reason = request.stop_reason.trim().to_string();
+        if request.expected_session.is_some()
+            && request.force
+            && request.reason == "manual_stop"
+            && (request.stop_reason.is_empty()
+                || request.stop_reason.chars().count() > 255
+                || request.stop_reason.contains('\0'))
+        {
+            return Err(tonic::Status::invalid_argument(
+                "stop_reason must be in 1..=255 characters",
+            ));
+        }
+        debug!(
+            "session_control.stop_device_stream: stream_id={}, reason={}, force={}, has_stop_reason={}",
+            request.stream_id,
+            request.reason,
+            request.force,
+            !request.stop_reason.is_empty()
+        );
         let identity = self
             .inner
             .lock()
@@ -764,6 +784,15 @@ impl SessionControl for SessionControlRpc {
                 response.session_node_id = identity.node_id;
                 response.session_instance_id = identity.instance_id;
                 return Ok(tonic::Response::new(response));
+            }
+            if request.force && request.reason == "manual_stop" {
+                SipDialogSessionRepository::record_stop_reason(
+                    &request.stream_id,
+                    &identity.node_id,
+                    &request.stop_reason,
+                )
+                .await
+                .map_err(storage_status)?;
             }
             Some(dialog)
         } else {
@@ -1045,6 +1074,93 @@ impl SessionControl for SessionControlRpc {
             items,
             next_after_id,
             server_time_ms: Local::now().timestamp_millis(),
+        }))
+    }
+
+    async fn list_active_stream_dialogs(
+        &self,
+        request: tonic::Request<ListActiveStreamDialogsRequest>,
+    ) -> Result<tonic::Response<ListActiveStreamDialogsResponse>, tonic::Status> {
+        let mut request = request.into_inner();
+        let identity = self.monitor_identity(request.expected_session.as_ref())?;
+        trim_active_dialog_request(&mut request);
+        let page = request.page.max(1);
+        let page_size = if request.page_size == 0 {
+            20
+        } else {
+            request.page_size
+        };
+        if page_size > 100 {
+            return Err(tonic::Status::invalid_argument(
+                "page_size must be in 1..=100",
+            ));
+        }
+        if !request.dialog_state.is_empty()
+            && !matches!(
+                request.dialog_state.as_str(),
+                "INVITING" | "ESTABLISHED" | "TERMINATING"
+            )
+        {
+            return Err(tonic::Status::invalid_argument(
+                "invalid active dialog state",
+            ));
+        }
+        let filter = DialogMonitorFilter {
+            stream_id: request.stream_id,
+            media_node_id: request.stream_node_id,
+            device_id: request.device_id,
+            channel_id: request.channel_id,
+            ssrc: request.ssrc,
+            state: request.dialog_state,
+        };
+        let (dialogs, total) = SipDialogSessionRepository::page_active_dialogs_for_monitor(
+            &identity.node_id,
+            page,
+            page_size,
+            &filter,
+        )
+        .await
+        .map_err(storage_status)?;
+        Ok(tonic::Response::new(ListActiveStreamDialogsResponse {
+            items: dialogs
+                .into_iter()
+                .map(|dialog| active_dialog_item(&identity, dialog))
+                .collect(),
+            total,
+            page,
+            page_size,
+            server_time_ms: Local::now().timestamp_millis(),
+        }))
+    }
+
+    async fn get_active_stream_management(
+        &self,
+        request: tonic::Request<GetActiveStreamManagementRequest>,
+    ) -> Result<tonic::Response<GetActiveStreamManagementResponse>, tonic::Status> {
+        let mut request = request.into_inner();
+        let identity = self.monitor_identity(request.expected_session.as_ref())?;
+        request.stream_id = request.stream_id.trim().to_string();
+        if request.stream_id.is_empty() {
+            return Err(tonic::Status::invalid_argument("stream_id is required"));
+        }
+        let dialog = SipDialogSessionRepository::find_by_stream_id(&request.stream_id)
+            .await
+            .map_err(storage_status)?
+            .ok_or_else(|| tonic::Status::not_found("stream dialog not found"))?;
+        if dialog.signal_node_id != identity.node_id {
+            return Err(tonic::Status::failed_precondition("wrong_session"));
+        }
+        if matches!(dialog.state, DialogState::Terminated | DialogState::Orphan) {
+            return Ok(tonic::Response::new(GetActiveStreamManagementResponse {
+                state: ActiveStreamManagementState::Ended as i32,
+                active: None,
+                ended: Some(history_stream_item(dialog)),
+            }));
+        }
+        Ok(tonic::Response::new(GetActiveStreamManagementResponse {
+            state: ActiveStreamManagementState::Active as i32,
+            active: Some(active_stream_item(&identity, &dialog).await),
+            ended: None,
         }))
     }
 
@@ -1916,6 +2032,15 @@ fn trim_active_stream_request(request: &mut ListActiveStreamsRequest) {
     request.state = request.state.trim().to_ascii_lowercase();
 }
 
+fn trim_active_dialog_request(request: &mut ListActiveStreamDialogsRequest) {
+    request.stream_id = request.stream_id.trim().to_string();
+    request.stream_node_id = request.stream_node_id.trim().to_string();
+    request.device_id = request.device_id.trim().to_string();
+    request.channel_id = request.channel_id.trim().to_string();
+    request.ssrc = request.ssrc.trim().to_string();
+    request.dialog_state = request.dialog_state.trim().to_ascii_uppercase();
+}
+
 fn trim_history_request(request: &mut ListStreamHistoryRequest) {
     request.stream_id = request.stream_id.trim().to_string();
     request.stream_node_id = request.stream_node_id.trim().to_string();
@@ -1960,6 +2085,26 @@ async fn active_stream_item(
         ),
     };
     active_stream_item_with_status(identity, dialog, status)
+}
+
+fn active_dialog_item(identity: &NodeIdentity, dialog: SipDialogSession) -> ActiveStreamDialogItem {
+    ActiveStreamDialogItem {
+        stream_id: dialog.stream_id,
+        session_node_id: identity.node_id.clone(),
+        session_instance_id: identity.instance_id.clone(),
+        stream_node_id: dialog.media_node_id,
+        device_id: dialog.device_id,
+        channel_id: dialog.channel_id,
+        ssrc: dialog.ssrc.unwrap_or_default(),
+        dialog_state: dialog.state.to_string(),
+        created_at_ms: local_datetime_ms(dialog.created_at),
+        established_at_ms: dialog
+            .established_at
+            .map(local_datetime_ms)
+            .unwrap_or_default(),
+        started_at_ms: local_datetime_ms(dialog.established_at.unwrap_or(dialog.created_at)),
+        session_type: dialog.session_type.to_string(),
+    }
 }
 
 fn active_stream_item_with_status(
@@ -2212,6 +2357,7 @@ fn history_stream_item(dialog: SipDialogSession) -> StreamHistoryItem {
         terminal_reason_label,
         error_code: dialog.error_code.unwrap_or_default(),
         legacy_terminal_time,
+        stop_reason: dialog.stop_reason.unwrap_or_default(),
     }
 }
 

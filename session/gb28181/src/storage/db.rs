@@ -475,6 +475,7 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
         ("registration_epoch_id", "varchar(36) NULL"),
         ("terminated_at", "datetime(3) NULL"),
         ("terminal_reason", "varchar(64) NULL"),
+        ("stop_reason", "varchar(255) NULL"),
         ("error_code", "varchar(64) NULL"),
     ];
     for (name, definition) in COLUMNS {
@@ -677,6 +678,7 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
         ("registration_epoch_id", "VARCHAR(36) NULL"),
         ("terminated_at", "DATETIME NULL"),
         ("terminal_reason", "VARCHAR(64) NULL"),
+        ("stop_reason", "VARCHAR(255) NULL"),
         ("error_code", "VARCHAR(64) NULL"),
     ];
     for (name, definition) in COLUMNS {
@@ -984,6 +986,7 @@ mod tests {
             "remote_tag",
             "contact_uri",
             "terminal_reason",
+            "stop_reason",
             "error_code",
         ] {
             assert!(mysql.contains(&format!("`{column}` varchar")));
@@ -1049,7 +1052,7 @@ mod tests {
             .into_iter()
             .map(|row| row.get::<String, _>("name"))
             .collect::<Vec<_>>();
-            for column in ["terminated_at", "terminal_reason", "error_code"] {
+            for column in ["terminated_at", "terminal_reason", "stop_reason", "error_code"] {
                 assert!(dialog_columns.iter().any(|item| item == column));
             }
 

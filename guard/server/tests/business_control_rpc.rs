@@ -25,20 +25,22 @@ use gmv_protocol::session::v1::{
     CreateGbDeviceRequest, CreateGbDeviceResponse, DeleteCloudRecordingRequest,
     DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
     GbChannel, GbDevice, GbRecordQueryBatch, GbResource, GbResourceResponse,
-    GetCloudRecordingRequest, GetGbChannelRecordsRequest, GetGbChannelRecordsResponse,
-    GetGbChannelRequest, GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse,
-    GetSessionConfigRequest, GetSessionConfigResponse, IssueCloudRecordingAccessRequest,
-    IssueCloudRecordingAccessResponse, ListActiveStreamsRequest, ListActiveStreamsResponse,
-    ListCloudRecordingsRequest, ListCloudRecordingsResponse, ListGbChannelImagesRequest,
-    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbChannelsResponse,
-    ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest, ListGbResourcesResponse,
-    ListStreamHistoryRequest, ListStreamHistoryResponse, PlaybackControlResponse,
-    PlaybackPresenceHeartbeat, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
-    RefreshPlaybackPresenceResponse, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest, SeekPlaybackRequest, SetPlaybackSpeedRequest,
-    SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
-    StartDeviceStreamRequest, StopCloudRecordingRequest, StopDeviceStreamRequest,
-    UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+    GetActiveStreamManagementRequest, GetActiveStreamManagementResponse, GetCloudRecordingRequest,
+    GetGbChannelRecordsRequest, GetGbChannelRecordsResponse, GetGbChannelRequest,
+    GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
+    GetSessionConfigResponse, IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
+    ListGbResourcesResponse, ListStreamHistoryRequest, ListStreamHistoryResponse,
+    PlaybackControlResponse, PlaybackPresenceHeartbeat, QueryGbChannelRecordsRequest,
+    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SetPlaybackStateRequest,
+    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
+    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
@@ -483,6 +485,18 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .await
                 .unwrap();
             assert_eq!(active.server_time_ms, 1_001);
+            let dialogs = control
+                .list_active_stream_dialogs(
+                    "session-rpc",
+                    ListActiveStreamDialogsRequest::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(dialogs.server_time_ms, 1_003);
+            control
+                .get_active_stream_management("session-rpc", "stream-1")
+                .await
+                .unwrap();
             let history = control
                 .list_stream_history("session-rpc", ListStreamHistoryRequest::default())
                 .await
@@ -763,6 +777,37 @@ impl SessionControl for FakeSession {
             server_time_ms: 1_002,
             ..Default::default()
         }))
+    }
+
+    async fn list_active_stream_dialogs(
+        &self,
+        request: tonic::Request<ListActiveStreamDialogsRequest>,
+    ) -> Result<tonic::Response<ListActiveStreamDialogsResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(ListActiveStreamDialogsResponse {
+            server_time_ms: 1_003,
+            ..Default::default()
+        }))
+    }
+
+    async fn get_active_stream_management(
+        &self,
+        request: tonic::Request<GetActiveStreamManagementRequest>,
+    ) -> Result<tonic::Response<GetActiveStreamManagementResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(
+            GetActiveStreamManagementResponse::default(),
+        ))
     }
 
     async fn create_cloud_recording(

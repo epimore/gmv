@@ -308,6 +308,7 @@ CREATE TABLE IF NOT EXISTS `gb28181_sip_dialog_session`  (
   `established_at` datetime(3) NULL DEFAULT NULL,
   `terminated_at` datetime(3) NULL DEFAULT NULL,
   `terminal_reason` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
+  `stop_reason` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `error_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `last_seen_at` datetime(3) NOT NULL,
   `expire_at` datetime(3) NOT NULL,

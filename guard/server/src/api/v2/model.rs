@@ -82,6 +82,41 @@ pub struct ActiveStreamMonitorPage {
 
 #[derive(Debug, Clone, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
+pub struct ActiveStreamDialogItem {
+    pub stream_id: String,
+    pub session_node_id: String,
+    pub session_instance_id: String,
+    pub stream_node_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub ssrc: String,
+    pub dialog_state: String,
+    pub created_at_ms: i64,
+    pub established_at_ms: i64,
+    pub started_at_ms: i64,
+    pub session_type: String,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct ActiveStreamDialogPage {
+    pub items: Vec<ActiveStreamDialogItem>,
+    pub total: u64,
+    pub page: u32,
+    pub page_size: u32,
+    pub server_time_ms: i64,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct ActiveStreamManagementInfo {
+    pub state: String,
+    pub active: Option<ActiveStreamMonitorItem>,
+    pub ended: Option<StreamHistoryMonitorItem>,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
 pub struct StreamHistoryMonitorItem {
     pub stream_id: String,
     pub session_node_id: String,
@@ -99,6 +134,7 @@ pub struct StreamHistoryMonitorItem {
     pub terminal_reason_label: String,
     pub error_code: String,
     pub legacy_terminal_time: bool,
+    pub stop_reason: String,
 }
 
 #[derive(Debug, Clone, base::serde::Serialize)]

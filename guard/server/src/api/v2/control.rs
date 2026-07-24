@@ -12,9 +12,11 @@ use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
     CloudRecordingSummary, ControlPtzRequest, CreateCloudRecordingRequest, CreateGbDeviceRequest,
     DeleteCloudRecordingRequest, DeleteGbDeviceRequest, DeviceStreamState, GbChannel,
-    GbChannelImage, GbDevice, GbResource, GetCloudRecordingRequest, GetGbChannelRecordsRequest,
+    GbChannelImage, GbDevice, GbResource, GetActiveStreamManagementRequest,
+    GetActiveStreamManagementResponse, GetCloudRecordingRequest, GetGbChannelRecordsRequest,
     GetGbChannelRecordsResponse, GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
-    IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse, ListActiveStreamsRequest,
+    IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
     ListActiveStreamsResponse, ListCloudRecordingsRequest, ListGbChannelImagesRequest,
     ListGbChannelsRequest, ListGbDevicesRequest, ListGbResourcesRequest, ListStreamHistoryRequest,
     ListStreamHistoryResponse, PlaybackPresenceHeartbeat, PlaybackPresenceHeartbeatResult,
@@ -287,6 +289,50 @@ impl BusinessControl {
         Ok(response)
     }
 
+    pub async fn list_active_stream_dialogs(
+        &self,
+        session_node_id: &str,
+        mut request: ListActiveStreamDialogsRequest,
+    ) -> GuardResult<ListActiveStreamDialogsResponse> {
+        let session = self.monitor_session_node(session_node_id)?;
+        request.expected_session = Some(proto_identity(&session.identity));
+        let mut client = self.session_client(&session).await?;
+        let resource_id = request.stream_id.clone();
+        let edge = RpcEdge::new(
+            "session",
+            "list_active_stream_dialogs",
+            session_node_id,
+            "",
+            &resource_id,
+        );
+        let response = edge.response(client.list_active_stream_dialogs(request).await)?;
+        edge.success();
+        Ok(response)
+    }
+
+    pub async fn get_active_stream_management(
+        &self,
+        session_node_id: &str,
+        stream_id: &str,
+    ) -> GuardResult<GetActiveStreamManagementResponse> {
+        let session = self.monitor_session_node(session_node_id)?;
+        let mut client = self.session_client(&session).await?;
+        let request = GetActiveStreamManagementRequest {
+            stream_id: stream_id.to_string(),
+            expected_session: Some(proto_identity(&session.identity)),
+        };
+        let edge = RpcEdge::new(
+            "session",
+            "get_active_stream_management",
+            session_node_id,
+            "",
+            stream_id,
+        );
+        let response = edge.response(client.get_active_stream_management(request).await)?;
+        edge.success();
+        Ok(response)
+    }
+
     pub async fn list_stream_history(
         &self,
         session_node_id: &str,
@@ -313,6 +359,7 @@ impl BusinessControl {
         session_node_id: &str,
         operation_id: &str,
         stream_id: &str,
+        stop_reason: &str,
     ) -> GuardResult<gmv_protocol::session::v1::DeviceStreamResponse> {
         let session = self.monitor_session_node(session_node_id)?;
         let mut client = self.session_client(&session).await?;
@@ -326,6 +373,7 @@ impl BusinessControl {
             subscription_id: String::new(),
             force: true,
             expected_session: Some(proto_identity(&session.identity)),
+            stop_reason: stop_reason.to_string(),
         };
         let edge = RpcEdge::new(
             "session",
@@ -1690,6 +1738,7 @@ impl BusinessControl {
             subscription_id: String::new(),
             force: true,
             expected_session: Some(proto_identity(&session.identity)),
+            stop_reason: "Guard 强制停止".to_string(),
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.stop_device_stream, node={}, req:{request:?}",
@@ -1793,6 +1842,7 @@ impl BusinessControl {
             subscription_id: subscription_id.to_string(),
             force: false,
             expected_session: None,
+            stop_reason: String::new(),
         };
         let edge = RpcEdge::new(
             "session",

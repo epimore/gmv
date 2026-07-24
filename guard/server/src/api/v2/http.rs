@@ -14,12 +14,12 @@ use base::err;
 use base::exception::GlobalError;
 use base::log::debug;
 use gmv_protocol::session::v1::{
-    CloudRecordingFileState, CloudRecordingStatus,
+    ActiveStreamManagementState, CloudRecordingFileState, CloudRecordingStatus,
     CloudRecordingSummary as RpcCloudRecordingSummary, CreateCloudRecordingRequest,
     GbChannel as RpcGbChannel, GbChannelImage as RpcGbChannelImage, GbDevice as RpcGbDevice,
     GbRecordQueryBatch as RpcGbRecordQueryBatch, GbRecordSegment as RpcGbRecordSegment,
     GbResource as RpcGbResource, GetGbChannelRecordsResponse as RpcGbChannelRecordsResponse,
-    ListActiveStreamsRequest, ListCloudRecordingsRequest, ListStreamHistoryRequest,
+    ListActiveStreamDialogsRequest, ListCloudRecordingsRequest, ListStreamHistoryRequest,
     PlaybackPresenceHeartbeat, ResetGbResourceConfirmationRequest,
     SaveGbResourceConfirmationRequest,
 };
@@ -35,11 +35,11 @@ use crate::api::v2::control::{
     BusinessControl, DeviceStreamOptions, GbDevicePage, GbSessionConfigSummary,
 };
 use crate::api::v2::model::{
-    ActiveStreamMonitorItem, ActiveStreamMonitorPage, ActiveStreamViewerFormat, AiTaskSummary,
-    AiTaskSummaryState, DeviceSummary, MediaOperationError, MediaOperationState,
-    MediaOperationSummary, MediaTransportCapability, MonitoredStreamStopResponse, RuntimeStatus,
-    StreamHistoryMonitorItem, StreamHistoryMonitorPage, StreamOutputSummary, StreamSummary,
-    StreamSummaryState,
+    ActiveStreamDialogItem, ActiveStreamDialogPage, ActiveStreamManagementInfo,
+    ActiveStreamMonitorItem, ActiveStreamViewerFormat, AiTaskSummary, AiTaskSummaryState,
+    DeviceSummary, MediaOperationError, MediaOperationState, MediaOperationSummary,
+    MediaTransportCapability, MonitoredStreamStopResponse, RuntimeStatus, StreamHistoryMonitorItem,
+    StreamHistoryMonitorPage, StreamOutputSummary, StreamSummary, StreamSummaryState,
 };
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
@@ -193,6 +193,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/devices/{device_id}/ptz", post(ptz))
         .route("/streams", get(streams))
         .route("/gb28181/streams", get(gb_active_streams))
+        .route(
+            "/gb28181/streams/{stream_id}/management",
+            get(gb_active_stream_management),
+        )
         .route("/gb28181/stream-history", get(gb_stream_history))
         .route(
             "/gb28181/streams/{stream_id}/stop",
@@ -1495,9 +1499,9 @@ struct GbActiveStreamQuery {
     #[serde(default)]
     session_node_id: String,
     #[serde(default)]
-    after_stream_id: String,
+    page: u32,
     #[serde(default)]
-    limit: u32,
+    page_size: u32,
     #[serde(default)]
     stream_id: String,
     #[serde(default)]
@@ -1509,7 +1513,14 @@ struct GbActiveStreamQuery {
     #[serde(default)]
     ssrc: String,
     #[serde(default)]
-    state: String,
+    dialog_state: String,
+}
+
+#[derive(Debug, Default, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbStreamManagementQuery {
+    #[serde(default)]
+    session_node_id: String,
 }
 
 #[derive(Debug, Default, base::serde::Deserialize)]
@@ -1540,6 +1551,7 @@ struct GbStreamHistoryQuery {
 struct GbMonitoredStreamStopRequest {
     session_node_id: String,
     request_id: String,
+    stop_reason: String,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -3524,33 +3536,33 @@ async fn gb_active_streams(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(query): Query<GbActiveStreamQuery>,
-) -> Result<Json<ActiveStreamMonitorPage>, HttpError> {
+) -> Result<Json<ActiveStreamDialogPage>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
     let session_node_id = query.session_node_id.trim();
     if session_node_id.is_empty() {
         return Err(GuardError::InvalidConfig("session_node_id is required".to_string()).into());
     }
     let response = BusinessControl::new(state.api.store())
-        .list_active_streams(
+        .list_active_stream_dialogs(
             session_node_id,
-            ListActiveStreamsRequest {
-                after_stream_id: query.after_stream_id,
-                limit: query.limit,
+            ListActiveStreamDialogsRequest {
+                page: query.page,
+                page_size: query.page_size,
                 stream_id: query.stream_id,
                 stream_node_id: query.stream_node_id,
                 device_id: query.device_id,
                 channel_id: query.channel_id,
                 ssrc: query.ssrc,
-                state: query.state,
+                dialog_state: query.dialog_state,
                 expected_session: None,
             },
         )
         .await?;
-    Ok(Json(ActiveStreamMonitorPage {
+    Ok(Json(ActiveStreamDialogPage {
         items: response
             .items
             .into_iter()
-            .map(|item| ActiveStreamMonitorItem {
+            .map(|item| ActiveStreamDialogItem {
                 stream_id: item.stream_id,
                 session_node_id: item.session_node_id,
                 session_instance_id: item.session_instance_id,
@@ -3558,31 +3570,88 @@ async fn gb_active_streams(
                 device_id: item.device_id,
                 channel_id: item.channel_id,
                 ssrc: item.ssrc,
-                state: item.state,
                 dialog_state: item.dialog_state,
-                media_state: item.media_state,
-                media_ready: item.media_ready,
                 created_at_ms: item.created_at_ms,
                 established_at_ms: item.established_at_ms,
                 started_at_ms: item.started_at_ms,
-                diagnostic_reason: item.diagnostic_reason,
                 session_type: item.session_type,
-                viewer_count: item.viewer_count,
-                viewer_formats: item
-                    .viewer_formats
-                    .into_iter()
-                    .map(|format| ActiveStreamViewerFormat {
-                        media_format: format.media_format,
-                        viewer_count: format.viewer_count,
-                    })
-                    .collect(),
-                supported_formats: item.supported_formats,
-                output_format: item.output_format,
             })
             .collect(),
-        next_after_id: response.next_after_id,
+        total: response.total,
+        page: response.page,
+        page_size: response.page_size,
         server_time_ms: response.server_time_ms,
     }))
+}
+
+async fn gb_active_stream_management(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(stream_id): Path<String>,
+    Query(query): Query<GbStreamManagementQuery>,
+) -> Result<Json<ActiveStreamManagementInfo>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let session_node_id = query.session_node_id.trim();
+    if session_node_id.is_empty() {
+        return Err(GuardError::InvalidConfig("session_node_id is required".to_string()).into());
+    }
+    let response = BusinessControl::new(state.api.store())
+        .get_active_stream_management(session_node_id, &stream_id)
+        .await?;
+    match ActiveStreamManagementState::try_from(response.state) {
+        Ok(ActiveStreamManagementState::Active) => {
+            let item = response.active.ok_or_else(|| {
+                GuardError::Conflict("session omitted active stream management item".to_string())
+            })?;
+            Ok(Json(ActiveStreamManagementInfo {
+                state: "active".to_string(),
+                active: Some(ActiveStreamMonitorItem {
+                    stream_id: item.stream_id,
+                    session_node_id: item.session_node_id,
+                    session_instance_id: item.session_instance_id,
+                    stream_node_id: item.stream_node_id,
+                    device_id: item.device_id,
+                    channel_id: item.channel_id,
+                    ssrc: item.ssrc,
+                    state: item.state,
+                    dialog_state: item.dialog_state,
+                    media_state: item.media_state,
+                    media_ready: item.media_ready,
+                    created_at_ms: item.created_at_ms,
+                    established_at_ms: item.established_at_ms,
+                    started_at_ms: item.started_at_ms,
+                    diagnostic_reason: item.diagnostic_reason,
+                    session_type: item.session_type,
+                    viewer_count: item.viewer_count,
+                    viewer_formats: item
+                        .viewer_formats
+                        .into_iter()
+                        .map(|format| ActiveStreamViewerFormat {
+                            media_format: format.media_format,
+                            viewer_count: format.viewer_count,
+                        })
+                        .collect(),
+                    supported_formats: item.supported_formats,
+                    output_format: item.output_format,
+                }),
+                ended: None,
+            }))
+        }
+        Ok(ActiveStreamManagementState::Ended) => {
+            let item = response.ended.ok_or_else(|| {
+                GuardError::Conflict("session omitted ended stream management item".to_string())
+            })?;
+            Ok(Json(ActiveStreamManagementInfo {
+                state: "ended".to_string(),
+                active: None,
+                ended: Some(stream_history_monitor_item(item)),
+            }))
+        }
+        _ => Err(GuardError::Conflict(
+            "session returned invalid stream management state".to_string(),
+        )
+        .into()),
+    }
 }
 
 async fn gb_stream_history(
@@ -3615,30 +3684,37 @@ async fn gb_stream_history(
         items: response
             .items
             .into_iter()
-            .map(|item| StreamHistoryMonitorItem {
-                stream_id: item.stream_id,
-                session_node_id: item.session_node_id,
-                stream_node_id: item.stream_node_id,
-                device_id: item.device_id,
-                channel_id: item.channel_id,
-                ssrc: item.ssrc,
-                session_type: item.session_type,
-                state: item.state,
-                created_at_ms: item.created_at_ms,
-                established_at_ms: item.established_at_ms,
-                terminated_at_ms: item.terminated_at_ms,
-                duration_ms: item.duration_ms,
-                terminal_reason: item.terminal_reason,
-                terminal_reason_label: item.terminal_reason_label,
-                error_code: item.error_code,
-                legacy_terminal_time: item.legacy_terminal_time,
-            })
+            .map(stream_history_monitor_item)
             .collect(),
         total: response.total,
         page: response.page,
         page_size: response.page_size,
         server_time_ms: response.server_time_ms,
     }))
+}
+
+fn stream_history_monitor_item(
+    item: gmv_protocol::session::v1::StreamHistoryItem,
+) -> StreamHistoryMonitorItem {
+    StreamHistoryMonitorItem {
+        stream_id: item.stream_id,
+        session_node_id: item.session_node_id,
+        stream_node_id: item.stream_node_id,
+        device_id: item.device_id,
+        channel_id: item.channel_id,
+        ssrc: item.ssrc,
+        session_type: item.session_type,
+        state: item.state,
+        created_at_ms: item.created_at_ms,
+        established_at_ms: item.established_at_ms,
+        terminated_at_ms: item.terminated_at_ms,
+        duration_ms: item.duration_ms,
+        terminal_reason: item.terminal_reason,
+        terminal_reason_label: item.terminal_reason_label,
+        error_code: item.error_code,
+        legacy_terminal_time: item.legacy_terminal_time,
+        stop_reason: item.stop_reason,
+    }
 }
 
 async fn stop_gb_monitored_stream(
@@ -3648,9 +3724,16 @@ async fn stop_gb_monitored_stream(
     Json(request): Json<GbMonitoredStreamStopRequest>,
 ) -> Result<Json<MonitoredStreamStopResponse>, HttpError> {
     require_write(&state.auth, &headers, Role::Operator)?;
-    if request.session_node_id.trim().is_empty() || request.request_id.trim().is_empty() {
+    let stop_reason = request.stop_reason.trim();
+    if request.session_node_id.trim().is_empty()
+        || request.request_id.trim().is_empty()
+        || stop_reason.is_empty()
+        || stop_reason.chars().count() > 255
+        || stop_reason.contains('\0')
+    {
         return Err(GuardError::InvalidConfig(
-            "session_node_id and request_id are required".to_string(),
+            "session_node_id, request_id and stop_reason (1..=255 characters) are required"
+                .to_string(),
         )
         .into());
     }
@@ -3659,6 +3742,7 @@ async fn stop_gb_monitored_stream(
             request.session_node_id.trim(),
             request.request_id.trim(),
             &stream_id,
+            stop_reason,
         )
         .await?;
     let state = match gmv_protocol::session::v1::DeviceStreamState::try_from(response.state) {

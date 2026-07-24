@@ -22,10 +22,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 const INSERT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,\
 signal_node_id,media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,\
 local_cseq,remote_cseq,contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,\
-state,established_at,terminated_at,terminal_reason,error_code,last_seen_at,expire_at,version,created_at,updated_at";
+state,established_at,terminated_at,terminal_reason,stop_reason,error_code,last_seen_at,expire_at,version,created_at,updated_at";
 const SELECT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,signal_node_id,\
 media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,local_cseq,remote_cseq,\
-contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,terminated_at,terminal_reason,error_code,last_seen_at,\
+contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,terminated_at,terminal_reason,stop_reason,error_code,last_seen_at,\
 expire_at,version,created_at,updated_at";
 const MAX_PAGE_SIZE: u32 = 1_000;
 
@@ -173,6 +173,7 @@ pub struct SipDialogSession {
     pub established_at: Option<NaiveDateTime>,
     pub terminated_at: Option<NaiveDateTime>,
     pub terminal_reason: Option<String>,
+    pub stop_reason: Option<String>,
     pub error_code: Option<String>,
     pub last_seen_at: NaiveDateTime,
     pub expire_at: NaiveDateTime,
@@ -195,6 +196,7 @@ impl SipDialogSession {
             "registration_epoch_id",
         )?;
         validate_optional_len(self.terminal_reason.as_deref(), 64, "terminal_reason")?;
+        validate_optional_stop_reason(self.stop_reason.as_deref())?;
         validate_optional_len(self.error_code.as_deref(), 64, "error_code")?;
         validate_len(&self.call_id, 128, "call_id")?;
         validate_sip_uri(&self.local_uri, 256, "local_uri")?;
@@ -294,6 +296,7 @@ struct SipDialogSessionRow {
     established_at: Option<NaiveDateTime>,
     terminated_at: Option<NaiveDateTime>,
     terminal_reason: Option<String>,
+    stop_reason: Option<String>,
     error_code: Option<String>,
     last_seen_at: NaiveDateTime,
     expire_at: NaiveDateTime,
@@ -331,6 +334,7 @@ impl TryFrom<SipDialogSessionRow> for SipDialogSession {
             established_at: row.established_at,
             terminated_at: row.terminated_at,
             terminal_reason: row.terminal_reason,
+            stop_reason: row.stop_reason,
             error_code: row.error_code,
             last_seen_at: row.last_seen_at,
             expire_at: row.expire_at,
@@ -430,7 +434,7 @@ impl SipDialogSessionRepository {
         db::execute!(
             sqlx::AssertSqlSafe(format!(
                 "INSERT INTO gb28181_sip_dialog_session ({INSERT_COLUMNS}) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )),
             &session.stream_id,
             &session.device_id,
@@ -456,6 +460,7 @@ impl SipDialogSessionRepository {
             session.established_at,
             session.terminated_at,
             &session.terminal_reason,
+            &session.stop_reason,
             &session.error_code,
             session.last_seen_at,
             session.expire_at,
@@ -716,6 +721,40 @@ impl SipDialogSessionRepository {
         )
         .hand_log(|message| error!("{message}"))?;
         Ok(rows == 1)
+    }
+
+    pub async fn record_stop_reason(
+        stream_id: &str,
+        signal_node_id: &str,
+        stop_reason: &str,
+    ) -> GlobalResult<()> {
+        validate_len(stream_id, 64, "stream_id")?;
+        validate_len(signal_node_id, 64, "signal_node_id")?;
+        validate_stop_reason(stop_reason)?;
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(session) = storage.get_mut(stream_id)
+                && session.signal_node_id == signal_node_id
+                && !session.state.is_terminal()
+                && session.stop_reason.is_none()
+            {
+                session.stop_reason = Some(stop_reason.to_string());
+            }
+            return Ok(());
+        }
+        db::execute!(
+            "UPDATE gb28181_sip_dialog_session SET stop_reason=? \
+             WHERE stream_id=? AND signal_node_id=? AND state IN ('INVITING','ESTABLISHED','TERMINATING') \
+             AND stop_reason IS NULL",
+            stop_reason,
+            stream_id,
+            signal_node_id,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        Ok(())
     }
 
     pub async fn initialize_playback_control(
@@ -1270,6 +1309,121 @@ impl SipDialogSessionRepository {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    pub async fn page_active_dialogs_for_monitor(
+        signal_node_id: &str,
+        page: u32,
+        page_size: u32,
+        filter: &DialogMonitorFilter,
+    ) -> GlobalResult<(Vec<SipDialogSession>, u64)> {
+        validate_len(signal_node_id, 64, "signal_node_id")?;
+        filter.validate()?;
+        if page == 0 || page_size == 0 || page_size > 100 {
+            return Err(invalid_data("invalid active dialog page"));
+        }
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut sessions = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .filter(|session| {
+                    session.signal_node_id == signal_node_id
+                        && !session.state.is_terminal()
+                        && filter.matches(session)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            sessions.sort_by(|left, right| left.stream_id.cmp(&right.stream_id));
+            let total = sessions.len() as u64;
+            let offset = (u64::from(page - 1) * u64::from(page_size)) as usize;
+            return Ok((
+                sessions
+                    .into_iter()
+                    .skip(offset)
+                    .take(page_size as usize)
+                    .collect(),
+                total,
+            ));
+        }
+        macro_rules! append_active_where {
+            ($builder:ident) => {{
+                $builder
+                    .push_bind(signal_node_id)
+                    .push(" AND state IN ('INVITING','ESTABLISHED','TERMINATING')");
+                if !filter.state.is_empty() {
+                    $builder.push(" AND state=").push_bind(&filter.state);
+                }
+                if !filter.stream_id.is_empty() {
+                    $builder
+                        .push(" AND stream_id=")
+                        .push_bind(&filter.stream_id);
+                }
+                if !filter.media_node_id.is_empty() {
+                    $builder
+                        .push(" AND media_node_id=")
+                        .push_bind(&filter.media_node_id);
+                }
+                if !filter.device_id.is_empty() {
+                    $builder
+                        .push(" AND device_id=")
+                        .push_bind(&filter.device_id);
+                }
+                if !filter.channel_id.is_empty() {
+                    $builder
+                        .push(" AND channel_id=")
+                        .push_bind(&filter.channel_id);
+                }
+                if !filter.ssrc.is_empty() {
+                    $builder.push(" AND ssrc=").push_bind(&filter.ssrc);
+                }
+            }};
+        }
+        macro_rules! run_active {
+            ($backend:ty, $pool:expr) => {{
+                async {
+                    let mut transaction = $pool.begin().await?;
+                    let mut count_builder = sqlx::QueryBuilder::<$backend>::new(
+                        "SELECT COUNT(*) FROM gb28181_sip_dialog_session WHERE signal_node_id=",
+                    );
+                    append_active_where!(count_builder);
+                    let (total,): (i64,) = count_builder
+                        .build_query_as()
+                        .fetch_one(&mut *transaction)
+                        .await?;
+                    let mut item_builder = sqlx::QueryBuilder::<$backend>::new(format!(
+                        "SELECT {SELECT_COLUMNS} FROM gb28181_sip_dialog_session WHERE signal_node_id="
+                    ));
+                    append_active_where!(item_builder);
+                    item_builder
+                        .push(" ORDER BY stream_id ASC LIMIT ")
+                        .push_bind(page_size)
+                        .push(" OFFSET ")
+                        .push_bind(i64::from(page - 1) * i64::from(page_size));
+                    let rows = item_builder
+                        .build_query_as::<SipDialogSessionRow>()
+                        .fetch_all(&mut *transaction)
+                        .await?;
+                    transaction.commit().await?;
+                    Ok::<_, sqlx::Error>((rows, total))
+                }
+                .await
+            }};
+        }
+        let (rows, total) = match db::backend() {
+            #[cfg(feature = "db-mysql")]
+            db::SessionDatabaseBackend::Mysql => run_active!(MySql, db::mysql_pool()),
+            #[cfg(feature = "db-sqlite")]
+            db::SessionDatabaseBackend::Sqlite => run_active!(Sqlite, db::sqlite_pool()),
+            backend => return Err(db::backend_not_enabled_global(backend)),
+        }
+        .hand_log(|message| error!("{message}"))?;
+        let rows = rows
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<GlobalResult<Vec<_>>>()?;
+        Ok((rows, u64::try_from(total).unwrap_or_default()))
+    }
+
     pub async fn page_history_for_monitor(
         signal_node_id: &str,
         page: u32,
@@ -1515,6 +1669,20 @@ fn validate_optional_len(value: Option<&str>, max_len: usize, field: &str) -> Gl
     Ok(())
 }
 
+fn validate_stop_reason(value: &str) -> GlobalResult<()> {
+    if value.is_empty() || value.chars().count() > 255 || value.contains('\0') {
+        return Err(invalid_data("invalid stop_reason"));
+    }
+    Ok(())
+}
+
+fn validate_optional_stop_reason(value: Option<&str>) -> GlobalResult<()> {
+    if let Some(value) = value {
+        validate_stop_reason(value)?;
+    }
+    Ok(())
+}
+
 fn invalid_data(message: &str) -> GlobalError {
     GlobalError::new_sys_error(message, |log_message| error!("{log_message}"))
 }
@@ -1597,6 +1765,7 @@ mod tests {
             established_at: None,
             terminated_at: None,
             terminal_reason: None,
+            stop_reason: None,
             error_code: None,
             last_seen_at: at(1_000),
             expire_at: at(28_801_000),
@@ -2005,6 +2174,16 @@ mod tests {
             SipDialogSessionRepository::insert_inviting(&other_owner)
                 .await
                 .expect("insert other owner");
+            SipDialogSessionRepository::record_stop_reason("history-a", "session-1", "现场维护")
+                .await
+                .expect("record stop reason");
+            SipDialogSessionRepository::record_stop_reason(
+                "history-a",
+                "session-1",
+                "重复请求不得覆盖",
+            )
+            .await
+            .expect("repeat stop reason");
             assert!(
                 SipDialogSessionRepository::cas_mark_terminal(
                     "history-a",
@@ -2033,6 +2212,7 @@ mod tests {
                 Some("invite_timeout")
             );
             assert_eq!(history[0].error_code.as_deref(), Some("INVITE_TIMEOUT"));
+            assert_eq!(history[0].stop_reason.as_deref(), Some("现场维护"));
             assert_eq!(
                 SipDialogSessionRepository::delete_terminal_before("session-1", at(3_000), 500)
                     .await
@@ -2082,6 +2262,41 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec!["monitor-2", "monitor-4"]
             );
+        });
+    }
+
+    #[test]
+    fn active_dialog_page_returns_filtered_total_and_offset_page() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let _guard = enable_dialog_test_storage();
+            for index in 0..5 {
+                let mut session = inviting(&format!("dialog-page-{index}"));
+                session.device_id = if index % 2 == 0 {
+                    "device-a"
+                } else {
+                    "device-b"
+                }
+                .into();
+                SipDialogSessionRepository::insert_inviting(&session)
+                    .await
+                    .expect("insert active dialog");
+            }
+            let (rows, total) = SipDialogSessionRepository::page_active_dialogs_for_monitor(
+                "session-1",
+                2,
+                2,
+                &DialogMonitorFilter {
+                    device_id: "device-a".into(),
+                    state: "INVITING".into(),
+                    ..DialogMonitorFilter::default()
+                },
+            )
+            .await
+            .expect("active dialog page");
+            assert_eq!(total, 3);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].stream_id, "dialog-page-4");
         });
     }
 }

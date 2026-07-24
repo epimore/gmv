@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS gb28181_sip_dialog_session (
     established_at DATETIME NULL,
     terminated_at DATETIME NULL,
     terminal_reason VARCHAR(64) NULL,
+    stop_reason VARCHAR(255) NULL,
     error_code VARCHAR(64) NULL,
     last_seen_at DATETIME NOT NULL,
     expire_at DATETIME NOT NULL,

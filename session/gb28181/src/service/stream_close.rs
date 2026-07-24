@@ -828,6 +828,7 @@ mod tests {
                     established_at: None,
                     terminated_at: None,
                     terminal_reason: None,
+                    stop_reason: None,
                     error_code: None,
                     last_seen_at: now,
                     expire_at: now + Duration::hours(1),

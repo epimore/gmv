@@ -41,15 +41,29 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     started_at_ms: monitorServerTimeMs - 5_000, viewer_count: 0, viewer_formats: [],
     supported_formats: ['flv', 'fmp4', 'hls', 'mp4'], output_format: 'mp4',
   };
+  const activeDialog = {
+    stream_id: active.stream_id, session_node_id: active.session_node_id, session_instance_id: active.session_instance_id,
+    stream_node_id: active.stream_node_id, device_id: active.device_id, channel_id: active.channel_id,
+    ssrc: active.ssrc, dialog_state: active.dialog_state, created_at_ms: active.created_at_ms,
+    established_at_ms: active.established_at_ms, started_at_ms: active.started_at_ms, session_type: active.session_type,
+  };
+  const downloadDialog = {
+    ...activeDialog,
+    stream_id: download.stream_id, ssrc: download.ssrc, dialog_state: download.dialog_state,
+    created_at_ms: download.created_at_ms, established_at_ms: download.established_at_ms,
+    started_at_ms: download.started_at_ms, session_type: download.session_type,
+  };
   const history = {
     stream_id: 'stream-history-1', session_node_id: node.node_id, stream_node_id: 'stream-node-1',
     device_id: 'device-1', channel_id: 'channel-1', ssrc: '0100000002', session_type: 'PLAYBACK',
     state: 'TERMINATED', created_at_ms: monitorServerTimeMs - 20_000, established_at_ms: monitorServerTimeMs - 19_000,
     terminated_at_ms: monitorServerTimeMs - 1_000, duration_ms: 18_000, terminal_reason: 'manual_stop',
-    terminal_reason_label: '手动停止', error_code: '', legacy_terminal_time: false,
+    terminal_reason_label: '手动停止', error_code: '', legacy_terminal_time: false, stop_reason: '现场维护',
   };
   let stopRequested = false;
   let activeListRequests = 0;
+  let managementRequests = 0;
+  let submittedStopReason = '';
 
   await page.route('**/api/v2/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -59,11 +73,18 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     else if (path === '/api/v2/gb28181/streams') {
       activeListRequests += 1;
       const items = !stopRequested
-        ? [active, download]
-        : [{ ...active, state: 'stopping', dialog_state: 'TERMINATING', media_ready: false }, download];
-      body = { items, next_after_id: '', server_time_ms: monitorServerTimeMs };
+        ? [activeDialog, downloadDialog]
+        : [{ ...activeDialog, dialog_state: 'TERMINATING' }, downloadDialog];
+      body = { items, total: items.length, page: 1, page_size: 20, server_time_ms: monitorServerTimeMs };
+    } else if (path === '/api/v2/gb28181/streams/stream-1/management') {
+      managementRequests += 1;
+      body = { state: 'active', active: stopRequested ? { ...active, state: 'stopping', dialog_state: 'TERMINATING', media_ready: false } : active, ended: null };
+    } else if (path === '/api/v2/gb28181/streams/stream-download-1/management') {
+      managementRequests += 1;
+      body = { state: 'active', active: download, ended: null };
     } else if (path === '/api/v2/gb28181/streams/stream-1/stop') {
       stopRequested = true;
+      submittedStopReason = (route.request().postDataJSON() as { stop_reason: string }).stop_reason;
       body = { stream_id: active.stream_id, state: 'stopping', session_node_id: node.node_id, session_instance_id: node.instance_id };
     } else if (path === '/api/v2/gb28181/stream-history') body = { items: [history], total: 1, page: 1, page_size: 20, server_time_ms: monitorServerTimeMs };
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
@@ -81,19 +102,25 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await onlineSession.click();
 
   const currentPanel = page.getByRole('tabpanel', { name: '当前运行' });
-  await expect(currentPanel.getByText('运行中', { exact: true }).first()).toBeVisible();
+  await expect(currentPanel.getByText('已建立', { exact: true }).first()).toBeVisible();
   await expect(currentPanel.getByText('直播', { exact: true })).toBeVisible();
   await expect(currentPanel.getByText('下载', { exact: true })).toBeVisible();
   await expect(currentPanel.getByText('观看人数', { exact: true })).toHaveCount(0);
   await expect(currentPanel.getByText('媒体格式', { exact: true })).toHaveCount(0);
   await expect(currentPanel.locator('.el-pagination')).toBeVisible();
+  await expect(currentPanel.locator('.el-pagination__total')).toBeVisible();
+  await expect(currentPanel.locator('.el-pagination__sizes')).toBeVisible();
+  await expect(currentPanel.locator('.el-pagination__jump')).toBeVisible();
+  expect(managementRequests).toBe(0);
   const duration = currentPanel.getByText('9秒', { exact: true });
   await expect(duration).toBeVisible();
   await page.waitForTimeout(1_200);
   await expect(duration).toBeVisible();
   const liveRow = currentPanel.getByRole('row').filter({ hasText: active.stream_id });
-  await liveRow.getByRole('button', { name: '详情', exact: true }).click();
-  const details = page.getByRole('dialog', { name: '流详情' });
+  await expect(liveRow.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+  await liveRow.getByRole('button', { name: '管理', exact: true }).click();
+  expect(managementRequests).toBe(1);
+  const details = page.getByRole('dialog', { name: '流管理' });
   await expect(details.getByText('总观看人数', { exact: true })).toBeVisible();
   await expect(details.getByRole('heading', { name: '媒体格式', exact: true })).toBeVisible();
   await expect(details.getByRole('columnheader', { name: '观看人数', exact: true })).toBeVisible();
@@ -103,7 +130,7 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await expect(flvRow.getByText('0', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   const downloadRow = currentPanel.getByRole('row').filter({ hasText: download.stream_id });
-  await downloadRow.getByRole('button', { name: '详情', exact: true }).click();
+  await downloadRow.getByRole('button', { name: '管理', exact: true }).click();
   await expect(details.getByText('下载格式', { exact: true })).toBeVisible();
   await expect(details.getByText('MP4', { exact: true })).toBeVisible();
   await expect(details.getByText('总观看人数', { exact: true })).toHaveCount(0);
@@ -128,15 +155,17 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await page.keyboard.press('Escape');
 
   await page.locator('.stream-filter-row').nth(1).locator('.el-select').click();
-  await expect(page.getByRole('option', { name: '启动中', exact: true })).toBeVisible();
-  await expect(page.getByRole('option', { name: '运行中', exact: true })).toBeVisible();
-  await expect(page.getByRole('option', { name: '停止中', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: '建立中', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: '已建立', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: '关闭中', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
 
-  await liveRow.getByRole('button', { name: '停止', exact: true }).click();
-  await page.getByRole('button', { name: '确认停止', exact: true }).click();
-  await expect(currentPanel.getByText('停止中', { exact: true })).toBeVisible();
-  await expect(liveRow.getByRole('button', { name: '重试停止', exact: true })).toBeEnabled();
+  await liveRow.getByRole('button', { name: '管理', exact: true }).click();
+  await details.getByRole('textbox', { name: '停止原因' }).fill('现场维护');
+  await details.getByRole('button', { name: '强制停止', exact: true }).click();
+  await page.getByRole('button', { name: '确认强制停止', exact: true }).click();
+  await expect(currentPanel.getByText('关闭中', { exact: true })).toBeVisible();
+  expect(submittedStopReason).toBe('现场维护');
   const requestsAfterStop = activeListRequests;
   await page.waitForTimeout(2_200);
   expect(activeListRequests).toBe(requestsAfterStop);
@@ -145,5 +174,9 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   const historyPanel = page.getByRole('tabpanel', { name: '历史记录' });
   await expect(historyPanel.getByText('回放', { exact: true })).toBeVisible();
   await expect(historyPanel.getByText('手动停止', { exact: true })).toBeVisible();
+  await expect(historyPanel.getByText('操作原因：现场维护', { exact: true })).toBeVisible();
   await expect(historyPanel.getByText('manual_stop', { exact: true })).toHaveCount(0);
+  await expect(historyPanel.locator('.el-pagination__total')).toBeVisible();
+  await expect(historyPanel.locator('.el-pagination__sizes')).toBeVisible();
+  await expect(historyPanel.locator('.el-pagination__jump')).toBeVisible();
 });

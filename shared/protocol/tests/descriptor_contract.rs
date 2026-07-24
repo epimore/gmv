@@ -234,7 +234,12 @@ fn session_stream_monitoring_contract_is_stable() {
         .iter()
         .filter_map(|method| method.name.as_deref())
         .collect::<Vec<_>>();
-    for method in ["ListActiveStreams", "ListStreamHistory"] {
+    for method in [
+        "ListActiveStreams",
+        "ListActiveStreamDialogs",
+        "GetActiveStreamManagement",
+        "ListStreamHistory",
+    ] {
         assert!(methods.contains(&method), "missing SessionControl.{method}");
     }
 
@@ -255,12 +260,24 @@ fn session_stream_monitoring_contract_is_stable() {
         Some(6)
     );
     assert_eq!(
+        field_number("StopDeviceStreamRequest", "stop_reason"),
+        Some(7)
+    );
+    assert_eq!(
         field_number("ListActiveStreamsRequest", "expected_session"),
         Some(9)
     );
     assert_eq!(
         field_number("ListStreamHistoryRequest", "expected_session"),
         Some(9)
+    );
+    assert_eq!(
+        field_number("ListActiveStreamDialogsRequest", "expected_session"),
+        Some(9)
+    );
+    assert_eq!(
+        field_number("GetActiveStreamManagementRequest", "expected_session"),
+        Some(2)
     );
     assert_eq!(
         field_number("StreamHistoryItem", "terminal_reason"),
@@ -271,6 +288,7 @@ fn session_stream_monitoring_contract_is_stable() {
         field_number("StreamHistoryItem", "terminal_reason_label"),
         Some(16)
     );
+    assert_eq!(field_number("StreamHistoryItem", "stop_reason"), Some(17));
     assert_eq!(field_number("ActiveStreamItem", "viewer_count"), Some(17));
     assert_eq!(field_number("ActiveStreamItem", "viewer_formats"), Some(18));
     assert_eq!(
