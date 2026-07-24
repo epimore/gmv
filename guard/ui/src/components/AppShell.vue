@@ -114,7 +114,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Bell, CircleCheck, Connection, Cpu, DataAnalysis, Expand, Fold, HomeFilled, Link, Menu as MenuIcon, Monitor, Platform, Setting, User, VideoCamera } from '@element-plus/icons-vue';
+import { Bell, CircleCheck, Connection, DataAnalysis, Expand, Fold, HomeFilled, Link, Menu as MenuIcon, Monitor, Platform, Setting, User, VideoCamera } from '@element-plus/icons-vue';
 import { useRoute, useRouter } from 'vue-router';
 import { errorMessage, updateProfile } from '@/api/client';
 import { menuRoutes } from '@/router';
@@ -135,7 +135,7 @@ const menuCollapsed = ref(false);
 const displayName = computed(() => auth.session?.nickname?.trim() || auth.session?.username || '');
 const userInitial = computed(() => displayName.value.slice(0, 1).toUpperCase() || 'U');
 const openMenus = computed(() => menuRoutes.filter((item) => item.children?.some((child) => route.path.startsWith(child.path))).map((item) => item.path));
-const menuIcons = { Bell, CircleCheck, Connection, Cpu, DataAnalysis, HomeFilled, Link, Menu: MenuIcon, Monitor, Platform, Setting, User, VideoCamera };
+const menuIcons = { Bell, CircleCheck, Connection, DataAnalysis, HomeFilled, Link, Menu: MenuIcon, Monitor, Platform, Setting, User, VideoCamera };
 
 function menuIcon(name: string) {
   return menuIcons[name as keyof typeof menuIcons] ?? MenuIcon;

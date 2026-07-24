@@ -24,7 +24,6 @@ export const menuRoutes: MenuRouteItem[] = [
   { path: '/onvif', label: 'ONVIF', icon: 'Connection' },
   { path: '/streams', label: '流媒监控', icon: 'VideoCamera' },
   { path: '/ai', label: '智能分析', icon: 'DataAnalysis' },
-  { path: '/nodes', label: '节点监控', icon: 'Cpu' },
   { path: '/events', label: '事件中心', icon: 'Bell' },
   { path: '/integrations', label: '三方集成', icon: 'Link' },
   {
@@ -54,7 +53,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'onvif', component: () => import('@/views/OnvifView.vue'), meta: { title: 'ONVIF' } },
       { path: 'streams', component: () => import('@/views/StreamsView.vue'), meta: { title: '流媒监控' } },
       { path: 'ai', component: () => import('@/views/AiView.vue'), meta: { title: '智能分析' } },
-      { path: 'nodes', component: () => import('@/views/NodesView.vue'), meta: { title: '节点监控' } },
+      { path: 'nodes', redirect: '/system/health' },
       { path: 'events', component: () => import('@/views/EventsView.vue'), meta: { title: '事件中心' } },
       { path: 'integrations', component: () => import('@/views/IntegrationsView.vue'), meta: { title: '三方集成' } },
       { path: 'system', redirect: '/system/health' },

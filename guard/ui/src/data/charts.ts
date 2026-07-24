@@ -32,16 +32,3 @@ export function graphOption(
     }],
   };
 }
-
-export function radarOption(labels: string[], values: number[]) {
-  const indicators = labels.map((name) => ({ name, max: 100 }));
-  return {
-    backgroundColor: 'transparent',
-    radar: {
-      indicator: indicators.length ? indicators : [{ name: '容量', max: 100 }],
-      axisName: { color: '#9edfff' }, splitLine: { lineStyle: { color: 'rgba(120,220,255,.16)' } },
-      splitArea: { areaStyle: { color: ['rgba(52,216,255,.03)', 'rgba(168,117,255,.05)'] } },
-    },
-    series: [{ type: 'radar', data: [{ value: values.length ? values : [0], name: '当前' }], areaStyle: { color: 'rgba(52,216,255,.20)' }, lineStyle: { color: '#34d8ff' } }],
-  };
-}

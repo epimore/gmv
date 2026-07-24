@@ -10,7 +10,6 @@ const session = {
 
 const routes = [
   ['/dashboard', 'Dashboard'],
-  ['/nodes', '节点监控'],
   ['/devices', '设备'],
   ['/gb28181/register', '注册管理'],
   ['/gb28181/monitor', '监控信息'],
@@ -91,18 +90,19 @@ test('未登录禁止 URL 直达，登录后恢复目标页面并可退出', asy
   await mockAuth(page);
 
   await page.goto('/nodes');
-  await expect(page).toHaveURL((url) => url.pathname === '/login' && url.searchParams.get('redirect') === '/nodes');
+  await expect(page).toHaveURL((url) => url.pathname === '/login' && url.searchParams.get('redirect') === '/system/health');
   await expect(page.getByRole('heading', { name: '登录' })).toBeVisible();
 
   await page.getByLabel('用户名').fill('admin');
   await page.getByLabel('密码').fill('secret');
   await page.getByRole('button', { name: '安全登录' }).click();
-  await expect(page).toHaveURL((url) => url.pathname === '/nodes');
+  await expect(page).toHaveURL((url) => url.pathname === '/system/health');
   const userMenu = page.getByRole('button', { name: /舰桥管理员 admin/ });
   await expect(userMenu).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole('heading', { name: '节点监控', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '系统健康', level: 1 })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: '节点监控' })).toHaveCount(0);
 
   await userMenu.click();
   await page.getByRole('menuitem', { name: '退出登录' }).click();
