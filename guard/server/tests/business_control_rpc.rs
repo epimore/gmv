@@ -1167,6 +1167,7 @@ impl StreamControl for FakeStream {
         Ok(tonic::Response::new(StopReceiveResponse {
             state: StreamState::Stopped as i32,
             error: None,
+            ..Default::default()
         }))
     }
 
@@ -1185,6 +1186,7 @@ impl StreamControl for FakeStream {
             terminal_reason: String::new(),
             viewer_count: 0,
             viewer_formats: vec![],
+            ..Default::default()
         }))
     }
 

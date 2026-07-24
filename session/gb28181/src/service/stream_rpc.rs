@@ -13,8 +13,8 @@ use gmv_nodec::error as node_error;
 use gmv_protocol::common::v1::{EndpointMode, ErrorDetail, OperationRef};
 use gmv_protocol::stream::v1::{
     CreateOutputRequest, OutputInfo, QueryStreamRequest, QueryStreamResponse,
-    ReleaseSubscriptionOutputsRequest, StopReceiveRequest, StreamBoolResponse, StreamJsonRequest,
-    StreamJsonResponse, StreamState, StreamUnitResponse,
+    ReleaseSubscriptionOutputsRequest, StopReceivePhase, StopReceiveRequest, StopReceiveResponse,
+    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
     stream_control_client::StreamControlClient,
 };
 use std::time::{Duration, Instant};
@@ -22,6 +22,21 @@ use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 
 use crate::state::StreamNode;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamInputObservation {
+    pub ssrc: u32,
+    pub lifecycle_generation: u64,
+    pub last_packet_at_ms: u64,
+    pub packet_count: u64,
+    pub input_idle_timeout_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalizeReceiveResult {
+    Finalized(StreamInputObservation),
+    InputChanged(StreamInputObservation),
+}
 
 async fn client(node: &StreamNode) -> GlobalResult<StreamControlClient<Channel>> {
     if node.control_grpc_uri.trim().is_empty() {
@@ -265,6 +280,224 @@ pub async fn query_stream(node: &StreamNode, stream_id: &str) -> GlobalResult<Qu
     Ok(response)
 }
 
+pub async fn query_input_observation(
+    node: &StreamNode,
+    stream_id: &str,
+    expected_ssrc: u32,
+) -> GlobalResult<StreamInputObservation> {
+    input_observation(
+        query_stream(node, stream_id).await?,
+        stream_id,
+        expected_ssrc,
+    )
+}
+
+pub async fn quiesce_receive_outputs(
+    node: &StreamNode,
+    stream_id: &str,
+    expected_ssrc: u32,
+    expected_generation: u64,
+    reason: &str,
+) -> GlobalResult<StreamInputObservation> {
+    let response = staged_stop_receive(
+        node,
+        stream_id,
+        reason,
+        StopReceivePhase::QuiesceOutputs,
+        expected_ssrc,
+        expected_generation,
+        0,
+    )
+    .await?;
+    if let Some(error) = response.error.clone() {
+        return Err(error_detail(error, "stop_receive"));
+    }
+    if !response.outputs_closed
+        || response.input_removed
+        || StreamState::try_from(response.state) != Ok(StreamState::Stopping)
+    {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream outputs were not quiesced",
+            |msg| {
+                error!(
+                    "{msg}: stream_id={stream_id}, state={}, outputs_closed={}, input_removed={}",
+                    response.state, response.outputs_closed, response.input_removed
+                )
+            },
+        ));
+    }
+    stop_observation(response, stream_id, expected_ssrc, expected_generation)
+}
+
+pub async fn finalize_receive(
+    node: &StreamNode,
+    stream_id: &str,
+    expected_ssrc: u32,
+    expected_generation: u64,
+    expected_packet_count: u64,
+    reason: &str,
+) -> GlobalResult<FinalizeReceiveResult> {
+    let response = staged_stop_receive(
+        node,
+        stream_id,
+        reason,
+        StopReceivePhase::Finalize,
+        expected_ssrc,
+        expected_generation,
+        expected_packet_count,
+    )
+    .await?;
+    if response
+        .error
+        .as_ref()
+        .is_some_and(|error| error.code == "stream_input_changed")
+    {
+        return stop_observation(response, stream_id, expected_ssrc, expected_generation)
+            .map(FinalizeReceiveResult::InputChanged);
+    }
+    if let Some(error) = response.error.clone() {
+        return Err(error_detail(error, "stop_receive"));
+    }
+    if !response.outputs_closed
+        || !response.input_removed
+        || StreamState::try_from(response.state) != Ok(StreamState::Stopped)
+    {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream finalize was not confirmed",
+            |msg| {
+                error!(
+                    "{msg}: stream_id={stream_id}, state={}, outputs_closed={}, input_removed={}",
+                    response.state, response.outputs_closed, response.input_removed
+                )
+            },
+        ));
+    }
+    stop_observation(response, stream_id, expected_ssrc, expected_generation)
+        .map(FinalizeReceiveResult::Finalized)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn staged_stop_receive(
+    node: &StreamNode,
+    stream_id: &str,
+    reason: &str,
+    phase: StopReceivePhase,
+    expected_ssrc: u32,
+    expected_generation: u64,
+    expected_packet_count: u64,
+) -> GlobalResult<StopReceiveResponse> {
+    let mut client = client(node).await?;
+    let response = client
+        .stop_receive(StopReceiveRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("session-close-{stream_id}-{}", phase.as_str_name()),
+                idempotency_key: format!("{stream_id}-{}", phase.as_str_name()),
+            }),
+            stream_id: stream_id.to_string(),
+            reason: reason.to_string(),
+            phase: phase as i32,
+            expected_ssrc: expected_ssrc.to_string(),
+            expected_lifecycle_generation: expected_generation,
+            expected_packet_count,
+        })
+        .await
+        .map_err(|error| rpc_status(error, "stop_receive"))?
+        .into_inner();
+    Ok(response)
+}
+
+fn input_observation(
+    response: QueryStreamResponse,
+    stream_id: &str,
+    expected_ssrc: u32,
+) -> GlobalResult<StreamInputObservation> {
+    if !response.input_observed {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream input observation is unavailable",
+            |msg| error!("{msg}: stream_id={stream_id}"),
+        ));
+    }
+    observation_fields(
+        &response.ssrc,
+        response.lifecycle_generation,
+        response.last_packet_at_ms,
+        response.packet_count,
+        response.input_idle_timeout_ms,
+        stream_id,
+        expected_ssrc,
+    )
+}
+
+fn stop_observation(
+    response: StopReceiveResponse,
+    stream_id: &str,
+    expected_ssrc: u32,
+    expected_generation: u64,
+) -> GlobalResult<StreamInputObservation> {
+    let observation = observation_fields(
+        &response.ssrc,
+        response.lifecycle_generation,
+        response.last_packet_at_ms,
+        response.packet_count,
+        response.input_idle_timeout_ms,
+        stream_id,
+        expected_ssrc,
+    )?;
+    if observation.lifecycle_generation != expected_generation {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream lifecycle generation changed",
+            |msg| {
+                error!(
+                    "{msg}: stream_id={stream_id}, expected_generation={expected_generation}, actual_generation={}",
+                    observation.lifecycle_generation
+                )
+            },
+        ));
+    }
+    Ok(observation)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observation_fields(
+    ssrc: &str,
+    lifecycle_generation: u64,
+    last_packet_at_ms: u64,
+    packet_count: u64,
+    input_idle_timeout_ms: u64,
+    stream_id: &str,
+    expected_ssrc: u32,
+) -> GlobalResult<StreamInputObservation> {
+    let actual_ssrc = ssrc.parse::<u32>().map_err(|_| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream returned invalid SSRC",
+            |msg| error!("{msg}: stream_id={stream_id}, ssrc={ssrc}"),
+        )
+    })?;
+    if actual_ssrc != expected_ssrc || lifecycle_generation == 0 {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream input identity does not match dialog",
+            |msg| {
+                error!(
+                    "{msg}: stream_id={stream_id}, expected_ssrc={expected_ssrc}, actual_ssrc={actual_ssrc}, lifecycle_generation={lifecycle_generation}"
+                )
+            },
+        ));
+    }
+    Ok(StreamInputObservation {
+        ssrc: actual_ssrc,
+        lifecycle_generation,
+        last_packet_at_ms,
+        packet_count,
+        input_idle_timeout_ms,
+    })
+}
+
 pub async fn stop_receive(node: &StreamNode, stream_id: &str, reason: &str) -> GlobalResult<()> {
     let mut client = client(node).await?;
     let response = client
@@ -275,6 +508,10 @@ pub async fn stop_receive(node: &StreamNode, stream_id: &str, reason: &str) -> G
             }),
             stream_id: stream_id.to_string(),
             reason: reason.to_string(),
+            phase: StopReceivePhase::Unspecified as i32,
+            expected_ssrc: String::new(),
+            expected_lifecycle_generation: 0,
+            expected_packet_count: 0,
         })
         .await
         .map_err(|error| rpc_status(error, "stop_receive"))?

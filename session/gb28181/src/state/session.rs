@@ -34,6 +34,7 @@ pub struct StreamByeCommand {
     pub generation: u64,
     pub device_id: String,
     pub stream_node_name: String,
+    pub ssrc: u32,
     pub call_id: String,
     pub seq: u32,
     pub terminal_reason: String,
@@ -43,6 +44,12 @@ pub struct StreamCloseStart {
     pub generation: u64,
     pub device_id: String,
     pub newly_started: bool,
+}
+
+#[derive(Clone)]
+pub struct StreamCloseTarget {
+    pub stream_node_name: String,
+    pub ssrc: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +68,8 @@ pub struct StreamCloseInfo {
     pub stream_node_name: String,
     pub call_id: String,
     pub last_error: Option<String>,
+    pub failure_terminal_reason: Option<String>,
+    pub failure_error_code: Option<String>,
     pub guard_lease: Option<GuardLease>,
 }
 
@@ -446,9 +455,19 @@ impl Cache {
             generation,
             device_id: stream.device_id.clone(),
             stream_node_name: stream.stream_node_name.clone(),
+            ssrc: stream.ssrc,
             call_id: stream.call_id.clone(),
             seq,
             terminal_reason,
+        })
+    }
+
+    pub fn stream_close_target(stream_id: &str) -> Option<StreamCloseTarget> {
+        let stream = GENERAL_CACHE.shared.stream_map.get(stream_id)?;
+        stream.closing_generation()?;
+        Some(StreamCloseTarget {
+            stream_node_name: stream.stream_node_name.clone(),
+            ssrc: stream.ssrc,
         })
     }
 
@@ -463,6 +482,40 @@ impl Cache {
             .stream_map
             .get_mut(stream_id)
             .is_some_and(|mut stream| stream.mark_bye_failed(generation, seq, reason))
+    }
+
+    pub fn stream_close_mark_retryable_failure(
+        stream_id: &str,
+        generation: u64,
+        seq: u32,
+        reason: String,
+        terminal_reason: &str,
+        error_code: &str,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
+            .is_some_and(|mut stream| {
+                stream.mark_retryable_failure(generation, seq, reason, terminal_reason, error_code)
+            })
+    }
+
+    pub fn stream_close_mark_terminal_failure(
+        stream_id: &str,
+        generation: u64,
+        seq: u32,
+        reason: String,
+        terminal_reason: &str,
+        error_code: &str,
+    ) -> bool {
+        GENERAL_CACHE
+            .shared
+            .stream_map
+            .get_mut(stream_id)
+            .is_some_and(|mut stream| {
+                stream.mark_terminal_failure(generation, seq, reason, terminal_reason, error_code)
+            })
     }
 
     pub fn stream_close_ids_by_device(device_id: &str) -> Vec<String> {
@@ -550,6 +603,7 @@ impl Cache {
             );
         }
         let last_error = stream.last_error();
+        let (failure_terminal_reason, failure_error_code) = stream.failure_terminal();
         Some(StreamCloseInfo {
             stream_id: stream_id.to_string(),
             generation,
@@ -559,6 +613,8 @@ impl Cache {
             stream_node_name: stream.stream_node_name,
             call_id: stream.call_id,
             last_error,
+            failure_terminal_reason,
+            failure_error_code,
             guard_lease: stream.guard_lease,
         })
     }
@@ -1371,6 +1427,8 @@ enum StreamLifecycle {
         generation: u64,
         inflight_seq: Option<u32>,
         last_error: Option<String>,
+        failure_terminal_reason: Option<String>,
+        failure_error_code: Option<String>,
         terminal_reason: String,
     },
 }
@@ -1384,6 +1442,8 @@ impl StreamTable {
             generation,
             inflight_seq: None,
             last_error: None,
+            failure_terminal_reason: None,
+            failure_error_code: None,
             terminal_reason: terminal_reason.to_string(),
         };
         true
@@ -1413,10 +1473,29 @@ impl StreamTable {
         expected_seq: u32,
         reason: String,
     ) -> bool {
+        self.mark_retryable_failure(
+            expected_generation,
+            expected_seq,
+            reason,
+            "bye_failed",
+            "SIP_BYE_FAILED",
+        )
+    }
+
+    fn mark_retryable_failure(
+        &mut self,
+        expected_generation: u64,
+        expected_seq: u32,
+        reason: String,
+        terminal_reason: &str,
+        error_code: &str,
+    ) -> bool {
         let StreamLifecycle::Closing {
             generation,
             inflight_seq,
             last_error,
+            failure_terminal_reason,
+            failure_error_code,
             ..
         } = &mut self.lifecycle
         else {
@@ -1427,6 +1506,36 @@ impl StreamTable {
         }
         *inflight_seq = None;
         *last_error = Some(reason);
+        *failure_terminal_reason = Some(terminal_reason.to_string());
+        *failure_error_code = Some(error_code.to_string());
+        true
+    }
+
+    fn mark_terminal_failure(
+        &mut self,
+        expected_generation: u64,
+        expected_seq: u32,
+        reason: String,
+        terminal_reason: &str,
+        error_code: &str,
+    ) -> bool {
+        let StreamLifecycle::Closing {
+            generation,
+            inflight_seq,
+            last_error,
+            failure_terminal_reason,
+            failure_error_code,
+            ..
+        } = &mut self.lifecycle
+        else {
+            return false;
+        };
+        if *generation != expected_generation || *inflight_seq != Some(expected_seq) {
+            return false;
+        }
+        *last_error = Some(reason);
+        *failure_terminal_reason = Some(terminal_reason.to_string());
+        *failure_error_code = Some(error_code.to_string());
         true
     }
 
@@ -1453,6 +1562,17 @@ impl StreamTable {
         match &self.lifecycle {
             StreamLifecycle::Playing => None,
             StreamLifecycle::Closing { last_error, .. } => last_error.clone(),
+        }
+    }
+
+    fn failure_terminal(&self) -> (Option<String>, Option<String>) {
+        match &self.lifecycle {
+            StreamLifecycle::Playing => (None, None),
+            StreamLifecycle::Closing {
+                failure_terminal_reason,
+                failure_error_code,
+                ..
+            } => (failure_terminal_reason.clone(), failure_error_code.clone()),
         }
     }
 }
@@ -1646,6 +1766,45 @@ mod tests {
         assert_eq!(table.take_bye(), Some((11, 8, "session_close".to_string())));
         assert!(table.mark_bye_failed(11, 8, "tcp closed".to_string()));
         assert_eq!(table.take_bye(), Some((11, 9, "session_close".to_string())));
+    }
+
+    #[test]
+    fn confirmed_bye_with_media_failure_cannot_send_a_second_bye() {
+        let mut table = stream_table();
+
+        assert!(table.begin_close(11, "manual_stop"));
+        assert_eq!(table.take_bye(), Some((11, 8, "manual_stop".to_string())));
+        assert!(table.mark_terminal_failure(
+            11,
+            8,
+            "RTP input remained active".to_string(),
+            "media_still_receiving",
+            "MEDIA_STILL_RECEIVING",
+        ));
+        assert_eq!(table.take_bye(), None);
+        assert_eq!(
+            table.failure_terminal(),
+            (
+                Some("media_still_receiving".to_string()),
+                Some("MEDIA_STILL_RECEIVING".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn output_quiesce_failure_can_retry_before_bye_dispatch() {
+        let mut table = stream_table();
+
+        assert!(table.begin_close(11, "manual_stop"));
+        assert_eq!(table.take_bye(), Some((11, 8, "manual_stop".to_string())));
+        assert!(table.mark_retryable_failure(
+            11,
+            8,
+            "stream node unavailable".to_string(),
+            "media_close_unconfirmed",
+            "MEDIA_CLOSE_UNCONFIRMED",
+        ));
+        assert_eq!(table.take_bye(), Some((11, 9, "manual_stop".to_string())));
     }
 
     #[test]

@@ -44,11 +44,28 @@ message StopReceiveRequest {
   gmv.common.v1.OperationRef operation = 1;
   string stream_id = 2;
   string reason = 3;
+  StopReceivePhase phase = 4;
+  string expected_ssrc = 5;
+  uint64 expected_lifecycle_generation = 6;
+  uint64 expected_packet_count = 7;
 }
 
 message StopReceiveResponse {
   StreamState state = 1;
   gmv.common.v1.ErrorDetail error = 2;
+  bool outputs_closed = 3;
+  bool input_removed = 4;
+  string ssrc = 5;
+  uint64 lifecycle_generation = 6;
+  uint64 last_packet_at_ms = 7;
+  uint64 packet_count = 8;
+  uint64 input_idle_timeout_ms = 9;
+}
+
+enum StopReceivePhase {
+  STOP_RECEIVE_PHASE_UNSPECIFIED = 0;
+  STOP_RECEIVE_PHASE_QUIESCE_OUTPUTS = 1;
+  STOP_RECEIVE_PHASE_FINALIZE = 2;
 }
 
 message QueryStreamRequest {
@@ -66,6 +83,12 @@ message QueryStreamResponse {
   string terminal_reason = 8;
   uint32 viewer_count = 9;
   repeated ViewerFormatCount viewer_formats = 10;
+  string ssrc = 11;
+  uint64 lifecycle_generation = 12;
+  uint64 last_packet_at_ms = 13;
+  uint64 packet_count = 14;
+  uint64 input_idle_timeout_ms = 15;
+  bool input_observed = 16;
 }
 
 message ViewerFormatCount {

@@ -739,9 +739,28 @@ impl SessionControl for SessionControlRpc {
             if dialog.signal_node_id != identity.node_id {
                 return Err(tonic::Status::failed_precondition("wrong_session"));
             }
-            if matches!(dialog.state, DialogState::Terminated | DialogState::Orphan) {
+            if dialog.state == DialogState::Terminated {
                 let mut response =
                     device_response(&request.stream_id, DeviceStreamState::Stopped, None);
+                response.session_node_id = identity.node_id;
+                response.session_instance_id = identity.instance_id;
+                return Ok(tonic::Response::new(response));
+            }
+            if dialog.state == DialogState::Orphan {
+                let err = GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "stream closed abnormally",
+                    |msg| {
+                        warn!(
+                            "{msg}: stream_id={}, terminal_reason={}, error_code={}",
+                            request.stream_id,
+                            dialog.terminal_reason.as_deref().unwrap_or("unknown"),
+                            dialog.error_code.as_deref().unwrap_or("UNKNOWN")
+                        )
+                    },
+                );
+                let mut response = device_error(err);
+                response.stream_id = request.stream_id.clone();
                 response.session_node_id = identity.node_id;
                 response.session_instance_id = identity.instance_id;
                 return Ok(tonic::Response::new(response));
@@ -755,6 +774,14 @@ impl SessionControl for SessionControlRpc {
             && crate::state::session::Cache::stream_map_query_input(&request.stream_id).is_none()
         {
             if dialog.state == DialogState::Inviting {
+                if dialog.session_type != DialogSessionType::Talk {
+                    let err = stream_close::close_unlinked_inviting_stream(dialog).await;
+                    let mut response = device_error(err);
+                    response.stream_id = request.stream_id.clone();
+                    response.session_node_id = identity.node_id;
+                    response.session_instance_id = identity.instance_id;
+                    return Ok(tonic::Response::new(response));
+                }
                 let media_result = if dialog.session_type == DialogSessionType::Talk {
                     match ensure_stream_node(&dialog.media_node_id).await {
                         Ok(node) => stream_rpc::talk_close(&node, &dialog.stream_id)
@@ -805,19 +832,30 @@ impl SessionControl for SessionControlRpc {
             if let Some(current) = SipDialogSessionRepository::find_by_stream_id(&request.stream_id)
                 .await
                 .map_err(storage_status)?
-                && matches!(current.state, DialogState::Terminated | DialogState::Orphan)
             {
-                let mut response =
-                    device_response(&request.stream_id, DeviceStreamState::Stopped, None);
-                response.session_node_id = identity.node_id;
-                response.session_instance_id = identity.instance_id;
-                return Ok(tonic::Response::new(response));
+                if current.state == DialogState::Terminated {
+                    let mut response =
+                        device_response(&request.stream_id, DeviceStreamState::Stopped, None);
+                    response.session_node_id = identity.node_id;
+                    response.session_instance_id = identity.instance_id;
+                    return Ok(tonic::Response::new(response));
+                }
+                if current.state == DialogState::Orphan {
+                    let err = GlobalError::new_biz_error(
+                        BaseErrorCode::InvalidState.code(),
+                        "stream recovery closed abnormally",
+                        |msg| warn!("{msg}: stream_id={}", request.stream_id),
+                    );
+                    let mut response = device_error(err);
+                    response.stream_id = request.stream_id.clone();
+                    response.session_node_id = identity.node_id;
+                    response.session_instance_id = identity.instance_id;
+                    return Ok(tonic::Response::new(response));
+                }
             }
         }
         let force = request.force || request.subscription_id.is_empty();
-        let setup_lock = (!force)
-            .then(|| crate::state::session::Cache::stream_map_query_input(&request.stream_id))
-            .flatten()
+        let setup_lock = crate::state::session::Cache::stream_map_query_input(&request.stream_id)
             .map(|(device_id, channel_id, access_mode)| {
                 crate::state::session::Cache::stream_setup_lock(
                     &device_id,
@@ -877,20 +915,23 @@ impl SessionControl for SessionControlRpc {
                 }
                 None => Ok(DeviceStreamState::Stopped),
             }
+        } else if request.expected_session.is_some() {
+            match stream_close::begin_manual(request.stream_id.clone()).await {
+                Ok(_) => Ok(DeviceStreamState::Stopping),
+                Err(err) => {
+                    let current = SipDialogSessionRepository::find_by_stream_id(&request.stream_id)
+                        .await
+                        .map_err(storage_status)?;
+                    if current.is_some_and(|dialog| dialog.state == DialogState::Terminated) {
+                        Ok(DeviceStreamState::Stopped)
+                    } else {
+                        Err(device_error(err))
+                    }
+                }
+            }
         } else {
-            stream_close::begin_with_reason(
-                request.stream_id.clone(),
-                if request.reason == "manual_stop" {
-                    "manual_stop"
-                } else {
-                    "session_close"
-                },
-            );
-            Ok(if request.expected_session.is_some() {
-                DeviceStreamState::Stopping
-            } else {
-                DeviceStreamState::Stopped
-            })
+            stream_close::begin_with_reason(request.stream_id.clone(), "session_close");
+            Ok(DeviceStreamState::Stopped)
         };
         let response = match state {
             Ok(state) => {

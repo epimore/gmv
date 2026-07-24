@@ -49,6 +49,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static REGISTER: OnceCell<Register> = OnceCell::new();
 
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
+}
+
 fn publish_muxer_event(
     message_bus: &bus::mpsc::TypedMessageBus,
     event: MuxerEvent,
@@ -150,6 +156,10 @@ pub struct RtpChannel {
     pub rtp_type: AtomicU8,
     pub media_started: AtomicBool,
     pub stream_id: Arc<str>,
+    pub last_packet_at_ms: AtomicU64,
+    pub packet_count: AtomicU64,
+    accepting: AtomicBool,
+    active_refreshes: AtomicUsize,
     pub miss_pkt: AtomicUsize,
     queue_ready_streak: AtomicUsize,
     queue_full_episode: Mutex<FailureEpisode>,
@@ -157,6 +167,7 @@ pub struct RtpChannel {
 impl RtpChannel {
     fn new(stream_id: Arc<str>) -> RtpChannel {
         let (rtp_tx, rtp_rx) = crossbeam_channel::bounded(RTP_BUFFER_SIZE * 10);
+        let now_ms = unix_time_ms();
         Self {
             rtp_tx,
             rtp_rx,
@@ -165,6 +176,10 @@ impl RtpChannel {
             rtp_type: AtomicU8::new(u8::MAX),
             media_started: AtomicBool::new(false),
             stream_id,
+            last_packet_at_ms: AtomicU64::new(now_ms),
+            packet_count: AtomicU64::new(0),
+            accepting: AtomicBool::new(true),
+            active_refreshes: AtomicUsize::new(0),
             miss_pkt: AtomicUsize::new(0),
             queue_ready_streak: AtomicUsize::new(0),
             queue_full_episode: Mutex::new(FailureEpisode::default()),
@@ -179,6 +194,22 @@ impl RtpChannel {
         rtp_type: u8,
         origin_trans: (SocketAddr, Protocol),
     ) -> GlobalResult<crossbeam_channel::Sender<RtpPacket>> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream RTP input is closing",
+                |msg| base::log::trace!("{msg}: ssrc={ssrc}"),
+            ));
+        }
+        self.active_refreshes.fetch_add(1, Ordering::AcqRel);
+        let _refresh_guard = RtpRefreshGuard(&self.active_refreshes);
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream RTP input is closing",
+                |msg| base::log::trace!("{msg}: ssrc={ssrc}"),
+            ));
+        }
         self.rtp_type.store(rtp_type, Ordering::Relaxed);
         if self
             .wait_sign_in
@@ -202,6 +233,9 @@ impl RtpChannel {
                 .inspect_err(|_| self.wait_sign_in.store(true, Ordering::Release))?;
         }
         self.in_has_timeout.store(0, Ordering::Relaxed);
+        self.last_packet_at_ms
+            .store(unix_time_ms(), Ordering::Release);
+        self.packet_count.fetch_add(1, Ordering::AcqRel);
 
         if self.rtp_tx.is_full() {
             self.queue_ready_streak.store(0, Ordering::Relaxed);
@@ -273,6 +307,14 @@ impl RtpChannel {
     }
 }
 
+struct RtpRefreshGuard<'a>(&'a AtomicUsize);
+
+impl Drop for RtpRefreshGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 pub enum RefreshRtp {
     Ready(crossbeam_channel::Sender<RtpPacket>),
     UnknownSsrc,
@@ -336,6 +378,7 @@ pub struct StreamMetadata {
     pub ssrc: u32,
     pub lifecycle_generation: u64,
     pub output_count: OutputCount,
+    pub closing: AtomicBool,
     pub in_wait_timeout: u8,
     pub out_idle_timeout: u8,
     // 关闭muxer或流是否已回调:不以timeout立即关闭流，可能需要流保活，如用户暂停观看；
@@ -352,6 +395,42 @@ pub struct StreamMetadata {
     pub output: OutputLayer,
     pub session_hook_endpoint: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamRuntimeObservation {
+    pub ssrc: u32,
+    pub lifecycle_generation: u64,
+    pub last_packet_at_ms: u64,
+    pub packet_count: u64,
+    pub input_idle_timeout_ms: u64,
+    pub closing: bool,
+}
+
+pub enum FinalizeStreamResult {
+    Finalized(StreamRuntimeObservation),
+    InputChanged(StreamRuntimeObservation),
+}
+
+fn validate_stream_identity(
+    meta: &StreamMetadata,
+    expected_ssrc: u32,
+    expected_generation: u64,
+    stream_id: &str,
+) -> GlobalResult<()> {
+    if meta.ssrc != expected_ssrc || meta.lifecycle_generation != expected_generation {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream identity does not match current runtime",
+            |msg| {
+                error!(
+                    "{msg}: stream_id={stream_id}, expected_ssrc={expected_ssrc}, actual_ssrc={}, expected_generation={expected_generation}, actual_generation={}",
+                    meta.ssrc, meta.lifecycle_generation
+                )
+            },
+        ));
+    }
+    Ok(())
+}
 impl StreamMetadata {
     fn new(
         ssrc: u32,
@@ -364,6 +443,7 @@ impl StreamMetadata {
             ssrc,
             lifecycle_generation: next_id(),
             output_count: Default::default(),
+            closing: AtomicBool::new(false),
             in_wait_timeout,
             out_idle_timeout,
             close_has_call: AtomicU8::new(0),
@@ -562,7 +642,181 @@ impl Register {
             .inner
             .stream_metadata_map
             .get(stream_id)
-            .is_some_and(|meta| meta.output.contains(output_enum))
+            .is_some_and(|meta| {
+                !meta.closing.load(Ordering::Acquire) && meta.output.contains(output_enum)
+            })
+    }
+
+    pub fn stream_runtime_observation(stream_id: &str) -> Option<StreamRuntimeObservation> {
+        let arc = Self::get().inner.clone();
+        let meta = arc.stream_metadata_map.get(stream_id)?;
+        let channel = arc.rtp_gateway_map.get(&meta.ssrc)?;
+        if channel.stream_id.as_ref() != stream_id {
+            return None;
+        }
+        Some(StreamRuntimeObservation {
+            ssrc: meta.ssrc,
+            lifecycle_generation: meta.lifecycle_generation,
+            last_packet_at_ms: channel.last_packet_at_ms.load(Ordering::Acquire),
+            packet_count: channel.packet_count.load(Ordering::Acquire),
+            input_idle_timeout_ms: u64::from(meta.in_wait_timeout).saturating_mul(1_000),
+            closing: meta.closing.load(Ordering::Acquire),
+        })
+    }
+
+    pub fn quiesce_stream_outputs(
+        stream_id: &str,
+        expected_ssrc: u32,
+        expected_generation: u64,
+    ) -> GlobalResult<StreamRuntimeObservation> {
+        let arc = Self::get().inner.clone();
+        let stream_id: Arc<str> = Arc::from(stream_id);
+        let mut meta = arc.stream_metadata_map.get_mut(&stream_id).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            )
+        })?;
+        validate_stream_identity(&meta, expected_ssrc, expected_generation, &stream_id)?;
+        let channel = arc.rtp_gateway_map.get(&meta.ssrc).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream RTP input is missing",
+                |msg| error!("{msg}: stream_id={stream_id}, ssrc={}", meta.ssrc),
+            )
+        })?;
+        if channel.stream_id != stream_id {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream RTP input belongs to another stream",
+                |msg| error!("{msg}: stream_id={stream_id}, ssrc={}", meta.ssrc),
+            ));
+        }
+        let meta = &mut *meta;
+        meta.closing.store(true, Ordering::Release);
+        for output_enum in [
+            OutputEnum::HttpFlv,
+            OutputEnum::DashFmp4,
+            OutputEnum::HlsFmp4,
+        ] {
+            if close_output_layers(&mut meta.output, &mut meta.converter.muxer, output_enum) {
+                let muxer = MuxerEnum::from_output_enum(output_enum);
+                Self::cancel_first_subscriber(
+                    &arc,
+                    stream_id.clone(),
+                    output_enum,
+                    meta.lifecycle_generation,
+                );
+                publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer))
+                    .hand_log(|msg| error!("{msg}"))?;
+            }
+        }
+        meta.output_count.clear_viewers();
+        Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
+        Ok(StreamRuntimeObservation {
+            ssrc: meta.ssrc,
+            lifecycle_generation: meta.lifecycle_generation,
+            last_packet_at_ms: channel.last_packet_at_ms.load(Ordering::Acquire),
+            packet_count: channel.packet_count.load(Ordering::Acquire),
+            input_idle_timeout_ms: u64::from(meta.in_wait_timeout).saturating_mul(1_000),
+            closing: true,
+        })
+    }
+
+    pub fn finalize_stream_by_id(
+        stream_id: &str,
+        expected_ssrc: u32,
+        expected_generation: u64,
+        expected_packet_count: u64,
+    ) -> GlobalResult<FinalizeStreamResult> {
+        let arc = Self::get().inner.clone();
+        let stream_id: Arc<str> = Arc::from(stream_id);
+        let meta = arc.stream_metadata_map.get(&stream_id).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            )
+        })?;
+        validate_stream_identity(&meta, expected_ssrc, expected_generation, &stream_id)?;
+        if !meta.closing.load(Ordering::Acquire) {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream outputs were not quiesced",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            ));
+        }
+        let in_wait_timeout = meta.in_wait_timeout;
+        let channel = arc.rtp_gateway_map.get(&meta.ssrc).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream RTP input disappeared before finalize",
+                |msg| error!("{msg}: stream_id={stream_id}, ssrc={}", meta.ssrc),
+            )
+        })?;
+        if channel.stream_id != stream_id {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream RTP input belongs to another stream",
+                |msg| error!("{msg}: stream_id={stream_id}, ssrc={}", meta.ssrc),
+            ));
+        }
+        channel.accepting.store(false, Ordering::Release);
+        while channel.active_refreshes.load(Ordering::Acquire) != 0 {
+            std::hint::spin_loop();
+        }
+        let packet_count = channel.packet_count.load(Ordering::Acquire);
+        if packet_count != expected_packet_count {
+            let observation = StreamRuntimeObservation {
+                ssrc: meta.ssrc,
+                lifecycle_generation: meta.lifecycle_generation,
+                last_packet_at_ms: channel.last_packet_at_ms.load(Ordering::Acquire),
+                packet_count,
+                input_idle_timeout_ms: u64::from(in_wait_timeout).saturating_mul(1_000),
+                closing: true,
+            };
+            channel.accepting.store(true, Ordering::Release);
+            return Ok(FinalizeStreamResult::InputChanged(observation));
+        }
+        drop(meta);
+        let removed_meta = arc.stream_metadata_map.remove_if(&stream_id, |_, meta| {
+            meta.ssrc == expected_ssrc
+                && meta.lifecycle_generation == expected_generation
+                && meta.closing.load(Ordering::Acquire)
+        });
+        let Some((_, meta)) = removed_meta else {
+            channel.accepting.store(true, Ordering::Release);
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream generation changed before finalize",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            ));
+        };
+        drop(channel);
+        Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
+        let _ = arc
+            .time_schedule
+            .delete(TimeScheduleKey::RtpGateway(meta.ssrc));
+        let (_, channel) = arc
+            .rtp_gateway_map
+            .remove_if(&meta.ssrc, |_, channel| channel.stream_id == stream_id)
+            .ok_or_else(|| {
+                GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "stream RTP input disappeared before finalize",
+                    |msg| error!("{msg}: stream_id={stream_id}, ssrc={}", meta.ssrc),
+                )
+            })?;
+        let observation = StreamRuntimeObservation {
+            ssrc: meta.ssrc,
+            lifecycle_generation: meta.lifecycle_generation,
+            last_packet_at_ms: channel.last_packet_at_ms.load(Ordering::Acquire),
+            packet_count,
+            input_idle_timeout_ms: u64::from(in_wait_timeout).saturating_mul(1_000),
+            closing: true,
+        };
+        Ok(FinalizeStreamResult::Finalized(observation))
     }
 
     //插入/移除muxer使用量
@@ -1340,6 +1594,13 @@ impl Register {
                 |msg| error!("{msg}: stream_id={stream_id}"),
             )
         })?;
+        if meta.closing.load(Ordering::Acquire) {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream is closing",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            ));
+        }
         if requested_transcode.is_some() && meta.converter.transcode != requested_transcode {
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidState.code(),
@@ -1620,6 +1881,12 @@ impl OutputCount {
             + self.local_ts.load(Ordering::Relaxed)
     }
 
+    fn clear_viewers(&self) {
+        self.http_flv.store(0, Ordering::Release);
+        self.dash_fmp4.store(0, Ordering::Release);
+        self.hls_fmp4.store(0, Ordering::Release);
+    }
+
     //获取复用器调用数量
     fn get_muxer_size(&self, output: OutputEnum) -> u32 {
         match output {
@@ -1866,6 +2133,23 @@ mod unknown_stream_tests {
         let channel = RtpChannel::new(Arc::from("stream-a"));
         assert!(!channel.media_started.swap(true, Ordering::AcqRel));
         assert!(channel.media_started.swap(true, Ordering::AcqRel));
+    }
+
+    #[test]
+    fn finalized_rtp_channel_rejects_late_packets() {
+        let channel = RtpChannel::new(Arc::from("stream-finalizing"));
+        channel.wait_sign_in.store(false, Ordering::Release);
+        let origin = (
+            "127.0.0.1:9000".parse::<SocketAddr>().unwrap(),
+            Protocol::UDP,
+        );
+
+        channel.refresh(200_000_011, 96, origin).unwrap();
+        assert_eq!(channel.packet_count.load(Ordering::Acquire), 1);
+
+        channel.accepting.store(false, Ordering::Release);
+        assert!(channel.refresh(200_000_011, 96, origin).is_err());
+        assert_eq!(channel.packet_count.load(Ordering::Acquire), 1);
     }
 
     #[test]

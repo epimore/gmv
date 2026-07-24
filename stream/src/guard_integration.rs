@@ -31,15 +31,15 @@ use gmv_protocol::stream::v1::{
     GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, OutputInfo, OutputState,
     QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
     ReleaseSubscriptionOutputsResponse, StartReceiveRequest, StartReceiveResponse,
-    StopReceiveRequest, StopReceiveResponse, StreamBoolResponse, StreamJsonRequest,
-    StreamJsonResponse, StreamState, StreamUnitResponse, ViewerFormatCount,
+    StopReceivePhase, StopReceiveRequest, StopReceiveResponse, StreamBoolResponse,
+    StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse, ViewerFormatCount,
     stream_control_server::StreamControl,
 };
 use tonic::transport::Channel;
 
 use crate::io::local::mp4::Mp4OutputInnerEvent;
 use crate::io::talk::TalkManager;
-use crate::state::register::Register;
+use crate::state::register::{FinalizeStreamResult, Register, StreamRuntimeObservation};
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_CHANNEL: OnceLock<RpcChannelConfig> = OnceLock::new();
@@ -616,6 +616,7 @@ pub struct StreamControlAdapter {
     streams: HashMap<String, StreamRuntime>,
     outputs: HashMap<String, OutputRuntime>,
     terminal_subscriptions: HashMap<(String, String), i64>,
+    finalized_streams: HashMap<String, FinalizedStreamRuntime>,
     media_tx: Option<mpsc::Sender<u32>>,
 }
 
@@ -625,6 +626,16 @@ struct StreamRuntime {
     route_id: String,
     endpoints: Vec<Endpoint>,
     state: StreamState,
+}
+
+#[derive(Debug, Clone)]
+struct FinalizedStreamRuntime {
+    ssrc: u32,
+    lifecycle_generation: u64,
+    last_packet_at_ms: u64,
+    packet_count: u64,
+    input_idle_timeout_ms: u64,
+    finalized_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -658,6 +669,7 @@ impl StreamControlAdapter {
             streams: HashMap::new(),
             outputs: HashMap::new(),
             terminal_subscriptions: HashMap::new(),
+            finalized_streams: HashMap::new(),
             media_tx: None,
         }
     }
@@ -707,6 +719,7 @@ impl StreamControlAdapter {
                 )),
             );
         }
+        self.finalized_streams.remove(&request.stream_id);
         let endpoints = if request.preferred_endpoints.is_empty() {
             vec![self.receive_endpoint.clone()]
         } else {
@@ -725,24 +738,172 @@ impl StreamControlAdapter {
     }
 
     pub fn stop_receive(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
+        let cutoff = now_ms().saturating_sub(10 * 60 * 1_000);
+        self.finalized_streams
+            .retain(|_, finalized| finalized.finalized_at_ms >= cutoff);
+        match StopReceivePhase::try_from(request.phase).unwrap_or(StopReceivePhase::Unspecified) {
+            StopReceivePhase::Unspecified => self.stop_receive_legacy(request),
+            StopReceivePhase::QuiesceOutputs => self.quiesce_receive_outputs(request),
+            StopReceivePhase::Finalize => self.finalize_receive(request),
+        }
+    }
+
+    fn stop_receive_legacy(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
         if self.media_tx.is_some() {
-            Register::close_stream_by_id(&request.stream_id);
+            let _ = Register::close_stream_by_id(&request.stream_id);
         }
         self.outputs
             .retain(|_, output| output.stream_id != request.stream_id);
-        match self.streams.get_mut(&request.stream_id) {
-            Some(stream) => {
-                stream.state = StreamState::Stopped;
-                StopReceiveResponse {
-                    state: StreamState::Stopped as i32,
-                    error: None,
+        if let Some(stream) = self.streams.get_mut(&request.stream_id) {
+            stream.state = StreamState::Stopped;
+        }
+        stop_response(StreamState::Stopped, None, true, true, None)
+    }
+
+    fn quiesce_receive_outputs(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
+        let Some((expected_ssrc, expected_generation)) = stop_identity(&request) else {
+            return stop_response(
+                StreamState::Failed,
+                Some(error(
+                    "invalid_stream_identity",
+                    "expected_ssrc and expected_lifecycle_generation are required",
+                )),
+                false,
+                false,
+                None,
+            );
+        };
+        let observation = if self.media_tx.is_some() {
+            match Register::quiesce_stream_outputs(
+                &request.stream_id,
+                expected_ssrc,
+                expected_generation,
+            ) {
+                Ok(observation) => observation,
+                Err(error_value) => {
+                    return stop_response(
+                        StreamState::Failed,
+                        Some(detail_from_error(error_value)),
+                        false,
+                        false,
+                        None,
+                    );
                 }
             }
-            None => StopReceiveResponse {
+        } else {
+            return stop_response(
+                StreamState::Failed,
+                Some(error(
+                    "media_runtime_unavailable",
+                    "stream media runtime is unavailable",
+                )),
+                false,
+                false,
+                None,
+            );
+        };
+        self.outputs
+            .retain(|_, output| output.stream_id != request.stream_id);
+        if let Some(stream) = self.streams.get_mut(&request.stream_id) {
+            stream.state = StreamState::Stopping;
+        }
+        stop_response(StreamState::Stopping, None, true, false, Some(observation))
+    }
+
+    fn finalize_receive(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
+        let Some((expected_ssrc, expected_generation)) = stop_identity(&request) else {
+            return stop_response(
+                StreamState::Failed,
+                Some(error(
+                    "invalid_stream_identity",
+                    "expected_ssrc and expected_lifecycle_generation are required",
+                )),
+                false,
+                false,
+                None,
+            );
+        };
+        if self
+            .finalized_streams
+            .get(&request.stream_id)
+            .is_some_and(|finalized| {
+                finalized.ssrc == expected_ssrc
+                    && finalized.lifecycle_generation == expected_generation
+                    && finalized.packet_count == request.expected_packet_count
+            })
+        {
+            let finalized = self.finalized_streams[&request.stream_id].clone();
+            return StopReceiveResponse {
                 state: StreamState::Stopped as i32,
                 error: None,
-            },
+                outputs_closed: true,
+                input_removed: true,
+                ssrc: finalized.ssrc.to_string(),
+                lifecycle_generation: finalized.lifecycle_generation,
+                last_packet_at_ms: finalized.last_packet_at_ms,
+                packet_count: finalized.packet_count,
+                input_idle_timeout_ms: finalized.input_idle_timeout_ms,
+            };
         }
+        let observation = if self.media_tx.is_some() {
+            match Register::finalize_stream_by_id(
+                &request.stream_id,
+                expected_ssrc,
+                expected_generation,
+                request.expected_packet_count,
+            ) {
+                Ok(FinalizeStreamResult::Finalized(observation)) => observation,
+                Ok(FinalizeStreamResult::InputChanged(observation)) => {
+                    return stop_response(
+                        StreamState::Stopping,
+                        Some(error(
+                            "stream_input_changed",
+                            "stream input changed during finalize",
+                        )),
+                        true,
+                        false,
+                        Some(observation),
+                    );
+                }
+                Err(error_value) => {
+                    return stop_response(
+                        StreamState::Stopping,
+                        Some(detail_from_error(error_value)),
+                        true,
+                        false,
+                        Register::stream_runtime_observation(&request.stream_id),
+                    );
+                }
+            }
+        } else {
+            return stop_response(
+                StreamState::Failed,
+                Some(error(
+                    "media_runtime_unavailable",
+                    "stream media runtime is unavailable",
+                )),
+                false,
+                false,
+                None,
+            );
+        };
+        self.outputs
+            .retain(|_, output| output.stream_id != request.stream_id);
+        if let Some(stream) = self.streams.get_mut(&request.stream_id) {
+            stream.state = StreamState::Stopped;
+        }
+        self.finalized_streams.insert(
+            request.stream_id,
+            FinalizedStreamRuntime {
+                ssrc: observation.ssrc,
+                lifecycle_generation: observation.lifecycle_generation,
+                last_packet_at_ms: observation.last_packet_at_ms,
+                packet_count: observation.packet_count,
+                input_idle_timeout_ms: observation.input_idle_timeout_ms,
+                finalized_at_ms: now_ms(),
+            },
+        );
+        stop_response(StreamState::Stopped, None, true, true, Some(observation))
     }
 
     pub fn query_stream(&self, request: QueryStreamRequest) -> QueryStreamResponse {
@@ -750,11 +911,19 @@ impl StreamControlAdapter {
             .streams
             .get(&request.stream_id)
             .map(|stream| stream.state);
+        let observation = self
+            .media_tx
+            .as_ref()
+            .and_then(|_| Register::stream_runtime_observation(&request.stream_id));
         let legacy_register_ts = self.media_tx.as_ref().and_then(|_| {
             Register::get_base_stream_info_by_stream_id(Arc::from(request.stream_id.as_str()))
                 .map(|info| info.in_time)
         });
-        let state = effective_stream_state(modern_state, legacy_register_ts);
+        let state = if observation.is_some_and(|observation| observation.closing) {
+            StreamState::Stopping
+        } else {
+            effective_stream_state(modern_state, legacy_register_ts)
+        };
         let (viewer_count, viewer_formats) = self.viewer_stats(&request.stream_id);
         QueryStreamResponse {
             stream_id: request.stream_id,
@@ -767,6 +936,22 @@ impl StreamControlAdapter {
             terminal_reason: String::new(),
             viewer_count,
             viewer_formats,
+            ssrc: observation
+                .map(|observation| observation.ssrc.to_string())
+                .unwrap_or_default(),
+            lifecycle_generation: observation
+                .map(|observation| observation.lifecycle_generation)
+                .unwrap_or_default(),
+            last_packet_at_ms: observation
+                .map(|observation| observation.last_packet_at_ms)
+                .unwrap_or_default(),
+            packet_count: observation
+                .map(|observation| observation.packet_count)
+                .unwrap_or_default(),
+            input_idle_timeout_ms: observation
+                .map(|observation| observation.input_idle_timeout_ms)
+                .unwrap_or_default(),
+            input_observed: observation.is_some(),
         }
     }
 
@@ -799,6 +984,16 @@ impl StreamControlAdapter {
 
     pub fn create_output(&mut self, request: CreateOutputRequest) -> CreateOutputResponse {
         self.prune_terminal_subscriptions(now_ms());
+        if self.streams.get(&request.stream_id).is_some_and(|stream| {
+            matches!(stream.state, StreamState::Stopping | StreamState::Stopped)
+        }) {
+            return CreateOutputResponse {
+                output_id: String::new(),
+                endpoints: vec![],
+                error: Some(error("stream_closing", "stream is closing")),
+                output: None,
+            };
+        }
         if !request.subscription_id.is_empty()
             && self
                 .terminal_subscriptions
@@ -1260,6 +1455,42 @@ fn start_response(
     }
 }
 
+fn stop_identity(request: &StopReceiveRequest) -> Option<(u32, u64)> {
+    let ssrc = request.expected_ssrc.trim().parse::<u32>().ok()?;
+    (ssrc != 0 && request.expected_lifecycle_generation != 0)
+        .then_some((ssrc, request.expected_lifecycle_generation))
+}
+
+fn stop_response(
+    state: StreamState,
+    error: Option<ErrorDetail>,
+    outputs_closed: bool,
+    input_removed: bool,
+    observation: Option<StreamRuntimeObservation>,
+) -> StopReceiveResponse {
+    StopReceiveResponse {
+        state: state as i32,
+        error,
+        outputs_closed,
+        input_removed,
+        ssrc: observation
+            .map(|observation| observation.ssrc.to_string())
+            .unwrap_or_default(),
+        lifecycle_generation: observation
+            .map(|observation| observation.lifecycle_generation)
+            .unwrap_or_default(),
+        last_packet_at_ms: observation
+            .map(|observation| observation.last_packet_at_ms)
+            .unwrap_or_default(),
+        packet_count: observation
+            .map(|observation| observation.packet_count)
+            .unwrap_or_default(),
+        input_idle_timeout_ms: observation
+            .map(|observation| observation.input_idle_timeout_ms)
+            .unwrap_or_default(),
+    }
+}
+
 fn error(code: &str, message: &str) -> ErrorDetail {
     gmv_nodec::error::error_detail(code, message)
 }
@@ -1351,10 +1582,8 @@ mod tests {
             false,
             30000,
         );
-        let mut control = StreamControlAdapter::new(
-            node.identity,
-            endpoint("rtp", "rtp", "127.0.0.1", 30000),
-        );
+        let mut control =
+            StreamControlAdapter::new(node.identity, endpoint("rtp", "rtp", "127.0.0.1", 30000));
         control.outputs.insert(
             "output-1".to_string(),
             OutputRuntime {
@@ -1371,6 +1600,10 @@ mod tests {
             operation: None,
             stream_id: "legacy-stream".to_string(),
             reason: "manual_stop".to_string(),
+            phase: StopReceivePhase::Unspecified as i32,
+            expected_ssrc: String::new(),
+            expected_lifecycle_generation: 0,
+            expected_packet_count: 0,
         });
 
         assert_eq!(response.state, StreamState::Stopped as i32);

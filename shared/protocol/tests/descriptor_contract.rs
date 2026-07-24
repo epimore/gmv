@@ -329,10 +329,53 @@ fn stream_output_lifecycle_contract_is_stable() {
     );
     assert_eq!(field_number("CreateOutputResponse", "output"), Some(4));
     assert_eq!(field_number("CloseOutputRequest", "stream_id"), Some(3));
+    assert_eq!(field_number("StopReceiveRequest", "phase"), Some(4));
+    assert_eq!(field_number("StopReceiveRequest", "expected_ssrc"), Some(5));
+    assert_eq!(
+        field_number("StopReceiveRequest", "expected_lifecycle_generation"),
+        Some(6)
+    );
+    assert_eq!(
+        field_number("StopReceiveRequest", "expected_packet_count"),
+        Some(7)
+    );
+    assert_eq!(
+        field_number("StopReceiveResponse", "outputs_closed"),
+        Some(3)
+    );
+    assert_eq!(
+        field_number("StopReceiveResponse", "input_removed"),
+        Some(4)
+    );
+    assert_eq!(
+        field_number("StopReceiveResponse", "input_idle_timeout_ms"),
+        Some(9)
+    );
     assert_eq!(field_number("QueryStreamResponse", "viewer_count"), Some(9));
     assert_eq!(
         field_number("QueryStreamResponse", "viewer_formats"),
         Some(10)
+    );
+    assert_eq!(field_number("QueryStreamResponse", "ssrc"), Some(11));
+    assert_eq!(
+        field_number("QueryStreamResponse", "lifecycle_generation"),
+        Some(12)
+    );
+    assert_eq!(
+        field_number("QueryStreamResponse", "last_packet_at_ms"),
+        Some(13)
+    );
+    assert_eq!(
+        field_number("QueryStreamResponse", "packet_count"),
+        Some(14)
+    );
+    assert_eq!(
+        field_number("QueryStreamResponse", "input_idle_timeout_ms"),
+        Some(15)
+    );
+    assert_eq!(
+        field_number("QueryStreamResponse", "input_observed"),
+        Some(16)
     );
     assert_eq!(
         field_number("GetPlaybackEndpointsResponse", "outputs"),

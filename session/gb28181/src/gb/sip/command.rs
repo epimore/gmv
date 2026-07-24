@@ -56,6 +56,13 @@ struct DurableDialogReservation {
     mansrtsp_cseq: u32,
 }
 
+pub(crate) struct PendingInviteStop {
+    stream_id: Option<String>,
+    call_id: String,
+    terminal_reason: String,
+    reservation: Option<DurableDialogReservation>,
+}
+
 pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Protocol)> {
     let Some(session) = Register::get_connected_device_session(device_id) else {
         return Err(device_not_connected(device_id));
@@ -1386,11 +1393,26 @@ where
 }
 
 pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> GlobalResult<()> {
+    let pending = send_invite_stop_by_device(device_id, req).await?;
+    complete_invite_stop(pending).await
+}
+
+pub(crate) async fn send_invite_stop_by_device(
+    device_id: &str,
+    req: InviteStopRequest,
+) -> GlobalResult<PendingInviteStop> {
+    let pending = prepare_invite_stop(req).await?;
+    send_prepared_invite_stop(device_id, &pending).await?;
+    Ok(pending)
+}
+
+pub(crate) async fn prepare_invite_stop(req: InviteStopRequest) -> GlobalResult<PendingInviteStop> {
     let terminal_reason = if req.terminal_reason.trim().is_empty() {
         "session_close"
     } else {
         req.terminal_reason.trim()
-    };
+    }
+    .to_string();
     let stream_id = req.stream_id.clone();
     let call_id = req
         .call_id
@@ -1403,17 +1425,30 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
             GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
                 "SIP dialog not found",
-                |msg| error!("device_id={device_id}; {msg}"),
+                |msg| error!("{msg}"),
             )
         })?;
     let reservation = match stream_id.as_deref() {
         Some(stream_id) => reserve_durable_dialog_request(stream_id, SipDialogMethod::Bye).await?,
         None => None,
     };
-    if stream_id.as_deref().is_some_and(|stream_id| {
+    Ok(PendingInviteStop {
+        stream_id,
+        call_id,
+        terminal_reason,
+        reservation,
+    })
+}
+
+pub(crate) async fn send_prepared_invite_stop(
+    device_id: &str,
+    pending: &PendingInviteStop,
+) -> GlobalResult<()> {
+    let use_restored = pending.stream_id.as_deref().is_some_and(|stream_id| {
         GeneralCache::stream_is_restored(stream_id) || GeneralCache::talk_is_restored(stream_id)
-    }) {
-        let session = load_durable_dialog(stream_id.as_deref().unwrap_or_default()).await?;
+    }) || Register::get_connected_device_session(device_id).is_none();
+    if use_restored {
+        let session = load_durable_dialog(pending.stream_id.as_deref().unwrap_or_default()).await?;
         send_restored_dialog_and_wait(
             device_id,
             SipDialogMethod::Bye,
@@ -1427,13 +1462,23 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
         send_native_dialog_and_wait(
             device_id,
             SipDialogMethod::Bye,
-            call_id.clone(),
+            pending.call_id.clone(),
             None,
             Vec::new(),
             BYE_WAIT_TIMEOUT,
         )
         .await?;
     }
+    Ok(())
+}
+
+pub(crate) async fn complete_invite_stop(pending: PendingInviteStop) -> GlobalResult<()> {
+    let PendingInviteStop {
+        stream_id,
+        call_id,
+        terminal_reason,
+        reservation,
+    } = pending;
     if let (Some(stream_id), Some(reservation)) = (stream_id.as_deref(), reservation) {
         let updated_at = Local::now().naive_local();
         let persisted = SipDialogSessionRepository::cas_mark_terminal(
@@ -1442,7 +1487,7 @@ pub async fn invite_stop_by_device(device_id: &str, req: InviteStopRequest) -> G
             reservation.version,
             DialogState::Terminating,
             DialogState::Terminated,
-            terminal_reason,
+            &terminal_reason,
             None,
             updated_at,
         )
@@ -1609,10 +1654,14 @@ async fn reserve_durable_dialog_request(
     let Some(session) = SipDialogSessionRepository::find_by_stream_id(stream_id).await? else {
         return Ok(None);
     };
-    if !Register::registration_epoch_matches(
-        &session.device_id,
-        session.registration_epoch_id.as_deref(),
-    ) {
+    let current_epoch_matches =
+        Register::get_device_session(&session.device_id).is_some_and(|current| {
+            current.registration_epoch_id.as_deref() == session.registration_epoch_id.as_deref()
+        });
+    if !current_epoch_matches
+        && !(method == SipDialogMethod::Bye
+            && Register::get_device_session(&session.device_id).is_none())
+    {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
             "durable SIP dialog registration epoch is no longer active",
