@@ -617,6 +617,7 @@ pub struct StreamControlAdapter {
     outputs: HashMap<String, OutputRuntime>,
     terminal_subscriptions: HashMap<(String, String), i64>,
     finalized_streams: HashMap<String, FinalizedStreamRuntime>,
+    restart_close_watches: HashMap<String, RestartCloseWatch>,
     media_tx: Option<mpsc::Sender<u32>>,
 }
 
@@ -637,6 +638,14 @@ struct FinalizedStreamRuntime {
     packet_count: u64,
     input_idle_timeout_ms: u64,
     finalized_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RestartCloseWatch {
+    ssrc: u32,
+    lifecycle_generation: u64,
+    started_at_ms: u64,
+    input_idle_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -671,6 +680,7 @@ impl StreamControlAdapter {
             outputs: HashMap::new(),
             terminal_subscriptions: HashMap::new(),
             finalized_streams: HashMap::new(),
+            restart_close_watches: HashMap::new(),
             media_tx: None,
         }
     }
@@ -699,6 +709,14 @@ impl StreamControlAdapter {
                 StreamState::Failed,
                 vec![],
                 Some(error("invalid_lease", "lease_id and route_id are required")),
+            );
+        }
+        if self.restart_close_watches.contains_key(&request.stream_id) {
+            return start_response(
+                &request.stream_id,
+                StreamState::Stopping,
+                vec![],
+                Some(error("stream_closing", "stream is closing")),
             );
         }
         if let Some(existing) = self.streams.get(&request.stream_id) {
@@ -756,6 +774,7 @@ impl StreamControlAdapter {
         }
         self.outputs
             .retain(|_, output| output.stream_id != request.stream_id);
+        self.restart_close_watches.remove(&request.stream_id);
         if let Some(stream) = self.streams.get_mut(&request.stream_id) {
             stream.state = StreamState::Stopped;
         }
@@ -763,36 +782,19 @@ impl StreamControlAdapter {
     }
 
     fn quiesce_receive_outputs(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
-        let Some((expected_ssrc, expected_generation)) = stop_identity(&request) else {
+        let Some(expected_ssrc) = expected_ssrc(&request) else {
             return stop_response(
                 StreamState::Failed,
                 Some(error(
                     "invalid_stream_identity",
-                    "expected_ssrc and expected_lifecycle_generation are required",
+                    "expected_ssrc is required",
                 )),
                 false,
                 false,
                 None,
             );
         };
-        let observation = if self.media_tx.is_some() {
-            match Register::quiesce_stream_outputs(
-                &request.stream_id,
-                expected_ssrc,
-                expected_generation,
-            ) {
-                Ok(observation) => observation,
-                Err(error_value) => {
-                    return stop_response(
-                        StreamState::Failed,
-                        Some(detail_from_error(error_value)),
-                        false,
-                        false,
-                        None,
-                    );
-                }
-            }
-        } else {
+        if self.media_tx.is_none() {
             return stop_response(
                 StreamState::Failed,
                 Some(error(
@@ -803,6 +805,55 @@ impl StreamControlAdapter {
                 false,
                 None,
             );
+        }
+        if let Some(watch) = self.restart_close_watches.get(&request.stream_id)
+            && watch.ssrc != expected_ssrc
+        {
+            return stop_response(
+                StreamState::Stopping,
+                Some(error(
+                    "stream_generation_changed",
+                    "restart close watch SSRC changed",
+                )),
+                true,
+                false,
+                self.restart_close_observation(&request.stream_id),
+            );
+        }
+        let observation = match Register::stream_runtime_observation(&request.stream_id) {
+            Some(current) => {
+                if request.expected_lifecycle_generation != 0
+                    && request.expected_lifecycle_generation != current.lifecycle_generation
+                {
+                    return stop_response(
+                        StreamState::Failed,
+                        Some(error(
+                            "stream_generation_changed",
+                            "stream lifecycle generation changed",
+                        )),
+                        false,
+                        false,
+                        Some(current),
+                    );
+                }
+                match Register::quiesce_stream_outputs(
+                    &request.stream_id,
+                    expected_ssrc,
+                    current.lifecycle_generation,
+                ) {
+                    Ok(observation) => observation,
+                    Err(error_value) => {
+                        return stop_response(
+                            StreamState::Failed,
+                            Some(detail_from_error(error_value)),
+                            false,
+                            false,
+                            None,
+                        );
+                    }
+                }
+            }
+            None => self.begin_restart_close_watch(&request.stream_id, expected_ssrc),
         };
         self.outputs
             .retain(|_, output| output.stream_id != request.stream_id);
@@ -846,6 +897,53 @@ impl StreamControlAdapter {
                 packet_count: finalized.packet_count,
                 input_idle_timeout_ms: finalized.input_idle_timeout_ms,
             };
+        }
+        if let Some(watch) = self.restart_close_watches.get(&request.stream_id).cloned() {
+            if watch.ssrc != expected_ssrc || watch.lifecycle_generation != expected_generation {
+                return stop_response(
+                    StreamState::Stopping,
+                    Some(error(
+                        "stream_generation_changed",
+                        "restart close watch identity changed",
+                    )),
+                    true,
+                    false,
+                    self.restart_close_observation(&request.stream_id),
+                );
+            }
+            let observation = self
+                .restart_close_observation(&request.stream_id)
+                .unwrap_or_else(|| restart_close_observation(&watch, None));
+            if observation.packet_count != request.expected_packet_count {
+                return stop_response(
+                    StreamState::Stopping,
+                    Some(error(
+                        "stream_input_changed",
+                        "stream input changed during finalize",
+                    )),
+                    true,
+                    false,
+                    Some(observation),
+                );
+            }
+            self.restart_close_watches.remove(&request.stream_id);
+            self.outputs
+                .retain(|_, output| output.stream_id != request.stream_id);
+            if let Some(stream) = self.streams.get_mut(&request.stream_id) {
+                stream.state = StreamState::Stopped;
+            }
+            self.finalized_streams.insert(
+                request.stream_id,
+                FinalizedStreamRuntime {
+                    ssrc: observation.ssrc,
+                    lifecycle_generation: observation.lifecycle_generation,
+                    last_packet_at_ms: observation.last_packet_at_ms,
+                    packet_count: observation.packet_count,
+                    input_idle_timeout_ms: observation.input_idle_timeout_ms,
+                    finalized_at_ms: now_ms(),
+                },
+            );
+            return stop_response(StreamState::Stopped, None, true, true, Some(observation));
         }
         let observation = if self.media_tx.is_some() {
             match Register::finalize_stream_by_id(
@@ -916,7 +1014,8 @@ impl StreamControlAdapter {
         let observation = self
             .media_tx
             .as_ref()
-            .and_then(|_| Register::stream_runtime_observation(&request.stream_id));
+            .and_then(|_| Register::stream_runtime_observation(&request.stream_id))
+            .or_else(|| self.restart_close_observation(&request.stream_id));
         let legacy_register_ts = self.media_tx.as_ref().and_then(|_| {
             Register::get_base_stream_info_by_stream_id(Arc::from(request.stream_id.as_str()))
                 .map(|info| info.in_time)
@@ -988,6 +1087,41 @@ impl StreamControlAdapter {
             })
             .collect();
         (viewer_count, viewer_formats)
+    }
+
+    fn begin_restart_close_watch(
+        &mut self,
+        stream_id: &str,
+        expected_ssrc: u32,
+    ) -> StreamRuntimeObservation {
+        if let Some(existing) = self.restart_close_watches.get(stream_id) {
+            if existing.ssrc == expected_ssrc {
+                return restart_close_observation(
+                    existing,
+                    Register::unknown_stream_observation(expected_ssrc),
+                );
+            }
+        }
+        let started_at_ms = u64::try_from(now_ms()).unwrap_or(1).max(1);
+        let watch = RestartCloseWatch {
+            ssrc: expected_ssrc,
+            lifecycle_generation: started_at_ms,
+            started_at_ms,
+            input_idle_timeout_ms: Register::configured_input_idle_timeout_ms().max(1),
+        };
+        let observation =
+            restart_close_observation(&watch, Register::unknown_stream_observation(expected_ssrc));
+        self.restart_close_watches
+            .insert(stream_id.to_string(), watch);
+        observation
+    }
+
+    fn restart_close_observation(&self, stream_id: &str) -> Option<StreamRuntimeObservation> {
+        let watch = self.restart_close_watches.get(stream_id)?;
+        Some(restart_close_observation(
+            watch,
+            Register::unknown_stream_observation(watch.ssrc),
+        ))
     }
 
     pub fn create_output(&mut self, request: CreateOutputRequest) -> CreateOutputResponse {
@@ -1469,10 +1603,16 @@ fn start_response(
     }
 }
 
-fn stop_identity(request: &StopReceiveRequest) -> Option<(u32, u64)> {
+fn expected_ssrc(request: &StopReceiveRequest) -> Option<u32> {
     let ssrc = request.expected_ssrc.trim().parse::<u32>().ok()?;
-    (ssrc != 0 && request.expected_lifecycle_generation != 0)
-        .then_some((ssrc, request.expected_lifecycle_generation))
+    (ssrc != 0).then_some(ssrc)
+}
+
+fn stop_identity(request: &StopReceiveRequest) -> Option<(u32, u64)> {
+    expected_ssrc(request).and_then(|ssrc| {
+        (request.expected_lifecycle_generation != 0)
+            .then_some((ssrc, request.expected_lifecycle_generation))
+    })
 }
 
 fn stop_response(
@@ -1553,6 +1693,21 @@ fn now_ms() -> i64 {
         })
 }
 
+fn restart_close_observation(
+    watch: &RestartCloseWatch,
+    unknown_observation: Option<(u64, u64)>,
+) -> StreamRuntimeObservation {
+    let (last_packet_at_ms, packet_count) = unknown_observation.unwrap_or((watch.started_at_ms, 0));
+    StreamRuntimeObservation {
+        ssrc: watch.ssrc,
+        lifecycle_generation: watch.lifecycle_generation,
+        last_packet_at_ms: last_packet_at_ms.max(watch.started_at_ms),
+        packet_count,
+        input_idle_timeout_ms: watch.input_idle_timeout_ms,
+        closing: true,
+    }
+}
+
 fn effective_stream_state(
     modern_state: Option<StreamState>,
     legacy_register_ts: Option<u64>,
@@ -1588,6 +1743,71 @@ mod tests {
             min_free_bytes: 0,
         });
         assert_eq!(primary_output_type_from_kind(&output), Some("mp4"));
+    }
+
+    #[test]
+    fn restart_close_watch_uses_acceptance_time_until_new_packets_arrive() {
+        let watch = RestartCloseWatch {
+            ssrc: 200_000_001,
+            lifecycle_generation: 7,
+            started_at_ms: 1_000,
+            input_idle_timeout_ms: 4_000,
+        };
+
+        let initial = restart_close_observation(&watch, None);
+        assert_eq!(initial.last_packet_at_ms, 1_000);
+        assert_eq!(initial.packet_count, 0);
+        assert!(initial.closing);
+
+        let late = restart_close_observation(&watch, Some((1_500, 3)));
+        assert_eq!(late.last_packet_at_ms, 1_500);
+        assert_eq!(late.packet_count, 3);
+
+        let stale = restart_close_observation(&watch, Some((500, 2)));
+        assert_eq!(stale.last_packet_at_ms, 1_000);
+        assert_eq!(stale.packet_count, 2);
+    }
+
+    #[test]
+    fn restart_close_watch_fences_a_new_receive_with_the_same_stream_id() {
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            false,
+            30000,
+        );
+        let mut control = StreamControlAdapter::new(
+            node.identity.clone(),
+            endpoint("rtp", "rtp", "127.0.0.1", 30000),
+        );
+        control.restart_close_watches.insert(
+            "stream-a".to_string(),
+            RestartCloseWatch {
+                ssrc: 200_000_001,
+                lifecycle_generation: 7,
+                started_at_ms: 1_000,
+                input_idle_timeout_ms: 4_000,
+            },
+        );
+
+        let response = control.start_receive(StartReceiveRequest {
+            operation: Some(operation("restart-stream-a")),
+            stream_id: "stream-a".to_string(),
+            route_id: "route-a".to_string(),
+            lease_id: "lease-a".to_string(),
+            expected_stream: Some(node.identity),
+            preferred_endpoints: vec![],
+        });
+
+        assert_eq!(response.state, StreamState::Stopping as i32);
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("stream_closing")
+        );
+        assert!(!control.streams.contains_key("stream-a"));
     }
 
     #[test]

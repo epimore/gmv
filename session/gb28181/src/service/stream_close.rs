@@ -242,13 +242,11 @@ async fn quiesce_target(
         ));
     }
     let node = crate::guard_integration::ensure_stream_node(&target.stream_node_name).await?;
-    let observed =
-        crate::service::stream_rpc::query_input_observation(&node, stream_id, target.ssrc).await?;
     let observation = crate::service::stream_rpc::quiesce_receive_outputs(
         &node,
         stream_id,
         target.ssrc,
-        observed.lifecycle_generation,
+        0,
         reason,
     )
     .await?;

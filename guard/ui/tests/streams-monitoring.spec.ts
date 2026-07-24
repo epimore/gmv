@@ -136,6 +136,7 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await liveRow.getByRole('button', { name: '停止', exact: true }).click();
   await page.getByRole('button', { name: '确认停止', exact: true }).click();
   await expect(currentPanel.getByText('停止中', { exact: true })).toBeVisible();
+  await expect(liveRow.getByRole('button', { name: '重试停止', exact: true })).toBeEnabled();
   const requestsAfterStop = activeListRequests;
   await page.waitForTimeout(2_200);
   expect(activeListRequests).toBe(requestsAfterStop);

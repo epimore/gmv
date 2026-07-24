@@ -222,6 +222,20 @@ pub async fn mark_failed(task_id: &str, code: &str, message: &str) -> GlobalResu
     Ok(())
 }
 
+pub async fn mark_stream_restart_interrupted(stream_id: &str) -> GlobalResult<()> {
+    let now = now_string();
+    db::execute!(
+        "UPDATE gb28181_record SET state=3,status=?,file_state=?,terminal_reason='stream_restart_interrupted',error_code='STREAM_RESTART_INTERRUPTED',error_message='流媒体服务重启，下载输出已中断',finished_at=?,lt=?,version=version+1 WHERE stream_id=? AND status IN ('STARTING','RUNNING','STOPPING')",
+        STATUS_FAILED,
+        FILE_NONE,
+        &now,
+        &now,
+        stream_id,
+    )
+    .hand_log(|msg| error!("{msg}"))?;
+    Ok(())
+}
+
 pub async fn claim_stop(task_id: &str) -> GlobalResult<bool> {
     let now = now_string();
     let result = db::execute!(

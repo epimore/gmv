@@ -446,7 +446,7 @@ fn stop_observation(
         stream_id,
         expected_ssrc,
     )?;
-    if observation.lifecycle_generation != expected_generation {
+    if expected_generation != 0 && observation.lifecycle_generation != expected_generation {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
             "stream lifecycle generation changed",

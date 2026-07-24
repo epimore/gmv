@@ -664,6 +664,27 @@ impl Register {
         })
     }
 
+    pub fn unknown_stream_observation(ssrc: u32) -> Option<(u64, u64)> {
+        let arc = Self::get().inner.clone();
+        let mut last_packet_at_ms = 0_u64;
+        let mut packet_count = 0_u64;
+        let mut found = false;
+        for entry in arc
+            .unknown_stream_map
+            .iter()
+            .filter(|entry| entry.value().ssrc == ssrc)
+        {
+            found = true;
+            last_packet_at_ms = last_packet_at_ms.max(entry.value().last_seen_at_ms);
+            packet_count = packet_count.saturating_add(entry.value().packet_count);
+        }
+        found.then_some((last_packet_at_ms, packet_count))
+    }
+
+    pub fn configured_input_idle_timeout_ms() -> u64 {
+        u64::from(Self::get().inner.stream_conf.in_wait_timeout).saturating_mul(1_000)
+    }
+
     pub fn quiesce_stream_outputs(
         stream_id: &str,
         expected_ssrc: u32,
@@ -699,6 +720,7 @@ impl Register {
             OutputEnum::HttpFlv,
             OutputEnum::DashFmp4,
             OutputEnum::HlsFmp4,
+            OutputEnum::LocalMp4,
         ] {
             if close_output_layers(&mut meta.output, &mut meta.converter.muxer, output_enum) {
                 let muxer = MuxerEnum::from_output_enum(output_enum);

@@ -46,7 +46,7 @@
             <el-table-column label="操作" fixed="right" width="140">
               <template #default="{ row }">
                 <el-button link type="primary" @click="showDetails(row)">详情</el-button>
-                <el-button link type="danger" :disabled="!canOperate || row.state === 'stopping'" @click="stop(row)">停止</el-button>
+                <el-button link type="danger" :disabled="!canOperate" @click="stop(row)">{{ row.state === 'stopping' ? '重试停止' : '停止' }}</el-button>
               </template>
             </el-table-column>
           </el-table>

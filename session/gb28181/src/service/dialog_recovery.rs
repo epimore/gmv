@@ -17,6 +17,7 @@ use crate::storage::dialog_session::{
     DialogSessionType, DialogState, DialogTransport, SipDialogSession, SipDialogSessionRepository,
 };
 use crate::storage::entity::{GmvDevice, GmvOauth};
+use crate::storage::recording;
 
 const RECOVERY_PAGE_SIZE: u32 = 200;
 
@@ -133,6 +134,10 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
     }
     let access_mode = access_mode(session.session_type)?;
     let media_online = query_media_online(session, ssrc).await?;
+
+    if !media_online && session.session_type == DialogSessionType::Download {
+        recording::mark_stream_restart_interrupted(&session.stream_id).await?;
+    }
 
     if session.transport == DialogTransport::Udp {
         if let Err(err) = ensure_udp_device_session(session).await {

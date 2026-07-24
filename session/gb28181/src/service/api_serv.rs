@@ -104,21 +104,16 @@ pub async fn download_info_by_stream_id(
 
 pub async fn download_stop(
     stream_id: String,
-    stream_node: Option<&str>,
+    _stream_node: Option<&str>,
     _token: String,
 ) -> GlobalResult<bool> {
     if id_builder::de_stream_id(&stream_id).is_ok() {
-        let (stream_server, ssrc) = download_stream_route(&stream_id, stream_node)?;
-        stream_close::begin(stream_id.clone());
-        let node = crate::guard_integration::ensure_stream_node(&stream_server).await?;
-        stream_rpc::close_output(
-            &node,
-            &StreamInfoQo {
-                ssrc,
-                output_enum: OutputEnum::LocalMp4,
-            },
-        )
-        .await?;
+        if session::Cache::stream_map_query_input(&stream_id).is_none()
+            && let Some(dialog) = SipDialogSessionRepository::find_by_stream_id(&stream_id).await?
+        {
+            crate::service::dialog_recovery::recover_dialog(&dialog).await?;
+        }
+        stream_close::begin_manual(stream_id).await?;
         return Ok(true);
     }
     Ok(false)
