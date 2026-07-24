@@ -62,6 +62,7 @@ pub struct ActiveStreamMonitorItem {
     pub viewer_count: u32,
     pub viewer_formats: Vec<ActiveStreamViewerFormat>,
     pub supported_formats: Vec<String>,
+    pub output_format: String,
 }
 
 #[derive(Debug, Clone, base::serde::Serialize)]
@@ -95,6 +96,7 @@ pub struct StreamHistoryMonitorItem {
     pub terminated_at_ms: i64,
     pub duration_ms: i64,
     pub terminal_reason: String,
+    pub terminal_reason_label: String,
     pub error_code: String,
     pub legacy_terminal_time: bool,
 }

@@ -3577,6 +3577,7 @@ async fn gb_active_streams(
                     })
                     .collect(),
                 supported_formats: item.supported_formats,
+                output_format: item.output_format,
             })
             .collect(),
         next_after_id: response.next_after_id,
@@ -3628,6 +3629,7 @@ async fn gb_stream_history(
                 terminated_at_ms: item.terminated_at_ms,
                 duration_ms: item.duration_ms,
                 terminal_reason: item.terminal_reason,
+                terminal_reason_label: item.terminal_reason_label,
                 error_code: item.error_code,
                 legacy_terminal_time: item.legacy_terminal_time,
             })

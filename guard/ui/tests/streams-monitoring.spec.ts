@@ -32,13 +32,21 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     started_at_ms: monitorServerTimeMs - 9_000, diagnostic_reason: '', session_type: 'LIVE',
     viewer_count: 1, viewer_formats: [{ media_format: 'hls', viewer_count: 1 }],
     supported_formats: ['flv', 'fmp4', 'hls', 'll_hls'],
+    output_format: 'hls',
+  };
+  const download = {
+    ...active,
+    stream_id: 'stream-download-1', ssrc: '0100000003', session_type: 'DOWNLOAD',
+    created_at_ms: monitorServerTimeMs - 6_000, established_at_ms: monitorServerTimeMs - 5_000,
+    started_at_ms: monitorServerTimeMs - 5_000, viewer_count: 0, viewer_formats: [],
+    supported_formats: ['flv', 'fmp4', 'hls', 'mp4'], output_format: 'mp4',
   };
   const history = {
     stream_id: 'stream-history-1', session_node_id: node.node_id, stream_node_id: 'stream-node-1',
     device_id: 'device-1', channel_id: 'channel-1', ssrc: '0100000002', session_type: 'PLAYBACK',
     state: 'TERMINATED', created_at_ms: monitorServerTimeMs - 20_000, established_at_ms: monitorServerTimeMs - 19_000,
     terminated_at_ms: monitorServerTimeMs - 1_000, duration_ms: 18_000, terminal_reason: 'manual_stop',
-    error_code: '', legacy_terminal_time: false,
+    terminal_reason_label: '手动停止', error_code: '', legacy_terminal_time: false,
   };
   let stopRequested = false;
   let activeListRequests = 0;
@@ -51,8 +59,8 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     else if (path === '/api/v2/gb28181/streams') {
       activeListRequests += 1;
       const items = !stopRequested
-        ? [active]
-        : [{ ...active, state: 'stopping', dialog_state: 'TERMINATING', media_ready: false }];
+        ? [active, download]
+        : [{ ...active, state: 'stopping', dialog_state: 'TERMINATING', media_ready: false }, download];
       body = { items, next_after_id: '', server_time_ms: monitorServerTimeMs };
     } else if (path === '/api/v2/gb28181/streams/stream-1/stop') {
       stopRequested = true;
@@ -72,16 +80,19 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await expect(page.getByText(node.instance_id, { exact: true })).toHaveCount(0);
   await onlineSession.click();
 
-  await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('运行中', { exact: true })).toBeVisible();
-  await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('直播', { exact: true })).toBeVisible();
-  await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('观看人数', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('媒体格式', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('tabpanel', { name: '当前运行' }).locator('.el-pagination')).toBeVisible();
-  const duration = page.getByRole('tabpanel', { name: '当前运行' }).getByText('9秒', { exact: true });
+  const currentPanel = page.getByRole('tabpanel', { name: '当前运行' });
+  await expect(currentPanel.getByText('运行中', { exact: true }).first()).toBeVisible();
+  await expect(currentPanel.getByText('直播', { exact: true })).toBeVisible();
+  await expect(currentPanel.getByText('下载', { exact: true })).toBeVisible();
+  await expect(currentPanel.getByText('观看人数', { exact: true })).toHaveCount(0);
+  await expect(currentPanel.getByText('媒体格式', { exact: true })).toHaveCount(0);
+  await expect(currentPanel.locator('.el-pagination')).toBeVisible();
+  const duration = currentPanel.getByText('9秒', { exact: true });
   await expect(duration).toBeVisible();
   await page.waitForTimeout(1_200);
   await expect(duration).toBeVisible();
-  await page.getByRole('button', { name: '详情', exact: true }).click();
+  const liveRow = currentPanel.getByRole('row').filter({ hasText: active.stream_id });
+  await liveRow.getByRole('button', { name: '详情', exact: true }).click();
   const details = page.getByRole('dialog', { name: '流详情' });
   await expect(details.getByText('总观看人数', { exact: true })).toBeVisible();
   await expect(details.getByRole('heading', { name: '媒体格式', exact: true })).toBeVisible();
@@ -90,6 +101,14 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await expect(hlsRow.getByText('1', { exact: true })).toBeVisible();
   const flvRow = details.getByRole('row').filter({ hasText: 'HTTP-FLV' });
   await expect(flvRow.getByText('0', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  const downloadRow = currentPanel.getByRole('row').filter({ hasText: download.stream_id });
+  await downloadRow.getByRole('button', { name: '详情', exact: true }).click();
+  await expect(details.getByText('下载格式', { exact: true })).toBeVisible();
+  await expect(details.getByText('MP4', { exact: true })).toBeVisible();
+  await expect(details.getByText('总观看人数', { exact: true })).toHaveCount(0);
+  await expect(details.getByRole('heading', { name: '媒体格式', exact: true })).toHaveCount(0);
+  await expect(details.getByRole('columnheader', { name: '观看人数', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(page.getByText('Session 服务', { exact: true })).toHaveCount(0);
   await expect(page.getByText('请先选择 Session 节点；页面不会从 Guard route/lease 推断当前业务流。')).toHaveCount(0);
@@ -114,9 +133,9 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await expect(page.getByRole('option', { name: '停止中', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
 
-  await page.getByRole('button', { name: '停止', exact: true }).click();
+  await liveRow.getByRole('button', { name: '停止', exact: true }).click();
   await page.getByRole('button', { name: '确认停止', exact: true }).click();
-  await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('停止中', { exact: true })).toBeVisible();
+  await expect(currentPanel.getByText('停止中', { exact: true })).toBeVisible();
   const requestsAfterStop = activeListRequests;
   await page.waitForTimeout(2_200);
   expect(activeListRequests).toBe(requestsAfterStop);

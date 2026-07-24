@@ -124,6 +124,7 @@ message ActiveStreamItem {
   uint32 viewer_count = 17;
   repeated ActiveStreamViewerFormat viewer_formats = 18;
   repeated string supported_formats = 19;
+  string output_format = 20;
 }
 
 message ActiveStreamViewerFormat {
@@ -167,6 +168,7 @@ message StreamHistoryItem {
   string terminal_reason = 13;
   string error_code = 14;
   bool legacy_terminal_time = 15;
+  string terminal_reason_label = 16;
 }
 
 message SetPlaybackSpeedRequest {

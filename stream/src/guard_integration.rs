@@ -626,6 +626,7 @@ struct StreamRuntime {
     route_id: String,
     endpoints: Vec<Endpoint>,
     state: StreamState,
+    primary_output_format: String,
 }
 
 #[derive(Debug, Clone)]
@@ -732,6 +733,7 @@ impl StreamControlAdapter {
                 route_id: request.route_id,
                 endpoints: endpoints.clone(),
                 state: StreamState::Receiving,
+                primary_output_format: String::new(),
             },
         );
         start_response(&request.stream_id, StreamState::Receiving, endpoints, None)
@@ -925,6 +927,11 @@ impl StreamControlAdapter {
             effective_stream_state(modern_state, legacy_register_ts)
         };
         let (viewer_count, viewer_formats) = self.viewer_stats(&request.stream_id);
+        let primary_output_format = self
+            .streams
+            .get(&request.stream_id)
+            .map(|stream| stream.primary_output_format.clone())
+            .unwrap_or_default();
         QueryStreamResponse {
             stream_id: request.stream_id,
             state: state as i32,
@@ -952,6 +959,7 @@ impl StreamControlAdapter {
                 .map(|observation| observation.input_idle_timeout_ms)
                 .unwrap_or_default(),
             input_observed: observation.is_some(),
+            primary_output_format,
         }
     }
 
@@ -1268,6 +1276,7 @@ impl StreamControlAdapter {
         let result = decode_payload::<MediaConfig>(&request.payload_json).and_then(|value| {
             let stream_id = value.stream_id.clone();
             let output_type = live_output_type_from_kind(&value.output);
+            let primary_output_format = primary_output_type_from_kind(&value.output);
             let audio_codec = value
                 .transcode
                 .as_ref()
@@ -1275,6 +1284,11 @@ impl StreamControlAdapter {
                 .map(|_| "aac")
                 .unwrap_or("");
             let ssrc = Register::init_media(value).map_err(detail_from_error)?;
+            if let (Some(stream), Some(output_format)) =
+                (self.streams.get_mut(&stream_id), primary_output_format)
+            {
+                stream.primary_output_format = output_format.to_string();
+            }
             if let Some(output_type) = output_type {
                 let endpoint = Register::create_live_output(&stream_id, output_type, audio_codec)
                     .map_err(detail_from_error)?;
@@ -1517,6 +1531,13 @@ fn live_output_type_from_kind(output: &OutputKind) -> Option<&'static str> {
     }
 }
 
+fn primary_output_type_from_kind(output: &OutputKind) -> Option<&'static str> {
+    match output {
+        OutputKind::LocalMp4(_) => Some("mp4"),
+        _ => live_output_type_from_kind(output),
+    }
+}
+
 fn output_resource_type(output_type: &str) -> &str {
     match output_type {
         "hls" | "ll_hls" => "hls",
@@ -1556,6 +1577,18 @@ pub fn operation(operation_id: &str) -> OperationRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_mp4_is_reported_as_primary_output_format() {
+        let output = OutputKind::LocalMp4(gmv_domain::info::output::LocalMp4Output {
+            fmt: gmv_domain::info::format::Mp4::default(),
+            path: String::new(),
+            token: None,
+            file_name: None,
+            min_free_bytes: 0,
+        });
+        assert_eq!(primary_output_type_from_kind(&output), Some("mp4"));
+    }
 
     #[test]
     fn legacy_media_runtime_drives_stream_state() {

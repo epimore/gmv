@@ -69,7 +69,7 @@
             <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at_ms) }}</template></el-table-column>
             <el-table-column label="结束时间" width="180"><template #default="{ row }">{{ formatDateTime(row.terminated_at_ms) }}<span v-if="row.legacy_terminal_time"> *</span></template></el-table-column>
             <el-table-column label="持续时间" width="120"><template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template></el-table-column>
-            <el-table-column label="停止原因" min-width="180"><template #default="{ row }">{{ terminalReasonLabel(row.terminal_reason) }}</template></el-table-column>
+            <el-table-column label="停止原因" min-width="180"><template #default="{ row }">{{ row.terminal_reason_label || '-' }}</template></el-table-column>
             <el-table-column label="失败码" min-width="150"><template #default="{ row }">{{ row.error_code || '-' }}</template></el-table-column>
           </el-table>
           <div class="pager-row">
@@ -90,14 +90,15 @@
           <el-descriptions-item label="通道 ID">{{ detailRow.channel_id || '-' }}</el-descriptions-item>
           <el-descriptions-item label="SSRC">{{ detailRow.ssrc || '-' }}</el-descriptions-item>
           <el-descriptions-item label="流媒体服务">{{ detailRow.stream_node_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="isDownloadDetail" label="下载格式" :span="2">{{ detailRow.output_format ? mediaFormatLabel(detailRow.output_format) : '-' }}</el-descriptions-item>
         </el-descriptions>
-        <section class="stream-detail-section">
+        <section v-if="!isDownloadDetail" class="stream-detail-section">
           <h4>观看概览</h4>
           <el-descriptions :column="1" border>
             <el-descriptions-item label="总观看人数">{{ detailRow.viewer_count }}</el-descriptions-item>
           </el-descriptions>
         </section>
-        <section class="stream-detail-section">
+        <section v-if="!isDownloadDetail" class="stream-detail-section">
           <h4>媒体格式</h4>
           <el-table :data="detailViewerFormats" border empty-text="暂无支持的媒体格式">
             <el-table-column label="媒体格式"><template #default="{ row }">{{ mediaFormatLabel(row.media_format) }}</template></el-table-column>
@@ -134,9 +135,10 @@ const historyTotal = ref(0);
 const serverTimeMs = ref(Date.now());
 const detailVisible = ref(false);
 const detailRow = ref<ActiveStreamMonitorItem>();
+const isDownloadDetail = computed(() => detailRow.value?.session_type.trim().toUpperCase() === 'DOWNLOAD');
 const detailViewerFormats = computed(() => {
   const row = detailRow.value;
-  if (!row) return [];
+  if (!row || isDownloadDetail.value) return [];
   const viewers = new Map(row.viewer_formats.map((item) => [normalizeMediaFormat(item.media_format), item.viewer_count]));
   const formats = row.supported_formats.length > 0 ? row.supported_formats : row.viewer_formats.map((item) => item.media_format);
   return formats.map((format) => ({ media_format: format, viewer_count: viewers.get(normalizeMediaFormat(format)) || 0 }));
@@ -173,31 +175,6 @@ function isNodeOnline(node: NodeInfo) { return node.connection === 'CONNECTED' &
 function sessionNodeLabel(node: NodeInfo) { return `${nodeKindLabel(node)} · ${node.node_id} · ${isNodeOnline(node) ? '在线' : '离线'}`; }
 function statusLabel(state: string): string { return ({ starting: '启动中', running: '运行中', stopping: '停止中', failed: '失败', unknown: '未知', conflict: '冲突', TERMINATED: '已终止', ORPHAN: '异常终止' } as Record<string, string>)[state] || state; }
 function streamTypeLabel(value: string): string { return ({ LIVE: '直播', PLAYBACK: '回放', DOWNLOAD: '下载', TALK: '语音' } as Record<string, string>)[value.trim().toUpperCase()] || '未知'; }
-function terminalReasonLabel(value: string): string {
-  const reason = value.trim().toLowerCase();
-  return ({
-    manual_stop: '手动停止',
-    last_subscription_released: '最后一个观看连接已释放',
-    peer_bye: '设备主动结束',
-    invite_cancelled: '邀请建立前已取消',
-    invite_failed: '邀请失败',
-    device_offline: '设备离线',
-    media_stopped: '媒体流已停止',
-    media_prepare_failed: '媒体准备失败',
-    invite_timeout: '邀请超时',
-    linkage_failed: '链路关联失败',
-    start_commit_failed: '启动提交失败',
-    close_timeout: '关闭超时',
-    bye_failed: 'BYE 关闭失败',
-    media_still_receiving: '设备仍在推流',
-    media_close_unconfirmed: '媒体资源关闭未确认',
-    recovery_failed: '会话恢复失败',
-    dialog_expired: '会话已过期',
-    internal_error: '内部错误',
-    legacy_unknown: '历史数据原因未知',
-    session_close: 'Session 服务关闭',
-  } as Record<string, string>)[reason] || (reason ? `未知原因（${value}）` : '-');
-}
 function normalizeMediaFormat(value: string): string { return value.trim().toLowerCase(); }
 function mediaFormatLabel(value: string): string { return ({ flv: 'HTTP-FLV', http_flv: 'HTTP-FLV', fmp4: 'fMP4', dash_fmp4: 'fMP4', hls: 'HLS', hls_fmp4: 'HLS', ll_hls: 'LL-HLS', mp4: 'MP4' } as Record<string, string>)[normalizeMediaFormat(value)] || value.toUpperCase(); }
 function formatDuration(ms: number): string { const seconds = Math.max(0, Math.floor(ms / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds % 3600 / 60); const remain = seconds % 60; return hours > 0 ? `${hours}时${minutes}分${remain}秒` : minutes > 0 ? `${minutes}分${remain}秒` : `${remain}秒`; }

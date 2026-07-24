@@ -267,12 +267,17 @@ fn session_stream_monitoring_contract_is_stable() {
         Some(13)
     );
     assert_eq!(field_number("StreamHistoryItem", "error_code"), Some(14));
+    assert_eq!(
+        field_number("StreamHistoryItem", "terminal_reason_label"),
+        Some(16)
+    );
     assert_eq!(field_number("ActiveStreamItem", "viewer_count"), Some(17));
     assert_eq!(field_number("ActiveStreamItem", "viewer_formats"), Some(18));
     assert_eq!(
         field_number("ActiveStreamItem", "supported_formats"),
         Some(19)
     );
+    assert_eq!(field_number("ActiveStreamItem", "output_format"), Some(20));
 }
 
 #[test]
@@ -359,6 +364,10 @@ fn stream_output_lifecycle_contract_is_stable() {
     assert_eq!(
         field_number("QueryStreamResponse", "viewer_formats"),
         Some(10)
+    );
+    assert_eq!(
+        field_number("QueryStreamResponse", "primary_output_format"),
+        Some(17)
     );
     assert_eq!(field_number("QueryStreamResponse", "ssrc"), Some(11));
     assert_eq!(

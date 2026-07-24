@@ -1016,6 +1016,7 @@ impl SessionControl for SessionControlRpc {
                             "stream_rpc_timeout".to_string(),
                             0,
                             vec![],
+                            String::new(),
                         ),
                     ),
                 }
@@ -1936,6 +1937,7 @@ async fn active_stream_item(
             String::new(),
             0,
             vec![],
+            String::new(),
         ),
         DialogState::Terminating => (
             "stopping".to_string(),
@@ -1944,6 +1946,7 @@ async fn active_stream_item(
             String::new(),
             0,
             vec![],
+            String::new(),
         ),
         DialogState::Established => probe_dialog_media(dialog).await,
         DialogState::Terminated | DialogState::Orphan => (
@@ -1953,6 +1956,7 @@ async fn active_stream_item(
             "terminal_dialog_excluded".to_string(),
             0,
             vec![],
+            String::new(),
         ),
     };
     active_stream_item_with_status(identity, dialog, status)
@@ -1968,9 +1972,18 @@ fn active_stream_item_with_status(
         String,
         u32,
         Vec<ActiveStreamViewerFormat>,
+        String,
     ),
 ) -> ActiveStreamItem {
-    let (state, media_state, media_ready, diagnostic_reason, viewer_count, viewer_formats) = status;
+    let (
+        state,
+        media_state,
+        media_ready,
+        diagnostic_reason,
+        viewer_count,
+        viewer_formats,
+        output_format,
+    ) = status;
     ActiveStreamItem {
         stream_id: dialog.stream_id.clone(),
         session_node_id: identity.node_id.clone(),
@@ -1994,6 +2007,7 @@ fn active_stream_item_with_status(
         viewer_count,
         viewer_formats,
         supported_formats: supported_media_formats(dialog.session_type),
+        output_format,
     }
 }
 
@@ -2016,6 +2030,7 @@ async fn probe_dialog_media(
     String,
     u32,
     Vec<ActiveStreamViewerFormat>,
+    String,
 ) {
     let Some(node) = StreamNodeRegistry::get(&dialog.media_node_id) else {
         return (
@@ -2025,6 +2040,7 @@ async fn probe_dialog_media(
             "stream_node_unavailable".to_string(),
             0,
             vec![],
+            String::new(),
         );
     };
     if dialog.session_type == DialogSessionType::Talk {
@@ -2036,6 +2052,7 @@ async fn probe_dialog_media(
                 String::new(),
                 0,
                 vec![],
+                String::new(),
             ),
             Ok(false) => (
                 "unknown".to_string(),
@@ -2044,6 +2061,7 @@ async fn probe_dialog_media(
                 "media_not_running".to_string(),
                 0,
                 vec![],
+                String::new(),
             ),
             Err(_) => (
                 "unknown".to_string(),
@@ -2052,6 +2070,7 @@ async fn probe_dialog_media(
                 "stream_rpc_unavailable".to_string(),
                 0,
                 vec![],
+                String::new(),
             ),
         };
     }
@@ -2061,6 +2080,7 @@ async fn probe_dialog_media(
                 ProtoStreamState::try_from(response.state).unwrap_or(ProtoStreamState::Unspecified);
             let media_ready = response.media_ready;
             let viewer_count = response.viewer_count;
+            let output_format = response.primary_output_format;
             let viewer_formats = response
                 .viewer_formats
                 .into_iter()
@@ -2077,6 +2097,7 @@ async fn probe_dialog_media(
                     String::new(),
                     viewer_count,
                     viewer_formats,
+                    output_format,
                 ),
                 ProtoStreamState::Failed => (
                     "failed".to_string(),
@@ -2085,6 +2106,7 @@ async fn probe_dialog_media(
                     "media_failed".to_string(),
                     viewer_count,
                     viewer_formats,
+                    output_format,
                 ),
                 ProtoStreamState::Starting => (
                     "starting".to_string(),
@@ -2093,6 +2115,7 @@ async fn probe_dialog_media(
                     String::new(),
                     viewer_count,
                     viewer_formats,
+                    output_format,
                 ),
                 ProtoStreamState::Stopping => (
                     "stopping".to_string(),
@@ -2101,6 +2124,7 @@ async fn probe_dialog_media(
                     String::new(),
                     viewer_count,
                     viewer_formats,
+                    output_format,
                 ),
                 ProtoStreamState::Receiving => (
                     "unknown".to_string(),
@@ -2109,6 +2133,7 @@ async fn probe_dialog_media(
                     "media_not_ready".to_string(),
                     viewer_count,
                     viewer_formats,
+                    output_format,
                 ),
                 ProtoStreamState::Stopped | ProtoStreamState::Unspecified => (
                     "unknown".to_string(),
@@ -2117,6 +2142,7 @@ async fn probe_dialog_media(
                     "media_not_running".to_string(),
                     viewer_count,
                     viewer_formats,
+                    output_format,
                 ),
             }
         }
@@ -2127,7 +2153,34 @@ async fn probe_dialog_media(
             "stream_rpc_unavailable".to_string(),
             0,
             vec![],
+            String::new(),
         ),
+    }
+}
+
+fn terminal_reason_label(reason: &str) -> &'static str {
+    match reason {
+        "manual_stop" => "手动停止",
+        "last_subscription_released" => "最后一个观看连接已释放",
+        "peer_bye" => "设备主动结束",
+        "invite_cancelled" => "邀请建立前已取消",
+        "invite_failed" => "邀请失败",
+        "device_offline" => "设备离线",
+        "media_stopped" => "媒体流已停止",
+        "media_prepare_failed" => "媒体准备失败",
+        "invite_timeout" => "邀请超时",
+        "linkage_failed" => "链路关联失败",
+        "start_commit_failed" => "启动提交失败",
+        "close_timeout" => "关闭超时",
+        "bye_failed" => "BYE 关闭失败",
+        "media_still_receiving" => "设备仍在推流",
+        "media_close_unconfirmed" => "媒体资源关闭未确认",
+        "recovery_failed" => "会话恢复失败",
+        "dialog_expired" => "会话已过期",
+        "internal_error" => "内部错误",
+        "legacy_unknown" => "历史数据原因未知",
+        "session_close" => "Session 服务关闭",
+        _ => "未知原因",
     }
 }
 
@@ -2135,6 +2188,10 @@ fn history_stream_item(dialog: SipDialogSession) -> StreamHistoryItem {
     let legacy_terminal_time = dialog.terminated_at.is_none();
     let ended_at = dialog.terminated_at.unwrap_or(dialog.updated_at);
     let started_at = dialog.established_at.unwrap_or(dialog.created_at);
+    let terminal_reason = dialog
+        .terminal_reason
+        .unwrap_or_else(|| "legacy_unknown".to_string());
+    let terminal_reason_label = terminal_reason_label(&terminal_reason).to_string();
     StreamHistoryItem {
         stream_id: dialog.stream_id,
         session_node_id: dialog.signal_node_id,
@@ -2151,9 +2208,8 @@ fn history_stream_item(dialog: SipDialogSession) -> StreamHistoryItem {
             .unwrap_or_default(),
         terminated_at_ms: local_datetime_ms(ended_at),
         duration_ms: (ended_at - started_at).num_milliseconds().max(0),
-        terminal_reason: dialog
-            .terminal_reason
-            .unwrap_or_else(|| "legacy_unknown".to_string()),
+        terminal_reason,
+        terminal_reason_label,
         error_code: dialog.error_code.unwrap_or_default(),
         legacy_terminal_time,
     }
@@ -3608,5 +3664,15 @@ mod tests {
             ["flv", "fmp4", "hls", "mp4"]
         );
         assert!(supported_media_formats(DialogSessionType::Talk).is_empty());
+    }
+
+    #[test]
+    fn terminal_reason_labels_are_owned_by_session() {
+        assert_eq!(terminal_reason_label("manual_stop"), "手动停止");
+        assert_eq!(
+            terminal_reason_label("media_still_receiving"),
+            "设备仍在推流"
+        );
+        assert_eq!(terminal_reason_label("future_reason"), "未知原因");
     }
 }

@@ -89,6 +89,7 @@ message QueryStreamResponse {
   uint64 packet_count = 14;
   uint64 input_idle_timeout_ms = 15;
   bool input_observed = 16;
+  string primary_output_format = 17;
 }
 
 message ViewerFormatCount {
