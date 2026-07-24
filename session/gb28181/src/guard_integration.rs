@@ -1993,7 +1993,18 @@ fn active_stream_item_with_status(
         session_type: dialog.session_type.to_string(),
         viewer_count,
         viewer_formats,
+        supported_formats: supported_media_formats(dialog.session_type),
     }
+}
+
+fn supported_media_formats(session_type: DialogSessionType) -> Vec<String> {
+    let formats: &[&str] = match session_type {
+        DialogSessionType::Live => &["flv", "fmp4", "hls", "ll_hls"],
+        DialogSessionType::Playback => &["flv", "fmp4", "hls"],
+        DialogSessionType::Download => &["flv", "fmp4", "hls", "mp4"],
+        DialogSessionType::Talk => &[],
+    };
+    formats.iter().map(|format| (*format).to_string()).collect()
 }
 
 async fn probe_dialog_media(
@@ -3580,5 +3591,22 @@ mod tests {
 
         let error = custom_media_config("playback", "ll_hls", "aac").unwrap_err();
         assert_eq!(error.code, "OUTPUT_NOT_ALLOWED_FOR_PLAYBACK");
+    }
+
+    #[test]
+    fn supported_media_formats_follow_dialog_session_type() {
+        assert_eq!(
+            supported_media_formats(DialogSessionType::Live),
+            ["flv", "fmp4", "hls", "ll_hls"]
+        );
+        assert_eq!(
+            supported_media_formats(DialogSessionType::Playback),
+            ["flv", "fmp4", "hls"]
+        );
+        assert_eq!(
+            supported_media_formats(DialogSessionType::Download),
+            ["flv", "fmp4", "hls", "mp4"]
+        );
+        assert!(supported_media_formats(DialogSessionType::Talk).is_empty());
     }
 }

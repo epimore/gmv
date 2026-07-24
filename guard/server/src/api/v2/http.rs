@@ -3576,6 +3576,7 @@ async fn gb_active_streams(
                         viewer_count: format.viewer_count,
                     })
                     .collect(),
+                supported_formats: item.supported_formats,
             })
             .collect(),
         next_after_id: response.next_after_id,

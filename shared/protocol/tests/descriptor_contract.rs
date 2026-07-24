@@ -269,6 +269,10 @@ fn session_stream_monitoring_contract_is_stable() {
     assert_eq!(field_number("StreamHistoryItem", "error_code"), Some(14));
     assert_eq!(field_number("ActiveStreamItem", "viewer_count"), Some(17));
     assert_eq!(field_number("ActiveStreamItem", "viewer_formats"), Some(18));
+    assert_eq!(
+        field_number("ActiveStreamItem", "supported_formats"),
+        Some(19)
+    );
 }
 
 #[test]

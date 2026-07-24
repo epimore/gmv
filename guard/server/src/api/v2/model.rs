@@ -61,6 +61,7 @@ pub struct ActiveStreamMonitorItem {
     pub session_type: String,
     pub viewer_count: u32,
     pub viewer_formats: Vec<ActiveStreamViewerFormat>,
+    pub supported_formats: Vec<String>,
 }
 
 #[derive(Debug, Clone, base::serde::Serialize)]

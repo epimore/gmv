@@ -38,6 +38,7 @@
             <el-table-column prop="device_id" label="设备 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="channel_id" label="通道 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="ssrc" label="SSRC" width="120" />
+            <el-table-column label="流类型" width="100"><template #default="{ row }">{{ streamTypeLabel(row.session_type) }}</template></el-table-column>
             <el-table-column label="状态" width="120"><template #default="{ row }"><StatusPill :label="statusLabel(row.state)" :tone="row.state" /></template></el-table-column>
             <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at_ms) }}</template></el-table-column>
             <el-table-column label="持续时间" width="120"><template #default="{ row }">{{ formatDuration(Math.max(0, serverTimeMs - row.started_at_ms)) }}</template></el-table-column>
@@ -63,11 +64,12 @@
             <el-table-column prop="device_id" label="设备 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="channel_id" label="通道 ID" min-width="170" show-overflow-tooltip />
             <el-table-column prop="ssrc" label="SSRC" width="120" />
+            <el-table-column label="流类型" width="100"><template #default="{ row }">{{ streamTypeLabel(row.session_type) }}</template></el-table-column>
             <el-table-column label="状态" width="120"><template #default="{ row }"><StatusPill :label="statusLabel(row.state)" :tone="row.state.toLowerCase()" /></template></el-table-column>
             <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at_ms) }}</template></el-table-column>
             <el-table-column label="结束时间" width="180"><template #default="{ row }">{{ formatDateTime(row.terminated_at_ms) }}<span v-if="row.legacy_terminal_time"> *</span></template></el-table-column>
             <el-table-column label="持续时间" width="120"><template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template></el-table-column>
-            <el-table-column prop="terminal_reason" label="停止原因" min-width="150" />
+            <el-table-column label="停止原因" min-width="180"><template #default="{ row }">{{ terminalReasonLabel(row.terminal_reason) }}</template></el-table-column>
             <el-table-column label="失败码" min-width="150"><template #default="{ row }">{{ row.error_code || '-' }}</template></el-table-column>
           </el-table>
           <div class="pager-row">
@@ -78,12 +80,31 @@
       </el-tabs>
     </GlassPanel>
 
-    <el-dialog v-model="detailVisible" title="流详情" width="520px">
-      <el-descriptions v-if="detailRow" :column="1" border>
-        <el-descriptions-item label="流 ID">{{ detailRow.stream_id }}</el-descriptions-item>
-        <el-descriptions-item label="观看人数">{{ detailRow.viewer_count }}</el-descriptions-item>
-        <el-descriptions-item label="媒体格式">{{ formatViewerFormats(detailRow) }}</el-descriptions-item>
-      </el-descriptions>
+    <el-dialog v-model="detailVisible" title="流详情" width="640px">
+      <template v-if="detailRow">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="流 ID" :span="2">{{ detailRow.stream_id }}</el-descriptions-item>
+          <el-descriptions-item label="流类型">{{ streamTypeLabel(detailRow.session_type) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ statusLabel(detailRow.state) }}</el-descriptions-item>
+          <el-descriptions-item label="设备 ID">{{ detailRow.device_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="通道 ID">{{ detailRow.channel_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="SSRC">{{ detailRow.ssrc || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="流媒体服务">{{ detailRow.stream_node_id || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <section class="stream-detail-section">
+          <h4>观看概览</h4>
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="总观看人数">{{ detailRow.viewer_count }}</el-descriptions-item>
+          </el-descriptions>
+        </section>
+        <section class="stream-detail-section">
+          <h4>媒体格式</h4>
+          <el-table :data="detailViewerFormats" border empty-text="暂无支持的媒体格式">
+            <el-table-column label="媒体格式"><template #default="{ row }">{{ mediaFormatLabel(row.media_format) }}</template></el-table-column>
+            <el-table-column prop="viewer_count" label="观看人数" width="140" align="right" />
+          </el-table>
+        </section>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -113,6 +134,13 @@ const historyTotal = ref(0);
 const serverTimeMs = ref(Date.now());
 const detailVisible = ref(false);
 const detailRow = ref<ActiveStreamMonitorItem>();
+const detailViewerFormats = computed(() => {
+  const row = detailRow.value;
+  if (!row) return [];
+  const viewers = new Map(row.viewer_formats.map((item) => [normalizeMediaFormat(item.media_format), item.viewer_count]));
+  const formats = row.supported_formats.length > 0 ? row.supported_formats : row.viewer_formats.map((item) => item.media_format);
+  return formats.map((format) => ({ media_format: format, viewer_count: viewers.get(normalizeMediaFormat(format)) || 0 }));
+});
 const requestInFlight = ref(false);
 const pageSize = 20;
 const filters = reactive<Required<StreamMonitorQuery>>({ stream_id: '', stream_node_id: '', device_id: '', channel_id: '', ssrc: '', state: '' });
@@ -144,8 +172,35 @@ function isStreamNode(node: NodeInfo) { return normalizeKind(node.kind) === 'str
 function isNodeOnline(node: NodeInfo) { return node.connection === 'CONNECTED' && node.scheduling === 'ENABLED'; }
 function sessionNodeLabel(node: NodeInfo) { return `${nodeKindLabel(node)} · ${node.node_id} · ${isNodeOnline(node) ? '在线' : '离线'}`; }
 function statusLabel(state: string): string { return ({ starting: '启动中', running: '运行中', stopping: '停止中', failed: '失败', unknown: '未知', conflict: '冲突', TERMINATED: '已终止', ORPHAN: '异常终止' } as Record<string, string>)[state] || state; }
+function streamTypeLabel(value: string): string { return ({ LIVE: '直播', PLAYBACK: '回放', DOWNLOAD: '下载', TALK: '语音' } as Record<string, string>)[value.trim().toUpperCase()] || '未知'; }
+function terminalReasonLabel(value: string): string {
+  const reason = value.trim().toLowerCase();
+  return ({
+    manual_stop: '手动停止',
+    last_subscription_released: '最后一个观看连接已释放',
+    peer_bye: '设备主动结束',
+    invite_cancelled: '邀请建立前已取消',
+    invite_failed: '邀请失败',
+    device_offline: '设备离线',
+    media_stopped: '媒体流已停止',
+    media_prepare_failed: '媒体准备失败',
+    invite_timeout: '邀请超时',
+    linkage_failed: '链路关联失败',
+    start_commit_failed: '启动提交失败',
+    close_timeout: '关闭超时',
+    bye_failed: 'BYE 关闭失败',
+    media_still_receiving: '设备仍在推流',
+    media_close_unconfirmed: '媒体资源关闭未确认',
+    recovery_failed: '会话恢复失败',
+    dialog_expired: '会话已过期',
+    internal_error: '内部错误',
+    legacy_unknown: '历史数据原因未知',
+    session_close: 'Session 服务关闭',
+  } as Record<string, string>)[reason] || (reason ? `未知原因（${value}）` : '-');
+}
+function normalizeMediaFormat(value: string): string { return value.trim().toLowerCase(); }
+function mediaFormatLabel(value: string): string { return ({ flv: 'HTTP-FLV', http_flv: 'HTTP-FLV', fmp4: 'fMP4', dash_fmp4: 'fMP4', hls: 'HLS', hls_fmp4: 'HLS', ll_hls: 'LL-HLS', mp4: 'MP4' } as Record<string, string>)[normalizeMediaFormat(value)] || value.toUpperCase(); }
 function formatDuration(ms: number): string { const seconds = Math.max(0, Math.floor(ms / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds % 3600 / 60); const remain = seconds % 60; return hours > 0 ? `${hours}时${minutes}分${remain}秒` : minutes > 0 ? `${minutes}分${remain}秒` : `${remain}秒`; }
-function formatViewerFormats(row: ActiveStreamMonitorItem): string { return row.viewer_formats.length > 0 ? row.viewer_formats.map((item) => `${item.media_format.toUpperCase()} ${item.viewer_count}`).join(' / ') : '-'; }
 function clearRows() { activeRows.value = []; historyRows.value = []; nextAfterId.value = ''; historyTotal.value = 0; }
 function resetPagination() { currentCursor.value = ''; currentPage.value = 1; currentPageCursors.value = { 1: '' }; historyPage.value = 1; }
 async function load(showLoading = true) {
@@ -199,5 +254,7 @@ onMounted(async () => { try { nodes.value = await listNodes(); } catch (error) {
 .node-option.offline { color: var(--el-text-color-secondary); }
 .node-status { flex: none; font-size: 12px; }
 .pager-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-height: 48px; color: var(--el-text-color-secondary); }
+.stream-detail-section { margin-top: 18px; }
+.stream-detail-section h4 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
 @media (max-width: 1000px) { .stream-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; } }
 </style>

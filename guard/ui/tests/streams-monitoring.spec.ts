@@ -31,6 +31,14 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     created_at_ms: monitorServerTimeMs - 10_000, established_at_ms: monitorServerTimeMs - 9_000,
     started_at_ms: monitorServerTimeMs - 9_000, diagnostic_reason: '', session_type: 'LIVE',
     viewer_count: 1, viewer_formats: [{ media_format: 'hls', viewer_count: 1 }],
+    supported_formats: ['flv', 'fmp4', 'hls', 'll_hls'],
+  };
+  const history = {
+    stream_id: 'stream-history-1', session_node_id: node.node_id, stream_node_id: 'stream-node-1',
+    device_id: 'device-1', channel_id: 'channel-1', ssrc: '0100000002', session_type: 'PLAYBACK',
+    state: 'TERMINATED', created_at_ms: monitorServerTimeMs - 20_000, established_at_ms: monitorServerTimeMs - 19_000,
+    terminated_at_ms: monitorServerTimeMs - 1_000, duration_ms: 18_000, terminal_reason: 'manual_stop',
+    error_code: '', legacy_terminal_time: false,
   };
   let stopRequested = false;
   let activeListRequests = 0;
@@ -49,7 +57,7 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
     } else if (path === '/api/v2/gb28181/streams/stream-1/stop') {
       stopRequested = true;
       body = { stream_id: active.stream_id, state: 'stopping', session_node_id: node.node_id, session_instance_id: node.instance_id };
-    }
+    } else if (path === '/api/v2/gb28181/stream-history') body = { items: [history], total: 1, page: 1, page_size: 20, server_time_ms: monitorServerTimeMs };
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 
@@ -65,6 +73,7 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await onlineSession.click();
 
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('运行中', { exact: true })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('直播', { exact: true })).toBeVisible();
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('观看人数', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).getByText('媒体格式', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('tabpanel', { name: '当前运行' }).locator('.el-pagination')).toBeVisible();
@@ -74,10 +83,13 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   await expect(duration).toBeVisible();
   await page.getByRole('button', { name: '详情', exact: true }).click();
   const details = page.getByRole('dialog', { name: '流详情' });
-  await expect(details.getByText('观看人数', { exact: true })).toBeVisible();
-  await expect(details.getByText('1', { exact: true })).toBeVisible();
-  await expect(details.getByText('媒体格式', { exact: true })).toBeVisible();
-  await expect(details.getByText('HLS 1', { exact: true })).toBeVisible();
+  await expect(details.getByText('总观看人数', { exact: true })).toBeVisible();
+  await expect(details.getByRole('heading', { name: '媒体格式', exact: true })).toBeVisible();
+  await expect(details.getByRole('columnheader', { name: '观看人数', exact: true })).toBeVisible();
+  const hlsRow = details.getByRole('row').filter({ hasText: 'HLS' });
+  await expect(hlsRow.getByText('1', { exact: true })).toBeVisible();
+  const flvRow = details.getByRole('row').filter({ hasText: 'HTTP-FLV' });
+  await expect(flvRow.getByText('0', { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByText('Session 服务', { exact: true })).toHaveCount(0);
   await expect(page.getByText('请先选择 Session 节点；页面不会从 Guard route/lease 推断当前业务流。')).toHaveCount(0);
@@ -108,4 +120,10 @@ test('流监控识别 GB28181 Session 并使用中文状态', async ({ page }) =
   const requestsAfterStop = activeListRequests;
   await page.waitForTimeout(2_200);
   expect(activeListRequests).toBe(requestsAfterStop);
+
+  await page.getByRole('tab', { name: '历史记录' }).click();
+  const historyPanel = page.getByRole('tabpanel', { name: '历史记录' });
+  await expect(historyPanel.getByText('回放', { exact: true })).toBeVisible();
+  await expect(historyPanel.getByText('手动停止', { exact: true })).toBeVisible();
+  await expect(historyPanel.getByText('manual_stop', { exact: true })).toHaveCount(0);
 });

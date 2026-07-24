@@ -123,6 +123,7 @@ message ActiveStreamItem {
   string session_type = 16;
   uint32 viewer_count = 17;
   repeated ActiveStreamViewerFormat viewer_formats = 18;
+  repeated string supported_formats = 19;
 }
 
 message ActiveStreamViewerFormat {
