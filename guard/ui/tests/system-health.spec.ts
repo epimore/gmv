@@ -99,8 +99,10 @@ test('系统健康展示全部节点的执行与排队负载，并突出离线�
 
   await expect(page.getByRole('heading', { name: '系统健康', level: 1 })).toBeVisible();
   await expect(page.getByRole('heading', { name: '任务拥堵', level: 2 })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '节点矩阵', level: 2 })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '实例围栏', level: 2 })).toBeVisible();
+  const nodeMatrixHeading = page.getByRole('heading', { name: '节点矩阵', level: 2 });
+  await expect(nodeMatrixHeading).toBeVisible();
+  await expect(nodeMatrixHeading.locator('xpath=ancestor::section')).toHaveClass(/span-12/);
+  await expect(page.locator('.el-drawer')).not.toBeVisible();
   await expect(page.getByRole('menuitem', { name: '节点监控' })).toHaveCount(0);
 
   const rows = page.locator('.node-load-row');
@@ -138,6 +140,15 @@ test('系统健康展示全部节点的执行与排队负载，并突出离线�
   ]);
   expect(tones[0].background).not.toBe(tones[1].background);
   expect(tones[0].border).not.toBe(tones[1].border);
+
+  await page.locator('.node-matrix-table .el-table__body tr').filter({ hasText: 'offline-node' }).click();
+  const nodeDetail = page.locator('.el-drawer');
+  await expect(nodeDetail).toBeVisible();
+  await expect(nodeDetail).toContainText('实例围栏 · stream:offline-node');
+  await expect(nodeDetail).toContainText('DISCONNECTED');
+  await expect(nodeDetail).toContainText('receiving_streams=2');
+  await nodeDetail.getByRole('button', { name: '关闭' }).click();
+  await expect(nodeDetail).not.toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
   const layout = await page.evaluate(() => ({

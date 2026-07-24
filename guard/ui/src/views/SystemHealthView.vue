@@ -38,9 +38,9 @@
       <el-empty v-else description="暂无已知节点" />
     </GlassPanel>
 
-    <GlassPanel class="span-8" title="节点矩阵" subtitle="node_id / instance_id / generation 主动上报">
-      <el-table :data="nodes" height="360" highlight-current-row empty-text="暂无注册节点"
-        @current-change="selected = $event">
+    <GlassPanel class="span-12" title="节点矩阵" subtitle="点击节点查看实例围栏 · node_id / instance_id / generation 主动上报">
+      <el-table class="node-matrix-table" :data="nodes" height="360" highlight-current-row empty-text="暂无注册节点"
+        @row-click="openNodeDetail">
         <el-table-column prop="display_name" label="节点名称" width="180" />
         <el-table-column prop="node_id" label="节点 ID" width="150" />
         <el-table-column prop="kind" label="类型" width="90" />
@@ -68,24 +68,27 @@
       </el-table>
     </GlassPanel>
 
-    <GlassPanel class="span-4" title="实例围栏" subtitle="当前选中节点的真实状态">
-      <div class="kv">
-        <div class="kv-item"><span>节点</span><b>{{ selected?.display_name || selected?.node_id || '-' }}</b></div>
-        <div class="kv-item"><span>服务</span><b>{{ selected?.service || '-' }}</b></div>
-        <div class="kv-item"><span>协议</span><b>{{ selected?.protocol || '-' }}</b></div>
-        <div class="kv-item"><span>实例</span><b class="code">{{ selected?.instance_id || '-' }}</b></div>
-        <div class="kv-item"><span>连接</span><b>{{ selected?.connection || '-' }}</b></div>
-        <div class="kv-item"><span>最后心跳</span><b>{{ formatDateTime(selected?.last_seen_at_ms) }}</b></div>
-        <div class="kv-item"><span>能力</span><b>{{ selected?.capabilities.join(', ') || '-' }}</b></div>
-        <div class="kv-item"><span>内存</span><b>{{ formatBytes(selected?.host_metrics.memory_used_bytes) }} / {{
-          formatBytes(selected?.host_metrics.memory_total_bytes) }}</b></div>
-        <div class="kv-item"><span>进程 RSS</span><b>{{ formatBytes(selected?.host_metrics.process_resident_memory_bytes)
-            }}</b></div>
-        <div class="kv-item"><span>线程</span><b>{{ selected?.host_metrics.process_threads ?? 0 }}</b></div>
-        <div class="kv-item"><span>业务指标</span><b>{{ businessMetrics }}</b></div>
+    <el-drawer v-model="nodeDetailVisible" :title="nodeDetailTitle" size="min(520px, 100vw)" destroy-on-close>
+      <div v-if="selected" class="node-detail">
+        <div class="kv">
+          <div class="kv-item"><span>节点</span><b>{{ selected.display_name || selected.node_id }}</b></div>
+          <div class="kv-item"><span>服务</span><b>{{ selected.service || '-' }}</b></div>
+          <div class="kv-item"><span>协议</span><b>{{ selected.protocol || '-' }}</b></div>
+          <div class="kv-item"><span>实例</span><b class="code">{{ selected.instance_id || '-' }}</b></div>
+          <div class="kv-item"><span>连接</span><b>{{ selected.connection || '-' }}</b></div>
+          <div class="kv-item"><span>最后心跳</span><b>{{ formatDateTime(selected.last_seen_at_ms) }}</b></div>
+          <div class="kv-item"><span>能力</span><b>{{ selected.capabilities.join(', ') || '-' }}</b></div>
+          <div class="kv-item"><span>内存</span><b>{{ formatBytes(selected.host_metrics.memory_used_bytes) }} / {{
+            formatBytes(selected.host_metrics.memory_total_bytes) }}</b></div>
+          <div class="kv-item"><span>进程 RSS</span><b>{{
+            formatBytes(selected.host_metrics.process_resident_memory_bytes) }}</b></div>
+          <div class="kv-item"><span>线程</span><b>{{ selected.host_metrics.process_threads }}</b></div>
+          <div class="kv-item"><span>业务指标</span><b>{{ businessMetrics }}</b></div>
+        </div>
+        <OrbitChart :option="capacityChart" sm />
       </div>
-      <OrbitChart :option="capacityChart" sm />
-    </GlassPanel>
+      <template #footer><el-button @click="nodeDetailVisible = false">关闭</el-button></template>
+    </el-drawer>
   </div>
 </template>
 
@@ -113,6 +116,7 @@ const loading = ref(false);
 const leases = ref<LeaseInfo[]>([]);
 const nodes = ref<NodeInfo[]>([]);
 const selected = ref<NodeInfo>();
+const nodeDetailVisible = ref(false);
 
 function alertLevel(node: NodeInfo): AlertLevel {
   if (node.health === 'OFFLINE' || node.connection !== 'CONNECTED') return 'offline';
@@ -149,11 +153,13 @@ const queuedTaskCount = computed(() => nodeLoads.value.reduce((sum, item) => sum
 const currentTaskCount = computed(() => runningTaskCount.value + queuedTaskCount.value);
 const capacityChart = computed(() => lineOption('CPU 使用率', nodes.value.map((item) => item.host_metrics.cpu_usage_percent), nodes.value.map((item) => item.node_id), '#a875ff'));
 const businessMetrics = computed(() => selected.value ? Object.entries(selected.value.business_metrics).map(([key, value]) => key + '=' + value).join(', ') || '-' : '-');
+const nodeDetailTitle = computed(() => `实例围栏 · ${selected.value?.display_name || selected.value?.node_id || '-'}`);
 
 function taskWidth(count: number) { return `${count / maxTaskCount.value * 100}%`; }
 function memoryPercent(node: NodeInfo) { return node.host_metrics.memory_total_bytes ? Math.round(node.host_metrics.memory_used_bytes / node.host_metrics.memory_total_bytes * 100) : 0; }
 function formatBytes(value?: number) { if (!value) return '0 B'; const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return (value / 1024 ** index).toFixed(index ? 1 : 0) + ' ' + units[index]; }
 function formatRate(value: number) { return formatBytes(value) + '/s'; }
+function openNodeDetail(node: NodeInfo) { selected.value = node; nodeDetailVisible.value = true; }
 
 async function load() {
   loading.value = true;
@@ -314,6 +320,15 @@ onMounted(() => { void load(); });
   margin-left: auto;
   color: var(--text);
   font-size: 13px;
+}
+
+.node-matrix-table :deep(.el-table__row) {
+  cursor: pointer;
+}
+
+.node-detail {
+  display: grid;
+  gap: 18px;
 }
 
 @media (max-width: 1100px) {
