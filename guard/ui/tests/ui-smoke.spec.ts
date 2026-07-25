@@ -16,7 +16,9 @@ const routes = [
   ['/streams', '流媒监控'],
   ['/ai', '智能分析'],
   ['/events', '事件中心'],
-  ['/integrations', '三方集成'],
+  ['/integrations/apps', '应用与凭证'],
+  ['/integrations/http', 'HTTP 接入'],
+  ['/integrations/mqtt', 'MQTT 接入'],
   ['/system', '系统健康'],
 ] as const;
 
