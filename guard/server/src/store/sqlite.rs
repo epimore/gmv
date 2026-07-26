@@ -2,7 +2,7 @@ use base_db::sqlx::SqlitePool;
 
 use crate::core::{GuardError, GuardResult};
 use crate::store::migration::MIGRATIONS;
-use crate::store::model::{EventRecord, OutboxRecord, OutboxRow, outbox_from_row};
+use crate::store::model::{OutboxRecord, OutboxRow, outbox_from_row};
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -18,41 +18,6 @@ impl SqliteStore {
         base_db::migration::run_sqlite_migrations(&self.pool, MIGRATIONS)
             .await
             .map_err(database_error)
-    }
-
-    pub async fn insert_event_with_outbox(
-        &self,
-        event: &EventRecord,
-        records: &[OutboxRecord],
-    ) -> GuardResult<bool> {
-        validate_records(event, records)?;
-        let mut tx = self.pool.begin().await.map_err(database_error)?;
-        let existing = base_db::sqlx::query_scalar::<_, String>(
-            "SELECT event_id FROM guard_event WHERE event_id = ?",
-        )
-        .bind(&event.event_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(database_error)?;
-        if existing.is_some() {
-            tx.rollback().await.map_err(database_error)?;
-            return Ok(false);
-        }
-        base_db::sqlx::query(
-            "INSERT INTO guard_event(event_id, topic, priority, payload) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&event.event_id)
-        .bind(&event.topic)
-        .bind(i64::from(event.priority))
-        .bind(&event.payload)
-        .execute(&mut *tx)
-        .await
-        .map_err(database_error)?;
-        for record in records {
-            insert_outbox_sqlite(&mut tx, record).await?;
-        }
-        tx.commit().await.map_err(database_error)?;
-        Ok(true)
     }
 
     pub async fn due_outbox(&self, now_ms: i64, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
@@ -308,15 +273,6 @@ impl SqliteStore {
             .collect()
     }
 
-    pub async fn revoke_ui_sessions(&self, username: &str) -> GuardResult<()> {
-        base_db::sqlx::query("DELETE FROM guard_ui_session WHERE username=?")
-            .bind(username)
-            .execute(&self.pool)
-            .await
-            .map_err(database_error)?;
-        Ok(())
-    }
-
     pub async fn bootstrap_admin(&self, username: &str, password_hash: &str) -> GuardResult<bool> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
         let count = base_db::sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM guard_user")
@@ -356,19 +312,6 @@ async fn insert_outbox_sqlite(
         .bind(&record.payload).bind(record.state.as_str()).bind(i64::from(record.attempts)).bind(record.next_attempt_at_ms)
         .bind(&record.last_error).bind(record.created_at_ms).bind(record.updated_at_ms)
         .execute(&mut **tx).await.map_err(database_error)?;
-    Ok(())
-}
-
-fn validate_records(event: &EventRecord, records: &[OutboxRecord]) -> GuardResult<()> {
-    if records.iter().any(|record| {
-        record.event_id != event.event_id
-            || record.outbox_id.is_empty()
-            || record.destination.is_empty()
-    }) {
-        return Err(GuardError::InvalidConfig(
-            "outbox records must match event and have ids/destinations".to_string(),
-        ));
-    }
     Ok(())
 }
 

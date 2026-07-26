@@ -11,9 +11,7 @@ use base_rpc::RetryPolicy;
 use gmv_guard_server::core::GuardResult;
 use gmv_guard_server::mqttc::{CommandIdRepository, MqttCommandPolicy};
 use gmv_guard_server::outbox::{OutboxDelivery, OutboxWorker};
-use gmv_guard_server::store::model::{
-    EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
-};
+use gmv_guard_server::store::model::{OutboxDestinationKind, OutboxRecord, OutboxState};
 use gmv_guard_server::store::sqlite::SqliteStore;
 
 struct Success;
@@ -42,12 +40,6 @@ fn sqlite_outbox_survives_pool_reopen_and_resumes_delivery() {
                 build_sqlite_pool(SqliteConnectionConfig::new(&path), pool_config.clone()).unwrap();
             let store = SqliteStore::new(pool);
             store.migrate().await.unwrap();
-            let event = EventRecord {
-                event_id: "e1".to_string(),
-                topic: "node.health".to_string(),
-                priority: 1,
-                payload: b"{}".to_vec(),
-            };
             let record = OutboxRecord {
                 outbox_id: "o1".to_string(),
                 event_id: "e1".to_string(),
@@ -61,12 +53,7 @@ fn sqlite_outbox_survives_pool_reopen_and_resumes_delivery() {
                 created_at_ms: 100,
                 updated_at_ms: 100,
             };
-            assert!(
-                store
-                    .insert_event_with_outbox(&event, &[record])
-                    .await
-                    .unwrap()
-            );
+            store.insert_outbox_records(&[record]).await.unwrap();
             drop(store);
 
             let pool = build_sqlite_pool(SqliteConnectionConfig::new(&path), pool_config).unwrap();

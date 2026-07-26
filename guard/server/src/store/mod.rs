@@ -1,10 +1,8 @@
-pub mod backup;
 pub mod migration;
 pub mod model;
 #[cfg(feature = "db-mysql")]
 pub mod mysql;
 pub mod persistent;
-pub mod retention;
 #[cfg(feature = "db-sqlite")]
 pub mod sqlite;
 
@@ -432,15 +430,6 @@ impl InMemoryGuardStore {
         events.truncate(limit);
         events
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum GuardStore {
-    Memory(InMemoryGuardStore),
-    #[cfg(feature = "db-mysql")]
-    Mysql(mysql::MysqlStore),
-    #[cfg(feature = "db-sqlite")]
-    Sqlite(sqlite::SqliteStore),
 }
 
 #[cfg(test)]

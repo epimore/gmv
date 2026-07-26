@@ -19,8 +19,7 @@
     <MetricCard
       v-for="item in metrics"
       :key="item.label"
-      class="span-3"
-      :class="`metric-${item.tone}`"
+      :class="[experimental.enabled ? 'span-3' : 'span-4', `metric-${item.tone}`]"
       :label="item.label"
       :value="item.value"
       :trend="item.trend"
@@ -42,7 +41,7 @@
         >
           <div class="capability-head">
             <span class="capability-index">{{ item.index }}</span>
-            <StatusPill :label="item.status" :tone="item.tone" />
+            <StatusPill :label="item.experimental ? `实验性 · ${item.status}` : item.status" :tone="item.tone" />
           </div>
           <b>{{ item.name }}</b>
           <p>{{ item.description }}</p>
@@ -82,7 +81,7 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-12" title="最近告警" :subtitle="recentAlertsSubtitle">
+    <GlassPanel v-if="experimental.enabled" class="span-12" title="最近告警" :subtitle="recentAlertsSubtitle">
       <template #action>
         <el-button @click="router.push('/events')">查看全部事件</el-button>
       </template>
@@ -107,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, type Ref } from "vue";
+import { computed, onMounted, ref, watch, type Ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRouter } from "vue-router";
 import {
@@ -127,6 +126,7 @@ import {
 import GlassPanel from "@/components/GlassPanel.vue";
 import MetricCard from "@/components/MetricCard.vue";
 import StatusPill from "@/components/StatusPill.vue";
+import { useExperimentalFeaturesStore } from "@/stores/experimentalFeatures";
 import { formatDateTime } from "@/utils/dateTime";
 
 type Tone = "ready" | "warning" | "danger" | "info";
@@ -138,6 +138,7 @@ interface CapabilityItem {
   tone: Tone;
   summary: string;
   route: string;
+  experimental?: boolean;
 }
 interface AttentionItem {
   key: string;
@@ -155,6 +156,7 @@ interface AlertRow extends EventItem {
 }
 
 const router = useRouter();
+const experimental = useExperimentalFeaturesStore();
 const loading = ref(false);
 const lastRefreshAt = ref(0);
 const nodes = ref<NodeInfo[]>([]);
@@ -260,7 +262,7 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/streams",
       action: "查看流媒",
     });
-  if (failedAiTasks.value.length)
+  if (experimental.enabled && failedAiTasks.value.length)
     items.push({
       key: "ai-failed",
       title: `${failedAiTasks.value.length} 个 AI 任务失败`,
@@ -269,7 +271,7 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/ai",
       action: "查看任务",
     });
-  if (deadOutbox.value.length)
+  if (experimental.enabled && deadOutbox.value.length)
     items.push({
       key: "outbox-dead",
       title: `${deadOutbox.value.length} 条外部投递已终止`,
@@ -278,7 +280,7 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/integrations/apps",
       action: "处理投递",
     });
-  else if (pendingOutbox.value.length)
+  else if (experimental.enabled && pendingOutbox.value.length)
     items.push({
       key: "outbox-pending",
       title: `${pendingOutbox.value.length} 条外部投递处理中`,
@@ -287,7 +289,7 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/integrations/apps",
       action: "查看队列",
     });
-  if (!eventsAvailable.value)
+  if (experimental.enabled && !eventsAvailable.value)
     items.push({
       key: "events-unavailable",
       title: "告警事件数据不可用",
@@ -310,7 +312,9 @@ const overallStatus = computed(() => {
   if (attentionItems.value.some((item) => item.tone === "danger"))
     return {
       title: "存在需要立即处理的问题",
-      description: "关键节点、运行资源或外部投递存在异常，请从待处理事项进入定位。",
+      description: experimental.enabled
+        ? "关键节点、运行资源或外部投递存在异常，请从待处理事项进入定位。"
+        : "关键节点或运行资源存在异常，请从待处理事项进入定位。",
       label: "异常",
       tone: "danger" as Tone,
     };
@@ -330,91 +334,127 @@ const overallStatus = computed(() => {
     };
   return {
     title: "边端能力运行正常",
-    description: "已知节点、运行资源和外部投递均未发现待处理异常。",
+    description: experimental.enabled
+      ? "已知节点、运行资源和外部投递均未发现待处理异常。"
+      : "已知节点和运行资源均未发现待处理异常。",
     label: "正常",
     tone: "ready" as Tone,
   };
 });
 
-const metrics = computed(() => [
-  {
-    label: "服务节点",
-    value: nodesAvailable.value ? `${readyNodes.value.length} / ${nodes.value.length}` : "—",
-    trend: "READY / 全部",
-    hint: offlineNodes.value.length ? `离线 ${offlineNodes.value.length}` : "连接正常",
-    tone: offlineNodes.value.length ? "danger" : "ready",
-  },
-  {
-    label: "活动业务",
-    value:
-      streamsAvailable.value && aiAvailable.value
-        ? runningStreams.value.length + runningAiTasks.value.length
+const metrics = computed(() => {
+  const items = [
+    {
+      label: "服务节点",
+      value: nodesAvailable.value ? `${readyNodes.value.length} / ${nodes.value.length}` : "—",
+      trend: "READY / 全部",
+      hint: offlineNodes.value.length ? `离线 ${offlineNodes.value.length}` : "连接正常",
+      tone: offlineNodes.value.length ? "danger" : "ready",
+    },
+    {
+      label: "活动业务",
+      value: streamsAvailable.value
+        ? runningStreams.value.length +
+          (experimental.enabled && aiAvailable.value ? runningAiTasks.value.length : 0)
         : "—",
-    trend:
-      streamsAvailable.value && aiAvailable.value
-        ? `流 ${runningStreams.value.length} · AI ${runningAiTasks.value.length}`
-        : "部分接口不可用",
-    hint: "当前运行",
-    tone: streamsAvailable.value && aiAvailable.value ? "ready" : "warning",
-  },
-  {
-    label: "待处理",
-    value: attentionItems.value.length,
-    trend: attentionItems.value.length ? "需要关注" : "当前正常",
-    hint: attentionItems.value.some((item) => item.tone === "danger") ? "含关键异常" : "无关键异常",
-    tone: attentionItems.value.some((item) => item.tone === "danger")
-      ? "danger"
-      : attentionItems.value.length
-        ? "warning"
-        : "ready",
-  },
-  {
-    label: "外部投递",
-    value: outboxAvailable.value ? pendingOutbox.value.length + deadOutbox.value.length : "—",
-    trend: outboxAvailable.value ? `处理中 ${pendingOutbox.value.length}` : "接口不可用",
-    hint: outboxAvailable.value ? `Dead ${deadOutbox.value.length}` : "状态未知",
-    tone: deadOutbox.value.length
-      ? "danger"
-      : pendingOutbox.value.length
-        ? "warning"
-        : outboxAvailable.value
+      trend: streamsAvailable.value
+        ? experimental.enabled && aiAvailable.value
+          ? `流 ${runningStreams.value.length} · AI ${runningAiTasks.value.length}`
+          : `流 ${runningStreams.value.length}`
+        : "接口不可用",
+      hint: "当前运行",
+      tone:
+        streamsAvailable.value && (!experimental.enabled || aiAvailable.value)
           ? "ready"
-          : "info",
-  },
-]);
+          : "warning",
+    },
+    {
+      label: "待处理",
+      value: attentionItems.value.length,
+      trend: attentionItems.value.length ? "需要关注" : "当前正常",
+      hint: attentionItems.value.some((item) => item.tone === "danger")
+        ? "含关键异常"
+        : "无关键异常",
+      tone: attentionItems.value.some((item) => item.tone === "danger")
+        ? "danger"
+        : attentionItems.value.length
+          ? "warning"
+          : "ready",
+    },
+  ];
+  if (experimental.enabled)
+    items.push({
+      label: "外部投递",
+      value: outboxAvailable.value ? pendingOutbox.value.length + deadOutbox.value.length : "—",
+      trend: outboxAvailable.value ? `处理中 ${pendingOutbox.value.length}` : "接口不可用",
+      hint: outboxAvailable.value ? `Dead ${deadOutbox.value.length}` : "状态未知",
+      tone: deadOutbox.value.length
+        ? "danger"
+        : pendingOutbox.value.length
+          ? "warning"
+          : outboxAvailable.value
+            ? "ready"
+            : "info",
+    });
+  return items;
+});
 
-const capabilities = computed<CapabilityItem[]>(() => [
-  capabilityFromNodes("01", "GB28181", "国标设备接入、注册与监控", "/gb28181/monitor", (node) =>
-    nodeMatches(node, ["session-gb28181", "gb28181"]),
-  ),
-  capabilityFromNodes("02", "ONVIF", "设备发现与通道控制入口", "/onvif", (node) =>
-    nodeMatches(node, ["session-onvif", "onvif"]),
-  ),
-  capabilityFromNodes(
-    "03",
-    "流媒体",
-    "实时预览、回放与输出管理",
-    "/streams",
-    (node) => nodeMatches(node, ["stream"]),
-    streamsAvailable.value ? `运行 ${runningStreams.value.length} 路` : "运行数据不可用",
-  ),
-  capabilityFromNodes(
-    "04",
-    "智能分析",
-    "AI 任务调度与结果摘要",
-    "/ai",
-    (node) => nodeMatches(node, ["avai"]),
-    aiAvailable.value ? `运行 ${runningAiTasks.value.length} 个任务` : "任务数据不可用",
-  ),
-  integrationCapability(
-    "05",
-    "HTTP 接入",
-    "开放接口与事件回调入口",
-    "/integrations/http",
-    "webhook",
-  ),
-  integrationCapability("06", "MQTT 接入", "命令订阅与事件发布入口", "/integrations/mqtt", "mqtt"),
-]);
+const capabilities = computed<CapabilityItem[]>(() => {
+  const items = [
+    capabilityFromNodes("01", "GB28181", "国标设备接入、注册与监控", "/gb28181/monitor", (node) =>
+      nodeMatches(node, ["session-gb28181", "gb28181"]),
+    ),
+    capabilityFromNodes(
+      "02",
+      "流媒体",
+      "实时预览、回放与输出管理",
+      "/streams",
+      (node) => nodeMatches(node, ["stream"]),
+      streamsAvailable.value ? `运行 ${runningStreams.value.length} 路` : "运行数据不可用",
+    ),
+  ];
+  if (!experimental.enabled) return items;
+  items.push(
+    {
+      ...capabilityFromNodes("03", "ONVIF", "设备发现与通道控制入口", "/onvif", (node) =>
+        nodeMatches(node, ["session-onvif", "onvif"]),
+      ),
+      experimental: true,
+    },
+    {
+      ...capabilityFromNodes(
+        "04",
+        "智能分析",
+        "AI 任务调度与结果摘要",
+        "/ai",
+        (node) => nodeMatches(node, ["avai"]),
+        aiAvailable.value ? `运行 ${runningAiTasks.value.length} 个任务` : "任务数据不可用",
+      ),
+      experimental: true,
+    },
+    {
+      ...integrationCapability(
+        "05",
+        "HTTP 接入",
+        "开放接口与事件回调入口",
+        "/integrations/http",
+        "webhook",
+      ),
+      experimental: true,
+    },
+    {
+      ...integrationCapability(
+        "06",
+        "MQTT 接入",
+        "命令订阅与事件发布入口",
+        "/integrations/mqtt",
+        "mqtt",
+      ),
+      experimental: true,
+    },
+  );
+  return items;
+});
 
 const recentAlerts = computed<AlertRow[]>(() =>
   events.value
@@ -600,35 +640,53 @@ function assignArrayResult<T>(
 async function load() {
   if (loading.value) return;
   loading.value = true;
-  const results = await Promise.allSettled([
+  const baseResults = await Promise.allSettled([
     listNodes(),
     listLeases(),
     listStreams(),
-    listAiTasks(),
-    listOutbox(200),
-    pollEvents(undefined, 100),
   ]);
-  assignArrayResult(results[0], nodes, nodesAvailable);
-  assignArrayResult(results[1], leases, leasesAvailable);
-  assignArrayResult(results[2], streams, streamsAvailable);
-  assignArrayResult(results[3], aiTasks, aiAvailable);
-  assignArrayResult(results[4], outbox, outboxAvailable);
-  if (results[5].status === "fulfilled") {
-    events.value = results[5].value.items;
-    eventsAvailable.value = true;
+  assignArrayResult(baseResults[0], nodes, nodesAvailable);
+  assignArrayResult(baseResults[1], leases, leasesAvailable);
+  assignArrayResult(baseResults[2], streams, streamsAvailable);
+  let experimentalRejected = false;
+  if (experimental.enabled) {
+    const experimentalResults = await Promise.allSettled([
+      listAiTasks(),
+      listOutbox(200),
+      pollEvents(undefined, 100),
+    ]);
+    assignArrayResult(experimentalResults[0], aiTasks, aiAvailable);
+    assignArrayResult(experimentalResults[1], outbox, outboxAvailable);
+    if (experimentalResults[2].status === "fulfilled") {
+      events.value = experimentalResults[2].value.items;
+      eventsAvailable.value = true;
+    } else {
+      events.value = [];
+      eventsAvailable.value = false;
+    }
+    experimentalRejected = experimentalResults.some((result) => result.status === "rejected");
   } else {
+    aiTasks.value = [];
+    outbox.value = [];
     events.value = [];
-    eventsAvailable.value = false;
+    aiAvailable.value = true;
+    outboxAvailable.value = true;
+    eventsAvailable.value = true;
   }
   lastRefreshAt.value = Date.now();
   loading.value = false;
-  if (results.some((result) => result.status === "rejected"))
+  if (baseResults.some((result) => result.status === "rejected") || experimentalRejected)
     ElMessage.warning("部分总览数据暂不可用，页面已保留可确认的状态");
 }
 
 onMounted(() => {
   void load();
 });
+
+watch(
+  () => experimental.enabled,
+  () => void load(),
+);
 </script>
 
 <style scoped>

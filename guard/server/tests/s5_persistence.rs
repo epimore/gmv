@@ -86,22 +86,28 @@ guard:
                 },
             )
             .unwrap();
-            for table in [
-                "guard_user",
-                "guard_service_credential",
-                "guard_ui_session",
-                "guard_integration",
-                "guard_system_setting",
-            ] {
-                let found = base_db::sqlx::query_scalar::<_, String>(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                )
-                .bind(table)
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
-                assert_eq!(found.as_deref(), Some(table));
-            }
+            let tables = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                tables,
+                [
+                    "_base_db_migrations",
+                    "guard_command",
+                    "guard_outbox",
+                    "guard_user"
+                ]
+            );
+            let migration = base_db::sqlx::query_as::<_, (i64, String)>(
+                "SELECT version,name FROM _base_db_migrations",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(migration, (1, "guard_preview_baseline".to_string()));
             pool.close().await;
             drop(store);
             let _ = std::fs::remove_dir_all(root);

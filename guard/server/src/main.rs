@@ -76,7 +76,6 @@ fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error
                 now_ms()?,
             )
             .await?;
-        users.revoke_ui_sessions(&username).await?;
         Ok::<_, GuardError>(())
     })?;
     println!("reset admin password for user {username}");

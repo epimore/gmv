@@ -76,15 +76,6 @@ impl UserRepository {
             }
         }
     }
-
-    pub async fn revoke_ui_sessions(&self, username: &str) -> GuardResult<()> {
-        match self {
-            #[cfg(feature = "db-mysql")]
-            Self::Mysql(store) => store.revoke_ui_sessions(username).await,
-            #[cfg(feature = "db-sqlite")]
-            Self::Sqlite(store) => store.revoke_ui_sessions(username).await,
-        }
-    }
 }
 
 pub enum PersistentStore {

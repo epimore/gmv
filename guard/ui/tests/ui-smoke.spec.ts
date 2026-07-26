@@ -8,26 +8,18 @@ const session = {
   expires_at_ms: Date.now() + 60_000,
 };
 
-const routes = [
+const defaultRoutes = [
   ['/dashboard', 'Dashboard'],
-  ['/devices', '设备'],
   ['/gb28181/register', '注册管理'],
   ['/gb28181/monitor', '监控信息'],
   ['/streams', '流媒监控'],
-  ['/ai', '智能分析'],
-  ['/events', '事件中心'],
-  ['/integrations/apps', '应用与凭证'],
-  ['/integrations/http', 'HTTP 接入'],
-  ['/integrations/mqtt', 'MQTT 接入'],
   ['/system', '系统健康'],
 ] as const;
 
-async function mockAuth(page: Page, initiallyAuthenticated = false) {
+async function mockAuth(page: Page, initiallyAuthenticated = false, authSession = session) {
   let authenticated = initiallyAuthenticated;
   const readBodies = new Map<string, unknown>([
-    ['/api/v2/dashboard', { node_count: 0, event_count: 0, next_after_id: null }],
     ['/api/v2/events', { items: [], next_after_id: null }],
-    ['/api/v2/devices', []],
     ['/api/v2/streams', []],
     ['/api/v2/ai/tasks', []],
     ['/api/v2/leases', []],
@@ -49,7 +41,7 @@ async function mockAuth(page: Page, initiallyAuthenticated = false) {
     await route.fulfill({
       status: authenticated ? 200 : 401,
       contentType: 'application/json',
-      body: JSON.stringify(authenticated ? session : { message: 'invalid UI session' }),
+      body: JSON.stringify(authenticated ? authSession : { message: 'invalid UI session' }),
     });
   });
   await page.route('**/api/v2/auth/login', async (route) => {
@@ -59,10 +51,10 @@ async function mockAuth(page: Page, initiallyAuthenticated = false) {
       return;
     }
     authenticated = true;
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(session) });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(authSession) });
   });
   await page.route('**/api/v2/auth/logout', async (route) => {
-    expect(route.request().headers()['x-csrf-token']).toBe(session.csrf_token);
+    expect(route.request().headers()['x-csrf-token']).toBe(authSession.csrf_token);
     authenticated = false;
     await route.fulfill({ status: 204, body: '' });
   });
@@ -70,14 +62,14 @@ async function mockAuth(page: Page, initiallyAuthenticated = false) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([{ ...session, enabled: true, created_at_ms: 0, updated_at_ms: 0 }]),
+      body: JSON.stringify([{ ...authSession, enabled: true, created_at_ms: 0, updated_at_ms: 0 }]),
     });
   });
   await page.route('**/api/v2/me', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ ...session, enabled: true, created_at_ms: 0, updated_at_ms: 0 }),
+      body: JSON.stringify({ ...authSession, enabled: true, created_at_ms: 0, updated_at_ms: 0 }),
     });
   });
   await page.route('**/api/v2/nodes', async (route) => {
@@ -144,7 +136,7 @@ test('已登录会话可访问中文页面与移动端布局', async ({ page }) 
   await mockAuth(page, true);
   await page.setViewportSize({ width: 390, height: 844 });
 
-  for (const [path, heading] of routes) {
+  for (const [path, heading] of defaultRoutes) {
     await page.goto(path);
     await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible();
   }
@@ -171,16 +163,54 @@ test('Dashboard 展示边端状态、能力入口和待处理事项', async ({ p
   await expect(page.getByRole('heading', { name: '边端能力等待接入', level: 2 })).toBeVisible();
   await expect(page.getByRole('heading', { name: '边端能力矩阵', level: 2 })).toBeVisible();
   await expect(page.getByRole('button', { name: /GB28181/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /ONVIF/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /MQTT 接入/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /ONVIF/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /MQTT 接入/ })).toHaveCount(0);
   await expect(page.getByText('尚未发现业务节点')).toBeVisible();
   await expect(page.getByText('星图拓扑')).toHaveCount(0);
   await expect(page.getByText('资源分布')).toHaveCount(0);
 });
 
+test('管理员可恢复并再次隐藏实验功能，直达路由与偏好保持一致', async ({ page }) => {
+  await mockAuth(page, true);
+
+  await page.goto('/onvif');
+  await expect(page).toHaveURL((url) => url.pathname === '/dashboard');
+  await expect(page.getByText('该功能当前处于实验隐藏状态')).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: /ONVIF/ })).toHaveCount(0);
+
+  await page.getByRole('button', { name: /舰桥管理员 admin/ }).click();
+  await page.getByRole('menuitem', { name: '显示实验性功能' }).click();
+  await expect(page.getByRole('menuitem', { name: /ONVIF（实验）/ })).toBeVisible();
+  await page.goto('/onvif');
+  await expect(page.getByRole('heading', { name: 'ONVIF', level: 1 })).toBeVisible();
+  await expect(page.getByText('实验性 · 未闭环')).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'ONVIF', level: 1 })).toBeVisible();
+  await page.getByRole('button', { name: /舰桥管理员 admin/ }).click();
+  await page.getByRole('menuitem', { name: '隐藏实验性功能' }).click();
+  await expect(page).toHaveURL((url) => url.pathname === '/dashboard');
+  await expect(page.getByRole('menuitem', { name: /ONVIF/ })).toHaveCount(0);
+});
+
+test('非管理员不能显示实验功能，本地状态不构成授权', async ({ page }) => {
+  const viewerSession = { ...session, username: 'viewer', nickname: '观察员', role: 'viewer' as const };
+  await mockAuth(page, true, viewerSession);
+
+  await page.goto('/dashboard');
+  await page.evaluate(() => window.localStorage.setItem('gmv.preview.experimental_features.viewer', 'true'));
+  await page.getByRole('button', { name: /观察员 viewer/ }).click();
+  await expect(page.getByRole('menuitem', { name: '显示实验性功能' })).toHaveCount(0);
+  await page.goto('/ai');
+  await expect(page).toHaveURL((url) => url.pathname === '/dashboard');
+});
+
 test('事件中心隐藏 cursor 并提供面向用户的筛选和详情入口', async ({ page }) => {
   await mockAuth(page, true);
 
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: /舰桥管理员 admin/ }).click();
+  await page.getByRole('menuitem', { name: '显示实验性功能' }).click();
   await page.goto('/events');
 
   await expect(page.getByRole('heading', { name: '告警与事件', level: 2 })).toBeVisible();

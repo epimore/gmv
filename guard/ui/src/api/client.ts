@@ -26,14 +26,12 @@ export class ApiError extends Error {
   }
 }
 export interface UserInfo { username: string; role: Role; nickname: string; enabled: boolean; created_at_ms: number; updated_at_ms: number }
-export interface DashboardInfo { node_count: number; event_count: number; next_after_id: string | null }
 export interface HostMetricsInfo { cpu_usage_percent: number; load_average_1m: number; load_average_5m: number; load_average_15m: number; memory_total_bytes: number; memory_used_bytes: number; swap_total_bytes: number; swap_used_bytes: number; disk_read_bytes_per_sec: number; disk_write_bytes_per_sec: number; network_receive_bytes_per_sec: number; network_transmit_bytes_per_sec: number; process_resident_memory_bytes: number; process_threads: number }
 export interface NodeInfo { node_id: string; instance_id: string; kind: string; service: string; protocol: string | null; display_name: string; connection: string; health: string; scheduling: string; capabilities: string[]; pending_leases: number; host_metrics: HostMetricsInfo; business_metrics: Record<string, string>; config: Record<string, string>; zone: string | null; last_seen_at_ms: number; generation: number; sequence: number }
 export interface EventItem { event_id: string; topic: string; priority: number; payload: string }
 export interface EventPage { items: EventItem[]; next_after_id: string | null }
 export interface LeaseInfo { lease_id: string; route_id: string; resource_id: string; node_id: string; instance_id: string; state: 'allocated' | 'confirmed' | 'failed' | 'released' | 'expired'; expires_at_ms: number }
 export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
-export interface DeviceSummary { device_id: string; name: string; session_node_id: string; channels: string[]; online: boolean }
 export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; subscription_id?: string; session_node_id?: string; session_instance_id?: string; playback_id?: string; playback_generation?: number; playback_start_time_sec?: number; playback_end_time_sec?: number; state: 'running' | 'stopping' | 'stopped' | 'failed' }
 export interface ActiveStreamViewerFormat { media_format: string; viewer_count: number }
 export interface ActiveStreamMonitorItem { stream_id: string; session_node_id: string; session_instance_id: string; stream_node_id: string; device_id: string; channel_id: string; ssrc: string; state: 'starting' | 'running' | 'stopping' | 'failed' | 'unknown' | 'conflict'; dialog_state: string; media_state: string; media_ready: boolean; created_at_ms: number; established_at_ms: number; started_at_ms: number; diagnostic_reason: string; session_type: string; viewer_count: number; viewer_formats: ActiveStreamViewerFormat[]; supported_formats: string[]; output_format: string }
@@ -65,7 +63,6 @@ export interface CreateUserPayload { username: string; role: Role; nickname: str
 export interface UpdateUserPayload { role: Role; nickname?: string; password?: string | null; enabled: boolean }
 export interface UpdateProfilePayload { nickname?: string; password?: string }
 
-export const liveApi = import.meta.env.VITE_GMV_API_MODE !== 'mock';
 let csrfToken = '';
 let unauthorizedHandler: (() => void) | undefined;
 export function setUnauthorizedHandler(handler: () => void): void { unauthorizedHandler = handler; }
@@ -126,18 +123,11 @@ export const updateProfile = (payload: UpdateProfilePayload) => request<UserInfo
 export const listUsers = () => request<UserInfo[]>('/users');
 export const createUser = (payload: CreateUserPayload) => request<UserInfo>('/users', { method: 'POST', body: JSON.stringify(payload) });
 export const updateUser = (username: string, payload: UpdateUserPayload) => request<UserInfo>('/users/' + encodeURIComponent(username), { method: 'POST', body: JSON.stringify(payload) });
-export const fetchDashboard = () => request<DashboardInfo>('/dashboard');
 export const listNodes = () => request<NodeInfo[]>('/nodes');
 export function pollEvents(afterId?: string, limit = 100, minPriority?: number, topicPrefix?: string): Promise<EventPage> { const query = new URLSearchParams({ limit: String(limit) }); if (afterId) query.set('after_id', afterId); if (minPriority) query.set('min_priority', String(minPriority)); if (topicPrefix) query.set('topic_prefix', topicPrefix); return request<EventPage>('/events?' + query); }
 export const listLeases = () => request<LeaseInfo[]>('/leases');
 export const listOutbox = (limit = 100) => request<OutboxInfo[]>('/integrations/outbox?limit=' + limit);
 export const retryOutbox = (outboxId: string) => request<OutboxInfo>('/integrations/outbox/' + encodeURIComponent(outboxId) + '/retry', { method: 'POST', body: '{}' });
-export const listDevices = () => request<DeviceSummary[]>('/devices');
-export const startPreview = async (deviceId: string, channelId: string, requestId: string) => {
-  const operation = await request<MediaOperationSummary<StreamSummary>>('/devices/' + deviceId + '/preview', { method: 'POST', body: JSON.stringify({ channel_id: channelId, request_id: requestId }) }, true, 3_000);
-  return waitMediaOperation(operation);
-};
-export const sendPtz = (deviceId: string, channelId: string) => request<{ accepted: boolean; count: number }>('/devices/' + deviceId + '/ptz', { method: 'POST', body: JSON.stringify({ channel_id: channelId }) });
 export const listStreams = () => request<StreamSummary[]>('/streams');
 export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
 function streamMonitorParams(sessionNodeId: string, query: StreamMonitorQuery): URLSearchParams { const params = new URLSearchParams({ session_node_id: sessionNodeId }); for (const [key, value] of Object.entries(query)) if (value?.trim()) params.set(key, value.trim()); return params; }

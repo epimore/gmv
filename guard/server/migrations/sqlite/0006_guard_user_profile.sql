@@ -1,1 +1,0 @@
-ALTER TABLE guard_user ADD COLUMN nickname VARCHAR(255) NOT NULL DEFAULT '';

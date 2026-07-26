@@ -1,7 +1,6 @@
 use gmv_guard_server::auth::{Role, Secret};
 use gmv_guard_server::core::GuardConfig;
 use gmv_guard_server::store::migration::migration_pairs;
-use gmv_guard_server::store::{GuardStore, InMemoryGuardStore};
 
 #[test]
 fn guard_config_and_secret_baselines_hold() {
@@ -9,12 +8,6 @@ fn guard_config_and_secret_baselines_hold() {
     assert!(Role::Admin.allows(Role::Operator));
     let secret = Secret::new("super-secret");
     assert!(!format!("{secret:?}").contains("super-secret"));
-}
-
-#[test]
-fn guard_store_is_explicit_backend_enum() {
-    let store = GuardStore::Memory(InMemoryGuardStore::default());
-    assert!(matches!(store, GuardStore::Memory(_)));
 }
 
 #[test]
@@ -56,20 +49,21 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         assert!(!mysql_all.contains(table), "mysql should not own {table}");
         assert!(!sqlite_all.contains(table), "sqlite should not own {table}");
     }
+    for table in ["guard_outbox", "guard_command", "guard_user"] {
+        assert!(mysql_all.contains(table), "mysql missing {table}");
+        assert!(sqlite_all.contains(table), "sqlite missing {table}");
+    }
     for table in [
         "guard_node",
         "guard_lease",
         "guard_route",
         "guard_event",
-        "guard_outbox",
-        "guard_command",
-        "guard_user",
         "guard_service_credential",
         "guard_ui_session",
         "guard_integration",
         "guard_system_setting",
     ] {
-        assert!(mysql_all.contains(table), "mysql missing {table}");
-        assert!(sqlite_all.contains(table), "sqlite missing {table}");
+        assert!(!mysql_all.contains(table), "mysql should not own {table}");
+        assert!(!sqlite_all.contains(table), "sqlite should not own {table}");
     }
 }

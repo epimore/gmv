@@ -11,26 +11,26 @@
       </RouterLink>
       <el-menu class="sidebar-menu" :collapse="menuCollapsed" :default-active="route.path" :default-openeds="openMenus"
         router>
-        <template v-for="item in menuRoutes" :key="item.path">
+        <template v-for="item in visibleMenuRoutes" :key="item.path">
           <el-sub-menu v-if="item.children?.length" :index="item.path">
             <template #title>
               <el-icon>
                 <component :is="menuIcon(item.icon)" />
               </el-icon>
-              <span>{{ item.label }}</span>
+              <span>{{ menuLabel(item) }}</span>
             </template>
             <el-menu-item v-for="child in item.children" :key="child.path" :index="child.path">
               <el-icon>
                 <component :is="menuIcon(child.icon)" />
               </el-icon>
-              <span>{{ child.label }}</span>
+              <span>{{ menuLabel(child) }}</span>
             </el-menu-item>
           </el-sub-menu>
           <el-menu-item v-else :index="item.path">
             <el-icon>
               <component :is="menuIcon(item.icon)" />
             </el-icon>
-            <span>{{ item.label }}</span>
+            <span>{{ menuLabel(item) }}</span>
           </el-menu-item>
         </template>
       </el-menu>
@@ -52,6 +52,9 @@
             <el-dropdown-menu>
               <el-dropdown-item command="profile">个人资料</el-dropdown-item>
               <el-dropdown-item command="keepalive">会话保活</el-dropdown-item>
+              <el-dropdown-item v-if="auth.isAdmin" divided command="experimental">
+                {{ experimental.enabled ? '隐藏实验性功能' : '显示实验性功能' }}
+              </el-dropdown-item>
               <el-dropdown-item divided command="logout">退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -60,6 +63,7 @@
       <header class="topbar">
         <div class="title">
           <h1>{{ route.meta.title }}</h1>
+          <el-tag v-if="route.meta.experimental" type="warning" effect="dark">实验性 · 未闭环</el-tag>
           <p>GMV 控制台 · API v2</p>
         </div>
       </header>
@@ -112,18 +116,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Bell, CircleCheck, Connection, DataAnalysis, Document, Expand, Fold, HomeFilled, Key, Link, Menu as MenuIcon, Monitor, Platform, Promotion, Setting, User, VideoCamera } from '@element-plus/icons-vue';
 import { useRoute, useRouter } from 'vue-router';
 import { errorMessage, updateProfile } from '@/api/client';
-import { menuRoutes } from '@/router';
+import { menuRoutes, type MenuRouteItem } from '@/router';
 import { useAuthStore } from '@/stores/auth';
+import { useExperimentalFeaturesStore } from '@/stores/experimentalFeatures';
 import { useSessionKeepaliveStore } from '@/stores/sessionKeepalive';
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
+const experimental = useExperimentalFeaturesStore();
 const keepalive = useSessionKeepaliveStore();
 const loggingOut = ref(false);
 const profileDialogVisible = ref(false);
@@ -134,12 +140,23 @@ const keepaliveForm = reactive({ enabled: true, intervalMinutes: 5 });
 const menuCollapsed = ref(false);
 const displayName = computed(() => auth.session?.nickname?.trim() || auth.session?.username || '');
 const userInitial = computed(() => displayName.value.slice(0, 1).toUpperCase() || 'U');
-const openMenus = computed(() => menuRoutes.filter((item) => item.children?.some((child) => route.path.startsWith(child.path))).map((item) => item.path));
+const visibleMenuRoutes = computed(() => menuRoutes.filter((item) => !item.experimental || experimental.enabled));
+const openMenus = computed(() => visibleMenuRoutes.value.filter((item) => item.children?.some((child) => route.path.startsWith(child.path))).map((item) => item.path));
 const menuIcons = { Bell, CircleCheck, Connection, DataAnalysis, Document, HomeFilled, Key, Link, Menu: MenuIcon, Monitor, Platform, Promotion, Setting, User, VideoCamera };
 
 function menuIcon(name: string) {
   return menuIcons[name as keyof typeof menuIcons] ?? MenuIcon;
 }
+
+function menuLabel(item: Pick<MenuRouteItem, 'label' | 'experimental'>): string {
+  return item.experimental ? `${item.label}（实验）` : item.label;
+}
+
+watch(
+  () => [auth.session?.username, auth.isAdmin] as const,
+  ([username, isAdmin]) => experimental.sync(username, isAdmin),
+  { immediate: true },
+);
 
 onMounted(() => {
   keepalive.start();
@@ -194,6 +211,14 @@ async function handleUserCommand(command: string | number | object) {
   }
   if (command === 'keepalive') {
     openKeepaliveSettings();
+    return;
+  }
+  if (command === 'experimental') {
+    const enabled = experimental.toggle();
+    if (!enabled && route.matched.some((record) => record.meta.experimental)) {
+      await router.replace('/dashboard');
+    }
+    ElMessage.success(enabled ? '已显示实验性功能' : '已隐藏实验性功能');
     return;
   }
   if (command === 'logout') await signOut();

@@ -154,6 +154,8 @@ pnpm -C guard/ui build
 target/release/guard
 guard/server/config.yml
 guard/ui/dist/
+guard/server/migrations/manual/mysql/cleanup_legacy_preview_schema.sql
+guard/server/migrations/manual/sqlite/cleanup_legacy_preview_schema.sql
 ```
 
 推荐安装目录：
@@ -168,6 +170,12 @@ guard/ui/dist/
     dist/
       index.html
       assets/
+  share/
+    sql/
+      mysql/
+        cleanup_legacy_preview_schema.sql
+      sqlite/
+        cleanup_legacy_preview_schema.sql
   data/
   logs/
 ```
@@ -221,6 +229,8 @@ pnpm -C guard/ui build
 ```text
 target/release/guard
 guard/server/config.yml
+guard/server/migrations/manual/mysql/cleanup_legacy_preview_schema.sql
+guard/server/migrations/manual/sqlite/cleanup_legacy_preview_schema.sql
 ```
 
 集成部署下，`guard.http.ui_dist_dir` 会被忽略，但可以保留在配置文件中。
@@ -959,6 +969,15 @@ journalctl -u gmv-stream -f
 
 ### 14.1 Guard 数据库
 
+干净预览版采用全新安装数据库基线。交付包中的 `data/` 必须为空，不得携带开发、测试或历史环境的 `guard.db`。Guard 初始化后只应出现：
+
+- `_base_db_migrations`
+- `guard_user`
+- `guard_outbox`
+- `guard_command`
+
+节点、租约、运行路由和事件当前由 Guard 内存状态承载，不创建同名数据库表。该预览版不承诺旧 Guard 数据库原地升级，启动时不会自动删除旧表。
+
 嵌入式或单机部署推荐 SQLite：
 
 ```yaml
@@ -986,6 +1005,18 @@ guard:
       pass: ""
       ssl_mode: preferred
 ```
+
+需要显式清理旧预览数据库中的废弃 Guard 对象时，必须先停止 Guard 写入并完成备份，再按实际后端执行人工脚本：
+
+```bash
+# SQLite：先复制 guard.db 形成可恢复备份
+sqlite3 /opt/gmv/data/guard.db ".read /opt/gmv/share/sql/sqlite/cleanup_legacy_preview_schema.sql"
+
+# MySQL：DDL 会隐式提交，不能依赖事务回滚
+mysql -h 127.0.0.1 -u gmv -p gmv < /opt/gmv/share/sql/mysql/cleanup_legacy_preview_schema.sql
+```
+
+脚本只删除 `guard_node`、`guard_lease`、`guard_route`、`guard_event`、`guard_service_credential`、`guard_ui_session`、`guard_integration`、`guard_system_setting`，并精确删除对应旧 Guard 迁移账本记录。当前旧表没有独立命名的 secondary index；主键索引随 `DROP TABLE` 一并删除。脚本保留 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command` 及其他模块的账本记录。人工脚本不是启动 migration，也不是旧库兼容承诺。
 
 ### 14.2 Session 数据库
 
