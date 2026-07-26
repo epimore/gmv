@@ -163,6 +163,35 @@ test('已登录会话可访问中文页面与移动端布局', async ({ page }) 
   expect(layout.mainWidth).toBe(layout.innerWidth);
 });
 
+test('Dashboard 展示边端状态、能力入口和待处理事项', async ({ page }) => {
+  await mockAuth(page, true);
+
+  await page.goto('/dashboard');
+
+  await expect(page.getByRole('heading', { name: '边端能力等待接入', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '边端能力矩阵', level: 2 })).toBeVisible();
+  await expect(page.getByRole('button', { name: /GB28181/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /ONVIF/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /MQTT 接入/ })).toBeVisible();
+  await expect(page.getByText('尚未发现业务节点')).toBeVisible();
+  await expect(page.getByText('星图拓扑')).toHaveCount(0);
+  await expect(page.getByText('资源分布')).toHaveCount(0);
+});
+
+test('事件中心隐藏 cursor 并提供面向用户的筛选和详情入口', async ({ page }) => {
+  await mockAuth(page, true);
+
+  await page.goto('/events');
+
+  await expect(page.getByRole('heading', { name: '告警与事件', level: 2 })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '事件级别' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '事件领域' })).toBeVisible();
+  await expect(page.getByLabel('事件搜索')).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停接收' })).toBeVisible();
+  await expect(page.getByText(/after_id|next cursor/)).toHaveCount(0);
+  await expect(page.getByText('获取时间不是事件发生时间')).toBeVisible();
+});
+
 test('多画面工作台已选通道空状态居中', async ({ page }) => {
   await mockAuth(page, true);
   await page.goto('/gb28181/monitor');
