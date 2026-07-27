@@ -82,9 +82,7 @@ async fn handle_rx_event(rx: &mut Receiver<Event>, semaphore: Arc<Semaphore>) ->
 async fn hand_event(event: Event) {
     match event {
         Event::RefreshCatalogSubscription(device_id, generation) => {
-            let _ = subscription::refresh_catalog_subscription(device_id, generation)
-                .await
-                .hand_log(|msg| warn!("refresh catalog subscription failed: {msg}"));
+            let _ = subscription::refresh_catalog_subscription(device_id, generation).await;
         }
         Event::OutSession(_) => {}
     }

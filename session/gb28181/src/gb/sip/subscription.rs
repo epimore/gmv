@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base::chrono::{Duration as TimeDelta, Local};
+use base::dashmap::DashSet;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::{error, warn};
 use base::logger::episode::{EpisodeDecision, FailureEpisode};
+use base::once_cell::sync::Lazy;
 use gmv_pjsip::SipOutboundSubscribe;
 use gmv_pjsip::message::extract_uri;
 
@@ -25,22 +27,45 @@ use super::xml;
 
 const SUBSCRIBE_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 const CATALOG_EVENT: &str = "Catalog";
+const CATALOG_DEGRADED_MIN_FAILURES: u64 = 3;
+const CATALOG_DEGRADED_AFTER: Duration = Duration::from_secs(120);
+
+static DEGRADED_CATALOG_SUBSCRIPTIONS: Lazy<DashSet<String>> = Lazy::new(DashSet::new);
+
+pub fn degraded_catalog_subscription_count() -> usize {
+    DEGRADED_CATALOG_SUBSCRIPTIONS.len()
+}
+
+pub fn clear_degraded_catalog_subscription(device_id: &str) {
+    DEGRADED_CATALOG_SUBSCRIPTIONS.remove(device_id);
+}
 
 pub async fn subscribe_catalog(device_id: &str, expires: u32) -> GlobalResult<()> {
     let expires = expires.max(1);
-    match subscribe_catalog_once(device_id, expires).await {
-        Ok(()) => Ok(()),
+    match subscribe_catalog_once(device_id, expires, true).await {
+        Ok(()) => {
+            clear_degraded_catalog_subscription(device_id);
+            Ok(())
+        }
         Err(err) => {
-            retry_new_catalog_subscription(device_id.to_string(), expires);
+            retry_new_catalog_subscription(
+                device_id.to_string(),
+                expires,
+                "initial_subscribe_failed",
+            );
             Err(err)
         }
     }
 }
 
-async fn subscribe_catalog_once(device_id: &str, expires: u32) -> GlobalResult<()> {
+async fn subscribe_catalog_once(
+    device_id: &str,
+    expires: u32,
+    log_failure: bool,
+) -> GlobalResult<()> {
     let (host, port, base_protocol) = connected_target(device_id)?;
     let Some(session) = Register::get_connected_device_session(device_id) else {
-        return Err(device_not_connected(device_id));
+        return Err(device_not_connected(device_id, log_failure));
     };
     let protocol = pjsip_protocol_from_base(base_protocol);
     let remote_target = target_uri(device_id, &host, port, protocol);
@@ -87,13 +112,19 @@ async fn subscribe_catalog_once(device_id: &str, expires: u32) -> GlobalResult<(
         .await
         .map_err(|reason| {
             SipRuntimeCache::global().remove_native_subscription_waiter(operation_id);
-            subscription_timeout(device_id, operation_id, reason)
+            subscription_timeout(device_id, operation_id, reason, log_failure)
         })?
-        .map_err(|failure| subscription_runtime_failure(device_id, operation_id, failure))?;
+        .map_err(|failure| {
+            subscription_runtime_failure(device_id, operation_id, failure, log_failure)
+        })?;
     if (200..300).contains(&response.status) {
         Ok(())
     } else {
-        Err(subscription_rejected(device_id, response.status))
+        Err(subscription_rejected(
+            device_id,
+            response.status,
+            log_failure,
+        ))
     }
 }
 
@@ -107,7 +138,7 @@ pub async fn refresh_catalog_subscription(
     };
     let Some(session) = Register::get_connected_device_session(device_id.as_ref()) else {
         Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
-        return Err(device_not_connected(device_id.as_ref()));
+        return Err(device_not_connected(device_id.as_ref(), true));
     };
     let runtime = NativeSipRuntimeHandle::global()?;
     let operation_id = runtime.next_operation_id();
@@ -141,13 +172,33 @@ pub async fn refresh_catalog_subscription(
             SipRuntimeCache::global().remove_native_response_waiter(operation_id);
             Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
             schedule_catalog_retry(device_id.clone(), generation, command.expires);
-            subscription_timeout(device_id.as_ref(), operation_id, reason)
+            subscription_timeout(device_id.as_ref(), operation_id, reason, true)
         })?;
-    let response = response.map_err(|failure| {
-        Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
-        schedule_catalog_retry(device_id.clone(), generation, command.expires);
-        subscription_runtime_failure(device_id.as_ref(), operation_id, failure)
-    })?;
+    let response = match response {
+        Ok(response) => response,
+        Err(NativeRuntimeFailure::RuntimeNotFound(status)) => {
+            Cache::catalog_subscription_remove(device_id.as_ref(), Some(generation));
+            warn!(
+                "catalog subscription state changed: state=rebuilding, previous_state=active, device_id={device_id}, reason=native_subscription_missing, pj_status={status}"
+            );
+            retry_new_catalog_subscription(
+                device_id.to_string(),
+                command.expires,
+                "native_subscription_missing",
+            );
+            return Ok(());
+        }
+        Err(failure) => {
+            Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
+            schedule_catalog_retry(device_id.clone(), generation, command.expires);
+            return Err(subscription_runtime_failure(
+                device_id.as_ref(),
+                operation_id,
+                failure,
+                true,
+            ));
+        }
+    };
     complete_refresh(device_id, command, response)
 }
 
@@ -179,12 +230,20 @@ fn complete_refresh(
         }
     } else if response.status == 481 {
         Cache::catalog_subscription_remove(device_id.as_ref(), Some(generation));
-        retry_new_catalog_subscription(device_id.to_string(), command.expires);
+        retry_new_catalog_subscription(
+            device_id.to_string(),
+            command.expires,
+            "device_subscription_missing",
+        );
         Ok(())
     } else {
         Cache::catalog_subscription_mark_failed(device_id.as_ref(), generation);
         schedule_catalog_retry(device_id.clone(), generation, command.expires);
-        Err(subscription_rejected(device_id.as_ref(), response.status))
+        Err(subscription_rejected(
+            device_id.as_ref(),
+            response.status,
+            true,
+        ))
     }
 }
 
@@ -300,22 +359,30 @@ fn terminate_catalog_subscription(device_id: &str, generation: u64) {
     let expires = Cache::catalog_subscription_expires(device_id, generation);
     if Cache::catalog_subscription_remove(device_id, Some(generation)) {
         if let Some(expires) = expires {
-            retry_new_catalog_subscription(device_id.to_string(), expires);
+            retry_new_catalog_subscription(
+                device_id.to_string(),
+                expires,
+                "subscription_terminated",
+            );
         }
     }
 }
 
-fn retry_new_catalog_subscription(device_id: String, expires: u32) {
+fn retry_new_catalog_subscription(device_id: String, expires: u32, trigger_reason: &'static str) {
     base::tokio::spawn(async move {
         let mut delay = Duration::from_secs(5);
         let mut failure_episode = FailureEpisode::default();
+        let mut failure_started_at = None;
+        let mut total_failures = 0_u64;
         loop {
             base::tokio::time::sleep(delay).await;
             if Register::get_connected_device_session(&device_id).is_none() {
+                DEGRADED_CATALOG_SUBSCRIPTIONS.remove(&device_id);
                 break;
             }
-            match subscribe_catalog_once(&device_id, expires).await {
+            match subscribe_catalog_once(&device_id, expires, false).await {
                 Ok(()) => {
+                    let was_degraded = DEGRADED_CATALOG_SUBSCRIPTIONS.remove(&device_id).is_some();
                     if let EpisodeDecision::Recovered {
                         total,
                         suppressed,
@@ -323,8 +390,12 @@ fn retry_new_catalog_subscription(device_id: String, expires: u32) {
                     } = failure_episode.record_success(Instant::now())
                     {
                         base::log::info!(
-                            "catalog subscription state changed: state=active, previous_state=retrying, outcome=recovered, device_id={device_id}, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                            "catalog subscription state changed: state=active, previous_state=retrying, outcome=recovered, device_id={device_id}, trigger_reason={trigger_reason}, was_degraded={was_degraded}, total_failures={total}, suppressed={suppressed}, duration_ms={}",
                             duration.as_millis()
+                        );
+                    } else {
+                        base::log::info!(
+                            "catalog subscription state changed: state=active, previous_state=rebuilding, outcome=recovered, device_id={device_id}, trigger_reason={trigger_reason}, was_degraded={was_degraded}"
                         );
                     }
                     break;
@@ -333,9 +404,15 @@ fn retry_new_catalog_subscription(device_id: String, expires: u32) {
                     base::log::trace!(
                         "catalog subscription retry failed: device_id={device_id}, err={err}"
                     );
-                    match failure_episode.record_failure(Instant::now()) {
+                    let now = Instant::now();
+                    let started_at = *failure_started_at.get_or_insert(now);
+                    total_failures = total_failures.saturating_add(1);
+                    let newly_degraded =
+                        should_mark_catalog_degraded(total_failures, started_at, now)
+                            && DEGRADED_CATALOG_SUBSCRIPTIONS.insert(device_id.clone());
+                    match failure_episode.record_failure(now) {
                         EpisodeDecision::Started => warn!(
-                            "catalog subscription state changed: state=retrying, previous_state=active, device_id={device_id}, reason=subscribe_failed"
+                            "catalog subscription state changed: state=retrying, previous_state=rebuilding, device_id={device_id}, trigger_reason={trigger_reason}, reason=subscribe_failed"
                         ),
                         EpisodeDecision::Summary {
                             total,
@@ -343,8 +420,17 @@ fn retry_new_catalog_subscription(device_id: String, expires: u32) {
                             suppressed,
                             duration,
                         } => warn!(
-                            "catalog subscription remains unavailable: state=retrying, outcome=ongoing, device_id={device_id}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                            "catalog subscription remains unavailable: state={}, outcome=ongoing, device_id={device_id}, trigger_reason={trigger_reason}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                            if DEGRADED_CATALOG_SUBSCRIPTIONS.contains(&device_id) {
+                                "degraded"
+                            } else {
+                                "retrying"
+                            },
                             duration.as_millis()
+                        ),
+                        EpisodeDecision::Suppressed if newly_degraded => warn!(
+                            "catalog subscription state changed: state=degraded, previous_state=retrying, outcome=ongoing, device_id={device_id}, trigger_reason={trigger_reason}, total_failures={total_failures}, duration_ms={}",
+                            now.saturating_duration_since(started_at).as_millis()
                         ),
                         EpisodeDecision::Suppressed => {}
                         EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => {
@@ -356,6 +442,11 @@ fn retry_new_catalog_subscription(device_id: String, expires: u32) {
             }
         }
     });
+}
+
+fn should_mark_catalog_degraded(total_failures: u64, started_at: Instant, now: Instant) -> bool {
+    total_failures >= CATALOG_DEGRADED_MIN_FAILURES
+        && now.saturating_duration_since(started_at) >= CATALOG_DEGRADED_AFTER
 }
 
 fn parse_subscription_state(value: &str) -> (&str, Option<u32>) {
@@ -370,11 +461,22 @@ fn parse_subscription_state(value: &str) -> (&str, Option<u32>) {
     (state, expires)
 }
 
-fn subscription_timeout(device_id: &str, operation_id: u64, reason: &str) -> GlobalError {
+fn subscription_timeout(
+    device_id: &str,
+    operation_id: u64,
+    reason: &str,
+    log_failure: bool,
+) -> GlobalError {
     GlobalError::new_biz_error(
         BaseErrorCode::Timeout.code(),
         "device SUBSCRIBE response timeout",
-        |msg| error!("device_id={device_id}; operation_id={operation_id}; {msg}; reason={reason}"),
+        |msg| {
+            if log_failure {
+                error!(
+                    "device_id={device_id}; operation_id={operation_id}; {msg}; reason={reason}"
+                );
+            }
+        },
     )
 }
 
@@ -382,6 +484,7 @@ fn subscription_runtime_failure(
     device_id: &str,
     operation_id: u64,
     failure: NativeRuntimeFailure,
+    log_failure: bool,
 ) -> GlobalError {
     let stopped = failure == NativeRuntimeFailure::Stopped;
     GlobalError::new_sys_error("native SIP SUBSCRIBE failed", |msg| {
@@ -390,7 +493,7 @@ fn subscription_runtime_failure(
                 "device_id={device_id}; operation_id={operation_id}; action=subscribe; \
                  stage=native_runtime; outcome=local_cancelled; reason={failure}; {msg}"
             );
-        } else {
+        } else if log_failure {
             error!(
                 "device_id={device_id}; operation_id={operation_id}; action=subscribe; \
                  stage=native_runtime; outcome=failed; reason={failure}; {msg}"
@@ -399,19 +502,27 @@ fn subscription_runtime_failure(
     })
 }
 
-fn subscription_rejected(device_id: &str, status: u16) -> GlobalError {
+fn subscription_rejected(device_id: &str, status: u16, log_failure: bool) -> GlobalError {
     GlobalError::new_biz_error(
         BaseErrorCode::InvalidState.code(),
         "device rejected catalog subscription",
-        |msg| error!("device_id={device_id}; status={status}; {msg}"),
+        |msg| {
+            if log_failure {
+                error!("device_id={device_id}; status={status}; {msg}");
+            }
+        },
     )
 }
 
-fn device_not_connected(device_id: &str) -> GlobalError {
+fn device_not_connected(device_id: &str, log_failure: bool) -> GlobalError {
     GlobalError::new_biz_error(
         BaseErrorCode::NotFound.code(),
         "device is not registered or connected",
-        |msg| error!("device_id={device_id}; {msg}"),
+        |msg| {
+            if log_failure {
+                error!("device_id={device_id}; {msg}");
+            }
+        },
     )
 }
 
@@ -423,9 +534,9 @@ fn invalid_subscription(message: &'static str) -> GlobalError {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
-    use super::{catalog_refresh_delay, parse_subscription_state};
+    use super::{catalog_refresh_delay, parse_subscription_state, should_mark_catalog_degraded};
 
     #[test]
     fn schedules_catalog_refresh_before_native_refresh() {
@@ -453,5 +564,25 @@ mod tests {
             parse_subscription_state("terminated;reason=timeout"),
             ("terminated", None)
         );
+    }
+
+    #[test]
+    fn catalog_degradation_requires_failure_count_and_duration() {
+        let started_at = Instant::now();
+        assert!(!should_mark_catalog_degraded(
+            2,
+            started_at,
+            started_at + Duration::from_secs(120)
+        ));
+        assert!(!should_mark_catalog_degraded(
+            3,
+            started_at,
+            started_at + Duration::from_secs(119)
+        ));
+        assert!(should_mark_catalog_degraded(
+            3,
+            started_at,
+            started_at + Duration::from_secs(120)
+        ));
     }
 }

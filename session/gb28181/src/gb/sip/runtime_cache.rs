@@ -14,6 +14,7 @@ use base::tokio::sync::{mpsc, oneshot};
 use base::tokio::time::{self, Instant};
 use gmv_pjsip::SipDialogSnapshot;
 use gmv_pjsip::SipMethod;
+use gmv_pjsip::SipRuntimeFaultKind;
 use gmv_pjsip::gb28181::sdp::SdpInfo;
 use gmv_pjsip::message::{extract_tag, extract_uri};
 
@@ -100,6 +101,7 @@ pub struct SipResponseResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeRuntimeFailure {
     SendFailed(String),
+    RuntimeNotFound(i32),
     RuntimeFault(i32),
     Stopped,
 }
@@ -108,10 +110,22 @@ impl fmt::Display for NativeRuntimeFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SendFailed(reason) => write!(f, "native SIP send failed: {reason}"),
+            Self::RuntimeNotFound(status) => {
+                write!(f, "native SIP runtime object not found: pj_status={status}")
+            }
             Self::RuntimeFault(status) => {
                 write!(f, "native SIP runtime fault: pj_status={status}")
             }
             Self::Stopped => f.write_str("native SIP runtime stopped"),
+        }
+    }
+}
+
+impl NativeRuntimeFailure {
+    pub fn from_runtime_fault(status: i32, kind: SipRuntimeFaultKind) -> Self {
+        match kind {
+            SipRuntimeFaultKind::NotFound => Self::RuntimeNotFound(status),
+            SipRuntimeFaultKind::Other => Self::RuntimeFault(status),
         }
     }
 }
@@ -1071,6 +1085,10 @@ mod tests {
                 .expect("SIP response")
                 .status,
             503
+        );
+        assert_eq!(
+            NativeRuntimeFailure::from_runtime_fault(70_006, SipRuntimeFaultKind::NotFound),
+            NativeRuntimeFailure::RuntimeNotFound(70_006)
         );
     }
 }

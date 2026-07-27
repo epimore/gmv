@@ -785,7 +785,10 @@ async fn run_native_business_events(
                     }
                 }
                 SipRuntimeEventKind::RuntimeFault => {
-                    let failure = NativeRuntimeFailure::RuntimeFault(event.pj_status);
+                    let failure = NativeRuntimeFailure::from_runtime_fault(
+                        event.pj_status,
+                        event.fault_kind(),
+                    );
                     let delivered = SipRuntimeCache::global()
                         .fail_native_invite_runtime(operation_id, failure.clone())
                         || SipRuntimeCache::global()

@@ -8,6 +8,14 @@ const session = {
   expires_at_ms: Date.now() + 60_000,
 };
 
+const readySessionNode = {
+  node_id: 'session-1', instance_id: 'instance-1', kind: 'SESSION', service: 'session-gb28181',
+  protocol: 'gb28181', display_name: 'GB28181 Session', connection: 'CONNECTED', health: 'READY',
+  scheduling: 'ENABLED', capabilities: ['protocol.gb28181'], pending_leases: 0,
+  host_metrics: {}, business_metrics: {}, config: {}, zone: null,
+  last_seen_at_ms: Date.now(), generation: 1, sequence: 1,
+};
+
 const defaultRoutes = [
   ['/dashboard', 'Dashboard'],
   ['/gb28181/register', '注册管理'],
@@ -166,8 +174,74 @@ test('Dashboard 展示边端状态、能力入口和待处理事项', async ({ p
   await expect(page.getByRole('button', { name: /ONVIF/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /MQTT 接入/ })).toHaveCount(0);
   await expect(page.getByText('尚未发现业务节点')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '业务异常概览', level: 2 })).toBeVisible();
   await expect(page.getByText('星图拓扑')).toHaveCount(0);
   await expect(page.getByText('资源分布')).toHaveCount(0);
+});
+
+test('Dashboard 将单次流失败归入业务异常而不是待处理事项', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/nodes', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([readySessionNode]),
+    });
+  });
+  await page.route('**/api/v2/streams', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        stream_id: 'failed-1', device_id: 'device-1', channel_id: 'channel-1', node_id: 'stream-1',
+        lease_id: '', endpoint: '', state: 'failed',
+      }]),
+    });
+  });
+
+  await page.goto('/dashboard');
+
+  await expect(page.getByText('1 条失败流记录')).toBeVisible();
+  await expect(page.getByText('当前无待处理事项')).toBeVisible();
+  await expect(page.getByText('1 路流失败')).toHaveCount(0);
+});
+
+test('Dashboard 将持续 Catalog 重建失败归入运维待处理事项', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/nodes', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        ...readySessionNode,
+        business_metrics: { catalog_subscription_degraded_devices: '2' },
+      }]),
+    });
+  });
+
+  await page.goto('/dashboard');
+
+  await expect(page.getByText('2 个设备目录订阅持续异常')).toBeVisible();
+  await expect(page.getByText('当前无待处理事项')).toHaveCount(0);
+});
+
+test('Dashboard 将会话与运行态冲突归入运维待处理事项', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/nodes', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        ...readySessionNode,
+        business_metrics: { dialog_runtime_conflicts: '1' },
+      }]),
+    });
+  });
+
+  await page.goto('/dashboard');
+
+  await expect(page.getByText('1 个流运行态与会话记录不一致')).toBeVisible();
+  await expect(page.getByText('当前无待处理事项')).toHaveCount(0);
 });
 
 test('管理员可恢复并再次隐藏实验功能，直达路由与偏好保持一致', async ({ page }) => {

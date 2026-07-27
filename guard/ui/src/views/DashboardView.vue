@@ -56,7 +56,7 @@
     <GlassPanel
       class="span-5"
       title="待处理事项"
-      subtitle="按当前 Guard 投影汇总 · 操作在对应业务页面完成"
+      subtitle="仅汇总持续影响系统正常使用、需要运维介入的问题"
     >
       <div v-if="attentionItems.length" class="attention-list">
         <button
@@ -78,6 +78,34 @@
       <div v-else class="attention-empty">
         <span>✓</span>
         <div><b>当前无待处理事项</b><small>已知节点、运行资源和外部投递状态正常</small></div>
+      </div>
+    </GlassPanel>
+
+    <GlassPanel
+      class="span-12"
+      title="业务异常概览"
+      subtitle="单次业务失败用于观察和下钻，不计入运维待处理事项"
+    >
+      <div v-if="businessExceptionItems.length" class="attention-list">
+        <button
+          v-for="item in businessExceptionItems"
+          :key="item.key"
+          class="attention-item"
+          :class="`is-${item.tone}`"
+          type="button"
+          @click="router.push(item.route)"
+        >
+          <span class="attention-dot" />
+          <span class="attention-copy"
+            ><b>{{ item.title }}</b
+            ><small>{{ item.detail }}</small></span
+          >
+          <span class="attention-link">{{ item.action }} →</span>
+        </button>
+      </div>
+      <div v-else class="attention-empty">
+        <span>✓</span>
+        <div><b>当前无业务失败记录</b><small>点播、回放、下载等失败会在对应业务页面提供重试</small></div>
       </div>
     </GlassPanel>
 
@@ -196,6 +224,18 @@ const activeLeasesOnOfflineNodes = computed(() => {
 });
 const failedStreams = computed(() => streams.value.filter((item) => item.state === "failed"));
 const failedAiTasks = computed(() => aiTasks.value.filter((item) => item.state === "failed"));
+const degradedCatalogSubscriptions = computed(() =>
+  nodes.value.reduce((total, node) => {
+    const value = Number(node.business_metrics.catalog_subscription_degraded_devices ?? 0);
+    return total + (Number.isSafeInteger(value) && value > 0 ? value : 0);
+  }, 0),
+);
+const dialogRuntimeConflicts = computed(() =>
+  nodes.value.reduce((total, node) => {
+    const value = Number(node.business_metrics.dialog_runtime_conflicts ?? 0);
+    return total + (Number.isSafeInteger(value) && value > 0 ? value : 0);
+  }, 0),
+);
 
 const attentionItems = computed<AttentionItem[]>(() => {
   const items: AttentionItem[] = [];
@@ -226,6 +266,15 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/system/health",
       action: "检查系统",
     });
+  if (!streamsAvailable.value)
+    items.push({
+      key: "streams-unavailable",
+      title: "流运行状态不可用",
+      detail: "当前无法读取 Guard 流运行投影",
+      tone: "warning",
+      route: "/streams",
+      action: "检查流媒",
+    });
   if (offlineNodes.value.length)
     items.push({
       key: "nodes-offline",
@@ -244,6 +293,24 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/system/health",
       action: "查看负载",
     });
+  if (degradedCatalogSubscriptions.value)
+    items.push({
+      key: "catalog-subscriptions-degraded",
+      title: `${degradedCatalogSubscriptions.value} 个设备目录订阅持续异常`,
+      detail: "在线设备的 Catalog 订阅重建已连续失败约 2 分钟",
+      tone: "warning",
+      route: "/gb28181/register",
+      action: "检查设备",
+    });
+  if (dialogRuntimeConflicts.value)
+    items.push({
+      key: "dialog-runtime-conflicts",
+      title: `${dialogRuntimeConflicts.value} 个流运行态与会话记录不一致`,
+      detail: "缺少安全自动清理所需的反向所有权证据，需要运维确认",
+      tone: "danger",
+      route: "/streams",
+      action: "检查残留",
+    });
   if (activeLeasesOnOfflineNodes.value.length)
     items.push({
       key: "leases-stale",
@@ -252,24 +319,6 @@ const attentionItems = computed<AttentionItem[]>(() => {
       tone: "danger",
       route: "/system/health",
       action: "检查任务",
-    });
-  if (failedStreams.value.length)
-    items.push({
-      key: "streams-failed",
-      title: `${failedStreams.value.length} 路流失败`,
-      detail: "Guard 运行投影标记为 FAILED",
-      tone: "danger",
-      route: "/streams",
-      action: "查看流媒",
-    });
-  if (experimental.enabled && failedAiTasks.value.length)
-    items.push({
-      key: "ai-failed",
-      title: `${failedAiTasks.value.length} 个 AI 任务失败`,
-      detail: "需要进入智能分析查看关联流和节点",
-      tone: "warning",
-      route: "/ai",
-      action: "查看任务",
     });
   if (experimental.enabled && deadOutbox.value.length)
     items.push({
@@ -280,15 +329,6 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/integrations/apps",
       action: "处理投递",
     });
-  else if (experimental.enabled && pendingOutbox.value.length)
-    items.push({
-      key: "outbox-pending",
-      title: `${pendingOutbox.value.length} 条外部投递处理中`,
-      detail: "包含等待、发送中或重试等待记录",
-      tone: "warning",
-      route: "/integrations/apps",
-      action: "查看队列",
-    });
   if (experimental.enabled && !eventsAvailable.value)
     items.push({
       key: "events-unavailable",
@@ -297,6 +337,29 @@ const attentionItems = computed<AttentionItem[]>(() => {
       tone: "warning",
       route: "/events",
       action: "检查事件",
+    });
+  return items;
+});
+
+const businessExceptionItems = computed<AttentionItem[]>(() => {
+  const items: AttentionItem[] = [];
+  if (failedStreams.value.length)
+    items.push({
+      key: "streams-failed",
+      title: `${failedStreams.value.length} 条失败流记录`,
+      detail: "这是业务运行结果，可进入流媒监控查看原因或重新发起",
+      tone: "warning",
+      route: "/streams",
+      action: "查看流媒",
+    });
+  if (experimental.enabled && failedAiTasks.value.length)
+    items.push({
+      key: "ai-failed",
+      title: `${failedAiTasks.value.length} 条失败 AI 任务记录`,
+      detail: "这是业务任务结果，可进入智能分析查看或重新发起",
+      tone: "warning",
+      route: "/ai",
+      action: "查看任务",
     });
   return items;
 });
@@ -313,8 +376,8 @@ const overallStatus = computed(() => {
     return {
       title: "存在需要立即处理的问题",
       description: experimental.enabled
-        ? "关键节点、运行资源或外部投递存在异常，请从待处理事项进入定位。"
-        : "关键节点或运行资源存在异常，请从待处理事项进入定位。",
+        ? "关键节点、系统状态或外部投递存在异常，请从待处理事项进入定位。"
+        : "关键节点或系统状态存在异常，请从待处理事项进入定位。",
       label: "异常",
       tone: "danger" as Tone,
     };
@@ -328,7 +391,7 @@ const overallStatus = computed(() => {
   if (attentionItems.value.length)
     return {
       title: "部分能力处于降级状态",
-      description: "核心控制面可访问，部分节点或投递任务需要关注。",
+      description: "核心控制面可访问，部分系统状态需要运维关注。",
       label: "降级",
       tone: "warning" as Tone,
     };

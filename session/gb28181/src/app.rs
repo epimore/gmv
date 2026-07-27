@@ -203,10 +203,22 @@ impl
                 node.register_request(NodeResourceSnapshot::default()),
             );
             reporter.business_metrics = Arc::new(|| {
-                HashMap::from([(
-                    "active_devices".to_string(),
-                    Register::active_device_count().to_string(),
-                )])
+                HashMap::from([
+                    (
+                        "active_devices".to_string(),
+                        Register::active_device_count().to_string(),
+                    ),
+                    (
+                        "catalog_subscription_degraded_devices".to_string(),
+                        crate::gb::sip::subscription::degraded_catalog_subscription_count()
+                            .to_string(),
+                    ),
+                    (
+                        "dialog_runtime_conflicts".to_string(),
+                        crate::service::dialog_recovery::runtime_dialog_conflict_count()
+                            .to_string(),
+                    ),
+                ])
             });
             let (_reporter, event_sender) =
                 NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());

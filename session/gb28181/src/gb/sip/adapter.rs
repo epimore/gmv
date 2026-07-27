@@ -215,6 +215,7 @@ async fn apply_register_event(event: &GbRegisterEvent) -> GlobalResult<()> {
 
     if outcome.needs_post_online_sync() {
         GeneralCache::catalog_subscription_remove(&event.device_id, None);
+        super::subscription::clear_degraded_catalog_subscription(&event.device_id);
         schedule_post_online_sync(event.device_id.clone(), expires);
     }
     Ok(())
@@ -262,10 +263,7 @@ pub(crate) fn schedule_post_online_sync(device_id: String, expires: u32) {
             .remove(&device_id)
             .map(|(_, current)| current)
             .unwrap_or(expires);
-        if let Err(err) = super::subscription::subscribe_catalog(&device_id, current_expires).await
-        {
-            warn!("subscribe catalog after online failed: device_id={device_id}, err={err}");
-        }
+        let _ = super::subscription::subscribe_catalog(&device_id, current_expires).await;
     });
 }
 

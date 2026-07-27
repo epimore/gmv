@@ -1,11 +1,14 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use base::chrono::{Duration as TimeDelta, Local};
+use base::dashmap::DashSet;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{error, info, warn};
 use base::net::state::{Association, Protocol};
+use base::once_cell::sync::Lazy;
 use gmv_domain::info::obj::StreamKey;
 
 use crate::gb::SessionConf;
@@ -20,6 +23,12 @@ use crate::storage::entity::{GmvDevice, GmvOauth};
 use crate::storage::recording;
 
 const RECOVERY_PAGE_SIZE: u32 = 200;
+
+static RUNTIME_DIALOG_CONFLICTS: Lazy<DashSet<String>> = Lazy::new(DashSet::new);
+
+pub fn runtime_dialog_conflict_count() -> usize {
+    RUNTIME_DIALOG_CONFLICTS.len()
+}
 
 pub async fn run_startup_recovery() -> GlobalResult<()> {
     recover_owned_dialogs().await
@@ -225,6 +234,7 @@ pub async fn run_reconciliation(cancel: base::tokio_util::sync::CancellationToke
             _ = cancel.cancelled() => break,
             _ = base::tokio::time::sleep(Duration::from_secs(60)) => {}
         }
+        reconcile_runtime_dialog_conflicts(&signal_node_id).await;
         let page = match SipDialogSessionRepository::page_owned_by_states(
             &signal_node_id,
             &states,
@@ -328,6 +338,52 @@ pub async fn run_reconciliation(cancel: base::tokio_util::sync::CancellationToke
         } else {
             page.last().map(|dialog| dialog.stream_id.clone())
         };
+    }
+}
+
+async fn reconcile_runtime_dialog_conflicts(signal_node_id: &str) {
+    let runtime_ids = Cache::stream_ids()
+        .into_iter()
+        .chain(Cache::talk_ids())
+        .collect::<HashSet<_>>();
+    RUNTIME_DIALOG_CONFLICTS.retain(|stream_id| runtime_ids.contains(stream_id));
+    for stream_id in runtime_ids {
+        let conflict = match SipDialogSessionRepository::find_by_stream_id(&stream_id).await {
+            Ok(Some(dialog))
+                if dialog.signal_node_id == signal_node_id
+                    && matches!(
+                        dialog.state,
+                        DialogState::Inviting | DialogState::Established | DialogState::Terminating
+                    ) =>
+            {
+                None
+            }
+            Ok(Some(dialog)) if dialog.signal_node_id != signal_node_id => Some("wrong_owner"),
+            Ok(Some(_)) => Some("dialog_terminal"),
+            Ok(None) => Some("dialog_missing"),
+            Err(err) => {
+                warn!(
+                    "runtime dialog reverse reconciliation lookup failed: stream_id={stream_id}, err={err}"
+                );
+                continue;
+            }
+        };
+        match conflict {
+            Some(reason) => {
+                if RUNTIME_DIALOG_CONFLICTS.insert(stream_id.clone()) {
+                    warn!(
+                        "runtime dialog state changed: state=conflict, outcome=requires_attention, stream_id={stream_id}, reason={reason}; automatic media cleanup skipped because reverse ownership fencing is incomplete"
+                    );
+                }
+            }
+            None => {
+                if RUNTIME_DIALOG_CONFLICTS.remove(&stream_id).is_some() {
+                    info!(
+                        "runtime dialog state changed: state=consistent, previous_state=conflict, outcome=recovered, stream_id={stream_id}"
+                    );
+                }
+            }
+        }
     }
 }
 
