@@ -123,7 +123,7 @@ fn ui_api_requires_registered_nodes_for_device_operations() {
         .unwrap()
         .block_on(async {
             let (app, _) = app();
-            let (cookie, csrf) = login(&app, "operator").await;
+            let (cookie, csrf) = login(&app, "viewer").await;
             let (status, _, devices) = call(
                 &app,
                 Request::get("/api/v2/devices")
@@ -150,6 +150,113 @@ fn ui_api_requires_registered_nodes_for_device_operations() {
             let (status, _, _) = call(
                 &app,
                 write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/ptz",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "deviceId": "34020000001320000001",
+                        "channelId": "ch-1",
+                        "leftRight": 1,
+                        "upDown": 0,
+                        "inOut": 0,
+                        "horizonSpeed": 64,
+                        "verticalSpeed": 0,
+                        "zoomSpeed": 0
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/preview",
+                    &cookie,
+                    &csrf,
+                    json!({ "request_id": "ui-gb-preview", "session_node_id": "session-1" }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/playback",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "request_id": "ui-gb-playback",
+                        "session_node_id": "session-1",
+                        "start_time_sec": 1,
+                        "end_time_sec": 2
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/records/query",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "request_id": "ui-record-query",
+                        "session_node_id": "session-1",
+                        "start_time_sec": 1,
+                        "end_time_sec": 2
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/cloud-recordings",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "request_id": "ui-cloud-download",
+                        "session_node_id": "session-1",
+                        "start_time_sec": 1,
+                        "end_time_sec": 2
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            for (path, request_id) in [
+                (
+                    "/api/v2/devices/34020000001320000001/playback",
+                    "ui-playback",
+                ),
+                (
+                    "/api/v2/devices/34020000001320000001/download",
+                    "ui-download",
+                ),
+            ] {
+                let (status, _, _) = call(
+                    &app,
+                    write_request(
+                        path,
+                        &cookie,
+                        &csrf,
+                        json!({ "request_id": request_id, "channel_id": "ch-1" }),
+                    ),
+                )
+                .await;
+                assert_eq!(status, StatusCode::NOT_FOUND);
+            }
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
                     "/api/v2/devices/34020000001320000001/ptz",
                     &cookie,
                     &csrf,
@@ -166,6 +273,18 @@ fn ui_api_requires_registered_nodes_for_device_operations() {
             )
             .await;
             assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/devices/34020000001320000001/talk",
+                    &cookie,
+                    &csrf,
+                    json!({ "request_id": "ui-talk", "channel_id": "ch-1" }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
         });
 }
 

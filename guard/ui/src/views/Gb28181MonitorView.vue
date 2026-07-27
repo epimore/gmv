@@ -512,7 +512,7 @@
             <el-date-picker v-model="cloudRecordingEndTime" type="datetime" format="YYYY-MM-DD HH:mm:ss"
               placeholder="请选择结束时间" :clearable="true" />
           </label>
-          <el-button :loading="cloudRecordingCreating" :disabled="!canOperate || !cloudRecordingStartTime || !cloudRecordingEndTime"
+          <el-button :loading="cloudRecordingCreating" :disabled="!cloudRecordingStartTime || !cloudRecordingEndTime"
             type="primary" @click="createSelectedCloudRecording">开始下载</el-button>
         </div>
         <el-table :data="cloudRecordings" empty-text="暂无录像下载任务">
@@ -831,7 +831,7 @@ const cloudRecordingChannelTitle = computed(() => {
 });
 const recordQuerying = computed(() => recordState.value?.attempt_batch?.status === 'QUERYING');
 const recordRetryAfterSec = computed(() => Math.max(0, Math.ceil(((recordState.value?.next_query_at_ms || 0) - recordNowMs.value) / 1000)));
-const recordUpdateDisabled = computed(() => !canOperate.value || recordQuerying.value || recordUpdating.value || recordRetryAfterSec.value > 0);
+const recordUpdateDisabled = computed(() => recordQuerying.value || recordUpdating.value || recordRetryAfterSec.value > 0);
 const recordTotal = computed(() => recordState.value?.total || 0);
 const resourceForm = reactive({ resource_kind: 'audio_output' as 'video' | 'audio_input' | 'audio_output' | 'other', owner_scope: 'device' as 'device' | 'resource', owner_id: '', remark: '' });
 
@@ -1097,7 +1097,7 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const playback = lastAction.value === '历史回放';
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
   if (playback && channel && canPlayback(channel)) {
-    if (canOperate.value) items.splice(1, 0, 'playbackClip');
+    items.splice(1, 0, 'playbackClip');
     items.push('timeline');
   }
   const overflowItems: GmvPlayerControlsConfig['items'] = [];
@@ -1256,7 +1256,7 @@ function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControls
   const items: GmvPlayerControlsConfig['items'] = ['play'];
   const overflowItems: GmvPlayerControlsConfig['items'] = ['outputType', 'info'];
   if (capabilities.playback) {
-    if (canOperate.value) items.push('playbackClip');
+    items.push('playbackClip');
     items.push('timeline');
     overflowItems.push('snapshot', 'fullscreen');
   } else {
@@ -2997,7 +2997,6 @@ async function createQuickCloudRecording(
   sessionNodeId: string,
   range: { startTimeMs: number; endTimeMs: number },
 ): Promise<boolean> {
-  if (!canOperate.value) return false;
   const startTimeSec = Math.floor(Math.min(range.startTimeMs, range.endTimeMs) / 1_000);
   const endTimeSec = Math.floor(Math.max(range.startTimeMs, range.endTimeMs) / 1_000);
   if (endTimeSec - startTimeSec < 120) {

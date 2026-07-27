@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS guard_user (
   password_hash TEXT NOT NULL,
   nickname VARCHAR(255) NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL,
+  expires_at_ms BIGINT NULL,
   created_at_ms BIGINT NOT NULL,
   updated_at_ms BIGINT NOT NULL
 );

@@ -5,12 +5,19 @@ use uuid::Uuid;
 use crate::auth::{Role, Secret};
 use crate::core::{GuardError, GuardResult};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserAccess {
+    pub enabled: bool,
+    pub expires_at_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserProfile {
     pub username: String,
     pub role: Role,
     pub nickname: String,
     pub enabled: bool,
+    pub expires_at_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -20,6 +27,7 @@ pub struct UserAccount {
     pub username: String,
     pub role: Role,
     pub nickname: String,
+    pub expires_at_ms: Option<i64>,
     password_hash: Secret,
 }
 
@@ -34,12 +42,29 @@ impl UserAccount {
         nickname: impl Into<String>,
         password_hash: impl Into<String>,
     ) -> Self {
+        Self::with_nickname_and_expiration(username, role, nickname, password_hash, None)
+    }
+
+    pub fn with_nickname_and_expiration(
+        username: impl Into<String>,
+        role: Role,
+        nickname: impl Into<String>,
+        password_hash: impl Into<String>,
+        expires_at_ms: Option<i64>,
+    ) -> Self {
         Self {
             username: username.into(),
             role,
             nickname: nickname.into(),
+            expires_at_ms,
             password_hash: Secret::new(password_hash),
         }
+    }
+
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        let now_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
+        self.expires_at_ms
+            .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
     }
 
     pub fn password_hash_is_set(&self) -> bool {

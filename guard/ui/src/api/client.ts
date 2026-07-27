@@ -25,7 +25,7 @@ export class ApiError extends Error {
     this.details = data.details || {};
   }
 }
-export interface UserInfo { username: string; role: Role; nickname: string; enabled: boolean; created_at_ms: number; updated_at_ms: number }
+export interface UserInfo { username: string; role: Role; nickname: string; enabled: boolean; expires_at_ms: number | null; created_at_ms: number; updated_at_ms: number }
 export interface HostMetricsInfo { cpu_usage_percent: number; load_average_1m: number; load_average_5m: number; load_average_15m: number; memory_total_bytes: number; memory_used_bytes: number; swap_total_bytes: number; swap_used_bytes: number; disk_read_bytes_per_sec: number; disk_write_bytes_per_sec: number; network_receive_bytes_per_sec: number; network_transmit_bytes_per_sec: number; process_resident_memory_bytes: number; process_threads: number }
 export interface NodeInfo { node_id: string; instance_id: string; kind: string; service: string; protocol: string | null; display_name: string; connection: string; health: string; scheduling: string; capabilities: string[]; pending_leases: number; host_metrics: HostMetricsInfo; business_metrics: Record<string, string>; config: Record<string, string>; zone: string | null; last_seen_at_ms: number; generation: number; sequence: number }
 export interface EventItem { event_id: string; topic: string; priority: number; payload: string }
@@ -59,8 +59,8 @@ export interface MediaOperationSummary<T = unknown> {
 export interface MediaTransportCapability { scheme: 'http' | 'https'; http_version: 'http/1.1' | 'h2'; multi_view_limit: number }
 export interface AiTaskSummary { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
 export interface RuntimeStatus { guard_available: boolean; streams: number; running_streams: number; ai_tasks: number; running_ai_tasks: number; ptz_commands: number }
-export interface CreateUserPayload { username: string; role: Role; nickname: string; password: string; enabled: boolean }
-export interface UpdateUserPayload { role: Role; nickname?: string; password?: string | null; enabled: boolean }
+export interface CreateUserPayload { username: string; role: Role; nickname: string; password: string; enabled: boolean; expires_at_ms: number | null }
+export interface UpdateUserPayload { role: Role; nickname?: string; password?: string | null; enabled: boolean; expires_at_ms: number | null }
 export interface UpdateProfilePayload { nickname?: string; password?: string }
 
 let csrfToken = '';

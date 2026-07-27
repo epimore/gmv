@@ -44,7 +44,9 @@ use crate::api::v2::model::{
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
 use crate::auth::session::{SESSION_COOKIE, cookie_value};
-use crate::auth::{AuthState, Role, UiSession, UserProfile, hash_password as hash_ui_password};
+use crate::auth::{
+    AuthState, Role, UiSession, UserAccess, UserProfile, hash_password as hash_ui_password,
+};
 use crate::core::{GmvGuardErrorCode, GuardError, HealthState, LeaseState, RouteState};
 use crate::operation::OperationRequest;
 use crate::operation::{OperationRecord, OperationStatus};
@@ -825,6 +827,7 @@ struct UserResponse {
     role: &'static str,
     nickname: String,
     enabled: bool,
+    expires_at_ms: Option<i64>,
     created_at_ms: i64,
     updated_at_ms: i64,
 }
@@ -839,6 +842,8 @@ struct CreateUserRequest {
     nickname: String,
     #[serde(default = "default_enabled")]
     enabled: bool,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -850,6 +855,25 @@ struct UpdateUserRequest {
     #[serde(default)]
     nickname: Option<String>,
     enabled: bool,
+    #[serde(default, deserialize_with = "deserialize_user_expiration_update")]
+    expires_at_ms: UserExpirationUpdate,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum UserExpirationUpdate {
+    #[default]
+    Unchanged,
+    Set(Option<i64>),
+}
+
+fn deserialize_user_expiration_update<'de, D>(
+    deserializer: D,
+) -> Result<UserExpirationUpdate, D::Error>
+where
+    D: base::serde::Deserializer<'de>,
+{
+    <Option<i64> as base::serde::Deserialize>::deserialize(deserializer)
+        .map(UserExpirationUpdate::Set)
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -901,7 +925,10 @@ async fn update_profile(
             current.role,
             hash.as_deref(),
             request.nickname.as_deref(),
-            current.enabled,
+            UserAccess {
+                enabled: current.enabled,
+                expires_at_ms: current.expires_at_ms,
+            },
             http_now_ms()?,
         )
         .await?;
@@ -938,18 +965,20 @@ async fn create_user(
     Json(request): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>), HttpError> {
     debug!(
-        "/api/v2/users, req: username={}, role={}, password={}, nickname={}, enabled={}",
+        "/api/v2/users, req: username={}, role={}, password={}, nickname={}, enabled={}, expires_at_ms={:?}",
         request.username,
         request.role,
         redacted(&request.password),
         request.nickname,
-        request.enabled
+        request.enabled,
+        request.expires_at_ms
     );
     require_write(&state.auth, &headers, Role::Admin)?;
     let username = request.username.trim().to_string();
     let role = Role::parse(&request.role)?;
     let hash = password_hash(&request.password)?;
     let now_ms = http_now_ms()?;
+    validate_user_expiration(request.expires_at_ms, now_ms)?;
     let users = require_user_repository(&state)?;
     users
         .upsert_user(
@@ -957,7 +986,10 @@ async fn create_user(
             role,
             Some(&hash),
             Some(&request.nickname),
-            request.enabled,
+            UserAccess {
+                enabled: request.enabled,
+                expires_at_ms: request.expires_at_ms,
+            },
             now_ms,
         )
         .await?;
@@ -978,12 +1010,13 @@ async fn update_user(
     Json(request): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, HttpError> {
     debug!(
-        "/api/v2/users/{{username}}, req: username={}, role={}, password={}, nickname={:?}, enabled={}",
+        "/api/v2/users/{{username}}, req: username={}, role={}, password={}, nickname={:?}, enabled={}, expires_at_ms={:?}",
         username,
         request.role,
         redacted_option(request.password.as_ref()),
         request.nickname,
-        request.enabled
+        request.enabled,
+        request.expires_at_ms
     );
     require_write(&state.auth, &headers, Role::Admin)?;
     let username = username.trim().to_string();
@@ -991,13 +1024,27 @@ async fn update_user(
     let hash = request.password.as_deref().map(password_hash).transpose()?;
     let now_ms = http_now_ms()?;
     let users = require_user_repository(&state)?;
+    let expires_at_ms = match request.expires_at_ms {
+        UserExpirationUpdate::Set(expires_at_ms) => expires_at_ms,
+        UserExpirationUpdate::Unchanged => users
+            .list_profiles()
+            .await?
+            .into_iter()
+            .find(|profile| profile.username == username)
+            .map(|profile| profile.expires_at_ms)
+            .ok_or_else(|| GuardError::NotFound(format!("user {username}")))?,
+    };
+    validate_user_expiration(expires_at_ms, now_ms)?;
     users
         .upsert_user(
             &username,
             role,
             hash.as_deref(),
             request.nickname.as_deref(),
-            request.enabled,
+            UserAccess {
+                enabled: request.enabled,
+                expires_at_ms,
+            },
             now_ms,
         )
         .await?;
@@ -1021,9 +1068,24 @@ fn user_response(profile: UserProfile) -> UserResponse {
         role: profile.role.as_str(),
         nickname: profile.nickname,
         enabled: profile.enabled,
+        expires_at_ms: profile.expires_at_ms,
         created_at_ms: profile.created_at_ms,
         updated_at_ms: profile.updated_at_ms,
     }
+}
+
+fn validate_user_expiration(expires_at_ms: Option<i64>, now_ms: i64) -> Result<(), HttpError> {
+    if expires_at_ms.is_some_and(|expires_at_ms| expires_at_ms <= now_ms) {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_user_expiration".to_string(),
+            message: "expires_at_ms must be in the future or null".to_string(),
+            user_message: Some("用户有效期必须晚于当前时间，或选择永久".to_string()),
+            retryable: Some(false),
+            details: BTreeMap::new(),
+        });
+    }
+    Ok(())
 }
 
 fn require_user_repository(state: &HttpState) -> Result<&UserRepository, HttpError> {
@@ -2721,7 +2783,7 @@ async fn query_gb_channel_records(
     Path((device_id, channel_id)): Path<(String, String)>,
     Json(request): Json<GbRecordQueryRequest>,
 ) -> Result<(StatusCode, Json<GbChannelRecordsResponse>), HttpError> {
-    require_write(&state.auth, &headers, Role::Operator)?;
+    require_write(&state.auth, &headers, Role::Viewer)?;
     if request.request_id.trim().is_empty() {
         return Err(HttpError::bad_request("request_id is required"));
     }
@@ -2803,7 +2865,7 @@ async fn create_cloud_recording(
     Path((device_id, channel_id)): Path<(String, String)>,
     Json(request): Json<CloudRecordingCreateRequest>,
 ) -> Result<(StatusCode, Json<CloudRecordingSummary>), HttpError> {
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let session = require_write(&state.auth, &headers, Role::Viewer)?;
     if request.request_id.trim().is_empty() || request.session_node_id.trim().is_empty() {
         return Err(HttpError::bad_request(
             "request_id and session_node_id are required",
@@ -3040,13 +3102,13 @@ async fn gb_ptz(
     debug!(
         "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}/ptz, req: device_id={device_id}, channel_id={channel_id}, command={command}, speed={speed}"
     );
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let session = require_write(&state.auth, &headers, Role::Viewer)?;
     let operation_id = format!("ptz-{}", http_now_ms()?);
     state.api.start_operation(operation_request(
         operation_id.clone(),
         "device.ptz",
         &session,
-        Role::Operator,
+        Role::Viewer,
     ))?;
     let ptz_result = BusinessControl::new(state.api.store())
         .ptz(&operation_id, &device_id, &channel_id, command, speed)
@@ -3205,6 +3267,7 @@ struct DeviceStreamHttpPolicy<'a> {
     operation_kind: &'a str,
     success_message: &'a str,
     issue_ticket: bool,
+    required_role: Role,
 }
 
 impl<'a> DeviceStreamHttpPolicy<'a> {
@@ -3213,6 +3276,7 @@ impl<'a> DeviceStreamHttpPolicy<'a> {
             operation_kind,
             success_message,
             issue_ticket: true,
+            required_role: Role::Viewer,
         }
     }
 
@@ -3221,6 +3285,7 @@ impl<'a> DeviceStreamHttpPolicy<'a> {
             operation_kind,
             success_message,
             issue_ticket: false,
+            required_role: Role::Operator,
         }
     }
 }
@@ -3239,7 +3304,7 @@ where
 {
     log_preview_request(policy.operation_kind, &device_id, &request);
     let (ui_session_token, session) =
-        require_write_with_token(&state.auth, &headers, Role::Operator)?;
+        require_write_with_token(&state.auth, &headers, policy.required_role)?;
     let operation_id = request.request_id.clone();
     if let Ok(existing) = state.api.get_operation(&operation_id) {
         require_operation_owner(&existing, &session)?;
@@ -3259,7 +3324,7 @@ where
         operation_id.clone(),
         policy.operation_kind,
         &session,
-        Role::Operator,
+        policy.required_role,
     ))?;
     if !created {
         let summary = media_operation_summary(existing);
@@ -3392,13 +3457,13 @@ where
 {
     log_preview_request(policy.operation_kind, &device_id, &request);
     let (ui_session_token, session) =
-        require_write_with_token(&state.auth, &headers, Role::Operator)?;
+        require_write_with_token(&state.auth, &headers, policy.required_role)?;
     let operation_id = request.request_id.clone();
     let (existing, created) = state.api.start_operation_once(operation_request(
         operation_id.clone(),
         policy.operation_kind,
         &session,
-        Role::Operator,
+        policy.required_role,
     ))?;
     if !created {
         return if existing.status == OperationStatus::Succeeded {
@@ -3492,13 +3557,13 @@ async fn ptz(
         "/api/v2/devices/{{device_id}}/ptz, req: device_id={device_id}, channel_id={}, command={command}, speed={speed}",
         request.channel_id
     );
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let session = require_write(&state.auth, &headers, Role::Viewer)?;
     let operation_id = format!("ptz-{}", http_now_ms()?);
     state.api.start_operation(operation_request(
         operation_id.clone(),
         "device.ptz",
         &session,
-        Role::Operator,
+        Role::Viewer,
     ))?;
     let ptz_result = BusinessControl::new(state.api.store())
         .ptz(
@@ -4082,7 +4147,7 @@ async fn continue_media_operation(
     headers: HeaderMap,
     Path(operation_id): Path<String>,
 ) -> Result<Json<MediaOperationSummary>, HttpError> {
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let session = require_write(&state.auth, &headers, Role::Viewer)?;
     let record = state.api.get_operation(&operation_id)?;
     require_operation_owner(&record, &session)?;
     Ok(Json(media_operation_summary(record)))
@@ -4093,7 +4158,7 @@ async fn cancel_media_operation(
     headers: HeaderMap,
     Path(operation_id): Path<String>,
 ) -> Result<Json<MediaOperationSummary>, HttpError> {
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let session = require_write(&state.auth, &headers, Role::Viewer)?;
     let record = state.api.get_operation(&operation_id)?;
     require_operation_owner(&record, &session)?;
     Ok(Json(media_operation_summary(
@@ -4271,13 +4336,28 @@ async fn release_stream(
             "<redacted>"
         }
     );
-    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let (ui_session_token, session) =
+        require_write_with_token(&state.auth, &headers, Role::Viewer)?;
+    if session.role == Role::Viewer
+        && !state
+            .api
+            .store()
+            .playback_tickets_for_subscription(&stream_id, &request.subscription_id)
+            .iter()
+            .any(|ticket| {
+                playback_control_owner_matches(ticket, &session.username, &ui_session_token)
+            })
+    {
+        return Err(HttpError::forbidden(
+            "stream subscription belongs to another UI session",
+        ));
+    }
     let operation_id = request.request_id;
     let (existing, created) = state.api.start_operation_once(operation_request(
         operation_id.clone(),
         "stream.release",
         &session,
-        Role::Operator,
+        Role::Viewer,
     ))?;
     if !created {
         return if existing.status == OperationStatus::Succeeded {
@@ -4338,8 +4418,7 @@ fn require_playback_control(
     playback_id: &str,
     stream_id: &str,
 ) -> Result<PlaybackTicketRecord, HttpError> {
-    let (ui_session_token, session) =
-        require_write_with_token(&state.auth, headers, Role::Operator)?;
+    let (ui_session_token, session) = require_write_with_token(&state.auth, headers, Role::Viewer)?;
     let ticket = state
         .api
         .store()

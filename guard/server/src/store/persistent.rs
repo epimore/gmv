@@ -13,7 +13,7 @@ use base_db::sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
 use crate::app_config::{DatabaseBackend, GuardAppConfig};
 #[cfg(feature = "db-mysql")]
 use crate::app_config::{MysqlAttrsConfig, MysqlSslMode as ConfigSslMode};
-use crate::auth::{Role, UserAccount, UserProfile};
+use crate::auth::{Role, UserAccess, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
 use crate::outbox::OutboxRepository;
 #[cfg(feature = "db-mysql")]
@@ -58,20 +58,20 @@ impl UserRepository {
         role: Role,
         password_hash: Option<&str>,
         nickname: Option<&str>,
-        enabled: bool,
+        access: UserAccess,
         now_ms: i64,
     ) -> GuardResult<()> {
         match self {
             #[cfg(feature = "db-mysql")]
             Self::Mysql(store) => {
                 store
-                    .upsert_user(username, role, password_hash, nickname, enabled, now_ms)
+                    .upsert_user(username, role, password_hash, nickname, access, now_ms)
                     .await
             }
             #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => {
                 store
-                    .upsert_user(username, role, password_hash, nickname, enabled, now_ms)
+                    .upsert_user(username, role, password_hash, nickname, access, now_ms)
                     .await
             }
         }

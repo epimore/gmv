@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, to_bytes};
 use axum::http::header::{CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
@@ -151,6 +151,11 @@ guard:
 
             let (status, admin_cookie, admin_csrf) = login(&app, "admin", "admin-secret").await;
             assert_eq!(status, StatusCode::OK);
+            let initial_expires_at_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                + 60 * 60 * 1000;
 
             let (status, _, users) = call(
                 &app,
@@ -175,7 +180,8 @@ guard:
                         "role": "operator",
                         "password": "ops-secret",
                         "nickname": "值班员",
-                        "enabled": true
+                        "enabled": true,
+                        "expires_at_ms": initial_expires_at_ms
                     }),
                 ),
             )
@@ -183,6 +189,26 @@ guard:
             assert_eq!(status, StatusCode::CREATED);
             assert_eq!(created["role"], "operator");
             assert_eq!(created["nickname"], "值班员");
+            assert_eq!(created["expires_at_ms"], initial_expires_at_ms);
+
+            let (status, _, error) = call(
+                &app,
+                write_request(
+                    "/api/v2/users",
+                    &admin_cookie,
+                    &admin_csrf,
+                    json!({
+                        "username": "expired",
+                        "role": "viewer",
+                        "password": "expired-secret",
+                        "enabled": true,
+                        "expires_at_ms": initial_expires_at_ms - 2 * 60 * 60 * 1000
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(error["code"], "invalid_user_expiration");
 
             let (status, ops_cookie, _) = login(&app, "ops", "ops-secret").await;
             assert_eq!(status, StatusCode::OK);
@@ -198,6 +224,8 @@ guard:
             assert_eq!(session["role"], "operator");
             assert_eq!(session["nickname"], "值班员");
 
+            let updated_expires_at_ms = initial_expires_at_ms + 60 * 60 * 1000;
+
             let (status, _, updated) = call(
                 &app,
                 write_request(
@@ -208,7 +236,8 @@ guard:
                         "role": "viewer",
                         "password": "viewer-secret",
                         "nickname": "观察员",
-                        "enabled": true
+                        "enabled": true,
+                        "expires_at_ms": updated_expires_at_ms
                     }),
                 ),
             )
@@ -216,6 +245,24 @@ guard:
             assert_eq!(status, StatusCode::OK);
             assert_eq!(updated["role"], "viewer");
             assert_eq!(updated["nickname"], "观察员");
+            assert_eq!(updated["expires_at_ms"], updated_expires_at_ms);
+
+            let (status, _, preserved) = call(
+                &app,
+                write_request(
+                    "/api/v2/users/ops",
+                    &admin_cookie,
+                    &admin_csrf,
+                    json!({
+                        "role": "viewer",
+                        "password": null,
+                        "enabled": true
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(preserved["expires_at_ms"], updated_expires_at_ms);
 
             let (status, _, _) = call(
                 &app,
@@ -272,13 +319,15 @@ guard:
                     json!({
                         "role": "viewer",
                         "password": null,
-                        "enabled": false
+                        "enabled": false,
+                        "expires_at_ms": null
                     }),
                 ),
             )
             .await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(disabled["enabled"], false);
+            assert_eq!(disabled["expires_at_ms"], Value::Null);
             assert_eq!(
                 login(&app, "ops", "self-secret").await.0,
                 StatusCode::UNAUTHORIZED

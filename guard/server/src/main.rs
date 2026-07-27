@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base::utils::crypto::{default_decrypt, default_encrypt};
 use gmv_guard_server::app_config::GuardAppConfig;
-use gmv_guard_server::auth::{Role, hash_password};
+use gmv_guard_server::auth::{Role, UserAccess, hash_password};
 use gmv_guard_server::core::{GuardError, GuardResult};
 use gmv_guard_server::store::persistent::PersistentStore;
 
@@ -72,7 +72,10 @@ fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error
                 Role::Admin,
                 Some(&password_hash),
                 Some(&existing.nickname),
-                true,
+                UserAccess {
+                    enabled: true,
+                    expires_at_ms: existing.expires_at_ms,
+                },
                 now_ms()?,
             )
             .await?;

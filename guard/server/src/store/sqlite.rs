@@ -132,20 +132,29 @@ impl SqliteStore {
         outbox_from_row(row)
     }
     pub async fn list_user_profiles(&self) -> GuardResult<Vec<crate::auth::UserProfile>> {
-        let rows = base_db::sqlx::query_as::<_, (String, String, String, i64, i64, i64)>(
-            "SELECT username,role,nickname,enabled,created_at_ms,updated_at_ms FROM guard_user ORDER BY username",
+        let rows = base_db::sqlx::query_as::<_, (String, String, String, i64, Option<i64>, i64, i64)>(
+            "SELECT username,role,nickname,enabled,expires_at_ms,created_at_ms,updated_at_ms FROM guard_user ORDER BY username",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?;
         rows.into_iter()
             .map(
-                |(username, role, nickname, enabled, created_at_ms, updated_at_ms)| {
+                |(
+                    username,
+                    role,
+                    nickname,
+                    enabled,
+                    expires_at_ms,
+                    created_at_ms,
+                    updated_at_ms,
+                )| {
                     Ok(crate::auth::UserProfile {
                         username,
                         role: crate::auth::Role::parse(&role)?,
                         nickname,
                         enabled: enabled != 0,
+                        expires_at_ms,
                         created_at_ms,
                         updated_at_ms,
                     })
@@ -155,19 +164,20 @@ impl SqliteStore {
     }
 
     pub async fn load_user(&self, username: &str) -> GuardResult<Option<crate::auth::UserAccount>> {
-        let row = base_db::sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT username,role,nickname,password_hash FROM guard_user WHERE username=? AND enabled=1",
+        let row = base_db::sqlx::query_as::<_, (String, String, String, String, Option<i64>)>(
+            "SELECT username,role,nickname,password_hash,expires_at_ms FROM guard_user WHERE username=? AND enabled=1",
         )
         .bind(username)
         .fetch_optional(&self.pool)
         .await
         .map_err(database_error)?;
-        row.map(|(username, role, nickname, hash)| {
-            Ok(crate::auth::UserAccount::with_nickname(
+        row.map(|(username, role, nickname, hash, expires_at_ms)| {
+            Ok(crate::auth::UserAccount::with_nickname_and_expiration(
                 username,
                 crate::auth::Role::parse(&role)?,
                 nickname,
                 hash,
+                expires_at_ms,
             ))
         })
         .transpose()
@@ -179,7 +189,7 @@ impl SqliteStore {
         role: crate::auth::Role,
         password_hash: Option<&str>,
         nickname: Option<&str>,
-        enabled: bool,
+        access: crate::auth::UserAccess,
         now_ms: i64,
     ) -> GuardResult<()> {
         if username.trim().is_empty() {
@@ -198,7 +208,7 @@ impl SqliteStore {
         .fetch_optional(&mut *tx)
         .await
         .map_err(database_error)?;
-        let enabled = if enabled { 1_i64 } else { 0_i64 };
+        let enabled = if access.enabled { 1_i64 } else { 0_i64 };
         let nickname = nickname
             .map(str::trim)
             .map(str::to_string)
@@ -206,11 +216,12 @@ impl SqliteStore {
             .unwrap_or_default();
         match (existing_nickname.is_some(), password_hash) {
             (true, Some(hash)) => {
-                base_db::sqlx::query("UPDATE guard_user SET role=?,password_hash=?,nickname=?,enabled=?,updated_at_ms=? WHERE username=?")
+                base_db::sqlx::query("UPDATE guard_user SET role=?,password_hash=?,nickname=?,enabled=?,expires_at_ms=?,updated_at_ms=? WHERE username=?")
                     .bind(role.as_str())
                     .bind(hash)
                     .bind(&nickname)
                     .bind(enabled)
+                    .bind(access.expires_at_ms)
                     .bind(now_ms)
                     .bind(username)
                     .execute(&mut *tx)
@@ -219,11 +230,12 @@ impl SqliteStore {
             }
             (true, None) => {
                 base_db::sqlx::query(
-                    "UPDATE guard_user SET role=?,nickname=?,enabled=?,updated_at_ms=? WHERE username=?",
+                    "UPDATE guard_user SET role=?,nickname=?,enabled=?,expires_at_ms=?,updated_at_ms=? WHERE username=?",
                 )
                 .bind(role.as_str())
                 .bind(&nickname)
                 .bind(enabled)
+                .bind(access.expires_at_ms)
                 .bind(now_ms)
                 .bind(username)
                 .execute(&mut *tx)
@@ -231,12 +243,13 @@ impl SqliteStore {
                 .map_err(database_error)?;
             }
             (false, Some(hash)) => {
-                base_db::sqlx::query("INSERT INTO guard_user(username,role,password_hash,nickname,enabled,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?)")
+                base_db::sqlx::query("INSERT INTO guard_user(username,role,password_hash,nickname,enabled,expires_at_ms,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?)")
                     .bind(username)
                     .bind(role.as_str())
                     .bind(hash)
                     .bind(&nickname)
                     .bind(enabled)
+                    .bind(access.expires_at_ms)
                     .bind(now_ms)
                     .bind(now_ms)
                     .execute(&mut *tx)
@@ -255,19 +268,20 @@ impl SqliteStore {
     }
 
     pub async fn load_users(&self) -> GuardResult<Vec<crate::auth::UserAccount>> {
-        let rows = base_db::sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT username,role,nickname,password_hash FROM guard_user WHERE enabled=1 ORDER BY username",
+        let rows = base_db::sqlx::query_as::<_, (String, String, String, String, Option<i64>)>(
+            "SELECT username,role,nickname,password_hash,expires_at_ms FROM guard_user WHERE enabled=1 ORDER BY username",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?;
         rows.into_iter()
-            .map(|(username, role, nickname, hash)| {
-                Ok(crate::auth::UserAccount::with_nickname(
+            .map(|(username, role, nickname, hash, expires_at_ms)| {
+                Ok(crate::auth::UserAccount::with_nickname_and_expiration(
                     username,
                     crate::auth::Role::parse(&role)?,
                     nickname,
                     hash,
+                    expires_at_ms,
                 ))
             })
             .collect()

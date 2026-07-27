@@ -101,13 +101,23 @@ guard:
                     "guard_user"
                 ]
             );
-            let migration = base_db::sqlx::query_as::<_, (i64, String)>(
-                "SELECT version,name FROM _base_db_migrations",
+            let migrations = base_db::sqlx::query_as::<_, (i64, String)>(
+                "SELECT version,name FROM _base_db_migrations ORDER BY version",
             )
-            .fetch_one(&pool)
+            .fetch_all(&pool)
             .await
             .unwrap();
-            assert_eq!(migration, (1, "guard_preview_baseline".to_string()));
+            assert_eq!(
+                migrations,
+                [(1, "guard_preview_baseline".to_string())]
+            );
+            let user_columns = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT name FROM pragma_table_info('guard_user') ORDER BY cid",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert!(user_columns.iter().any(|column| column == "expires_at_ms"));
             pool.close().await;
             drop(store);
             let _ = std::fs::remove_dir_all(root);

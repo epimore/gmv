@@ -43,6 +43,7 @@ pub struct UiSession {
     pub nickname: String,
     pub csrf_token: String,
     pub expires_at_ms: u64,
+    account_expires_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +92,7 @@ impl AuthState {
             .map(|user| user.verify_password(password))
             .transpose()?
             .unwrap_or(false);
-        if !verified {
+        if !verified || user.as_ref().is_some_and(|user| user.is_expired_at(now_ms)) {
             self.record_failure(username, now_ms);
             return Err(GuardError::InvalidIdentity(
                 "invalid username or password".to_string(),
@@ -100,12 +101,21 @@ impl AuthState {
         self.failed_attempts.lock().remove(username);
         let user = user.expect("verified user must exist");
         let token = Uuid::new_v4().to_string();
+        let account_expires_at_ms = user
+            .expires_at_ms
+            .map(|expires_at_ms| u64::try_from(expires_at_ms).unwrap_or_default());
+        let expires_at_ms = account_expires_at_ms
+            .map(|expires_at_ms| {
+                expires_at_ms.min(now_ms + self.policy.session_ttl.as_millis() as u64)
+            })
+            .unwrap_or_else(|| now_ms + self.policy.session_ttl.as_millis() as u64);
         let session = UiSession {
             username: user.username.clone(),
             role: user.role,
             nickname: user.nickname.clone(),
             csrf_token: Uuid::new_v4().to_string(),
-            expires_at_ms: now_ms + self.policy.session_ttl.as_millis() as u64,
+            expires_at_ms,
+            account_expires_at_ms,
         };
         self.sessions.lock().insert(token.clone(), session.clone());
         Ok((token, session))
@@ -172,7 +182,12 @@ impl AuthState {
         let session = sessions
             .get_mut(token)
             .expect("validated UI session must exist");
-        session.expires_at_ms = now_ms + self.policy.session_ttl.as_millis() as u64;
+        session.expires_at_ms = session
+            .account_expires_at_ms
+            .map(|expires_at_ms| {
+                expires_at_ms.min(now_ms + self.policy.session_ttl.as_millis() as u64)
+            })
+            .unwrap_or_else(|| now_ms + self.policy.session_ttl.as_millis() as u64);
         Ok(session.clone())
     }
 
@@ -342,6 +357,7 @@ mod tests {
                 nickname: String::new(),
                 csrf_token: "csrf-1".to_string(),
                 expires_at_ms: original_expires_at_ms,
+                account_expires_at_ms: None,
             },
         );
 
@@ -365,10 +381,47 @@ mod tests {
                 nickname: String::new(),
                 csrf_token: "csrf-1".to_string(),
                 expires_at_ms: 0,
+                account_expires_at_ms: None,
             },
         );
 
         assert!(auth.renew_session("token-1").is_err());
         assert!(!auth.sessions.lock().contains_key("token-1"));
+    }
+
+    #[test]
+    fn account_expiration_rejects_login_and_caps_session_renewal() {
+        let now = now_ms().unwrap();
+        let hash = crate::auth::hash_password("secret").unwrap();
+        let expired = UserAccount::with_nickname_and_expiration(
+            "expired",
+            Role::Viewer,
+            "",
+            hash.clone(),
+            Some(i64::try_from(now.saturating_sub(1)).unwrap()),
+        );
+        let valid_until = now + 30_000;
+        let valid = UserAccount::with_nickname_and_expiration(
+            "valid",
+            Role::Viewer,
+            "",
+            hash,
+            Some(i64::try_from(valid_until).unwrap()),
+        );
+        let auth = AuthState::new(
+            [expired, valid],
+            SessionPolicy {
+                session_ttl: Duration::from_secs(60),
+                ..SessionPolicy::default()
+            },
+        );
+
+        assert!(auth.authenticate("expired", "secret").is_err());
+        let (token, session) = auth.authenticate("valid", "secret").unwrap();
+        assert_eq!(session.expires_at_ms, valid_until);
+        assert_eq!(
+            auth.renew_session(&token).unwrap().expires_at_ms,
+            valid_until
+        );
     }
 }
