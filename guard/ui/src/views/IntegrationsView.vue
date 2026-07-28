@@ -39,9 +39,16 @@
         <el-table-column label="鉴权方式" min-width="180">
           <template #default="{ row }">{{ row.transport === "http" ? "Access Key + HMAC" : "Broker ACL" }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="168">
           <template #default="{ row }">
-            <el-switch :model-value="row.enabled" :disabled="!auth.isAdmin" @change="toggleIntegration(row, Boolean($event))" />
+            <div class="runtime-toggle">
+              <el-switch
+                :model-value="row.enabled"
+                :disabled="!auth.isAdmin || mqttRuntimeUnavailable(row)"
+                @change="toggleIntegration(row, Boolean($event))"
+              />
+              <small v-if="mqttRuntimeUnavailable(row)">先启用 MQTT Runtime</small>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="应用有效期" width="150">
@@ -184,6 +191,7 @@ import {
   createIntegration,
   createIntegrationCredential,
   errorMessage,
+  getIntegrationMqttRuntime,
   listIntegrationCredentials,
   listIntegrations,
   listOutbox,
@@ -192,6 +200,7 @@ import {
   updateIntegration,
   type IntegrationCredentialInfo,
   type IntegrationInfo,
+  type IntegrationMqttRuntime,
   type OutboxInfo,
 } from "@/api/client";
 
@@ -201,6 +210,7 @@ const auth = useAuthStore();
 const applications = ref<IntegrationInfo[]>([]);
 const credentials = ref<CredentialRow[]>([]);
 const outbox = ref<OutboxInfo[]>([]);
+const mqttRuntime = ref<IntegrationMqttRuntime | null>(null);
 const createDialogVisible = ref(false);
 const credentialDialogVisible = ref(false);
 const secretDialogVisible = ref(false);
@@ -217,14 +227,24 @@ const disabledCount = computed(() => applications.value.filter((item) => !item.e
 
 async function loadData() {
   try {
-    applications.value = await listIntegrations();
+    const [integrations, runtime, records] = await Promise.all([
+      listIntegrations(),
+      getIntegrationMqttRuntime(),
+      listOutbox(100),
+    ]);
+    applications.value = integrations;
+    mqttRuntime.value = runtime;
+    outbox.value = records;
     const httpApps = applications.value.filter((item) => item.transport === "http");
     const groups = await Promise.all(httpApps.map(async (item) => (await listIntegrationCredentials(item.integration_id)).map((credential) => ({ ...credential, integrationName: item.name }))));
     credentials.value = groups.flat();
-    outbox.value = await listOutbox(100);
   } catch (error) {
     ElMessage.error(errorMessage(error, "加载三方接入失败"));
   }
+}
+
+function mqttRuntimeUnavailable(row: IntegrationInfo) {
+  return row.transport === "mqtt" && !mqttRuntime.value?.enabled;
 }
 
 function outboxState(value: OutboxInfo["state"]) {
@@ -318,6 +338,10 @@ async function revokeCredential(row: CredentialRow) {
 }
 
 async function toggleIntegration(row: IntegrationInfo, enabled: boolean) {
+  if (enabled && mqttRuntimeUnavailable(row)) {
+    ElMessage.warning("请先在 Guard 配置中启用 MQTT Runtime 并重启服务");
+    return;
+  }
   try {
     await updateIntegration(row.integration_id, {
       name: row.name,
@@ -353,6 +377,17 @@ onMounted(loadData);
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.runtime-toggle {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+}
+
+.runtime-toggle small {
+  color: var(--yellow);
+  white-space: nowrap;
 }
 
 .principle-list {

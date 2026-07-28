@@ -90,15 +90,15 @@ guard:
   integrations:
     # HTTP HMAC 凭证使用环境变量 GMV_GUARD_INTEGRATION_MASTER_KEY 加密，值为 32 字节密钥的无填充 Base64。
     mqtt:
-      enabled: false
+      enabled: true
       protocol_version: v3 # 可选 v3（MQTT 3.1.1）或 v5（MQTT 5.0）；切换后重建连接。
-      broker: 127.0.0.1
-      port: 8883
+      broker: mqtt-broker
+      port: 1883
       client_id: gmv-guard
       username: guard
       pass_crypto_enable: false # 密码是否加密，默认不加密。
-      pass: ""
-      tls: true
+      pass: "pwd12345" # MQTT broker 密码；可留空，避免长期保存密码。
+      tls: false # TLS 默认启用；开发/受控内网可显式关闭。
       subscribe_topics:
         - gmv/commands/#
       publish_event_topics:

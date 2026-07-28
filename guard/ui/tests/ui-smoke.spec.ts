@@ -286,6 +286,30 @@ test('MQTT 接入显式展示并保存 V3/V5 协议版本', async ({ page }) => 
   await expect.poll(() => savedVersion).toBe('v3');
 });
 
+test('MQTT Runtime 未启用时应用页禁止启用 MQTT 接入', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/integrations', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      integration_id: 'mqtt-disabled-1', name: '待启用 MQTT', transport: 'mqtt',
+      inbound_enabled: true, outbound_enabled: true, enabled: false, scopes: ['*'],
+      expires_at_ms: null, config_version: 1, created_by: 'admin',
+      created_at_ms: 1, updated_at_ms: 1,
+    }]),
+  }));
+  await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ enabled: false, protocol_version: 'v3', connection_scope: 'deployment', qos: 1, retain: false }),
+  }));
+
+  await page.goto('/integrations/apps');
+
+  await expect(page.getByText('先启用 MQTT Runtime')).toBeVisible();
+  await expect(page.getByRole('switch')).toBeDisabled();
+});
+
 test('Dashboard 将持续 Catalog 重建失败归入运维待处理事项', async ({ page }) => {
   await mockAuth(page, true);
   await page.route('**/api/v2/nodes', async (route) => {

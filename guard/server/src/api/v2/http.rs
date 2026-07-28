@@ -1941,12 +1941,24 @@ async fn update_integration(
     value.config_version += 1;
     value.updated_at_ms = now_ms;
     value.validate(now_ms)?;
-    if value.transport == IntegrationTransport::Mqtt && value.enabled && !state.mqtt_runtime_enabled
-    {
-        return Err(GuardError::InvalidConfig(
-            "MQTT runtime must be enabled before enabling the integration".to_string(),
-        )
-        .into());
+    if value.transport == IntegrationTransport::Mqtt && value.enabled {
+        if !state.mqtt_runtime_enabled {
+            return Err(GuardError::InvalidConfig(
+                "MQTT runtime must be enabled before enabling the integration".to_string(),
+            )
+            .into());
+        }
+        let mqtt = repository
+            .mqtt_config(&integration_id)
+            .await?
+            .ok_or_else(|| GuardError::NotFound(format!("MQTT integration {integration_id}")))?;
+        if mqtt.protocol_version != state.mqtt_runtime_protocol_version {
+            return Err(GuardError::InvalidConfig(format!(
+                "MQTT integration protocol_version {} must match running broker connection {}",
+                mqtt.protocol_version, state.mqtt_runtime_protocol_version
+            ))
+            .into());
+        }
     }
     repository.upsert(&value).await?;
     append_integration_audit(
