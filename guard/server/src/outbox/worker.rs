@@ -17,6 +17,9 @@ use crate::store::mysql::MysqlStore;
 #[cfg(feature = "db-sqlite")]
 use crate::store::sqlite::SqliteStore;
 
+const DEAD_RETENTION_MS: i64 = 72 * 60 * 60 * 1_000;
+const MAX_DEAD_PER_INTEGRATION: usize = 1_000;
+
 pub trait OutboxDelivery: Send + Sync {
     fn deliver<'a>(
         &'a self,
@@ -94,6 +97,19 @@ impl OutboxRepository {
         }
     }
 
+    pub async fn insert_mapped_outbox_records(
+        &self,
+        records: Vec<OutboxRecord>,
+    ) -> GuardResult<()> {
+        match self {
+            Self::Memory(store) => store.insert_mapped_outbox_records(records),
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => store.insert_mapped_outbox_records(&records).await,
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => store.insert_mapped_outbox_records(&records).await,
+        }
+    }
+
     pub async fn list(&self, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
         match self {
             Self::Memory(store) => Ok(store.outbox_records(limit)),
@@ -152,6 +168,43 @@ impl OutboxRepository {
             Self::Sqlite(store) => store.update_outbox(&record).await,
         }
     }
+
+    async fn delete(&self, outbox_id: &str) -> GuardResult<()> {
+        match self {
+            Self::Memory(store) => {
+                store.remove_outbox(outbox_id);
+                Ok(())
+            }
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => store.delete_outbox(outbox_id).await,
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => store.delete_outbox(outbox_id).await,
+        }
+    }
+
+    async fn cleanup_dead(&self, now_ms: i64) -> GuardResult<()> {
+        let older_than_ms = now_ms.saturating_sub(DEAD_RETENTION_MS);
+        match self {
+            Self::Memory(store) => {
+                store.cleanup_dead_outbox(older_than_ms, MAX_DEAD_PER_INTEGRATION);
+                Ok(())
+            }
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => {
+                store
+                    .cleanup_dead_outbox(older_than_ms, MAX_DEAD_PER_INTEGRATION)
+                    .await?;
+                Ok(())
+            }
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => {
+                store
+                    .cleanup_dead_outbox(older_than_ms, MAX_DEAD_PER_INTEGRATION)
+                    .await?;
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -162,6 +215,7 @@ pub struct OutboxWorker {
     batch_size: usize,
     sending_timeout: Duration,
     max_record_age: Option<Duration>,
+    delete_delivered: bool,
     delivery_failure_episode: Arc<Mutex<FailureEpisode>>,
 }
 
@@ -179,6 +233,7 @@ impl OutboxWorker {
             batch_size: batch_size.max(1),
             sending_timeout: Duration::from_secs(30),
             max_record_age: None,
+            delete_delivered: false,
             delivery_failure_episode: Arc::new(Mutex::new(FailureEpisode::default())),
         }
     }
@@ -194,6 +249,11 @@ impl OutboxWorker {
         if !age.is_zero() {
             self.max_record_age = Some(age);
         }
+        self
+    }
+
+    pub fn with_delete_delivered(mut self, enabled: bool) -> Self {
+        self.delete_delivered = enabled;
         self
     }
 
@@ -229,8 +289,15 @@ impl OutboxWorker {
                         record.event_id,
                         record.attempts
                     );
+                    if self.delete_delivered {
+                        self.store.delete(&record.outbox_id).await?;
+                        continue;
+                    }
                 }
-                Err(error) if self.retry.permits(record.attempts.saturating_add(1)) => {
+                Err(error)
+                    if delivery_error_is_retryable(&error)
+                        && self.retry.permits(record.attempts.saturating_add(1)) =>
+                {
                     failed_deliveries = failed_deliveries.saturating_add(1);
                     let reason = error.to_string();
                     let delay = self.retry.delay(record.attempts);
@@ -259,6 +326,7 @@ impl OutboxWorker {
             }
             self.store.update(record).await?;
         }
+        self.store.cleanup_dead(now_ms).await?;
         self.record_delivery_result(failed_deliveries, delivered);
         Ok(records.len())
     }
@@ -297,10 +365,29 @@ impl OutboxWorker {
     }
 
     fn record_expired(&self, record: &OutboxRecord, now_ms: i64) -> bool {
+        if record
+            .expires_at_ms
+            .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
+        {
+            return true;
+        }
         let Some(max_age) = self.max_record_age else {
             return false;
         };
         let max_age_ms = max_age.as_millis().min(i64::MAX as u128) as i64;
         now_ms.saturating_sub(record.created_at_ms) > max_age_ms
     }
+}
+
+fn delivery_error_is_retryable(error: &crate::core::GuardError) -> bool {
+    matches!(
+        error,
+        crate::core::GuardError::Conflict(_)
+            | crate::core::GuardError::Capacity(_)
+            | crate::core::GuardError::TimeUnsynced(_)
+            | crate::core::GuardError::UserVisible {
+                retryable: true,
+                ..
+            }
+    )
 }

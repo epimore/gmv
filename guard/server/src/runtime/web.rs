@@ -77,6 +77,10 @@ pub async fn serve(
     auth: AuthState,
     outbox: crate::outbox::OutboxRepository,
     user_repository: crate::store::persistent::UserRepository,
+    integration_repository: crate::store::persistent::IntegrationRepository,
+    integration_secrets: Option<crate::integration::secret::IntegrationSecretCipher>,
+    mqtt_runtime_protocol_version: String,
+    mqtt_runtime_enabled: bool,
     event_forwarder: Option<EventForwarder>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
@@ -91,6 +95,11 @@ pub async fn serve(
             auth,
             outbox,
             users: Some(user_repository),
+            integrations: Some(integration_repository),
+            integration_secrets,
+            integration_nonces: crate::integration::hmac::HmacNonceCache::new(300_000, 10_000)?,
+            mqtt_runtime_protocol_version,
+            mqtt_runtime_enabled,
             event_forwarder,
             media_https_http2_verified: config.media_https_http2_verified,
         },

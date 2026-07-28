@@ -15,6 +15,10 @@ use crate::app_config::{DatabaseBackend, GuardAppConfig};
 use crate::app_config::{MysqlAttrsConfig, MysqlSslMode as ConfigSslMode};
 use crate::auth::{Role, UserAccess, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
+use crate::integration::model::{
+    Integration, IntegrationAudit, IntegrationCredential, IntegrationHttpConfig,
+    IntegrationMapping, IntegrationMqttConfig,
+};
 use crate::outbox::OutboxRepository;
 #[cfg(feature = "db-mysql")]
 use crate::store::mysql::MysqlStore;
@@ -27,6 +31,102 @@ pub enum UserRepository {
     Mysql(MysqlStore),
     #[cfg(feature = "db-sqlite")]
     Sqlite(SqliteStore),
+}
+
+#[derive(Debug, Clone)]
+pub enum IntegrationRepository {
+    #[cfg(feature = "db-mysql")]
+    Mysql(MysqlStore),
+    #[cfg(feature = "db-sqlite")]
+    Sqlite(SqliteStore),
+}
+
+macro_rules! dispatch_integration {
+    ($self:expr, $method:ident($($argument:expr),* $(,)?)) => {
+        match $self {
+            #[cfg(feature = "db-mysql")]
+            IntegrationRepository::Mysql(store) => store.$method($($argument),*).await,
+            #[cfg(feature = "db-sqlite")]
+            IntegrationRepository::Sqlite(store) => store.$method($($argument),*).await,
+        }
+    };
+}
+
+impl IntegrationRepository {
+    pub async fn list(&self) -> GuardResult<Vec<Integration>> {
+        dispatch_integration!(self, list_integrations())
+    }
+
+    pub async fn get(&self, integration_id: &str) -> GuardResult<Option<Integration>> {
+        dispatch_integration!(self, get_integration(integration_id))
+    }
+
+    pub async fn upsert(&self, value: &Integration) -> GuardResult<()> {
+        dispatch_integration!(self, upsert_integration(value))
+    }
+
+    pub async fn list_credentials(
+        &self,
+        integration_id: &str,
+    ) -> GuardResult<Vec<IntegrationCredential>> {
+        dispatch_integration!(self, list_integration_credentials(integration_id))
+    }
+
+    pub async fn find_credential(
+        &self,
+        access_key: &str,
+    ) -> GuardResult<Option<IntegrationCredential>> {
+        dispatch_integration!(self, find_integration_credential(access_key))
+    }
+
+    pub async fn insert_credential(&self, value: &IntegrationCredential) -> GuardResult<()> {
+        dispatch_integration!(self, insert_integration_credential(value))
+    }
+
+    pub async fn revoke_credential(&self, credential_id: &str, now_ms: i64) -> GuardResult<()> {
+        dispatch_integration!(self, revoke_integration_credential(credential_id, now_ms))
+    }
+
+    pub async fn http_config(
+        &self,
+        integration_id: &str,
+    ) -> GuardResult<Option<IntegrationHttpConfig>> {
+        dispatch_integration!(self, get_integration_http_config(integration_id))
+    }
+
+    pub async fn upsert_http_config(&self, value: &IntegrationHttpConfig) -> GuardResult<()> {
+        dispatch_integration!(self, upsert_integration_http_config(value))
+    }
+
+    pub async fn mqtt_config(
+        &self,
+        integration_id: &str,
+    ) -> GuardResult<Option<IntegrationMqttConfig>> {
+        dispatch_integration!(self, get_integration_mqtt_config(integration_id))
+    }
+
+    pub async fn upsert_mqtt_config(&self, value: &IntegrationMqttConfig) -> GuardResult<()> {
+        dispatch_integration!(self, upsert_integration_mqtt_config(value))
+    }
+
+    pub async fn list_mappings(
+        &self,
+        integration_id: &str,
+    ) -> GuardResult<Vec<IntegrationMapping>> {
+        dispatch_integration!(self, list_integration_mappings(integration_id))
+    }
+
+    pub async fn upsert_mapping(&self, value: &IntegrationMapping) -> GuardResult<()> {
+        dispatch_integration!(self, upsert_integration_mapping(value))
+    }
+
+    pub async fn append_audit(&self, value: &IntegrationAudit) -> GuardResult<()> {
+        dispatch_integration!(self, append_integration_audit(value))
+    }
+
+    pub async fn list_audits(&self, limit: usize) -> GuardResult<Vec<IntegrationAudit>> {
+        dispatch_integration!(self, list_integration_audits(limit))
+    }
 }
 
 impl UserRepository {
@@ -189,6 +289,15 @@ impl PersistentStore {
             Self::Mysql(store) => UserRepository::Mysql(store.clone()),
             #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => UserRepository::Sqlite(store.clone()),
+        }
+    }
+
+    pub fn integration_repository(&self) -> IntegrationRepository {
+        match self {
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => IntegrationRepository::Mysql(store.clone()),
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => IntegrationRepository::Sqlite(store.clone()),
         }
     }
 

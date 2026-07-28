@@ -8,6 +8,7 @@ pub mod auth;
 pub mod bus;
 pub mod core;
 pub mod gateway;
+pub mod integration;
 pub mod lease;
 pub mod mqttc;
 pub mod operation;

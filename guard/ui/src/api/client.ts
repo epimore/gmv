@@ -31,7 +31,16 @@ export interface NodeInfo { node_id: string; instance_id: string; kind: string; 
 export interface EventItem { event_id: string; topic: string; priority: number; payload: string }
 export interface EventPage { items: EventItem[]; next_after_id: string | null }
 export interface LeaseInfo { lease_id: string; route_id: string; resource_id: string; node_id: string; instance_id: string; state: 'allocated' | 'confirmed' | 'failed' | 'released' | 'expired'; expires_at_ms: number }
-export interface OutboxInfo { outbox_id: string; event_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number }
+export interface OutboxInfo { outbox_id: string; event_id: string; integration_id: string; mapping_id: string; destination_kind: 'mqtt' | 'webhook'; destination: string; state: 'pending' | 'sending' | 'delivered' | 'retry_wait' | 'dead'; attempts: number; next_attempt_at_ms: number; last_error: string | null; created_at_ms: number; updated_at_ms: number; expires_at_ms: number | null }
+export type IntegrationTransport = 'http' | 'mqtt';
+export interface IntegrationInfo { integration_id: string; name: string; transport: IntegrationTransport; inbound_enabled: boolean; outbound_enabled: boolean; enabled: boolean; scopes: string[]; expires_at_ms: number | null; config_version: number; created_by: string; created_at_ms: number; updated_at_ms: number }
+export interface CreateIntegrationPayload { name: string; transport: IntegrationTransport; inbound_enabled: boolean; outbound_enabled: boolean; enabled: boolean; scopes: string[]; expires_at_ms: number | null }
+export interface IntegrationCredentialInfo { credential_id: string; access_key: string; integration_id: string; purpose: 'http_inbound_verify' | 'http_callback_sign'; key_version: number; status: 'active' | 'revoked'; not_before_ms: number; expires_at_ms: number | null; revoked_at_ms: number | null; created_by: string; created_at_ms: number; updated_at_ms: number }
+export interface CreatedIntegrationCredential { credential: IntegrationCredentialInfo; secret: string }
+export interface IntegrationMqttConfig { integration_id: string; protocol_version: 'v3' | 'v5'; allowed_actions: string[]; command_topic: string; result_topic: string; event_topic_prefix: string; updated_at_ms: number }
+export interface IntegrationMqttRuntime { enabled: boolean; protocol_version: 'v3' | 'v5'; connection_scope: 'deployment'; qos: number; retain: boolean }
+export interface IntegrationHttpConfig { integration_id: string; callback_url: string | null; callback_timeout_ms: number; private_network_policy: 'deny' | 'allowlist'; private_network_allowlist: string[]; max_attempts: number; event_ttl_ms: number; max_response_bytes: number; updated_at_ms: number }
+export interface IntegrationMappingInfo { mapping_id: string; integration_id: string; direction: 'INBOUND' | 'OUTBOUND'; source_type: string; schema_version: string; destination_kind: 'HTTP' | 'MQTT'; destination: string; payload_profile: string; enabled: boolean; created_at_ms: number; updated_at_ms: number }
 export interface StreamSummary { stream_id: string; device_id: string; channel_id: string; node_id: string; lease_id: string; endpoint: string; video_codec?: string; audio_codec?: string; mime_codec?: string; subscription_id?: string; session_node_id?: string; session_instance_id?: string; playback_id?: string; playback_generation?: number; playback_start_time_sec?: number; playback_end_time_sec?: number; state: 'running' | 'stopping' | 'stopped' | 'failed' }
 export interface ActiveStreamViewerFormat { media_format: string; viewer_count: number }
 export interface ActiveStreamMonitorItem { stream_id: string; session_node_id: string; session_instance_id: string; stream_node_id: string; device_id: string; channel_id: string; ssrc: string; state: 'starting' | 'running' | 'stopping' | 'failed' | 'unknown' | 'conflict'; dialog_state: string; media_state: string; media_ready: boolean; created_at_ms: number; established_at_ms: number; started_at_ms: number; diagnostic_reason: string; session_type: string; viewer_count: number; viewer_formats: ActiveStreamViewerFormat[]; supported_formats: string[]; output_format: string }
@@ -95,6 +104,9 @@ async function requestAt<T>(url: string, init: RequestInit = {}, redirectOnUnaut
   return response.json() as Promise<T>;
 }
 const request = <T>(path: string, init: RequestInit = {}, redirectOnUnauthorized = true, timeoutMs = 0) => requestAt<T>('/api/v2' + path, init, redirectOnUnauthorized, timeoutMs);
+export const getOpenApiDocument = () => requestAt<Record<string, unknown>>('/api-docs/openapi.json');
+export const getAsyncApiDocument = () => requestAt<Record<string, unknown>>('/api-docs/asyncapi.json');
+export const getIntegrationManifest = () => requestAt<Record<string, unknown>>('/api-docs/manifest.json');
 
 export function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) return error.userMessage || fallback;
@@ -128,6 +140,19 @@ export function pollEvents(afterId?: string, limit = 100, minPriority?: number, 
 export const listLeases = () => request<LeaseInfo[]>('/leases');
 export const listOutbox = (limit = 100) => request<OutboxInfo[]>('/integrations/outbox?limit=' + limit);
 export const retryOutbox = (outboxId: string) => request<OutboxInfo>('/integrations/outbox/' + encodeURIComponent(outboxId) + '/retry', { method: 'POST', body: '{}' });
+export const listIntegrations = () => request<IntegrationInfo[]>('/integrations');
+export const createIntegration = (payload: CreateIntegrationPayload) => request<IntegrationInfo>('/integrations', { method: 'POST', body: JSON.stringify(payload) });
+export const updateIntegration = (integrationId: string, payload: Omit<IntegrationInfo, 'integration_id' | 'transport' | 'created_by' | 'created_at_ms' | 'updated_at_ms' | 'config_version'> & { expected_config_version: number }) => request<IntegrationInfo>('/integrations/' + encodeURIComponent(integrationId), { method: 'POST', body: JSON.stringify(payload) });
+export const listIntegrationCredentials = (integrationId: string) => request<IntegrationCredentialInfo[]>('/integrations/' + encodeURIComponent(integrationId) + '/credentials');
+export const createIntegrationCredential = (integrationId: string, purpose: IntegrationCredentialInfo['purpose'], expiresAtMs: number | null) => request<CreatedIntegrationCredential>('/integrations/' + encodeURIComponent(integrationId) + '/credentials', { method: 'POST', body: JSON.stringify({ purpose, expires_at_ms: expiresAtMs }) });
+export const revokeIntegrationCredential = (integrationId: string, credentialId: string) => request<void>('/integrations/' + encodeURIComponent(integrationId) + '/credentials/' + encodeURIComponent(credentialId) + '/revoke', { method: 'POST', body: '{}' });
+export const getIntegrationMqttConfig = (integrationId: string) => request<IntegrationMqttConfig>('/integrations/' + encodeURIComponent(integrationId) + '/mqtt');
+export const getIntegrationMqttRuntime = () => request<IntegrationMqttRuntime>('/integrations/mqtt/runtime');
+export const saveIntegrationMqttConfig = (integrationId: string, payload: Omit<IntegrationMqttConfig, 'integration_id' | 'updated_at_ms'>) => request<IntegrationMqttConfig>('/integrations/' + encodeURIComponent(integrationId) + '/mqtt', { method: 'POST', body: JSON.stringify(payload) });
+export const getIntegrationHttpConfig = (integrationId: string) => request<IntegrationHttpConfig>('/integrations/' + encodeURIComponent(integrationId) + '/http');
+export const saveIntegrationHttpConfig = (integrationId: string, payload: Omit<IntegrationHttpConfig, 'integration_id' | 'updated_at_ms'>) => request<IntegrationHttpConfig>('/integrations/' + encodeURIComponent(integrationId) + '/http', { method: 'POST', body: JSON.stringify(payload) });
+export const listIntegrationMappings = (integrationId: string) => request<IntegrationMappingInfo[]>('/integrations/' + encodeURIComponent(integrationId) + '/mappings');
+export const saveIntegrationMapping = (integrationId: string, payload: Omit<IntegrationMappingInfo, 'mapping_id' | 'integration_id' | 'created_at_ms' | 'updated_at_ms'> & { mapping_id?: string }) => request<IntegrationMappingInfo>('/integrations/' + encodeURIComponent(integrationId) + '/mappings', { method: 'POST', body: JSON.stringify(payload) });
 export const listStreams = () => request<StreamSummary[]>('/streams');
 export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
 function streamMonitorParams(sessionNodeId: string, query: StreamMonitorQuery): URLSearchParams { const params = new URLSearchParams({ session_node_id: sessionNodeId }); for (const [key, value] of Object.entries(query)) if (value?.trim()) params.set(key, value.trim()); return params; }

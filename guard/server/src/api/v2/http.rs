@@ -1,5 +1,5 @@
-use axum::body::Body;
-use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
+use axum::body::{Body, to_bytes};
+use axum::extract::{ConnectInfo, FromRequestParts, MatchedPath, OriginalUri, Path, Query, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ORIGIN, REFERRER_POLICY,
     SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
@@ -7,7 +7,7 @@ use axum::http::header::{
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base::err;
@@ -48,24 +48,38 @@ use crate::auth::{
     AuthState, Role, UiSession, UserAccess, UserProfile, hash_password as hash_ui_password,
 };
 use crate::core::{
-    ConnectionState, GmvGuardErrorCode, GuardError, HealthState, LeaseState, RouteState,
-    SchedulingState,
+    ConnectionState, GmvGuardErrorCode, GuardError, GuardResult, HealthState, LeaseState,
+    RouteState, SchedulingState,
 };
+use crate::integration::hmac::{HmacNonceCache, SignedRequest, body_sha256, verify_request};
+use crate::integration::model::{
+    CredentialPurpose, CredentialStatus, Integration, IntegrationAudit, IntegrationCredential,
+    IntegrationCredentialSummary, IntegrationHttpConfig, IntegrationMapping, IntegrationMqttConfig,
+    IntegrationTransport,
+};
+use crate::integration::secret::IntegrationSecretCipher;
 use crate::operation::OperationRequest;
 use crate::operation::{OperationRecord, OperationStatus};
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
 use crate::store::model::{
-    EventRecord, LeaseRecord, NodeRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
-    PLAYBACK_TOKEN_TTL_MS, PlaybackTicketRecord,
+    EventRecord, INTEGRATION_PLAYBACK_MAX_LIFETIME_MS, INTEGRATION_PLAYBACK_MAX_RENEWALS,
+    INTEGRATION_PLAYBACK_TOKEN_TTL_MS, LeaseRecord, NodeRecord, OutboxDestinationKind,
+    OutboxRecord, OutboxState, PLAYBACK_TOKEN_TTL_MS, PlaybackTicketRecord,
 };
-use crate::store::persistent::UserRepository;
+use crate::store::persistent::{IntegrationRepository, UserRepository};
 
 const CSRF_HEADER: &str = "x-csrf-token";
 const DEFAULT_GB_DEVICE_PAGE_SIZE: u32 = 20;
 const MAX_GB_DEVICE_PAGE_SIZE: u32 = 500;
 const MEDIA_CHECKPOINT_MS: u64 = 8_000;
 const FIRST_PREVIEW_HARD_TIMEOUT_MS: u64 = 15_000;
+const HMAC_ACCESS_KEY_HEADER: &str = "x-gmv-access-key";
+const HMAC_TIMESTAMP_HEADER: &str = "x-gmv-timestamp";
+const HMAC_NONCE_HEADER: &str = "x-gmv-nonce";
+const HMAC_CONTENT_SHA256_HEADER: &str = "x-gmv-content-sha256";
+const HMAC_SIGNATURE_HEADER: &str = "x-gmv-signature";
+const MAX_OPEN_API_BODY_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct HttpState {
@@ -73,12 +87,18 @@ pub struct HttpState {
     pub auth: AuthState,
     pub outbox: OutboxRepository,
     pub users: Option<UserRepository>,
+    pub integrations: Option<IntegrationRepository>,
+    pub integration_secrets: Option<IntegrationSecretCipher>,
+    pub integration_nonces: HmacNonceCache,
+    pub mqtt_runtime_protocol_version: String,
+    pub mqtt_runtime_enabled: bool,
     pub event_forwarder: Option<EventForwarder>,
     pub media_https_http2_verified: bool,
 }
 
 pub fn router(state: HttpState) -> Router {
     let root_state = state.clone();
+    let open_api = open_business_router(state.clone());
     let session_renew_auth = state.auth.clone();
     let origins = state
         .auth
@@ -112,6 +132,36 @@ pub fn router(state: HttpState) -> Router {
         .route("/events", get(events))
         .route("/users", get(list_users).post(create_user))
         .route("/users/{username}", post(update_user))
+        .route(
+            "/integrations",
+            get(list_integrations).post(create_integration),
+        )
+        .route(
+            "/integrations/{integration_id}",
+            get(get_integration).post(update_integration),
+        )
+        .route(
+            "/integrations/{integration_id}/credentials",
+            get(list_integration_credentials).post(create_integration_credential),
+        )
+        .route(
+            "/integrations/{integration_id}/credentials/{credential_id}/revoke",
+            post(revoke_integration_credential),
+        )
+        .route(
+            "/integrations/{integration_id}/http",
+            get(get_integration_http).post(update_integration_http),
+        )
+        .route(
+            "/integrations/{integration_id}/mqtt",
+            get(get_integration_mqtt).post(update_integration_mqtt),
+        )
+        .route("/integrations/mqtt/runtime", get(integration_mqtt_runtime))
+        .route(
+            "/integrations/{integration_id}/mappings",
+            get(list_integration_mappings).post(upsert_integration_mapping),
+        )
+        .route("/integrations/audits", get(list_integration_audits))
         .route("/integrations/outbox", get(outbox_records))
         .route("/integrations/outbox/{outbox_id}/retry", post(retry_outbox))
         .route(
@@ -253,6 +303,13 @@ pub fn router(state: HttpState) -> Router {
         .route("/health/live", get(health_live))
         .route("/health/ready", get(health_ready))
         .route("/metrics", get(metrics))
+        .route("/api-docs", get(api_docs_index))
+        .route("/api-docs/http", get(api_docs_index))
+        .route("/api-docs/mqtt", get(api_docs_index))
+        .route("/api-docs/openapi.json", get(openapi_document))
+        .route("/api-docs/asyncapi.json", get(asyncapi_document))
+        .route("/api-docs/manifest.json", get(api_manifest))
+        .nest("/openapi/v1", open_api)
         .nest(paths::API_PREFIX, api)
         .with_state(root_state)
         .layer(SetResponseHeaderLayer::overriding(
@@ -269,6 +326,576 @@ pub fn router(state: HttpState) -> Router {
             REFERRER_POLICY,
             HeaderValue::from_static("no-referrer"),
         ))
+}
+
+const OPEN_BUSINESS_OPERATIONS: &[(&str, &[&str])] = &[
+    ("/dashboard", &["get"]),
+    ("/media/transport", &["get"]),
+    ("/media/operations", &["get"]),
+    ("/media/operations/{operation_id}", &["get"]),
+    ("/media/operations/{operation_id}/continue", &["post"]),
+    ("/media/operations/{operation_id}/cancel", &["post"]),
+    ("/nodes", &["get"]),
+    ("/leases", &["get"]),
+    ("/events", &["get"]),
+    ("/gb28181/session-nodes/{node_id}/config", &["get"]),
+    ("/gb28181/devices", &["get", "post"]),
+    ("/gb28181/devices/{device_id}", &["get", "post"]),
+    ("/gb28181/devices/{device_id}/delete", &["post"]),
+    ("/gb28181/devices/{device_id}/channels", &["get"]),
+    ("/gb28181/devices/{device_id}/resources", &["get"]),
+    (
+        "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation",
+        &["post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation/reset",
+        &["post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}",
+        &["get", "post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/preview",
+        &["post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/playback",
+        &["post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/ptz",
+        &["post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images",
+        &["get", "post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/records",
+        &["get"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/records/query",
+        &["post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings",
+        &["get", "post"],
+    ),
+    ("/gb28181/cloud-recordings/{task_id}", &["get"]),
+    ("/gb28181/cloud-recordings/{task_id}/stop", &["post"]),
+    ("/gb28181/cloud-recordings/{task_id}/delete", &["post"]),
+    ("/gb28181/cloud-recordings/{task_id}/access", &["post"]),
+    ("/gb28181/devices/{device_id}/broadcast/start", &["post"]),
+    ("/gb28181/broadcasts/{stream_id}/stop", &["post"]),
+    ("/devices", &["get"]),
+    ("/devices/{device_id}/preview", &["post"]),
+    ("/devices/{device_id}/playback", &["post"]),
+    ("/devices/{device_id}/download", &["post"]),
+    ("/devices/{device_id}/talk", &["post"]),
+    ("/devices/{device_id}/ptz", &["post"]),
+    ("/streams", &["get"]),
+    ("/gb28181/streams", &["get"]),
+    ("/gb28181/streams/{stream_id}/management", &["get"]),
+    ("/gb28181/stream-history", &["get"]),
+    ("/gb28181/streams/{stream_id}/stop", &["post"]),
+    ("/streams/{stream_id}/stop", &["post"]),
+    ("/streams/{stream_id}/release", &["post"]),
+    ("/streams/{stream_id}/speed", &["post"]),
+    ("/playbacks/{playback_id}/seek", &["post"]),
+    ("/playbacks/{playback_id}/speed", &["post"]),
+    ("/playbacks/{playback_id}/state", &["post"]),
+    ("/playbacks/presence/heartbeat", &["post"]),
+    ("/playback-tickets/{token}/renew", &["post"]),
+    ("/streams/{stream_id}/outputs", &["get", "post"]),
+    ("/streams/{stream_id}/outputs/{output_id}/close", &["post"]),
+    ("/ai/tasks", &["get", "post"]),
+    ("/ai/tasks/{task_id}/cancel", &["post"]),
+    ("/runtime/status", &["get"]),
+];
+
+async fn api_docs_index(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Html<&'static str>, HttpError> {
+    require_role(&state.auth, &headers, Role::Admin)?;
+    Ok(Html(
+        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>GMV 三方集成文档</title><style>body{margin:0;background:#03102d;color:#dff7ff;font:15px system-ui;padding:48px}main{max-width:860px;margin:auto;padding:32px;border:1px solid #2592ff55;border-radius:18px;background:#071f48}a{color:#51ddff}code{color:#9eefff}li{margin:14px 0}</style></head><body><main><h1>GMV Guard 三方集成契约</h1><p>HTTP 使用 <code>GMV-HMAC-SHA256-V1</code>；MQTT 可显式选择 V3.1.1 或 V5.0。</p><ul><li><a href="/api-docs/openapi.json">OpenAPI 3.1 JSON</a></li><li><a href="/api-docs/asyncapi.json">AsyncAPI 3.0 JSON</a></li><li><a href="/api-docs/manifest.json">能力与鉴权清单</a></li></ul></main></body></html>"#,
+    ))
+}
+
+async fn openapi_document(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<base::serde_json::Value>, HttpError> {
+    require_role(&state.auth, &headers, Role::Admin)?;
+    let mut paths = base::serde_json::Map::new();
+    for (path, methods) in OPEN_BUSINESS_OPERATIONS {
+        let mut operations = base::serde_json::Map::new();
+        for method in *methods {
+            let required_scope = open_business_scope(
+                if *method == "get" {
+                    &Method::GET
+                } else {
+                    &Method::POST
+                },
+                path,
+            );
+            operations.insert(
+                (*method).to_string(),
+                base::serde_json::json!({
+                    "summary": format!("Guard business API {} {}", method.to_ascii_uppercase(), path),
+                    "x-gmv-required-scope": required_scope,
+                    "parameters": openapi_path_parameters(path),
+                    "security": [{"GmvAccessKey": [], "GmvTimestamp": [], "GmvNonce": [], "GmvContentSha256": [], "GmvSignature": []}],
+                    "responses": {"200": {"description": "Success"}, "202": {"description": "Accepted"}, "400": {"description": "Invalid request"}, "401": {"description": "Invalid signature"}, "403": {"description": "Insufficient scope"}}
+                }),
+            );
+        }
+        paths.insert(format!("/openapi/v1{path}"), operations.into());
+    }
+    Ok(Json(base::serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "GMV Guard Open Business API", "version": env!("CARGO_PKG_VERSION")},
+        "paths": paths,
+        "components": {"securitySchemes": {
+            "GmvAccessKey": {"type": "apiKey", "in": "header", "name": HMAC_ACCESS_KEY_HEADER},
+            "GmvTimestamp": {"type": "apiKey", "in": "header", "name": HMAC_TIMESTAMP_HEADER},
+            "GmvNonce": {"type": "apiKey", "in": "header", "name": HMAC_NONCE_HEADER},
+            "GmvContentSha256": {"type": "apiKey", "in": "header", "name": HMAC_CONTENT_SHA256_HEADER},
+            "GmvSignature": {"type": "apiKey", "in": "header", "name": HMAC_SIGNATURE_HEADER, "description": "hex(HMAC-SHA256(secret, canonical_request))"}
+        }},
+        "x-gmv-hmac": {"version": "GMV-HMAC-SHA256-V1", "timestamp_unit": "milliseconds", "clock_skew_ms": 300000, "canonical_fields": ["version", "access_key", "timestamp_ms", "nonce", "method", "path", "canonical_query", "body_sha256"]}
+    })))
+}
+
+fn openapi_path_parameters(path: &str) -> Vec<base::serde_json::Value> {
+    path.split('{')
+        .skip(1)
+        .filter_map(|part| part.split_once('}').map(|(name, _)| name))
+        .map(|name| {
+            base::serde_json::json!({
+                "name": name,
+                "in": "path",
+                "required": true,
+                "schema": {"type": "string"}
+            })
+        })
+        .collect()
+}
+
+async fn asyncapi_document(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<base::serde_json::Value>, HttpError> {
+    require_role(&state.auth, &headers, Role::Admin)?;
+    Ok(Json(base::serde_json::json!({
+        "asyncapi": "3.0.0",
+        "info": {"title": "GMV Guard MQTT Integration", "version": env!("CARGO_PKG_VERSION")},
+        "servers": {
+            "mqttV3": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "3.1.1", "description": "Select with protocol_version=v3"},
+            "mqttV5": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "5.0", "description": "Select with protocol_version=v5"}
+        },
+        "channels": {
+            "commands": {"address": "gmv/commands/{integration_id}", "messages": {"command": {"$ref": "#/components/messages/IntegrationCommand"}}},
+            "commandResults": {"address": "gmv/command-results/{integration_id}", "messages": {"result": {"$ref": "#/components/messages/CommandResult"}}},
+            "events": {"address": "gmv/events/{integration_id}/{event_type}", "messages": {"event": {"$ref": "#/components/messages/EventEnvelope"}, "playbackRenewalRequest": {"$ref": "#/components/messages/PlaybackRenewalRequest"}}}
+        },
+        "components": {"messages": {
+            "IntegrationCommand": {"payload": {"type": "object", "required": ["integration_id", "command_id", "issued_at_ms", "expires_at_ms", "action", "target", "payload"]}},
+            "CommandResult": {"payload": {"type": "object", "required": ["command_id", "operation_id", "state"]}},
+            "EventEnvelope": {"payload": {"type": "object", "required": ["event_id", "event_type", "schema_version", "occurred_at_ms", "payload"]}},
+            "PlaybackRenewalRequest": {"payload": {"type": "object", "required": ["token", "playback_id", "stream_id", "expires_at_ms", "response_action"]}}
+        }},
+        "x-gmv-protocol-selection": {"allowed": ["v3", "v5"], "default": "v3", "qos": 1, "payload_compatible": true}
+    })))
+}
+
+async fn api_manifest(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<base::serde_json::Value>, HttpError> {
+    require_role(&state.auth, &headers, Role::Admin)?;
+    Ok(Json(base::serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "http": {"base_path": "/openapi/v1", "methods": ["GET", "POST"], "auth": "GMV-HMAC-SHA256-V1"},
+        "mqtt": {"protocol_versions": ["v3", "v5"], "default": "v3", "qos": 1, "command_actions": ["stream.start", "stream.stop", "stream.playback", "stream.download", "device.talk", "device.ptz", "ai.start", "ai.cancel", "playback.ticket.renew"]},
+        "scopes": ["*", "devices:read", "devices:write", "devices:control", "images:read", "audio:control", "streams:read", "streams:write", "streams:preview", "streams:playback", "recordings:read", "recordings:write", "events:read", "ai:read", "ai:write", "nodes:read", "leases:read", "runtime:read"]
+    })))
+}
+
+fn open_business_router(state: HttpState) -> Router<HttpState> {
+    let auth_state = state.clone();
+    Router::new()
+        .route("/dashboard", get(dashboard))
+        .route("/media/transport", get(media_transport))
+        .route("/media/operations", get(media_operations))
+        .route("/media/operations/{operation_id}", get(media_operation))
+        .route(
+            "/media/operations/{operation_id}/continue",
+            post(continue_media_operation),
+        )
+        .route(
+            "/media/operations/{operation_id}/cancel",
+            post(cancel_media_operation),
+        )
+        .route("/nodes", get(nodes))
+        .route("/leases", get(leases))
+        .route("/events", get(events))
+        .route(
+            "/gb28181/session-nodes/{node_id}/config",
+            get(gb_session_node_config),
+        )
+        .route("/gb28181/devices", get(gb_devices).post(create_gb_device))
+        .route(
+            "/gb28181/devices/{device_id}",
+            get(gb_device).post(update_gb_device),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/delete",
+            post(delete_gb_device),
+        )
+        .route("/gb28181/devices/{device_id}/channels", get(gb_channels))
+        .route("/gb28181/devices/{device_id}/resources", get(gb_resources))
+        .route(
+            "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation",
+            post(save_gb_resource_confirmation),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation/reset",
+            post(reset_gb_resource_confirmation),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}",
+            get(gb_channel).post(update_gb_channel),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/preview",
+            post(gb_preview),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/playback",
+            post(gb_playback),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/ptz",
+            post(gb_ptz),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/images",
+            get(gb_channel_images).post(gb_snapshot_image),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/records",
+            get(gb_channel_records),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/records/query",
+            post(query_gb_channel_records),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings",
+            get(list_cloud_recordings).post(create_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}",
+            get(get_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}/stop",
+            post(stop_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}/delete",
+            post(delete_cloud_recording),
+        )
+        .route(
+            "/gb28181/cloud-recordings/{task_id}/access",
+            post(issue_cloud_recording_access),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/broadcast/start",
+            post(gb_broadcast),
+        )
+        .route("/gb28181/broadcasts/{stream_id}/stop", post(stop_stream))
+        .route("/devices", get(devices))
+        .route("/devices/{device_id}/preview", post(preview))
+        .route("/devices/{device_id}/playback", post(playback))
+        .route("/devices/{device_id}/download", post(download))
+        .route("/devices/{device_id}/talk", post(talk))
+        .route("/devices/{device_id}/ptz", post(ptz))
+        .route("/streams", get(streams))
+        .route("/gb28181/streams", get(gb_active_streams))
+        .route(
+            "/gb28181/streams/{stream_id}/management",
+            get(gb_active_stream_management),
+        )
+        .route("/gb28181/stream-history", get(gb_stream_history))
+        .route(
+            "/gb28181/streams/{stream_id}/stop",
+            post(stop_gb_monitored_stream),
+        )
+        .route("/streams/{stream_id}/stop", post(stop_stream))
+        .route("/streams/{stream_id}/release", post(release_stream))
+        .route("/streams/{stream_id}/speed", post(set_playback_speed))
+        .route("/playbacks/{playback_id}/seek", post(seek_playback))
+        .route(
+            "/playbacks/{playback_id}/speed",
+            post(set_versioned_playback_speed),
+        )
+        .route("/playbacks/{playback_id}/state", post(set_playback_state))
+        .route(
+            "/playbacks/presence/heartbeat",
+            post(heartbeat_playback_presence),
+        )
+        .route(
+            "/playback-tickets/{token}/renew",
+            post(renew_integration_playback_ticket),
+        )
+        .route(
+            "/streams/{stream_id}/outputs",
+            get(list_stream_outputs).post(create_stream_output),
+        )
+        .route(
+            "/streams/{stream_id}/outputs/{output_id}/close",
+            post(close_stream_output),
+        )
+        .route("/ai/tasks", get(ai_tasks).post(start_ai_task))
+        .route("/ai/tasks/{task_id}/cancel", post(cancel_ai_task))
+        .route("/runtime/status", get(runtime_status))
+        .layer(middleware::from_fn_with_state(
+            auth_state,
+            authenticate_open_business_request,
+        ))
+        .layer(middleware::from_fn(debug_http_request))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
+}
+
+async fn authenticate_open_business_request(
+    State(state): State<HttpState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    match authenticate_open_business_request_inner(&state, request).await {
+        Ok((request, token)) => {
+            let response = next.run(request).await;
+            state.auth.logout(&token);
+            response
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn authenticate_open_business_request_inner(
+    state: &HttpState,
+    request: Request<Body>,
+) -> Result<(Request<Body>, String), HttpError> {
+    let access_key = required_header(request.headers(), HMAC_ACCESS_KEY_HEADER)?;
+    let timestamp = required_header(request.headers(), HMAC_TIMESTAMP_HEADER)?
+        .parse::<i64>()
+        .map_err(|_| HttpError::unauthorized())?;
+    let nonce = required_header(request.headers(), HMAC_NONCE_HEADER)?;
+    let signature = required_header(request.headers(), HMAC_SIGNATURE_HEADER)?;
+    let content_sha256 = required_header(request.headers(), HMAC_CONTENT_SHA256_HEADER)?;
+    let now_ms = http_now_ms()?;
+    if now_ms.abs_diff(timestamp) > 300_000 {
+        return Err(HttpError::unauthorized());
+    }
+    let repository = require_integration_repository(state)?;
+    let credential = repository
+        .find_credential(&access_key)
+        .await?
+        .filter(|credential| {
+            credential.purpose == CredentialPurpose::HttpInboundVerify
+                && credential.is_active_at(now_ms)
+        })
+        .ok_or_else(HttpError::unauthorized)?;
+    let integration = repository
+        .get(&credential.integration_id)
+        .await?
+        .filter(|integration| {
+            integration.transport == IntegrationTransport::Http
+                && integration.inbound_enabled
+                && integration.enabled
+                && integration
+                    .expires_at_ms
+                    .is_none_or(|expires_at| expires_at > now_ms)
+        })
+        .ok_or_else(HttpError::unauthorized)?;
+    let scope = open_business_scope(request.method(), request.uri().path())
+        .ok_or_else(|| HttpError::forbidden("business API capability is not open"))?;
+    if !integration.scopes.iter().any(|candidate| candidate == "*")
+        && !integration.permits(scope, now_ms)
+    {
+        return Err(HttpError::forbidden(format!(
+            "integration scope {scope} is required"
+        )));
+    }
+    let cipher = state
+        .integration_secrets
+        .as_ref()
+        .ok_or_else(|| HttpError::internal("integration secret cipher is not configured"))?;
+    let secret = cipher.decrypt(&credential.secret_ciphertext)?;
+    let method = request.method().as_str().to_string();
+    let signed_uri = request
+        .extensions()
+        .get::<OriginalUri>()
+        .map(|value| &value.0)
+        .unwrap_or_else(|| request.uri());
+    let path = signed_uri.path().to_string();
+    let query = signed_uri.query().unwrap_or_default().to_string();
+    let (mut parts, body) = request.into_parts();
+    let body = to_bytes(body, MAX_OPEN_API_BODY_BYTES)
+        .await
+        .map_err(|_| HttpError::bad_request("request body exceeds the configured limit"))?;
+    if content_sha256 != body_sha256(&body) {
+        return Err(HttpError::unauthorized());
+    }
+    verify_request(
+        secret.as_bytes(),
+        &SignedRequest {
+            access_key: &access_key,
+            timestamp_ms: timestamp,
+            nonce: &nonce,
+            method: &method,
+            path: &path,
+            query: &query,
+            body: &body,
+        },
+        &signature,
+    )
+    .map_err(HttpError::from_auth)?;
+    state
+        .integration_nonces
+        .claim_rate_slot(&access_key, now_ms)
+        .map_err(HttpError::from_auth)?;
+    state
+        .integration_nonces
+        .claim(&access_key, &nonce, now_ms)
+        .map_err(HttpError::from_auth)?;
+    let identity = format!("integration:{}", integration.integration_id);
+    let (token, session) =
+        state
+            .auth
+            .issue_service_session(&identity, Role::Admin, Duration::from_secs(300))?;
+    let cookie = format!("{SESSION_COOKIE}={token}");
+    parts.headers.insert(
+        COOKIE,
+        HeaderValue::from_str(&cookie)
+            .map_err(|_| HttpError::internal("invalid session cookie"))?,
+    );
+    parts.headers.insert(
+        HeaderName::from_static(CSRF_HEADER),
+        HeaderValue::from_str(&session.csrf_token)
+            .map_err(|_| HttpError::internal("invalid CSRF token"))?,
+    );
+    if request_method_requires_csrf(&method) {
+        let origin = state
+            .auth
+            .allowed_origins()
+            .first()
+            .ok_or_else(|| HttpError::internal("UI origin policy is empty"))?;
+        parts.headers.insert(
+            ORIGIN,
+            HeaderValue::from_str(origin)
+                .map_err(|_| HttpError::internal("invalid configured origin"))?,
+        );
+    }
+    Ok((Request::from_parts(parts, Body::from(body)), token))
+}
+
+fn required_header(headers: &HeaderMap, name: &'static str) -> Result<String, HttpError> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(HttpError::unauthorized)
+}
+
+fn request_method_requires_csrf(method: &str) -> bool {
+    method != Method::GET.as_str()
+}
+
+fn open_business_scope(method: &Method, path: &str) -> Option<&'static str> {
+    if path.contains("/images") {
+        return Some(if *method == Method::GET {
+            "images:read"
+        } else {
+            "devices:control"
+        });
+    }
+    if path.contains("/ptz") {
+        return Some("devices:control");
+    }
+    if path.contains("/talk") || path.contains("/broadcast") {
+        return Some("audio:control");
+    }
+    if path.contains("/preview") {
+        return Some("streams:preview");
+    }
+    if path.contains("/playback") || path.contains("/playbacks") {
+        return Some("streams:playback");
+    }
+    let operation = if *method == Method::GET {
+        "read"
+    } else {
+        "write"
+    };
+    let capability = if path.contains("/events") {
+        "events"
+    } else if path.contains("cloud-recordings")
+        || path.contains("/records")
+        || path.contains("/images")
+    {
+        "recordings"
+    } else if path.contains("/ai/") {
+        "ai"
+    } else if path.contains("/streams")
+        || path.contains("/playbacks")
+        || path.contains("/media/")
+        || path.contains("/preview")
+        || path.contains("/playback")
+        || path.contains("/download")
+        || path.contains("/talk")
+        || path.contains("/broadcast")
+    {
+        "streams"
+    } else if path.contains("/devices") || path.contains("/ptz") || path.contains("/gb28181/") {
+        "devices"
+    } else if path.contains("/nodes") {
+        "nodes"
+    } else if path.contains("/leases") {
+        "leases"
+    } else if path.contains("/dashboard") || path.contains("/runtime/") {
+        "runtime"
+    } else {
+        return None;
+    };
+    match (capability, operation) {
+        ("events", "read") => Some("events:read"),
+        ("events", "write") => Some("events:write"),
+        ("recordings", "read") => Some("recordings:read"),
+        ("recordings", "write") => Some("recordings:write"),
+        ("ai", "read") => Some("ai:read"),
+        ("ai", "write") => Some("ai:write"),
+        ("streams", "read") => Some("streams:read"),
+        ("streams", "write") => Some("streams:write"),
+        ("devices", "read") => Some("devices:read"),
+        ("devices", "write") => Some("devices:write"),
+        ("nodes", "read") => Some("nodes:read"),
+        ("nodes", "write") => Some("nodes:write"),
+        ("leases", "read") => Some("leases:read"),
+        ("leases", "write") => Some("leases:write"),
+        ("runtime", "read") => Some("runtime:read"),
+        ("runtime", "write") => Some("runtime:write"),
+        _ => None,
+    }
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -306,12 +933,17 @@ struct HealthResponse {
 
 async fn debug_http_request(request: Request<Body>, next: Next) -> Response {
     let method = request.method().clone();
-    let uri = request.uri().clone();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or("unmatched")
+        .to_string();
     let started = Instant::now();
-    debug!("guard http inbound: method={method}, uri={uri}");
+    debug!("guard http inbound: method={method}, route={route}");
     let response = next.run(request).await;
     debug!(
-        "guard http outbound: method={method}, uri={uri}, status={}, elapsed_ms={}",
+        "guard http outbound: method={method}, route={route}, status={}, elapsed_ms={}",
         response.status().as_u16(),
         started.elapsed().as_millis()
     );
@@ -1100,6 +1732,629 @@ fn default_enabled() -> bool {
     true
 }
 
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct CreateIntegrationRequest {
+    name: String,
+    transport: String,
+    inbound_enabled: bool,
+    outbound_enabled: bool,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    scopes: Vec<String>,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct UpdateIntegrationRequest {
+    name: String,
+    inbound_enabled: bool,
+    outbound_enabled: bool,
+    enabled: bool,
+    scopes: Vec<String>,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
+    expected_config_version: i64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct CreateIntegrationCredentialRequest {
+    purpose: CredentialPurpose,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct CreatedIntegrationCredentialResponse {
+    credential: IntegrationCredentialSummary,
+    secret: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct SaveHttpIntegrationRequest {
+    #[serde(default)]
+    callback_url: Option<String>,
+    callback_timeout_ms: i64,
+    private_network_policy: String,
+    #[serde(default)]
+    private_network_allowlist: Vec<String>,
+    max_attempts: i64,
+    event_ttl_ms: i64,
+    max_response_bytes: i64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct SaveMqttIntegrationRequest {
+    protocol_version: String,
+    #[serde(default)]
+    allowed_actions: Vec<String>,
+    command_topic: String,
+    result_topic: String,
+    event_topic_prefix: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct SaveIntegrationMappingRequest {
+    #[serde(default)]
+    mapping_id: Option<String>,
+    direction: String,
+    source_type: String,
+    schema_version: String,
+    destination_kind: String,
+    destination: String,
+    payload_profile: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+async fn list_integrations(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<Integration>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(require_integration_repository(&state)?.list().await?))
+}
+
+async fn get_integration(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+) -> Result<Json<Integration>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let value = require_integration_repository(&state)?
+        .get(&integration_id)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
+    Ok(Json(value))
+}
+
+async fn create_integration(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateIntegrationRequest>,
+) -> Result<(StatusCode, Json<Integration>), HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    let now_ms = http_now_ms()?;
+    let transport = IntegrationTransport::parse(&request.transport.to_ascii_uppercase())?;
+    let integration_id = format!("int_{}", Uuid::new_v4().simple());
+    let value = Integration {
+        integration_id: integration_id.clone(),
+        name: request.name.trim().to_string(),
+        transport,
+        inbound_enabled: request.inbound_enabled,
+        outbound_enabled: request.outbound_enabled,
+        enabled: request.enabled,
+        scopes: request.scopes,
+        expires_at_ms: request.expires_at_ms,
+        config_version: 1,
+        created_by: session.username.clone(),
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+    };
+    value.validate(now_ms)?;
+    if value.transport == IntegrationTransport::Mqtt && value.enabled && !state.mqtt_runtime_enabled
+    {
+        return Err(GuardError::InvalidConfig(
+            "MQTT runtime must be enabled before enabling the integration".to_string(),
+        )
+        .into());
+    }
+    let repository = require_integration_repository(&state)?;
+    repository.upsert(&value).await?;
+    match transport {
+        IntegrationTransport::Http => {
+            repository
+                .upsert_http_config(&IntegrationHttpConfig {
+                    integration_id: integration_id.clone(),
+                    callback_url: None,
+                    callback_timeout_ms: 5_000,
+                    private_network_policy: "deny".to_string(),
+                    private_network_allowlist: Vec::new(),
+                    max_attempts: 5,
+                    event_ttl_ms: 259_200_000,
+                    max_response_bytes: 65_536,
+                    updated_at_ms: now_ms,
+                })
+                .await?;
+        }
+        IntegrationTransport::Mqtt => {
+            repository
+                .upsert_mqtt_config(&IntegrationMqttConfig {
+                    integration_id: integration_id.clone(),
+                    protocol_version: state.mqtt_runtime_protocol_version.clone(),
+                    allowed_actions: Vec::new(),
+                    command_topic: format!("gmv/commands/{integration_id}"),
+                    result_topic: format!("gmv/command-results/{integration_id}"),
+                    event_topic_prefix: format!("gmv/events/{integration_id}"),
+                    updated_at_ms: now_ms,
+                })
+                .await?;
+        }
+    }
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "integration.create",
+        &integration_id,
+        "created",
+        now_ms,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(value)))
+}
+
+async fn update_integration(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+    Json(request): Json<UpdateIntegrationRequest>,
+) -> Result<Json<Integration>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    let repository = require_integration_repository(&state)?;
+    let mut value = repository
+        .get(&integration_id)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
+    if value.config_version != request.expected_config_version {
+        return Err(GuardError::Conflict(format!(
+            "integration config version changed: expected {}, actual {}",
+            request.expected_config_version, value.config_version
+        ))
+        .into());
+    }
+    let now_ms = http_now_ms()?;
+    value.name = request.name.trim().to_string();
+    value.inbound_enabled = request.inbound_enabled;
+    value.outbound_enabled = request.outbound_enabled;
+    value.enabled = request.enabled;
+    value.scopes = request.scopes;
+    value.expires_at_ms = request.expires_at_ms;
+    value.config_version += 1;
+    value.updated_at_ms = now_ms;
+    value.validate(now_ms)?;
+    if value.transport == IntegrationTransport::Mqtt && value.enabled && !state.mqtt_runtime_enabled
+    {
+        return Err(GuardError::InvalidConfig(
+            "MQTT runtime must be enabled before enabling the integration".to_string(),
+        )
+        .into());
+    }
+    repository.upsert(&value).await?;
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "integration.update",
+        &integration_id,
+        "updated",
+        now_ms,
+    )
+    .await?;
+    Ok(Json(value))
+}
+
+async fn list_integration_credentials(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+) -> Result<Json<Vec<IntegrationCredentialSummary>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let values = require_integration_repository(&state)?
+        .list_credentials(&integration_id)
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    Ok(Json(values))
+}
+
+async fn create_integration_credential(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+    Json(request): Json<CreateIntegrationCredentialRequest>,
+) -> Result<(StatusCode, Json<CreatedIntegrationCredentialResponse>), HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    let repository = require_integration_repository(&state)?;
+    let integration = repository
+        .get(&integration_id)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
+    if integration.transport != IntegrationTransport::Http {
+        return Err(GuardError::InvalidConfig(
+            "HMAC credentials are only valid for HTTP integrations".to_string(),
+        )
+        .into());
+    }
+    let cipher = state.integration_secrets.as_ref().ok_or_else(|| {
+        GuardError::InvalidConfig(format!(
+            "{} is required to create integration credentials",
+            crate::integration::secret::INTEGRATION_MASTER_KEY_ENV
+        ))
+    })?;
+    let now_ms = http_now_ms()?;
+    if request
+        .expires_at_ms
+        .is_some_and(|expires_at| expires_at <= now_ms)
+    {
+        return Err(GuardError::InvalidConfig(
+            "credential expiry must be in the future".to_string(),
+        )
+        .into());
+    }
+    let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let credential = IntegrationCredential {
+        credential_id: format!("cred_{}", Uuid::new_v4().simple()),
+        access_key: format!("ak_{}", Uuid::new_v4().simple()),
+        integration_id: integration_id.clone(),
+        purpose: request.purpose,
+        secret_ciphertext: cipher.encrypt(&secret)?,
+        key_version: 1,
+        status: CredentialStatus::Active,
+        not_before_ms: now_ms,
+        expires_at_ms: request.expires_at_ms,
+        revoked_at_ms: None,
+        created_by: session.username.clone(),
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+    };
+    repository.insert_credential(&credential).await?;
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "credential.create",
+        &credential.credential_id,
+        "created",
+        now_ms,
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedIntegrationCredentialResponse {
+            credential: credential.into(),
+            secret,
+        }),
+    ))
+}
+
+async fn revoke_integration_credential(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((integration_id, credential_id)): Path<(String, String)>,
+) -> Result<StatusCode, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    let repository = require_integration_repository(&state)?;
+    let now_ms = http_now_ms()?;
+    let belongs = repository
+        .list_credentials(&integration_id)
+        .await?
+        .iter()
+        .any(|credential| credential.credential_id == credential_id);
+    if !belongs {
+        return Err(GuardError::NotFound(format!("credential {credential_id}")).into());
+    }
+    repository.revoke_credential(&credential_id, now_ms).await?;
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "credential.revoke",
+        &credential_id,
+        "revoked",
+        now_ms,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_integration_http(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+) -> Result<Json<IntegrationHttpConfig>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let value = require_integration_repository(&state)?
+        .http_config(&integration_id)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("HTTP integration {integration_id}")))?;
+    Ok(Json(value))
+}
+
+async fn update_integration_http(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+    Json(request): Json<SaveHttpIntegrationRequest>,
+) -> Result<Json<IntegrationHttpConfig>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    require_integration_transport(&state, &integration_id, IntegrationTransport::Http).await?;
+    let now_ms = http_now_ms()?;
+    let value = IntegrationHttpConfig {
+        integration_id: integration_id.clone(),
+        callback_url: request.callback_url,
+        callback_timeout_ms: request.callback_timeout_ms,
+        private_network_policy: request.private_network_policy,
+        private_network_allowlist: request.private_network_allowlist,
+        max_attempts: request.max_attempts,
+        event_ttl_ms: request.event_ttl_ms,
+        max_response_bytes: request.max_response_bytes,
+        updated_at_ms: now_ms,
+    };
+    value.validate()?;
+    let repository = require_integration_repository(&state)?;
+    repository.upsert_http_config(&value).await?;
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "http.update",
+        &integration_id,
+        "updated",
+        now_ms,
+    )
+    .await?;
+    Ok(Json(value))
+}
+
+async fn get_integration_mqtt(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+) -> Result<Json<IntegrationMqttConfig>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let value = require_integration_repository(&state)?
+        .mqtt_config(&integration_id)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("MQTT integration {integration_id}")))?;
+    Ok(Json(value))
+}
+
+async fn integration_mqtt_runtime(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<base::serde_json::Value>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(base::serde_json::json!({
+        "enabled": state.mqtt_runtime_enabled,
+        "protocol_version": state.mqtt_runtime_protocol_version,
+        "connection_scope": "deployment",
+        "qos": 1,
+        "retain": false
+    })))
+}
+
+async fn update_integration_mqtt(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+    Json(request): Json<SaveMqttIntegrationRequest>,
+) -> Result<Json<IntegrationMqttConfig>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    require_integration_transport(&state, &integration_id, IntegrationTransport::Mqtt).await?;
+    let now_ms = http_now_ms()?;
+    let value = IntegrationMqttConfig {
+        integration_id: integration_id.clone(),
+        protocol_version: request.protocol_version.to_ascii_lowercase(),
+        allowed_actions: request.allowed_actions,
+        command_topic: request.command_topic,
+        result_topic: request.result_topic,
+        event_topic_prefix: request.event_topic_prefix,
+        updated_at_ms: now_ms,
+    };
+    value.validate()?;
+    if value.protocol_version != state.mqtt_runtime_protocol_version {
+        return Err(GuardError::InvalidConfig(format!(
+            "MQTT protocol_version must match running broker connection {}",
+            state.mqtt_runtime_protocol_version
+        ))
+        .into());
+    }
+    let repository = require_integration_repository(&state)?;
+    repository.upsert_mqtt_config(&value).await?;
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "mqtt.update",
+        &integration_id,
+        &format!("protocol_version={}", value.protocol_version),
+        now_ms,
+    )
+    .await?;
+    Ok(Json(value))
+}
+
+async fn list_integration_mappings(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+) -> Result<Json<Vec<IntegrationMapping>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(
+        require_integration_repository(&state)?
+            .list_mappings(&integration_id)
+            .await?,
+    ))
+}
+
+async fn upsert_integration_mapping(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(integration_id): Path<String>,
+    Json(request): Json<SaveIntegrationMappingRequest>,
+) -> Result<Json<IntegrationMapping>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    if request.direction != "OUTBOUND"
+        || !matches!(request.destination_kind.as_str(), "HTTP" | "MQTT")
+        || request.source_type.trim().is_empty()
+        || !request.source_type.bytes().all(|value| {
+            value.is_ascii_alphanumeric() || matches!(value, b'.' | b'_' | b'-' | b'*')
+        })
+        || request.destination.trim().is_empty()
+        || request.schema_version != "v1"
+        || request.payload_profile != "event-envelope-v1"
+    {
+        return Err(GuardError::InvalidConfig("invalid integration mapping".to_string()).into());
+    }
+    let repository = require_integration_repository(&state)?;
+    let integration = repository
+        .get(&integration_id)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
+    match integration.transport {
+        IntegrationTransport::Http => {
+            let config = repository
+                .http_config(&integration_id)
+                .await?
+                .ok_or_else(|| {
+                    GuardError::InvalidConfig("HTTP integration config missing".to_string())
+                })?;
+            if request.destination_kind != "HTTP"
+                || config.callback_url.as_deref() != Some(request.destination.as_str())
+            {
+                return Err(GuardError::InvalidConfig(
+                    "HTTP mapping destination must match the configured callback URL".to_string(),
+                )
+                .into());
+            }
+        }
+        IntegrationTransport::Mqtt => {
+            let config = repository
+                .mqtt_config(&integration_id)
+                .await?
+                .ok_or_else(|| {
+                    GuardError::InvalidConfig("MQTT integration config missing".to_string())
+                })?;
+            let prefix = format!("{}/", config.event_topic_prefix);
+            if request.destination_kind != "MQTT" || !request.destination.starts_with(&prefix) {
+                return Err(GuardError::InvalidConfig(
+                    "MQTT mapping destination must use the integration event topic prefix"
+                        .to_string(),
+                )
+                .into());
+            }
+        }
+    }
+    let now_ms = http_now_ms()?;
+    let value = IntegrationMapping {
+        mapping_id: request
+            .mapping_id
+            .unwrap_or_else(|| format!("map_{}", Uuid::new_v4().simple())),
+        integration_id: integration_id.clone(),
+        direction: request.direction,
+        source_type: request.source_type,
+        schema_version: request.schema_version,
+        destination_kind: request.destination_kind,
+        destination: request.destination,
+        payload_profile: request.payload_profile,
+        enabled: request.enabled,
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+    };
+    repository.upsert_mapping(&value).await?;
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "mapping.upsert",
+        &value.mapping_id,
+        "updated",
+        now_ms,
+    )
+    .await?;
+    Ok(Json(value))
+}
+
+async fn list_integration_audits(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<OutboxQuery>,
+) -> Result<Json<Vec<IntegrationAudit>>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(
+        require_integration_repository(&state)?
+            .list_audits(query.limit.unwrap_or(100).min(1_000))
+            .await?,
+    ))
+}
+
+fn require_integration_repository(state: &HttpState) -> Result<&IntegrationRepository, HttpError> {
+    state.integrations.as_ref().ok_or_else(|| {
+        GuardError::InvalidConfig("integration persistent store is disabled".to_string()).into()
+    })
+}
+
+async fn require_integration_transport(
+    state: &HttpState,
+    integration_id: &str,
+    expected: IntegrationTransport,
+) -> Result<(), HttpError> {
+    let value = require_integration_repository(state)?
+        .get(integration_id)
+        .await?
+        .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
+    if value.transport != expected {
+        return Err(GuardError::InvalidConfig(format!(
+            "integration {integration_id} transport does not match"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+async fn append_integration_audit(
+    repository: &IntegrationRepository,
+    integration_id: Option<&str>,
+    actor: &str,
+    action: &str,
+    target_id: &str,
+    detail_summary: &str,
+    now_ms: i64,
+) -> GuardResult<()> {
+    repository
+        .append_audit(&IntegrationAudit {
+            audit_id: format!("audit_{}", Uuid::new_v4().simple()),
+            integration_id: integration_id.map(str::to_string),
+            actor: actor.to_string(),
+            action: action.to_string(),
+            target_id: target_id.to_string(),
+            outcome: "SUCCESS".to_string(),
+            detail_summary: detail_summary.to_string(),
+            created_at_ms: now_ms,
+        })
+        .await
+}
+
 fn user_response(profile: UserProfile) -> UserResponse {
     UserResponse {
         username: profile.username,
@@ -1169,6 +2424,8 @@ fn password_hash(password: &str) -> Result<String, HttpError> {
 struct OutboxResponse {
     outbox_id: String,
     event_id: String,
+    integration_id: String,
+    mapping_id: String,
     destination_kind: &'static str,
     destination: String,
     state: &'static str,
@@ -1177,6 +2434,7 @@ struct OutboxResponse {
     last_error: Option<String>,
     created_at_ms: i64,
     updated_at_ms: i64,
+    expires_at_ms: Option<i64>,
 }
 
 impl From<OutboxRecord> for OutboxResponse {
@@ -1184,6 +2442,8 @@ impl From<OutboxRecord> for OutboxResponse {
         Self {
             outbox_id: record.outbox_id,
             event_id: record.event_id,
+            integration_id: record.integration_id,
+            mapping_id: record.mapping_id,
             destination_kind: match record.destination_kind {
                 OutboxDestinationKind::Mqtt => "mqtt",
                 OutboxDestinationKind::Webhook => "webhook",
@@ -1201,6 +2461,7 @@ impl From<OutboxRecord> for OutboxResponse {
             last_error: record.last_error,
             created_at_ms: record.created_at_ms,
             updated_at_ms: record.updated_at_ms,
+            expires_at_ms: record.expires_at_ms,
         }
     }
 }
@@ -1348,11 +2609,30 @@ fn issue_playback_ticket(
         username: session.username.clone(),
         ui_session_token: ui_session_token.to_string(),
         required_role,
-        expires_at_ms: now_ms + PLAYBACK_TOKEN_TTL_MS,
+        issued_at_ms: now_ms,
+        expires_at_ms: now_ms + playback_ticket_ttl_ms(&session.username),
+        absolute_expires_at_ms: playback_ticket_absolute_expiry(&session.username, now_ms),
+        renewal_count: 0,
     };
     state.api.store().upsert_playback_ticket(ticket);
     stream.endpoint = endpoint_with_playback_token(&stream.endpoint, &token);
     Ok(stream)
+}
+
+fn playback_ticket_ttl_ms(username: &str) -> i64 {
+    if username.starts_with("integration:") {
+        INTEGRATION_PLAYBACK_TOKEN_TTL_MS
+    } else {
+        PLAYBACK_TOKEN_TTL_MS
+    }
+}
+
+fn playback_ticket_absolute_expiry(username: &str, now_ms: i64) -> i64 {
+    if username.starts_with("integration:") {
+        now_ms.saturating_add(INTEGRATION_PLAYBACK_MAX_LIFETIME_MS)
+    } else {
+        now_ms.saturating_add(PLAYBACK_TOKEN_TTL_MS)
+    }
 }
 
 fn issue_stream_output_ticket(
@@ -1392,7 +2672,10 @@ fn issue_stream_output_ticket(
         username: session.username.clone(),
         ui_session_token: ui_session_token.to_string(),
         required_role: Role::Viewer,
-        expires_at_ms: now_ms + PLAYBACK_TOKEN_TTL_MS,
+        issued_at_ms: now_ms,
+        expires_at_ms: now_ms + playback_ticket_ttl_ms(&session.username),
+        absolute_expires_at_ms: playback_ticket_absolute_expiry(&session.username, now_ms),
+        renewal_count: 0,
     };
     state.api.store().upsert_playback_ticket(ticket);
     output.endpoint = endpoint_with_playback_token(&output.endpoint, &token);
@@ -2006,6 +3289,20 @@ struct PlaybackStateRequest {
 struct PlaybackControlHttpResponse {
     accepted: bool,
     generation: u64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct IntegrationPlaybackRenewRequest {
+    renew: bool,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct IntegrationPlaybackRenewResponse {
+    renewed: bool,
+    revoked: bool,
+    expires_at_ms: Option<i64>,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -2821,7 +4118,7 @@ async fn query_gb_channel_records(
     Path((device_id, channel_id)): Path<(String, String)>,
     Json(request): Json<GbRecordQueryRequest>,
 ) -> Result<(StatusCode, Json<GbChannelRecordsResponse>), HttpError> {
-    require_write(&state.auth, &headers, Role::Viewer)?;
+    require_write(&state.auth, &headers, Role::Operator)?;
     if request.request_id.trim().is_empty() {
         return Err(HttpError::bad_request("request_id is required"));
     }
@@ -4475,7 +5772,8 @@ fn playback_control_owner_matches(
     username: &str,
     ui_session_token: &str,
 ) -> bool {
-    ticket.username == username && ticket.ui_session_token == ui_session_token
+    ticket.username == username
+        && (username.starts_with("integration:") || ticket.ui_session_token == ui_session_token)
 }
 
 async fn seek_playback(
@@ -4629,6 +5927,62 @@ async fn set_playback_speed(
     Ok(Json(PlaybackSpeedResponse {
         accepted: true,
         speed_rate: request.speed_rate,
+    }))
+}
+
+async fn renew_integration_playback_ticket(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+    Json(request): Json<IntegrationPlaybackRenewRequest>,
+) -> Result<Json<IntegrationPlaybackRenewResponse>, HttpError> {
+    let (_, session) = require_write_with_token(&state.auth, &headers, Role::Viewer)?;
+    if !session.username.starts_with("integration:") {
+        return Err(HttpError::forbidden(
+            "playback ticket renewal requires integration identity",
+        ));
+    }
+    let store = state.api.store();
+    let mut ticket = store
+        .get_playback_ticket(&token)
+        .ok_or_else(|| GuardError::NotFound("playback ticket".to_string()))?;
+    if ticket.username != session.username {
+        return Err(HttpError::forbidden("playback ticket owner mismatch"));
+    }
+    if !request.renew {
+        store.revoke_playback_token(&token);
+        return Ok(Json(IntegrationPlaybackRenewResponse {
+            renewed: false,
+            revoked: true,
+            expires_at_ms: None,
+        }));
+    }
+    let now_ms = http_now_ms()?;
+    if ticket.expires_at_ms <= now_ms {
+        store.revoke_playback_token(&token);
+        return Err(GuardError::InvalidIdentity("playback ticket expired".to_string()).into());
+    }
+    let ttl_ms = playback_ticket_ttl_ms(&ticket.username);
+    if ticket.renewal_count >= INTEGRATION_PLAYBACK_MAX_RENEWALS
+        || now_ms.saturating_add(ttl_ms) > ticket.absolute_expires_at_ms
+    {
+        store.revoke_playback_token(&token);
+        return Err(HttpError::forbidden(
+            "playback ticket renewal limit reached",
+        ));
+    }
+    ticket.expires_at_ms = now_ms.saturating_add(ttl_ms);
+    ticket.renewal_count = ticket.renewal_count.saturating_add(1);
+    state.auth.extend_service_session(
+        &ticket.ui_session_token,
+        Duration::from_millis(ttl_ms as u64),
+    )?;
+    let expires_at_ms = ticket.expires_at_ms;
+    store.upsert_playback_ticket(ticket);
+    Ok(Json(IntegrationPlaybackRenewResponse {
+        renewed: true,
+        revoked: false,
+        expires_at_ms: Some(expires_at_ms),
     }))
 }
 
@@ -5137,13 +6491,15 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GbStreamRequest, GuardError, HttpError, endpoint_with_playback_token, gb_preview_request,
-        media_startup_timeout_ms, node_connection_label, node_health_label, node_scheduling_label,
+        GbStreamRequest, GuardError, HttpError, OPEN_BUSINESS_OPERATIONS,
+        endpoint_with_playback_token, gb_preview_request, media_startup_timeout_ms,
+        node_connection_label, node_health_label, node_scheduling_label, open_business_scope,
         playback_control_owner_matches, playback_token_from_endpoint,
     };
     use crate::auth::Role;
     use crate::core::{ConnectionState, HealthState, SchedulingState};
     use crate::store::model::PlaybackTicketRecord;
+    use axum::http::Method;
 
     #[test]
     fn playback_control_ownership_does_not_expire_with_media_url_ticket() {
@@ -5160,7 +6516,10 @@ mod tests {
             username: "operator".to_string(),
             ui_session_token: "ui-session".to_string(),
             required_role: Role::Operator,
+            issued_at_ms: 0,
             expires_at_ms: 0,
+            absolute_expires_at_ms: i64::MAX,
+            renewal_count: 0,
         };
 
         assert!(playback_control_owner_matches(
@@ -5254,5 +6613,28 @@ mod tests {
         );
 
         assert_eq!(request.session_node_id, "session-b");
+    }
+
+    #[test]
+    fn open_business_contract_registry_is_scoped_and_excludes_management_paths() {
+        let mut operations = std::collections::HashSet::new();
+        for (path, methods) in OPEN_BUSINESS_OPERATIONS {
+            assert!(!path.contains("/users"));
+            assert!(!path.contains("/integrations"));
+            assert!(!path.contains("/system"));
+            for method in *methods {
+                let method = match *method {
+                    "get" => Method::GET,
+                    "post" => Method::POST,
+                    other => panic!("unexpected public HTTP method: {other}"),
+                };
+                assert!(open_business_scope(&method, path).is_some());
+                assert!(
+                    operations.insert((method, *path)),
+                    "duplicate public operation"
+                );
+            }
+        }
+        assert!(operations.contains(&(Method::POST, "/playback-tickets/{token}/renew")));
     }
 }

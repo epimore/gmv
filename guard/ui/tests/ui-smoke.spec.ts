@@ -202,7 +202,7 @@ test('Dashboard 展示边端状态、能力入口和待处理事项', async ({ p
 
   await page.goto('/dashboard');
 
-  await expect(page.getByRole('heading', { name: '边端能力等待接入', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '等待节点接入', level: 2 })).toBeVisible();
   await expect(page.getByRole('heading', { name: '边端能力矩阵', level: 2 })).toBeVisible();
   await expect(page.getByRole('button', { name: /GB28181/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /ONVIF/ })).toHaveCount(0);
@@ -238,6 +238,52 @@ test('Dashboard 将单次流失败归入业务异常而不是待处理事项', a
   await expect(page.getByText('1 条失败流记录')).toBeVisible();
   await expect(page.getByText('当前无待处理事项')).toBeVisible();
   await expect(page.getByText('1 路流失败')).toHaveCount(0);
+});
+
+test('MQTT 接入显式展示并保存 V3/V5 协议版本', async ({ page }) => {
+  await mockAuth(page, true);
+  const integration = {
+    integration_id: 'mqtt-app-1', name: '边缘 MQTT', transport: 'mqtt', inbound_enabled: true,
+    outbound_enabled: true, enabled: true, scopes: ['*'], expires_at_ms: null,
+    config_version: 1, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+  };
+  let savedVersion = '';
+
+  await page.route('**/api/v2/integrations', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([integration]),
+  }));
+  await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ enabled: true, protocol_version: 'v5', connection_scope: 'deployment', qos: 1, retain: false }),
+  }));
+  await page.route('**/api/v2/integrations/mqtt-app-1/mqtt', async (route) => {
+    const config = {
+      integration_id: 'mqtt-app-1', protocol_version: 'v5', allowed_actions: ['stream.stop'],
+      command_topic: 'gmv/commands/mqtt-app-1', result_topic: 'gmv/command-results/mqtt-app-1',
+      event_topic_prefix: 'gmv/events/mqtt-app-1', updated_at_ms: 1,
+    };
+    if (route.request().method() === 'POST') {
+      savedVersion = (route.request().postDataJSON() as { protocol_version: string }).protocol_version;
+      config.protocol_version = savedVersion;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) });
+  });
+  await page.route('**/api/v2/integrations/mqtt-app-1/mappings', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([]),
+  }));
+  await page.route('**/api-docs/asyncapi.json', (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ channels: { commands: { address: 'gmv/commands/{integration_id}', messages: { command: {} } } } }),
+  }));
+
+  await page.goto('/integrations/mqtt');
+  await expect(page.getByRole('heading', { name: 'MQTT 接入', level: 1 })).toBeVisible();
+  await expect(page.getByText('部署级 MQTT runtime 已启用 · V5.0')).toBeVisible();
+  await expect(page.getByText('V5.0', { exact: true }).first()).toBeVisible();
+
+  await page.getByText('V3.1.1', { exact: true }).last().click();
+  await page.getByRole('button', { name: '保存配置' }).click();
+  await expect.poll(() => savedVersion).toBe('v3');
 });
 
 test('Dashboard 将持续 Catalog 重建失败归入运维待处理事项', async ({ page }) => {

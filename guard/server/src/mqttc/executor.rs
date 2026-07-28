@@ -1,130 +1,289 @@
+use std::collections::HashMap;
+
 use base::serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::api::v2::control::{BusinessControl, DeviceStreamOptions};
+use crate::auth::AuthState;
 use crate::core::{GuardError, GuardResult};
 use crate::mqttc::mapping::{CommandAction, RoutedCommand};
 use crate::operation::OperationService;
+use crate::outbox::OutboxRepository;
 use crate::store::InMemoryGuardStore;
+use crate::store::model::{INTEGRATION_PLAYBACK_MAX_RENEWALS, INTEGRATION_PLAYBACK_TOKEN_TTL_MS};
+use crate::store::model::{OutboxDestinationKind, OutboxRecord, OutboxState};
 
 #[derive(Debug, Clone)]
 pub struct MqttCommandExecutor {
     operations: OperationService,
     control: BusinessControl,
+    store: InMemoryGuardStore,
+    auth: Option<AuthState>,
+    result_outbox: Option<(OutboxRepository, HashMap<String, String>)>,
 }
 
 impl MqttCommandExecutor {
     pub fn new(operations: OperationService, store: InMemoryGuardStore) -> Self {
         Self {
             operations,
-            control: BusinessControl::new(store),
+            control: BusinessControl::new(store.clone()),
+            store,
+            auth: None,
+            result_outbox: None,
         }
     }
 
+    pub fn with_auth(mut self, auth: AuthState) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    pub fn with_result_outbox(
+        mut self,
+        repository: OutboxRepository,
+        topics: HashMap<String, String>,
+    ) -> Self {
+        self.result_outbox = Some((repository, topics));
+        self
+    }
+
     pub async fn execute(&self, command: RoutedCommand) -> GuardResult<()> {
-        let operation = self.operations.start(command.operation_request("mqtt"))?;
-        let result = match command.action {
-            CommandAction::StreamStart => {
-                let device_id = payload_string(&command.payload, "device_id")
-                    .unwrap_or_else(|| command.target.clone());
-                let channel_id = required_payload_string(&command.payload, "channel_id")?;
-                self.control
-                    .start_live_with_options(
-                        &command.command_id,
-                        &device_id,
-                        &channel_id,
-                        device_stream_options(&command.payload),
-                    )
-                    .await
-                    .map(|_| ())
-            }
-            CommandAction::StreamStop => self
-                .control
-                .stop_stream(&command.command_id, &command.target)
-                .await
-                .map(|_| ()),
-            CommandAction::StreamPlayback => {
-                let device_id = payload_string(&command.payload, "device_id")
-                    .unwrap_or_else(|| command.target.clone());
-                let channel_id = required_payload_string(&command.payload, "channel_id")?;
-                self.control
-                    .start_playback_with_options(
-                        &command.command_id,
-                        &device_id,
-                        &channel_id,
-                        device_stream_options(&command.payload),
-                    )
-                    .await
-                    .map(|_| ())
-            }
-            CommandAction::StreamDownload => {
-                let device_id = payload_string(&command.payload, "device_id")
-                    .unwrap_or_else(|| command.target.clone());
-                let channel_id = required_payload_string(&command.payload, "channel_id")?;
-                self.control
-                    .start_download_with_options(
-                        &command.command_id,
-                        &device_id,
-                        &channel_id,
-                        device_stream_options(&command.payload),
-                    )
-                    .await
-                    .map(|_| ())
-            }
-            CommandAction::StreamTalk => {
-                let device_id = payload_string(&command.payload, "device_id")
-                    .unwrap_or_else(|| command.target.clone());
-                let channel_id = required_payload_string(&command.payload, "channel_id")?;
-                self.control
-                    .start_talk_with_options(
-                        &command.command_id,
-                        &device_id,
-                        &channel_id,
-                        device_stream_options(&command.payload),
-                    )
-                    .await
-                    .map(|_| ())
-            }
-            CommandAction::Ptz => {
-                let channel_id = required_payload_string(&command.payload, "channel_id")?;
-                let (ptz_command, speed) = ptz_control(&command.payload)?;
-                self.control
-                    .ptz(
-                        &command.command_id,
-                        &command.target,
-                        &channel_id,
-                        ptz_command,
-                        speed,
-                    )
-                    .await
-                    .map(|_| ())
-            }
-            CommandAction::AiStart => {
-                let stream_id = payload_string(&command.payload, "stream_id")
-                    .unwrap_or_else(|| command.target.clone());
-                let model = required_payload_string(&command.payload, "model")?;
-                self.control
-                    .start_ai(&command.command_id, &stream_id, &model)
-                    .await
-                    .map(|_| ())
-            }
-            CommandAction::AiCancel => self
-                .control
-                .cancel_ai(&command.command_id, &command.target)
-                .await
-                .map(|_| ()),
+        let requested_by = if command.integration_id.is_empty() {
+            "mqtt".to_string()
+        } else {
+            format!("integration:{}", command.integration_id)
         };
+        let operation = self
+            .operations
+            .start(command.operation_request(requested_by))?;
+        let result: GuardResult<()> = async {
+            match command.action {
+                CommandAction::StreamStart => {
+                    let device_id = payload_string(&command.payload, "device_id")
+                        .unwrap_or_else(|| command.target.clone());
+                    let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                    self.control
+                        .start_live_with_options(
+                            &command.command_id,
+                            &device_id,
+                            &channel_id,
+                            device_stream_options(&command.payload),
+                        )
+                        .await
+                        .map(|_| ())
+                }
+                CommandAction::StreamStop => self
+                    .control
+                    .stop_stream(&command.command_id, &command.target)
+                    .await
+                    .map(|_| ()),
+                CommandAction::StreamPlayback => {
+                    let device_id = payload_string(&command.payload, "device_id")
+                        .unwrap_or_else(|| command.target.clone());
+                    let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                    self.control
+                        .start_playback_with_options(
+                            &command.command_id,
+                            &device_id,
+                            &channel_id,
+                            device_stream_options(&command.payload),
+                        )
+                        .await
+                        .map(|_| ())
+                }
+                CommandAction::StreamDownload => {
+                    let device_id = payload_string(&command.payload, "device_id")
+                        .unwrap_or_else(|| command.target.clone());
+                    let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                    self.control
+                        .start_download_with_options(
+                            &command.command_id,
+                            &device_id,
+                            &channel_id,
+                            device_stream_options(&command.payload),
+                        )
+                        .await
+                        .map(|_| ())
+                }
+                CommandAction::StreamTalk => {
+                    let device_id = payload_string(&command.payload, "device_id")
+                        .unwrap_or_else(|| command.target.clone());
+                    let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                    self.control
+                        .start_talk_with_options(
+                            &command.command_id,
+                            &device_id,
+                            &channel_id,
+                            device_stream_options(&command.payload),
+                        )
+                        .await
+                        .map(|_| ())
+                }
+                CommandAction::Ptz => {
+                    let channel_id = required_payload_string(&command.payload, "channel_id")?;
+                    let (ptz_command, speed) = ptz_control(&command.payload)?;
+                    self.control
+                        .ptz(
+                            &command.command_id,
+                            &command.target,
+                            &channel_id,
+                            ptz_command,
+                            speed,
+                        )
+                        .await
+                        .map(|_| ())
+                }
+                CommandAction::AiStart => {
+                    let stream_id = payload_string(&command.payload, "stream_id")
+                        .unwrap_or_else(|| command.target.clone());
+                    let model = required_payload_string(&command.payload, "model")?;
+                    self.control
+                        .start_ai(&command.command_id, &stream_id, &model)
+                        .await
+                        .map(|_| ())
+                }
+                CommandAction::AiCancel => self
+                    .control
+                    .cancel_ai(&command.command_id, &command.target)
+                    .await
+                    .map(|_| ()),
+                CommandAction::PlaybackTicketRenew => self.renew_playback_ticket(&command).await,
+            }
+        }
+        .await;
         match result {
             Ok(()) => {
                 self.operations
                     .succeed(&operation.operation_id, "MQTT command executed")?;
+                self.enqueue_result(&command, "succeeded", None).await?;
                 Ok(())
             }
             Err(error) => {
                 let _ = self.operations.fail(&operation.operation_id, error.clone());
+                self.enqueue_result(&command, "failed", Some(error_code(&error)))
+                    .await?;
                 Err(error)
             }
         }
     }
+
+    async fn renew_playback_ticket(&self, command: &RoutedCommand) -> GuardResult<()> {
+        let mut ticket = self
+            .store
+            .get_playback_ticket(&command.target)
+            .ok_or_else(|| GuardError::NotFound("playback ticket".to_string()))?;
+        if ticket.username != format!("integration:{}", command.integration_id) {
+            return Err(GuardError::InvalidIdentity(
+                "playback ticket owner mismatch".to_string(),
+            ));
+        }
+        let renew = command
+            .payload
+            .get("renew")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                GuardError::InvalidConfig("MQTT command payload.renew is required".to_string())
+            })?;
+        if !renew {
+            self.store.revoke_playback_token(&ticket.token);
+            return Ok(());
+        }
+        let now_ms = now_ms();
+        if ticket.expires_at_ms <= now_ms {
+            self.store.revoke_playback_token(&ticket.token);
+            return Err(GuardError::InvalidIdentity(
+                "playback ticket expired".to_string(),
+            ));
+        }
+        let auth = self.auth.as_ref().ok_or_else(|| {
+            GuardError::InvalidConfig("MQTT integration auth state is missing".to_string())
+        })?;
+        if ticket.renewal_count >= INTEGRATION_PLAYBACK_MAX_RENEWALS
+            || now_ms.saturating_add(INTEGRATION_PLAYBACK_TOKEN_TTL_MS)
+                > ticket.absolute_expires_at_ms
+        {
+            self.store.revoke_playback_token(&ticket.token);
+            return Err(GuardError::InvalidIdentity(
+                "playback ticket renewal limit reached".to_string(),
+            ));
+        }
+        ticket.expires_at_ms = now_ms.saturating_add(INTEGRATION_PLAYBACK_TOKEN_TTL_MS);
+        ticket.renewal_count = ticket.renewal_count.saturating_add(1);
+        auth.extend_service_session(
+            &ticket.ui_session_token,
+            std::time::Duration::from_millis(INTEGRATION_PLAYBACK_TOKEN_TTL_MS as u64),
+        )?;
+        self.store.upsert_playback_ticket(ticket);
+        Ok(())
+    }
+
+    async fn enqueue_result(
+        &self,
+        command: &RoutedCommand,
+        state: &str,
+        error_code: Option<&str>,
+    ) -> GuardResult<()> {
+        let Some((repository, topics)) = &self.result_outbox else {
+            return Ok(());
+        };
+        let Some(topic) = topics.get(&command.integration_id) else {
+            return Ok(());
+        };
+        let now_ms = now_ms();
+        let payload = base::serde_json::to_vec(&base::serde_json::json!({
+            "schema_version": "v1",
+            "integration_id": command.integration_id,
+            "command_id": command.command_id,
+            "operation_id": command.command_id,
+            "state": state,
+            "error_code": error_code,
+            "occurred_at_ms": now_ms
+        }))
+        .map_err(|error| {
+            GuardError::InvalidConfig(format!("MQTT result encode failed: {error}"))
+        })?;
+        let digest = hex::encode(Sha256::digest(command.command_id.as_bytes()));
+        repository
+            .insert_mapped_outbox_records(vec![OutboxRecord {
+                outbox_id: format!("cmd-result-{}", &digest[..32]),
+                event_id: command.command_id.clone(),
+                integration_id: command.integration_id.clone(),
+                mapping_id: format!("mqtt-command-result:{}", command.integration_id),
+                destination_kind: OutboxDestinationKind::Mqtt,
+                destination: topic.clone(),
+                payload,
+                state: OutboxState::Pending,
+                attempts: 0,
+                next_attempt_at_ms: now_ms,
+                last_error: None,
+                created_at_ms: now_ms,
+                updated_at_ms: now_ms,
+                expires_at_ms: Some(command.expires_at_ms),
+            }])
+            .await
+    }
+}
+
+fn error_code(error: &GuardError) -> &'static str {
+    match error {
+        GuardError::InvalidConfig(_) => "invalid_command",
+        GuardError::InvalidIdentity(_) => "forbidden",
+        GuardError::Conflict(_) => "conflict",
+        GuardError::NotFound(_) => "not_found",
+        GuardError::StaleInstance(_) => "stale_instance",
+        GuardError::Capacity(_) => "capacity_exceeded",
+        GuardError::TimeUnsynced(_) => "time_unsynced",
+        GuardError::DuplicateEvent(_) => "duplicate",
+        GuardError::UserVisible { .. } => "business_error",
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(i64::MAX as u128) as i64
+        })
 }
 
 fn required_payload_string(payload: &Value, key: &str) -> GuardResult<String> {

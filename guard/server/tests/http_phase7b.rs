@@ -57,6 +57,12 @@ fn test_app(store: InMemoryGuardStore) -> axum::Router {
         auth,
         outbox: OutboxRepository::from(store),
         users: None,
+        integrations: None,
+        integration_secrets: None,
+        integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(300_000, 100)
+            .unwrap(),
+        mqtt_runtime_protocol_version: "v3".to_string(),
+        mqtt_runtime_enabled: false,
         event_forwarder: None,
         media_https_http2_verified: false,
     })

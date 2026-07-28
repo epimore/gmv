@@ -49,7 +49,18 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         assert!(!mysql_all.contains(table), "mysql should not own {table}");
         assert!(!sqlite_all.contains(table), "sqlite should not own {table}");
     }
-    for table in ["guard_outbox", "guard_command", "guard_user"] {
+    for table in [
+        "guard_outbox",
+        "guard_command",
+        "guard_user",
+        "guard_integration",
+        "guard_integration_credential",
+        "guard_integration_http",
+        "guard_integration_mqtt",
+        "guard_integration_mapping",
+        "guard_integration_audit",
+        "guard_integration_delivery",
+    ] {
         assert!(mysql_all.contains(table), "mysql missing {table}");
         assert!(sqlite_all.contains(table), "sqlite missing {table}");
     }
@@ -60,7 +71,6 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         "guard_event",
         "guard_service_credential",
         "guard_ui_session",
-        "guard_integration",
         "guard_system_setting",
     ] {
         assert!(!mysql_all.contains(table), "mysql should not own {table}");

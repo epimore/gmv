@@ -88,8 +88,10 @@ guard:
       local_login_only: false # 仅从配置文件读取；修改后需重启 guard 生效。
 
   integrations:
+    # HTTP HMAC 凭证使用环境变量 GMV_GUARD_INTEGRATION_MASTER_KEY 加密，值为 32 字节密钥的无填充 Base64。
     mqtt:
       enabled: false
+      protocol_version: v3 # 可选 v3（MQTT 3.1.1）或 v5（MQTT 5.0）；切换后重建连接。
       broker: 127.0.0.1
       port: 8883
       client_id: gmv-guard

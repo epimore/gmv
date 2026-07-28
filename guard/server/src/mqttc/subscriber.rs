@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use base::serde::Deserialize;
@@ -16,6 +16,8 @@ use crate::store::sqlite::SqliteStore;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde", deny_unknown_fields)]
 pub struct MqttCommand {
+    #[serde(default)]
+    pub integration_id: String,
     pub command_id: String,
     pub issued_at_ms: i64,
     pub expires_at_ms: i64,
@@ -67,6 +69,7 @@ impl CommandIdRepository {
 #[derive(Debug, Clone)]
 pub struct MqttCommandPolicy {
     allowed_actions: HashSet<String>,
+    topic_routes: HashMap<String, (String, HashSet<String>)>,
     seen: Arc<Mutex<HashSet<String>>>,
     max_ttl_ms: i64,
 }
@@ -83,13 +86,35 @@ impl MqttCommandPolicy {
         }
         Ok(Self {
             allowed_actions: allowed_actions.into_iter().collect(),
+            topic_routes: HashMap::new(),
             seen: Arc::new(Mutex::new(HashSet::new())),
             max_ttl_ms,
         })
     }
 
+    pub fn with_topic_routes(
+        mut self,
+        routes: impl IntoIterator<Item = (String, String, Vec<String>)>,
+    ) -> GuardResult<Self> {
+        for (topic, integration_id, actions) in routes {
+            if topic.is_empty()
+                || topic.contains(['#', '+'])
+                || integration_id.is_empty()
+                || self
+                    .topic_routes
+                    .insert(topic, (integration_id, actions.into_iter().collect()))
+                    .is_some()
+            {
+                return Err(GuardError::InvalidConfig(
+                    "invalid or duplicate MQTT integration command route".to_string(),
+                ));
+            }
+        }
+        Ok(self)
+    }
+
     pub fn decode(&self, payload: &[u8], now_ms: i64) -> GuardResult<Option<RoutedCommand>> {
-        let (command, routed) = self.validate(payload, now_ms)?;
+        let (command, routed) = self.validate(None, payload, now_ms)?;
         let mut seen = self.seen.lock();
         if !seen.insert(command.command_id) {
             return Ok(None);
@@ -103,7 +128,7 @@ impl MqttCommandPolicy {
         now_ms: i64,
         repository: &CommandIdRepository,
     ) -> GuardResult<Option<RoutedCommand>> {
-        let (command, routed) = self.validate(payload, now_ms)?;
+        let (command, routed) = self.validate(None, payload, now_ms)?;
         if !repository
             .claim(&command.command_id, command.expires_at_ms, now_ms)
             .await?
@@ -113,7 +138,29 @@ impl MqttCommandPolicy {
         Ok(Some(routed))
     }
 
-    fn validate(&self, payload: &[u8], now_ms: i64) -> GuardResult<(MqttCommand, RoutedCommand)> {
+    pub async fn decode_topic_with_repository(
+        &self,
+        topic: &str,
+        payload: &[u8],
+        now_ms: i64,
+        repository: &CommandIdRepository,
+    ) -> GuardResult<Option<RoutedCommand>> {
+        let (command, routed) = self.validate(Some(topic), payload, now_ms)?;
+        if !repository
+            .claim(&command.command_id, command.expires_at_ms, now_ms)
+            .await?
+        {
+            return Ok(None);
+        }
+        Ok(Some(routed))
+    }
+
+    fn validate(
+        &self,
+        topic: Option<&str>,
+        payload: &[u8],
+        now_ms: i64,
+    ) -> GuardResult<(MqttCommand, RoutedCommand)> {
         let command: MqttCommand = base::serde_json::from_slice(payload).map_err(|error| {
             GuardError::InvalidConfig(format!("invalid MQTT command JSON: {error}"))
         })?;
@@ -134,7 +181,22 @@ impl MqttCommandPolicy {
                 "MQTT command TTL is invalid or expired".to_string(),
             ));
         }
-        if !self.allowed_actions.contains(&command.action) {
+        let route_actions = topic
+            .and_then(|topic| self.topic_routes.get(topic))
+            .map(|(integration_id, actions)| {
+                if command.integration_id != *integration_id {
+                    return Err(GuardError::InvalidIdentity(
+                        "MQTT command integration does not match topic".to_string(),
+                    ));
+                }
+                Ok(actions)
+            })
+            .transpose()?;
+        let action_allowed = route_actions.map_or_else(
+            || self.allowed_actions.contains(&command.action),
+            |actions| actions.contains(&command.action),
+        );
+        if !action_allowed {
             return Err(GuardError::InvalidIdentity(
                 "MQTT command action is not allowed".to_string(),
             ));
@@ -144,6 +206,8 @@ impl MqttCommandPolicy {
         })?;
         let routed = RoutedCommand {
             command_id: command.command_id.clone(),
+            integration_id: command.integration_id.clone(),
+            expires_at_ms: command.expires_at_ms,
             action,
             target: command.target.clone(),
             payload: command.payload.clone(),

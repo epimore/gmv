@@ -6,6 +6,9 @@ use crate::core::{
 use std::collections::HashMap;
 
 pub const PLAYBACK_TOKEN_TTL_MS: i64 = 60_000;
+pub const INTEGRATION_PLAYBACK_TOKEN_TTL_MS: i64 = 300_000;
+pub const INTEGRATION_PLAYBACK_MAX_LIFETIME_MS: i64 = 86_400_000;
+pub const INTEGRATION_PLAYBACK_MAX_RENEWALS: u32 = 288;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostMetricsRecord {
@@ -99,7 +102,10 @@ pub struct PlaybackTicketRecord {
     pub username: String,
     pub ui_session_token: String,
     pub required_role: Role,
+    pub issued_at_ms: i64,
     pub expires_at_ms: i64,
+    pub absolute_expires_at_ms: i64,
+    pub renewal_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +149,8 @@ impl OutboxState {
 pub struct OutboxRecord {
     pub outbox_id: String,
     pub event_id: String,
+    pub integration_id: String,
+    pub mapping_id: String,
     pub destination_kind: OutboxDestinationKind,
     pub destination: String,
     pub payload: Vec<u8>,
@@ -152,6 +160,7 @@ pub struct OutboxRecord {
     pub last_error: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
 }
 
 impl OutboxDestinationKind {
@@ -203,6 +212,8 @@ pub(crate) type OutboxRow = (
     String,
     String,
     String,
+    String,
+    String,
     Vec<u8>,
     String,
     i64,
@@ -210,22 +221,26 @@ pub(crate) type OutboxRow = (
     Option<String>,
     i64,
     i64,
+    Option<i64>,
 );
 
 pub(crate) fn outbox_from_row(row: OutboxRow) -> crate::core::GuardResult<OutboxRecord> {
     Ok(OutboxRecord {
         outbox_id: row.0,
         event_id: row.1,
-        destination_kind: OutboxDestinationKind::parse(&row.2)?,
-        destination: row.3,
-        payload: row.4,
-        state: OutboxState::parse(&row.5)?,
-        attempts: u32::try_from(row.6).map_err(|_| {
+        integration_id: row.2,
+        mapping_id: row.3,
+        destination_kind: OutboxDestinationKind::parse(&row.4)?,
+        destination: row.5,
+        payload: row.6,
+        state: OutboxState::parse(&row.7)?,
+        attempts: u32::try_from(row.8).map_err(|_| {
             crate::core::GuardError::InvalidConfig("outbox attempts overflow".to_string())
         })?,
-        next_attempt_at_ms: row.7,
-        last_error: row.8,
-        created_at_ms: row.9,
-        updated_at_ms: row.10,
+        next_attempt_at_ms: row.9,
+        last_error: row.10,
+        created_at_ms: row.11,
+        updated_at_ms: row.12,
+        expires_at_ms: row.13,
     })
 }

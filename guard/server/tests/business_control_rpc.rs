@@ -613,6 +613,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             let executor = MqttCommandExecutor::new(operations.clone(), store);
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-live-1".to_string(),
                     action: CommandAction::StreamStart,
                     target: "device-2".to_string(),
@@ -626,6 +628,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-playback-1".to_string(),
                     action: CommandAction::StreamPlayback,
                     target: "device-2".to_string(),
@@ -639,6 +643,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-download-1".to_string(),
                     action: CommandAction::StreamDownload,
                     target: "device-2".to_string(),
@@ -652,6 +658,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-talk-1".to_string(),
                     action: CommandAction::StreamTalk,
                     target: "device-2".to_string(),
@@ -665,6 +673,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-ptz-1".to_string(),
                     action: CommandAction::Ptz,
                     target: "device-2".to_string(),
@@ -686,6 +696,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-ai-1".to_string(),
                     action: CommandAction::AiStart,
                     target: "live-mqtt-live-1".to_string(),
@@ -699,6 +711,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-ai-cancel-1".to_string(),
                     action: CommandAction::AiCancel,
                     target: "ai-mqtt-ai-1".to_string(),
@@ -712,6 +726,8 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             executor
                 .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
                     command_id: "mqtt-stop-1".to_string(),
                     action: CommandAction::StreamStop,
                     target: "live-mqtt-live-1".to_string(),

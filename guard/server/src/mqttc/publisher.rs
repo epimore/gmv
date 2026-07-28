@@ -2,6 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use base_rpc::RetryPolicy;
+use rumqttc::v5::AsyncClient as AsyncClientV5;
+use rumqttc::v5::mqttbytes::QoS as QoSV5;
 use rumqttc::{AsyncClient, QoS};
 
 use crate::core::{GuardError, GuardResult};
@@ -10,12 +12,18 @@ use crate::store::model::{OutboxDestinationKind, OutboxRecord};
 
 #[derive(Clone)]
 pub struct MqttPublisher {
-    client: AsyncClient,
+    client: MqttPublishClient,
     retry: RetryPolicy,
 }
 
+#[derive(Clone)]
+pub enum MqttPublishClient {
+    V3(AsyncClient),
+    V5(AsyncClientV5),
+}
+
 impl MqttPublisher {
-    pub fn new(client: AsyncClient, retry: RetryPolicy) -> Self {
+    pub fn new(client: MqttPublishClient, retry: RetryPolicy) -> Self {
         Self { client, retry }
     }
 
@@ -29,10 +37,16 @@ impl MqttPublisher {
                 "MQTT publish topic must be concrete".to_string(),
             ));
         }
-        self.client
-            .publish(topic, QoS::AtLeastOnce, false, payload)
-            .await
-            .map_err(|error| GuardError::Conflict(format!("MQTT publish failed: {error}")))
+        match &self.client {
+            MqttPublishClient::V3(client) => client
+                .publish(topic, QoS::AtLeastOnce, false, payload)
+                .await
+                .map_err(|error| GuardError::Conflict(format!("MQTT v3 publish failed: {error}"))),
+            MqttPublishClient::V5(client) => client
+                .publish(topic, QoSV5::AtLeastOnce, false, payload.to_vec())
+                .await
+                .map_err(|error| GuardError::Conflict(format!("MQTT v5 publish failed: {error}"))),
+        }
     }
 }
 

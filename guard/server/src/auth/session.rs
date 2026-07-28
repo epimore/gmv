@@ -121,6 +121,42 @@ impl AuthState {
         Ok((token, session))
     }
 
+    pub fn issue_service_session(
+        &self,
+        identity: &str,
+        role: Role,
+        ttl: Duration,
+    ) -> GuardResult<(String, UiSession)> {
+        let now_ms = now_ms()?;
+        self.sessions
+            .lock()
+            .retain(|_, session| session.expires_at_ms > now_ms);
+        let token = Uuid::new_v4().to_string();
+        let session = UiSession {
+            username: identity.to_string(),
+            role,
+            nickname: "third-party integration".to_string(),
+            csrf_token: Uuid::new_v4().to_string(),
+            expires_at_ms: now_ms.saturating_add(ttl.as_millis() as u64),
+            account_expires_at_ms: None,
+        };
+        self.sessions.lock().insert(token.clone(), session.clone());
+        Ok((token, session))
+    }
+
+    pub fn extend_service_session(&self, token: &str, ttl: Duration) -> GuardResult<()> {
+        let now_ms = now_ms()?;
+        let mut sessions = self.sessions.lock();
+        let session = sessions
+            .get_mut(token)
+            .filter(|session| session.username.starts_with("integration:"))
+            .ok_or_else(|| {
+                GuardError::InvalidIdentity("invalid integration session".to_string())
+            })?;
+        session.expires_at_ms = now_ms.saturating_add(ttl.as_millis() as u64);
+        Ok(())
+    }
+
     pub fn upsert_user(&self, user: UserAccount) {
         self.users.write().insert(user.username.clone(), user);
     }

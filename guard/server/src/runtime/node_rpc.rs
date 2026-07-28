@@ -512,10 +512,14 @@ async fn apply_event(
     if inserted && topic == "session.playback_presence_terminal" {
         apply_playback_presence_terminal(store, &payload)?;
     }
-    if inserted && let Some(forwarder) = forwarder {
-        forwarder
+    if inserted
+        && let Some(forwarder) = forwarder
+        && let Err(error) = forwarder
             .forward(event_id.clone(), topic.clone(), payload)
-            .await?;
+            .await
+    {
+        store.remove_event(&event_id);
+        return Err(error);
     }
     if inserted {
         base::log::info!(

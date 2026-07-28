@@ -43,6 +43,8 @@ fn sqlite_outbox_survives_pool_reopen_and_resumes_delivery() {
             let record = OutboxRecord {
                 outbox_id: "o1".to_string(),
                 event_id: "e1".to_string(),
+                integration_id: String::new(),
+                mapping_id: String::new(),
                 destination_kind: OutboxDestinationKind::Mqtt,
                 destination: "gmv/events".to_string(),
                 payload: b"{}".to_vec(),
@@ -52,6 +54,7 @@ fn sqlite_outbox_survives_pool_reopen_and_resumes_delivery() {
                 last_error: None,
                 created_at_ms: 100,
                 updated_at_ms: 100,
+                expires_at_ms: None,
             };
             store.insert_outbox_records(&[record]).await.unwrap();
             drop(store);

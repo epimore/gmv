@@ -594,6 +594,8 @@ impl IntegrationsConfig {
 pub struct MqttStartupConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_mqtt_protocol_version")]
+    pub protocol_version: String,
     #[serde(default)]
     pub broker: String,
     #[serde(default = "default_mqtt_port")]
@@ -622,6 +624,7 @@ impl Default for MqttStartupConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            protocol_version: default_mqtt_protocol_version(),
             broker: String::new(),
             port: default_mqtt_port(),
             client_id: String::new(),
@@ -639,6 +642,11 @@ impl Default for MqttStartupConfig {
 
 impl MqttStartupConfig {
     fn validate(&self) -> GuardResult<()> {
+        if !matches!(self.protocol_version.as_str(), "v3" | "v5") {
+            return Err(GuardError::InvalidConfig(
+                "guard.integrations.mqtt.protocol_version must be v3 or v5".to_string(),
+            ));
+        }
         if self.enabled
             && (self.broker.trim().is_empty()
                 || self.client_id.trim().is_empty()
@@ -669,6 +677,10 @@ impl MqttStartupConfig {
 
 fn default_mqtt_publish_topic_prefix() -> String {
     "gmv/events".to_string()
+}
+
+fn default_mqtt_protocol_version() -> String {
+    "v3".to_string()
 }
 
 fn default_mqtt_publish_event_ttl_sec() -> u64 {
@@ -794,6 +806,7 @@ mod tests {
     fn mqtt_startup_password_supports_plaintext_and_encrypted_sources() {
         let plaintext = MqttStartupConfig {
             enabled: true,
+            protocol_version: "v3".to_string(),
             broker: "127.0.0.1".to_string(),
             port: 1883,
             client_id: "guard".to_string(),

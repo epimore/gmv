@@ -52,6 +52,14 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             auth,
             outbox: OutboxRepository::from(store.clone()),
             users: None,
+            integrations: None,
+            integration_secrets: None,
+            integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(
+                300_000, 100,
+            )
+            .unwrap(),
+            mqtt_runtime_protocol_version: "v3".to_string(),
+            mqtt_runtime_enabled: false,
             event_forwarder: None,
             media_https_http2_verified: false,
         }),
@@ -207,6 +215,8 @@ fn gate_r_real_device_readiness_and_observability_contract() {
                         OutboxRecord {
                             outbox_id: "gate-r-pending".to_string(),
                             event_id: "gate-r-event".to_string(),
+                            integration_id: String::new(),
+                            mapping_id: String::new(),
                             destination_kind: OutboxDestinationKind::Webhook,
                             destination: "https://example.com/hook".to_string(),
                             payload: b"{}".to_vec(),
@@ -216,10 +226,13 @@ fn gate_r_real_device_readiness_and_observability_contract() {
                             last_error: None,
                             created_at_ms: 1,
                             updated_at_ms: 1,
+                            expires_at_ms: None,
                         },
                         OutboxRecord {
                             outbox_id: "gate-r-dead".to_string(),
                             event_id: "gate-r-event".to_string(),
+                            integration_id: String::new(),
+                            mapping_id: String::new(),
                             destination_kind: OutboxDestinationKind::Mqtt,
                             destination: "gmv/events".to_string(),
                             payload: b"{}".to_vec(),
@@ -229,6 +242,7 @@ fn gate_r_real_device_readiness_and_observability_contract() {
                             last_error: Some("broker offline".to_string()),
                             created_at_ms: 2,
                             updated_at_ms: 2,
+                            expires_at_ms: None,
                         },
                     ],
                 )

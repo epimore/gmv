@@ -97,6 +97,13 @@ guard:
                 [
                     "_base_db_migrations",
                     "guard_command",
+                    "guard_integration",
+                    "guard_integration_audit",
+                    "guard_integration_credential",
+                    "guard_integration_delivery",
+                    "guard_integration_http",
+                    "guard_integration_mapping",
+                    "guard_integration_mqtt",
                     "guard_outbox",
                     "guard_user"
                 ]
@@ -109,7 +116,10 @@ guard:
             .unwrap();
             assert_eq!(
                 migrations,
-                [(1, "guard_preview_baseline".to_string())]
+                [
+                    (1, "guard_preview_baseline".to_string()),
+                    (2, "guard_integrations".to_string())
+                ]
             );
             let user_columns = base_db::sqlx::query_scalar::<_, String>(
                 "SELECT name FROM pragma_table_info('guard_user') ORDER BY cid",

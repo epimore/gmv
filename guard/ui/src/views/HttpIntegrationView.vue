@@ -40,17 +40,53 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-4" title="接入参数预览" subtitle="最终配置由 Guard Server 提供">
+    <GlassPanel class="span-4" title="HTTP 接入配置" subtitle="回调仅允许 HTTPS，私网默认拒绝">
+      <template #action><el-button type="primary" :loading="saving" :disabled="!auth.isAdmin || !selectedIntegrationId" @click="saveConfig">保存配置</el-button></template>
+      <div class="config-form">
+        <label>接入应用</label>
+        <el-select v-model="selectedIntegrationId" placeholder="请选择 HTTP 应用" @change="loadConfig">
+          <el-option v-for="item in httpIntegrations" :key="item.integration_id" :label="item.name" :value="item.integration_id" />
+        </el-select>
+        <label>事件回调地址</label>
+        <el-input v-model="callbackUrl" placeholder="https://partner.example.com/gmv/events" />
+        <label>私网回调策略</label>
+        <el-switch v-model="allowPrivateNetworks" active-text="仅允许白名单" inactive-text="拒绝私网" />
+        <el-input
+          v-if="allowPrivateNetworks"
+          v-model="privateAllowlistText"
+          type="textarea"
+          :rows="3"
+          placeholder="每行一个 hostname、IP 或 CIDR，例如 10.20.0.0/16"
+        />
+      </div>
       <div class="kv">
         <div class="kv-item"><span>开放 API</span><b class="code">/openapi/v1</b></div>
         <div class="kv-item"><span>协议</span><b>HTTPS</b></div>
         <div class="kv-item"><span>签名算法</span><b>HMAC-SHA256</b></div>
         <div class="kv-item"><span>幂等字段</span><b class="code">request_id</b></div>
         <div class="kv-item wide">
-          <span>回调地址</span><b class="code">https://partner.example.com/gmv/events</b>
+          <span>回调地址</span><b class="code">{{ callbackUrl || "未配置" }}</b>
         </div>
         <div class="kv-item wide"><span>凭证用途</span><b>入站验签 / 回调签名分离</b></div>
       </div>
+    </GlassPanel>
+
+    <GlassPanel class="span-12" title="回调事件映射" subtitle="事件类型支持精确值或 * 通配；每条映射独立进入 outbox">
+      <template #action>
+        <div class="mapping-action">
+          <el-input v-model="mappingSource" placeholder="session.* / stream.*" />
+          <el-button type="primary" :disabled="!auth.isAdmin || !selectedIntegrationId || !callbackUrl" @click="addMapping">新增映射</el-button>
+        </div>
+      </template>
+      <el-table :data="mappings" height="220" empty-text="尚未配置回调事件映射">
+        <el-table-column prop="source_type" label="Guard 事件类型" min-width="220" />
+        <el-table-column prop="schema_version" label="Schema" width="110" />
+        <el-table-column prop="destination" label="回调地址" min-width="320" />
+        <el-table-column prop="payload_profile" label="Payload Profile" min-width="160" />
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }"><StatusPill :label="row.enabled ? '启用' : '停用'" :tone="row.enabled ? 'ready' : 'warning'" /></template>
+        </el-table-column>
+      </el-table>
     </GlassPanel>
 
     <GlassPanel
@@ -58,7 +94,7 @@
       title="接口契约预览"
       subtitle="示例结构 · 正式内容由代码生成的 OpenAPI 提供"
     >
-      <template #action><el-button @click="showPlaceholder">查看在线文档</el-button></template>
+      <template #action><el-button @click="openDocs">查看在线文档</el-button></template>
       <el-table :data="contracts" height="270">
         <el-table-column label="方向" width="120">
           <template #default="{ row }"
@@ -115,49 +151,139 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
+import { useAuthStore } from "@/stores/auth";
 import GlassPanel from "@/components/GlassPanel.vue";
 import MetricCard from "@/components/MetricCard.vue";
 import StatusPill from "@/components/StatusPill.vue";
+import {
+  errorMessage,
+  getOpenApiDocument,
+  getIntegrationHttpConfig,
+  listIntegrations,
+  listIntegrationMappings,
+  saveIntegrationHttpConfig,
+  saveIntegrationMapping,
+  type IntegrationHttpConfig,
+  type IntegrationInfo,
+  type IntegrationMappingInfo,
+} from "@/api/client";
 
-const contracts = [
-  {
-    direction: "被调用",
-    method: "GET",
-    path: "/openapi/v1/devices",
-    purpose: "查询设备与通道",
-    auth: "Access Key + HMAC",
-    tracking: "trace_id",
-  },
-  {
-    direction: "被调用",
-    method: "POST",
-    path: "/openapi/v1/streams/preview",
-    purpose: "创建实时预览",
-    auth: "Access Key + HMAC",
-    tracking: "request_id / operation_id",
-  },
-  {
-    direction: "被调用",
-    method: "POST",
-    path: "/openapi/v1/streams/stop",
-    purpose: "停止业务流",
-    auth: "Access Key + HMAC",
-    tracking: "request_id / operation_id",
-  },
-  {
-    direction: "回调",
-    method: "POST",
-    path: "{callback_url}/events",
-    purpose: "推送事件与操作结果",
-    auth: "Guard 回调签名",
-    tracking: "event_id / trace_id",
-  },
-];
+const httpIntegrations = ref<IntegrationInfo[]>([]);
+const selectedIntegrationId = ref("");
+const auth = useAuthStore();
+const callbackUrl = ref("");
+const allowPrivateNetworks = ref(false);
+const privateAllowlistText = ref("");
+const saving = ref(false);
+const config = ref<IntegrationHttpConfig | null>(null);
+const mappings = ref<IntegrationMappingInfo[]>([]);
+const mappingSource = ref("");
+const contracts = ref<Array<{ direction: string; method: string; path: string; purpose: string; auth: string; tracking: string }>>([]);
 
-function showPlaceholder() {
-  ElMessage.info("OpenAPI 在线文档将在 Guard Server 契约生成能力完成后开放");
+async function loadIntegrations() {
+  try {
+    httpIntegrations.value = (await listIntegrations()).filter((item) => item.transport === "http");
+    selectedIntegrationId.value = httpIntegrations.value[0]?.integration_id ?? "";
+    await loadConfig();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "加载 HTTP 接入失败"));
+  }
 }
+
+async function loadContract() {
+  try {
+    const document = await getOpenApiDocument() as { paths?: Record<string, Record<string, { summary?: string }>> };
+    contracts.value = Object.entries(document.paths ?? {}).flatMap(([path, operations]) =>
+      Object.entries(operations).map(([method, operation]) => ({
+        direction: "被调用",
+        method: method.toUpperCase(),
+        path,
+        purpose: operation.summary ?? "Guard 业务能力",
+        auth: "Access Key + HMAC",
+        tracking: method === "post" ? "request_id / operation_id" : "trace_id",
+      })),
+    );
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "加载 OpenAPI 契约失败"));
+  }
+}
+
+async function loadConfig() {
+  if (!selectedIntegrationId.value) {
+    config.value = null;
+    callbackUrl.value = "";
+    allowPrivateNetworks.value = false;
+    privateAllowlistText.value = "";
+    return;
+  }
+  try {
+    config.value = await getIntegrationHttpConfig(selectedIntegrationId.value);
+    callbackUrl.value = config.value.callback_url ?? "";
+    allowPrivateNetworks.value = config.value.private_network_policy === "allowlist";
+    privateAllowlistText.value = config.value.private_network_allowlist.join("\n");
+    mappings.value = await listIntegrationMappings(selectedIntegrationId.value);
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "加载 HTTP 配置失败"));
+  }
+}
+
+async function addMapping() {
+  const sourceType = mappingSource.value.trim();
+  if (!selectedIntegrationId.value || !sourceType || !callbackUrl.value.trim()) {
+    ElMessage.warning("请填写事件类型并先保存 HTTPS 回调地址");
+    return;
+  }
+  try {
+    await saveIntegrationMapping(selectedIntegrationId.value, {
+      direction: "OUTBOUND",
+      source_type: sourceType,
+      schema_version: "v1",
+      destination_kind: "HTTP",
+      destination: callbackUrl.value.trim(),
+      payload_profile: "event-envelope-v1",
+      enabled: true,
+    });
+    mappings.value = await listIntegrationMappings(selectedIntegrationId.value);
+    mappingSource.value = "";
+    ElMessage.success("回调事件映射已新增");
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "新增事件映射失败"));
+  }
+}
+
+async function saveConfig() {
+  if (!selectedIntegrationId.value || !config.value) return;
+  saving.value = true;
+  try {
+    config.value = await saveIntegrationHttpConfig(selectedIntegrationId.value, {
+      callback_url: callbackUrl.value.trim() || null,
+      callback_timeout_ms: config.value.callback_timeout_ms,
+      private_network_policy: allowPrivateNetworks.value ? "allowlist" : "deny",
+      private_network_allowlist: allowPrivateNetworks.value
+        ? privateAllowlistText.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean)
+        : [],
+      max_attempts: config.value.max_attempts,
+      event_ttl_ms: config.value.event_ttl_ms,
+      max_response_bytes: config.value.max_response_bytes,
+    });
+    ElMessage.success("HTTP 回调配置已保存");
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "保存 HTTP 配置失败"));
+  } finally {
+    saving.value = false;
+  }
+}
+
+function openDocs() {
+  window.open("/api-docs", "_blank", "noopener,noreferrer");
+}
+
+onMounted(() => {
+  void loadIntegrations();
+  void loadContract();
+});
 </script>
 
 <style scoped>
@@ -244,6 +370,23 @@ function showPlaceholder() {
 
 .kv .wide {
   grid-column: span 2;
+}
+
+.config-form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.config-form label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mapping-action {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) auto;
+  gap: 10px;
 }
 
 .kv-item b {

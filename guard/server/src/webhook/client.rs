@@ -8,10 +8,10 @@ use url::Url;
 
 use crate::auth::Secret;
 use crate::core::{GuardError, GuardResult};
+use crate::integration::hmac::{SignedRequest, body_sha256, sign_request};
 use crate::outbox::OutboxDelivery;
 use crate::store::model::{OutboxDestinationKind, OutboxRecord};
 use crate::webhook::policy::WebhookUrlPolicy;
-use crate::webhook::signing;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebhookResponse {
@@ -22,6 +22,7 @@ pub struct WebhookResponse {
 
 #[derive(Debug, Clone)]
 pub struct WebhookClient {
+    access_key: String,
     secret: Secret,
     timeout: Duration,
     max_response_bytes: usize,
@@ -41,11 +42,17 @@ impl WebhookClient {
             ));
         }
         Ok(Self {
+            access_key: "gmv".to_string(),
             secret: Secret::new(secret),
             timeout,
             max_response_bytes,
             policy,
         })
+    }
+
+    pub fn with_access_key(mut self, access_key: impl Into<String>) -> Self {
+        self.access_key = access_key.into();
+        self
     }
 
     pub async fn send(&self, destination: &str, payload: &[u8]) -> GuardResult<WebhookResponse> {
@@ -60,11 +67,26 @@ impl WebhookClient {
             .build()
             .map_err(|error| GuardError::InvalidConfig(format!("webhook client: {error}")))?;
         let timestamp_ms = now_ms()?;
-        let signature = signing::sign(self.secret.expose().as_bytes(), timestamp_ms, payload)?;
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let signature = sign_request(
+            self.secret.expose().as_bytes(),
+            &SignedRequest {
+                access_key: &self.access_key,
+                timestamp_ms,
+                nonce: &nonce,
+                method: "POST",
+                path: url.path(),
+                query: url.query().unwrap_or_default(),
+                body: payload,
+            },
+        )?;
         let response = client
             .post(url)
             .header("content-type", "application/json")
             .header("x-gmv-timestamp", timestamp_ms.to_string())
+            .header("x-gmv-access-key", &self.access_key)
+            .header("x-gmv-nonce", nonce)
+            .header("x-gmv-content-sha256", body_sha256(payload))
             .header("x-gmv-signature", signature)
             .body(payload.to_vec())
             .send()
@@ -96,11 +118,11 @@ impl WebhookClient {
             truncated,
         };
         if !status.is_success() {
-            return Err(GuardError::Conflict(format!(
-                "webhook returned HTTP {}: {}",
-                result.status,
-                String::from_utf8_lossy(&result.body)
-            )));
+            let message = format!("webhook returned HTTP {}", result.status);
+            if status.is_client_error() && result.status != 408 && result.status != 429 {
+                return Err(GuardError::InvalidIdentity(message));
+            }
+            return Err(GuardError::Conflict(message));
         }
         Ok(result)
     }

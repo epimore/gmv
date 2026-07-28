@@ -6,7 +6,7 @@ use crate::core::{GuardError, GuardResult};
 
 #[derive(Debug, Clone, Default)]
 pub struct WebhookUrlPolicy {
-    pub allow_private_networks: bool,
+    pub private_network_allowlist: Vec<String>,
 }
 
 impl WebhookUrlPolicy {
@@ -41,13 +41,34 @@ impl WebhookUrlPolicy {
                 "webhook host resolved to no addresses".to_string(),
             ));
         }
-        if !self.allow_private_networks && addresses.iter().any(|address| !is_public(address.ip()))
-        {
+        if addresses.iter().any(|address| {
+            !is_public(address.ip()) && !self.private_address_allowed(host, address.ip())
+        }) {
             return Err(GuardError::InvalidIdentity(
                 "webhook host resolves to a non-public address".to_string(),
             ));
         }
         Ok(addresses)
+    }
+
+    fn private_address_allowed(&self, host: &str, ip: IpAddr) -> bool {
+        if !is_allowlist_eligible_private(ip) {
+            return false;
+        }
+        self.private_network_allowlist.iter().any(|entry| {
+            entry.eq_ignore_ascii_case(host)
+                || entry.parse::<IpAddr>().is_ok_and(|allowed| allowed == ip)
+                || entry
+                    .parse::<ipnet::IpNet>()
+                    .is_ok_and(|network| network.contains(&ip))
+        })
+    }
+}
+
+fn is_allowlist_eligible_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_private(),
+        IpAddr::V6(ip) => (ip.segments()[0] & 0xfe00) == 0xfc00,
     }
 }
 
@@ -105,5 +126,19 @@ mod tests {
         }
         assert!(is_public("8.8.8.8".parse().unwrap()));
         assert!(is_public("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn private_allowlist_accepts_only_private_cidr_or_exact_host() {
+        let policy = WebhookUrlPolicy {
+            private_network_allowlist: vec![
+                "10.20.0.0/16".to_string(),
+                "partner.internal".to_string(),
+            ],
+        };
+        assert!(policy.private_address_allowed("other.internal", "10.20.1.2".parse().unwrap()));
+        assert!(policy.private_address_allowed("partner.internal", "192.168.1.3".parse().unwrap()));
+        assert!(!policy.private_address_allowed("partner.internal", "127.0.0.1".parse().unwrap()));
+        assert!(!policy.private_address_allowed("other.internal", "192.168.1.3".parse().unwrap()));
     }
 }

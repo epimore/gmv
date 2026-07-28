@@ -9,16 +9,18 @@ use base::log::{error, info, warn};
 use base::logger;
 use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::tokio_util::sync::CancellationToken;
+use sha2::{Digest, Sha256};
 
 use crate::api::v2::ApiV2;
 use crate::app_config::GuardAppConfig;
 use crate::auth::{AuthState, Secret, SessionPolicy};
 use crate::core::{GuardError, GuardResult};
 use crate::mqttc::{
-    CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy, MqttRuntime,
+    CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy,
+    MqttProtocolVersion, MqttRuntime,
 };
 use crate::operation::OperationService;
-use crate::outbox::OutboxWorker;
+use crate::outbox::{DeliveryRouter, OutboxWorker};
 use crate::runtime::event_forwarder::{EventForwardRule, EventForwarder};
 use crate::runtime::node_expirer;
 use crate::runtime::node_rpc::{self, NodeRpcConfig};
@@ -99,6 +101,52 @@ pub async fn start_guard(
     persistent.initialize(&config).await?;
     let users = persistent.load_users().await?;
     let user_repository = persistent.user_repository();
+    let integration_repository = persistent.integration_repository();
+    let integration_secrets = crate::integration::secret::IntegrationSecretCipher::from_env()?;
+    if integration_secrets.is_none()
+        && integration_repository
+            .list()
+            .await?
+            .iter()
+            .any(|integration| {
+                integration.enabled
+                    && integration.transport
+                        == crate::integration::model::IntegrationTransport::Http
+            })
+    {
+        return Err(GuardError::InvalidConfig(format!(
+            "{} is required while an HTTP integration is enabled",
+            crate::integration::secret::INTEGRATION_MASTER_KEY_ENV
+        ))
+        .into());
+    }
+    for integration in integration_repository.list().await? {
+        if integration.enabled
+            && integration.transport == crate::integration::model::IntegrationTransport::Mqtt
+            && !config.integrations.mqtt.enabled
+        {
+            return Err(GuardError::InvalidConfig(format!(
+                "MQTT integration {} is enabled while MQTT runtime is disabled",
+                integration.integration_id
+            ))
+            .into());
+        }
+        if integration.enabled
+            && integration.transport == crate::integration::model::IntegrationTransport::Mqtt
+            && let Some(mqtt) = integration_repository
+                .mqtt_config(&integration.integration_id)
+                .await?
+            && mqtt.protocol_version != config.integrations.mqtt.protocol_version
+        {
+            return Err(GuardError::InvalidConfig(format!(
+                "MQTT integration {} declares {}, but runtime uses {}",
+                integration.integration_id,
+                mqtt.protocol_version,
+                config.integrations.mqtt.protocol_version
+            ))
+            .into());
+        }
+    }
     let store = InMemoryGuardStore::default();
     let auth = AuthState::new(
         users,
@@ -127,11 +175,59 @@ pub async fn start_guard(
         }),
     };
     let _node_expirer = node_expirer::spawn(registry.clone(), config.grpc.heartbeat_timeout_ms);
-    let event_forwarder = if config.integrations.mqtt.enabled {
-        spawn_mqtt_runtime(&config, &persistent, operations.clone(), api_store.clone())?
+    let mqtt_publisher = if config.integrations.mqtt.enabled {
+        Some(
+            spawn_mqtt_runtime(
+                &config,
+                &persistent,
+                operations.clone(),
+                api_store.clone(),
+                auth.clone(),
+                &integration_repository,
+            )
+            .await?,
+        )
     } else {
         None
     };
+    let mqtt_rules = if config.integrations.mqtt.enabled {
+        config
+            .integrations
+            .mqtt
+            .publish_event_topics
+            .iter()
+            .map(|pattern| EventForwardRule {
+                pattern: pattern.clone(),
+                topic_prefix: config.integrations.mqtt.publish_topic_prefix.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let event_forwarder = Some(
+        EventForwarder::new(persistent.outbox_repository(), mqtt_rules)
+            .with_integrations(integration_repository.clone()),
+    );
+    if let Some(forwarder) = event_forwarder.clone() {
+        spawn_integration_playback_renewal(api_store.clone(), forwarder);
+    }
+    let mut delivery = DeliveryRouter::default();
+    if let Some(publisher) = mqtt_publisher {
+        delivery = delivery.with(
+            crate::store::model::OutboxDestinationKind::Mqtt,
+            Arc::new(publisher),
+        );
+    }
+    if let Some(cipher) = integration_secrets.clone() {
+        delivery = delivery.with(
+            crate::store::model::OutboxDestinationKind::Webhook,
+            Arc::new(crate::webhook::IntegrationWebhookDelivery::new(
+                integration_repository.clone(),
+                cipher,
+            )),
+        );
+    }
+    spawn_outbox_worker(persistent.outbox_repository(), delivery);
     let web = web::serve(
         web_config,
         listeners.web,
@@ -139,6 +235,10 @@ pub async fn start_guard(
         auth.clone(),
         persistent.outbox_repository(),
         user_repository,
+        integration_repository,
+        integration_secrets,
+        config.integrations.mqtt.protocol_version.clone(),
+        config.integrations.mqtt.enabled,
         event_forwarder.clone(),
     );
     let rpc = node_rpc::serve(
@@ -152,14 +252,17 @@ pub async fn start_guard(
     base::tokio::try_join!(web, rpc).map(|_| ())
 }
 
-fn spawn_mqtt_runtime(
+async fn spawn_mqtt_runtime(
     config: &GuardAppConfig,
     persistent: &PersistentStore,
     operations: OperationService,
     store: InMemoryGuardStore,
-) -> GuardResult<Option<EventForwarder>> {
+    auth: AuthState,
+    integrations: &crate::store::persistent::IntegrationRepository,
+) -> GuardResult<crate::mqttc::MqttPublisher> {
     let mqtt = &config.integrations.mqtt;
     let runtime = MqttRuntime::new(MqttClientConfig {
+        protocol_version: MqttProtocolVersion::parse(&mqtt.protocol_version)?,
         client_id: mqtt.client_id.clone(),
         host: mqtt.broker.clone(),
         port: mqtt.port,
@@ -170,20 +273,38 @@ fn spawn_mqtt_runtime(
         tls: mqtt.tls,
         retry: base_rpc::RetryPolicy::default(),
     })?;
-    let event_forwarder = if mqtt.publish_event_topics.is_empty() {
-        None
-    } else {
-        let rules = mqtt
-            .publish_event_topics
-            .iter()
-            .map(|pattern| EventForwardRule {
-                pattern: pattern.clone(),
-                topic_prefix: mqtt.publish_topic_prefix.clone(),
-            })
-            .collect::<Vec<_>>();
-        Some(EventForwarder::new(persistent.outbox_repository(), rules))
-    };
-    let topics = mqtt.subscribe_topics.clone();
+    let publisher = runtime.publisher.clone();
+    let mut topics = mqtt.subscribe_topics.clone();
+    let mut topic_routes = Vec::new();
+    let mut result_topics = std::collections::HashMap::new();
+    for integration in integrations
+        .list()
+        .await?
+        .into_iter()
+        .filter(|integration| {
+            integration.enabled
+                && integration.inbound_enabled
+                && integration.transport == crate::integration::model::IntegrationTransport::Mqtt
+        })
+    {
+        if let Some(integration_mqtt) = integrations
+            .mqtt_config(&integration.integration_id)
+            .await?
+        {
+            topics.push(integration_mqtt.command_topic.clone());
+            result_topics.insert(
+                integration.integration_id.clone(),
+                integration_mqtt.result_topic.clone(),
+            );
+            topic_routes.push((
+                integration_mqtt.command_topic,
+                integration.integration_id,
+                integration_mqtt.allowed_actions,
+            ));
+        }
+    }
+    topics.sort();
+    topics.dedup();
     let policy = MqttCommandPolicy::new(
         [
             "stream.start".to_string(),
@@ -191,70 +312,21 @@ fn spawn_mqtt_runtime(
             "device.ptz".to_string(),
             "ai.start".to_string(),
             "ai.cancel".to_string(),
+            "playback.ticket.renew".to_string(),
         ],
         300_000,
-    )?;
+    )?
+    .with_topic_routes(topic_routes)?;
     let repository = match persistent {
         #[cfg(feature = "db-mysql")]
         PersistentStore::Mysql(store) => CommandIdRepository::from(store.clone()),
         #[cfg(feature = "db-sqlite")]
         PersistentStore::Sqlite(store) => CommandIdRepository::from(store.clone()),
     };
-    let executor = MqttCommandExecutor::new(operations, store);
+    let executor = MqttCommandExecutor::new(operations, store)
+        .with_auth(auth)
+        .with_result_outbox(persistent.outbox_repository(), result_topics);
     let cancel = CancellationToken::new();
-    let worker = OutboxWorker::new(
-        persistent.outbox_repository(),
-        Arc::new(runtime.publisher.clone()),
-        runtime.publisher.retry_policy().clone(),
-        100,
-    )
-    .with_max_record_age(Duration::from_secs(mqtt.publish_event_ttl_sec));
-    let worker_cancel = cancel.clone();
-    base::tokio::spawn(async move {
-        let mut failure_episode = FailureEpisode::default();
-        loop {
-            if worker_cancel.is_cancelled() {
-                break;
-            }
-            match worker.run_once(now_ms().unwrap_or_default()).await {
-                Ok(_) => {
-                    if let EpisodeDecision::Recovered {
-                        total,
-                        suppressed,
-                        duration,
-                    } = failure_episode.record_success(Instant::now())
-                    {
-                        info!(
-                            "MQTT outbox worker state changed: state=ready, previous_state=failed, outcome=recovered, total_failures={total}, suppressed={suppressed}, duration_ms={}",
-                            duration.as_millis()
-                        );
-                    }
-                }
-                Err(error) => {
-                    base::log::trace!("MQTT outbox worker attempt failed: error={error}");
-                    match failure_episode.record_failure(Instant::now()) {
-                        EpisodeDecision::Started => warn!(
-                            "MQTT outbox worker state changed: state=failed, previous_state=ready, reason=run_once_failed"
-                        ),
-                        EpisodeDecision::Summary {
-                            total,
-                            since_last_summary,
-                            suppressed,
-                            duration,
-                        } => warn!(
-                            "MQTT outbox worker remains failed: outcome=ongoing, reason=run_once_failed, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
-                            duration.as_millis()
-                        ),
-                        EpisodeDecision::Suppressed => {}
-                        EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => {
-                            unreachable!()
-                        }
-                    }
-                }
-            }
-            base::tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    });
     base::tokio::spawn(async move {
         let result = if topics.is_empty() {
             runtime.run(cancel).await
@@ -267,7 +339,100 @@ fn spawn_mqtt_runtime(
             warn!("MQTT runtime stopped: {error}");
         }
     });
-    Ok(event_forwarder)
+    Ok(publisher)
+}
+
+fn spawn_outbox_worker(repository: crate::outbox::OutboxRepository, delivery: DeliveryRouter) {
+    let worker = OutboxWorker::new(
+        repository,
+        Arc::new(delivery),
+        base_rpc::RetryPolicy::default(),
+        100,
+    )
+    .with_delete_delivered(true);
+    base::tokio::spawn(async move {
+        let mut failure_episode = FailureEpisode::default();
+        loop {
+            match worker.run_once(now_ms().unwrap_or_default()).await {
+                Ok(_) => {
+                    if let EpisodeDecision::Recovered {
+                        total,
+                        suppressed,
+                        duration,
+                    } = failure_episode.record_success(Instant::now())
+                    {
+                        info!(
+                            "integration outbox worker recovered: total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                            duration.as_millis()
+                        );
+                    }
+                }
+                Err(error) => match failure_episode.record_failure(Instant::now()) {
+                    EpisodeDecision::Started => warn!("integration outbox worker failed: {error}"),
+                    EpisodeDecision::Summary {
+                        total,
+                        suppressed,
+                        duration,
+                        ..
+                    } => warn!(
+                        "integration outbox worker remains failed: total={total}, suppressed={suppressed}, duration_ms={}",
+                        duration.as_millis()
+                    ),
+                    EpisodeDecision::Suppressed => {}
+                    EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+                },
+            }
+            base::tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+}
+
+fn spawn_integration_playback_renewal(store: InMemoryGuardStore, forwarder: EventForwarder) {
+    base::tokio::spawn(async move {
+        loop {
+            let now = now_ms().unwrap_or_default();
+            for ticket in
+                store.integration_playback_tickets_expiring_before(now, now.saturating_add(60_000))
+            {
+                let Some(integration_id) = ticket.username.strip_prefix("integration:") else {
+                    continue;
+                };
+                let mut digest = Sha256::new();
+                digest.update(ticket.token.as_bytes());
+                digest.update(ticket.expires_at_ms.to_be_bytes());
+                let event_id = format!("playback-renew-{}", hex::encode(digest.finalize()));
+                let payload = match base::serde_json::to_vec(&base::serde_json::json!({
+                    "token": ticket.token,
+                    "playback_id": ticket.playback_id,
+                    "stream_id": ticket.stream_id,
+                    "output_id": ticket.output_id,
+                    "subscription_id": ticket.subscription_id,
+                    "expires_at_ms": ticket.expires_at_ms,
+                    "response_action": "playback.ticket.renew"
+                })) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        warn!("playback renewal request encode failed: {error}");
+                        continue;
+                    }
+                };
+                if let Err(error) = forwarder
+                    .forward_for_integration(
+                        integration_id,
+                        event_id,
+                        "integration.playback_ticket.renew_requested".to_string(),
+                        payload,
+                    )
+                    .await
+                {
+                    warn!(
+                        "playback renewal request enqueue failed: integration_id={integration_id}, reason={error}"
+                    );
+                }
+            }
+            base::tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
 }
 
 fn now_ms() -> GuardResult<i64> {

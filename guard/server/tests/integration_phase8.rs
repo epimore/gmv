@@ -1,12 +1,22 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
-use gmv_guard_server::mqttc::{CommandAction, MqttClientConfig, MqttCommandPolicy};
+use gmv_guard_server::auth::{AuthState, Role, SessionPolicy};
+use gmv_guard_server::mqttc::{
+    CommandAction, CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy,
+    MqttProtocolVersion, RoutedCommand,
+};
+use gmv_guard_server::operation::OperationService;
+use gmv_guard_server::outbox::OutboxRepository;
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::PlaybackTicketRecord;
 use gmv_guard_server::webhook::signing;
 use gmv_guard_server::webhook::{WebhookClient, WebhookUrlPolicy};
 
 #[test]
 fn mqtt_config_requires_complete_credentials_and_tls_is_explicit() {
     let config = MqttClientConfig {
+        protocol_version: MqttProtocolVersion::V3,
         client_id: "guard-1".to_string(),
         host: "mqtt.example.com".to_string(),
         port: 8883,
@@ -79,6 +89,143 @@ fn mqtt_commands_enforce_schema_ttl_permissions_and_idempotency() {
 
     let forbidden = payload.replace_ascii(b"stream.stop", b"device.ptz ");
     assert!(policy.decode(&forbidden, 1500).is_err());
+}
+
+#[test]
+fn mqtt_command_topic_is_bound_to_integration_and_action_allowlist() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let policy = MqttCommandPolicy::new(["stream.stop".to_string()], 60_000)
+                .unwrap()
+                .with_topic_routes([
+                    (
+                        "gmv/commands/app-1".to_string(),
+                        "app-1".to_string(),
+                        vec!["stream.stop".to_string()],
+                    ),
+                    (
+                        "gmv/commands/app-2".to_string(),
+                        "app-2".to_string(),
+                        vec!["ai.start".to_string()],
+                    ),
+                ])
+                .unwrap();
+            let repository = CommandIdRepository::from(InMemoryGuardStore::default());
+            let payload = br#"{
+              "integration_id":"app-1",
+              "command_id":"cmd-topic-1",
+              "issued_at_ms":1000,
+              "expires_at_ms":2000,
+              "action":"stream.stop",
+              "target":"stream-1"
+            }"#;
+            let command = policy
+                .decode_topic_with_repository("gmv/commands/app-1", payload, 1500, &repository)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(command.integration_id, "app-1");
+
+            let mismatched = payload.replace_ascii(b"cmd-topic-1", b"cmd-topic-2");
+            assert!(
+                policy
+                    .decode_topic_with_repository(
+                        "gmv/commands/app-2",
+                        &mismatched,
+                        1500,
+                        &repository,
+                    )
+                    .await
+                    .is_err()
+            );
+        });
+}
+
+#[test]
+fn mqtt_command_failure_queues_correlated_result() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let store = InMemoryGuardStore::default();
+            let executor = MqttCommandExecutor::new(OperationService::default(), store.clone())
+                .with_result_outbox(
+                    OutboxRepository::from(store.clone()),
+                    HashMap::from([("app-1".to_string(), "gmv/command-results/app-1".to_string())]),
+                );
+            let error = executor
+                .execute(RoutedCommand {
+                    command_id: "cmd-result-1".to_string(),
+                    integration_id: "app-1".to_string(),
+                    expires_at_ms: i64::MAX,
+                    action: CommandAction::StreamStart,
+                    target: "device-1".to_string(),
+                    payload: base::serde_json::json!({}),
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("channel_id"));
+            let records = store.outbox_records(10);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].destination, "gmv/command-results/app-1");
+            let payload: base::serde_json::Value =
+                base::serde_json::from_slice(&records[0].payload).unwrap();
+            assert_eq!(payload["command_id"], "cmd-result-1");
+            assert_eq!(payload["state"], "failed");
+        });
+}
+
+#[test]
+fn mqtt_playback_ticket_renewal_checks_owner_and_extends_lifecycle() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let store = InMemoryGuardStore::default();
+            let auth = AuthState::new(
+                std::iter::empty::<gmv_guard_server::auth::UserAccount>(),
+                SessionPolicy::default(),
+            );
+            let (service_token, _) = auth
+                .issue_service_session("integration:app-1", Role::Admin, Duration::from_secs(300))
+                .unwrap();
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64;
+            store.upsert_playback_ticket(PlaybackTicketRecord {
+                token: "ticket-1".to_string(),
+                stream_id: "stream-1".to_string(),
+                playback_id: "playback-1".to_string(),
+                playback_start_time_sec: 0,
+                playback_end_time_sec: 60,
+                output_id: String::new(),
+                subscription_id: "subscription-1".to_string(),
+                lease_id: "lease-1".to_string(),
+                route_id: "route-1".to_string(),
+                username: "integration:app-1".to_string(),
+                ui_session_token: service_token,
+                required_role: Role::Viewer,
+                issued_at_ms: now_ms,
+                expires_at_ms: now_ms + 60_000,
+                absolute_expires_at_ms: now_ms + 3_600_000,
+                renewal_count: 0,
+            });
+            MqttCommandExecutor::new(OperationService::default(), store.clone())
+                .with_auth(auth)
+                .execute(RoutedCommand {
+                    command_id: "renew-1".to_string(),
+                    integration_id: "app-1".to_string(),
+                    expires_at_ms: now_ms + 60_000,
+                    action: CommandAction::PlaybackTicketRenew,
+                    target: "ticket-1".to_string(),
+                    payload: base::serde_json::json!({"renew": true}),
+                })
+                .await
+                .unwrap();
+            let ticket = store.get_playback_ticket("ticket-1").unwrap();
+            assert!(ticket.expires_at_ms >= now_ms + 299_000);
+            assert_eq!(ticket.renewal_count, 1);
+        });
 }
 
 #[test]

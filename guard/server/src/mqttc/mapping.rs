@@ -13,6 +13,7 @@ pub enum CommandAction {
     Ptz,
     AiStart,
     AiCancel,
+    PlaybackTicketRenew,
 }
 
 impl CommandAction {
@@ -26,6 +27,7 @@ impl CommandAction {
             "device.ptz" => Some(Self::Ptz),
             "ai.start" => Some(Self::AiStart),
             "ai.cancel" => Some(Self::AiCancel),
+            "playback.ticket.renew" => Some(Self::PlaybackTicketRenew),
             _ => None,
         }
     }
@@ -40,6 +42,7 @@ impl CommandAction {
             Self::Ptz => "device.ptz",
             Self::AiStart => "ai.start",
             Self::AiCancel => "ai.cancel",
+            Self::PlaybackTicketRenew => "playback.ticket.renew",
         }
     }
 }
@@ -47,6 +50,8 @@ impl CommandAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoutedCommand {
     pub command_id: String,
+    pub integration_id: String,
+    pub expires_at_ms: i64,
     pub action: CommandAction,
     pub target: String,
     pub payload: Value,

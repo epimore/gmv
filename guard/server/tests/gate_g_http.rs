@@ -52,6 +52,14 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             auth,
             outbox: OutboxRepository::from(store.clone()),
             users: None,
+            integrations: None,
+            integration_secrets: None,
+            integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(
+                300_000, 100,
+            )
+            .unwrap(),
+            mqtt_runtime_protocol_version: "v3".to_string(),
+            mqtt_runtime_enabled: false,
             event_forwarder: None,
             media_https_http2_verified: false,
         }),
@@ -212,7 +220,7 @@ fn ui_api_requires_registered_nodes_for_device_operations() {
                 ),
             )
             .await;
-            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert_eq!(status, StatusCode::FORBIDDEN);
 
             let (status, _, _) = call(
                 &app,
@@ -370,6 +378,8 @@ fn outbox_manual_retry_is_exposed_safely() {
                     vec![OutboxRecord {
                         outbox_id: "outbox-dead".to_string(),
                         event_id: "event-dead".to_string(),
+                        integration_id: String::new(),
+                        mapping_id: String::new(),
                         destination_kind: OutboxDestinationKind::Webhook,
                         destination: "https://example.com/hook".to_string(),
                         payload: b"{}".to_vec(),
@@ -379,6 +389,7 @@ fn outbox_manual_retry_is_exposed_safely() {
                         last_error: Some("offline".to_string()),
                         created_at_ms: 1,
                         updated_at_ms: 1,
+                        expires_at_ms: None,
                     }],
                 )
                 .unwrap();

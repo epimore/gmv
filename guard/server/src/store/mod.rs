@@ -1,3 +1,4 @@
+pub mod integration;
 pub mod migration;
 pub mod model;
 #[cfg(feature = "db-mysql")]
@@ -31,6 +32,7 @@ struct StoreInner {
     idempotency_keys: HashSet<String>,
     outbox: HashMap<String, OutboxRecord>,
     command_ids: HashMap<String, i64>,
+    integration_delivery_keys: HashMap<(String, String), i64>,
     playback_tickets: HashMap<String, PlaybackTicketRecord>,
     stream_session_owners: HashMap<String, StreamSessionOwnerRecord>,
     stream_input_owners: HashMap<String, StreamSessionOwnerRecord>,
@@ -116,6 +118,24 @@ impl InMemoryGuardStore {
 
     pub fn get_playback_ticket(&self, token: &str) -> Option<PlaybackTicketRecord> {
         self.inner.read().playback_tickets.get(token).cloned()
+    }
+
+    pub fn integration_playback_tickets_expiring_before(
+        &self,
+        now_ms: i64,
+        before_ms: i64,
+    ) -> Vec<PlaybackTicketRecord> {
+        self.inner
+            .read()
+            .playback_tickets
+            .values()
+            .filter(|ticket| {
+                ticket.username.starts_with("integration:")
+                    && ticket.expires_at_ms > now_ms
+                    && ticket.expires_at_ms <= before_ms
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn find_playback_control_ticket(
@@ -272,6 +292,10 @@ impl InMemoryGuardStore {
         Ok(true)
     }
 
+    pub fn remove_event(&self, event_id: &str) {
+        self.inner.write().events.remove(event_id);
+    }
+
     pub fn insert_event_with_outbox(
         &self,
         event: EventRecord,
@@ -316,8 +340,73 @@ impl InMemoryGuardStore {
         Ok(())
     }
 
+    pub fn insert_mapped_outbox_records(&self, records: Vec<OutboxRecord>) -> GuardResult<()> {
+        let mut inner = self.inner.write();
+        let now_ms = records
+            .iter()
+            .map(|record| record.created_at_ms)
+            .max()
+            .unwrap_or_default();
+        inner
+            .integration_delivery_keys
+            .retain(|_, expires_at_ms| *expires_at_ms > now_ms);
+        for record in records {
+            if record.outbox_id.is_empty()
+                || record.event_id.is_empty()
+                || record.mapping_id.is_empty()
+                || record.destination.is_empty()
+            {
+                return Err(GuardError::InvalidConfig(
+                    "invalid mapped outbox record".to_string(),
+                ));
+            }
+            let key = (record.event_id.clone(), record.mapping_id.clone());
+            let expires_at_ms = record
+                .expires_at_ms
+                .unwrap_or_else(|| record.created_at_ms.saturating_add(259_200_000));
+            if inner
+                .integration_delivery_keys
+                .insert(key, expires_at_ms)
+                .is_none()
+            {
+                inner.outbox.insert(record.outbox_id.clone(), record);
+            }
+        }
+        Ok(())
+    }
+
     pub fn get_outbox(&self, outbox_id: &str) -> Option<OutboxRecord> {
         self.inner.read().outbox.get(outbox_id).cloned()
+    }
+
+    pub fn remove_outbox(&self, outbox_id: &str) -> bool {
+        self.inner.write().outbox.remove(outbox_id).is_some()
+    }
+
+    pub fn cleanup_dead_outbox(&self, older_than_ms: i64, max_per_integration: usize) -> usize {
+        let mut inner = self.inner.write();
+        let before = inner.outbox.len();
+        inner.outbox.retain(|_, record| {
+            record.state != OutboxState::Dead || record.updated_at_ms > older_than_ms
+        });
+        let mut by_integration = HashMap::<String, Vec<(String, i64)>>::new();
+        for record in inner
+            .outbox
+            .values()
+            .filter(|record| record.state == OutboxState::Dead)
+        {
+            by_integration
+                .entry(record.integration_id.clone())
+                .or_default()
+                .push((record.outbox_id.clone(), record.updated_at_ms));
+        }
+        for records in by_integration.values_mut() {
+            records.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+            for (outbox_id, _) in records.iter().skip(max_per_integration) {
+                inner.outbox.remove(outbox_id);
+            }
+        }
+        before.saturating_sub(inner.outbox.len())
     }
 
     pub fn due_outbox(&self, now_ms: i64, limit: usize) -> Vec<OutboxRecord> {
@@ -451,7 +540,10 @@ mod tests {
             username: String::new(),
             ui_session_token: String::new(),
             required_role: Role::Viewer,
+            issued_at_ms: 0,
             expires_at_ms,
+            absolute_expires_at_ms: i64::MAX,
+            renewal_count: 0,
         }
     }
 

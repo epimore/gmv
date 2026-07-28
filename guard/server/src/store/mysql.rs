@@ -14,6 +14,10 @@ impl MysqlStore {
         Self { pool }
     }
 
+    pub(crate) fn pool(&self) -> &MySqlPool {
+        &self.pool
+    }
+
     pub async fn migrate(&self) -> GuardResult<()> {
         base_db::migration::run_mysql_migrations(&self.pool, MYSQL_MIGRATIONS)
             .await
@@ -21,7 +25,7 @@ impl MysqlStore {
     }
 
     pub async fn due_outbox(&self, now_ms: i64, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
-        let rows = base_db::sqlx::query_as::<_, OutboxRow>("SELECT outbox_id,event_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms FROM guard_outbox WHERE state IN ('PENDING','RETRY_WAIT') AND next_attempt_at_ms <= ? ORDER BY next_attempt_at_ms,outbox_id LIMIT ?")
+        let rows = base_db::sqlx::query_as::<_, OutboxRow>("SELECT outbox_id,event_id,integration_id,mapping_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms,expires_at_ms FROM guard_outbox WHERE state IN ('PENDING','RETRY_WAIT') AND next_attempt_at_ms <= ? ORDER BY next_attempt_at_ms,outbox_id LIMIT ?")
             .bind(now_ms).bind(i64::try_from(limit).unwrap_or(i64::MAX)).fetch_all(&self.pool).await.map_err(database_error)?;
         rows.into_iter().map(outbox_from_row).collect()
     }
@@ -37,6 +41,52 @@ impl MysqlStore {
         Ok(())
     }
 
+    pub async fn delete_outbox(&self, outbox_id: &str) -> GuardResult<()> {
+        base_db::sqlx::query("DELETE FROM guard_outbox WHERE outbox_id=?")
+            .bind(outbox_id)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    pub async fn cleanup_dead_outbox(
+        &self,
+        older_than_ms: i64,
+        max_per_integration: usize,
+    ) -> GuardResult<u64> {
+        let mut removed = base_db::sqlx::query(
+            "DELETE FROM guard_outbox WHERE state='DEAD' AND updated_at_ms <= ?",
+        )
+        .bind(older_than_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        let rows = base_db::sqlx::query_as::<_, (String, String)>(
+            "SELECT outbox_id,integration_id FROM guard_outbox WHERE state='DEAD' ORDER BY integration_id,updated_at_ms DESC,outbox_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?;
+        let mut counts = std::collections::HashMap::<String, usize>::new();
+        for (outbox_id, integration_id) in rows {
+            let count = counts.entry(integration_id).or_default();
+            *count = count.saturating_add(1);
+            if *count > max_per_integration {
+                removed = removed.saturating_add(
+                    base_db::sqlx::query("DELETE FROM guard_outbox WHERE outbox_id=?")
+                        .bind(outbox_id)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(database_error)?
+                        .rows_affected(),
+                );
+            }
+        }
+        Ok(removed)
+    }
+
     pub async fn insert_outbox_records(&self, records: &[OutboxRecord]) -> GuardResult<()> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
         for record in records {
@@ -46,9 +96,36 @@ impl MysqlStore {
         Ok(())
     }
 
+    pub async fn insert_mapped_outbox_records(&self, records: &[OutboxRecord]) -> GuardResult<()> {
+        let mut tx = self.pool.begin().await.map_err(database_error)?;
+        let now_ms = records
+            .iter()
+            .map(|record| record.created_at_ms)
+            .max()
+            .unwrap_or_default();
+        base_db::sqlx::query("DELETE FROM guard_integration_delivery WHERE expires_at_ms <= ?")
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        for record in records {
+            let expires_at_ms = record
+                .expires_at_ms
+                .unwrap_or_else(|| record.created_at_ms.saturating_add(259_200_000));
+            let claimed = base_db::sqlx::query("INSERT IGNORE INTO guard_integration_delivery(event_id,mapping_id,expires_at_ms,created_at_ms) VALUES (?,?,?,?)")
+                .bind(&record.event_id).bind(&record.mapping_id).bind(expires_at_ms).bind(record.created_at_ms)
+                .execute(&mut *tx).await.map_err(database_error)?;
+            if claimed.rows_affected() > 0 {
+                insert_outbox_mysql(&mut tx, record).await?;
+            }
+        }
+        tx.commit().await.map_err(database_error)?;
+        Ok(())
+    }
+
     pub async fn outbox_records(&self, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
         let rows = base_db::sqlx::query_as::<_, OutboxRow>(
-            "SELECT outbox_id,event_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms FROM guard_outbox ORDER BY created_at_ms DESC,outbox_id LIMIT ?",
+            "SELECT outbox_id,event_id,integration_id,mapping_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms,expires_at_ms FROM guard_outbox ORDER BY created_at_ms DESC,outbox_id LIMIT ?",
         )
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
@@ -126,7 +203,7 @@ impl MysqlStore {
     }
 
     pub async fn get_outbox(&self, outbox_id: &str) -> GuardResult<OutboxRecord> {
-        let row = base_db::sqlx::query_as::<_, OutboxRow>("SELECT outbox_id,event_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms FROM guard_outbox WHERE outbox_id=?")
+        let row = base_db::sqlx::query_as::<_, OutboxRow>("SELECT outbox_id,event_id,integration_id,mapping_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms,expires_at_ms FROM guard_outbox WHERE outbox_id=?")
             .bind(outbox_id).fetch_optional(&self.pool).await.map_err(database_error)?
             .ok_or_else(|| GuardError::NotFound(format!("outbox {outbox_id}")))?;
         outbox_from_row(row)
@@ -321,10 +398,10 @@ async fn insert_outbox_mysql(
     tx: &mut base_db::sqlx::Transaction<'_, base_db::sqlx::MySql>,
     record: &OutboxRecord,
 ) -> GuardResult<()> {
-    base_db::sqlx::query("INSERT INTO guard_outbox(outbox_id,event_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(&record.outbox_id).bind(&record.event_id).bind(record.destination_kind.as_str()).bind(&record.destination)
+    base_db::sqlx::query("INSERT INTO guard_outbox(outbox_id,event_id,integration_id,mapping_id,destination_kind,destination,payload,state,attempts,next_attempt_at_ms,last_error,created_at_ms,updated_at_ms,expires_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&record.outbox_id).bind(&record.event_id).bind(&record.integration_id).bind(&record.mapping_id).bind(record.destination_kind.as_str()).bind(&record.destination)
         .bind(&record.payload).bind(record.state.as_str()).bind(i64::from(record.attempts)).bind(record.next_attempt_at_ms)
-        .bind(&record.last_error).bind(record.created_at_ms).bind(record.updated_at_ms)
+        .bind(&record.last_error).bind(record.created_at_ms).bind(record.updated_at_ms).bind(record.expires_at_ms)
         .execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }

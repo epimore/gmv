@@ -165,7 +165,10 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
                 username: "operator".to_string(),
                 ui_session_token: ui_session_token.clone(),
                 required_role: Role::Viewer,
+                issued_at_ms: 0,
                 expires_at_ms: i64::MAX,
+                absolute_expires_at_ms: i64::MAX,
+                renewal_count: 0,
             });
             let service = GuardControlRpc::with_auth(store.clone(), auth.clone());
 
@@ -214,7 +217,10 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
                 username: "operator".to_string(),
                 ui_session_token: ui_session_token.clone(),
                 required_role: Role::Viewer,
+                issued_at_ms: 0,
                 expires_at_ms: 0,
+                absolute_expires_at_ms: 0,
+                renewal_count: 0,
             });
             let expired = service
                 .check_playback(tonic::Request::new(CheckPlaybackRequest {
@@ -257,7 +263,10 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
                 username: "operator".to_string(),
                 ui_session_token,
                 required_role: Role::Viewer,
+                issued_at_ms: 0,
                 expires_at_ms: i64::MAX,
+                absolute_expires_at_ms: i64::MAX,
+                renewal_count: 0,
             });
             auth.revoke_user_sessions("operator");
             let inactive_session = service

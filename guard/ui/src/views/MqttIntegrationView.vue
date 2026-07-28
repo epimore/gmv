@@ -2,10 +2,10 @@
   <div class="page-grid">
     <MetricCard
       class="span-3"
-      label="接入方向"
-      value="双向"
-      trend="Subscribe / Publish"
-      hint="按需启用"
+      label="协议版本"
+      :value="protocolLabel"
+      trend="MQTT V3 / V5"
+      hint="应用级显式选择"
     />
     <MetricCard class="span-3" label="传输安全" value="TLS" trend="Broker 鉴权" hint="Topic ACL" />
     <MetricCard
@@ -51,24 +51,57 @@
             事件和命令结果先进入有界 outbox，再以 QoS 1 发布；消费方根据 event_id 或 command_id
             保证幂等。
           </p>
-          <div class="flow-meta"><span>事件主题</span><code>gmv/events/{event_type}</code></div>
+          <div class="flow-meta"><span>事件主题</span><code>gmv/events/{integration_id}/{event_type}</code></div>
         </article>
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-4" title="Broker 参数预览" subtitle="连接信息与业务凭证分用途管理">
+    <GlassPanel class="span-4" title="Broker 连接配置" subtitle="协议版本必须显式选择，不自动推断">
+      <template #action>
+        <el-button type="primary" :loading="saving" :disabled="!auth.isAdmin || !selectedIntegrationId" @click="saveProtocol">保存配置</el-button>
+      </template>
+      <div class="integration-selector">
+        <span>接入应用</span>
+        <el-select v-model="selectedIntegrationId" placeholder="请选择 MQTT 应用" @change="loadMqttConfig">
+          <el-option
+            v-for="item in mqttIntegrations"
+            :key="item.integration_id"
+            :label="item.name"
+            :value="item.integration_id"
+          />
+        </el-select>
+      </div>
+      <div class="protocol-selector">
+        <span>MQTT 协议版本</span>
+        <el-radio-group v-model="protocolVersion" aria-label="MQTT 协议版本">
+          <el-radio-button value="v3">V3.1.1</el-radio-button>
+          <el-radio-button value="v5">V5.0</el-radio-button>
+        </el-radio-group>
+        <small>用于明确三方契约版本；必须与 Guard 当前部署的 Broker runtime 版本一致。</small>
+      </div>
+      <div class="protocol-selector">
+        <span>允许的入站命令</span>
+        <el-checkbox-group v-model="allowedActions" class="action-selector">
+          <el-checkbox v-for="action in actionOptions" :key="action" :value="action">{{ action }}</el-checkbox>
+        </el-checkbox-group>
+        <small>命令 topic、integration_id 和 action 三者同时校验，避免应用间串用。</small>
+      </div>
       <div class="broker-status">
         <span class="pulse" />
-        <div><b>连接配置完整</b><small>演示状态 · 尚未连接真实 Broker</small></div>
+        <div>
+          <b>{{ runtimeStatus }}</b>
+          <small>{{ selectedIntegrationId || "请先在应用与凭证页创建 MQTT 接入" }}</small>
+        </div>
       </div>
       <div class="kv">
         <div class="kv-item wide">
-          <span>Broker</span><b class="code">mqtts://broker.example.com:8883</b>
+          <span>Broker</span><b>部署级连接（地址不在应用配置中暴露）</b>
         </div>
-        <div class="kv-item"><span>Client ID</span><b class="code">gmv-guard-edge-01</b></div>
-        <div class="kv-item"><span>Keep Alive</span><b>30 s</b></div>
-        <div class="kv-item"><span>连接鉴权</span><b>TLS + Username</b></div>
-        <div class="kv-item"><span>消息签名</span><b>待策略确认</b></div>
+        <div class="kv-item"><span>应用 ID</span><b class="code">{{ selectedIntegrationId || "—" }}</b></div>
+        <div class="kv-item"><span>协议版本</span><b>{{ protocolLabel }}</b></div>
+        <div class="kv-item"><span>连接范围</span><b>单 Broker / 部署级</b></div>
+        <div class="kv-item"><span>投递语义</span><b>QoS {{ mqttRuntime?.qos ?? 1 }} / Retain 关闭</b></div>
+        <div class="kv-item"><span>消息安全</span><b>Broker TLS + Topic ACL</b></div>
       </div>
     </GlassPanel>
 
@@ -78,6 +111,15 @@
       subtitle="以 Guard 为观察方描述 publish / subscribe 方向"
     >
       <template #action><el-button @click="showPlaceholder">查看在线文档</el-button></template>
+      <div class="mapping-editor">
+        <el-input v-model="mappingSource" placeholder="外发事件类型，例如 stream.started" />
+        <el-button type="primary" :disabled="!auth.isAdmin || !selectedIntegrationId" @click="addEventMapping">新增事件映射</el-button>
+      </div>
+      <div v-if="eventMappings.length" class="mapping-tags">
+        <el-tag v-for="mapping in eventMappings" :key="mapping.mapping_id" effect="plain">
+          {{ mapping.source_type }} → {{ mapping.destination }}
+        </el-tag>
+      </div>
       <el-table :data="channels" height="270">
         <el-table-column label="Guard 操作" width="130">
           <template #default="{ row }"
@@ -143,48 +185,161 @@
 </template>
 
 <script setup lang="ts">
+import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
+import { useAuthStore } from "@/stores/auth";
 import GlassPanel from "@/components/GlassPanel.vue";
 import MetricCard from "@/components/MetricCard.vue";
 import StatusPill from "@/components/StatusPill.vue";
+import {
+  errorMessage,
+  getAsyncApiDocument,
+  getIntegrationMqttConfig,
+  getIntegrationMqttRuntime,
+  listIntegrationMappings,
+  listIntegrations,
+  saveIntegrationMapping,
+  saveIntegrationMqttConfig,
+  type IntegrationInfo,
+  type IntegrationMqttConfig,
+  type IntegrationMqttRuntime,
+  type IntegrationMappingInfo,
+} from "@/api/client";
 
-const channels = [
-  {
-    operation: "SUBSCRIBE",
-    topic: "gmv/commands/{integration_id}",
-    message: "IntegrationCommand",
-    qos: "1",
-    auth: "Broker ACL",
-    tracking: "command_id",
-  },
-  {
-    operation: "PUBLISH",
-    topic: "gmv/command-results/{integration_id}",
-    message: "CommandResult",
-    qos: "1",
-    auth: "Broker ACL",
-    tracking: "command_id / operation_id",
-  },
-  {
-    operation: "PUBLISH",
-    topic: "gmv/events/{event_type}",
-    message: "EventEnvelope",
-    qos: "1",
-    auth: "Topic mapping",
-    tracking: "event_id / trace_id",
-  },
-  {
-    operation: "PUBLISH",
-    topic: "gmv/status/{integration_id}",
-    message: "IntegrationStatus",
-    qos: "1",
-    auth: "Topic mapping",
-    tracking: "integration_id",
-  },
-];
+const protocolVersion = ref<"v3" | "v5">("v3");
+const auth = useAuthStore();
+const protocolLabel = computed(() => (protocolVersion.value === "v5" ? "V5.0" : "V3.1.1"));
+const mqttIntegrations = ref<IntegrationInfo[]>([]);
+const selectedIntegrationId = ref("");
+const saving = ref(false);
+const mqttConfig = ref<IntegrationMqttConfig | null>(null);
+const allowedActions = ref<string[]>([]);
+const actionOptions = ["stream.start", "stream.stop", "stream.playback", "stream.download", "device.talk", "device.ptz", "ai.start", "ai.cancel", "playback.ticket.renew"];
+const mappingSource = ref("");
+const eventMappings = ref<IntegrationMappingInfo[]>([]);
+const mqttRuntime = ref<IntegrationMqttRuntime | null>(null);
+const runtimeStatus = computed(() => {
+  if (!mqttRuntime.value?.enabled) return "部署级 MQTT runtime 未启用";
+  const version = mqttRuntime.value.protocol_version === "v5" ? "V5.0" : "V3.1.1";
+  return `部署级 MQTT runtime 已启用 · ${version}`;
+});
+const channels = ref<
+  Array<{
+    operation: string;
+    topic: string;
+    message: string;
+    qos: string;
+    auth: string;
+    tracking: string;
+  }>
+>([]);
+
+async function loadIntegrations() {
+  try {
+    const [integrations, runtime] = await Promise.all([listIntegrations(), getIntegrationMqttRuntime()]);
+    mqttRuntime.value = runtime;
+    protocolVersion.value = runtime.protocol_version;
+    mqttIntegrations.value = integrations.filter((item) => item.transport === "mqtt");
+    selectedIntegrationId.value = mqttIntegrations.value[0]?.integration_id ?? "";
+    await loadMqttConfig();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "加载 MQTT 接入失败"));
+  }
+}
+
+async function loadMqttConfig() {
+  if (!selectedIntegrationId.value) {
+    mqttConfig.value = null;
+    allowedActions.value = [];
+    eventMappings.value = [];
+    protocolVersion.value = mqttRuntime.value?.protocol_version ?? "v3";
+    return;
+  }
+  try {
+    mqttConfig.value = await getIntegrationMqttConfig(selectedIntegrationId.value);
+    protocolVersion.value = mqttConfig.value.protocol_version;
+    allowedActions.value = [...mqttConfig.value.allowed_actions];
+    eventMappings.value = (await listIntegrationMappings(selectedIntegrationId.value)).filter(
+      (mapping) => mapping.destination_kind === "MQTT" && mapping.direction === "OUTBOUND",
+    );
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "加载 MQTT 配置失败"));
+  }
+}
+
+async function loadContract() {
+  try {
+    const document = (await getAsyncApiDocument()) as {
+      channels?: Record<string, { address?: string; messages?: Record<string, unknown> }>;
+    };
+    channels.value = Object.entries(document.channels ?? {}).map(([name, channel]) => ({
+      operation: name === "commands" ? "SUBSCRIBE" : "PUBLISH",
+      topic: channel.address ?? name,
+      message: Object.keys(channel.messages ?? {})[0] ?? "Message",
+      qos: "1",
+      auth: "Broker ACL",
+      tracking:
+        name === "commands" || name === "commandResults"
+          ? "command_id / operation_id"
+          : "event_id / trace_id",
+    }));
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "加载 AsyncAPI 契约失败"));
+  }
+}
+
+async function saveProtocol() {
+  if (!selectedIntegrationId.value || !mqttConfig.value) return;
+  saving.value = true;
+  try {
+    mqttConfig.value = await saveIntegrationMqttConfig(selectedIntegrationId.value, {
+      protocol_version: protocolVersion.value,
+      allowed_actions: allowedActions.value,
+      command_topic: mqttConfig.value.command_topic,
+      result_topic: mqttConfig.value.result_topic,
+      event_topic_prefix: mqttConfig.value.event_topic_prefix,
+    });
+    ElMessage.success(`MQTT 协议版本已保存为 ${protocolLabel.value}`);
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "保存 MQTT 协议版本失败"));
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function addEventMapping() {
+  const sourceType = mappingSource.value.trim();
+  if (!selectedIntegrationId.value || !mqttConfig.value || !sourceType) {
+    ElMessage.warning("请填写外发事件类型");
+    return;
+  }
+  try {
+    await saveIntegrationMapping(selectedIntegrationId.value, {
+      direction: "OUTBOUND",
+      source_type: sourceType,
+      schema_version: "v1",
+      destination_kind: "MQTT",
+      destination: `${mqttConfig.value.event_topic_prefix}/${sourceType.replaceAll(".", "/")}`,
+      payload_profile: "event-envelope-v1",
+      enabled: true,
+    });
+    mappingSource.value = "";
+    eventMappings.value = (await listIntegrationMappings(selectedIntegrationId.value)).filter(
+      (mapping) => mapping.destination_kind === "MQTT" && mapping.direction === "OUTBOUND",
+    );
+    ElMessage.success("MQTT 事件映射已新增");
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "新增 MQTT 事件映射失败"));
+  }
+}
+
+onMounted(() => {
+  void loadIntegrations();
+  void loadContract();
+});
 
 function showPlaceholder() {
-  ElMessage.info("AsyncAPI 在线文档将在 Guard Server 契约生成能力完成后开放");
+  window.open("/api-docs", "_blank", "noopener,noreferrer");
 }
 </script>
 
@@ -280,6 +435,55 @@ function showPlaceholder() {
   background: rgba(8, 92, 70, 0.16);
 }
 
+.protocol-selector {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 13px 14px;
+  border: 1px solid rgba(37, 146, 255, 0.3);
+  border-radius: 14px;
+  background: rgba(4, 16, 47, 0.48);
+}
+
+.integration-selector {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.integration-selector > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.protocol-selector > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.protocol-selector small {
+  color: var(--faint);
+  line-height: 1.45;
+}
+
+.action-selector,
+.mapping-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.mapping-editor {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.mapping-tags {
+  margin-bottom: 12px;
+}
+
 .broker-status .pulse {
   width: 10px;
   height: 10px;
@@ -361,5 +565,11 @@ function showPlaceholder() {
 .delivery-policy small {
   color: var(--muted);
   line-height: 1.35;
+}
+
+@media (max-width: 720px) {
+  .mapping-editor {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

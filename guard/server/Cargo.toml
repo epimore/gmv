@@ -32,6 +32,10 @@ axum-server = { workspace = true, features = ["tls-rustls"] }
 tower-http = { workspace = true, features = ["cors", "fs", "set-header"] }
 argon2.workspace = true
 rust-embed = { version = "8", optional = true }
+hex = "0.4"
+hmac = "0.12"
+ipnet = "2.11"
+sha2 = "0.10"
 
 
 [dev-dependencies]
