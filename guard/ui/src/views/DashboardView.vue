@@ -383,7 +383,7 @@ const overallStatus = computed(() => {
     };
   if (!nodes.value.length)
     return {
-      title: "边端能力等待接入",
+      title: "等待节点接入",
       description: "Guard 控制台可访问，尚未发现已注册的业务节点。",
       label: "待接入",
       tone: "info" as Tone,
@@ -396,7 +396,7 @@ const overallStatus = computed(() => {
       tone: "warning" as Tone,
     };
   return {
-    title: "边端能力运行正常",
+    title: "运行正常",
     description: experimental.enabled
       ? "已知节点、运行资源和外部投递均未发现待处理异常。"
       : "已知节点和运行资源均未发现待处理异常。",
