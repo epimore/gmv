@@ -237,6 +237,9 @@ fn nodes_expose_session_protocol_and_service_metadata() {
         assert_eq!(body[0]["service"], "session-gb28181");
         assert_eq!(body[0]["protocol"], "gb28181");
         assert_eq!(body[0]["display_name"], "session-gb28181:session-gb-1");
+        assert_eq!(body[0]["connection_label"], "已连接");
+        assert_eq!(body[0]["health_label"], "就绪");
+        assert_eq!(body[0]["scheduling_label"], "可调度");
     });
 }
 

@@ -1,6 +1,6 @@
 <template>
-  <div class="page-grid" v-loading="loading">
-    <GlassPanel class="span-12">
+  <div class="page-grid viewport-card-page is-single-card-page" v-loading="loading">
+    <GlassPanel class="span-12 fill-panel">
       <div class="toolbar">
         <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 420px"
           :loading="listNodeLoading" @change="handleListNodeChange">
@@ -18,7 +18,7 @@
         <el-button :loading="loading" @click="resetDevices">重置</el-button>
         <el-button type="primary" :disabled="!canOperate" @click="openDevice()">新增注册配置</el-button>
       </div>
-      <el-table :data="devices" height="520" empty-text="暂无注册配置">
+      <el-table class="fill-table" :data="devices" height="100%" empty-text="暂无注册配置">
         <el-table-column prop="device_id" label="SIP设备ID" min-width="190" />
         <el-table-column label="设备名称" min-width="140"><template #default="{ row }">{{ row.alias || '-'
             }}</template></el-table-column>

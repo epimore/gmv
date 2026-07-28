@@ -1,6 +1,7 @@
 <template>
-  <div v-if="!selectedDevice && monitorMode === 'devices'" class="page-grid" v-loading="loading">
-    <GlassPanel class="span-12" title="监控信息" subtitle="按设备查看在线状态和注册时间">
+  <div v-if="!selectedDevice && monitorMode === 'devices'" class="page-grid viewport-card-page is-single-card-page"
+    v-loading="loading">
+    <GlassPanel class="span-12 fill-panel" title="监控信息" subtitle="按设备查看在线状态和注册时间">
       <div class="toolbar">
         <el-select v-model="selectedListNodeId" filterable placeholder="选择 Session 节点" style="width: 420px"
           :loading="listNodeLoading" @change="handleListNodeChange">
@@ -18,7 +19,7 @@
         <!-- <el-button :loading="loading" @click="loadDevices">刷新</el-button> -->
         <el-button type="primary" plain @click="openMultiView('live')">多画面工作台</el-button>
       </div>
-      <el-table :data="devices" height="620" empty-text="暂无监控设备">
+      <el-table class="fill-table" :data="devices" height="100%" empty-text="暂无监控设备">
         <el-table-column type="index" :index="tableIndex" label="序号" width="64" />
         <el-table-column prop="device_id" label="设备 ID" min-width="200" show-overflow-tooltip />
         <el-table-column label="设备名称" min-width="160" show-overflow-tooltip>

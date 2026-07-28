@@ -1,91 +1,180 @@
 <template>
-  <div class="page-grid" v-loading="loading">
-    <MetricCard class="span-3" label="READY 节点" :value="readyCount" trend="可调度" :hint="`${nodes.length} 个节点`" />
+  <div class="page-grid viewport-card-page has-summary-cards" v-loading="loading">
+    <MetricCard class="span-3" label="就绪节点" :value="readyCount" trend="可调度" :hint="`${nodes.length} 个节点`" />
     <MetricCard class="span-3" label="异常节点" :value="warningCount" trend="需关注" hint="健康或调度异常" />
-    <MetricCard class="span-3" label="离线节点" :value="offlineCount" trend="连接中断" hint="OFFLINE" />
+    <MetricCard class="span-3" label="离线节点" :value="offlineCount" trend="连接中断" hint="离线" />
     <MetricCard class="span-3" label="当前任务" :value="currentTaskCount" :trend="`执行 ${runningTaskCount}`"
       :hint="`排队 ${queuedTaskCount}`" />
 
-    <GlassPanel class="span-12" title="任务拥堵" subtitle="所有已知节点 · CONFIRMED 执行中 · ALLOCATED 排队中（已分配、待节点确认）">
-      <template #action><el-button :loading="loading" @click="load">刷新</el-button></template>
-      <div v-if="nodeLoads.length" class="node-load-list" role="list" aria-label="节点任务负载">
-        <article v-for="item in nodeLoads" :key="item.node.node_id" class="node-load-row"
-          :class="`is-${item.alertLevel}`" :data-node-id="item.node.node_id" :data-alert-level="item.alertLevel"
-          role="listitem">
-          <div class="node-load-identity">
-            <!-- <b>{{ item.node.display_name || item.node.node_id }}</b> -->
-            <b class="code">{{ item.node.node_id }}</b>
-            <small>{{ item.node.kind }}</small>
-          </div>
-          <div class="node-load-state">
-            <StatusPill :label="item.node.health" :tone="item.node.health" />
-            <span :class="{ warning: item.node.scheduling !== 'ENABLED' }">{{ item.node.scheduling }}</span>
-          </div>
-          <div class="node-load-visual">
-            <div class="node-load-track" role="img"
-              :aria-label="`${item.node.node_id}：执行中 ${item.running}，排队中 ${item.queued}，合计 ${item.total}`">
-              <span v-if="item.running" class="node-load-running" :style="{ width: taskWidth(item.running) }" />
-              <span v-if="item.queued" class="node-load-queued" :style="{ width: taskWidth(item.queued) }" />
+    <GlassPanel class="span-12 fill-panel">
+      <div class="health-tabs-wrap">
+        <el-button class="health-refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-tabs v-model="activeTab">
+          <el-tab-pane label="任务拥堵" name="tasks">
+            <div class="health-filter-scroll">
+              <el-form class="health-filter-row task-filters" :inline="true" :model="taskFilterDraft"
+                aria-label="任务拥堵查询条件">
+                <el-form-item label="类型">
+                  <el-select v-model="taskFilterDraft.kind" clearable placeholder="全部类型">
+                    <el-option v-for="kind in kindOptions" :key="kind" :label="kind" :value="kind" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="监控状态">
+                  <el-select v-model="taskFilterDraft.health" clearable placeholder="全部状态">
+                    <el-option v-for="health in healthOptions" :key="health.value" :label="health.label"
+                      :value="health.value" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="节点 ID">
+                  <el-select v-model="taskFilterDraft.nodeId" clearable filterable placeholder="输入节点 ID 模糊匹配">
+                    <el-option v-for="nodeId in nodeIdOptions" :key="nodeId" :label="nodeId" :value="nodeId" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item class="filter-actions">
+                  <el-button type="primary" @click="queryTaskFilters">查询</el-button>
+                  <el-button @click="resetTaskFilters">重置</el-button>
+                </el-form-item>
+              </el-form>
             </div>
-            <div class="node-load-counts">
-              <span class="running">执行 {{ item.running }}</span>
-              <span class="queued">排队 {{ item.queued }}</span>
-              <b>合计 {{ item.total }}</b>
-            </div>
-          </div>
-        </article>
-      </div>
-      <el-empty v-else description="暂无已知节点" />
-    </GlassPanel>
 
-    <GlassPanel class="span-12" title="节点矩阵" subtitle="点击节点查看实例围栏 · node_id / instance_id / generation 主动上报">
-      <el-table class="node-matrix-table" :data="nodes" height="360" highlight-current-row empty-text="暂无注册节点"
-        @row-click="openNodeDetail">
-        <el-table-column prop="display_name" label="节点名称" width="180" />
-        <el-table-column prop="node_id" label="节点 ID" width="150" />
-        <el-table-column prop="kind" label="类型" width="90" />
-        <!-- <el-table-column prop="service" label="服务" width="150" /> -->
-        <el-table-column label="协议" width="110"><template #default="{ row }">{{ row.protocol || '-'
-            }}</template></el-table-column>
-        <el-table-column label="健康" width="120"><template #default="{ row }">
-            <StatusPill :label="row.health" :tone="row.health" />
-          </template></el-table-column>
-        <el-table-column prop="scheduling" label="调度" width="130" />
-        <el-table-column prop="instance_id" label="实例" min-width="160" />
-        <el-table-column prop="generation" label="代次" width="80" />
-        <el-table-column label="CPU" width="145"><template #default="{ row }"><el-progress
-              :percentage="Math.round(row.host_metrics.cpu_usage_percent)" /></template></el-table-column>
-        <el-table-column label="内存" width="145"><template #default="{ row }"><el-progress
-              :percentage="memoryPercent(row)" /></template></el-table-column>
-        <el-table-column label="Load" width="100"><template #default="{ row }">{{
-          row.host_metrics.load_average_1m.toFixed(2) }}</template></el-table-column>
-        <el-table-column label="磁盘 IO" width="150"><template #default="{ row }">↓{{
-          formatRate(row.host_metrics.disk_read_bytes_per_sec) }} ↑{{
-              formatRate(row.host_metrics.disk_write_bytes_per_sec) }}</template></el-table-column>
-        <el-table-column label="网络 IO" width="150"><template #default="{ row }">↓{{
-          formatRate(row.host_metrics.network_receive_bytes_per_sec) }} ↑{{
-              formatRate(row.host_metrics.network_transmit_bytes_per_sec) }}</template></el-table-column>
-      </el-table>
+            <div class="health-tab-body">
+              <div v-if="taskPageRows.length" class="node-load-list" role="list" aria-label="节点任务负载">
+                <article v-for="item in taskPageRows" :key="item.node.node_id" class="node-load-row"
+                  :class="`is-${item.alertLevel}`" :data-node-id="item.node.node_id"
+                  :data-alert-level="item.alertLevel" role="listitem">
+                  <div class="node-load-identity">
+                    <b class="code">{{ item.node.node_id }}</b>
+                    <small>{{ item.node.kind }}</small>
+                  </div>
+                  <div class="node-load-state">
+                    <StatusPill :label="item.node.health_label" :tone="item.node.health" />
+                    <span :class="{ warning: item.node.scheduling !== 'ENABLED' }">{{ item.node.scheduling_label }}</span>
+                  </div>
+                  <div class="node-load-visual">
+                    <div class="node-load-track" role="img"
+                      :aria-label="`${item.node.node_id}：执行中 ${item.running}，排队中 ${item.queued}，合计 ${item.total}`">
+                      <span v-if="item.running" class="node-load-running" :style="{ width: taskWidth(item.running) }" />
+                      <span v-if="item.queued" class="node-load-queued" :style="{ width: taskWidth(item.queued) }" />
+                    </div>
+                    <div class="node-load-counts">
+                      <span class="running">执行 {{ item.running }}</span>
+                      <span class="queued">排队 {{ item.queued }}</span>
+                      <b>合计 {{ item.total }}</b>
+                    </div>
+                  </div>
+                </article>
+              </div>
+              <el-empty v-else description="暂无符合条件的节点" />
+            </div>
+            <div class="pager-row">
+              <el-pagination v-model:current-page="taskPage" :page-size="PAGE_SIZE" :total="filteredTaskLoads.length"
+                layout="total, prev, pager, next" />
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="节点矩阵" name="matrix">
+            <div class="health-filter-scroll">
+              <el-form class="health-filter-row matrix-filters" :inline="true" :model="matrixFilterDraft"
+                aria-label="节点矩阵查询条件">
+                <el-form-item label="类型">
+                  <el-select v-model="matrixFilterDraft.kind" clearable placeholder="全部类型">
+                    <el-option v-for="kind in kindOptions" :key="kind" :label="kind" :value="kind" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="监控状态">
+                  <el-select v-model="matrixFilterDraft.health" clearable placeholder="全部状态">
+                    <el-option v-for="health in healthOptions" :key="health.value" :label="health.label"
+                      :value="health.value" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="节点 ID">
+                  <el-select v-model="matrixFilterDraft.nodeId" clearable filterable placeholder="输入节点 ID 模糊匹配">
+                    <el-option v-for="nodeId in nodeIdOptions" :key="nodeId" :label="nodeId" :value="nodeId" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item class="filter-actions">
+                  <el-button type="primary" @click="queryMatrixFilters">查询</el-button>
+                  <el-button @click="resetMatrixFilters">重置</el-button>
+                </el-form-item>
+              </el-form>
+            </div>
+
+            <div class="health-tab-body">
+              <el-table class="node-matrix-table" :data="matrixPageRows" height="100%" highlight-current-row
+                empty-text="暂无符合条件的节点" @row-click="openNodeDetail">
+                <el-table-column prop="node_id" label="节点 ID" min-width="170" show-overflow-tooltip />
+                <el-table-column prop="kind" label="类型" min-width="130" show-overflow-tooltip />
+                <el-table-column label="协议" min-width="110" show-overflow-tooltip><template #default="{ row }">{{ row.protocol || '-'
+                    }}</template></el-table-column>
+                <el-table-column label="健康" min-width="110"><template #default="{ row }">
+                    <StatusPill :label="row.health_label" :tone="row.health" />
+                  </template></el-table-column>
+                <el-table-column label="CPU" min-width="145"><template #default="{ row }"><el-progress
+                      :percentage="Math.round(row.host_metrics.cpu_usage_percent)" /></template></el-table-column>
+                <el-table-column label="内存" min-width="145"><template #default="{ row }"><el-progress
+                      :percentage="memoryPercent(row)" /></template></el-table-column>
+                <el-table-column label="磁盘 IO" min-width="180"><template #default="{ row }"><span class="io-cell">↓{{
+                  formatRate(row.host_metrics.disk_read_bytes_per_sec) }} ↑{{
+                      formatRate(row.host_metrics.disk_write_bytes_per_sec) }}</span></template></el-table-column>
+                <el-table-column label="网络 IO" min-width="180"><template #default="{ row }"><span class="io-cell">↓{{
+                  formatRate(row.host_metrics.network_receive_bytes_per_sec) }} ↑{{
+                      formatRate(row.host_metrics.network_transmit_bytes_per_sec) }}</span></template></el-table-column>
+              </el-table>
+            </div>
+            <div class="pager-row">
+              <el-pagination v-model:current-page="matrixPage" :page-size="PAGE_SIZE" :total="filteredMatrixNodes.length"
+                layout="total, prev, pager, next" />
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
     </GlassPanel>
 
     <el-drawer v-model="nodeDetailVisible" :title="nodeDetailTitle" size="min(520px, 100vw)" destroy-on-close>
       <div v-if="selected" class="node-detail">
-        <div class="kv">
-          <div class="kv-item"><span>节点</span><b>{{ selected.display_name || selected.node_id }}</b></div>
-          <div class="kv-item"><span>服务</span><b>{{ selected.service || '-' }}</b></div>
-          <div class="kv-item"><span>协议</span><b>{{ selected.protocol || '-' }}</b></div>
-          <div class="kv-item"><span>实例</span><b class="code">{{ selected.instance_id || '-' }}</b></div>
-          <div class="kv-item"><span>连接</span><b>{{ selected.connection || '-' }}</b></div>
-          <div class="kv-item"><span>最后心跳</span><b>{{ formatDateTime(selected.last_seen_at_ms) }}</b></div>
-          <div class="kv-item"><span>能力</span><b>{{ selected.capabilities.join(', ') || '-' }}</b></div>
-          <div class="kv-item"><span>内存</span><b>{{ formatBytes(selected.host_metrics.memory_used_bytes) }} / {{
-            formatBytes(selected.host_metrics.memory_total_bytes) }}</b></div>
-          <div class="kv-item"><span>进程 RSS</span><b>{{
-            formatBytes(selected.host_metrics.process_resident_memory_bytes) }}</b></div>
-          <div class="kv-item"><span>线程</span><b>{{ selected.host_metrics.process_threads }}</b></div>
-          <div class="kv-item"><span>业务指标</span><b>{{ businessMetrics }}</b></div>
+        <div class="node-detail-grid">
+          <div class="node-detail-field is-wide"><span class="node-detail-label">节点 ID</span><b
+              class="node-detail-value code">{{ selected.node_id }}</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">类型</span><b
+              class="node-detail-value">{{ selected.kind || '-' }}</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">协议</span><b
+              class="node-detail-value">{{ selected.protocol || '-' }}</b></div>
+          <div class="node-detail-field"><span class="node-detail-label">健康</span><div class="node-detail-value">
+              <StatusPill :label="selected.health_label" :tone="selected.health" />
+            </div></div>
+          <div class="node-detail-field"><span class="node-detail-label">连接</span><b
+              class="node-detail-value">{{ selected.connection_label }}</b></div>
+          <div class="node-detail-field"><span class="node-detail-label">调度</span><b
+              class="node-detail-value">{{ selected.scheduling_label }}</b></div>
+          <div class="node-detail-field"><span class="node-detail-label">CPU</span><b
+              class="node-detail-value">{{ selected.host_metrics.cpu_usage_percent.toFixed(1) }}%</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">实例</span><b
+              class="node-detail-value code">{{ selected.instance_id || '-' }}</b></div>
+          <div class="node-detail-field"><span class="node-detail-label">代次</span><b
+              class="node-detail-value">{{ selected.generation }}</b></div>
+          <div class="node-detail-field"><span class="node-detail-label">线程</span><b
+              class="node-detail-value">{{ selected.host_metrics.process_threads }}</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">最后心跳</span><b
+              class="node-detail-value">{{ formatDateTime(selected.last_seen_at_ms) }}</b></div>
+          <div class="node-detail-field is-wide is-stacked"><span class="node-detail-label">Load（1m / 5m / 15m）</span><b
+              class="node-detail-value">{{ selected.host_metrics.load_average_1m.toFixed(2) }} / {{
+                selected.host_metrics.load_average_5m.toFixed(2) }} / {{ selected.host_metrics.load_average_15m.toFixed(2) }}</b></div>
+          <div class="node-detail-field is-wide is-stacked"><span class="node-detail-label">能力</span><b
+              class="node-detail-value">{{ selected.capabilities.join(', ') || '-' }}</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">内存</span><b
+              class="node-detail-value">{{ formatBytes(selected.host_metrics.memory_used_bytes) }} / {{
+                formatBytes(selected.host_metrics.memory_total_bytes) }}</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">磁盘 IO</span><b
+              class="node-detail-value">↓{{ formatRate(selected.host_metrics.disk_read_bytes_per_sec) }} ↑{{
+                formatRate(selected.host_metrics.disk_write_bytes_per_sec) }}</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">网络 IO</span><b
+              class="node-detail-value">↓{{ formatRate(selected.host_metrics.network_receive_bytes_per_sec) }} ↑{{
+                formatRate(selected.host_metrics.network_transmit_bytes_per_sec) }}</b></div>
+          <div class="node-detail-field is-wide"><span class="node-detail-label">进程 RSS</span><b
+              class="node-detail-value">{{ formatBytes(selected.host_metrics.process_resident_memory_bytes) }}</b></div>
+          <div class="node-detail-field is-wide is-stacked"><span class="node-detail-label">业务指标</span><b
+              class="node-detail-value">{{ businessMetrics }}</b></div>
         </div>
-        <OrbitChart :option="capacityChart" sm />
       </div>
       <template #footer><el-button @click="nodeDetailVisible = false">关闭</el-button></template>
     </el-drawer>
@@ -93,14 +182,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { errorMessage, listLeases, listNodes, type LeaseInfo, type NodeInfo } from '@/api/client';
 import GlassPanel from '@/components/GlassPanel.vue';
 import MetricCard from '@/components/MetricCard.vue';
-import OrbitChart from '@/components/OrbitChart.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { lineOption } from '@/data/charts';
 import { formatDateTime } from '@/utils/dateTime';
 
 type AlertLevel = 'offline' | 'warning' | 'ready';
@@ -112,16 +199,45 @@ interface NodeTaskLoad {
   alertLevel: AlertLevel;
 }
 
+interface NodeFilters {
+  kind: string;
+  health: string;
+  nodeId: string;
+}
+
+const PAGE_SIZE = 10;
+const naturalCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+
 const loading = ref(false);
 const leases = ref<LeaseInfo[]>([]);
 const nodes = ref<NodeInfo[]>([]);
 const selected = ref<NodeInfo>();
 const nodeDetailVisible = ref(false);
+const activeTab = ref<'tasks' | 'matrix'>('tasks');
+const taskPage = ref(1);
+const matrixPage = ref(1);
+const taskFilterDraft = reactive<NodeFilters>({ kind: '', health: '', nodeId: '' });
+const taskFilters = reactive<NodeFilters>({ kind: '', health: '', nodeId: '' });
+const matrixFilterDraft = reactive<NodeFilters>({ kind: '', health: '', nodeId: '' });
+const matrixFilters = reactive<NodeFilters>({ kind: '', health: '', nodeId: '' });
 
 function alertLevel(node: NodeInfo): AlertLevel {
   if (node.health === 'OFFLINE' || node.connection !== 'CONNECTED') return 'offline';
   if (node.health !== 'READY' || node.scheduling !== 'ENABLED') return 'warning';
   return 'ready';
+}
+
+function compareNodes(left: NodeInfo, right: NodeInfo) {
+  const alertPriority = Number(alertLevel(left) === 'ready') - Number(alertLevel(right) === 'ready');
+  return alertPriority
+    || naturalCollator.compare(left.kind, right.kind)
+    || naturalCollator.compare(left.node_id, right.node_id);
+}
+
+function matchesFilters(node: NodeInfo, filters: NodeFilters) {
+  return (!filters.kind || node.kind === filters.kind)
+    && (!filters.health || node.health === filters.health)
+    && (!filters.nodeId || node.node_id === filters.nodeId);
 }
 
 const nodeLoads = computed<NodeTaskLoad[]>(() => {
@@ -133,17 +249,24 @@ const nodeLoads = computed<NodeTaskLoad[]>(() => {
     else count.queued += 1;
     counts.set(lease.node_id, count);
   }
-  const priority: Record<AlertLevel, number> = { offline: 0, warning: 1, ready: 2 };
   return nodes.value
     .map((node) => {
       const count = counts.get(node.node_id) ?? { running: 0, queued: 0 };
       return { node, ...count, total: count.running + count.queued, alertLevel: alertLevel(node) };
     })
-    .sort((left, right) => priority[left.alertLevel] - priority[right.alertLevel]
-      || right.total - left.total
-      || left.node.node_id.localeCompare(right.node.node_id));
+    .sort((left, right) => compareNodes(left.node, right.node));
 });
 
+const sortedNodes = computed(() => [...nodes.value].sort(compareNodes));
+const kindOptions = computed(() => [...new Set(nodes.value.map((node) => node.kind))].sort(naturalCollator.compare));
+const healthOptions = computed(() => [...new Map(nodes.value.map((node) => [node.health, node.health_label])).entries()]
+  .map(([value, label]) => ({ value, label }))
+  .sort((left, right) => naturalCollator.compare(left.label, right.label)));
+const nodeIdOptions = computed(() => nodes.value.map((node) => node.node_id).sort(naturalCollator.compare));
+const filteredTaskLoads = computed(() => nodeLoads.value.filter((item) => matchesFilters(item.node, taskFilters)));
+const filteredMatrixNodes = computed(() => sortedNodes.value.filter((node) => matchesFilters(node, matrixFilters)));
+const taskPageRows = computed(() => filteredTaskLoads.value.slice((taskPage.value - 1) * PAGE_SIZE, taskPage.value * PAGE_SIZE));
+const matrixPageRows = computed(() => filteredMatrixNodes.value.slice((matrixPage.value - 1) * PAGE_SIZE, matrixPage.value * PAGE_SIZE));
 const maxTaskCount = computed(() => Math.max(1, ...nodeLoads.value.map((item) => item.total)));
 const readyCount = computed(() => nodeLoads.value.filter((item) => item.alertLevel === 'ready').length);
 const warningCount = computed(() => nodeLoads.value.filter((item) => item.alertLevel === 'warning').length);
@@ -151,7 +274,6 @@ const offlineCount = computed(() => nodeLoads.value.filter((item) => item.alertL
 const runningTaskCount = computed(() => nodeLoads.value.reduce((sum, item) => sum + item.running, 0));
 const queuedTaskCount = computed(() => nodeLoads.value.reduce((sum, item) => sum + item.queued, 0));
 const currentTaskCount = computed(() => runningTaskCount.value + queuedTaskCount.value);
-const capacityChart = computed(() => lineOption('CPU 使用率', nodes.value.map((item) => item.host_metrics.cpu_usage_percent), nodes.value.map((item) => item.node_id), '#a875ff'));
 const businessMetrics = computed(() => selected.value ? Object.entries(selected.value.business_metrics).map(([key, value]) => key + '=' + value).join(', ') || '-' : '-');
 const nodeDetailTitle = computed(() => `实例围栏 · ${selected.value?.display_name || selected.value?.node_id || '-'}`);
 
@@ -160,6 +282,10 @@ function memoryPercent(node: NodeInfo) { return node.host_metrics.memory_total_b
 function formatBytes(value?: number) { if (!value) return '0 B'; const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return (value / 1024 ** index).toFixed(index ? 1 : 0) + ' ' + units[index]; }
 function formatRate(value: number) { return formatBytes(value) + '/s'; }
 function openNodeDetail(node: NodeInfo) { selected.value = node; nodeDetailVisible.value = true; }
+function queryTaskFilters() { Object.assign(taskFilters, taskFilterDraft); taskPage.value = 1; }
+function resetTaskFilters() { Object.assign(taskFilterDraft, { kind: '', health: '', nodeId: '' }); queryTaskFilters(); }
+function queryMatrixFilters() { Object.assign(matrixFilters, matrixFilterDraft); matrixPage.value = 1; }
+function resetMatrixFilters() { Object.assign(matrixFilterDraft, { kind: '', health: '', nodeId: '' }); queryMatrixFilters(); }
 
 async function load() {
   loading.value = true;
@@ -180,11 +306,113 @@ onMounted(() => { void load(); });
 </script>
 
 <style scoped>
+.health-tabs-wrap {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+
+.health-tabs-wrap > :deep(.el-tabs) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.health-tabs-wrap :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+}
+
+.health-tabs-wrap :deep(.el-tab-pane) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.health-refresh {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+}
+
+.health-filter-scroll {
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.health-filter-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr)) 180px;
+  gap: 10px;
+  min-width: 820px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 16px 2px;
+}
+
+.health-filter-row :deep(.el-form-item) {
+  margin: 0;
+}
+
+.health-filter-row :deep(.el-form-item__content),
+.health-filter-row :deep(.el-select) {
+  min-width: 0;
+  width: 100%;
+}
+
+.health-filter-row :deep(.filter-actions) {
+  width: 180px;
+}
+
+.health-filter-row :deep(.filter-actions .el-form-item__content) {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.health-filter-row :deep(.filter-actions .el-button) {
+  width: 100%;
+  margin: 0;
+}
+
+.pager-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 48px;
+}
+
+.health-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.health-tab-body :deep(.el-empty) {
+  height: 100%;
+}
+
+@media (max-width: 900px) {
+  .health-tabs-wrap,
+  .health-tabs-wrap > :deep(.el-tabs),
+  .health-tabs-wrap :deep(.el-tab-pane) {
+    display: block;
+    height: auto;
+  }
+
+  .health-tab-body {
+    height: 520px;
+  }
+}
+
 .node-load-list {
   display: grid;
   gap: 6px;
-  max-height: 360px;
-  overflow-y: auto;
   padding-right: 4px;
 }
 
@@ -326,9 +554,61 @@ onMounted(() => { void load(); });
   cursor: pointer;
 }
 
+.node-matrix-table :deep(.cell),
+.io-cell {
+  white-space: nowrap;
+}
+
 .node-detail {
+  min-width: 0;
+}
+
+.node-detail-grid {
   display: grid;
-  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.node-detail-field {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(37, 146, 255, .22);
+  border-radius: 14px;
+  background: rgba(4, 16, 47, .48);
+}
+
+.node-detail-field.is-wide {
+  grid-column: 1 / -1;
+}
+
+.node-detail-field.is-stacked {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+}
+
+.node-detail-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.node-detail-value {
+  min-width: 0;
+  margin: 0;
+  justify-self: end;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 15px;
+  text-align: right;
+}
+
+.node-detail-field.is-stacked .node-detail-value {
+  justify-self: start;
+  text-align: left;
 }
 
 @media (max-width: 1100px) {

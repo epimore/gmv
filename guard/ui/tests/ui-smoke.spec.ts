@@ -163,6 +163,40 @@ test('已登录会话可访问中文页面与移动端布局', async ({ page }) 
   expect(layout.mainWidth).toBe(layout.innerWidth);
 });
 
+test('核心管理页面卡片铺满可视窗口且页面不产生纵向滚动', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  const routes = [
+    ['/gb28181/register', '注册管理'],
+    ['/gb28181/monitor', '监控信息'],
+    ['/streams', '流媒监控'],
+    ['/system/health', '系统健康'],
+    ['/system/users', '用户管理'],
+  ] as const;
+
+  for (const [path, heading] of routes) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible();
+
+    const layout = await page.locator('.viewport-card-page').evaluate((grid) => {
+      const gridRect = grid.getBoundingClientRect();
+      const fillPanel = grid.querySelector<HTMLElement>(':scope > .fill-panel');
+      const panelRect = fillPanel?.getBoundingClientRect();
+      return {
+        viewportHeight: window.innerHeight,
+        documentHeight: document.documentElement.scrollHeight,
+        gridBottom: Math.round(gridRect.bottom),
+        panelBottom: Math.round(panelRect?.bottom || 0),
+      };
+    });
+
+    expect(layout.documentHeight).toBe(layout.viewportHeight);
+    expect(layout.gridBottom).toBe(layout.viewportHeight - 32);
+    expect(layout.panelBottom).toBe(layout.gridBottom);
+  }
+});
+
 test('Dashboard 展示边端状态、能力入口和待处理事项', async ({ page }) => {
   await mockAuth(page, true);
 

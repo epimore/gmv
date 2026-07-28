@@ -1,6 +1,6 @@
 <template>
-  <div class="page-grid" v-loading="loading">
-    <GlassPanel class="span-12">
+  <div class="page-grid viewport-card-page is-single-card-page" v-loading="loading">
+    <GlassPanel class="span-12 fill-panel">
       <div class="toolbar stream-toolbar">
         <div class="stream-filter-row">
           <el-select v-model="sessionNodeId" placeholder="请选择 Session 节点（必选）" clearable filterable @change="resetAndLoad">
@@ -30,9 +30,9 @@
         </div>
       </div>
 
-      <el-tabs v-model="activeTab" @tab-change="tabChanged">
+      <el-tabs class="stream-tabs" v-model="activeTab" @tab-change="tabChanged">
         <el-tab-pane label="当前运行" name="current">
-          <el-table :data="activeRows" empty-text="暂无当前运行资源" height="520">
+          <el-table class="stream-table" :data="activeRows" empty-text="暂无当前运行资源" height="100%">
             <el-table-column prop="stream_id" label="流 ID" min-width="220" show-overflow-tooltip />
             <el-table-column prop="stream_node_id" label="流媒体服务" min-width="140" show-overflow-tooltip />
             <el-table-column prop="device_id" label="设备 ID" min-width="170" show-overflow-tooltip />
@@ -56,7 +56,7 @@
         </el-tab-pane>
 
         <el-tab-pane label="历史记录" name="history">
-          <el-table :data="historyRows" empty-text="暂无历史记录" height="520">
+          <el-table class="stream-table" :data="historyRows" empty-text="暂无历史记录" height="100%">
             <el-table-column prop="stream_id" label="流 ID" min-width="220" show-overflow-tooltip />
             <el-table-column prop="stream_node_id" label="流媒体服务" min-width="140" show-overflow-tooltip />
             <el-table-column prop="device_id" label="设备 ID" min-width="170" show-overflow-tooltip />
@@ -285,7 +285,16 @@ onMounted(async () => { try { nodes.value = await listNodes(); } catch (error) {
 .node-option.offline { color: var(--el-text-color-secondary); }
 .node-status { flex: none; font-size: 12px; }
 .pager-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-height: 48px; color: var(--el-text-color-secondary); }
+.stream-tabs { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.stream-tabs :deep(.el-tabs__content) { flex: 1; min-height: 0; }
+.stream-tabs :deep(.el-tab-pane) { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.stream-table { flex: 1; min-height: 0; }
 .stream-detail-section { margin-top: 18px; }
 .stream-detail-section h4 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
 @media (max-width: 1000px) { .stream-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; } }
+@media (max-width: 900px) {
+  .stream-tabs,
+  .stream-tabs :deep(.el-tab-pane) { display: block; height: auto; }
+  .stream-table { height: 520px; }
+}
 </style>

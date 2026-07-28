@@ -47,7 +47,10 @@ use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{
     AuthState, Role, UiSession, UserAccess, UserProfile, hash_password as hash_ui_password,
 };
-use crate::core::{GmvGuardErrorCode, GuardError, HealthState, LeaseState, RouteState};
+use crate::core::{
+    ConnectionState, GmvGuardErrorCode, GuardError, HealthState, LeaseState, RouteState,
+    SchedulingState,
+};
 use crate::operation::OperationRequest;
 use crate::operation::{OperationRecord, OperationStatus};
 use crate::outbox::OutboxRepository;
@@ -528,8 +531,11 @@ struct NodeResponse {
     protocol: Option<String>,
     display_name: String,
     connection: String,
+    connection_label: String,
     health: String,
+    health_label: String,
     scheduling: String,
+    scheduling_label: String,
     capabilities: Vec<String>,
     pending_leases: u32,
     host_metrics: HostMetricsResponse,
@@ -584,6 +590,9 @@ impl From<crate::store::model::HostMetricsRecord> for HostMetricsResponse {
 impl From<NodeRecord> for NodeResponse {
     fn from(node: NodeRecord) -> Self {
         let service = node_service(&node);
+        let connection_label = node_connection_label(node.connection).to_string();
+        let health_label = node_health_label(node.health).to_string();
+        let scheduling_label = node_scheduling_label(node.scheduling).to_string();
         Self {
             node_id: node.identity.node_id.clone(),
             instance_id: node.identity.instance_id.clone(),
@@ -592,8 +601,11 @@ impl From<NodeRecord> for NodeResponse {
             protocol: node_protocol(&node),
             display_name: node_display_name(&node),
             connection: format!("{:?}", node.connection).to_uppercase(),
+            connection_label,
             health: format!("{:?}", node.health).to_uppercase(),
+            health_label,
             scheduling: format!("{:?}", node.scheduling).to_uppercase(),
+            scheduling_label,
             capabilities: node.capabilities,
             pending_leases: node.pending_leases,
             host_metrics: node.host_metrics.into(),
@@ -604,6 +616,32 @@ impl From<NodeRecord> for NodeResponse {
             generation: node.generation,
             sequence: node.sequence,
         }
+    }
+}
+
+fn node_connection_label(state: ConnectionState) -> &'static str {
+    match state {
+        ConnectionState::Connected => "已连接",
+        ConnectionState::Disconnected => "已断开",
+        ConnectionState::Superseded => "已替代",
+    }
+}
+
+fn node_health_label(state: HealthState) -> &'static str {
+    match state {
+        HealthState::Starting => "启动中",
+        HealthState::Ready => "就绪",
+        HealthState::Degraded => "降级",
+        HealthState::Draining => "排空中",
+        HealthState::Offline => "离线",
+    }
+}
+
+fn node_scheduling_label(state: SchedulingState) -> &'static str {
+    match state {
+        SchedulingState::Enabled => "可调度",
+        SchedulingState::Disabled => "不可调度",
+        SchedulingState::TimeUnsynced => "时间未同步",
     }
 }
 
@@ -5100,9 +5138,11 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 mod tests {
     use super::{
         GbStreamRequest, GuardError, HttpError, endpoint_with_playback_token, gb_preview_request,
-        media_startup_timeout_ms, playback_control_owner_matches, playback_token_from_endpoint,
+        media_startup_timeout_ms, node_connection_label, node_health_label, node_scheduling_label,
+        playback_control_owner_matches, playback_token_from_endpoint,
     };
     use crate::auth::Role;
+    use crate::core::{ConnectionState, HealthState, SchedulingState};
     use crate::store::model::PlaybackTicketRecord;
 
     #[test]
@@ -5133,6 +5173,29 @@ mod tests {
             "operator",
             "another-session"
         ));
+    }
+
+    #[test]
+    fn node_state_labels_cover_all_api_states() {
+        assert_eq!(node_connection_label(ConnectionState::Connected), "已连接");
+        assert_eq!(
+            node_connection_label(ConnectionState::Disconnected),
+            "已断开"
+        );
+        assert_eq!(node_connection_label(ConnectionState::Superseded), "已替代");
+
+        assert_eq!(node_health_label(HealthState::Starting), "启动中");
+        assert_eq!(node_health_label(HealthState::Ready), "就绪");
+        assert_eq!(node_health_label(HealthState::Degraded), "降级");
+        assert_eq!(node_health_label(HealthState::Draining), "排空中");
+        assert_eq!(node_health_label(HealthState::Offline), "离线");
+
+        assert_eq!(node_scheduling_label(SchedulingState::Enabled), "可调度");
+        assert_eq!(node_scheduling_label(SchedulingState::Disabled), "不可调度");
+        assert_eq!(
+            node_scheduling_label(SchedulingState::TimeUnsynced),
+            "时间未同步"
+        );
     }
 
     #[test]

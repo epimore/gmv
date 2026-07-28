@@ -1,13 +1,13 @@
 <template>
-  <div class="page-grid">
-    <GlassPanel class="span-12" title="用户管理" subtitle="admin 创建用户、配置角色、有效期和重置密码">
+  <div class="page-grid viewport-card-page is-single-card-page">
+    <GlassPanel class="span-12 fill-panel" title="用户管理" subtitle="admin 创建用户、配置角色、有效期和重置密码">
       <div class="toolbar">
         <el-button type="primary" :disabled="!canManageUsers" @click="openCreateUser">创建用户</el-button>
         <el-button :loading="loadingUsers" @click="loadSecurityState">刷新</el-button>
         <span class="code">角色：viewer / operator / admin</span>
       </div>
       <el-alert v-if="!canManageUsers" title="当前用户不是 admin，只能维护自己的基本信息。" type="warning" :closable="false" show-icon />
-      <el-table :data="users" height="300" style="margin-top: 12px;">
+      <el-table class="fill-table" :data="users" height="100%" style="margin-top: 12px;">
         <el-table-column prop="username" label="用户名" min-width="130" />
         <el-table-column prop="nickname" label="昵称" min-width="140" />
         <el-table-column label="角色" width="220">

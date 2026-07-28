@@ -827,6 +827,34 @@ button:not(.channel-cover):focus-visible {
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 16px;
 }
+.viewport-card-page {
+  height: calc(100vh - 178px);
+  height: calc(100dvh - 178px);
+  min-height: 0;
+  overflow: hidden;
+  align-content: start;
+}
+.viewport-card-page.is-single-card-page {
+  grid-template-rows: minmax(0, 1fr);
+}
+.viewport-card-page.has-summary-cards {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.viewport-card-page > .fill-panel {
+  height: 100%;
+  min-height: 0;
+}
+.viewport-card-page > .fill-panel > .panel-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+.viewport-card-page .fill-table {
+  flex: 1;
+  min-height: 0;
+}
 .span-3 {
   grid-column: span 3;
 }
@@ -1338,6 +1366,17 @@ button:not(.channel-cover):focus-visible {
   }
   .page-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .viewport-card-page,
+  .viewport-card-page.is-single-card-page,
+  .viewport-card-page.has-summary-cards {
+    height: auto;
+    overflow: visible;
+    grid-template-rows: none;
+  }
+  .viewport-card-page > .fill-panel,
+  .viewport-card-page > .fill-panel > .panel-inner {
+    height: auto;
   }
   .span-3,
   .span-4,
