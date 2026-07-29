@@ -1860,6 +1860,7 @@ async fn create_integration(
         updated_at_ms: now_ms,
     };
     value.validate(now_ms)?;
+    require_http_integration_master_key(&state, &value)?;
     if value.transport == IntegrationTransport::Mqtt && value.enabled && !state.mqtt_runtime_enabled
     {
         return Err(GuardError::InvalidConfig(
@@ -1941,6 +1942,7 @@ async fn update_integration(
     value.config_version += 1;
     value.updated_at_ms = now_ms;
     value.validate(now_ms)?;
+    require_http_integration_master_key(&state, &value)?;
     if value.transport == IntegrationTransport::Mqtt && value.enabled {
         if !state.mqtt_runtime_enabled {
             return Err(GuardError::InvalidConfig(
@@ -2010,7 +2012,7 @@ async fn create_integration_credential(
     let cipher = state.integration_secrets.as_ref().ok_or_else(|| {
         GuardError::InvalidConfig(format!(
             "{} is required to create integration credentials",
-            crate::integration::secret::INTEGRATION_MASTER_KEY_ENV
+            crate::integration::secret::INTEGRATION_MASTER_KEY_CONFIG
         ))
     })?;
     let now_ms = http_now_ms()?;
@@ -2229,10 +2231,12 @@ async fn upsert_integration_mapping(
     if request.direction != "OUTBOUND"
         || !matches!(request.destination_kind.as_str(), "HTTP" | "MQTT")
         || request.source_type.trim().is_empty()
+        || request.source_type.len() > 255
         || !request.source_type.bytes().all(|value| {
             value.is_ascii_alphanumeric() || matches!(value, b'.' | b'_' | b'-' | b'*')
         })
         || request.destination.trim().is_empty()
+        || request.destination.len() > 512
         || request.schema_version != "v1"
         || request.payload_profile != "event-envelope-v1"
     {
@@ -2324,6 +2328,29 @@ fn require_integration_repository(state: &HttpState) -> Result<&IntegrationRepos
     state.integrations.as_ref().ok_or_else(|| {
         GuardError::InvalidConfig("integration persistent store is disabled".to_string()).into()
     })
+}
+
+fn require_http_integration_master_key(
+    state: &HttpState,
+    integration: &Integration,
+) -> Result<(), HttpError> {
+    if integration.transport == IntegrationTransport::Http
+        && integration.enabled
+        && state.integration_secrets.is_none()
+    {
+        return Err(HttpError {
+            status: StatusCode::BAD_REQUEST,
+            code: "integration_master_key_missing".to_string(),
+            message: format!(
+                "{} is required before enabling an HTTP integration",
+                crate::integration::secret::INTEGRATION_MASTER_KEY_CONFIG
+            ),
+            user_message: Some("部署未配置 HTTP 集成主密钥，暂不能启用 HTTP 接入".to_string()),
+            retryable: Some(false),
+            details: BTreeMap::new(),
+        });
+    }
+    Ok(())
 }
 
 async fn require_integration_transport(

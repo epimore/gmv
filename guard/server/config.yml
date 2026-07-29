@@ -88,7 +88,9 @@ guard:
       local_login_only: false # 仅从配置文件读取；修改后需重启 guard 生效。
 
   integrations:
-    # HTTP HMAC 凭证使用环境变量 GMV_GUARD_INTEGRATION_MASTER_KEY 加密，值为 32 字节密钥的无填充 Base64。
+    # HTTP HMAC 凭证主密钥。已有凭证时必须保持不变；值为 32 字节密钥的无填充 Base64。
+    master_key_crypto_enable: false # true 时填写 `guard encrypt <master_key>` 的输出。
+    master_key: "oa338+YmVNyBoGW79XB7+CsYEJSiXS2nHMeU12m1LWQ"
     mqtt:
       enabled: true
       protocol_version: v3 # 可选 v3（MQTT 3.1.1）或 v5（MQTT 5.0）；切换后重建连接。
@@ -97,7 +99,7 @@ guard:
       client_id: gmv-guard
       username: guard
       pass_crypto_enable: false # 密码是否加密，默认不加密。
-      pass: "pwd12345" # MQTT broker 密码；可留空，避免长期保存密码。
+      pass: "Gmv_EMQX_2026_Strong_Password"
       tls: false # TLS 默认启用；开发/受控内网可显式关闭。
       subscribe_topics:
         - gmv/commands/#

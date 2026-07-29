@@ -159,6 +159,69 @@ guard:
 
             let (status, admin_cookie, admin_csrf) = login(&app, "admin", "admin-secret").await;
             assert_eq!(status, StatusCode::OK);
+
+            let (status, _, error) = call(
+                &app,
+                write_request(
+                    "/api/v2/integrations",
+                    &admin_cookie,
+                    &admin_csrf,
+                    json!({
+                        "name": "HTTP without master key",
+                        "transport": "http",
+                        "inbound_enabled": true,
+                        "outbound_enabled": true,
+                        "enabled": true,
+                        "scopes": ["*"],
+                        "expires_at_ms": null
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(error["code"], "integration_master_key_missing");
+
+            let (status, _, disabled_http) = call(
+                &app,
+                write_request(
+                    "/api/v2/integrations",
+                    &admin_cookie,
+                    &admin_csrf,
+                    json!({
+                        "name": "Disabled HTTP",
+                        "transport": "http",
+                        "inbound_enabled": true,
+                        "outbound_enabled": true,
+                        "enabled": false,
+                        "scopes": ["*"],
+                        "expires_at_ms": null
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            let integration_id = disabled_http["integration_id"].as_str().unwrap();
+            let (status, _, error) = call(
+                &app,
+                write_request(
+                    &format!("/api/v2/integrations/{integration_id}"),
+                    &admin_cookie,
+                    &admin_csrf,
+                    json!({
+                        "name": "Enabled HTTP",
+                        "inbound_enabled": true,
+                        "outbound_enabled": true,
+                        "enabled": true,
+                        "scopes": ["*"],
+                        "expires_at_ms": null,
+                        "expected_config_version": 1
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(error["code"], "integration_master_key_missing");
+
             let initial_expires_at_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

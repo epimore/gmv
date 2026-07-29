@@ -580,12 +580,35 @@ impl BootstrapAdminConfig {
 #[serde(crate = "base::serde")]
 pub struct IntegrationsConfig {
     #[serde(default)]
+    pub master_key_crypto_enable: bool,
+    #[serde(default)]
+    pub master_key: String,
+    #[serde(default)]
     pub mqtt: MqttStartupConfig,
 }
 
 impl IntegrationsConfig {
     fn validate(&self) -> GuardResult<()> {
-        self.mqtt.validate()
+        self.mqtt.validate()?;
+        if let Some(master_key) = self.master_key_value()? {
+            crate::integration::secret::IntegrationSecretCipher::from_base64_key_no_pad(
+                &master_key,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn master_key_value(&self) -> GuardResult<Option<String>> {
+        if self.master_key.is_empty() {
+            return Ok(None);
+        }
+        let value = if self.master_key_crypto_enable {
+            default_decrypt(&self.master_key)
+                .map_err(|error| GuardError::InvalidConfig(error.to_string()))?
+        } else {
+            self.master_key.clone()
+        };
+        Ok(Some(value))
     }
 }
 
@@ -830,6 +853,37 @@ mod tests {
     }
 
     #[test]
+    fn integration_master_key_supports_plaintext_and_encrypted_config_sources() {
+        let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let plaintext = IntegrationsConfig {
+            master_key_crypto_enable: false,
+            master_key: key.to_string(),
+            mqtt: MqttStartupConfig::default(),
+        };
+        plaintext.validate().unwrap();
+        assert_eq!(plaintext.master_key_value().unwrap().as_deref(), Some(key));
+
+        let encrypted = IntegrationsConfig {
+            master_key_crypto_enable: true,
+            master_key: default_encrypt(key).unwrap(),
+            mqtt: MqttStartupConfig::default(),
+        };
+        encrypted.validate().unwrap();
+        assert_eq!(encrypted.master_key_value().unwrap().as_deref(), Some(key));
+    }
+
+    #[test]
+    fn integration_master_key_rejects_invalid_config_value() {
+        let config = IntegrationsConfig {
+            master_key_crypto_enable: false,
+            master_key: "not-a-32-byte-key".to_string(),
+            mqtt: MqttStartupConfig::default(),
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn bootstrap_admin_password_source_can_be_omitted_after_initialization() {
         let config = BootstrapAdminConfig {
             username: "admin".to_string(),
@@ -869,6 +923,7 @@ mod tests {
         let config: GuardAppConfig = base::serde_yaml::from_value(guard).unwrap();
 
         config.database.pool.validate().unwrap();
+        config.integrations.validate().unwrap();
     }
 
     #[test]

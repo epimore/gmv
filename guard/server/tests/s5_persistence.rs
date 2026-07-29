@@ -5,7 +5,9 @@ use base_db::dbx::{
     sqlitex::{SqliteConnectionConfig, build_sqlite_pool},
 };
 use gmv_guard_server::app_config::GuardAppConfig;
+use gmv_guard_server::store::migration::{SQLITE_0001, SQLITE_0003};
 use gmv_guard_server::store::persistent::PersistentStore;
+use gmv_guard_server::store::sqlite::SqliteStore;
 
 #[test]
 fn yaml_annotation_auto_migrates_and_bootstraps_only_once() {
@@ -118,7 +120,7 @@ guard:
                 migrations,
                 [
                     (1, "guard_preview_baseline".to_string()),
-                    (2, "guard_integrations".to_string())
+                    (3, "guard_integrations".to_string())
                 ]
             );
             let user_columns = base_db::sqlx::query_scalar::<_, String>(
@@ -131,5 +133,124 @@ guard:
             pool.close().await;
             drop(store);
             let _ = std::fs::remove_dir_all(root);
+        });
+}
+
+#[test]
+fn sqlite_preserves_reserved_user_expiration_v2_and_applies_integrations_v3() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "guard-user-expiration-upgrade-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            let pool = build_sqlite_pool(
+                SqliteConnectionConfig::new(&path),
+                DatabasePoolConfig {
+                    max_size: 1,
+                    min_idle: Some(0),
+                    connection_timeout: Duration::from_secs(2),
+                    ..DatabasePoolConfig::default()
+                },
+            )
+            .unwrap();
+            base_db::sqlx::raw_sql(SQLITE_0001)
+                .execute(&pool)
+                .await
+                .unwrap();
+            base_db::sqlx::raw_sql(
+                "CREATE TABLE _base_db_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at_ms INTEGER NOT NULL);\
+                 INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES\
+                   (1,'guard_preview_baseline',0),(2,'guard_user_expiration',0);",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            SqliteStore::new(pool.clone()).migrate().await.unwrap();
+
+            let migrations = base_db::sqlx::query_as::<_, (i64, String)>(
+                "SELECT version,name FROM _base_db_migrations ORDER BY version",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                migrations,
+                [
+                    (1, "guard_preview_baseline".to_string()),
+                    (2, "guard_user_expiration".to_string()),
+                    (3, "guard_integrations".to_string())
+                ]
+            );
+            let integration_table = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='guard_integration'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(integration_table, "guard_integration");
+
+            pool.close().await;
+            let _ = std::fs::remove_file(path);
+        });
+}
+
+#[test]
+fn sqlite_aliases_integrations_v2_without_reapplying_schema() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "guard-integrations-v2-upgrade-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            let pool = build_sqlite_pool(
+                SqliteConnectionConfig::new(&path),
+                DatabasePoolConfig {
+                    max_size: 1,
+                    min_idle: Some(0),
+                    connection_timeout: Duration::from_secs(2),
+                    ..DatabasePoolConfig::default()
+                },
+            )
+            .unwrap();
+            base_db::sqlx::raw_sql(SQLITE_0001)
+                .execute(&pool)
+                .await
+                .unwrap();
+            base_db::sqlx::raw_sql(SQLITE_0003)
+                .execute(&pool)
+                .await
+                .unwrap();
+            base_db::sqlx::raw_sql(
+                "CREATE TABLE _base_db_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at_ms INTEGER NOT NULL);\
+                 INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES\
+                   (1,'guard_preview_baseline',0),(2,'guard_integrations',123);",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            SqliteStore::new(pool.clone()).migrate().await.unwrap();
+
+            let migrations = base_db::sqlx::query_as::<_, (i64, String, i64)>(
+                "SELECT version,name,applied_at_ms FROM _base_db_migrations ORDER BY version",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                migrations,
+                [
+                    (1, "guard_preview_baseline".to_string(), 0),
+                    (2, "guard_integrations".to_string(), 123),
+                    (3, "guard_integrations".to_string(), 123)
+                ]
+            );
+
+            pool.close().await;
+            let _ = std::fs::remove_file(path);
         });
 }

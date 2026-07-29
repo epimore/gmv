@@ -1,7 +1,10 @@
 use base_db::sqlx::MySqlPool;
 
 use crate::core::{GuardError, GuardResult};
-use crate::store::migration::MYSQL_MIGRATIONS;
+use crate::store::migration::{
+    INTEGRATIONS_V2_COMPATIBILITY_SQL, MYSQL_0003, MYSQL_0003_COLUMNS, MYSQL_0003_INDEXES,
+    MYSQL_MIGRATIONS,
+};
 use crate::store::model::{OutboxRecord, OutboxRow, outbox_from_row};
 
 #[derive(Debug, Clone)]
@@ -19,6 +22,14 @@ impl MysqlStore {
     }
 
     pub async fn migrate(&self) -> GuardResult<()> {
+        base_db::migration::run_mysql_migrations(&self.pool, &MYSQL_MIGRATIONS[..1])
+            .await
+            .map_err(database_error)?;
+        base_db::sqlx::query(INTEGRATIONS_V2_COMPATIBILITY_SQL)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        migrate_integrations_v3(&self.pool).await?;
         base_db::migration::run_mysql_migrations(&self.pool, MYSQL_MIGRATIONS)
             .await
             .map_err(database_error)
@@ -392,6 +403,69 @@ impl MysqlStore {
         tx.commit().await.map_err(database_error)?;
         Ok(true)
     }
+}
+
+async fn migrate_integrations_v3(pool: &MySqlPool) -> GuardResult<()> {
+    let existing = base_db::sqlx::query_scalar::<_, String>(
+        "SELECT name FROM _base_db_migrations WHERE version=3",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?;
+    if existing.is_some() {
+        return Ok(());
+    }
+
+    base_db::sqlx::raw_sql(MYSQL_0003)
+        .execute(pool)
+        .await
+        .map_err(database_error)?;
+    for &(table, column, definition) in MYSQL_0003_COLUMNS {
+        let exists = base_db::sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?)",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .map_err(database_error)?;
+        if exists == 0 {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN {definition}"
+            )))
+            .execute(pool)
+            .await
+            .map_err(database_error)?;
+        }
+    }
+    for &(table, index, statement) in MYSQL_0003_INDEXES {
+        let exists = base_db::sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?)",
+        )
+        .bind(table)
+        .bind(index)
+        .fetch_one(pool)
+        .await
+        .map_err(database_error)?;
+        if exists == 0 {
+            base_db::sqlx::query(statement)
+                .execute(pool)
+                .await
+                .map_err(database_error)?;
+        }
+    }
+    let applied_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    base_db::sqlx::query(
+        "INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES (3,'guard_integrations',?)",
+    )
+    .bind(i64::try_from(applied_at_ms).unwrap_or(i64::MAX))
+    .execute(pool)
+    .await
+    .map_err(database_error)?;
+    Ok(())
 }
 
 async fn insert_outbox_mysql(

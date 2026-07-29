@@ -270,10 +270,10 @@ impl IntegrationHttpConfig {
         if self
             .callback_url
             .as_deref()
-            .is_some_and(|value| !value.starts_with("https://"))
+            .is_some_and(|value| !value.starts_with("https://") || value.len() > 512)
         {
             return Err(GuardError::InvalidConfig(
-                "HTTP callback_url must use https".to_string(),
+                "HTTP callback_url must use https and not exceed 512 bytes".to_string(),
             ));
         }
         Ok(())
@@ -410,5 +410,23 @@ mod tests {
             updated_at_ms: 0,
         };
         assert!(!format!("{credential:?}").contains("sensitive-ciphertext"));
+    }
+
+    #[test]
+    fn http_callback_url_must_fit_the_mapping_destination_column() {
+        let mut value = IntegrationHttpConfig {
+            integration_id: "partner-1".to_string(),
+            callback_url: Some(format!("https://example.com/{}", "a".repeat(492))),
+            callback_timeout_ms: 5_000,
+            private_network_policy: "deny".to_string(),
+            private_network_allowlist: Vec::new(),
+            max_attempts: 5,
+            event_ttl_ms: 259_200_000,
+            max_response_bytes: 65_536,
+            updated_at_ms: 1,
+        };
+        value.validate().unwrap();
+        value.callback_url = Some(format!("https://example.com/{}", "a".repeat(493)));
+        assert!(value.validate().is_err());
     }
 }

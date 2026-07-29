@@ -27,11 +27,9 @@ CREATE TABLE IF NOT EXISTS guard_integration_credential (
   created_by VARCHAR(128) NOT NULL,
   created_at_ms BIGINT NOT NULL,
   updated_at_ms BIGINT NOT NULL,
-  FOREIGN KEY (integration_id) REFERENCES guard_integration(integration_id)
+  FOREIGN KEY (integration_id) REFERENCES guard_integration(integration_id),
+  INDEX idx_guard_integration_credential_app (integration_id, purpose, status)
 );
-
-CREATE INDEX idx_guard_integration_credential_app
-  ON guard_integration_credential(integration_id, purpose, status);
 
 CREATE TABLE IF NOT EXISTS guard_integration_http (
   integration_id VARCHAR(128) NOT NULL PRIMARY KEY,
@@ -60,21 +58,19 @@ CREATE TABLE IF NOT EXISTS guard_integration_mqtt (
 CREATE TABLE IF NOT EXISTS guard_integration_mapping (
   mapping_id VARCHAR(128) NOT NULL PRIMARY KEY,
   integration_id VARCHAR(128) NOT NULL,
-  direction VARCHAR(16) NOT NULL,
-  source_type VARCHAR(255) NOT NULL,
+  direction VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  source_type VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   schema_version VARCHAR(32) NOT NULL,
-  destination_kind VARCHAR(16) NOT NULL,
-  destination VARCHAR(1024) NOT NULL,
+  destination_kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  destination VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   payload_profile VARCHAR(128) NOT NULL,
   enabled INTEGER NOT NULL,
   created_at_ms BIGINT NOT NULL,
   updated_at_ms BIGINT NOT NULL,
   FOREIGN KEY (integration_id) REFERENCES guard_integration(integration_id),
-  UNIQUE (integration_id, direction, source_type, destination_kind, destination)
+  UNIQUE (integration_id, direction, source_type, destination_kind, destination),
+  INDEX idx_guard_integration_mapping_source (source_type, enabled)
 );
-
-CREATE INDEX idx_guard_integration_mapping_source
-  ON guard_integration_mapping(source_type, enabled);
 
 CREATE TABLE IF NOT EXISTS guard_integration_audit (
   audit_id VARCHAR(128) NOT NULL PRIMARY KEY,
@@ -84,32 +80,15 @@ CREATE TABLE IF NOT EXISTS guard_integration_audit (
   target_id VARCHAR(128) NOT NULL,
   outcome VARCHAR(32) NOT NULL,
   detail_summary TEXT NOT NULL,
-  created_at_ms BIGINT NOT NULL
+  created_at_ms BIGINT NOT NULL,
+  INDEX idx_guard_integration_audit_created (created_at_ms, audit_id)
 );
-
-CREATE INDEX idx_guard_integration_audit_created
-  ON guard_integration_audit(created_at_ms, audit_id);
 
 CREATE TABLE IF NOT EXISTS guard_integration_delivery (
   event_id VARCHAR(128) NOT NULL,
   mapping_id VARCHAR(128) NOT NULL,
   expires_at_ms BIGINT NOT NULL,
   created_at_ms BIGINT NOT NULL,
-  PRIMARY KEY (event_id, mapping_id)
+  PRIMARY KEY (event_id, mapping_id),
+  INDEX idx_guard_integration_delivery_expires (expires_at_ms)
 );
-
-CREATE INDEX idx_guard_integration_delivery_expires
-  ON guard_integration_delivery(expires_at_ms);
-
-ALTER TABLE guard_command ADD COLUMN integration_id VARCHAR(128) NOT NULL DEFAULT '';
-ALTER TABLE guard_command ADD COLUMN operation_id VARCHAR(128) NOT NULL DEFAULT '';
-ALTER TABLE guard_command ADD COLUMN action VARCHAR(128) NOT NULL DEFAULT '';
-ALTER TABLE guard_command ADD COLUMN state VARCHAR(32) NOT NULL DEFAULT 'CLAIMED';
-ALTER TABLE guard_command ADD COLUMN updated_at_ms BIGINT NOT NULL DEFAULT 0;
-
-ALTER TABLE guard_outbox ADD COLUMN integration_id VARCHAR(128) NOT NULL DEFAULT '';
-ALTER TABLE guard_outbox ADD COLUMN mapping_id VARCHAR(128) NOT NULL DEFAULT '';
-ALTER TABLE guard_outbox ADD COLUMN expires_at_ms BIGINT NULL;
-
-CREATE INDEX idx_guard_outbox_integration_state
-  ON guard_outbox(integration_id, state, next_attempt_at_ms);

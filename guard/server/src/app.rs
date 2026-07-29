@@ -102,7 +102,11 @@ pub async fn start_guard(
     let users = persistent.load_users().await?;
     let user_repository = persistent.user_repository();
     let integration_repository = persistent.integration_repository();
-    let integration_secrets = crate::integration::secret::IntegrationSecretCipher::from_env()?;
+    let integration_master_key = config.integrations.master_key_value()?;
+    let integration_secrets = integration_master_key
+        .as_deref()
+        .map(crate::integration::secret::IntegrationSecretCipher::from_base64_key_no_pad)
+        .transpose()?;
     if integration_secrets.is_none()
         && integration_repository
             .list()
@@ -116,7 +120,7 @@ pub async fn start_guard(
     {
         return Err(GuardError::InvalidConfig(format!(
             "{} is required while an HTTP integration is enabled",
-            crate::integration::secret::INTEGRATION_MASTER_KEY_ENV
+            crate::integration::secret::INTEGRATION_MASTER_KEY_CONFIG
         ))
         .into());
     }

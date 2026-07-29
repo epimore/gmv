@@ -2,7 +2,7 @@ use base::utils::crypto::Aes256GcmCipher;
 
 use crate::core::{GuardError, GuardResult};
 
-pub const INTEGRATION_MASTER_KEY_ENV: &str = "GMV_GUARD_INTEGRATION_MASTER_KEY";
+pub const INTEGRATION_MASTER_KEY_CONFIG: &str = "guard.integrations.master_key";
 
 #[derive(Clone)]
 pub struct IntegrationSecretCipher {
@@ -13,7 +13,7 @@ impl std::fmt::Debug for IntegrationSecretCipher {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("IntegrationSecretCipher")
-            .field("key", &"<external>")
+            .field("key", &"<redacted>")
             .finish()
     }
 }
@@ -23,18 +23,6 @@ impl IntegrationSecretCipher {
         let cipher = Aes256GcmCipher::from_base64_key_no_pad(key)
             .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
         Ok(Self { cipher })
-    }
-
-    pub fn from_env() -> GuardResult<Option<Self>> {
-        let Some(key) = std::env::var_os(INTEGRATION_MASTER_KEY_ENV) else {
-            return Ok(None);
-        };
-        let key = key.into_string().map_err(|_| {
-            GuardError::InvalidConfig(format!(
-                "{INTEGRATION_MASTER_KEY_ENV} must contain UTF-8 base64"
-            ))
-        })?;
-        Self::from_base64_key_no_pad(&key).map(Some)
     }
 
     pub fn encrypt(&self, secret: &str) -> GuardResult<String> {

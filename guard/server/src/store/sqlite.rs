@@ -1,7 +1,7 @@
 use base_db::sqlx::SqlitePool;
 
 use crate::core::{GuardError, GuardResult};
-use crate::store::migration::MIGRATIONS;
+use crate::store::migration::{INTEGRATIONS_V2_COMPATIBILITY_SQL, MIGRATIONS};
 use crate::store::model::{OutboxRecord, OutboxRow, outbox_from_row};
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,13 @@ impl SqliteStore {
     }
 
     pub async fn migrate(&self) -> GuardResult<()> {
+        base_db::migration::run_sqlite_migrations(&self.pool, &MIGRATIONS[..1])
+            .await
+            .map_err(database_error)?;
+        base_db::sqlx::query(INTEGRATIONS_V2_COMPATIBILITY_SQL)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
         base_db::migration::run_sqlite_migrations(&self.pool, MIGRATIONS)
             .await
             .map_err(database_error)
