@@ -510,6 +510,23 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
             .hand_log(|msg| error!("{msg}"))?;
         }
     }
+    let oauth_existing: Vec<String> = base_db::sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='gb28181_oauth'",
+    )
+    .fetch_all(mysql_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    if !oauth_existing
+        .iter()
+        .any(|column| column == "snapshot_to_mode")
+    {
+        base_db::sqlx::query(
+            "ALTER TABLE gb28181_oauth ADD COLUMN snapshot_to_mode tinyint UNSIGNED NOT NULL DEFAULT 0",
+        )
+        .execute(mysql_pool())
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    }
     let epoch_index_exists: Option<i64> = base_db::sqlx::query_scalar(
         "SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='gb28181_sip_dialog_session' AND index_name='idx_gmv_sip_dialog_device_epoch_state' LIMIT 1",
     )
@@ -715,6 +732,7 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
             .hand_log(|msg| error!("{msg}"))?;
         }
     }
+    ensure_sqlite_snapshot_to_mode(sqlite_pool()).await?;
     base_db::sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_gb28181_sip_dialog_device_epoch_state ON gb28181_sip_dialog_session (device_id, registration_epoch_id, state)",
     )
@@ -728,6 +746,32 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
     .await
     .hand_log(|msg| error!("{msg}"))?;
     ensure_sqlite_cloud_recording_columns().await?;
+    Ok(())
+}
+
+#[cfg(feature = "db-sqlite")]
+async fn ensure_sqlite_snapshot_to_mode(pool: &SqlitePool) -> GlobalResult<()> {
+    use base_db::sqlx::Row;
+
+    let oauth_rows = base_db::sqlx::query("PRAGMA table_info(gb28181_oauth)")
+        .fetch_all(pool)
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    let oauth_existing: Vec<String> = oauth_rows
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    if !oauth_existing
+        .iter()
+        .any(|column| column == "snapshot_to_mode")
+    {
+        base_db::sqlx::query(
+            "ALTER TABLE gb28181_oauth ADD COLUMN snapshot_to_mode INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+    }
     Ok(())
 }
 
@@ -1043,6 +1087,14 @@ mod tests {
             assert!(names.contains(&"gb28181_enum_code".to_string()));
             assert!(names.contains(&"gb28181_resource_confirmation".to_string()));
 
+            let snapshot_to_mode: (i64, Option<String>) = base_db::sqlx::query_as(
+                "SELECT \"notnull\",dflt_value FROM pragma_table_info('gb28181_oauth') WHERE name='snapshot_to_mode'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read snapshot_to_mode schema");
+            assert_eq!(snapshot_to_mode, (1, Some("0".to_string())));
+
             let dialog_columns = base_db::sqlx::query(
                 "SELECT name FROM pragma_table_info('gb28181_sip_dialog_session')",
             )
@@ -1137,6 +1189,44 @@ mod tests {
             .await
             .expect("count legacy names");
             assert_eq!(legacy_names, 0);
+
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn sqlite_snapshot_to_mode_upgrade_is_idempotent_and_defaults_legacy_rows() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let (pool, root) = temp_sqlite_pool("snapshot-to-mode-upgrade");
+            base_db::sqlx::query(
+                "CREATE TABLE gb28181_oauth (device_id VARCHAR(20) PRIMARY KEY NOT NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("create legacy oauth table");
+            base_db::sqlx::query("INSERT INTO gb28181_oauth (device_id) VALUES (?)")
+                .bind("34020000001110000001")
+                .execute(&pool)
+                .await
+                .expect("insert legacy device");
+
+            ensure_sqlite_snapshot_to_mode(&pool)
+                .await
+                .expect("add snapshot_to_mode");
+            ensure_sqlite_snapshot_to_mode(&pool)
+                .await
+                .expect("repeat snapshot_to_mode upgrade");
+
+            let mode: i64 = base_db::sqlx::query_scalar(
+                "SELECT snapshot_to_mode FROM gb28181_oauth WHERE device_id=?",
+            )
+            .bind("34020000001110000001")
+            .fetch_one(&pool)
+            .await
+            .expect("read legacy device mode");
+            assert_eq!(mode, 0);
 
             pool.close().await;
             let _ = std::fs::remove_dir_all(root);

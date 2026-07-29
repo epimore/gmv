@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS gb28181_oauth (
     alias VARCHAR(32) NULL,
     status INTEGER NULL,
     heartbeat_sec INTEGER NULL,
+    snapshot_to_mode INTEGER NOT NULL DEFAULT 0,
     del INTEGER NULL,
     create_time DATETIME NULL,
     tenant_id INTEGER NULL,

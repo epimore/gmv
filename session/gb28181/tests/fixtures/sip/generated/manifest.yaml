@@ -7,8 +7,8 @@ integrity_test: generated_sip_corpus_is_current_and_complete
 runtime_test: normal_gb28181_business_dialogues_use_owned_io
 business_flow_test: all_business_http_apis_complete_the_normal_signaling_flow
 quality:
-  scenario_count: 18
-  packet_count: 44
+  scenario_count: 19
+  packet_count: 46
   covered_business_api_count: 19
   failed_scenario_ids: []
   uncovered_business_apis: []
@@ -177,6 +177,26 @@ packets:
     expected_status: 200
     source: synthetic-wire
     sha256: 407cb0573353e7f23065285d8b3ffdf008c405370df803e00884e5dc36bee6e1
+    business_apis:
+      - /edge/upload/picture/{token}
+  - scenario_id: snapshot-business-target
+    file: snapshot-business-target-01-request.sip
+    direction: platform-to-device
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: null
+    source: synthetic-wire
+    sha256: 04261c3fe8eab6e5c42ed5df6f8215b892188f13b4302ec4eeaf6a67e1c7e6e9
+    business_apis:
+      - /edge/upload/picture/{token}
+  - scenario_id: snapshot-business-target
+    file: snapshot-business-target-02-200.sip
+    direction: device-to-platform
+    transport: udp
+    sip_method: MESSAGE
+    expected_status: 200
+    source: synthetic-wire
+    sha256: 2caed7c76cb96bce194ca3df4b72bf4e550beccf1da6e47e4e703b1465f54610
     business_apis:
       - /edge/upload/picture/{token}
   - scenario_id: live-normal

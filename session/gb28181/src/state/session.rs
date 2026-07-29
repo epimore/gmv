@@ -1274,7 +1274,7 @@ impl Cache {
         );
     }
 
-    pub fn notify_snapshot_wait(key: &str) -> bool {
+    pub fn notify_snapshot_wait(key: &str, accepted: bool) -> bool {
         let guard = GENERAL_CACHE.shared.state.lock();
         let sender = guard
             .entities
@@ -1286,7 +1286,7 @@ impl Cache {
         drop(guard);
         match sender {
             Some(tx) => {
-                let _ = tx.try_send(true);
+                let _ = tx.try_send(accepted);
                 true
             }
             None => false,
@@ -1662,7 +1662,10 @@ impl AccessMode {
 
 #[cfg(test)]
 mod tests {
-    use crate::state::session::{AccessMode, Cache, GENERAL_CACHE, StreamLifecycle, StreamTable};
+    use crate::state::session::{
+        AccessMode, Cache, GENERAL_CACHE, StateEntry, StateValue, StateWaiter, StreamLifecycle,
+        StreamTable,
+    };
 
     fn stream_table() -> StreamTable {
         StreamTable {
@@ -1679,6 +1682,24 @@ mod tests {
             guard_lease: None,
             lifecycle: StreamLifecycle::Playing,
         }
+    }
+
+    #[test]
+    fn snapshot_wait_delivers_device_rejection_without_waiting_for_expiry() {
+        let key = "test:snapshot:device-rejection".to_string();
+        let (tx, mut rx) = base::tokio::sync::mpsc::channel(1);
+        GENERAL_CACHE.shared.state.lock().entities.insert(
+            key.clone(),
+            StateEntry {
+                value: StateValue::Empty,
+                expire: None,
+                waiter: Some(StateWaiter::Snapshot(tx)),
+            },
+        );
+
+        assert!(Cache::notify_snapshot_wait(&key, false));
+        assert_eq!(rx.try_recv(), Ok(false));
+        GENERAL_CACHE.shared.state.lock().entities.remove(&key);
     }
 
     #[test]

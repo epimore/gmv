@@ -1684,7 +1684,7 @@ impl SessionControl for SessionControlRpc {
         let request = request.into_inner();
         if let Some(device) = request.device.as_ref() {
             debug!(
-                "session_control.create_gb_device, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
+                "session_control.create_gb_device, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, snapshot_to_mode={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
                 device.device_id,
                 device.session_node_id,
                 device.domain_id,
@@ -1701,6 +1701,7 @@ impl SessionControl for SessionControlRpc {
                 device.alias,
                 device.status,
                 device.heartbeat_sec,
+                device.snapshot_to_mode,
                 device.tenant_id,
                 device.sys_org_code,
                 device.create_by,
@@ -1712,6 +1713,7 @@ impl SessionControl for SessionControlRpc {
         let device = request
             .device
             .ok_or_else(|| tonic::Status::invalid_argument("device is required"))?;
+        validate_snapshot_to_mode(device.snapshot_to_mode)?;
         let device = crate::storage::guard_query::GbDeviceView::create(gb_device_create(device))
             .await
             .map_err(storage_status)?;
@@ -1728,7 +1730,7 @@ impl SessionControl for SessionControlRpc {
         let request = request.into_inner();
         if let Some(device) = request.device.as_ref() {
             debug!(
-                "session_control.update_gb_device, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
+                "session_control.update_gb_device, req: device_id={}, session_node_id={}, domain_id={}, domain={}, longitude={}, latitude={}, address={}, pwd={}, pwd_check={}, alias={}, status={}, heartbeat_sec={}, snapshot_to_mode={}, tenant_id={}, sys_org_code={}, create_by={}, update_by={}",
                 device.device_id,
                 device.session_node_id,
                 device.domain_id,
@@ -1745,6 +1747,7 @@ impl SessionControl for SessionControlRpc {
                 device.alias,
                 device.status,
                 device.heartbeat_sec,
+                device.snapshot_to_mode,
                 device.tenant_id,
                 device.sys_org_code,
                 device.create_by,
@@ -1756,6 +1759,7 @@ impl SessionControl for SessionControlRpc {
         let device = request
             .device
             .ok_or_else(|| tonic::Status::invalid_argument("device is required"))?;
+        validate_snapshot_to_mode(device.snapshot_to_mode)?;
         let device = crate::storage::guard_query::GbDeviceView::update(gb_device_create(device))
             .await
             .map_err(storage_status)?
@@ -3011,6 +3015,7 @@ fn gb_device_proto(
         camera_in_count: row.camera_in_count,
         camera_off_count: row.camera_off_count,
         register_time: datetime_string(row.register_time),
+        snapshot_to_mode: row.snapshot_to_mode,
     }
 }
 
@@ -3027,10 +3032,21 @@ fn gb_device_create(device: GbDevice) -> crate::storage::guard_query::GbDeviceCr
         alias: device.alias,
         status: device.status,
         heartbeat_sec: device.heartbeat_sec,
+        snapshot_to_mode: device.snapshot_to_mode,
         tenant_id: device.tenant_id,
         sys_org_code: device.sys_org_code,
         create_by: device.create_by,
         update_by: device.update_by,
+    }
+}
+
+fn validate_snapshot_to_mode(value: i64) -> Result<(), tonic::Status> {
+    if matches!(value, 0 | 1) {
+        Ok(())
+    } else {
+        Err(tonic::Status::invalid_argument(
+            "snapshot_to_mode must be 0 (signaling_peer) or 1 (business_target)",
+        ))
     }
 }
 
@@ -3536,6 +3552,14 @@ mod tests {
     use super::*;
     use gmv_protocol::common::v1::Endpoint;
     use gmv_protocol::session::v1::session_hook_server::SessionHook;
+
+    #[test]
+    fn snapshot_to_mode_accepts_only_defined_values() {
+        assert!(validate_snapshot_to_mode(0).is_ok());
+        assert!(validate_snapshot_to_mode(1).is_ok());
+        assert!(validate_snapshot_to_mode(-1).is_err());
+        assert!(validate_snapshot_to_mode(2).is_err());
+    }
 
     fn cloud_recording(
         status: &str,

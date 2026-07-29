@@ -356,6 +356,46 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
                 }
             }
         }
+        GbMessageKind::DeviceConfig => {
+            let Some(signaling_peer_id) = validate_snapshot_source(event, source_device_id)? else {
+                return Ok(());
+            };
+            let sn = event
+                .xml_sn
+                .as_deref()
+                .or_else(|| super::xml::value(&items, "Response,SN"))
+                .and_then(|value| value.parse::<u32>().ok());
+            let result = super::xml::value(&items, "Response,Result");
+            let (Some(sn), Some(result)) = (sn, result) else {
+                debug!(
+                    "DeviceConfig response missing SN or Result: device_id={signaling_peer_id}, call_id={:?}",
+                    event.call_id
+                );
+                return Ok(());
+            };
+            let Some(pending) =
+                SipRuntimeCache::global().complete_snapshot_response(&signaling_peer_id, sn)
+            else {
+                debug!(
+                    "DeviceConfig response has no active snapshot waiter: device_id={signaling_peer_id}, sn={sn}, call_id={:?}",
+                    event.call_id
+                );
+                return Ok(());
+            };
+            if result.eq_ignore_ascii_case("OK") {
+                debug!(
+                    "snapshot command accepted: device_id={signaling_peer_id}, channel_id={}, sn={sn}, session_id={}, to_mode={}",
+                    pending.business_target_id, pending.session_id, pending.to_mode
+                );
+            } else {
+                let key = crate::service::edge_serv::rebuild_snapshot_wait_key(&pending.session_id);
+                GeneralCache::notify_snapshot_wait(&key, false);
+                warn!(
+                    "snapshot command rejected: device_id={signaling_peer_id}, channel_id={}, sn={sn}, session_id={}, to_mode={}, result={result}",
+                    pending.business_target_id, pending.session_id, pending.to_mode
+                );
+            }
+        }
         GbMessageKind::Broadcast => {
             let Some(_) = validate_message_source(event, source_device_id)? else {
                 return Ok(());
@@ -378,12 +418,12 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
             }
         }
         GbMessageKind::UploadSnapshotFinished | GbMessageKind::Notify => {
-            let Some(_) = validate_message_source(event, source_device_id)? else {
+            let Some(_) = validate_snapshot_source(event, source_device_id)? else {
                 return Ok(());
             };
             if let Some(session_id) = event.snapshot_session_id.as_deref() {
                 let key = crate::service::edge_serv::rebuild_snapshot_wait_key(session_id);
-                if GeneralCache::notify_snapshot_wait(&key) {
+                if GeneralCache::notify_snapshot_wait(&key, true) {
                     info!("snapshot upload notification received: session_id={session_id}");
                 }
             }
@@ -391,6 +431,22 @@ fn apply_message_event(event: &GbMessageEvent) -> GlobalResult<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn validate_snapshot_source(
+    event: &GbMessageEvent,
+    claimed_device_id: Option<&str>,
+) -> GlobalResult<Option<String>> {
+    let association = base_association_from_pjsip(&event.association);
+    let device_id = Register::get_device_id_by_association(&association)
+        .map(|value| value.to_string())
+        .or_else(|| claimed_device_id.map(ToOwned::to_owned));
+    let Some(device_id) = device_id else {
+        warn!("snapshot SIP message missing registered source identity");
+        return Ok(None);
+    };
+    Register::validate_registered_source(&device_id, &association)?;
+    Ok(Some(device_id))
 }
 
 fn validate_message_source<'a>(

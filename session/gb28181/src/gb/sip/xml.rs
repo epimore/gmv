@@ -501,6 +501,7 @@ pub fn build_preset_query_xml(device_id: &str) -> String {
 }
 
 pub fn build_snapshot_control_xml(
+    sn: u32,
     channel_id: &str,
     count: u8,
     interval: u8,
@@ -511,7 +512,7 @@ pub fn build_snapshot_control_xml(
         "<?xml version=\"1.0\"?>\r\n\
 <Control>\r\n\
 <CmdType>DeviceConfig</CmdType>\r\n\
-<SN>1</SN>\r\n\
+<SN>{}</SN>\r\n\
 <DeviceID>{}</DeviceID>\r\n\
 <SnapShotConfig>\r\n\
 <SnapNum>{}</SnapNum>\r\n\
@@ -520,6 +521,7 @@ pub fn build_snapshot_control_xml(
 <SessionID>{}</SessionID>\r\n\
 </SnapShotConfig>\r\n\
 </Control>\r\n",
+        sn,
         escape(channel_id),
         count,
         interval,
@@ -533,7 +535,7 @@ mod tests {
     use super::{
         RESPONSE_DEVICE_LIST_ITEM_DEVICE_ID, SPLIT_CLASS, build_broadcast_notify,
         build_catalog_subscription, build_config_download_query, build_cruise_track_query,
-        encode_document, parse_items, parse_record_info_response,
+        build_snapshot_control_xml, encode_document, parse_items, parse_record_info_response,
     };
     use encoding_rs::GBK;
 
@@ -601,6 +603,22 @@ mod tests {
         assert!(broadcast.contains("<CmdType>Broadcast</CmdType>"));
         assert!(broadcast.contains("<SourceID>34020000001360000001</SourceID>"));
         assert!(broadcast.contains("<TargetID>34020000001370000001</TargetID>"));
+    }
+
+    #[test]
+    fn snapshot_control_uses_supplied_sn_and_business_target() {
+        let xml = build_snapshot_control_xml(
+            9001,
+            "34020000001320000002",
+            2,
+            1,
+            "http://127.0.0.1/snapshot",
+            "snapshot-session",
+        );
+        assert!(xml.contains("<SN>9001</SN>"));
+        assert!(xml.contains("<DeviceID>34020000001320000002</DeviceID>"));
+        assert!(xml.contains("<SnapShotConfig>"));
+        assert!(!xml.contains("<SN>1</SN>"));
     }
 
     #[test]

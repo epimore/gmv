@@ -435,6 +435,7 @@ message GbDevice {
   int64 camera_in_count = 27;
   int64 camera_off_count = 28;
   string register_time = 29;
+  int64 snapshot_to_mode = 30;
 }
 
 message ListGbChannelsRequest {

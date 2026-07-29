@@ -223,6 +223,7 @@ CREATE TABLE IF NOT EXISTS `gb28181_oauth`  (
   `alias` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '别名',
   `status` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-禁用，1-启用',
   `heartbeat_sec` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '心跳间隔：秒',
+  `snapshot_to_mode` tinyint UNSIGNED NOT NULL DEFAULT 0 COMMENT '抓拍MESSAGE To：0-注册设备/代理，1-业务子通道',
   `del` tinyint UNSIGNED NULL DEFAULT NULL COMMENT '0-未删除，1-已删除',
   `create_time` datetime NULL DEFAULT NULL COMMENT '创建时间',
   `tenant_id` int NULL DEFAULT NULL COMMENT '租户id',

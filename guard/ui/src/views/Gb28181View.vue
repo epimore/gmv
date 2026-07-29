@@ -98,6 +98,14 @@
         <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="心跳周期(秒)"><el-input-number v-model="deviceForm.heartbeat_sec" :min="5"
                 :max="255" style="width: 100%" :disabled="deviceReadonly" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="抓拍 To">
+              <el-select v-model="deviceForm.snapshot_to_mode" style="width: 100%" :disabled="deviceReadonly">
+                <el-option label="注册设备/代理（默认）" :value="0" />
+                <el-option label="业务子通道" :value="1" />
+              </el-select>
+            </el-form-item></el-col>
+        </el-row>
+        <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="地址"><el-input v-model="deviceForm.address"
                 :disabled="deviceReadonly" /></el-form-item></el-col>
         </el-row>
@@ -155,7 +163,7 @@ const selectedListNodeOption = computed(() => sessionNodeOptions.value.find((ite
 
 type SessionNodeOption = { node: NodeInfo; config?: GbSessionConfigInfo; disabled: boolean; kindLabel: string; statusLabel: string };
 
-function emptyDevice(): GbDevicePayload { return { device_id: '', alias: '', session_node_id: '', domain_id: '', domain: '', pwd_check: 1, pwd: '', status: 1, heartbeat_sec: 60, address: '', longitude: '', latitude: '', tenant_id: '', sys_org_code: '', create_by: '' }; }
+function emptyDevice(): GbDevicePayload { return { device_id: '', alias: '', session_node_id: '', domain_id: '', domain: '', pwd_check: 1, pwd: '', status: 1, heartbeat_sec: 60, snapshot_to_mode: 0, address: '', longitude: '', latitude: '', tenant_id: '', sys_org_code: '', create_by: '' }; }
 function assign<T extends object>(target: T, source: Partial<T>) { Object.assign(target, source); }
 function normalizeKind(value?: string | null) { return (value || '').trim().toLowerCase(); }
 function nodeKindLabel(node: NodeInfo) { return (node.kind || node.service || node.config?.service || 'node').toUpperCase(); }
@@ -213,7 +221,7 @@ async function resetDevices() { deviceId.value = ''; deviceName.value = ''; page
 async function handlePageSizeChange() { page.value = 1; await loadDevices(); }
 async function handleListNodeChange() { page.value = 1; await loadDevices(); }
 async function selectSessionNode(nodeId: string) { await loadSessionNodeConfig(nodeId); }
-async function openDevice(row?: GbDeviceInfo, readonly = false) { deviceReadonly.value = readonly; editingDevice.value = row; clearSessionConfig(false); const payload: GbDevicePayload = row ? { device_id: row.device_id, session_node_id: row.session_node_id, domain_id: row.domain_id, domain: row.domain, longitude: row.longitude || "", latitude: row.latitude || "", address: row.address || "", pwd: row.pwd || "", pwd_check: row.pwd_check, alias: row.alias || "", status: row.status, heartbeat_sec: row.heartbeat_sec, tenant_id: row.tenant_id || "", sys_org_code: row.sys_org_code || "", create_by: row.create_by || "", update_by: row.update_by || "" } : emptyDevice(); assign(deviceForm, payload); deviceDialog.value = true; if (deviceForm.session_node_id) await loadSessionNodeConfig(deviceForm.session_node_id, !row, false); }
+async function openDevice(row?: GbDeviceInfo, readonly = false) { deviceReadonly.value = readonly; editingDevice.value = row; clearSessionConfig(false); const payload: GbDevicePayload = row ? { device_id: row.device_id, session_node_id: row.session_node_id, domain_id: row.domain_id, domain: row.domain, longitude: row.longitude || "", latitude: row.latitude || "", address: row.address || "", pwd: row.pwd || "", pwd_check: row.pwd_check, alias: row.alias || "", status: row.status, heartbeat_sec: row.heartbeat_sec, snapshot_to_mode: row.snapshot_to_mode, tenant_id: row.tenant_id || "", sys_org_code: row.sys_org_code || "", create_by: row.create_by || "", update_by: row.update_by || "" } : emptyDevice(); assign(deviceForm, payload); deviceDialog.value = true; if (deviceForm.session_node_id) await loadSessionNodeConfig(deviceForm.session_node_id, !row, false); }
 async function saveDevice() {
   const nodeId = deviceForm.session_node_id;
   if (!nodeId) return ElMessage.warning("Session 节点必填");

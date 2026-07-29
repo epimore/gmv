@@ -50,12 +50,33 @@ fn request(
     body: &str,
     extra_headers: &[(&str, &str)],
 ) -> Vec<u8> {
+    request_to(
+        method,
+        scenario_id,
+        cseq,
+        DEVICE_ID,
+        content_type,
+        body,
+        extra_headers,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_to(
+    method: &str,
+    scenario_id: &str,
+    cseq: u32,
+    to_id: &str,
+    content_type: Option<&str>,
+    body: &str,
+    extra_headers: &[(&str, &str)],
+) -> Vec<u8> {
     let mut packet = format!(
         "{method} sip:{DEVICE_ID}@{DEVICE_ADDR} SIP/2.0\r\n\
 Via: SIP/2.0/UDP {PLATFORM_ADDR};rport;branch=z9hG4bK-{scenario_id}\r\n\
 Max-Forwards: 70\r\n\
 From: <sip:{PLATFORM_ID}@3402000000>;tag=platform-{scenario_id}\r\n\
-To: <sip:{DEVICE_ID}@{DEVICE_ADDR}>\r\n\
+To: <sip:{to_id}@{DEVICE_ADDR}>\r\n\
 Contact: <sip:{PLATFORM_ID}@{PLATFORM_ADDR}>\r\n\
 Call-ID: {scenario_id}@gmv.test\r\n\
 CSeq: {cseq} {method}\r\n"
@@ -119,11 +140,36 @@ fn response(
     body: &str,
     extra_headers: &[(&str, &str)],
 ) -> Vec<u8> {
+    response_for_to(
+        scenario_id,
+        cseq,
+        method,
+        status,
+        reason,
+        DEVICE_ID,
+        content_type,
+        body,
+        extra_headers,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn response_for_to(
+    scenario_id: &str,
+    cseq: u32,
+    method: &str,
+    status: u16,
+    reason: &str,
+    to_id: &str,
+    content_type: Option<&str>,
+    body: &str,
+    extra_headers: &[(&str, &str)],
+) -> Vec<u8> {
     let mut packet = format!(
         "SIP/2.0 {status} {reason}\r\n\
 Via: SIP/2.0/UDP {PLATFORM_ADDR};rport=25600;branch=z9hG4bK-{scenario_id}\r\n\
 From: <sip:{PLATFORM_ID}@3402000000>;tag=platform-{scenario_id}\r\n\
-To: <sip:{DEVICE_ID}@{DEVICE_ADDR}>;tag=device-{scenario_id}\r\n\
+To: <sip:{to_id}@{DEVICE_ADDR}>;tag=device-{scenario_id}\r\n\
 Call-ID: {scenario_id}@gmv.test\r\n\
 CSeq: {cseq} {method}\r\n"
     );
@@ -432,6 +478,55 @@ fn packet_assets() -> Vec<PacketAsset> {
         );
         push_exchange(&mut assets, scenario_id, apis, "MESSAGE", cseq, packet);
     }
+    let business_target_snapshot = xml(
+        "Control",
+        "DeviceConfig",
+        16,
+        CHANNEL_ID,
+        "<SnapShotConfig>\r\n\
+<SnapNum>1</SnapNum>\r\n\
+<Interval>1</Interval>\r\n\
+<UploadURL>http://192.0.2.10:8080/edge/upload/picture/token</UploadURL>\r\n\
+<SessionID>snapshot-business-target-session</SessionID>\r\n\
+</SnapShotConfig>\r\n",
+    );
+    let business_target_packet = request_to(
+        "MESSAGE",
+        "snapshot-business-target",
+        16,
+        CHANNEL_ID,
+        Some("Application/MANSCDP+xml"),
+        &business_target_snapshot,
+        &[],
+    );
+    assets.push(PacketAsset {
+        scenario_id: "snapshot-business-target",
+        business_apis: &["/edge/upload/picture/{token}"],
+        file_name: "snapshot-business-target-01-request.sip".into(),
+        direction: "platform-to-device",
+        sip_method: "MESSAGE",
+        expected_status: None,
+        bytes: business_target_packet,
+    });
+    assets.push(PacketAsset {
+        scenario_id: "snapshot-business-target",
+        business_apis: &["/edge/upload/picture/{token}"],
+        file_name: "snapshot-business-target-02-200.sip".into(),
+        direction: "device-to-platform",
+        sip_method: "MESSAGE",
+        expected_status: Some(200),
+        bytes: response_for_to(
+            "snapshot-business-target",
+            16,
+            "MESSAGE",
+            200,
+            "OK",
+            CHANNEL_ID,
+            None,
+            "",
+            &[],
+        ),
+    });
 
     let answer_video = format!(
         "v=0\r\n\

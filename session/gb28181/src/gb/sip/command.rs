@@ -63,6 +63,33 @@ pub(crate) struct PendingInviteStop {
     reservation: Option<DurableDialogReservation>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotToMode {
+    SignalingPeer,
+    BusinessTarget,
+}
+
+impl SnapshotToMode {
+    pub fn from_storage(value: i64) -> GlobalResult<Self> {
+        match value {
+            0 => Ok(Self::SignalingPeer),
+            1 => Ok(Self::BusinessTarget),
+            _ => Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "snapshot_to_mode must be 0 (signaling_peer) or 1 (business_target)",
+                |msg| error!("{msg}: value={value}"),
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SignalingPeer => "signaling_peer",
+            Self::BusinessTarget => "business_target",
+        }
+    }
+}
+
 pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Protocol)> {
     let Some(session) = Register::get_connected_device_session(device_id) else {
         return Err(device_not_connected(device_id));
@@ -96,6 +123,7 @@ async fn send_native_message_on_device_and_wait(
         association_id: 0,
         protocol: request.protocol,
         target_uri: request.target_uri(),
+        to_uri: request.to_uri(),
         from_uri: format!("<sip:{}@{}:{}>", conf.domain_id, conf.wan_ip, conf.wan_port),
         content_type: request.content_type,
         body: request.body.to_vec(),
@@ -816,6 +844,8 @@ fn build_ptz_command(model: &PtzControlModel) -> GlobalResult<String> {
 pub async fn snapshot_image_call(
     device_id: &str,
     channel_id: &str,
+    to_mode: SnapshotToMode,
+    sn: u32,
     count: u8,
     interval: u8,
     url: &str,
@@ -824,10 +854,12 @@ pub async fn snapshot_image_call(
     let (host, port, proto) = connected_target(device_id)?;
     send_native_message_and_wait(CreateDeviceMessageRequest::snapshot_control(
         device_id.to_string(),
+        (to_mode == SnapshotToMode::BusinessTarget).then(|| channel_id.to_string()),
         channel_id,
         host,
         port,
         pjsip_protocol_from_base(proto),
+        sn,
         count,
         interval,
         url,

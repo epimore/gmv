@@ -37,7 +37,26 @@ pub struct SipRuntimeCache {
     broadcast_response_waiters: DashMap<BroadcastResponseKey, BroadcastResponseWaiter>,
     broadcast_invite_waiters: DashMap<String, BroadcastInviteWaiter>,
     record_info_waiters: DashMap<RecordInfoKey, RecordInfoWaiter>,
+    snapshot_response_waiters: DashMap<SnapshotResponseKey, SnapshotResponseWaiter>,
     call_stream_index: DashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct SnapshotResponseKey {
+    pub signaling_peer_id: String,
+    pub sn: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingSnapshotResponse {
+    pub session_id: String,
+    pub business_target_id: String,
+    pub to_mode: String,
+}
+
+struct SnapshotResponseWaiter {
+    deadline: Instant,
+    pending: PendingSnapshotResponse,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -258,6 +277,38 @@ impl SipRuntimeCache {
 
     pub fn remove_record_info_waiter(&self, key: &RecordInfoKey) {
         self.record_info_waiters.remove(key);
+    }
+
+    pub fn insert_snapshot_response_waiter(
+        &self,
+        key: SnapshotResponseKey,
+        pending: PendingSnapshotResponse,
+        ttl: Duration,
+    ) {
+        self.snapshot_response_waiters.insert(
+            key,
+            SnapshotResponseWaiter {
+                deadline: Instant::now() + ttl,
+                pending,
+            },
+        );
+    }
+
+    pub fn complete_snapshot_response(
+        &self,
+        signaling_peer_id: &str,
+        sn: u32,
+    ) -> Option<PendingSnapshotResponse> {
+        self.snapshot_response_waiters
+            .remove(&SnapshotResponseKey {
+                signaling_peer_id: signaling_peer_id.to_string(),
+                sn,
+            })
+            .map(|(_, waiter)| waiter.pending)
+    }
+
+    pub fn remove_snapshot_response_waiter(&self, key: &SnapshotResponseKey) {
+        self.snapshot_response_waiters.remove(key);
     }
 
     pub fn insert_broadcast_response_waiter(
@@ -797,6 +848,7 @@ impl SipRuntimeCache {
         let mut response_waiters = 0;
         let mut native_response_waiters = 0;
         let mut record_info_waiters = 0;
+        let mut snapshot_response_waiters = 0;
 
         let expired_invites = self
             .invite_waiters
@@ -891,6 +943,16 @@ impl SipRuntimeCache {
                 record_info_waiters += 1;
             }
         }
+        let expired_snapshot_responses = self
+            .snapshot_response_waiters
+            .iter()
+            .filter_map(|item| (item.deadline <= now).then(|| item.key().clone()))
+            .collect::<Vec<_>>();
+        for key in expired_snapshot_responses {
+            if self.snapshot_response_waiters.remove(&key).is_some() {
+                snapshot_response_waiters += 1;
+            }
+        }
 
         RuntimeCleanupReport {
             invite_waiters,
@@ -898,6 +960,7 @@ impl SipRuntimeCache {
             response_waiters,
             native_response_waiters,
             record_info_waiters,
+            snapshot_response_waiters,
         }
     }
 }
@@ -926,6 +989,7 @@ pub struct RuntimeCleanupReport {
     pub response_waiters: usize,
     pub native_response_waiters: usize,
     pub record_info_waiters: usize,
+    pub snapshot_response_waiters: usize,
 }
 
 pub async fn recv_with_timeout<T>(
@@ -1008,6 +1072,37 @@ mod tests {
             invite.try_recv().expect("broadcast invite").call_id,
             "broadcast-call"
         );
+    }
+
+    #[test]
+    fn snapshot_response_requires_registered_peer_and_sn_and_is_consumed_once() {
+        let cache = SipRuntimeCache::default();
+        let key = SnapshotResponseKey {
+            signaling_peer_id: "nvr".into(),
+            sn: 9001,
+        };
+        cache.insert_snapshot_response_waiter(
+            key,
+            PendingSnapshotResponse {
+                session_id: "snapshot-session".into(),
+                business_target_id: "ipc-channel".into(),
+                to_mode: "business_target".into(),
+            },
+            Duration::from_secs(1),
+        );
+
+        assert!(
+            cache
+                .complete_snapshot_response("ipc-channel", 9001)
+                .is_none()
+        );
+        assert!(cache.complete_snapshot_response("nvr", 9002).is_none());
+        let pending = cache
+            .complete_snapshot_response("nvr", 9001)
+            .expect("matching peer and SN");
+        assert_eq!(pending.business_target_id, "ipc-channel");
+        assert_eq!(pending.to_mode, "business_target");
+        assert!(cache.complete_snapshot_response("nvr", 9001).is_none());
     }
 
     #[test]

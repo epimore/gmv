@@ -2,17 +2,21 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::gb::sip::command as sip_command;
+use crate::gb::sip::runtime_cache::{
+    PendingSnapshotResponse, SipRuntimeCache, SnapshotResponseKey,
+};
 use crate::service::{KEY_SNAPSHOT_IMAGE, SNAPSHOT_IDLE_EXPIRES};
 use crate::state;
 use crate::state::model::SnapshotImage;
 use crate::storage::entity::GmvFileInfo;
+use crate::storage::guard_query::GbDeviceView;
 use crate::storage::pics::Pics;
 use crate::utils::edge_token;
 use axum::body::Bytes;
 use base::chrono::Local;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{debug, error};
 use base::tokio::fs;
 use base::tokio::sync::mpsc;
 use base::tokio::time::Instant;
@@ -33,17 +37,43 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
         ));
     }
     let interval = info.interval.unwrap_or(pics_conf.interval);
+    let device_id = &info.device_channel_ident.device_id;
+    let channel_id = &info.device_channel_ident.channel_id;
+    let device = GbDeviceView::get(device_id).await?.ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "snapshot signaling peer configuration not found",
+            |msg| error!("{msg}: device_id={device_id}"),
+        )
+    })?;
+    let to_mode = sip_command::SnapshotToMode::from_storage(device.snapshot_to_mode)?;
+    let sn = crate::gb::sip::sequence::next_sn();
     let (tx, mut rx) = mpsc::channel(8);
     let timeout = snapshot_idle_timeout();
     let when = Instant::now() + timeout;
     let key = rebuild_snapshot_wait_key(&session_id);
     let token_key = rebuild_pic_token(&token);
+    let response_key = SnapshotResponseKey {
+        signaling_peer_id: device_id.clone(),
+        sn,
+    };
     state::session::Cache::insert_snapshot_wait(key.clone(), when, tx);
     state::session::Cache::insert_counter(token_key.clone(), count, timeout);
+    SipRuntimeCache::global().insert_snapshot_response_waiter(
+        response_key.clone(),
+        PendingSnapshotResponse {
+            session_id: session_id.clone(),
+            business_target_id: channel_id.clone(),
+            to_mode: to_mode.as_str().to_string(),
+        },
+        timeout,
+    );
 
     if let Err(err) = sip_command::snapshot_image_call(
-        &info.device_channel_ident.device_id,
-        &info.device_channel_ident.channel_id,
+        device_id,
+        channel_id,
+        to_mode,
+        sn,
         count,
         interval,
         &url,
@@ -53,15 +83,38 @@ pub async fn snapshot_image(info: SnapshotImage) -> GlobalResult<String> {
     {
         state::session::Cache::remove_state(&key);
         state::session::Cache::remove_state(&token_key);
+        SipRuntimeCache::global().remove_snapshot_response_waiter(&response_key);
         return Err(err);
     }
 
-    if let Some(true) = rx.recv().await {
-        state::session::Cache::remove_state(&key);
-        return Ok(session_id);
+    match rx.recv().await {
+        Some(true) => {
+            state::session::Cache::remove_state(&key);
+            state::session::Cache::remove_state(&token_key);
+            SipRuntimeCache::global().remove_snapshot_response_waiter(&response_key);
+            return Ok(session_id);
+        }
+        Some(false) => {
+            state::session::Cache::remove_state(&key);
+            state::session::Cache::remove_state(&token_key);
+            SipRuntimeCache::global().remove_snapshot_response_waiter(&response_key);
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "快照失败:设备拒绝抓拍命令",
+                |msg| {
+                    debug!(
+                        "{msg}: device_id={device_id}, channel_id={channel_id}, sn={sn}, session_id={session_id}, to_mode={}",
+                        to_mode.as_str()
+                    )
+                },
+            ));
+        }
+        None => {}
     }
 
+    state::session::Cache::remove_state(&key);
     state::session::Cache::remove_state(&token_key);
+    SipRuntimeCache::global().remove_snapshot_response_waiter(&response_key);
     Err(GlobalError::new_biz_error(
         BaseErrorCode::Timeout.code(),
         "快照失败:设备不支持或响应超时",

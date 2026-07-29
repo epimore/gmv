@@ -3594,6 +3594,8 @@ struct GbDeviceRequest {
     #[serde(default = "default_heartbeat_sec_i64")]
     heartbeat_sec: i64,
     #[serde(default)]
+    snapshot_to_mode: i64,
+    #[serde(default)]
     tenant_id: String,
     #[serde(default)]
     sys_org_code: String,
@@ -3723,6 +3725,7 @@ struct GbDeviceResponse {
     alias: Option<String>,
     status: i64,
     heartbeat_sec: i64,
+    snapshot_to_mode: i64,
     del: i64,
     create_time: Option<String>,
     tenant_id: Option<String>,
@@ -4216,6 +4219,7 @@ fn gb_device_request(request: GbDeviceRequest) -> RpcGbDevice {
         alias: request.alias,
         status: request.status,
         heartbeat_sec: request.heartbeat_sec,
+        snapshot_to_mode: request.snapshot_to_mode,
         del: 0,
         create_time: String::new(),
         tenant_id: request.tenant_id,
@@ -4250,6 +4254,7 @@ fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
         alias: empty_to_none(record.alias),
         status: record.status,
         heartbeat_sec: record.heartbeat_sec,
+        snapshot_to_mode: record.snapshot_to_mode,
         del: record.del,
         create_time: empty_to_none(record.create_time),
         tenant_id: empty_to_none(record.tenant_id),

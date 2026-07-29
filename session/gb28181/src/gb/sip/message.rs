@@ -170,6 +170,7 @@ fn sip_user(header: &str) -> Option<String> {
 #[derive(Clone, Debug)]
 pub struct CreateDeviceMessageRequest {
     pub device_id: String,
+    pub to_device_id: Option<String>,
     pub device_host: String,
     pub device_port: u16,
     pub protocol: SipTransportProtocol,
@@ -187,6 +188,20 @@ impl CreateDeviceMessageRequest {
             self.device_port,
             self.protocol,
         )
+    }
+
+    pub fn to_uri(&self) -> Option<String> {
+        self.to_device_id.as_ref().map(|device_id| {
+            format!(
+                "<{}>",
+                target_uri(
+                    device_id,
+                    &self.device_host,
+                    self.device_port,
+                    self.protocol,
+                )
+            )
+        })
     }
 
     pub fn catalog_query(
@@ -322,17 +337,22 @@ impl CreateDeviceMessageRequest {
 
     pub fn snapshot_control(
         device_id: impl Into<String>,
+        to_device_id: Option<String>,
         channel_id: &str,
         device_host: impl Into<String>,
         device_port: u16,
         protocol: SipTransportProtocol,
+        sn: u32,
         count: u8,
         interval: u8,
         url: &str,
         session_id: &str,
     ) -> Self {
-        let body = xml::build_snapshot_control_xml(channel_id, count, interval, url, session_id);
-        Self::xml(device_id, device_host, device_port, protocol, body)
+        let body =
+            xml::build_snapshot_control_xml(sn, channel_id, count, interval, url, session_id);
+        let mut request = Self::xml(device_id, device_host, device_port, protocol, body);
+        request.to_device_id = to_device_id;
+        request
     }
 
     pub fn xml(
@@ -345,6 +365,7 @@ impl CreateDeviceMessageRequest {
         let body = body.into();
         Self {
             device_id: device_id.into(),
+            to_device_id: None,
             device_host: device_host.into(),
             device_port,
             protocol,
@@ -376,7 +397,7 @@ mod tests {
     use base::bytes::Bytes;
     use gmv_pjsip::{SipAssociation, SipMethod, SipTransportProtocol};
 
-    use super::{GB_XML_CONTENT_TYPE, GbMessageEvent, GbMessageKind};
+    use super::{CreateDeviceMessageRequest, GB_XML_CONTENT_TYPE, GbMessageEvent, GbMessageKind};
 
     fn association() -> SipAssociation {
         SipAssociation {
@@ -483,5 +504,43 @@ mod tests {
         ] {
             assert_eq!(classify(cmd_type), expected, "{cmd_type}");
         }
+    }
+
+    #[test]
+    fn snapshot_to_mode_changes_only_to_uri() {
+        let peer = CreateDeviceMessageRequest::snapshot_control(
+            "34020000001110000001",
+            None,
+            "34020000001320000002",
+            "192.0.2.10",
+            5060,
+            SipTransportProtocol::Udp,
+            9001,
+            1,
+            1,
+            "http://127.0.0.1/snapshot",
+            "snapshot-session",
+        );
+        let child = CreateDeviceMessageRequest::snapshot_control(
+            "34020000001110000001",
+            Some("34020000001320000002".to_string()),
+            "34020000001320000002",
+            "192.0.2.10",
+            5060,
+            SipTransportProtocol::Udp,
+            9001,
+            1,
+            1,
+            "http://127.0.0.1/snapshot",
+            "snapshot-session",
+        );
+
+        assert_eq!(peer.target_uri(), child.target_uri());
+        assert_eq!(peer.to_uri(), None);
+        assert_eq!(
+            child.to_uri().as_deref(),
+            Some("<sip:34020000001320000002@192.0.2.10:5060>")
+        );
+        assert_eq!(peer.body, child.body);
     }
 }
