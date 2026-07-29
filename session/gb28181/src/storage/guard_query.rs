@@ -508,7 +508,91 @@ impl GbChannelView {
         }
         Self::get(&channel.device_id, &channel.channel_id).await
     }
+
+    pub async fn set_cover_image(
+        device_id: &str,
+        channel_id: &str,
+        image_id: &str,
+    ) -> GlobalResult<Option<Self>> {
+        if Self::get(device_id, channel_id).await?.is_none() {
+            return Ok(None);
+        }
+        let image_id = image_id.parse::<i64>().map_err(|_| {
+            GlobalError::new_sys_error("invalid GB28181 image id", |msg| error!("{msg}"))
+        })?;
+        match db::backend() {
+            db::SessionDatabaseBackend::Mysql => {
+                db::execute!(
+                    r#"INSERT INTO gb28181_device_channel_conf
+                    (device_id,channel_id,over_pic_id,create_time,update_time)
+                    VALUES (?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                    ON DUPLICATE KEY UPDATE over_pic_id=VALUES(over_pic_id),update_time=CURRENT_TIMESTAMP"#,
+                    device_id,
+                    channel_id,
+                    image_id,
+                )
+                .hand_log(|msg| error!("{msg}"))?;
+            }
+            db::SessionDatabaseBackend::Sqlite => {
+                db::execute!(
+                    r#"INSERT INTO gb28181_device_channel_conf
+                    (device_id,channel_id,over_pic_id,create_time,update_time)
+                    VALUES (?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                    ON CONFLICT(device_id, channel_id) DO UPDATE SET
+                    over_pic_id=excluded.over_pic_id,update_time=CURRENT_TIMESTAMP"#,
+                    device_id,
+                    channel_id,
+                    image_id,
+                )
+                .hand_log(|msg| error!("{msg}"))?;
+            }
+        }
+        Self::get(device_id, channel_id).await
+    }
 }
+
+#[derive(Debug, Clone, Default, FromRow)]
+pub struct GbChannelCoverView {
+    pub channel_id: String,
+    pub cover_image_id: String,
+}
+
+impl GbChannelCoverView {
+    pub async fn list(device_id: &str) -> GlobalResult<Vec<Self>> {
+        let sql = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => GB_CHANNEL_COVER_LIST_MYSQL,
+            db::SessionDatabaseBackend::Sqlite => GB_CHANNEL_COVER_LIST_SQLITE,
+        };
+        db::fetch_all_as!(Self, sql, device_id).hand_log(|msg| error!("{msg}"))
+    }
+}
+
+const GB_CHANNEL_COVER_LIST_MYSQL: &str = r#"SELECT c.channel_id,
+COALESCE(
+  (SELECT CAST(selected.id AS CHAR) FROM gb28181_file_info selected
+   WHERE selected.id=conf.over_pic_id AND selected.device_id=c.device_id AND selected.channel_id=c.channel_id
+     AND COALESCE(selected.is_del,0)=0 AND COALESCE(selected.file_type,0)=0 LIMIT 1),
+  (SELECT CAST(latest.id AS CHAR) FROM gb28181_file_info latest
+   WHERE latest.device_id=c.device_id AND latest.channel_id=c.channel_id
+     AND COALESCE(latest.is_del,0)=0 AND COALESCE(latest.file_type,0)=0
+   ORDER BY latest.create_time DESC,latest.id DESC LIMIT 1),
+  '') AS cover_image_id
+FROM gb28181_device_channel c
+LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id
+WHERE c.device_id=?"#;
+const GB_CHANNEL_COVER_LIST_SQLITE: &str = r#"SELECT c.channel_id,
+COALESCE(
+  (SELECT CAST(selected.id AS TEXT) FROM gb28181_file_info selected
+   WHERE selected.id=conf.over_pic_id AND selected.device_id=c.device_id AND selected.channel_id=c.channel_id
+     AND COALESCE(selected.is_del,0)=0 AND COALESCE(selected.file_type,0)=0 LIMIT 1),
+  (SELECT CAST(latest.id AS TEXT) FROM gb28181_file_info latest
+   WHERE latest.device_id=c.device_id AND latest.channel_id=c.channel_id
+     AND COALESCE(latest.is_del,0)=0 AND COALESCE(latest.file_type,0)=0
+   ORDER BY latest.create_time DESC,latest.id DESC LIMIT 1),
+  '') AS cover_image_id
+FROM gb28181_device_channel c
+LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id
+WHERE c.device_id=?"#;
 
 #[derive(Debug, Clone, Default)]
 pub struct GbChannelConfigUpdate {
@@ -599,22 +683,91 @@ pub struct GbChannelImageView {
     pub image_id: String,
     pub device_id: String,
     pub channel_id: String,
-    pub image_url: String,
     pub created_at: Option<NaiveDateTime>,
+    pub file_name: String,
+    pub file_format: String,
+    pub file_size: i64,
+    pub dir_path: String,
+    pub abs_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, FromRow)]
+struct CountRow {
+    total: i64,
 }
 
 impl GbChannelImageView {
-    pub async fn list(device_id: &str, channel_id: &str) -> GlobalResult<Vec<Self>> {
+    pub async fn list(
+        device_id: &str,
+        channel_id: &str,
+        start_time: Option<NaiveDateTime>,
+        end_time: Option<NaiveDateTime>,
+        page: i64,
+        page_size: i64,
+    ) -> GlobalResult<(Vec<Self>, i64)> {
         let sql = match db::backend() {
             db::SessionDatabaseBackend::Mysql => GB_CHANNEL_IMAGE_LIST_MYSQL,
             db::SessionDatabaseBackend::Sqlite => GB_CHANNEL_IMAGE_LIST_SQLITE,
         };
-        db::fetch_all_as!(Self, sql, device_id, channel_id).hand_log(|msg| error!("{msg}"))
+        let count_sql = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => GB_CHANNEL_IMAGE_COUNT_MYSQL,
+            db::SessionDatabaseBackend::Sqlite => GB_CHANNEL_IMAGE_COUNT_SQLITE,
+        };
+        let offset = (page - 1) * page_size;
+        let start_enabled = i64::from(start_time.is_some());
+        let end_enabled = i64::from(end_time.is_some());
+        let default_time = NaiveDateTime::default();
+        let start_time = start_time.unwrap_or(default_time);
+        let end_time = end_time.unwrap_or(default_time);
+        let images = db::fetch_all_as!(
+            Self,
+            sql,
+            device_id,
+            channel_id,
+            start_enabled,
+            start_time,
+            end_enabled,
+            end_time,
+            page_size,
+            offset
+        )
+        .hand_log(|msg| error!("{msg}"))?;
+        let total = db::fetch_optional_as!(
+            CountRow,
+            count_sql,
+            device_id,
+            channel_id,
+            start_enabled,
+            start_time,
+            end_enabled,
+            end_time
+        )
+        .hand_log(|msg| error!("{msg}"))?
+        .map(|row| row.total)
+        .unwrap_or_default();
+        Ok((images, total))
+    }
+
+    pub async fn get(
+        image_id: &str,
+        device_id: &str,
+        channel_id: &str,
+    ) -> GlobalResult<Option<Self>> {
+        let sql = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => GB_CHANNEL_IMAGE_GET_MYSQL,
+            db::SessionDatabaseBackend::Sqlite => GB_CHANNEL_IMAGE_GET_SQLITE,
+        };
+        db::fetch_optional_as!(Self, sql, image_id, device_id, channel_id)
+            .hand_log(|msg| error!("{msg}"))
     }
 }
 
-const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,COALESCE(abs_path,dir_path) AS image_url,create_time AS created_at FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 ORDER BY id DESC LIMIT 50";
-const GB_CHANNEL_IMAGE_LIST_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,COALESCE(abs_path,dir_path) AS image_url,create_time AS created_at FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 ORDER BY id DESC LIMIT 50";
+const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?) ORDER BY create_time DESC,id DESC LIMIT ? OFFSET ?";
+const GB_CHANNEL_IMAGE_LIST_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?) ORDER BY create_time DESC,id DESC LIMIT ? OFFSET ?";
+const GB_CHANNEL_IMAGE_COUNT_MYSQL: &str = "SELECT CAST(COUNT(*) AS SIGNED) AS total FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?)";
+const GB_CHANNEL_IMAGE_COUNT_SQLITE: &str = "SELECT COUNT(*) AS total FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?)";
+const GB_CHANNEL_IMAGE_GET_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE id=? AND device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0";
+const GB_CHANNEL_IMAGE_GET_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE id=? AND device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0";
 
 #[cfg(test)]
 mod tests {

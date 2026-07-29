@@ -208,6 +208,14 @@ pub fn router(state: HttpState) -> Router {
             get(gb_channel_images).post(gb_snapshot_image),
         )
         .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/access",
+            post(issue_gb_channel_image_access),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/cover",
+            post(set_gb_channel_cover),
+        )
+        .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/records",
             get(gb_channel_records),
         )
@@ -373,6 +381,14 @@ const OPEN_BUSINESS_OPERATIONS: &[(&str, &[&str])] = &[
     (
         "/gb28181/devices/{device_id}/channels/{channel_id}/images",
         &["get", "post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/access",
+        &["post"],
+    ),
+    (
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/cover",
+        &["post"],
     ),
     (
         "/gb28181/devices/{device_id}/channels/{channel_id}/records",
@@ -655,6 +671,12 @@ fn openapi_operation_summary(method: &str, path: &str) -> &'static str {
         ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/ptz") => "控制通道云台",
         ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/images") => "查询通道截图",
         ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/images") => "触发通道截图",
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/access") => {
+            "签发通道截图访问地址"
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/cover") => {
+            "设置通道封面截图"
+        }
         ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/records") => "查询通道录像片段",
         ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/records/query") => {
             "发起通道录像查询"
@@ -834,6 +856,12 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
         ],
         "/gb28181/devices/{device_id}/channels/{channel_id}/images" => {
             &[("request_id", true), ("count", false), ("interval", false)]
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/access" => {
+            &[("session_node_id", true), ("mode", false)]
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/cover" => {
+            &[("session_node_id", true)]
         }
         "/gb28181/devices/{device_id}/channels/{channel_id}/records/query" => &[
             ("request_id", true),
@@ -1313,6 +1341,14 @@ fn open_business_router(state: HttpState) -> Router<HttpState> {
             get(gb_channel_images).post(gb_snapshot_image),
         )
         .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/access",
+            post(issue_gb_channel_image_access),
+        )
+        .route(
+            "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/cover",
+            post(set_gb_channel_cover),
+        )
+        .route(
             "/gb28181/devices/{device_id}/channels/{channel_id}/records",
             get(gb_channel_records),
         )
@@ -1549,7 +1585,7 @@ fn request_method_requires_csrf(method: &str) -> bool {
 
 fn open_business_scope(method: &Method, path: &str) -> Option<&'static str> {
     if path.contains("/images") {
-        return Some(if *method == Method::GET {
+        return Some(if *method == Method::GET || path.ends_with("/access") {
             "images:read"
         } else {
             "devices:control"
@@ -3786,6 +3822,7 @@ struct GbChannelResponse {
     sort_no: i64,
     created_at_ms: i64,
     updated_at_ms: i64,
+    cover_image_id: String,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -3823,6 +3860,63 @@ struct GbChannelImageResponse {
     channel_id: String,
     image_url: String,
     created_at_ms: i64,
+    file_name: String,
+    content_type: String,
+    file_size: u64,
+    can_preview: bool,
+    session_node_id: String,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbChannelImagePageResponse {
+    items: Vec<GbChannelImageResponse>,
+    total: u64,
+    page: u32,
+    page_size: u32,
+}
+
+#[derive(Debug, Default, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbChannelImageListQuery {
+    #[serde(default)]
+    session_node_id: String,
+    #[serde(default)]
+    start_time_ms: i64,
+    #[serde(default)]
+    end_time_ms: i64,
+    #[serde(default = "default_page")]
+    page: u32,
+    #[serde(default = "default_image_page_size")]
+    page_size: u32,
+}
+
+fn default_image_page_size() -> u32 {
+    12
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbChannelImageAccessRequest {
+    session_node_id: String,
+    #[serde(default)]
+    mode: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct GbChannelCoverRequest {
+    session_node_id: String,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct GbChannelImageAccessResponse {
+    url: String,
+    expires_at_ms: i64,
+    content_type: String,
+    file_name: String,
+    file_size: u64,
 }
 
 #[derive(Debug, base::serde::Serialize)]
@@ -4315,6 +4409,7 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
         sort_no: record.sort_no,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+        cover_image_id: record.cover_image_id,
     }
 }
 
@@ -4480,6 +4575,11 @@ fn gb_channel_image_response(record: RpcGbChannelImage) -> GbChannelImageRespons
         channel_id: record.channel_id,
         image_url: record.image_url,
         created_at_ms: record.created_at_ms,
+        file_name: record.file_name,
+        content_type: record.content_type,
+        file_size: record.file_size,
+        can_preview: record.can_preview,
+        session_node_id: record.session_node_id,
     }
 }
 
@@ -4821,17 +4921,109 @@ async fn gb_channel_images(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Result<Json<Vec<GbChannelImageResponse>>, HttpError> {
+    Query(query): Query<GbChannelImageListQuery>,
+) -> Result<Json<GbChannelImagePageResponse>, HttpError> {
     debug!(
         "/api/v2/gb28181/devices/{{device_id}}/channels/{{channel_id}}/images, req: device_id={device_id}, channel_id={channel_id}"
     );
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let images = BusinessControl::new(state.api.store())
-        .list_gb_channel_images(&device_id, &channel_id)
+    let control = BusinessControl::new(state.api.store());
+    let session_node_id = if query.session_node_id.trim().is_empty() {
+        control
+            .get_gb_device(&device_id)
+            .await?
+            .map(|device| device.session_node_id)
+            .filter(|node_id| !node_id.is_empty())
+            .ok_or_else(|| GuardError::NotFound(format!("GB28181 device {device_id}")))?
+    } else {
+        query.session_node_id
+    };
+    let response = control
+        .list_gb_channel_images(
+            &session_node_id,
+            &device_id,
+            &channel_id,
+            query.start_time_ms,
+            query.end_time_ms,
+            query.page,
+            query.page_size,
+        )
         .await?;
-    Ok(Json(
-        images.into_iter().map(gb_channel_image_response).collect(),
-    ))
+    Ok(Json(GbChannelImagePageResponse {
+        items: response
+            .images
+            .into_iter()
+            .map(gb_channel_image_response)
+            .collect(),
+        total: response.total,
+        page: response.page,
+        page_size: response.page_size,
+    }))
+}
+
+async fn issue_gb_channel_image_access(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id, image_id)): Path<(String, String, String)>,
+    Json(request): Json<GbChannelImageAccessRequest>,
+) -> Result<Json<GbChannelImageAccessResponse>, HttpError> {
+    require_write(&state.auth, &headers, Role::Viewer)?;
+    if request.session_node_id.trim().is_empty() {
+        return Err(HttpError::bad_request("session_node_id is required"));
+    }
+    let operation_id = format!("image-access-{}", Uuid::new_v4());
+    let access = BusinessControl::new(state.api.store())
+        .issue_gb_channel_image_access(
+            &request.session_node_id,
+            gmv_protocol::session::v1::IssueGbChannelImageAccessRequest {
+                operation: Some(gmv_protocol::common::v1::OperationRef {
+                    operation_id,
+                    idempotency_key: String::new(),
+                }),
+                image_id,
+                device_id,
+                channel_id,
+                mode: request.mode,
+            },
+        )
+        .await?;
+    Ok(Json(GbChannelImageAccessResponse {
+        url: access.url,
+        expires_at_ms: access.expires_at_ms,
+        content_type: access.content_type,
+        file_name: access.file_name,
+        file_size: access.file_size,
+    }))
+}
+
+async fn set_gb_channel_cover(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((device_id, channel_id, image_id)): Path<(String, String, String)>,
+    Json(request): Json<GbChannelCoverRequest>,
+) -> Result<Json<GbChannelResponse>, HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    if request.session_node_id.trim().is_empty() {
+        return Err(HttpError::bad_request("session_node_id is required"));
+    }
+    let response = BusinessControl::new(state.api.store())
+        .set_gb_channel_cover(
+            &request.session_node_id,
+            gmv_protocol::session::v1::SetGbChannelCoverRequest {
+                operation: Some(gmv_protocol::common::v1::OperationRef {
+                    operation_id: format!("image-cover-{}", Uuid::new_v4()),
+                    idempotency_key: String::new(),
+                }),
+                device_id,
+                channel_id,
+                image_id,
+            },
+        )
+        .await?;
+    let channel = response.channel.ok_or_else(|| {
+        GuardError::Conflict("session returned empty GB28181 channel".to_string())
+    })?;
+    Ok(Json(gb_channel_response(channel)))
 }
 
 async fn gb_channel_records(

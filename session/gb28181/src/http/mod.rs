@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 
 pub(crate) mod cloud_recording;
 mod edge;
+pub(crate) mod image;
 
 #[derive(Debug, Deserialize)]
 #[serde(crate = "base::serde")]
@@ -102,6 +103,7 @@ pub(crate) fn routes() -> Router {
     Router::new()
         .nest("/edge", edge::routes())
         .merge(cloud_recording::routes())
+        .merge(image::routes())
 }
 
 pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {

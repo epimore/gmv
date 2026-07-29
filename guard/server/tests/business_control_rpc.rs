@@ -29,6 +29,7 @@ use gmv_protocol::session::v1::{
     GetGbChannelRecordsRequest, GetGbChannelRecordsResponse, GetGbChannelRequest,
     GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
     GetSessionConfigResponse, IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    IssueGbChannelImageAccessRequest, IssueGbChannelImageAccessResponse,
     ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
     ListActiveStreamsResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
@@ -37,8 +38,8 @@ use gmv_protocol::session::v1::{
     PlaybackControlResponse, PlaybackPresenceHeartbeat, QueryGbChannelRecordsRequest,
     RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
-    SetPlaybackSpeedRequest, SetPlaybackSpeedResponse, SetPlaybackStateRequest,
-    SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
+    SetGbChannelCoverRequest, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
+    SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
     StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
     UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
 };
@@ -480,6 +481,43 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .unwrap();
 
             let control = BusinessControl::new(store.clone());
+            let image_access = control
+                .issue_gb_channel_image_access(
+                    "session-rpc",
+                    IssueGbChannelImageAccessRequest {
+                        operation: None,
+                        image_id: "1".to_string(),
+                        device_id: "device-1".to_string(),
+                        channel_id: "channel-1".to_string(),
+                        mode: "inline".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(image_access.content_type, "image/jpeg");
+            assert_eq!(image_access.file_name, "snapshot.jpeg");
+            let image_page = control
+                .list_gb_channel_images("session-rpc", "device-1", "channel-1", 1_000, 2_000, 2, 24)
+                .await
+                .unwrap();
+            assert_eq!(image_page.total, 7);
+            assert_eq!(image_page.page, 2);
+            assert_eq!(image_page.page_size, 24);
+            let cover = control
+                .set_gb_channel_cover(
+                    "session-rpc",
+                    SetGbChannelCoverRequest {
+                        operation: None,
+                        device_id: "device-1".to_string(),
+                        channel_id: "channel-1".to_string(),
+                        image_id: "16873".to_string(),
+                    },
+                )
+                .await
+                .unwrap()
+                .channel
+                .unwrap();
+            assert_eq!(cover.cover_image_id, "16873");
             let active = control
                 .list_active_streams("session-rpc", ListActiveStreamsRequest::default())
                 .await
@@ -1100,10 +1138,45 @@ impl SessionControl for FakeSession {
 
     async fn list_gb_channel_images(
         &self,
-        _request: tonic::Request<ListGbChannelImagesRequest>,
+        request: tonic::Request<ListGbChannelImagesRequest>,
     ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
+        let request = request.into_inner();
+        assert_eq!(request.start_time_ms, 1_000);
+        assert_eq!(request.end_time_ms, 2_000);
         Ok(tonic::Response::new(ListGbChannelImagesResponse {
             images: vec![],
+            total: 7,
+            page: request.page,
+            page_size: request.page_size,
+        }))
+    }
+
+    async fn issue_gb_channel_image_access(
+        &self,
+        _request: tonic::Request<IssueGbChannelImageAccessRequest>,
+    ) -> Result<tonic::Response<IssueGbChannelImageAccessResponse>, tonic::Status> {
+        Ok(tonic::Response::new(IssueGbChannelImageAccessResponse {
+            url: "https://example.test/images/1/file?token=test".to_string(),
+            expires_at_ms: 2_000,
+            content_type: "image/jpeg".to_string(),
+            file_name: "snapshot.jpeg".to_string(),
+            file_size: 4,
+        }))
+    }
+
+    async fn set_gb_channel_cover(
+        &self,
+        request: tonic::Request<SetGbChannelCoverRequest>,
+    ) -> Result<tonic::Response<UpdateGbChannelResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(UpdateGbChannelResponse {
+            channel: Some(GbChannel {
+                device_id: request.device_id,
+                channel_id: request.channel_id,
+                over_pic_id: request.image_id.clone(),
+                cover_image_id: request.image_id,
+                ..Default::default()
+            }),
         }))
     }
 

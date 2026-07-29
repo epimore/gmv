@@ -42,6 +42,7 @@ use gmv_protocol::session::v1::{
     GetGbChannelRecordsRequest, GetGbChannelRecordsResponse, GetGbChannelRequest,
     GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
     GetSessionConfigResponse, IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    IssueGbChannelImageAccessRequest, IssueGbChannelImageAccessResponse,
     ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
     ListActiveStreamsResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
@@ -50,11 +51,12 @@ use gmv_protocol::session::v1::{
     PlaybackControlResponse, PlaybackPresenceHeartbeatResult, PlaybackState,
     QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
-    SessionHookRequest, SessionHookResponse, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
-    SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
-    StopCloudRecordingRequest, StopDeviceStreamRequest, StreamHistoryItem, UpdateGbChannelRequest,
-    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
-    session_control_server::SessionControl, session_hook_server::SessionHook,
+    SessionHookRequest, SessionHookResponse, SetGbChannelCoverRequest, SetPlaybackSpeedRequest,
+    SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
+    StartDeviceStreamRequest, StopCloudRecordingRequest, StopDeviceStreamRequest,
+    StreamHistoryItem, UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest,
+    UpdateGbDeviceResponse, session_control_server::SessionControl,
+    session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
@@ -1799,11 +1801,20 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<ListGbChannelsResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!("session_control.list_gb_channels, req:{request:?}");
+        let covers = crate::storage::guard_query::GbChannelCoverView::list(&request.device_id)
+            .await
+            .map_err(storage_status)?
+            .into_iter()
+            .map(|cover| (cover.channel_id, cover.cover_image_id))
+            .collect::<HashMap<_, _>>();
         let channels = crate::storage::guard_query::GbChannelView::list(&request.device_id)
             .await
             .map_err(storage_status)?
             .into_iter()
-            .map(gb_channel_proto)
+            .map(|channel| {
+                let cover_image_id = covers.get(&channel.channel_id).cloned().unwrap_or_default();
+                gb_channel_proto(channel, cover_image_id)
+            })
             .collect();
         Ok(tonic::Response::new(ListGbChannelsResponse { channels }))
     }
@@ -1814,13 +1825,21 @@ impl SessionControl for SessionControlRpc {
     ) -> Result<tonic::Response<GetGbChannelResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!("session_control.get_gb_channel, req:{request:?}");
+        let cover_image_id =
+            crate::storage::guard_query::GbChannelCoverView::list(&request.device_id)
+                .await
+                .map_err(storage_status)?
+                .into_iter()
+                .find(|cover| cover.channel_id == request.channel_id)
+                .map(|cover| cover.cover_image_id)
+                .unwrap_or_default();
         let channel = crate::storage::guard_query::GbChannelView::get(
             &request.device_id,
             &request.channel_id,
         )
         .await
         .map_err(storage_status)?
-        .map(gb_channel_proto);
+        .map(|channel| gb_channel_proto(channel, cover_image_id));
         Ok(tonic::Response::new(GetGbChannelResponse { channel }))
     }
 
@@ -1858,8 +1877,16 @@ impl SessionControl for SessionControlRpc {
         .await
         .map_err(storage_status)?
         .ok_or_else(|| tonic::Status::not_found("GB28181 channel"))?;
+        let cover_image_id =
+            crate::storage::guard_query::GbChannelCoverView::list(&channel.device_id)
+                .await
+                .map_err(storage_status)?
+                .into_iter()
+                .find(|cover| cover.channel_id == channel.channel_id)
+                .map(|cover| cover.cover_image_id)
+                .unwrap_or_default();
         Ok(tonic::Response::new(UpdateGbChannelResponse {
-            channel: Some(gb_channel_proto(channel)),
+            channel: Some(gb_channel_proto(channel, cover_image_id)),
         }))
     }
 
@@ -1868,17 +1895,88 @@ impl SessionControl for SessionControlRpc {
         request: tonic::Request<ListGbChannelImagesRequest>,
     ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
         let request = request.into_inner();
+        let session_node_id = self.session_node_id()?;
         debug!("session_control.list_gb_channel_images, req:{request:?}");
-        let images = crate::storage::guard_query::GbChannelImageView::list(
+        let page = request.page.max(1);
+        let page_size = if request.page_size == 0 {
+            12
+        } else {
+            request.page_size.min(100)
+        };
+        let start_time = image_query_datetime(request.start_time_ms)?;
+        let end_time = image_query_datetime(request.end_time_ms)?;
+        if matches!((start_time, end_time), (Some(start), Some(end)) if start > end) {
+            return Err(tonic::Status::invalid_argument(
+                "start_time_ms must not be after end_time_ms",
+            ));
+        }
+        let (images, total) = crate::storage::guard_query::GbChannelImageView::list(
+            &request.device_id,
+            &request.channel_id,
+            start_time,
+            end_time,
+            i64::from(page),
+            i64::from(page_size),
+        )
+        .await
+        .map_err(storage_status)?;
+        let images = images
+            .into_iter()
+            .map(|image| gb_channel_image_proto(image, &session_node_id))
+            .collect();
+        Ok(tonic::Response::new(ListGbChannelImagesResponse {
+            images,
+            total: total.max(0) as u64,
+            page,
+            page_size,
+        }))
+    }
+
+    async fn issue_gb_channel_image_access(
+        &self,
+        request: tonic::Request<IssueGbChannelImageAccessRequest>,
+    ) -> Result<tonic::Response<IssueGbChannelImageAccessResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let issued = crate::http::image::issue_ticket(
+            &request.image_id,
+            &request.device_id,
+            &request.channel_id,
+            &request.mode,
+        )
+        .await?;
+        Ok(tonic::Response::new(IssueGbChannelImageAccessResponse {
+            url: issued.url,
+            expires_at_ms: issued.expires_at_ms,
+            content_type: issued.content_type,
+            file_name: issued.file_name,
+            file_size: issued.file_size,
+        }))
+    }
+
+    async fn set_gb_channel_cover(
+        &self,
+        request: tonic::Request<SetGbChannelCoverRequest>,
+    ) -> Result<tonic::Response<UpdateGbChannelResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let image = crate::storage::guard_query::GbChannelImageView::get(
+            &request.image_id,
             &request.device_id,
             &request.channel_id,
         )
         .await
         .map_err(storage_status)?
-        .into_iter()
-        .map(gb_channel_image_proto)
-        .collect();
-        Ok(tonic::Response::new(ListGbChannelImagesResponse { images }))
+        .ok_or_else(|| tonic::Status::not_found("GB28181 image"))?;
+        let channel = crate::storage::guard_query::GbChannelView::set_cover_image(
+            &request.device_id,
+            &request.channel_id,
+            &image.image_id,
+        )
+        .await
+        .map_err(storage_status)?
+        .ok_or_else(|| tonic::Status::not_found("GB28181 channel"))?;
+        Ok(tonic::Response::new(UpdateGbChannelResponse {
+            channel: Some(gb_channel_proto(channel, image.image_id)),
+        }))
     }
 
     async fn get_gb_channel_records(
@@ -3050,7 +3148,10 @@ fn validate_snapshot_to_mode(value: i64) -> Result<(), tonic::Status> {
     }
 }
 
-fn gb_channel_proto(row: crate::storage::guard_query::GbChannelView) -> GbChannel {
+fn gb_channel_proto(
+    row: crate::storage::guard_query::GbChannelView,
+    cover_image_id: String,
+) -> GbChannel {
     GbChannel {
         device_id: row.device_id,
         channel_id: row.channel_id,
@@ -3081,6 +3182,7 @@ fn gb_channel_proto(row: crate::storage::guard_query::GbChannelView) -> GbChanne
         sort_no: row.sort_no,
         created_at_ms: datetime_ms(row.created_at),
         updated_at_ms: datetime_ms(row.updated_at),
+        cover_image_id,
     }
 }
 
@@ -3104,13 +3206,25 @@ fn gb_channel_config_update(
     }
 }
 
-fn gb_channel_image_proto(row: crate::storage::guard_query::GbChannelImageView) -> GbChannelImage {
+fn gb_channel_image_proto(
+    row: crate::storage::guard_query::GbChannelImageView,
+    session_node_id: &str,
+) -> GbChannelImage {
+    let content_type = crate::http::image::image_content_type(&row.file_format)
+        .unwrap_or_default()
+        .to_string();
+    let file_name = crate::http::image::image_file_name(&row).unwrap_or_default();
     GbChannelImage {
         image_id: row.image_id,
         device_id: row.device_id,
         channel_id: row.channel_id,
-        image_url: row.image_url,
+        image_url: String::new(),
         created_at_ms: datetime_ms(row.created_at),
+        file_name,
+        content_type: content_type.clone(),
+        file_size: u64::try_from(row.file_size).unwrap_or_default(),
+        can_preview: !content_type.is_empty(),
+        session_node_id: session_node_id.to_string(),
     }
 }
 
@@ -3210,6 +3324,19 @@ fn datetime_string(value: Option<base::chrono::NaiveDateTime>) -> String {
 
 fn datetime_ms(value: Option<base::chrono::NaiveDateTime>) -> i64 {
     value.map(local_datetime_ms).unwrap_or_default()
+}
+
+fn image_query_datetime(
+    value_ms: i64,
+) -> Result<Option<base::chrono::NaiveDateTime>, tonic::Status> {
+    if value_ms == 0 {
+        return Ok(None);
+    }
+    Local
+        .timestamp_millis_opt(value_ms)
+        .single()
+        .map(|value| Some(value.naive_local()))
+        .ok_or_else(|| tonic::Status::invalid_argument("invalid image query time"))
 }
 
 fn local_datetime_ms(value: base::chrono::NaiveDateTime) -> i64 {

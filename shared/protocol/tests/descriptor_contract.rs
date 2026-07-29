@@ -217,6 +217,93 @@ fn session_record_query_contract_is_stable() {
 }
 
 #[test]
+fn session_image_access_contract_is_stable() {
+    let descriptor = descriptor();
+    let session = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.session.v1"))
+        .unwrap();
+    let service = session
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("SessionControl"))
+        .unwrap();
+    assert!(
+        service
+            .method
+            .iter()
+            .any(|method| method.name.as_deref() == Some("IssueGbChannelImageAccess"))
+    );
+    assert!(
+        service
+            .method
+            .iter()
+            .any(|method| method.name.as_deref() == Some("SetGbChannelCover"))
+    );
+
+    let image = session
+        .message_type
+        .iter()
+        .find(|message| message.name.as_deref() == Some("GbChannelImage"))
+        .unwrap();
+    for (field, number) in [
+        ("file_name", 6),
+        ("content_type", 7),
+        ("file_size", 8),
+        ("can_preview", 9),
+        ("session_node_id", 10),
+    ] {
+        assert_eq!(
+            image
+                .field
+                .iter()
+                .find(|item| item.name.as_deref() == Some(field))
+                .unwrap()
+                .number,
+            Some(number)
+        );
+    }
+
+    let channel = session
+        .message_type
+        .iter()
+        .find(|message| message.name.as_deref() == Some("GbChannel"))
+        .unwrap();
+    assert_eq!(
+        channel
+            .field
+            .iter()
+            .find(|item| item.name.as_deref() == Some("cover_image_id"))
+            .unwrap()
+            .number,
+        Some(30)
+    );
+
+    let list_request = session
+        .message_type
+        .iter()
+        .find(|message| message.name.as_deref() == Some("ListGbChannelImagesRequest"))
+        .unwrap();
+    for (field, number) in [
+        ("start_time_ms", 3),
+        ("end_time_ms", 4),
+        ("page", 5),
+        ("page_size", 6),
+    ] {
+        assert_eq!(
+            list_request
+                .field
+                .iter()
+                .find(|item| item.name.as_deref() == Some(field))
+                .unwrap()
+                .number,
+            Some(number)
+        );
+    }
+}
+
+#[test]
 fn session_stream_monitoring_contract_is_stable() {
     let descriptor = descriptor();
     let session = descriptor

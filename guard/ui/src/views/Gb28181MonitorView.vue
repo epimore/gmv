@@ -259,7 +259,7 @@
     </GlassPanel>
   </div>
 
-  <div v-else class="page-grid">
+  <div v-else class="page-grid" :class="{ 'viewport-card-page has-summary-cards': showImages }">
     <GlassPanel class="span-12" title="通道监控" :subtitle="selectedDevice.device_id">
       <div class="monitor-head">
         <div class="device-summary">
@@ -281,25 +281,47 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel v-if="showImages" class="span-12" title="抓拍图集" :subtitle="selectedChannelTitle">
-      <div class="toolbar">
-        <el-button @click="showImages = false">返回通道</el-button>
-        <el-button :loading="imageLoading" @click="selectedChannel && loadImages(selectedChannel)">刷新图集</el-button>
-      </div>
-      <div v-if="images.length" class="image-grid">
-        <a v-for="image in images" :key="image.image_id" class="image-card" :href="image.image_url" target="_blank"
-          rel="noreferrer">
-          <div class="image-preview">
-            <img v-if="image.image_url" :src="image.image_url" :alt="image.image_id" />
-            <span v-else>暂无图片</span>
+    <GlassPanel v-if="showImages" class="span-12 fill-panel image-gallery-panel" title="抓拍图集" :subtitle="selectedChannelTitle">
+      <div class="image-gallery-content" v-loading="imageLoading">
+        <div class="image-gallery-toolbar">
+          <div class="toolbar">
+            <el-button @click="showImages = false">返回通道</el-button>
+            <el-button :loading="imageLoading" @click="selectedChannel && loadImages(selectedChannel)">刷新图集</el-button>
           </div>
-          <div class="image-meta">
-            <b>{{ image.image_id }}</b>
-            <span>{{ formatTime(image.created_at_ms) }}</span>
+          <div class="image-time-filter">
+            <el-date-picker v-model="imageStartTime" type="datetime" placeholder="开始时间" format="YYYY-MM-DD HH:mm:ss" :clearable="true" />
+            <span>至</span>
+            <el-date-picker v-model="imageEndTime" type="datetime" placeholder="结束时间" format="YYYY-MM-DD HH:mm:ss" :clearable="true" />
+            <el-button type="primary" @click="queryImages">查询</el-button>
           </div>
-        </a>
+        </div>
+        <div v-if="images.length" class="image-grid">
+          <article v-for="image in images" :key="image.session_node_id + ':' + image.image_id" class="image-card">
+            <div class="image-preview">
+              <el-image v-if="image.image_url" class="gallery-image" :src="image.image_url" :alt="image.file_name || image.image_id"
+                :preview-src-list="imagePreviewUrls" :initial-index="imagePreviewUrls.indexOf(image.image_url)"
+                fit="cover" lazy preview-teleported>
+                <template #error><span>图片加载失败</span></template>
+              </el-image>
+              <span v-else>{{ image.can_preview ? '访问地址获取失败' : '不支持的图片格式' }}</span>
+            </div>
+            <div class="image-meta">
+              <div><b>{{ image.file_name || image.image_id }}</b><span>{{ formatTime(image.created_at_ms) }}</span></div>
+              <el-button size="small" :type="selectedChannel?.over_pic_id === image.image_id ? 'success' : 'primary'"
+                :disabled="!canOperate || selectedChannel?.over_pic_id === image.image_id"
+                @click="setImageAsCover(image)">
+                {{ selectedChannel?.over_pic_id === image.image_id ? '当前封面' : '设为封面' }}
+              </el-button>
+            </div>
+          </article>
+        </div>
+        <el-empty v-else description="暂无抓拍图片" />
+        <el-pagination class="image-pagination" background
+          v-model:current-page="imagePage" v-model:page-size="imagePageSize"
+          :page-sizes="[12, 24, 48]" :total="imageTotal"
+          layout="total, sizes, prev, pager, next, jumper"
+          @current-change="changeImagePage" @size-change="changeImagePageSize" />
       </div>
-      <el-empty v-else description="暂无抓拍图片" />
     </GlassPanel>
 
     <template v-else>
@@ -639,6 +661,7 @@ import {
   getGbSessionNodeConfig,
   getGbChannelRecords,
   heartbeatGbPlaybackPresence,
+  issueGbChannelImageAccess,
   issueCloudRecordingAccess,
   listGbChannelImages,
   listGbChannels,
@@ -652,6 +675,7 @@ import {
   saveGbResourceConfirmation,
   sendGbPtz,
   seekGbPlayback,
+  setGbChannelCover,
   setGbPlaybackSpeed,
   setGbPlaybackState,
   startGbPlayback,
@@ -713,6 +737,12 @@ const channels = ref<GbChannelInfo[]>([]);
 const resources = ref<GbResourceInfo[]>([]);
 const treeDevices = ref<GbDeviceInfo[]>([]);
 const images = ref<GbChannelImageInfo[]>([]);
+const imagePreviewUrls = computed(() => images.value.map((image) => image.image_url).filter(Boolean));
+const imageStartTime = ref<Date>();
+const imageEndTime = ref<Date>();
+const imagePage = ref(1);
+const imagePageSize = ref(12);
+const imageTotal = ref(0);
 const sessionNodes = ref<NodeInfo[]>([]);
 const sessionNodeOptions = ref<SessionNodeOption[]>([]);
 const selectedListNodeId = ref('');
@@ -2590,7 +2620,18 @@ async function reloadChannels() {
       listGbChannels(selectedDevice.value.device_id, selectedDevice.value.session_node_id),
       listGbResources(selectedDevice.value.device_id, selectedDevice.value.session_node_id),
     ]);
-    channels.value = channelRows;
+    const sessionNodeId = selectedDevice.value.session_node_id;
+    const covers = await Promise.all(channelRows.map(async (channel) => {
+      if (!channel.cover_image_id || !sessionNodeId) return channel;
+      const access = await issueGbChannelImageAccess(
+        channel.device_id,
+        channel.channel_id,
+        channel.cover_image_id,
+        sessionNodeId,
+      ).catch(() => undefined);
+      return { ...channel, pic_url: access?.url || '' };
+    }));
+    channels.value = covers;
     resources.value = resourceRows;
     resourcesLoaded.value = true;
   } catch (error) {
@@ -3208,9 +3249,39 @@ async function requestDeviceSnapshot(channel: GbChannelInfo) {
 async function loadImages(channel: GbChannelInfo) {
   imageLoading.value = true;
   try {
-    images.value = await listGbChannelImages(channel.device_id, channel.channel_id);
+    if (imageStartTime.value && imageEndTime.value && imageStartTime.value > imageEndTime.value) {
+      ElMessage.warning('开始时间不能晚于结束时间');
+      return;
+    }
+    const page = await listGbChannelImages(channel.device_id, channel.channel_id, {
+      session_node_id: selectedDevice.value?.session_node_id || '',
+      start_time_ms: imageStartTime.value?.getTime(),
+      end_time_ms: imageEndTime.value?.getTime(),
+      page: imagePage.value,
+      page_size: imagePageSize.value,
+    });
+    imageTotal.value = page.total;
+    imagePage.value = page.page;
+    imagePageSize.value = page.page_size;
+    const accessList = await Promise.all(page.items.map((image) => {
+      if (!image.can_preview || !image.session_node_id) return Promise.resolve(undefined);
+      return issueGbChannelImageAccess(
+        image.device_id,
+        image.channel_id,
+        image.image_id,
+        image.session_node_id,
+      ).catch(() => undefined);
+    }));
+    images.value = page.items.map((image, index) => ({
+      ...image,
+      image_url: accessList[index]?.url || '',
+    }));
+    if (page.items.some((image) => image.can_preview) && !images.value.some((image) => image.image_url)) {
+      ElMessage.warning('抓拍图片访问地址获取失败');
+    }
   } catch (error) {
     images.value = [];
+    imageTotal.value = 0;
     ElMessage.error(errorMessage(error, '抓拍图集加载失败'));
   } finally {
     imageLoading.value = false;
@@ -3219,7 +3290,38 @@ async function loadImages(channel: GbChannelInfo) {
 async function openImages(channel: GbChannelInfo) {
   selectedChannel.value = channel;
   showImages.value = true;
+  imagePage.value = 1;
   await loadImages(channel);
+}
+async function queryImages() {
+  if (!selectedChannel.value) return;
+  imagePage.value = 1;
+  await loadImages(selectedChannel.value);
+}
+async function changeImagePage() {
+  if (selectedChannel.value) await loadImages(selectedChannel.value);
+}
+async function changeImagePageSize() {
+  imagePage.value = 1;
+  if (selectedChannel.value) await loadImages(selectedChannel.value);
+}
+async function setImageAsCover(image: GbChannelImageInfo) {
+  if (!selectedDevice.value || !selectedChannel.value) return;
+  try {
+    const updated = await setGbChannelCover(
+      image.device_id,
+      image.channel_id,
+      image.image_id,
+      selectedDevice.value.session_node_id,
+    );
+    const picUrl = image.image_url || selectedChannel.value.pic_url;
+    const local = { ...updated, pic_url: picUrl };
+    channels.value = channels.value.map((channel) => channel.channel_id === local.channel_id ? local : channel);
+    selectedChannel.value = local;
+    ElMessage.success('封面设置成功');
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '封面设置失败'));
+  }
 }
 function previewCover(channel: GbChannelInfo) {
   coverUrl.value = channel.pic_url || '';
@@ -3337,7 +3439,7 @@ async function saveConfig() {
   if (!selectedChannel.value) return;
   configSaving.value = true;
   try {
-    const payload = { ...configForm };
+    const payload = { ...configForm, over_pic_id: selectedChannel.value.over_pic_id };
     delete payload.device_id;
     await updateGbChannel(selectedChannel.value.device_id, selectedChannel.value.channel_id, payload);
     configDrawer.value = false;
@@ -4585,7 +4687,52 @@ onBeforeUnmount(() => {
 .image-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-content: start;
   gap: 12px;
+}
+
+.image-gallery-panel {
+  overflow: hidden;
+}
+
+.image-gallery-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.image-gallery-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.image-time-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.image-gallery-content > .image-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.image-gallery-content > .el-empty {
+  flex: 1;
+}
+
+.image-pagination {
+  flex: none;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .image-card {
@@ -4611,10 +4758,24 @@ onBeforeUnmount(() => {
   object-fit: cover;
 }
 
+.gallery-image {
+  width: 100%;
+  height: 100%;
+  cursor: zoom-in;
+}
+
 .image-meta {
-  display: grid;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 4px;
   padding: 10px;
+}
+
+.image-meta > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
 }
 
 .image-meta b {

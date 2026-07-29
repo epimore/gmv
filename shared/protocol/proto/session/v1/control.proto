@@ -30,6 +30,8 @@ service SessionControl {
   rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
   rpc UpdateGbChannel(UpdateGbChannelRequest) returns (UpdateGbChannelResponse);
   rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
+  rpc IssueGbChannelImageAccess(IssueGbChannelImageAccessRequest) returns (IssueGbChannelImageAccessResponse);
+  rpc SetGbChannelCover(SetGbChannelCoverRequest) returns (UpdateGbChannelResponse);
   rpc GetGbChannelRecords(GetGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
   rpc QueryGbChannelRecords(QueryGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
   rpc ListGbResources(ListGbResourcesRequest) returns (ListGbResourcesResponse);
@@ -493,15 +495,23 @@ message GbChannel {
   int64 sort_no = 27;
   int64 created_at_ms = 28;
   int64 updated_at_ms = 29;
+  string cover_image_id = 30;
 }
 
 message ListGbChannelImagesRequest {
   string device_id = 1;
   string channel_id = 2;
+  int64 start_time_ms = 3;
+  int64 end_time_ms = 4;
+  uint32 page = 5;
+  uint32 page_size = 6;
 }
 
 message ListGbChannelImagesResponse {
   repeated GbChannelImage images = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
 }
 
 message GbChannelImage {
@@ -510,6 +520,34 @@ message GbChannelImage {
   string channel_id = 3;
   string image_url = 4;
   int64 created_at_ms = 5;
+  string file_name = 6;
+  string content_type = 7;
+  uint64 file_size = 8;
+  bool can_preview = 9;
+  string session_node_id = 10;
+}
+
+message IssueGbChannelImageAccessRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string image_id = 2;
+  string device_id = 3;
+  string channel_id = 4;
+  string mode = 5;
+}
+
+message IssueGbChannelImageAccessResponse {
+  string url = 1;
+  int64 expires_at_ms = 2;
+  string content_type = 3;
+  string file_name = 4;
+  uint64 file_size = 5;
+}
+
+message SetGbChannelCoverRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string image_id = 4;
 }
 
 message GetGbChannelRecordsRequest {

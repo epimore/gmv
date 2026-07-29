@@ -71,6 +71,8 @@ server:
         num: 1
         interval: 1
         max_upload_bytes: 10485760
+        public_base_url: "" #公网代理前缀，例如 https://gmv.example.com/session-1；留空则使用Session直连地址
+        access_ticket_ttl_secs: 300
     alarm:
         enable: false #是否开启告警事件上报guard，默认false
         priority: 4 #告警等级 1-4,默认最低4

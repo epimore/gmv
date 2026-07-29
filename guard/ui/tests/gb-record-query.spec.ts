@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('录像查询仅按用户操作发起，并保留下载任务手动刷新', async ({ page }) => {
+test('录像查询仅按用户操作发起，并通过票据展示抓拍图集', async ({ page }) => {
   let recordQueries = 0;
   const recordLists: URLSearchParams[] = [];
   let cloudRecordingLists = 0;
@@ -8,6 +8,9 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   let recordQueryRange: { start_time_sec: number; end_time_sec: number } | undefined;
   let previewOutputType = '';
   let playbackOutputType = '';
+  let imageAccesses = 0;
+  let coverUpdates = 0;
+  const imageLists: URLSearchParams[] = [];
   const session = {
     username: 'operator',
     nickname: '值班员',
@@ -36,6 +39,7 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
     ip_address: '', port: 0, longitude: '', latitude: '', ptz_type: '3', alias_name: '', pic_url: '',
     snapshot: 1, over_pic_id: '', ptz_enable: 1, talk_enable: 2, audio_enable: 2, record_enable: 1,
     playback_enable: 1, alarm_enable: 1, biz_enable: 1, sort_no: 1, created_at_ms: 0, updated_at_ms: 0,
+    cover_image_id: '16873',
   };
   const resource = {
     device_id: device.device_id, resource_id: channel.channel_id, name: channel.name, status: 'ON',
@@ -75,6 +79,17 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
     stream_id: 'preview-stream-1', endpoint: '/test-preview/index.m3u8',
     playback_id: null, playback_generation: null, playback_start_time_sec: null, playback_end_time_sec: null,
   };
+  const image = {
+    image_id: '16873', device_id: device.device_id, channel_id: channel.channel_id, image_url: '',
+    created_at_ms: Date.now(), file_name: 'snapshot.jpeg', content_type: 'image/jpeg', file_size: 128,
+    can_preview: true, session_node_id: 'session-1',
+  };
+
+  await page.route('**/test-snapshot.svg', (route) => route.fulfill({
+    status: 200,
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="12"><rect width="16" height="12" fill="navy"/></svg>',
+  }));
 
   await page.route('**/api/v2/**', async (route) => {
     const request = route.request();
@@ -88,6 +103,21 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
     else if (path === '/api/v2/gb28181/devices') body = { items: [device], total: 1, page: 1, page_size: 20 };
     else if (path.endsWith('/channels')) body = [channel];
     else if (path.endsWith('/resources')) body = [resource];
+    else if (path.endsWith('/images/16873/access')) {
+      imageAccesses += 1;
+      expect(request.method()).toBe('POST');
+      expect(request.headers()['x-csrf-token']).toBe(session.csrf_token);
+      expect(request.postDataJSON()).toEqual({ session_node_id: 'session-1', mode: 'inline' });
+      body = { url: '/test-snapshot.svg', expires_at_ms: Date.now() + 300_000, content_type: 'image/jpeg', file_name: image.file_name, file_size: image.file_size };
+    } else if (path.endsWith('/images/16873/cover')) {
+      coverUpdates += 1;
+      expect(request.method()).toBe('POST');
+      expect(request.postDataJSON()).toEqual({ session_node_id: 'session-1' });
+      body = { ...channel, over_pic_id: image.image_id, cover_image_id: image.image_id };
+    } else if (path.endsWith('/images')) {
+      imageLists.push(new URL(request.url()).searchParams);
+      body = { items: [image], total: 1, page: 1, page_size: 12 };
+    }
     else if (path.endsWith('/preview') && request.method() === 'POST') {
       previewOutputType = request.postDataJSON().output_type;
       body = {
@@ -130,6 +160,7 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
 
   await page.goto('/gb28181/monitor');
   await page.getByRole('button', { name: '相机' }).click();
+  await expect(page.locator('.channel-cover img')).toHaveAttribute('src', '/test-snapshot.svg');
   await page.locator('.channel-live-dropdown').getByRole('button', { name: '直播', exact: true }).click();
   await page.getByRole('menuitem', { name: 'LL-HLS', exact: true }).click();
   await expect.poll(() => previewOutputType).toBe('ll_hls');
@@ -148,6 +179,40 @@ test('录像查询仅按用户操作发起，并保留下载任务手动刷新',
   await page.getByRole('menuitem', { name: '配置', exact: true }).click();
   await expect(page.getByRole('heading', { name: '相机业务配置' })).toBeVisible();
   await page.locator('.camera-config-drawer .el-drawer__close-btn').click();
+  await channelCard.getByRole('button', { name: '图集', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '抓拍图集', exact: true })).toBeVisible();
+  await expect.poll(() => imageAccesses).toBe(2);
+  expect(imageLists[0].get('page')).toBe('1');
+  expect(imageLists[0].get('page_size')).toBe('12');
+  expect(imageLists[0].get('session_node_id')).toBe('session-1');
+  await expect(page.locator('.gallery-image img')).toHaveAttribute('src', '/test-snapshot.svg');
+  await expect(page.locator('.image-pagination .el-pagination__total')).toContainText('1');
+  await expect(page.locator('.image-pagination .el-pagination__sizes')).toBeVisible();
+  await expect(page.locator('.image-pagination .btn-prev')).toBeVisible();
+  await expect(page.locator('.image-pagination .btn-next')).toBeVisible();
+  await expect(page.locator('.image-pagination .el-pagination__jump')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const root = document.scrollingElement;
+    return !!root && root.scrollHeight <= root.clientHeight + 1;
+  })).toBe(true);
+  await page.getByRole('button', { name: '设为封面', exact: true }).click();
+  await expect.poll(() => coverUpdates).toBe(1);
+  await expect(page.getByRole('button', { name: '当前封面', exact: true })).toBeDisabled();
+  const imageTimeInputs = page.locator('.image-time-filter input');
+  await imageTimeInputs.nth(0).fill('2026-07-21 00:00:00');
+  await imageTimeInputs.nth(0).press('Enter');
+  await page.locator('.image-time-filter').getByRole('button', { name: '查询', exact: true }).click();
+  await expect.poll(() => imageLists.length).toBe(2);
+  expect(imageLists.at(-1)!.get('start_time_ms')).toBeTruthy();
+  expect(imageLists.at(-1)!.get('end_time_ms')).toBeNull();
+  await imageTimeInputs.nth(0).clear();
+  await imageTimeInputs.nth(1).fill('2026-07-22 00:00:00');
+  await imageTimeInputs.nth(1).press('Enter');
+  await page.locator('.image-time-filter').getByRole('button', { name: '查询', exact: true }).click();
+  await expect.poll(() => imageLists.length).toBe(3);
+  expect(imageLists.at(-1)!.get('start_time_ms')).toBeNull();
+  expect(imageLists.at(-1)!.get('end_time_ms')).toBeTruthy();
+  await page.getByRole('button', { name: '返回通道', exact: true }).click();
   await page.locator('.channel-play-main', { hasText: '回放' }).click();
 
   const playbackRangeDialog = page.getByRole('dialog', { name: '历史回放', exact: true });

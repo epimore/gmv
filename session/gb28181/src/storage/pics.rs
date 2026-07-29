@@ -21,6 +21,10 @@ pub struct Pics {
     pub interval: u8,
     #[serde(default = "default_max_upload_bytes")]
     pub max_upload_bytes: usize,
+    #[serde(default)]
+    pub public_base_url: String,
+    #[serde(default = "default_access_ticket_ttl_secs")]
+    pub access_ticket_ttl_secs: u64,
 }
 
 serde_default!(
@@ -33,6 +37,7 @@ serde_default!(default_storage_format, String, "jpeg".to_string());
 serde_default!(default_num, u8, 1);
 serde_default!(default_interval, u8, 1);
 serde_default!(default_max_upload_bytes, usize, 10 * 1024 * 1024);
+serde_default!(default_access_ticket_ttl_secs, u64, 300);
 
 impl Pics {
     pub fn get_pics_by_conf() -> Self {
@@ -60,6 +65,19 @@ impl CheckFromConf for Pics {
         if self.num == 0 || self.interval == 0 || self.max_upload_bytes == 0 {
             return Err(FieldCheckError::BizError(
                 "server.pics配置中的数量、间隔和大小限制必须大于0".to_string(),
+            ));
+        }
+        if self.access_ticket_ttl_secs == 0 {
+            return Err(FieldCheckError::BizError(
+                "server.pics.access_ticket_ttl_secs必须大于0".to_string(),
+            ));
+        }
+        let public_base_url = self.public_base_url.trim();
+        if !public_base_url.is_empty()
+            && !(public_base_url.starts_with("http://") || public_base_url.starts_with("https://"))
+        {
+            return Err(FieldCheckError::BizError(
+                "server.pics.public_base_url必须是http或https地址".to_string(),
             ));
         }
         Ok(())
