@@ -24,7 +24,7 @@
     />
 
     <GlassPanel
-      class="span-8"
+      class="span-6"
       title="MQTT 双向接入"
       subtitle="Guard 订阅第三方命令 · Guard 发布事件和操作结果"
     >
@@ -56,7 +56,7 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-4" title="Broker 连接配置" subtitle="协议版本必须显式选择，不自动推断">
+    <GlassPanel class="span-6" title="Broker 连接配置" subtitle="协议版本必须显式选择，不自动推断">
       <template #action>
         <el-button type="primary" :loading="saving" :disabled="!auth.isAdmin || !selectedIntegrationId" @click="saveProtocol">保存配置</el-button>
       </template>
@@ -346,7 +346,7 @@ function openDocs() {
 <style scoped>
 .flow-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 

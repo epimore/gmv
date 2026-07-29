@@ -17,7 +17,7 @@
       hint="Guard 暴露"
     />
 
-    <GlassPanel class="span-8" title="HTTP 双向接入" subtitle="第三方调用 Guard · Guard 回调第三方">
+    <GlassPanel class="span-6" title="HTTP 双向接入" subtitle="第三方调用 Guard · Guard 回调第三方">
       <div class="flow-grid">
         <article class="flow-card inbound">
           <div class="flow-head">
@@ -40,7 +40,7 @@
       </div>
     </GlassPanel>
 
-    <GlassPanel class="span-4" title="HTTP 接入配置" subtitle="回调仅允许 HTTPS，私网默认拒绝">
+    <GlassPanel class="span-6" title="HTTP 接入配置" subtitle="回调仅允许 HTTPS，私网默认拒绝">
       <template #action><el-button type="primary" :loading="saving" :disabled="!auth.isAdmin || !selectedIntegrationId" @click="saveConfig">保存配置</el-button></template>
       <div class="config-form">
         <label>接入应用</label>
@@ -289,7 +289,7 @@ onMounted(() => {
 <style scoped>
 .flow-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
