@@ -13,6 +13,7 @@ use base::once_cell::sync::OnceCell;
 use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::{self, Sender};
 use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 use gmv_pjsip::{SipRegisteredSource, SipTransportProtocol};
 use parking_lot::Mutex;
 use uuid::Uuid;
@@ -49,6 +50,7 @@ pub struct Register {
 }
 
 pub struct Inner {
+    runtime: GlobalRuntime,
     pub event_tx: Sender<Event>,
     pub io_map: Network,
     recovering_devices: DashMap<Arc<str>, u64>,
@@ -86,7 +88,7 @@ impl Register {
         REGISTER.get().expect("Register not initialized")
     }
 
-    pub fn init(cancel_token: CancellationToken) -> GlobalResult<()> {
+    pub fn init(runtime: &GlobalRuntime, cancel_token: CancellationToken) -> GlobalResult<()> {
         if REGISTER.get().is_some() {
             return Ok(());
         }
@@ -94,6 +96,7 @@ impl Register {
         let (event_tx, event_rx) = mpsc::channel(256);
         TimeScheduler::init();
         let inner = Arc::new(Inner {
+            runtime: runtime.clone(),
             event_tx,
             io_map: Network {
                 session: Default::default(),
@@ -114,7 +117,13 @@ impl Register {
                 GlobalError::new_sys_error("Register already initialized", |msg| error!("{msg}"))
             })?;
 
-        base::tokio::spawn(event::schedule_event(inner, event_rx, cancel_token));
+        let scheduler_cancel = cancel_token.clone();
+        runtime.spawn("session-register-event-scheduler", async move {
+            event::schedule_event(inner, event_rx, cancel_token).await;
+            if !scheduler_cancel.is_cancelled() {
+                GlobalRuntime::request_shutdown_with_error();
+            }
+        })?;
         Ok(())
     }
 
@@ -209,7 +218,10 @@ impl Register {
                 return Ok(());
             }
         };
-        base::tokio::spawn(async move {
+        let recovery_runtime = inner.runtime.clone();
+        let cleanup_inner = inner.clone();
+        let cleanup_device_id = device_id.clone();
+        let recovery_task = async move {
             let _permit = permit;
             let result = Self::recover_device_session(&device_id, association, recovery_id).await;
             inner
@@ -246,7 +258,15 @@ impl Register {
                     record_device_recovery_failure(&inner, "recovery_failed");
                 }
             }
-        });
+        };
+        if recovery_runtime
+            .spawn("session-device-recovery", recovery_task)
+            .is_err()
+        {
+            cleanup_inner
+                .recovering_devices
+                .remove_if(&cleanup_device_id, |_, current| *current == recovery_id);
+        }
         Ok(())
     }
 
@@ -768,7 +788,7 @@ fn remove_native_registered_source(device_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceRecoveryOutcome, Register, heartbeat_timeout};
+    use super::{DeviceRecoveryOutcome, GlobalRuntime, Register, heartbeat_timeout};
     use crate::storage::entity::{
         GmvDevice, GmvOauth, TEST_STORAGE_TEST_LOCK, enable_test_storage,
     };
@@ -805,7 +825,10 @@ mod tests {
             .build()
             .expect("runtime")
             .block_on(async {
-                Register::init(cancel.child_token()).expect("register init");
+                let runtime =
+                    GlobalRuntime::register_default(base::utils::rt::RuntimeType::CommonNetwork)
+                        .expect("runtime init");
+                Register::init(&runtime, cancel.child_token()).expect("register init");
                 let now = Local::now().naive_local();
                 let device_id: Arc<str> = Arc::from("34020000001320000001");
                 GmvDevice {

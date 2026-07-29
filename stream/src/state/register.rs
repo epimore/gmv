@@ -1846,15 +1846,14 @@ impl Register {
         }
         Ok(ssrc)
     }
-    pub fn init() -> GlobalResult<()> {
+    pub fn init(runtime: &GlobalRuntime) -> GlobalResult<()> {
         if REGISTER.get().is_some() {
             return Ok(());
         }
         let server_conf = ServerConf::init_by_conf();
         let stream_conf = StreamConf::init_by_conf();
         let (event_tx, event_rx) = mpsc::channel(10000);
-        let rt = GlobalRuntime::get_main_runtime();
-        let _enter = rt.rt_handle.enter();
+        let _enter = runtime.rt_handle.enter();
         let time_schedule = c100k::Cache::default();
         let inner = Inner {
             time_schedule,
@@ -1876,8 +1875,15 @@ impl Register {
         REGISTER.set(register).map_err(|_| {
             GlobalError::new_sys_error("Register already initialized", |msg| error!("{msg}"))
         })?;
-        rt.rt_handle
-            .spawn(event::schedule_event(arc, event_rx, rt.cancel.clone()));
+        let scheduler_cancel = runtime.cancel.clone();
+        let shutdown_cancel = scheduler_cancel.clone();
+        runtime.spawn("stream-event-scheduler", async move {
+            event::schedule_event(arc, event_rx, scheduler_cancel).await;
+            if !shutdown_cancel.is_cancelled() {
+                error!("stream event scheduler stopped unexpectedly");
+                GlobalRuntime::request_shutdown_with_error();
+            }
+        })?;
         Ok(())
     }
 }

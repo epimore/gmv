@@ -8,12 +8,12 @@ use base::exception::GlobalResultExt;
 use base::log::{error, info, warn};
 use base::net::state::Protocol;
 use base::serde::Serialize;
-use base::tokio;
 use base::tokio::select;
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::{Semaphore, mpsc};
 use base::tokio_util::sync::CancellationToken;
+use base::tokio_util::task::TaskTracker;
 use gmv_domain::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
     RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
@@ -89,22 +89,27 @@ impl Event {
     async fn hand_event(
         rx: &mut Receiver<(Event, Option<Sender<EventRes>>)>,
         semaphore: Arc<Semaphore>,
+        tasks: &TaskTracker,
+        cancel: &CancellationToken,
     ) -> bool {
         let Some((event, tx)) = rx.recv().await else {
             return false;
         };
         match event {
             Event::Out(out) => {
-                if let Ok(permit) = semaphore
-                    .acquire_owned()
-                    .await
-                    .hand_log(|msg| error!("{msg}"))
-                {
-                    tokio::spawn(async move {
-                        Self::hand_out(out, tx).await;
-                        drop(permit);
-                    });
-                }
+                let permit = select! {
+                    permit = semaphore.acquire_owned() => {
+                        let Ok(permit) = permit.hand_log(|msg| error!("{msg}")) else {
+                            return false;
+                        };
+                        permit
+                    }
+                    _ = cancel.cancelled() => return false,
+                };
+                tasks.spawn(async move {
+                    Self::hand_out(out, tx).await;
+                    drop(permit);
+                });
             }
             Event::Active(active) => {
                 Self::hand_active(active, tx);
@@ -326,18 +331,26 @@ pub async fn schedule_event(
     cancel_token: CancellationToken,
 ) {
     let semaphore = Arc::new(Semaphore::new(MAX_WORKER_POOL));
+    let tasks = TaskTracker::new();
     loop {
         select! {
            biased; // 按编写顺序检查分支
+            _ = cancel_token.cancelled() => {break;}
             _ = on_time_schedule(&inner)=>{},
-            open = Event::hand_event(&mut event_rx,semaphore.clone()) => {
+            open = Event::hand_event(
+                &mut event_rx,
+                semaphore.clone(),
+                &tasks,
+                &cancel_token,
+            ) => {
                 if !open {
                     break;
                 }
             }
-            _ = cancel_token.cancelled() => {break;}
         }
     }
+    tasks.close();
+    tasks.wait().await;
 }
 
 #[cfg(test)]
@@ -350,7 +363,11 @@ mod tests {
         runtime.block_on(async {
             let (tx, mut rx) = mpsc::channel(1);
             drop(tx);
-            assert!(!Event::hand_event(&mut rx, Arc::new(Semaphore::new(1))).await);
+            let tasks = TaskTracker::new();
+            let cancel = CancellationToken::new();
+            assert!(
+                !Event::hand_event(&mut rx, Arc::new(Semaphore::new(1)), &tasks, &cancel).await
+            );
         });
     }
 }

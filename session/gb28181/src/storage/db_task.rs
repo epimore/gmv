@@ -10,6 +10,7 @@ use base::tokio::select;
 use base::tokio::sync::mpsc::error::TrySendError;
 use base::tokio::sync::mpsc::{self, Receiver, Sender};
 use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 
 use crate::storage::entity::{GmvDevice, GmvDeviceChannel, GmvDeviceExt};
 
@@ -85,17 +86,18 @@ impl DbTask {
     }
 }
 
-pub fn init(cancel: CancellationToken) {
+pub fn init(runtime: &GlobalRuntime, cancel: CancellationToken) -> Result<(), GlobalError> {
     if DB_TASK_TX.get().is_some() {
-        return;
+        return Ok(());
     }
 
     let (tx, rx) = mpsc::channel(DB_TASK_QUEUE_SIZE);
     if DB_TASK_TX.set(tx).is_err() {
-        return;
+        return Ok(());
     }
 
-    base::tokio::spawn(run(rx, cancel));
+    runtime.spawn("session-db-worker", run(rx, cancel))?;
+    Ok(())
 }
 
 pub fn submit(task: DbTask) {
@@ -182,25 +184,45 @@ async fn run(mut rx: Receiver<DbTask>, cancel: CancellationToken) {
         select! {
             item = rx.recv() => {
                 let Some(task) = item else {
-                    warn!("session DB worker exiting because task queue closed");
+                    error!("session DB worker exiting because task queue closed unexpectedly");
+                    GlobalRuntime::request_shutdown_with_error();
                     break;
                 };
-                match handle_task(task).await {
-                    Ok(operation) => record_db_success(
-                        operation,
-                        &mut failure_episodes[operation.index()],
-                    ),
-                    Err((operation, err)) => record_db_failure(
-                        operation,
-                        err,
-                        &mut failure_episodes[operation.index()],
-                    ),
-                }
+                process_task(task, &mut failure_episodes).await;
             }
             _ = cancel.cancelled() => {
-                warn!("session DB worker exiting after cancellation");
+                rx.close();
+                let mut drained = 0usize;
+                let mut failed = false;
+                while let Some(task) = rx.recv().await {
+                    failed |= !process_task(task, &mut failure_episodes).await;
+                    drained = drained.saturating_add(1);
+                }
+                if failed {
+                    GlobalRuntime::request_shutdown_with_error();
+                }
+                base::log::debug!(
+                    "session DB worker exited after cancellation: outcome={}, drained_tasks={drained}",
+                    if failed { "incomplete" } else { "drained" }
+                );
                 break;
             },
+        }
+    }
+}
+
+async fn process_task(
+    task: DbTask,
+    failure_episodes: &mut [FailureEpisode; DbOperation::COUNT],
+) -> bool {
+    match handle_task(task).await {
+        Ok(operation) => {
+            record_db_success(operation, &mut failure_episodes[operation.index()]);
+            true
+        }
+        Err((operation, err)) => {
+            record_db_failure(operation, err, &mut failure_episodes[operation.index()]);
+            false
         }
     }
 }

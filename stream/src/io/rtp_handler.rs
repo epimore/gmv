@@ -11,6 +11,7 @@ use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, U16BeLengthP
 use base::net::state::{CHANNEL_BUFFER_SIZE, IoEventType, Protocol, Zip};
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 use crossbeam_channel::TrySendError;
 use parking_lot::Mutex;
 use rtp_types::RtpPacket;
@@ -29,6 +30,7 @@ pub fn listen_media_server(port: u16) -> GlobalResult<(Option<TcpListener>, Opti
 }
 
 pub fn run(
+    runtime: &GlobalRuntime,
     mut tu: (Option<TcpListener>, Option<UdpSocket>),
     cancel: CancellationToken,
 ) -> GlobalResult<()> {
@@ -59,8 +61,16 @@ pub fn run(
             Arc::new(RtpReader::default()),
             Arc::new(U16BeLengthPrefixEncoder),
         )?;
-    base::tokio::spawn(write_net(output_rx, writer.clone(), cancel));
-    TalkManager::init_rtp_writer(writer, output_tx, rtp_port)
+    let writer_cancel = cancel.clone();
+    let output_writer = writer.clone();
+    runtime.spawn("stream-rtp-writer", async move {
+        write_net(output_rx, output_writer, cancel).await;
+        if !writer_cancel.is_cancelled() {
+            error!("rtp writer stopped unexpectedly");
+            GlobalRuntime::request_shutdown_with_error();
+        }
+    })?;
+    TalkManager::init_rtp_writer(runtime.clone(), writer, output_tx, rtp_port)
 }
 
 async fn write_net(

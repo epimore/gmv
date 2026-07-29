@@ -86,12 +86,11 @@ impl
         let guard = GuardConf::init_by_conf();
         let started_at_epoch_ms = now_epoch_ms();
         let (tx, rx) = mpsc::channel(100);
-        Register::init()?;
-
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
+        Register::init(&network_rt)?;
         {
             let _enter = network_rt.rt_handle.enter();
-            rtp_handler::run(tu, network_rt.cancel.clone())?;
+            rtp_handler::run(&network_rt, tu, network_rt.cancel.clone())?;
             let mut node = StreamGuardNode::new(
                 node_name,
                 generate_instance_id(),
@@ -122,8 +121,9 @@ impl
                 labels: HashMap::new(),
             };
             let control_cancel = network_rt.cancel.clone();
+            let control_shutdown = control_cancel.clone();
             let control_media_tx = tx.clone();
-            base::tokio::spawn(async move {
+            network_rt.spawn("stream-control-rpc", async move {
                 base::log::debug!(
                     "stream rpc service inbound: node_id={}, bind_addr={}, tls={}",
                     control_node_id,
@@ -145,6 +145,7 @@ impl
                             Ok(tls) => tls,
                             Err(err) => {
                                 error!("stream control RPC TLS config failed: {err}");
+                                GlobalRuntime::request_shutdown_with_error();
                                 return;
                             }
                         },
@@ -154,6 +155,7 @@ impl
                     Ok(incoming) => incoming,
                     Err(err) => {
                         error!("stream control RPC listener failed: {err}");
+                        GlobalRuntime::request_shutdown_with_error();
                         return;
                     }
                 };
@@ -161,25 +163,32 @@ impl
                     Ok(server) => server,
                     Err(err) => {
                         error!("stream control RPC server build failed: {err}");
+                        GlobalRuntime::request_shutdown_with_error();
                         return;
                     }
                 };
                 if let Err(err) = server
                     .add_service(StreamControlServer::new(rpc))
                     .serve_with_incoming_shutdown(incoming, async move {
-                        control_cancel.cancelled().await
+                        control_shutdown.cancelled().await
                     })
                     .await
                 {
                     error!("stream control RPC server stopped with error: {err}");
+                    GlobalRuntime::request_shutdown_with_error();
                 } else {
+                    if !control_cancel.is_cancelled() {
+                        error!("stream control RPC server stopped unexpectedly");
+                        GlobalRuntime::request_shutdown_with_error();
+                        return;
+                    }
                     base::log::debug!(
                         "stream rpc service outbound: node_id={}, bind_addr={}",
                         control_node_id,
                         control_addr
                     );
                 }
-            });
+            })?;
             let mut reporter = NodeReporterConfig::new(
                 node.guard_channel.clone(),
                 node.register_request(NodeResourceSnapshot::default()),
@@ -197,27 +206,56 @@ impl
                 ])
             });
             init_guard_channel(node.guard_channel.clone());
-            let (_reporter, event_sender) =
-                NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());
+            let event_sender = NodeReporter::spawn_managed_with_events(
+                &network_rt,
+                reporter,
+                network_rt.cancel.clone(),
+            )?;
             init_guard_event_sender(event_sender);
         }
-        network_rt.rt_handle.spawn(http::run(
-            http_listener,
-            self.conf.http.tls.enabled.then(|| http::HttpTlsConfig {
-                certificate_path: self.conf.http.tls.certificate_path.clone(),
-                private_key_path: self.conf.http.tls.private_key_path.clone(),
-            }),
-            tx,
-            network_rt.cancel.clone(),
-        ));
+        let http_cancel = network_rt.cancel.clone();
+        let http_shutdown = http_cancel.clone();
+        network_rt.spawn("stream-http", async move {
+            let result = http::run(
+                http_listener,
+                self.conf.http.tls.enabled.then(|| http::HttpTlsConfig {
+                    certificate_path: self.conf.http.tls.certificate_path.clone(),
+                    private_key_path: self.conf.http.tls.private_key_path.clone(),
+                }),
+                tx,
+                http_shutdown,
+            )
+            .await;
+            match result {
+                Ok(()) if http_cancel.is_cancelled() => {}
+                Ok(()) => {
+                    error!("stream HTTP service stopped unexpectedly");
+                    GlobalRuntime::request_shutdown_with_error();
+                }
+                Err(err) => {
+                    error!("stream HTTP service stopped with error: {err}");
+                    GlobalRuntime::request_shutdown_with_error();
+                }
+            }
+        })?;
 
         let compute_rt = GlobalRuntime::register_default(RuntimeType::CommonCompute)?;
-        compute_rt.rt_handle.spawn(media::handle_process(rx));
+        let dispatcher_rt = compute_rt.clone();
+        compute_rt.spawn(
+            "stream-media-dispatcher",
+            media::handle_process(rx, dispatcher_rt),
+        )?;
 
-        GlobalRuntime::order_shutdown(
-            &[RuntimeType::CommonNetwork, RuntimeType::CommonCompute],
-            |msg| info!("{msg}"),
-        );
+        let report = GlobalRuntime::order_shutdown(&[
+            RuntimeType::CommonNetwork,
+            RuntimeType::CommonCompute,
+        ]);
+        if !report.is_graceful() {
+            return Err(base::exception::GlobalError::new_sys_error(
+                "stream shutdown was incomplete",
+                |_| {},
+            ));
+        }
         Ok(())
     }
 }

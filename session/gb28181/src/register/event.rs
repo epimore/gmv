@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use base::exception::GlobalResultExt;
 use base::log::{debug, error, warn};
-use base::tokio;
 use base::tokio::select;
 use base::tokio::sync::Semaphore;
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio_util::sync::CancellationToken;
+use base::tokio_util::task::TaskTracker;
 
 use crate::gb::sip::subscription;
 use crate::register::core::{Inner, Register, TimeScheduleKey};
@@ -28,9 +28,14 @@ pub async fn schedule_event(
     cancel_token: CancellationToken,
 ) {
     let semaphore = Arc::new(Semaphore::new(MAX_WORKER_POOL));
+    let tasks = TaskTracker::new();
     loop {
         select! {
             biased;
+            _ = cancel_token.cancelled() => {
+                debug!("register scheduler task exiting after cancellation");
+                break;
+            }
             batch = Register::scheduler().next_batch(&cancel_token) => {
                 match batch {
                     Some(items) => on_time_schedule(&inner, items).await,
@@ -44,7 +49,12 @@ pub async fn schedule_event(
                     },
                 }
             }
-            open = handle_rx_event(&mut event_rx, semaphore.clone()) => {
+            open = handle_rx_event(
+                &mut event_rx,
+                semaphore.clone(),
+                &tasks,
+                &cancel_token,
+            ) => {
                 if !open {
                     if cancel_token.is_cancelled() {
                         debug!("register event channel closed during shutdown");
@@ -54,28 +64,34 @@ pub async fn schedule_event(
                     break;
                 }
             }
-            _ = cancel_token.cancelled() => {
-                debug!("register scheduler task exiting after cancellation");
-                break;
-            },
         }
     }
+    tasks.close();
+    tasks.wait().await;
 }
 
-async fn handle_rx_event(rx: &mut Receiver<Event>, semaphore: Arc<Semaphore>) -> bool {
+async fn handle_rx_event(
+    rx: &mut Receiver<Event>,
+    semaphore: Arc<Semaphore>,
+    tasks: &TaskTracker,
+    cancel: &CancellationToken,
+) -> bool {
     let Some(event) = rx.recv().await else {
         return false;
     };
-    if let Ok(permit) = semaphore
-        .acquire_owned()
-        .await
-        .hand_log(|msg| error!("{msg}"))
-    {
-        tokio::spawn(async move {
-            let _permit = permit;
-            hand_event(event).await;
-        });
-    }
+    let permit = select! {
+        permit = semaphore.acquire_owned() => {
+            let Ok(permit) = permit.hand_log(|msg| error!("{msg}")) else {
+                return false;
+            };
+            permit
+        }
+        _ = cancel.cancelled() => return false,
+    };
+    tasks.spawn(async move {
+        let _permit = permit;
+        hand_event(event).await;
+    });
     true
 }
 
@@ -154,9 +170,11 @@ async fn on_time_schedule(
 
 #[cfg(test)]
 mod tests {
-    use super::handle_rx_event;
+    use super::{Event, handle_rx_event};
     use base::tokio::runtime::Builder;
     use base::tokio::sync::{Semaphore, mpsc};
+    use base::tokio_util::sync::CancellationToken;
+    use base::tokio_util::task::TaskTracker;
     use std::sync::Arc;
 
     #[test]
@@ -168,8 +186,31 @@ mod tests {
             .block_on(async {
                 let (tx, mut rx) = mpsc::channel(1);
                 drop(tx);
+                let tasks = TaskTracker::new();
+                let cancel = CancellationToken::new();
 
-                assert!(!handle_rx_event(&mut rx, Arc::new(Semaphore::new(1))).await);
+                assert!(
+                    !handle_rx_event(&mut rx, Arc::new(Semaphore::new(1)), &tasks, &cancel,).await
+                );
+            });
+    }
+
+    #[test]
+    fn cancellation_interrupts_event_worker_backpressure() {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let semaphore = Arc::new(Semaphore::new(1));
+                let _permit = semaphore.clone().acquire_owned().await.expect("permit");
+                let (tx, mut rx) = mpsc::channel(1);
+                tx.send(Event::OutSession(1)).await.expect("event");
+                let tasks = TaskTracker::new();
+                let cancel = CancellationToken::new();
+                cancel.cancel();
+
+                assert!(!handle_rx_event(&mut rx, semaphore, &tasks, &cancel).await);
             });
     }
 }

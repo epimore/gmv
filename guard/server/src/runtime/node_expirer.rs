@@ -1,13 +1,23 @@
 use std::time::Duration;
 
 use crate::registry::RegistryService;
+use base::exception::GlobalResult;
+use base::utils::rt::GlobalRuntime;
 
-pub fn spawn(registry: RegistryService, timeout_ms: u64) -> base::tokio::task::JoinHandle<()> {
-    base::tokio::spawn(async move {
+pub fn spawn(
+    runtime: &GlobalRuntime,
+    registry: RegistryService,
+    timeout_ms: u64,
+) -> GlobalResult<base::tokio::task::JoinHandle<()>> {
+    let cancel = runtime.cancel.clone();
+    runtime.spawn("guard-node-expirer", async move {
         let interval_ms = 1_000;
         let mut interval = base::tokio::time::interval(Duration::from_millis(interval_ms));
         loop {
-            interval.tick().await;
+            base::tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             let expired = registry.expire_stale(now_ms(), timeout_ms);
             if !expired.is_empty() {
                 base::log::warn!("Guard marked stale nodes offline: {}", expired.join(","));
@@ -50,7 +60,10 @@ mod tests {
                         config: Default::default(),
                     })
                     .unwrap();
-                let handle = spawn(registry, 10);
+                let runtime =
+                    GlobalRuntime::register_default(base::utils::rt::RuntimeType::CommonNetwork)
+                        .unwrap();
+                let handle = spawn(&runtime, registry, 10).unwrap();
                 base::tokio::time::sleep(Duration::from_millis(1_100)).await;
                 handle.abort();
                 let node = store.get_node("stream-expire").unwrap();

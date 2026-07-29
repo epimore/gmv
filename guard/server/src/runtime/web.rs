@@ -8,6 +8,7 @@ use crate::auth::AuthState;
 use crate::core::{GuardError, GuardResult};
 use crate::runtime::application_router;
 use crate::runtime::event_forwarder::EventForwarder;
+use base::tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct WebTlsConfig {
@@ -82,7 +83,8 @@ pub async fn serve(
     mqtt_runtime_protocol_version: String,
     mqtt_runtime_enabled: bool,
     event_forwarder: Option<EventForwarder>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    cancel: CancellationToken,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     config.validate()?;
     base::log::debug!(
         "guard http service inbound: bind_addr={}, tls={}",
@@ -106,6 +108,12 @@ pub async fn serve(
         config.ui_dist_dir.clone(),
     );
     listener.set_nonblocking(true)?;
+    let handle = axum_server::Handle::new();
+    let shutdown = handle.clone();
+    base::tokio::spawn(async move {
+        cancel.cancelled().await;
+        shutdown.graceful_shutdown(None);
+    });
     if let Some(tls) = config.tls {
         let rustls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
             tls.certificate_path,
@@ -113,10 +121,12 @@ pub async fn serve(
         )
         .await?;
         axum_server::from_tcp_rustls(listener, rustls)?
+            .handle(handle)
             .serve(app.into_make_service())
             .await?;
     } else {
         axum_server::from_tcp(listener)?
+            .handle(handle)
             .serve(app.into_make_service())
             .await?;
     }

@@ -4,6 +4,7 @@ use std::pin::Pin;
 
 use base::futures::Stream;
 use base::tokio::sync::mpsc;
+use base::tokio_util::sync::CancellationToken;
 use gmv_protocol::common::v1::{
     Endpoint as ProtoEndpoint, EndpointMode as ProtoEndpointMode, NodeIdentity as ProtoIdentity,
     NodeKind as ProtoNodeKind,
@@ -289,7 +290,8 @@ pub async fn serve(
     store: InMemoryGuardStore,
     auth: AuthState,
     forwarder: Option<EventForwarder>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    cancel: CancellationToken,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     base::log::debug!(
         "guard rpc service inbound: bind_addr={}, tls={}",
         config.bind_addr,
@@ -317,7 +319,7 @@ pub async fn serve(
     base_rpc::build_server(&server_config)?
         .add_service(GuardNodeControlServer::new(node_service))
         .add_service(GuardControlServer::new(control_service))
-        .serve_with_incoming(incoming)
+        .serve_with_incoming_shutdown(incoming, async move { cancel.cancelled().await })
         .await?;
     base::log::debug!("guard rpc service outbound: bind_addr={}", config.bind_addr);
     Ok(())

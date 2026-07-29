@@ -118,11 +118,11 @@ impl
         let started_at_epoch_ms = now_epoch_ms();
         let (http_listener, tu, grpc_listener) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
-        let service_cancel = network_rt.cancel.clone();
-        let service_task = network_rt.rt_handle.spawn(async move {
-            if let Err(err) = SessionConf::run(tu, network_rt.cancel.clone()).await {
+        let service_rt = network_rt.clone();
+        network_rt.spawn("session-service", async move {
+            if let Err(err) = SessionConf::run(tu, &service_rt).await {
                 error!("GB28181 session initialization failed: {err}");
-                network_rt.cancel.cancel();
+                GlobalRuntime::request_shutdown_with_error();
                 return;
             }
             let mut node = SessionGuardNode::new(
@@ -142,8 +142,9 @@ impl
             let control_identity = node.identity.clone();
             let control_node_id = control_identity.node_id.clone();
             let control_addr = grpc.addr;
-            let control_cancel = network_rt.cancel.clone();
-            base::tokio::spawn(async move {
+            let control_cancel = service_rt.cancel.clone();
+            let control_shutdown = control_cancel.clone();
+            if let Err(err) = service_rt.spawn("session-control-rpc", async move {
                 base::log::debug!(
                     "session rpc service inbound: node_id={}, bind_addr={}, tls={}",
                     control_node_id,
@@ -162,6 +163,7 @@ impl
                             Ok(tls) => tls,
                             Err(err) => {
                                 error!("session control RPC TLS config failed: {err}");
+                                GlobalRuntime::request_shutdown_with_error();
                                 return;
                             }
                         },
@@ -171,6 +173,7 @@ impl
                     Ok(incoming) => incoming,
                     Err(err) => {
                         error!("session control RPC listener failed: {err}");
+                        GlobalRuntime::request_shutdown_with_error();
                         return;
                     }
                 };
@@ -178,6 +181,7 @@ impl
                     Ok(server) => server,
                     Err(err) => {
                         error!("session control RPC server build failed: {err}");
+                        GlobalRuntime::request_shutdown_with_error();
                         return;
                     }
                 };
@@ -185,19 +189,29 @@ impl
                     .add_service(SessionControlServer::new(rpc))
                     .add_service(SessionHookServer::new(SessionHookRpc))
                     .serve_with_incoming_shutdown(incoming, async move {
-                        control_cancel.cancelled().await
+                        control_shutdown.cancelled().await
                     })
                     .await
                 {
                     error!("session control RPC server stopped with error: {err}");
+                    GlobalRuntime::request_shutdown_with_error();
                 } else {
+                    if !control_cancel.is_cancelled() {
+                        error!("session control RPC server stopped unexpectedly");
+                        GlobalRuntime::request_shutdown_with_error();
+                        return;
+                    }
                     base::log::debug!(
                         "session rpc service outbound: node_id={}, bind_addr={}",
                         control_node_id,
                         control_addr
                     );
                 }
-            });
+            }) {
+                error!("spawn session control RPC task failed: {err}");
+                GlobalRuntime::request_shutdown_with_error();
+                return;
+            }
             let mut reporter = NodeReporterConfig::new(
                 node.guard_channel.clone(),
                 node.register_request(NodeResourceSnapshot::default()),
@@ -220,42 +234,46 @@ impl
                     ),
                 ])
             });
-            let (_reporter, event_sender) =
-                NodeReporter::spawn_with_events(reporter, network_rt.cancel.clone());
+            let event_sender = match NodeReporter::spawn_managed_with_events(
+                &service_rt,
+                reporter,
+                service_rt.cancel.clone(),
+            ) {
+                Ok(started) => started,
+                Err(err) => {
+                    error!("spawn session node reporter failed: {err}");
+                    GlobalRuntime::request_shutdown_with_error();
+                    return;
+                }
+            };
             init_guard_event_sender(event_sender);
             if let Some(http_listener) = http_listener {
-                match http.run(http_listener, network_rt.cancel.clone()).await {
-                    Ok(()) => base::log::debug!(
-                        "HTTP service returned; cancellation_requested={}",
-                        network_rt.cancel.is_cancelled()
-                    ),
+                match http.run(http_listener, service_rt.cancel.clone()).await {
+                    Ok(()) if service_rt.cancel.is_cancelled() => {
+                        base::log::debug!("HTTP service returned after cancellation")
+                    }
+                    Ok(()) => {
+                        error!("HTTP service stopped unexpectedly");
+                        GlobalRuntime::request_shutdown_with_error();
+                    }
                     Err(err) => {
                         error!("HTTP service stopped with error: {err}");
-                        network_rt.cancel.cancel();
+                        GlobalRuntime::request_shutdown_with_error();
                     }
                 }
             } else {
                 warn!("HTTP service disabled by configuration");
-                network_rt.cancel.cancelled().await;
+                service_rt.cancel.cancelled().await;
             }
             base::log::debug!("session network task exited");
-        });
-        network_rt.rt_handle.spawn(async move {
-            match service_task.await {
-                Ok(()) => base::log::debug!(
-                    "session network task completed; cancellation_requested={}",
-                    service_cancel.is_cancelled()
-                ),
-                Err(err) if err.is_cancelled() && service_cancel.is_cancelled() => {
-                    base::log::debug!("session network task cancelled during shutdown")
-                }
-                Err(err) => error!(
-                    "session network task terminated unexpectedly: cancelled={}, panic={}, err={err}",
-                    err.is_cancelled(), err.is_panic()
-                ),
-            }
-        });
-        GlobalRuntime::order_shutdown(&[RuntimeType::CommonNetwork], |msg| info!("{msg}"));
+        })?;
+        let report = GlobalRuntime::order_shutdown(&[RuntimeType::CommonNetwork]);
+        if !report.is_graceful() {
+            return Err(base::exception::GlobalError::new_sys_error(
+                "session shutdown was incomplete",
+                |_| {},
+            ));
+        }
         Ok(())
     }
 }

@@ -19,6 +19,7 @@ use base::tokio::sync::mpsc;
 use base::tokio::sync::mpsc::error::TrySendError;
 use base::tokio::time::{self, Instant, MissedTickBehavior};
 use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 use gmv_domain::info::obj::{
     TALK_INPUT_PREFIX, TalkAnswerReq, TalkClosedEvent, TalkOpenReq, TalkOpenResp,
 };
@@ -38,6 +39,7 @@ static RTP_IO: OnceCell<RtpIo> = OnceCell::new();
 static TALK_SESSIONS: Lazy<DashMap<String, TalkSession>> = Lazy::new(DashMap::new);
 
 struct RtpIo {
+    runtime: GlobalRuntime,
     writer: PacketWriter<U16BeLengthPrefixEncoder>,
     output_tx: mpsc::Sender<Zip>,
     rtp_port: u16,
@@ -67,12 +69,14 @@ pub struct TalkManager;
 
 impl TalkManager {
     pub fn init_rtp_writer(
+        runtime: GlobalRuntime,
         writer: PacketWriter<U16BeLengthPrefixEncoder>,
         output_tx: mpsc::Sender<Zip>,
         rtp_port: u16,
     ) -> GlobalResult<()> {
         RTP_IO
             .set(RtpIo {
+                runtime,
                 writer,
                 output_tx,
                 rtp_port,
@@ -91,12 +95,13 @@ impl TalkManager {
 
         let rtp_io = rtp_io()?;
         let rtp_port = rtp_io.rtp_port;
+        let runtime = rtp_io.runtime.clone();
         let writer = rtp_io.writer.clone();
         let output_tx = rtp_io.output_tx.clone();
         let (input_tx, input_rx) = mpsc::channel(TALK_INPUT_QUEUE_SIZE);
         let payload_type = Arc::new(AtomicU8::new(req.payload_type));
         let target = Arc::new(Mutex::new(None));
-        let cancel = CancellationToken::new();
+        let cancel = runtime.cancel.child_token();
         let input_timeout =
             Duration::from_secs(u64::from(StreamConf::init_by_conf().in_wait_timeout));
 
@@ -122,19 +127,26 @@ impl TalkManager {
             )),
             Entry::Vacant(vac) => {
                 vac.insert(session);
-                base::tokio::spawn(run_rtp_sender(
-                    req.talk_id.clone(),
-                    req.ssrc,
-                    req.sample_rate,
-                    req.frame_duration_ms,
-                    input_timeout,
-                    payload_type,
-                    target,
-                    writer,
-                    output_tx,
-                    input_rx,
-                    cancel,
-                ));
+                let talk_id = req.talk_id.clone();
+                if let Err(err) = runtime.spawn(
+                    "stream-talk-sender",
+                    run_rtp_sender(
+                        req.talk_id.clone(),
+                        req.ssrc,
+                        req.sample_rate,
+                        req.frame_duration_ms,
+                        input_timeout,
+                        payload_type,
+                        target,
+                        writer,
+                        output_tx,
+                        input_rx,
+                        cancel,
+                    ),
+                ) {
+                    TALK_SESSIONS.remove(&talk_id);
+                    return Err(err);
+                }
                 Ok(TalkOpenResp {
                     talk_id: req.talk_id.clone(),
                     input_url: build_input_url(&req.talk_id),

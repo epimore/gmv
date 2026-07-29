@@ -309,6 +309,15 @@ impl PersistentStore {
             Self::Sqlite(store) => OutboxRepository::from(store.clone()),
         }
     }
+
+    pub async fn close(&self) {
+        match self {
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => store.pool().close().await,
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => store.pool().close().await,
+        }
+    }
 }
 
 #[cfg(feature = "db-mysql")]

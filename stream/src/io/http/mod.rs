@@ -8,7 +8,6 @@ use base::tokio::sync::mpsc::Sender;
 use base::tokio_util::sync::CancellationToken;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 mod api;
 pub mod call;
@@ -41,7 +40,7 @@ pub async fn run(
     let shutdown = handle.clone();
     base::tokio::spawn(async move {
         cancel_token.cancelled().await;
-        shutdown.graceful_shutdown(Some(Duration::from_secs(10)));
+        shutdown.graceful_shutdown(None);
     });
     let result = if let Some(tls) = tls {
         let rustls = axum_server::tls_rustls::RustlsConfig::from_pem_file(

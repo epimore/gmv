@@ -5,7 +5,7 @@ use std::sync::Arc;
 use avai::guard_integration::{AvaiControlAdapter, AvaiControlRpc, AvaiGuardNode};
 use base::cfg_lib::conf;
 use base::serde::Deserialize;
-use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::{GlobalRuntime, RuntimeType};
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::avai::v1::avai_control_server::AvaiControlServer;
 
@@ -55,54 +55,73 @@ fn default_capabilities() -> Vec<String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    base::tokio::runtime::Runtime::new()?.block_on(async {
-        let guard = GuardConf::conf();
-        let server = ServerConf::conf();
-        let capabilities = server.capabilities.clone();
-        let mut node = AvaiGuardNode::new(
-            server.node_id,
-            generate_instance_id(),
-            server.host,
-            guard.endpoint,
-            u32::from(server.grpc_port),
-            capabilities.clone(),
-        );
-        node.started_at_epoch_ms = now_epoch_ms();
-        let adapter = AvaiControlAdapter::new(node.identity.clone(), capabilities);
-        let snapshot = adapter.resource_snapshot();
-        let rpc = AvaiControlRpc::new(adapter);
-        let metrics_rpc = rpc.clone();
-        let mut reporter =
-            NodeReporterConfig::new(node.guard_channel.clone(), node.register_request(snapshot));
-        reporter.business_metrics = Arc::new(move || {
-            HashMap::from([(
-                "running_tasks".to_string(),
-                metrics_rpc.running_task_count().to_string(),
-            )])
-        });
-        let cancel = CancellationToken::new();
-        let reporter_task = NodeReporter::spawn(reporter, cancel.clone());
-        let address: SocketAddr = format!("0.0.0.0:{}", server.grpc_port).parse()?;
-        let shutdown = cancel.clone();
-        base::log::debug!(
-            "avai rpc service inbound: node_id={}, bind_addr={}",
-            node.identity.node_id,
-            address
-        );
-        let server = tonic::transport::Server::builder()
-            .add_service(AvaiControlServer::new(rpc))
-            .serve_with_shutdown(address, async move { shutdown.cancelled().await });
-        base::tokio::select! {
-            result = server => {
-                result?;
-                base::log::debug!("avai rpc service outbound: bind_addr={address}");
-            },
-            _ = base::tokio::signal::ctrl_c() => cancel.cancel(),
+    let runtime = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
+    let service_runtime = runtime.clone();
+    runtime.spawn("avai-service", async move {
+        if let Err(err) = run_service(service_runtime).await {
+            base::log::error!("avai runtime failed: {err}");
+            GlobalRuntime::request_shutdown_with_error();
         }
-        cancel.cancel();
-        let _ = reporter_task.await;
-        Ok(())
-    })
+    })?;
+    let report = GlobalRuntime::order_shutdown(&[RuntimeType::CommonNetwork]);
+    if !report.is_graceful() {
+        return Err(std::io::Error::other("avai shutdown was incomplete").into());
+    }
+    Ok(())
+}
+
+async fn run_service(
+    runtime: GlobalRuntime,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let guard = GuardConf::conf();
+    let server = ServerConf::conf();
+    let capabilities = server.capabilities.clone();
+    let mut node = AvaiGuardNode::new(
+        server.node_id,
+        generate_instance_id(),
+        server.host,
+        guard.endpoint,
+        u32::from(server.grpc_port),
+        capabilities.clone(),
+    );
+    node.started_at_epoch_ms = now_epoch_ms();
+    let adapter = AvaiControlAdapter::new(node.identity.clone(), capabilities);
+    let snapshot = adapter.resource_snapshot();
+    let rpc = AvaiControlRpc::new(adapter);
+    let metrics_rpc = rpc.clone();
+    let mut reporter =
+        NodeReporterConfig::new(node.guard_channel.clone(), node.register_request(snapshot));
+    reporter.business_metrics = Arc::new(move || {
+        HashMap::from([(
+            "running_tasks".to_string(),
+            metrics_rpc.running_task_count().to_string(),
+        )])
+    });
+    let cancel = runtime.cancel.clone();
+    NodeReporter::spawn_managed(&runtime, reporter, cancel.clone())?;
+    let address: SocketAddr = format!("0.0.0.0:{}", server.grpc_port).parse()?;
+    let shutdown = cancel.clone();
+    base::log::debug!(
+        "avai rpc service inbound: node_id={}, bind_addr={}",
+        node.identity.node_id,
+        address
+    );
+    let result = tonic::transport::Server::builder()
+        .add_service(AvaiControlServer::new(rpc))
+        .serve_with_shutdown(address, async move { shutdown.cancelled().await })
+        .await;
+    match result {
+        Ok(()) if cancel.is_cancelled() => {
+            base::log::debug!("avai rpc service outbound: bind_addr={address}");
+            Ok(())
+        }
+        Ok(()) => {
+            base::log::error!("avai RPC server stopped unexpectedly");
+            GlobalRuntime::request_shutdown_with_error();
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()

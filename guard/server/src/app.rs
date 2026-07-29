@@ -5,10 +5,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{error, info, warn};
+use base::log::{debug, error, info, warn};
 use base::logger;
 use base::logger::episode::{EpisodeDecision, FailureEpisode};
-use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::{GlobalRuntime, RuntimeType};
 use sha2::{Digest, Sha256};
 
 use crate::api::v2::ApiV2;
@@ -75,19 +75,21 @@ impl Daemon<GuardListeners> for AppInfo {
     }
 
     fn run_app(self, listeners: GuardListeners) -> GlobalResult<()> {
-        let runtime = base::tokio::runtime::Runtime::new().map_err(|err| {
-            GlobalError::new_sys_error(
-                &format!("create Guard tokio runtime failed: {err}"),
-                |msg| error!("{msg}"),
-            )
+        let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
+        let service_rt = network_rt.clone();
+        network_rt.spawn("guard-service", async move {
+            if let Err(err) = start_guard(self.config, listeners, service_rt).await {
+                error!("Guard runtime failed: {err}");
+                GlobalRuntime::request_shutdown_with_error();
+            }
         })?;
-        runtime
-            .block_on(start_guard(self.config, listeners))
-            .map_err(|err| {
-                GlobalError::new_sys_error(&format!("Guard runtime failed: {err}"), |msg| {
-                    error!("{msg}")
-                })
-            })?;
+        let report = GlobalRuntime::order_shutdown(&[RuntimeType::CommonNetwork]);
+        if !report.is_graceful() {
+            return Err(GlobalError::new_sys_error(
+                "Guard shutdown was incomplete",
+                |_| {},
+            ));
+        }
         Ok(())
     }
 }
@@ -95,7 +97,8 @@ impl Daemon<GuardListeners> for AppInfo {
 pub async fn start_guard(
     config: GuardAppConfig,
     listeners: GuardListeners,
-) -> Result<(), Box<dyn std::error::Error>> {
+    runtime: GlobalRuntime,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let web_config = WebServerConfig::from_app(&config)?;
     let persistent = PersistentStore::connect(&config).await?;
     persistent.initialize(&config).await?;
@@ -178,19 +181,23 @@ pub async fn start_guard(
             private_key_path: config.grpc.tls.private_key_path.clone(),
         }),
     };
-    let _node_expirer = node_expirer::spawn(registry.clone(), config.grpc.heartbeat_timeout_ms);
+    let mut background_tasks = vec![(
+        "node-expirer",
+        node_expirer::spawn(&runtime, registry.clone(), config.grpc.heartbeat_timeout_ms)?,
+    )];
     let mqtt_publisher = if config.integrations.mqtt.enabled {
-        Some(
-            spawn_mqtt_runtime(
-                &config,
-                &persistent,
-                operations.clone(),
-                api_store.clone(),
-                auth.clone(),
-                &integration_repository,
-            )
-            .await?,
+        let (publisher, task) = spawn_mqtt_runtime(
+            &runtime,
+            &config,
+            &persistent,
+            operations.clone(),
+            api_store.clone(),
+            auth.clone(),
+            &integration_repository,
         )
+        .await?;
+        background_tasks.push(("mqtt-runtime", task));
+        Some(publisher)
     } else {
         None
     };
@@ -213,7 +220,10 @@ pub async fn start_guard(
             .with_integrations(integration_repository.clone()),
     );
     if let Some(forwarder) = event_forwarder.clone() {
-        spawn_integration_playback_renewal(api_store.clone(), forwarder);
+        background_tasks.push((
+            "playback-renewal",
+            spawn_integration_playback_renewal(&runtime, api_store.clone(), forwarder)?,
+        ));
     }
     let mut delivery = DeliveryRouter::default();
     if let Some(publisher) = mqtt_publisher {
@@ -231,7 +241,10 @@ pub async fn start_guard(
             )),
         );
     }
-    spawn_outbox_worker(persistent.outbox_repository(), delivery);
+    background_tasks.push((
+        "outbox-worker",
+        spawn_outbox_worker(&runtime, persistent.outbox_repository(), delivery)?,
+    ));
     let web = web::serve(
         web_config,
         listeners.web,
@@ -244,6 +257,7 @@ pub async fn start_guard(
         config.integrations.mqtt.protocol_version.clone(),
         config.integrations.mqtt.enabled,
         event_forwarder.clone(),
+        runtime.cancel.clone(),
     );
     let rpc = node_rpc::serve(
         rpc_config,
@@ -252,18 +266,58 @@ pub async fn start_guard(
         api_store.clone(),
         auth,
         event_forwarder,
+        runtime.cancel.clone(),
     );
-    base::tokio::try_join!(web, rpc).map(|_| ())
+    let web_cancel = runtime.cancel.clone();
+    let web = async {
+        let result = web.await;
+        if result.is_err() {
+            GlobalRuntime::request_shutdown_with_error();
+        } else if !web_cancel.is_cancelled() {
+            error!("Guard HTTP server stopped unexpectedly");
+            GlobalRuntime::request_shutdown_with_error();
+        }
+        result
+    };
+    let rpc_cancel = runtime.cancel.clone();
+    let rpc = async {
+        let result = rpc.await;
+        if result.is_err() {
+            GlobalRuntime::request_shutdown_with_error();
+        } else if !rpc_cancel.is_cancelled() {
+            error!("Guard RPC server stopped unexpectedly");
+            GlobalRuntime::request_shutdown_with_error();
+        }
+        result
+    };
+    let (web_result, rpc_result) = base::tokio::join!(web, rpc);
+    for (name, task) in background_tasks {
+        match task.await {
+            Ok(()) => debug!("Guard background task completed: task={name}"),
+            Err(err) if err.is_cancelled() && runtime.cancel.is_cancelled() => {
+                debug!("Guard background task cancelled during shutdown: task={name}")
+            }
+            Err(err) => error!("Guard background task failed: task={name}, reason={err}"),
+        }
+    }
+    persistent.close().await;
+    web_result?;
+    rpc_result?;
+    Ok(())
 }
 
 async fn spawn_mqtt_runtime(
+    managed_runtime: &GlobalRuntime,
     config: &GuardAppConfig,
     persistent: &PersistentStore,
     operations: OperationService,
     store: InMemoryGuardStore,
     auth: AuthState,
     integrations: &crate::store::persistent::IntegrationRepository,
-) -> GuardResult<crate::mqttc::MqttPublisher> {
+) -> GuardResult<(
+    crate::mqttc::MqttPublisher,
+    base::tokio::task::JoinHandle<()>,
+)> {
     let mqtt = &config.integrations.mqtt;
     let runtime = MqttRuntime::new(MqttClientConfig {
         protocol_version: MqttProtocolVersion::parse(&mqtt.protocol_version)?,
@@ -330,8 +384,9 @@ async fn spawn_mqtt_runtime(
     let executor = MqttCommandExecutor::new(operations, store)
         .with_auth(auth)
         .with_result_outbox(persistent.outbox_repository(), result_topics);
-    let cancel = CancellationToken::new();
-    base::tokio::spawn(async move {
+    let cancel = managed_runtime.cancel.clone();
+    let shutdown = cancel.clone();
+    let task = managed_runtime.spawn("guard-mqtt-runtime", async move {
         let result = if topics.is_empty() {
             runtime.run(cancel).await
         } else {
@@ -340,13 +395,21 @@ async fn spawn_mqtt_runtime(
                 .await
         };
         if let Err(error) = result {
-            warn!("MQTT runtime stopped: {error}");
+            error!("MQTT runtime stopped: {error}");
+            GlobalRuntime::request_shutdown_with_error();
+        } else if !shutdown.is_cancelled() {
+            error!("MQTT runtime stopped unexpectedly");
+            GlobalRuntime::request_shutdown_with_error();
         }
-    });
-    Ok(publisher)
+    })?;
+    Ok((publisher, task))
 }
 
-fn spawn_outbox_worker(repository: crate::outbox::OutboxRepository, delivery: DeliveryRouter) {
+fn spawn_outbox_worker(
+    runtime: &GlobalRuntime,
+    repository: crate::outbox::OutboxRepository,
+    delivery: DeliveryRouter,
+) -> GlobalResult<base::tokio::task::JoinHandle<()>> {
     let worker = OutboxWorker::new(
         repository,
         Arc::new(delivery),
@@ -354,7 +417,8 @@ fn spawn_outbox_worker(repository: crate::outbox::OutboxRepository, delivery: De
         100,
     )
     .with_delete_delivered(true);
-    base::tokio::spawn(async move {
+    let cancel = runtime.cancel.clone();
+    runtime.spawn("guard-outbox-worker", async move {
         let mut failure_episode = FailureEpisode::default();
         loop {
             match worker.run_once(now_ms().unwrap_or_default()).await {
@@ -386,13 +450,21 @@ fn spawn_outbox_worker(repository: crate::outbox::OutboxRepository, delivery: De
                     EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
                 },
             }
-            base::tokio::time::sleep(Duration::from_secs(2)).await;
+            base::tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = base::tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
         }
-    });
+    })
 }
 
-fn spawn_integration_playback_renewal(store: InMemoryGuardStore, forwarder: EventForwarder) {
-    base::tokio::spawn(async move {
+fn spawn_integration_playback_renewal(
+    runtime: &GlobalRuntime,
+    store: InMemoryGuardStore,
+    forwarder: EventForwarder,
+) -> GlobalResult<base::tokio::task::JoinHandle<()>> {
+    let cancel = runtime.cancel.clone();
+    runtime.spawn("guard-playback-renewal", async move {
         loop {
             let now = now_ms().unwrap_or_default();
             for ticket in
@@ -434,9 +506,12 @@ fn spawn_integration_playback_renewal(store: InMemoryGuardStore, forwarder: Even
                     );
                 }
             }
-            base::tokio::time::sleep(Duration::from_secs(5)).await;
+            base::tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = base::tokio::time::sleep(Duration::from_secs(5)) => {}
+            }
         }
-    });
+    })
 }
 
 fn now_ms() -> GuardResult<i64> {

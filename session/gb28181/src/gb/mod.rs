@@ -7,8 +7,8 @@ use base::log::error;
 use base::log::{info, warn};
 use base::net;
 use base::serde::Deserialize;
-use base::tokio::runtime::Handle;
 use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 use gmv_pjsip::{SipRuntimeSockets, SipTransportProtocol};
 use regex::Regex;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
@@ -77,10 +77,11 @@ impl SessionConf {
 
     pub async fn run(
         tu: (Option<std::net::TcpListener>, Option<UdpSocket>),
-        cancel_token: CancellationToken,
+        runtime: &GlobalRuntime,
     ) -> GlobalResult<()> {
+        let cancel_token = runtime.cancel.clone();
         crate::storage::db::initialize().await?;
-        db_task::init(cancel_token.child_token());
+        db_task::init(runtime, cancel_token.child_token())?;
         let session_conf = SessionConf::get_session_by_conf();
         crate::storage::ssrc_sequence::SsrcSequence::initialize(&session_conf.domain_id).await?;
         let auth_cache = sip::auth::init_global().await?;
@@ -99,23 +100,36 @@ impl SessionConf {
         )?;
         let native_runtime = native_service.handle();
         native_runtime.install_global()?;
-        Register::init(cancel_token.child_token())?;
+        Register::init(runtime, cancel_token.child_token())?;
         install_restart_recovery_sources(&native_runtime).await?;
         crate::service::dialog_recovery::run_startup_recovery().await?;
-        let handle = Handle::current();
-        handle.spawn(crate::service::dialog_recovery::run_reconciliation(
-            cancel_token.child_token(),
-        ));
-        handle.spawn(crate::service::dialog_recovery::run_history_retention(
-            cancel_token.child_token(),
-        ));
-        handle.spawn(sip::auth::run_cleanup_task(cancel_token.child_token()));
-        handle.spawn(sip::run_cleanup_task(cancel_token.child_token()));
+        runtime.spawn(
+            "session-dialog-reconciliation",
+            crate::service::dialog_recovery::run_reconciliation(cancel_token.child_token()),
+        )?;
+        runtime.spawn(
+            "session-dialog-history-retention",
+            crate::service::dialog_recovery::run_history_retention(cancel_token.child_token()),
+        )?;
+        runtime.spawn(
+            "session-auth-cleanup",
+            sip::auth::run_cleanup_task(cancel_token.child_token()),
+        )?;
+        runtime.spawn(
+            "session-sip-cleanup",
+            sip::run_cleanup_task(cancel_token.child_token()),
+        )?;
         let native_shutdown = cancel_token.child_token();
-        handle.spawn(async move {
+        runtime.spawn("session-native-sip-shutdown", async move {
             native_shutdown.cancelled().await;
-            native_service.shutdown();
-        });
+            match base::tokio::task::spawn_blocking(move || native_service.shutdown()).await {
+                Ok(()) => base::log::debug!("native SIP shutdown task completed"),
+                Err(err) => {
+                    base::log::error!("native SIP shutdown task failed: {err}");
+                    GlobalRuntime::request_shutdown_with_error();
+                }
+            }
+        })?;
         Ok(())
     }
 }

@@ -6,6 +6,7 @@ use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::tokio::sync::mpsc;
 use base::tokio::task::JoinHandle;
 use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 
 use base_rpc::{RpcChannelConfig, connect_channel};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
@@ -88,75 +89,94 @@ impl NodeReporter {
         config: NodeReporterConfig,
         cancel: CancellationToken,
     ) -> (JoinHandle<()>, NodeEventSender) {
-        let (event_tx, mut event_rx) = mpsc::channel(128);
+        let (event_tx, event_rx) = mpsc::channel(128);
         let sender = NodeEventSender { tx: event_tx };
-        let handle = base::tokio::spawn(async move {
-            let mut sequence = 0u64;
-            let mut collector = HostMetricsCollector::new();
-            let mut connection_episode = FailureEpisode::default();
-            while !cancel.is_cancelled() {
-                let result = run_connection(
-                    &config,
-                    &cancel,
-                    &mut collector,
-                    &mut sequence,
-                    &mut event_rx,
-                    &mut connection_episode,
-                )
-                .await;
-                if cancel.is_cancelled() {
-                    base::log::trace!(
-                        "node reporter control stream ended: outcome=local_cancelled"
-                    );
-                    break;
-                }
-                match result {
-                    Ok(ControlStreamEnd::LocalCancelled) => {
-                        base::log::trace!(
-                            "node reporter control stream ended: outcome=local_cancelled"
-                        );
-                        break;
-                    }
-                    Ok(ControlStreamEnd::RemoteEof) => {
-                        record_connection_failure(
-                            &mut connection_episode,
-                            "remote_eof",
-                            None,
-                            None,
-                        );
-                    }
-                    Ok(ControlStreamEnd::TransportError(code)) => {
-                        record_connection_failure(
-                            &mut connection_episode,
-                            "transport_error",
-                            Some(code),
-                            None,
-                        );
-                    }
-                    Ok(ControlStreamEnd::OutputReceiverDropped) => {
-                        record_connection_failure(
-                            &mut connection_episode,
-                            "output_receiver_dropped",
-                            None,
-                            None,
-                        );
-                    }
-                    Err(error) => {
-                        record_connection_failure(
-                            &mut connection_episode,
-                            "connection_error",
-                            None,
-                            Some(error.as_ref()),
-                        );
-                    }
-                }
-                base::tokio::select! {
-                    _ = base::tokio::time::sleep(config.reconnect_delay) => {}
-                    _ = cancel.cancelled() => break,
-                }
-            }
-        });
+        let handle = base::tokio::spawn(run_reporter(config, cancel, event_rx));
         (handle, sender)
+    }
+
+    pub fn spawn_managed(
+        runtime: &GlobalRuntime,
+        config: NodeReporterConfig,
+        cancel: CancellationToken,
+    ) -> base::exception::GlobalResult<()> {
+        let (event_tx, event_rx) = mpsc::channel(128);
+        drop(event_tx);
+        drop(runtime.spawn("node-reporter", run_reporter(config, cancel, event_rx))?);
+        Ok(())
+    }
+
+    pub fn spawn_managed_with_events(
+        runtime: &GlobalRuntime,
+        config: NodeReporterConfig,
+        cancel: CancellationToken,
+    ) -> base::exception::GlobalResult<NodeEventSender> {
+        let (event_tx, event_rx) = mpsc::channel(128);
+        let sender = NodeEventSender { tx: event_tx };
+        drop(runtime.spawn("node-reporter", run_reporter(config, cancel, event_rx))?);
+        Ok(sender)
+    }
+}
+
+async fn run_reporter(
+    config: NodeReporterConfig,
+    cancel: CancellationToken,
+    mut event_rx: mpsc::Receiver<NodeEvent>,
+) {
+    let mut sequence = 0u64;
+    let mut collector = HostMetricsCollector::new();
+    let mut connection_episode = FailureEpisode::default();
+    while !cancel.is_cancelled() {
+        let result = run_connection(
+            &config,
+            &cancel,
+            &mut collector,
+            &mut sequence,
+            &mut event_rx,
+            &mut connection_episode,
+        )
+        .await;
+        if cancel.is_cancelled() {
+            base::log::trace!("node reporter control stream ended: outcome=local_cancelled");
+            break;
+        }
+        match result {
+            Ok(ControlStreamEnd::LocalCancelled) => {
+                base::log::trace!("node reporter control stream ended: outcome=local_cancelled");
+                break;
+            }
+            Ok(ControlStreamEnd::RemoteEof) => {
+                record_connection_failure(&mut connection_episode, "remote_eof", None, None);
+            }
+            Ok(ControlStreamEnd::TransportError(code)) => {
+                record_connection_failure(
+                    &mut connection_episode,
+                    "transport_error",
+                    Some(code),
+                    None,
+                );
+            }
+            Ok(ControlStreamEnd::OutputReceiverDropped) => {
+                record_connection_failure(
+                    &mut connection_episode,
+                    "output_receiver_dropped",
+                    None,
+                    None,
+                );
+            }
+            Err(error) => {
+                record_connection_failure(
+                    &mut connection_episode,
+                    "connection_error",
+                    None,
+                    Some(error.as_ref()),
+                );
+            }
+        }
+        base::tokio::select! {
+            _ = base::tokio::time::sleep(config.reconnect_delay) => {}
+            _ = cancel.cancelled() => break,
+        }
     }
 }
 
