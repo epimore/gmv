@@ -110,7 +110,7 @@
       title="Topic 契约预览"
       subtitle="以 Guard 为观察方描述 publish / subscribe 方向"
     >
-      <template #action><el-button @click="showPlaceholder">查看在线文档</el-button></template>
+      <template #action><el-button @click="openDocs">查看在线文档</el-button></template>
       <div class="mapping-editor">
         <el-input v-model="mappingSource" placeholder="外发事件类型，例如 stream.started" />
         <el-button type="primary" :disabled="!auth.isAdmin || !selectedIntegrationId" @click="addEventMapping">新增事件映射</el-button>
@@ -152,7 +152,7 @@
         </div>
         <div>
           <span>在线消息文档</span><code>GET /api-docs/mqtt</code
-          ><el-tag effect="plain">内置静态页</el-tag>
+          ><el-tag effect="plain">可视化文档</el-tag>
         </div>
         <div>
           <span>能力清单</span><code>GET /api-docs/manifest.json</code
@@ -338,8 +338,8 @@ onMounted(() => {
   void loadContract();
 });
 
-function showPlaceholder() {
-  window.open("/api-docs", "_blank", "noopener,noreferrer");
+function openDocs() {
+  window.open("/api-docs/mqtt", "_blank", "noopener,noreferrer");
 }
 </script>
 

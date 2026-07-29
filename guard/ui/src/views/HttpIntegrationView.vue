@@ -131,7 +131,7 @@
         </div>
         <div>
           <span>在线接口文档</span><code>GET /api-docs/http</code
-          ><el-tag effect="plain">内置静态页</el-tag>
+          ><el-tag effect="plain">可视化文档</el-tag>
         </div>
         <div>
           <span>能力清单</span><code>GET /api-docs/manifest.json</code
@@ -277,7 +277,7 @@ async function saveConfig() {
 }
 
 function openDocs() {
-  window.open("/api-docs", "_blank", "noopener,noreferrer");
+  window.open("/api-docs/http", "_blank", "noopener,noreferrer");
 }
 
 onMounted(() => {

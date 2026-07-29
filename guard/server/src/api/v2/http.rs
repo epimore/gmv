@@ -304,8 +304,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/health/ready", get(health_ready))
         .route("/metrics", get(metrics))
         .route("/api-docs", get(api_docs_index))
-        .route("/api-docs/http", get(api_docs_index))
-        .route("/api-docs/mqtt", get(api_docs_index))
+        .route("/api-docs/http", get(api_docs_http))
+        .route("/api-docs/mqtt", get(api_docs_mqtt))
+        .route("/api-docs/assets/docs.css", get(api_docs_styles))
+        .route("/api-docs/assets/docs.js", get(api_docs_script))
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/api-docs/asyncapi.json", get(asyncapi_document))
         .route("/api-docs/manifest.json", get(api_manifest))
@@ -422,8 +424,56 @@ async fn api_docs_index(
 ) -> Result<Html<&'static str>, HttpError> {
     require_role(&state.auth, &headers, Role::Admin)?;
     Ok(Html(
-        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>GMV 三方集成文档</title><style>body{margin:0;background:#03102d;color:#dff7ff;font:15px system-ui;padding:48px}main{max-width:860px;margin:auto;padding:32px;border:1px solid #2592ff55;border-radius:18px;background:#071f48}a{color:#51ddff}code{color:#9eefff}li{margin:14px 0}</style></head><body><main><h1>GMV Guard 三方集成契约</h1><p>HTTP 使用 <code>GMV-HMAC-SHA256-V1</code>；MQTT 可显式选择 V3.1.1 或 V5.0。</p><ul><li><a href="/api-docs/openapi.json">OpenAPI 3.1 JSON</a></li><li><a href="/api-docs/asyncapi.json">AsyncAPI 3.0 JSON</a></li><li><a href="/api-docs/manifest.json">能力与鉴权清单</a></li></ul></main></body></html>"#,
+        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GMV 三方集成文档</title><link rel="stylesheet" href="/api-docs/assets/docs.css"></head><body><main class="shell"><header class="topbar"><div><p class="eyebrow">GMV GUARD · INTEGRATION CONTRACT</p><h1>三方集成在线文档</h1><p class="subtitle">HTTP 与 MQTT 契约均随 Guard Server 发布；在线页面用于阅读，JSON 地址继续作为机器可读的契约来源。</p></div></header><section class="overview-grid"><article class="overview-card"><span class="chip">OpenAPI 3.1</span><h2>HTTP 接入</h2><p>查看第三方调用 Guard 的业务接口、HMAC 鉴权、中文参数字段与 JSON 返回说明。</p><div class="link-row"><a class="button" href="/api-docs/http">打开在线文档</a><a class="button" href="/api-docs/openapi.json">查看 OpenAPI JSON</a></div></article><article class="overview-card"><span class="chip ok">AsyncAPI 3.0</span><h2>MQTT 接入</h2><p>查看 Guard 订阅/发布方向、Topic、QoS、消息字段与中文业务说明。</p><div class="link-row"><a class="button" href="/api-docs/mqtt">打开在线文档</a><a class="button" href="/api-docs/asyncapi.json">查看 AsyncAPI JSON</a></div></article></section><p class="subtitle"><a href="/api-docs/manifest.json">查看版本、鉴权和能力清单 JSON</a></p></main></body></html>"#,
     ))
+}
+
+async fn api_docs_http(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, HttpError> {
+    require_role(&state.auth, &headers, Role::Admin)?;
+    Ok(Html(api_docs_contract_page(
+        "http",
+        "HTTP 三方接入文档",
+        "OpenAPI 3.1 · 第三方调用 Guard Server · GMV-HMAC-SHA256-V1",
+        "/api-docs/openapi.json",
+    )))
+}
+
+async fn api_docs_mqtt(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Html<String>, HttpError> {
+    require_role(&state.auth, &headers, Role::Admin)?;
+    Ok(Html(api_docs_contract_page(
+        "mqtt",
+        "MQTT 三方接入文档",
+        "AsyncAPI 3.0 · Guard 订阅命令并发布结果与事件 · QoS 1",
+        "/api-docs/asyncapi.json",
+    )))
+}
+
+fn api_docs_contract_page(mode: &str, title: &str, subtitle: &str, spec_url: &str) -> String {
+    format!(
+        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><link rel="stylesheet" href="/api-docs/assets/docs.css"><script src="/api-docs/assets/docs.js" defer></script></head><body><main class="shell" data-api-docs data-mode="{mode}" data-spec="{spec_url}"><header class="topbar"><div><p class="eyebrow">GMV GUARD · INTEGRATION CONTRACT</p><h1>{title}</h1><p class="subtitle">{subtitle}</p></div><nav class="nav" aria-label="文档导航"><a href="/api-docs">文档首页</a><a class="{http_active}" href="/api-docs/http">HTTP</a><a class="{mqtt_active}" href="/api-docs/mqtt">MQTT</a><a href="{spec_url}">原始 JSON</a></nav></header><section class="toolbar"><input id="contract-search" class="search" type="search" placeholder="搜索路径、Topic、方法或中文说明" disabled><div class="meta"><span id="contract-count">加载中</span><span class="chip ok">只读契约</span></div></section><div id="contract-content"><div class="empty">正在加载契约 JSON…</div></div></main></body></html>"#,
+        http_active = if mode == "http" { "active" } else { "" },
+        mqtt_active = if mode == "mqtt" { "active" } else { "" },
+    )
+}
+
+async fn api_docs_styles() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("api_docs.css"),
+    )
+}
+
+async fn api_docs_script() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("api_docs.js"),
+    )
 }
 
 async fn openapi_document(
@@ -435,6 +485,7 @@ async fn openapi_document(
     for (path, methods) in OPEN_BUSINESS_OPERATIONS {
         let mut operations = base::serde_json::Map::new();
         for method in *methods {
+            let summary = openapi_operation_summary(method, path);
             let required_scope = open_business_scope(
                 if *method == "get" {
                     &Method::GET
@@ -443,36 +494,81 @@ async fn openapi_document(
                 },
                 path,
             );
-            operations.insert(
-                (*method).to_string(),
-                base::serde_json::json!({
-                    "summary": format!("Guard business API {} {}", method.to_ascii_uppercase(), path),
-                    "x-gmv-required-scope": required_scope,
-                    "parameters": openapi_path_parameters(path),
-                    "security": [{"GmvAccessKey": [], "GmvTimestamp": [], "GmvNonce": [], "GmvContentSha256": [], "GmvSignature": []}],
-                    "responses": {"200": {"description": "Success"}, "202": {"description": "Accepted"}, "400": {"description": "Invalid request"}, "401": {"description": "Invalid signature"}, "403": {"description": "Insufficient scope"}}
-                }),
-            );
+            let mut operation = base::serde_json::json!({
+                "tags": [openapi_operation_tag(path)],
+                "summary": summary,
+                "description": format!("{summary}。请求须完成 GMV-HMAC-SHA256-V1 签名校验，并具备所列权限。"),
+                "x-gmv-required-scope": required_scope,
+                "parameters": openapi_operation_parameters(method, path),
+                "security": [{"GmvAccessKey": [], "GmvTimestamp": [], "GmvNonce": [], "GmvContentSha256": [], "GmvSignature": []}],
+                "responses": openapi_responses(summary)
+            });
+            if let Some(request_body) = openapi_request_body(method, path) {
+                operation
+                    .as_object_mut()
+                    .expect("OpenAPI operation must be an object")
+                    .insert("requestBody".to_string(), request_body);
+            }
+            operations.insert((*method).to_string(), operation);
         }
         paths.insert(format!("/openapi/v1{path}"), operations.into());
     }
     Ok(Json(base::serde_json::json!({
         "openapi": "3.1.0",
-        "info": {"title": "GMV Guard Open Business API", "version": env!("CARGO_PKG_VERSION")},
+        "info": {
+            "title": "GMV Guard 三方 HTTP 开放接口",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "面向第三方业务系统的 Guard Server HTTP 接口契约。所有请求与响应正文均使用 JSON，写请求仅使用 POST。"
+        },
+        "tags": [
+            {"name": "总览与运行状态", "description": "查询 Guard 汇总信息、运行状态和媒体传输能力。"},
+            {"name": "节点与租约", "description": "查询节点、租约及媒体操作状态。"},
+            {"name": "事件", "description": "分页查询 Guard 事件。"},
+            {"name": "GB28181 设备与通道", "description": "管理 GB28181 设备、通道、资源确认与截图。"},
+            {"name": "GB28181 录像", "description": "查询设备录像并管理云端录像任务。"},
+            {"name": "预览与回放", "description": "创建和控制预览、回放、下载、语音及媒体输出。"},
+            {"name": "流监控", "description": "查询和停止活动流。"},
+            {"name": "智能分析", "description": "查询、启动和取消智能分析任务。"}
+        ],
         "paths": paths,
-        "components": {"securitySchemes": {
-            "GmvAccessKey": {"type": "apiKey", "in": "header", "name": HMAC_ACCESS_KEY_HEADER},
-            "GmvTimestamp": {"type": "apiKey", "in": "header", "name": HMAC_TIMESTAMP_HEADER},
-            "GmvNonce": {"type": "apiKey", "in": "header", "name": HMAC_NONCE_HEADER},
-            "GmvContentSha256": {"type": "apiKey", "in": "header", "name": HMAC_CONTENT_SHA256_HEADER},
-            "GmvSignature": {"type": "apiKey", "in": "header", "name": HMAC_SIGNATURE_HEADER, "description": "hex(HMAC-SHA256(secret, canonical_request))"}
-        }},
-        "x-gmv-hmac": {"version": "GMV-HMAC-SHA256-V1", "timestamp_unit": "milliseconds", "clock_skew_ms": 300000, "canonical_fields": ["version", "access_key", "timestamp_ms", "nonce", "method", "path", "canonical_query", "body_sha256"]}
+        "components": {
+            "securitySchemes": {
+                "GmvAccessKey": {"type": "apiKey", "in": "header", "name": HMAC_ACCESS_KEY_HEADER, "description": "第三方应用的 Access Key。"},
+                "GmvTimestamp": {"type": "apiKey", "in": "header", "name": HMAC_TIMESTAMP_HEADER, "description": "请求发起时间，单位为毫秒。"},
+                "GmvNonce": {"type": "apiKey", "in": "header", "name": HMAC_NONCE_HEADER, "description": "一次性随机值，用于防止重放。"},
+                "GmvContentSha256": {"type": "apiKey", "in": "header", "name": HMAC_CONTENT_SHA256_HEADER, "description": "JSON 请求正文的 SHA-256 十六进制摘要。"},
+                "GmvSignature": {"type": "apiKey", "in": "header", "name": HMAC_SIGNATURE_HEADER, "description": "canonical_request 的 HMAC-SHA256 十六进制签名。"}
+            },
+            "schemas": {
+                "ErrorResponse": {
+                    "type": "object",
+                    "description": "统一 JSON 错误返回。",
+                    "properties": {
+                        "code": {"type": "string", "description": "稳定的错误代码。"},
+                        "message": {"type": "string", "description": "面向开发者的错误说明。"},
+                        "user_message": {"type": "string", "description": "可直接展示给用户的中文提示。"},
+                        "operation_id": {"type": ["string", "null"], "description": "关联的业务操作标识。"},
+                        "trace_id": {"type": ["string", "null"], "description": "请求追踪标识。"},
+                        "retryable": {"type": "boolean", "description": "是否适合由调用方重试。"},
+                        "details": {"type": "object", "description": "受限的错误补充信息。"}
+                    },
+                    "required": ["code", "message", "user_message", "retryable", "details"]
+                }
+            }
+        },
+        "x-gmv-hmac": {
+            "version": "GMV-HMAC-SHA256-V1",
+            "description": "将以下字段按固定顺序组成 canonical_request 后计算 HMAC-SHA256。",
+            "timestamp_unit": "毫秒",
+            "clock_skew_ms": 300000,
+            "canonical_fields": ["version", "access_key", "timestamp_ms", "nonce", "method", "path", "canonical_query", "body_sha256"]
+        }
     })))
 }
 
-fn openapi_path_parameters(path: &str) -> Vec<base::serde_json::Value> {
-    path.split('{')
+fn openapi_operation_parameters(method: &str, path: &str) -> Vec<base::serde_json::Value> {
+    let mut parameters = path
+        .split('{')
         .skip(1)
         .filter_map(|part| part.split_once('}').map(|(name, _)| name))
         .map(|name| {
@@ -480,10 +576,534 @@ fn openapi_path_parameters(path: &str) -> Vec<base::serde_json::Value> {
                 "name": name,
                 "in": "path",
                 "required": true,
+                "description": openapi_field_description(name),
                 "schema": {"type": "string"}
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if method == "get" {
+        parameters.extend(openapi_query_fields(path).iter().map(|(name, required)| {
+            base::serde_json::json!({
+                "name": name,
+                "in": "query",
+                "required": required,
+                "description": openapi_field_description(name),
+                "schema": {"type": openapi_field_type(name)}
+            })
+        }));
+    }
+    parameters
+}
+
+fn openapi_operation_tag(path: &str) -> &'static str {
+    if path == "/dashboard" || path == "/media/transport" || path == "/runtime/status" {
+        "总览与运行状态"
+    } else if path.starts_with("/media/operations") || path == "/nodes" || path == "/leases" {
+        "节点与租约"
+    } else if path == "/events" {
+        "事件"
+    } else if path.contains("cloud-recordings") || path.contains("/records") {
+        "GB28181 录像"
+    } else if path.starts_with("/gb28181/devices")
+        && !path.ends_with("/preview")
+        && !path.ends_with("/playback")
+        && !path.ends_with("/ptz")
+    {
+        "GB28181 设备与通道"
+    } else if path.starts_with("/ai/") {
+        "智能分析"
+    } else if path.contains("stream-history") || path.contains("/streams/{stream_id}/management") {
+        "流监控"
+    } else {
+        "预览与回放"
+    }
+}
+
+fn openapi_operation_summary(method: &str, path: &str) -> &'static str {
+    match (method, path) {
+        ("get", "/dashboard") => "查询 Guard 业务总览",
+        ("get", "/media/transport") => "查询媒体传输能力",
+        ("get", "/media/operations") => "查询媒体操作列表",
+        ("get", "/media/operations/{operation_id}") => "查询媒体操作详情",
+        ("post", "/media/operations/{operation_id}/continue") => "继续等待媒体操作",
+        ("post", "/media/operations/{operation_id}/cancel") => "取消媒体操作",
+        ("get", "/nodes") => "查询已注册节点",
+        ("get", "/leases") => "查询节点租约",
+        ("get", "/events") => "分页查询事件",
+        ("get", "/gb28181/session-nodes/{node_id}/config") => "查询 GB28181 会话节点配置",
+        ("get", "/gb28181/devices") => "分页查询 GB28181 设备",
+        ("post", "/gb28181/devices") => "创建 GB28181 设备",
+        ("get", "/gb28181/devices/{device_id}") => "查询 GB28181 设备详情",
+        ("post", "/gb28181/devices/{device_id}") => "更新 GB28181 设备",
+        ("post", "/gb28181/devices/{device_id}/delete") => "删除 GB28181 设备",
+        ("get", "/gb28181/devices/{device_id}/channels") => "查询设备通道",
+        ("get", "/gb28181/devices/{device_id}/resources") => "查询设备资源",
+        ("post", "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation") => {
+            "确认设备资源归属"
+        }
+        ("post", "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation/reset") => {
+            "重置设备资源确认"
+        }
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}") => "查询通道详情",
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}") => "更新通道配置",
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/preview") => {
+            "创建通道实时预览"
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/playback") => {
+            "创建通道录像回放"
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/ptz") => "控制通道云台",
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/images") => "查询通道截图",
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/images") => "触发通道截图",
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/records") => "查询通道录像片段",
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/records/query") => {
+            "发起通道录像查询"
+        }
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings") => {
+            "查询通道云端录像任务"
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings") => {
+            "创建通道云端录像任务"
+        }
+        ("get", "/gb28181/cloud-recordings/{task_id}") => "查询云端录像任务详情",
+        ("post", "/gb28181/cloud-recordings/{task_id}/stop") => "停止云端录像任务",
+        ("post", "/gb28181/cloud-recordings/{task_id}/delete") => "删除云端录像任务",
+        ("post", "/gb28181/cloud-recordings/{task_id}/access") => "签发云端录像访问地址",
+        ("post", "/gb28181/devices/{device_id}/broadcast/start") => "发起设备语音广播",
+        ("post", "/gb28181/broadcasts/{stream_id}/stop") => "停止设备语音广播",
+        ("get", "/devices") => "查询可用设备",
+        ("post", "/devices/{device_id}/preview") => "创建设备实时预览",
+        ("post", "/devices/{device_id}/playback") => "创建设备录像回放",
+        ("post", "/devices/{device_id}/download") => "创建设备录像下载",
+        ("post", "/devices/{device_id}/talk") => "创建设备语音对讲",
+        ("post", "/devices/{device_id}/ptz") => "控制设备云台",
+        ("get", "/streams") => "查询媒体流",
+        ("get", "/gb28181/streams") => "分页查询 GB28181 活动流",
+        ("get", "/gb28181/streams/{stream_id}/management") => "查询活动流管理信息",
+        ("get", "/gb28181/stream-history") => "分页查询 GB28181 流历史",
+        ("post", "/gb28181/streams/{stream_id}/stop") => "停止 GB28181 活动流",
+        ("post", "/streams/{stream_id}/stop") => "停止媒体流",
+        ("post", "/streams/{stream_id}/release") => "释放媒体流订阅",
+        ("post", "/streams/{stream_id}/speed") => "设置回放流倍速",
+        ("post", "/playbacks/{playback_id}/seek") => "跳转回放进度",
+        ("post", "/playbacks/{playback_id}/speed") => "设置版本化回放倍速",
+        ("post", "/playbacks/{playback_id}/state") => "暂停或继续回放",
+        ("post", "/playbacks/presence/heartbeat") => "上报回放观看心跳",
+        ("post", "/playback-tickets/{token}/renew") => "确认续期第三方播放票据",
+        ("get", "/streams/{stream_id}/outputs") => "查询媒体流输出",
+        ("post", "/streams/{stream_id}/outputs") => "创建媒体流输出",
+        ("post", "/streams/{stream_id}/outputs/{output_id}/close") => "关闭媒体流输出",
+        ("get", "/ai/tasks") => "查询智能分析任务",
+        ("post", "/ai/tasks") => "启动智能分析任务",
+        ("post", "/ai/tasks/{task_id}/cancel") => "取消智能分析任务",
+        ("get", "/runtime/status") => "查询 Guard 运行状态",
+        ("get", _) => "查询 Guard 业务数据",
+        ("post", _) => "提交 Guard 业务操作",
+        _ => "Guard 开放业务接口",
+    }
+}
+
+fn openapi_query_fields(path: &str) -> &'static [(&'static str, bool)] {
+    match path {
+        "/media/operations" => &[("ids", false)],
+        "/events" => &[
+            ("after_id", false),
+            ("limit", false),
+            ("topic_prefix", false),
+            ("min_priority", false),
+        ],
+        "/gb28181/devices" => &[
+            ("page", false),
+            ("page_size", false),
+            ("session_node_id", false),
+            ("domain_id", false),
+            ("device_id", false),
+            ("device_name", false),
+            ("registered_only", false),
+        ],
+        "/gb28181/devices/{device_id}/channels"
+        | "/gb28181/devices/{device_id}/resources"
+        | "/gb28181/streams/{stream_id}/management" => &[("session_node_id", true)],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/records" => &[
+            ("session_node_id", true),
+            ("start_time_sec", false),
+            ("end_time_sec", false),
+            ("page", false),
+            ("page_size", false),
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings" => &[
+            ("session_node_id", true),
+            ("page", false),
+            ("page_size", false),
+        ],
+        "/gb28181/streams" => &[
+            ("session_node_id", true),
+            ("page", false),
+            ("page_size", false),
+            ("stream_id", false),
+            ("stream_node_id", false),
+            ("device_id", false),
+            ("channel_id", false),
+            ("ssrc", false),
+            ("dialog_state", false),
+        ],
+        "/gb28181/stream-history" => &[
+            ("session_node_id", true),
+            ("page", false),
+            ("page_size", false),
+            ("stream_id", false),
+            ("stream_node_id", false),
+            ("device_id", false),
+            ("channel_id", false),
+            ("ssrc", false),
+            ("state", false),
+        ],
+        _ => &[],
+    }
+}
+
+fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, bool)] {
+    if method != "post" {
+        return &[];
+    }
+    match path {
+        "/gb28181/devices" | "/gb28181/devices/{device_id}" => &[
+            ("device_id", false),
+            ("session_node_id", false),
+            ("domain_id", false),
+            ("domain", false),
+            ("longitude", false),
+            ("latitude", false),
+            ("address", false),
+            ("pwd", false),
+            ("pwd_check", false),
+            ("alias", false),
+            ("status", false),
+            ("heartbeat_sec", false),
+            ("tenant_id", false),
+            ("sys_org_code", false),
+            ("create_by", false),
+            ("update_by", false),
+        ],
+        "/gb28181/devices/{device_id}/delete" => &[("session_node_id", true), ("domain_id", true)],
+        "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation" => &[
+            ("request_id", true),
+            ("resource_kind", true),
+            ("owner_scope", true),
+            ("owner_id", true),
+            ("remark", false),
+        ],
+        "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation/reset" => {
+            &[("request_id", true)]
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}" => &[
+            ("alias_name", false),
+            ("snapshot", false),
+            ("over_pic_id", false),
+            ("ptz_enable", false),
+            ("talk_enable", false),
+            ("audio_enable", false),
+            ("record_enable", false),
+            ("playback_enable", false),
+            ("alarm_enable", false),
+            ("biz_enable", false),
+            ("sort_no", false),
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/preview"
+        | "/gb28181/devices/{device_id}/channels/{channel_id}/playback" => &[
+            ("request_id", true),
+            ("session_node_id", false),
+            ("token", false),
+            ("start_time_sec", false),
+            ("end_time_sec", false),
+            ("trans_mode", false),
+            ("output_type", false),
+            ("audio_codec", false),
+            ("startup_timeout_ms", false),
+            ("playback_id", false),
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/ptz" => &[
+            ("deviceId", true),
+            ("channelId", true),
+            ("leftRight", true),
+            ("upDown", true),
+            ("inOut", true),
+            ("horizonSpeed", true),
+            ("verticalSpeed", true),
+            ("zoomSpeed", true),
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images" => {
+            &[("request_id", true), ("count", false), ("interval", false)]
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}/records/query" => &[
+            ("request_id", true),
+            ("session_node_id", true),
+            ("start_time_sec", true),
+            ("end_time_sec", true),
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings" => &[
+            ("request_id", true),
+            ("session_node_id", true),
+            ("start_time_sec", true),
+            ("end_time_sec", true),
+        ],
+        "/gb28181/cloud-recordings/{task_id}/stop"
+        | "/gb28181/cloud-recordings/{task_id}/delete" => &[("request_id", true)],
+        "/gb28181/cloud-recordings/{task_id}/access" => &[("mode", false)],
+        "/gb28181/devices/{device_id}/broadcast/start"
+        | "/devices/{device_id}/preview"
+        | "/devices/{device_id}/playback"
+        | "/devices/{device_id}/download"
+        | "/devices/{device_id}/talk" => &[
+            ("request_id", true),
+            ("channel_id", true),
+            ("session_node_id", false),
+            ("token", false),
+            ("start_time_sec", false),
+            ("end_time_sec", false),
+            ("trans_mode", false),
+            ("output_type", false),
+            ("audio_codec", false),
+            ("startup_timeout_ms", false),
+            ("talk_codec", false),
+            ("talk_sample_rate", false),
+            ("talk_channel_count", false),
+            ("talk_frame_duration_ms", false),
+            ("playback_id", false),
+        ],
+        "/devices/{device_id}/ptz" => &[
+            ("channel_id", true),
+            ("leftRight", true),
+            ("upDown", true),
+            ("inOut", true),
+            ("horizonSpeed", true),
+            ("verticalSpeed", true),
+            ("zoomSpeed", true),
+        ],
+        "/gb28181/streams/{stream_id}/stop" => &[
+            ("session_node_id", true),
+            ("request_id", true),
+            ("stop_reason", true),
+        ],
+        "/streams/{stream_id}/release" => &[("request_id", true), ("subscription_id", true)],
+        "/streams/{stream_id}/speed" => &[("speed_rate", true)],
+        "/playbacks/{playback_id}/seek" => &[
+            ("request_id", true),
+            ("stream_id", true),
+            ("position_sec", true),
+            ("expected_generation", true),
+        ],
+        "/playbacks/{playback_id}/speed" => &[
+            ("request_id", true),
+            ("stream_id", true),
+            ("speed_rate", true),
+            ("expected_generation", true),
+        ],
+        "/playbacks/{playback_id}/state" => &[
+            ("request_id", true),
+            ("stream_id", true),
+            ("paused", true),
+            ("expected_generation", true),
+        ],
+        "/playbacks/presence/heartbeat" => &[("items", true)],
+        "/playback-tickets/{token}/renew" => &[("renew", true)],
+        "/streams/{stream_id}/outputs" => &[
+            ("request_id", true),
+            ("output_type", true),
+            ("subscription_id", false),
+            ("audio_codec", false),
+            ("startup_timeout_ms", false),
+        ],
+        "/ai/tasks" => &[("request_id", true), ("stream_id", true), ("model", true)],
+        _ => &[],
+    }
+}
+
+fn openapi_request_body(method: &str, path: &str) -> Option<base::serde_json::Value> {
+    let fields = openapi_request_fields(method, path);
+    if fields.is_empty() {
+        return None;
+    }
+    let properties = fields
+        .iter()
+        .map(|(name, _)| ((*name).to_string(), openapi_field_schema(name)))
+        .collect::<base::serde_json::Map<_, _>>();
+    let required = fields
+        .iter()
+        .filter_map(|(name, required)| required.then_some(*name))
+        .collect::<Vec<_>>();
+    Some(base::serde_json::json!({
+        "required": true,
+        "description": "JSON 请求正文。",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                }
+            }
+        }
+    }))
+}
+
+fn openapi_field_schema(name: &str) -> base::serde_json::Value {
+    base::serde_json::json!({
+        "type": openapi_field_type(name),
+        "description": openapi_field_description(name)
+    })
+}
+
+fn openapi_field_type(name: &str) -> &'static str {
+    match name {
+        "registered_only" | "paused" | "renew" => "boolean",
+        "speed_rate" | "longitude" | "latitude" => "number",
+        "items" => "array",
+        "limit"
+        | "min_priority"
+        | "page"
+        | "page_size"
+        | "pwd_check"
+        | "status"
+        | "heartbeat_sec"
+        | "snapshot"
+        | "ptz_enable"
+        | "talk_enable"
+        | "audio_enable"
+        | "record_enable"
+        | "playback_enable"
+        | "alarm_enable"
+        | "biz_enable"
+        | "sort_no"
+        | "start_time_sec"
+        | "end_time_sec"
+        | "startup_timeout_ms"
+        | "talk_sample_rate"
+        | "talk_channel_count"
+        | "talk_frame_duration_ms"
+        | "leftRight"
+        | "upDown"
+        | "inOut"
+        | "horizonSpeed"
+        | "verticalSpeed"
+        | "zoomSpeed"
+        | "count"
+        | "interval"
+        | "position_sec"
+        | "expected_generation" => "integer",
+        _ => "string",
+    }
+}
+
+fn openapi_field_description(name: &str) -> &'static str {
+    match name {
+        "operation_id" => "媒体或业务操作的唯一标识。",
+        "node_id" => "Guard 注册节点的唯一标识。",
+        "device_id" | "deviceId" => "设备唯一标识。",
+        "channel_id" | "channelId" => "设备通道唯一标识。",
+        "resource_id" => "设备资源唯一标识。",
+        "stream_id" => "媒体流唯一标识。",
+        "playback_id" => "回放会话唯一标识。",
+        "token" => "播放票据或业务令牌。",
+        "output_id" => "媒体输出唯一标识。",
+        "task_id" => "任务唯一标识。",
+        "request_id" => "调用方生成的幂等请求标识。",
+        "session_node_id" => "负责该业务的 GB28181 会话节点标识。",
+        "domain_id" => "GB28181 域标识。",
+        "domain" => "GB28181 域名称。",
+        "longitude" => "设备经度。",
+        "latitude" => "设备纬度。",
+        "address" => "设备安装或网络地址。",
+        "pwd" => "设备接入密码；请按安全要求传输和保存。",
+        "pwd_check" => "是否校验设备密码。",
+        "alias" | "alias_name" => "便于识别的中文别名。",
+        "over_pic_id" => "通道覆盖图资源标识。",
+        "status" => "启停状态。",
+        "heartbeat_sec" => "设备心跳间隔，单位为秒。",
+        "tenant_id" => "业务租户标识。",
+        "sys_org_code" => "业务组织机构编码。",
+        "create_by" => "创建人标识。",
+        "update_by" => "更新人标识。",
+        "resource_kind" => "待确认的资源类型。",
+        "owner_scope" => "资源归属范围。",
+        "owner_id" => "资源归属对象标识。",
+        "remark" => "资源确认备注。",
+        "snapshot" => "是否启用截图能力。",
+        "ptz_enable" => "是否启用云台控制。",
+        "talk_enable" => "是否启用语音对讲。",
+        "audio_enable" => "是否启用音频。",
+        "record_enable" => "是否启用录像。",
+        "playback_enable" => "是否启用回放。",
+        "alarm_enable" => "是否启用告警。",
+        "biz_enable" => "是否启用业务处理。",
+        "sort_no" => "通道显示排序号。",
+        "start_time_sec" => "开始时间，Unix 秒时间戳。",
+        "end_time_sec" => "结束时间，Unix 秒时间戳。",
+        "trans_mode" => "媒体传输模式。",
+        "output_type" => "输出封装类型，例如 flv 或 hls。",
+        "audio_codec" => "输出音频编码，例如 aac。",
+        "startup_timeout_ms" => "等待媒体启动的超时时间，单位为毫秒。",
+        "talk_codec" => "语音对讲编码。",
+        "talk_sample_rate" => "语音对讲采样率。",
+        "talk_channel_count" => "语音对讲声道数。",
+        "talk_frame_duration_ms" => "语音对讲帧时长，单位为毫秒。",
+        "leftRight" => "水平控制值：0 停止、1 向左、2 向右。",
+        "upDown" => "垂直控制值：0 停止、1 向上、2 向下。",
+        "inOut" => "变倍控制值：0 停止、1 缩小、2 放大。",
+        "horizonSpeed" => "水平转动速度。",
+        "verticalSpeed" => "垂直转动速度。",
+        "zoomSpeed" => "变倍速度。",
+        "count" => "本次截图数量。",
+        "interval" => "连续截图间隔。",
+        "mode" => "录像访问模式。",
+        "stream_node_id" => "负责媒体流的流节点标识。",
+        "ssrc" => "RTP 同步源标识。",
+        "dialog_state" => "GB28181 SIP Dialog 状态筛选值。",
+        "state" => "业务状态筛选值。",
+        "stop_reason" => "停止媒体流的原因。",
+        "subscription_id" => "媒体订阅唯一标识。",
+        "speed_rate" => "回放倍速。",
+        "position_sec" => "目标回放位置，Unix 秒时间戳。",
+        "expected_generation" => "调用方期望的回放控制版本，用于防止并发覆盖。",
+        "paused" => "是否暂停回放。",
+        "items" => {
+            "回放观看心跳条目数组，每项包含 playback_id、stream_id、subscription_id 和 generation。"
+        }
+        "renew" => "是否同意续期播放票据；仅 true 才执行续期。",
+        "model" => "智能分析模型标识。",
+        "ids" => "以英文逗号分隔的操作标识列表，最多 100 项。",
+        "after_id" => "从该事件标识之后继续查询。",
+        "limit" => "本次最多返回的记录数。",
+        "topic_prefix" => "事件 Topic 前缀筛选值。",
+        "min_priority" => "最低事件优先级。",
+        "page" => "页码，从 1 开始。",
+        "page_size" => "每页记录数。",
+        "device_name" => "设备名称模糊筛选值。",
+        "registered_only" => "是否只返回已注册设备。",
+        _ => "业务字段。",
+    }
+}
+
+fn openapi_responses(summary: &str) -> base::serde_json::Value {
+    let success_schema = base::serde_json::json!({
+        "type": ["object", "array"],
+        "description": format!("{summary}成功时返回的 JSON 数据。具体字段由当前 Guard 版本的业务响应决定。")
+    });
+    let error_content = base::serde_json::json!({
+        "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}
+    });
+    base::serde_json::json!({
+        "200": {"description": "请求成功，返回 JSON 业务数据。", "content": {"application/json": {"schema": success_schema}}},
+        "201": {"description": "资源创建成功，返回新建资源的 JSON 数据。", "content": {"application/json": {"schema": success_schema}}},
+        "202": {"description": "异步操作已受理，返回操作状态或任务摘要 JSON。", "content": {"application/json": {"schema": success_schema}}},
+        "400": {"description": "请求参数、字段格式或业务前置条件不正确。", "content": error_content},
+        "401": {"description": "Access Key、时间戳、nonce、正文摘要或 HMAC 签名无效。", "content": error_content},
+        "403": {"description": "第三方应用未获得该接口所需权限，或无权访问目标资源。", "content": error_content},
+        "404": {"description": "目标设备、通道、流、任务或操作不存在。", "content": error_content},
+        "409": {"description": "当前资源状态与请求冲突。", "content": error_content},
+        "429": {"description": "超过调用频率或系统容量限制，可按返回信息决定是否重试。", "content": error_content},
+        "500": {"description": "Guard 内部处理失败。", "content": error_content}
+    })
 }
 
 async fn asyncapi_document(
@@ -493,23 +1113,128 @@ async fn asyncapi_document(
     require_role(&state.auth, &headers, Role::Admin)?;
     Ok(Json(base::serde_json::json!({
         "asyncapi": "3.0.0",
-        "info": {"title": "GMV Guard MQTT Integration", "version": env!("CARGO_PKG_VERSION")},
+        "info": {
+            "title": "GMV Guard 三方 MQTT 接入",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "面向第三方业务系统的 MQTT 消息契约。以 Guard 为观察方描述订阅和发布方向，Payload 统一使用 UTF-8 JSON。"
+        },
         "servers": {
-            "mqttV3": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "3.1.1", "description": "Select with protocol_version=v3"},
-            "mqttV5": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "5.0", "description": "Select with protocol_version=v5"}
+            "mqttV3": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "3.1.1", "description": "应用配置 protocol_version=v3 时使用 MQTT V3.1.1。"},
+            "mqttV5": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "5.0", "description": "应用配置 protocol_version=v5 时使用 MQTT V5.0。"}
         },
         "channels": {
-            "commands": {"address": "gmv/commands/{integration_id}", "messages": {"command": {"$ref": "#/components/messages/IntegrationCommand"}}},
-            "commandResults": {"address": "gmv/command-results/{integration_id}", "messages": {"result": {"$ref": "#/components/messages/CommandResult"}}},
-            "events": {"address": "gmv/events/{integration_id}/{event_type}", "messages": {"event": {"$ref": "#/components/messages/EventEnvelope"}, "playbackRenewalRequest": {"$ref": "#/components/messages/PlaybackRenewalRequest"}}}
+            "commands": {
+                "address": "gmv/commands/{integration_id}",
+                "description": "第三方发布命令，Guard 订阅并执行。",
+                "parameters": {"integration_id": {"$ref": "#/components/parameters/integrationId"}},
+                "messages": {"command": {"$ref": "#/components/messages/IntegrationCommand"}}
+            },
+            "commandResults": {
+                "address": "gmv/command-results/{integration_id}",
+                "description": "Guard 发布命令受理结果，第三方订阅。",
+                "parameters": {"integration_id": {"$ref": "#/components/parameters/integrationId"}},
+                "messages": {"result": {"$ref": "#/components/messages/CommandResult"}}
+            },
+            "events": {
+                "address": "gmv/events/{integration_id}/{event_type}",
+                "description": "Guard 发布业务事件或播放票据续期请求，第三方订阅。",
+                "parameters": {
+                    "integration_id": {"$ref": "#/components/parameters/integrationId"},
+                    "event_type": {"$ref": "#/components/parameters/eventType"}
+                },
+                "messages": {
+                    "event": {"$ref": "#/components/messages/EventEnvelope"},
+                    "playbackRenewalRequest": {"$ref": "#/components/messages/PlaybackRenewalRequest"}
+                }
+            }
         },
-        "components": {"messages": {
-            "IntegrationCommand": {"payload": {"type": "object", "required": ["integration_id", "command_id", "issued_at_ms", "expires_at_ms", "action", "target", "payload"]}},
-            "CommandResult": {"payload": {"type": "object", "required": ["command_id", "operation_id", "state"]}},
-            "EventEnvelope": {"payload": {"type": "object", "required": ["event_id", "event_type", "schema_version", "occurred_at_ms", "payload"]}},
-            "PlaybackRenewalRequest": {"payload": {"type": "object", "required": ["token", "playback_id", "stream_id", "expires_at_ms", "response_action"]}}
-        }},
-        "x-gmv-protocol-selection": {"allowed": ["v3", "v5"], "default": "v3", "qos": 1, "payload_compatible": true}
+        "components": {
+            "parameters": {
+                "integrationId": {"description": "第三方应用唯一标识。"},
+                "eventType": {"description": "事件类型；Topic 中的点号按斜杠展开。"}
+            },
+            "messages": {
+                "IntegrationCommand": {
+                    "name": "IntegrationCommand",
+                    "title": "第三方命令",
+                    "summary": "第三方向 Guard 提交的版本化 JSON 命令。",
+                    "contentType": "application/json",
+                    "payload": {
+                        "type": "object",
+                        "required": ["integration_id", "command_id", "issued_at_ms", "expires_at_ms", "action", "target", "payload"],
+                        "properties": {
+                            "integration_id": {"type": "string", "description": "第三方应用唯一标识，必须与 Topic 一致。"},
+                            "command_id": {"type": "string", "description": "第三方生成的全局唯一幂等命令标识。"},
+                            "issued_at_ms": {"type": "integer", "description": "命令签发时间，Unix 毫秒时间戳。"},
+                            "expires_at_ms": {"type": "integer", "description": "命令过期时间，Unix 毫秒时间戳。"},
+                            "action": {"type": "string", "description": "已授权的命令动作，例如 stream.start。"},
+                            "target": {"type": "string", "description": "命令目标设备、通道、流或任务标识。"},
+                            "payload": {"type": "object", "description": "与 action 对应的 JSON 业务参数。"}
+                        }
+                    }
+                },
+                "CommandResult": {
+                    "name": "CommandResult",
+                    "title": "命令结果",
+                    "summary": "Guard 对第三方命令的受理或执行状态。",
+                    "contentType": "application/json",
+                    "payload": {
+                        "type": "object",
+                        "required": ["command_id", "operation_id", "state"],
+                        "properties": {
+                            "command_id": {"type": "string", "description": "对应第三方命令的幂等标识。"},
+                            "operation_id": {"type": "string", "description": "Guard 内部业务操作标识。"},
+                            "state": {"type": "string", "description": "命令当前状态。"},
+                            "error_code": {"type": "string", "description": "失败时的稳定错误代码。"},
+                            "error_message": {"type": "string", "description": "失败时的中文错误说明。"}
+                        }
+                    }
+                },
+                "EventEnvelope": {
+                    "name": "EventEnvelope",
+                    "title": "业务事件",
+                    "summary": "Guard 向第三方发布的统一 JSON 事件信封。",
+                    "contentType": "application/json",
+                    "payload": {
+                        "type": "object",
+                        "required": ["event_id", "event_type", "schema_version", "occurred_at_ms", "payload"],
+                        "properties": {
+                            "event_id": {"type": "string", "description": "事件唯一标识，消费方据此幂等。"},
+                            "event_type": {"type": "string", "description": "事件类型。"},
+                            "schema_version": {"type": "string", "description": "事件 Payload 的 Schema 版本。"},
+                            "occurred_at_ms": {"type": "integer", "description": "事件发生时间，Unix 毫秒时间戳。"},
+                            "trace_id": {"type": "string", "description": "跨 HTTP、MQTT 和内部操作的追踪标识。"},
+                            "payload": {"type": "object", "description": "与 event_type 对应的 JSON 业务数据。"}
+                        }
+                    }
+                },
+                "PlaybackRenewalRequest": {
+                    "name": "PlaybackRenewalRequest",
+                    "title": "播放票据续期请求",
+                    "summary": "Guard 在第三方播放票据到期前发出的续期询问。",
+                    "contentType": "application/json",
+                    "payload": {
+                        "type": "object",
+                        "required": ["token", "playback_id", "stream_id", "expires_at_ms", "response_action"],
+                        "properties": {
+                            "token": {"type": "string", "description": "待续期播放票据。"},
+                            "playback_id": {"type": "string", "description": "回放会话唯一标识。"},
+                            "stream_id": {"type": "string", "description": "媒体流唯一标识。"},
+                            "expires_at_ms": {"type": "integer", "description": "当前票据过期时间，Unix 毫秒时间戳。"},
+                            "response_action": {"type": "string", "description": "第三方返回续期决定时使用的命令动作。"}
+                        }
+                    }
+                }
+            }
+        },
+        "x-gmv-protocol-selection": {
+            "allowed": ["v3", "v5"],
+            "default": "v3",
+            "qos": 1,
+            "retain": false,
+            "payload_compatible": true,
+            "description": "应用选择的协议版本必须与 Guard 部署级 MQTT runtime 一致；两个版本使用相同 JSON Payload。"
+        }
     })))
 }
 
@@ -6530,10 +7255,11 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GbStreamRequest, GuardError, HttpError, OPEN_BUSINESS_OPERATIONS,
+        GbStreamRequest, GuardError, HttpError, OPEN_BUSINESS_OPERATIONS, api_docs_contract_page,
         endpoint_with_playback_token, gb_preview_request, media_startup_timeout_ms,
         node_connection_label, node_health_label, node_scheduling_label, open_business_scope,
-        playback_control_owner_matches, playback_token_from_endpoint,
+        openapi_operation_parameters, openapi_operation_summary, openapi_request_body,
+        openapi_responses, playback_control_owner_matches, playback_token_from_endpoint,
     };
     use crate::auth::Role;
     use crate::core::{ConnectionState, HealthState, SchedulingState};
@@ -6675,5 +7401,93 @@ mod tests {
             }
         }
         assert!(operations.contains(&(Method::POST, "/playback-tickets/{token}/renew")));
+    }
+
+    #[test]
+    fn public_http_contract_uses_chinese_descriptions() {
+        fn contains_chinese(value: &str) -> bool {
+            value
+                .chars()
+                .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character))
+        }
+
+        for (path, methods) in OPEN_BUSINESS_OPERATIONS {
+            for method in *methods {
+                let summary = openapi_operation_summary(method, path);
+                assert!(
+                    contains_chinese(summary),
+                    "operation summary must be Chinese: {method} {path}"
+                );
+                assert_ne!(
+                    summary, "查询 Guard 业务数据",
+                    "missing GET summary: {path}"
+                );
+                assert_ne!(
+                    summary, "提交 Guard 业务操作",
+                    "missing POST summary: {path}"
+                );
+                for parameter in openapi_operation_parameters(method, path) {
+                    assert!(
+                        parameter["description"]
+                            .as_str()
+                            .is_some_and(contains_chinese),
+                        "parameter description must be Chinese: {method} {path}"
+                    );
+                    assert_ne!(
+                        parameter["description"].as_str(),
+                        Some("业务字段。"),
+                        "parameter description must be specific: {method} {path}"
+                    );
+                }
+                if let Some(request_body) = openapi_request_body(method, path) {
+                    for property in
+                        request_body["content"]["application/json"]["schema"]["properties"]
+                            .as_object()
+                            .into_iter()
+                            .flatten()
+                            .map(|(_, property)| property)
+                    {
+                        assert!(
+                            property["description"]
+                                .as_str()
+                                .is_some_and(contains_chinese),
+                            "request field description must be Chinese: {method} {path}"
+                        );
+                        assert_ne!(
+                            property["description"].as_str(),
+                            Some("业务字段。"),
+                            "request field description must be specific: {method} {path}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            openapi_responses("查询业务数据")["200"]["description"]
+                .as_str()
+                .is_some_and(contains_chinese)
+        );
+    }
+
+    #[test]
+    fn online_contract_pages_keep_raw_json_entries() {
+        let http = api_docs_contract_page(
+            "http",
+            "HTTP 三方接入文档",
+            "HTTP 契约",
+            "/api-docs/openapi.json",
+        );
+        let mqtt = api_docs_contract_page(
+            "mqtt",
+            "MQTT 三方接入文档",
+            "MQTT 契约",
+            "/api-docs/asyncapi.json",
+        );
+
+        assert!(http.contains("data-mode=\"http\""));
+        assert!(http.contains("/api-docs/openapi.json"));
+        assert!(mqtt.contains("data-mode=\"mqtt\""));
+        assert!(mqtt.contains("/api-docs/asyncapi.json"));
+        assert!(include_str!("api_docs.js").contains("查看原始 JSON 定义"));
     }
 }
