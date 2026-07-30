@@ -339,6 +339,7 @@ fn leases_are_exposed_to_viewers() {
                 instance_id: "instance-a".to_string(),
                 idempotency_key: "lease-ui-1".to_string(),
                 constraints: std::collections::HashMap::new(),
+                endpoints: vec![],
                 state: LeaseState::Confirmed,
                 expires_at_ms: 10_000,
             })

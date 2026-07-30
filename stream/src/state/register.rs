@@ -406,6 +406,13 @@ pub struct StreamRuntimeObservation {
     pub closing: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MediaEndpointBinding {
+    pub endpoint_id: String,
+    pub generation: u64,
+    pub expected_ssrc: u32,
+}
+
 pub enum FinalizeStreamResult {
     Finalized(StreamRuntimeObservation),
     InputChanged(StreamRuntimeObservation),
@@ -533,6 +540,7 @@ pub struct Inner {
     pub rtp_gateway_map: DashMap<u32, RtpChannel>,
     //key:stream_id
     pub stream_metadata_map: DashMap<Arc<str>, StreamMetadata>,
+    pub media_endpoint_map: DashMap<Arc<str>, MediaEndpointBinding>,
     pub out_session_map: DashMap<u64, OutSession>,
     pub hls_viewer_deadline_map: DashMap<(Arc<str>, Arc<str>), Instant>,
     pub hls_lease_lock: Mutex<()>,
@@ -632,6 +640,7 @@ impl Register {
         inner
             .user_token_map
             .retain(|(_, token_stream_id), _| token_stream_id != stream_id);
+        crate::io::media_endpoint::MediaEndpointManager::release_stream_detached(stream_id);
     }
 
     pub fn is_live_output_open(stream_id: &str, output_type: &str) -> bool {
@@ -944,7 +953,7 @@ impl Register {
                     let stream_info = Self::build_base_stream_info(
                         &meta,
                         inner.server_conf.name.clone(),
-                        inner.server_conf.proxy_addr.clone(),
+                        inner.server_conf.http.public_url.clone(),
                         rc.stream_id.clone().to_string(),
                     );
                     let state = StreamState::new(stream_info, meta.output_count.get_out_count());
@@ -1061,7 +1070,7 @@ impl Register {
         let base_stream_info = Self::build_base_stream_info(
             &meta,
             inner.server_conf.name.clone(),
-            inner.server_conf.proxy_addr.clone(),
+            inner.server_conf.http.public_url.clone(),
             stream_id.to_string(),
         );
         let output_stream_info = OutputStreamInfo::new(
@@ -1108,7 +1117,7 @@ impl Register {
             let base_stream_info = Self::build_base_stream_info(
                 &meta,
                 arc.server_conf.name.clone(),
-                arc.server_conf.proxy_addr.clone(),
+                arc.server_conf.http.public_url.clone(),
                 stream_id.to_string(),
             );
             if let Some(token) = user_token {
@@ -1175,7 +1184,7 @@ impl Register {
                         let base_stream_info = Self::build_base_stream_info(
                             &meta,
                             arc.server_conf.name.clone(),
-                            arc.server_conf.proxy_addr.clone(),
+                            arc.server_conf.http.public_url.clone(),
                             os.1.stream_id.to_string(),
                         );
                         // event user off play
@@ -1328,7 +1337,7 @@ impl Register {
             let stream_info = Self::build_base_stream_info(
                 &meta,
                 arc.server_conf.name.clone(),
-                arc.server_conf.proxy_addr.clone(),
+                arc.server_conf.http.public_url.clone(),
                 stream_id.to_string(),
             );
             Some(stream_info)
@@ -1378,6 +1387,57 @@ impl Register {
             .rtp_gateway_map
             .get(&ssrc)
             .map(|channel| channel.stream_id.clone())
+    }
+
+    pub fn bind_media_endpoint(
+        stream_id: &str,
+        endpoint_id: String,
+        generation: u64,
+        expected_ssrc: u32,
+    ) {
+        let Some(register) = REGISTER.get() else {
+            return;
+        };
+        register.inner.media_endpoint_map.insert(
+            Arc::from(stream_id),
+            MediaEndpointBinding {
+                endpoint_id,
+                generation,
+                expected_ssrc,
+            },
+        );
+    }
+
+    pub fn media_endpoint_matches(
+        stream_id: &str,
+        endpoint_id: &str,
+        generation: u64,
+        ssrc: u32,
+    ) -> bool {
+        let Some(register) = REGISTER.get() else {
+            return true;
+        };
+        register
+            .inner
+            .media_endpoint_map
+            .get(stream_id)
+            .is_some_and(|binding| {
+                binding.endpoint_id == endpoint_id
+                    && binding.generation == generation
+                    && binding.expected_ssrc == ssrc
+            })
+    }
+
+    pub fn unbind_media_endpoint(stream_id: &str, endpoint_id: &str, generation: u64) {
+        let Some(register) = REGISTER.get() else {
+            return;
+        };
+        register
+            .inner
+            .media_endpoint_map
+            .remove_if(stream_id, |_, binding| {
+                binding.endpoint_id == endpoint_id && binding.generation == generation
+            });
     }
 
     pub fn get_event_tx() -> mpsc::Sender<(Event, Option<Sender<EventRes>>)> {
@@ -1535,7 +1595,7 @@ impl Register {
                         let stream_info = Self::build_base_stream_info(
                             &meta,
                             arc.server_conf.name.clone(),
-                            arc.server_conf.proxy_addr.clone(),
+                            arc.server_conf.http.public_url.clone(),
                             stream_id.to_string(),
                         );
                         let info = RegisterStreamInfo {
@@ -1551,7 +1611,7 @@ impl Register {
                     let stream_info = Self::build_base_stream_info(
                         &meta,
                         arc.server_conf.name.clone(),
-                        arc.server_conf.proxy_addr.clone(),
+                        arc.server_conf.http.public_url.clone(),
                         stream_id.to_string(),
                     );
                     let info = RegisterStreamInfo {
@@ -1592,7 +1652,7 @@ impl Register {
             Self::build_base_stream_info(
                 &meta,
                 arc.server_conf.name.clone(),
-                arc.server_conf.proxy_addr.clone(),
+                arc.server_conf.http.public_url.clone(),
                 stream_id.to_string(),
             )
         })
@@ -1665,7 +1725,7 @@ impl Register {
         let base = Self::build_base_stream_info(
             &meta,
             arc.server_conf.name.clone(),
-            arc.server_conf.proxy_addr.clone(),
+            arc.server_conf.http.public_url.clone(),
             stream_id.to_string(),
         );
         Ok(format!("{}.{}", base.rtp_info.proxy_addr, suffix))
@@ -1846,11 +1906,10 @@ impl Register {
         }
         Ok(ssrc)
     }
-    pub fn init(runtime: &GlobalRuntime) -> GlobalResult<()> {
+    pub fn init(runtime: &GlobalRuntime, server_conf: ServerConf) -> GlobalResult<()> {
         if REGISTER.get().is_some() {
             return Ok(());
         }
-        let server_conf = ServerConf::init_by_conf();
         let stream_conf = StreamConf::init_by_conf();
         let (event_tx, event_rx) = mpsc::channel(10000);
         let _enter = runtime.rt_handle.enter();
@@ -1860,6 +1919,7 @@ impl Register {
             rtp_gateway_map: Default::default(),
             event_tx,
             stream_metadata_map: Default::default(),
+            media_endpoint_map: Default::default(),
             out_session_map: Default::default(),
             hls_viewer_deadline_map: Default::default(),
             hls_lease_lock: Mutex::new(()),

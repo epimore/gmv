@@ -1,5 +1,22 @@
 use prost::Message;
 use prost_types::FileDescriptorSet;
+use std::collections::HashMap;
+
+#[derive(Clone, PartialEq, Message)]
+struct LegacyStartReceiveRequest {
+    #[prost(message, optional, tag = "1")]
+    operation: Option<gmv_protocol::common::v1::OperationRef>,
+    #[prost(string, tag = "2")]
+    stream_id: String,
+    #[prost(string, tag = "3")]
+    route_id: String,
+    #[prost(string, tag = "4")]
+    lease_id: String,
+    #[prost(message, optional, tag = "5")]
+    expected_stream: Option<gmv_protocol::common::v1::NodeIdentity>,
+    #[prost(message, repeated, tag = "6")]
+    preferred_endpoints: Vec<gmv_protocol::common::v1::Endpoint>,
+}
 
 fn descriptor() -> FileDescriptorSet {
     FileDescriptorSet::decode(gmv_protocol::FILE_DESCRIPTOR_SET).unwrap()
@@ -506,4 +523,135 @@ fn stream_output_lifecycle_contract_is_stable() {
         field_number("StreamJsonRequest", "subscription_id"),
         Some(2)
     );
+}
+
+#[test]
+fn stream_receive_allocation_contract_is_additive() {
+    let descriptor = descriptor();
+    let stream = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.stream.v1"))
+        .unwrap();
+    let message = |name: &str| {
+        stream
+            .message_type
+            .iter()
+            .find(|message| message.name.as_deref() == Some(name))
+            .unwrap()
+    };
+    let field = |message_name: &str, field_name: &str| {
+        message(message_name)
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some(field_name))
+            .unwrap()
+    };
+
+    for (name, number) in [
+        ("operation", 1),
+        ("stream_id", 2),
+        ("route_id", 3),
+        ("lease_id", 4),
+        ("expected_stream", 5),
+        ("preferred_endpoints", 6),
+        ("constraints", 7),
+        ("reservation_ttl_ms", 8),
+    ] {
+        assert_eq!(field("StartReceiveRequest", name).number, Some(number));
+    }
+    assert_eq!(
+        field("StartReceiveResponse", "receive_endpoints").number,
+        Some(3)
+    );
+    assert_eq!(
+        field("StartReceiveResponse", "receive_endpoints")
+            .type_name
+            .as_deref(),
+        Some(".gmv.common.v1.Endpoint")
+    );
+}
+
+#[test]
+fn node_capability_and_allocated_endpoint_use_distinct_contract_paths() {
+    let descriptor = descriptor();
+    let guard_messages = descriptor
+        .file
+        .iter()
+        .filter(|file| file.package.as_deref() == Some("gmv.guard.v1"))
+        .flat_map(|file| file.message_type.iter())
+        .collect::<Vec<_>>();
+    let register_endpoints = guard_messages
+        .iter()
+        .find(|message| message.name.as_deref() == Some("RegisterNodeRequest"))
+        .unwrap()
+        .field
+        .iter()
+        .find(|field| field.name.as_deref() == Some("endpoints"))
+        .unwrap();
+    let allocate_endpoints = guard_messages
+        .iter()
+        .find(|message| message.name.as_deref() == Some("AllocateStreamResponse"))
+        .unwrap()
+        .field
+        .iter()
+        .find(|field| field.name.as_deref() == Some("endpoints"))
+        .unwrap();
+
+    assert_eq!(register_endpoints.number, Some(4));
+    assert_eq!(allocate_endpoints.number, Some(4));
+    assert_eq!(
+        register_endpoints.type_name.as_deref(),
+        Some(".gmv.common.v1.Endpoint")
+    );
+    assert_eq!(
+        allocate_endpoints.type_name.as_deref(),
+        Some(".gmv.common.v1.Endpoint")
+    );
+}
+
+#[test]
+fn start_receive_request_is_wire_compatible_with_legacy_callers() {
+    let legacy = LegacyStartReceiveRequest {
+        operation: Some(gmv_protocol::common::v1::OperationRef {
+            operation_id: "operation-1".to_string(),
+            idempotency_key: "idempotency-1".to_string(),
+        }),
+        stream_id: "stream-1".to_string(),
+        route_id: "route-1".to_string(),
+        lease_id: "lease-1".to_string(),
+        expected_stream: Some(gmv_protocol::common::v1::NodeIdentity {
+            node_id: "stream-node-1".to_string(),
+            instance_id: "instance-1".to_string(),
+            kind: gmv_protocol::common::v1::NodeKind::Stream.into(),
+        }),
+        preferred_endpoints: Vec::new(),
+    };
+
+    let decoded =
+        gmv_protocol::stream::v1::StartReceiveRequest::decode(legacy.encode_to_vec().as_slice())
+            .unwrap();
+    assert_eq!(decoded.stream_id, legacy.stream_id);
+    assert_eq!(decoded.route_id, legacy.route_id);
+    assert_eq!(decoded.lease_id, legacy.lease_id);
+    assert!(decoded.constraints.is_empty());
+    assert_eq!(decoded.reservation_ttl_ms, 0);
+
+    let mut constraints = HashMap::new();
+    constraints.insert("transport".to_string(), "tcp_passive".to_string());
+    let current = gmv_protocol::stream::v1::StartReceiveRequest {
+        operation: legacy.operation.clone(),
+        stream_id: legacy.stream_id.clone(),
+        route_id: legacy.route_id.clone(),
+        lease_id: legacy.lease_id.clone(),
+        expected_stream: legacy.expected_stream.clone(),
+        preferred_endpoints: legacy.preferred_endpoints.clone(),
+        constraints,
+        reservation_ttl_ms: 30_000,
+    };
+    let decoded_legacy =
+        LegacyStartReceiveRequest::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded_legacy.stream_id, current.stream_id);
+    assert_eq!(decoded_legacy.route_id, current.route_id);
+    assert_eq!(decoded_legacy.lease_id, current.lease_id);
 }

@@ -38,6 +38,7 @@ impl LeaseService {
             instance_id: request.owner.instance_id,
             idempotency_key: request.idempotency_key,
             constraints: request.constraints,
+            endpoints: Vec::new(),
             state: LeaseState::Allocated,
             expires_at_ms: request.now_ms + request.ttl_ms as i64,
         };
@@ -60,8 +61,18 @@ impl LeaseService {
         for mut lease in self.store.leases() {
             if lease.state == LeaseState::Allocated && now_ms >= lease.expires_at_ms {
                 lease.state = LeaseState::Expired;
+                if let Err(error) = self.store.update_lease(lease.clone()) {
+                    base::log::error!(
+                        "guard lease expiration update failed: lease_id={}, reason={error}",
+                        lease.lease_id
+                    );
+                    continue;
+                }
                 expired.push(lease.lease_id.clone());
-                let _ = self.store.update_lease(lease);
+                if let Some(mut route) = self.store.get_route(&lease.route_id) {
+                    route.state = crate::core::RouteState::Closed;
+                    self.store.upsert_route(route);
+                }
             }
         }
         expired
@@ -87,6 +98,9 @@ impl LeaseService {
             lease.state,
             LeaseState::Released | LeaseState::Failed | LeaseState::Expired
         ) {
+            if lease.state == state {
+                return Ok(lease);
+            }
             return Err(GuardError::Conflict(format!(
                 "lease {lease_id} is terminal: {:?}",
                 lease.state

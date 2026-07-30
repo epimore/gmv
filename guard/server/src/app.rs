@@ -22,9 +22,9 @@ use crate::mqttc::{
 use crate::operation::OperationService;
 use crate::outbox::{DeliveryRouter, OutboxWorker};
 use crate::runtime::event_forwarder::{EventForwardRule, EventForwarder};
-use crate::runtime::node_expirer;
 use crate::runtime::node_rpc::{self, NodeRpcConfig};
 use crate::runtime::web::{self, WebServerConfig};
+use crate::runtime::{lease_expirer, node_expirer};
 use crate::store::InMemoryGuardStore;
 use crate::store::persistent::PersistentStore;
 
@@ -181,10 +181,16 @@ pub async fn start_guard(
             private_key_path: config.grpc.tls.private_key_path.clone(),
         }),
     };
-    let mut background_tasks = vec![(
-        "node-expirer",
-        node_expirer::spawn(&runtime, registry.clone(), config.grpc.heartbeat_timeout_ms)?,
-    )];
+    let mut background_tasks = vec![
+        (
+            "node-expirer",
+            node_expirer::spawn(&runtime, registry.clone(), config.grpc.heartbeat_timeout_ms)?,
+        ),
+        (
+            "lease-expirer",
+            lease_expirer::spawn(&runtime, api_store.clone())?,
+        ),
+    ];
     let mqtt_publisher = if config.integrations.mqtt.enabled {
         let (publisher, task) = spawn_mqtt_runtime(
             &runtime,

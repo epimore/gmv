@@ -1,4 +1,5 @@
-use crate::general::cfg::{GrpcConf, GuardConf, ServerConf};
+use crate::general::cfg::{GuardConf, MediaListenerConf, MediaListenerMode, ServerConf};
+use crate::io::media_endpoint::{MediaBootstrap, MediaEndpointManager};
 use crate::io::{http, rtp_handler, talk::TalkManager};
 use crate::media;
 use crate::state::register::Register;
@@ -10,7 +11,7 @@ use base::logger;
 use base::tokio::sync::mpsc;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::collections::HashMap;
-use std::net::{TcpListener, UdpSocket};
+use std::net::TcpListener;
 use std::sync::Arc;
 
 use crate::guard_integration::{
@@ -26,25 +27,19 @@ pub struct App {
     conf: ServerConf,
 }
 
-impl
-    Daemon<(
-        std::net::TcpListener,
-        (Option<std::net::TcpListener>, Option<UdpSocket>),
-        TcpListener,
-    )> for App
-{
+pub struct StreamBootstrap {
+    http_listener: TcpListener,
+    grpc_listener: TcpListener,
+    media: MediaBootstrap,
+    media_conf: MediaListenerConf,
+}
+
+impl Daemon<StreamBootstrap> for App {
     fn cli_basic() -> CliBasic {
         default_cli_basic!()
     }
 
-    fn init_privilege() -> GlobalResult<(
-        Self,
-        (
-            std::net::TcpListener,
-            (Option<std::net::TcpListener>, Option<UdpSocket>),
-            TcpListener,
-        ),
-    )>
+    fn init_privilege() -> GlobalResult<(Self, StreamBootstrap)>
     where
         Self: Sized,
     {
@@ -52,77 +47,101 @@ impl
             conf: ServerConf::init_by_conf(),
         };
         logger::Logger::init()?;
-        let http_port = app.conf.http_port;
-        let http_listener = http::listen_http_server(http_port)?;
-        let rtp_port = app.conf.rtp_port;
-        let tu = rtp_handler::listen_media_server(rtp_port)?;
-        let grpc = GrpcConf::init_by_conf();
-        let grpc_listener = TcpListener::bind(grpc.addr).map_err(|error| {
+        let http_addr = app.conf.http.listen_addr;
+        let media_conf = app.conf.media_listener_conf().map_err(|message| {
+            base::exception::GlobalError::new_biz_error(
+                base::err::BaseErrorCode::InvalidRequest.code(),
+                &message,
+                |msg| error!("{msg}"),
+            )
+        })?;
+        let grpc_addr = app.conf.grpc.listen_addr;
+        let http_listener = http::listen_http_server(http_addr)?;
+        let grpc_listener = TcpListener::bind(grpc_addr).map_err(|error| {
             base::exception::GlobalError::new_sys_error(
-                &format!("bind stream grpc {} failed: {error}", grpc.addr),
+                &format!("bind stream grpc {grpc_addr} failed: {error}"),
                 |_| {},
             )
         })?;
-        banner(Self::cli_basic().version, http_port, rtp_port, |msg| {
+        let media = match media_conf.mode {
+            MediaListenerMode::Single => MediaBootstrap::Single {
+                listener: rtp_handler::listen_media_server(
+                    media_conf.bind_ip,
+                    media_conf.single_port,
+                )?,
+            },
+            MediaListenerMode::Multi => MediaBootstrap::Multi,
+        };
+        banner(Self::cli_basic().version, &app.conf, &media_conf, |msg| {
             info!("{msg}")
         });
-        Ok((app, (http_listener, tu, grpc_listener)))
+        Ok((
+            app,
+            StreamBootstrap {
+                http_listener,
+                grpc_listener,
+                media,
+                media_conf,
+            },
+        ))
     }
 
-    fn run_app(
-        self,
-        t: (
-            std::net::TcpListener,
-            (Option<std::net::TcpListener>, Option<UdpSocket>),
-            TcpListener,
-        ),
-    ) -> GlobalResult<()> {
-        let (http_listener, tu, grpc_listener) = t;
+    fn run_app(self, bootstrap: StreamBootstrap) -> GlobalResult<()> {
+        let StreamBootstrap {
+            http_listener,
+            grpc_listener,
+            media,
+            media_conf,
+        } = bootstrap;
         let node_name = self.conf.name.clone();
-        let http_port = self.conf.http_port;
-        let rtp_port = self.conf.rtp_port;
-        let host = self.conf.host.clone();
-        let grpc = GrpcConf::init_by_conf();
+        let (http_public_host, http_public_port) =
+            self.conf.http.public_endpoint().map_err(|message| {
+                base::exception::GlobalError::new_biz_error(
+                    base::err::BaseErrorCode::InvalidRequest.code(),
+                    &message,
+                    |msg| error!("{msg}"),
+                )
+            })?;
+        let grpc = self.conf.grpc.clone();
         let guard = GuardConf::init_by_conf();
         let started_at_epoch_ms = now_epoch_ms();
         let (tx, rx) = mpsc::channel(100);
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
-        Register::init(&network_rt)?;
+        Register::init(&network_rt, self.conf.clone())?;
         {
             let _enter = network_rt.rt_handle.enter();
-            rtp_handler::run(&network_rt, tu, network_rt.cancel.clone())?;
+            let media_endpoints = MediaEndpointManager::new(network_rt.clone(), media_conf, media)?;
+            MediaEndpointManager::install_global(media_endpoints.clone())?;
+            MediaEndpointManager::spawn_expiry_task(media_endpoints.clone())?;
+            TalkManager::init(network_rt.clone(), media_endpoints.clone())?;
+            let receive_endpoint = media_endpoints.capability_endpoint();
             let mut node = StreamGuardNode::new(
                 node_name,
                 generate_instance_id(),
-                host.clone(),
+                http_public_host,
                 guard.endpoint.clone(),
-                u32::from(http_port),
+                u32::from(http_public_port),
                 self.conf.http.tls.enabled,
-                u32::from(rtp_port),
+                receive_endpoint.port,
             );
+            node.endpoints.retain(|endpoint| endpoint.name != "rtp");
+            node.endpoints.push(receive_endpoint.clone());
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
                 scheme: base_rpc::rpc_scheme(grpc.tls.enabled).to_string(),
-                host: grpc.addr.ip().to_string(),
-                port: u32::from(grpc.addr.port()),
+                host: grpc.advertised_addr.ip().to_string(),
+                port: u32::from(grpc.advertised_addr.port()),
                 mode: EndpointMode::Single as i32,
                 labels: HashMap::new(),
             });
             let control_identity = node.identity.clone();
             let control_node_id = control_identity.node_id.clone();
-            let control_addr = grpc.addr;
-            let receive_endpoint = Endpoint {
-                name: "rtp".to_string(),
-                scheme: "rtp".to_string(),
-                host: host.clone(),
-                port: u32::from(rtp_port),
-                mode: EndpointMode::Single as i32,
-                labels: HashMap::new(),
-            };
+            let control_addr = grpc.listen_addr;
             let control_cancel = network_rt.cancel.clone();
             let control_shutdown = control_cancel.clone();
             let control_media_tx = tx.clone();
+            let control_media_endpoints = media_endpoints.clone();
             network_rt.spawn("stream-control-rpc", async move {
                 base::log::debug!(
                     "stream rpc service inbound: node_id={}, bind_addr={}, tls={}",
@@ -132,6 +151,7 @@ impl
                 );
                 let rpc = StreamControlRpc::new(
                     StreamControlAdapter::new(control_identity, receive_endpoint)
+                        .with_media_endpoints(control_media_endpoints)
                         .with_media_tx(control_media_tx),
                 );
                 let mut server_config = base_rpc::RpcServerConfig::default();
@@ -193,7 +213,9 @@ impl
                 node.guard_channel.clone(),
                 node.register_request(NodeResourceSnapshot::default()),
             );
-            reporter.business_metrics = Arc::new(|| {
+            let metrics_media_endpoints = media_endpoints.clone();
+            reporter.business_metrics = Arc::new(move || {
+                let media_stats = metrics_media_endpoints.stats_snapshot();
                 HashMap::from([
                     (
                         "receiving_streams".to_string(),
@@ -202,6 +224,32 @@ impl
                     (
                         "active_talk_sessions".to_string(),
                         TalkManager::active_session_count().to_string(),
+                    ),
+                    (
+                        "media_ports_total".to_string(),
+                        media_stats.total.to_string(),
+                    ),
+                    ("media_ports_free".to_string(), media_stats.free.to_string()),
+                    ("media_ports_binding".to_string(), "0".to_string()),
+                    (
+                        "media_ports_listening".to_string(),
+                        media_stats.listening.to_string(),
+                    ),
+                    (
+                        "media_ports_confirmed".to_string(),
+                        media_stats.confirmed.to_string(),
+                    ),
+                    (
+                        "media_ports_releasing".to_string(),
+                        media_stats.releasing.to_string(),
+                    ),
+                    (
+                        "media_port_bind_failures".to_string(),
+                        media_stats.bind_failures.to_string(),
+                    ),
+                    (
+                        "media_port_exhaustions".to_string(),
+                        media_stats.exhaustions.to_string(),
                     ),
                 ])
             });
@@ -212,6 +260,14 @@ impl
                 network_rt.cancel.clone(),
             )?;
             init_guard_event_sender(event_sender);
+            let shutdown_cancel = network_rt.cancel.clone();
+            network_rt.spawn("stream-media-endpoint-shutdown", async move {
+                shutdown_cancel.cancelled().await;
+                if let Err(error) = media_endpoints.shutdown().await {
+                    error!("media endpoint shutdown failed: {error}");
+                    GlobalRuntime::request_shutdown_with_error();
+                }
+            })?;
         }
         let http_cancel = network_rt.cancel.clone();
         let http_shutdown = http_cancel.clone();
@@ -260,21 +316,50 @@ impl
     }
 }
 
-fn banner<F: FnOnce(String)>(version: &str, http_port: u16, rtp_port: u16, f: F) {
-    let http_addr = format!("0.0.0.0:{http_port}");
-    let rtp_addr = format!("0.0.0.0:{rtp_port}");
+fn banner<F: FnOnce(String)>(
+    version: &str,
+    server_conf: &ServerConf,
+    media_conf: &MediaListenerConf,
+    f: F,
+) {
+    let (rtp_listen, rtp_public, rtp_status) = match media_conf.mode {
+        MediaListenerMode::Single => (
+            format!("{}:{}", media_conf.bind_ip, media_conf.single_port),
+            format!("{}:{}", media_conf.advertised_host, media_conf.single_port),
+            "🟢 Listening",
+        ),
+        MediaListenerMode::Multi => (
+            format!(
+                "{}:{}-{}",
+                media_conf.bind_ip, media_conf.port_range.start, media_conf.port_range.end
+            ),
+            format!(
+                "{}:{}-{}",
+                media_conf.advertised_host, media_conf.port_range.start, media_conf.port_range.end
+            ),
+            "🟢 Dynamic",
+        ),
+    };
     let msg = format!(
         r#"
 ======================================================================
                     [GMV:STREAM]   Version: {}
 ======================================================================
-┌──────────────────┬──────────────────────┬──────────────┬──────────────┐
-│ Service          │ Address              │ Protocols    │  Status      │
-├──────────────────┼──────────────────────┼──────────────┼──────────────┤
-│ Stream HTTP      │ {:<20} │ HTTP         │ 🟢 Ready     │
-│ Stream RTP       │ {:<20} │ TCP, UDP     │ 🟢 Listening │
-└──────────────────┴──────────────────────┴──────────────┴──────────────┘"#,
-        version, http_addr, rtp_addr
+HTTP listen       : {}
+HTTP public       : {}
+gRPC listen       : {}
+gRPC advertised   : {}
+RTP listen        : {}
+RTP advertised    : {}
+RTP status        : {}"#,
+        version,
+        server_conf.http.listen_addr,
+        server_conf.http.public_url,
+        server_conf.grpc.listen_addr,
+        server_conf.grpc.advertised_addr,
+        rtp_listen,
+        rtp_public,
+        rtp_status
     );
     f(msg);
 }

@@ -3,18 +3,122 @@ use gmv_guard_server::core::{
     LeaseState as CoreLeaseState, NodeIdentity, NodeKind, RouteState as CoreRouteState,
 };
 use gmv_guard_server::registry::{RegisterRequest, RegistryService};
-use gmv_guard_server::runtime::control_rpc::GuardControlRpc;
+use gmv_guard_server::runtime::control_rpc::{GuardControlRpc, StreamReceiveControl};
 use gmv_guard_server::store::InMemoryGuardStore;
 use gmv_guard_server::store::model::{
     EndpointModeRecord, EndpointRecord, LeaseRecord, PlaybackTicketRecord, RouteRecord,
 };
-use gmv_protocol::common::v1::OperationRef;
+use gmv_protocol::common::v1::{Endpoint, EndpointMode, OperationRef};
 use gmv_protocol::guard::v1::guard_control_server::GuardControl;
 use gmv_protocol::guard::v1::{
     AllocateStreamRequest, CheckPlaybackRequest, LeaseRequest, LeaseState, QueryNodeRequest,
     QueryRouteRequest, RouteState,
 };
+use gmv_protocol::stream::v1::{
+    StartReceiveRequest, StartReceiveResponse, StopReceiveRequest, StopReceiveResponse, StreamState,
+};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Debug)]
+struct FakeStreamReceiveControl;
+
+#[tonic::async_trait]
+impl StreamReceiveControl for FakeStreamReceiveControl {
+    async fn start_receive(
+        &self,
+        _node: &gmv_guard_server::store::model::NodeRecord,
+        request: StartReceiveRequest,
+    ) -> Result<StartReceiveResponse, tonic::Status> {
+        Ok(StartReceiveResponse {
+            stream_id: request.stream_id,
+            state: StreamState::Receiving as i32,
+            receive_endpoints: vec![Endpoint {
+                name: "rtp".to_string(),
+                scheme: "rtp".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 28601,
+                mode: EndpointMode::Single as i32,
+                labels: HashMap::from([
+                    ("endpoint_id".to_string(), "media-28601-1".to_string()),
+                    ("generation".to_string(), "1".to_string()),
+                ]),
+            }],
+            error: None,
+        })
+    }
+
+    async fn stop_receive(
+        &self,
+        _node: &gmv_guard_server::store::model::NodeRecord,
+        _request: StopReceiveRequest,
+    ) -> Result<StopReceiveResponse, tonic::Status> {
+        Ok(StopReceiveResponse {
+            state: StreamState::Stopped as i32,
+            ..Default::default()
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct RejectingStreamReceiveControl {
+    stops: AtomicUsize,
+}
+
+#[tonic::async_trait]
+impl StreamReceiveControl for RejectingStreamReceiveControl {
+    async fn start_receive(
+        &self,
+        _node: &gmv_guard_server::store::model::NodeRecord,
+        request: StartReceiveRequest,
+    ) -> Result<StartReceiveResponse, tonic::Status> {
+        Ok(StartReceiveResponse {
+            stream_id: request.stream_id,
+            state: StreamState::Failed as i32,
+            receive_endpoints: vec![],
+            error: Some(gmv_protocol::common::v1::ErrorDetail {
+                code: "endpoint_allocation_failed".to_string(),
+                message: "media port pool is exhausted".to_string(),
+                ..Default::default()
+            }),
+        })
+    }
+
+    async fn stop_receive(
+        &self,
+        _node: &gmv_guard_server::store::model::NodeRecord,
+        _request: StopReceiveRequest,
+    ) -> Result<StopReceiveResponse, tonic::Status> {
+        self.stops.fetch_add(1, Ordering::Relaxed);
+        Ok(StopReceiveResponse {
+            state: StreamState::Stopped as i32,
+            ..Default::default()
+        })
+    }
+}
+
+fn register_stream_node(store: &InMemoryGuardStore, node_id: &str) {
+    RegistryService::new(store.clone())
+        .register(RegisterRequest {
+            identity: NodeIdentity::new(node_id, "inst-1", NodeKind::Stream),
+            capabilities: vec!["live".to_string()],
+            endpoints: vec![EndpointRecord {
+                name: "grpc".to_string(),
+                scheme: "http".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 19082,
+                mode: EndpointModeRecord::Single,
+                labels: HashMap::new(),
+            }],
+            host_metrics: Default::default(),
+            zone: Some("z1".to_string()),
+            now_ms: 1_000,
+            takeover: false,
+            config: Default::default(),
+        })
+        .unwrap();
+}
 
 #[test]
 fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
@@ -22,27 +126,12 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
         .unwrap()
         .block_on(async {
             let store = InMemoryGuardStore::default();
-            RegistryService::new(store.clone())
-                .register(RegisterRequest {
-                    identity: NodeIdentity::new("stream-rpc-1", "inst-1", NodeKind::Stream),
-                    capabilities: vec!["live".to_string()],
-                    endpoints: vec![EndpointRecord {
-                        name: "grpc".to_string(),
-                        scheme: "http".to_string(),
-                        host: "127.0.0.1".to_string(),
-                        port: 19082,
-                        mode: EndpointModeRecord::Single,
-                        labels: HashMap::new(),
-                    }],
-                    host_metrics: Default::default(),
-                    zone: Some("z1".to_string()),
-                    now_ms: 1_000,
-                    takeover: false,
-                    config: Default::default(),
-                })
-                .unwrap();
+            register_stream_node(&store, "stream-rpc-1");
 
-            let service = GuardControlRpc::new(store.clone());
+            let service = GuardControlRpc::new_with_stream_control(
+                store.clone(),
+                Arc::new(FakeStreamReceiveControl),
+            );
             let allocation = service
                 .allocate_stream(tonic::Request::new(AllocateStreamRequest {
                     operation: Some(OperationRef {
@@ -58,8 +147,24 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
                 .into_inner();
             assert_eq!(allocation.lease_id, "lease-op-rpc-1");
             assert_eq!(allocation.route_id, "route-op-rpc-1");
-            assert_eq!(allocation.endpoints.len(), 1);
-            assert_eq!(allocation.endpoints[0].port, 19082);
+            assert_eq!(allocation.endpoints.len(), 2);
+            assert_eq!(allocation.endpoints[1].port, 28601);
+            assert_eq!(allocation.endpoints[1].mode, EndpointMode::Single as i32);
+
+            let repeated = service
+                .allocate_stream(tonic::Request::new(AllocateStreamRequest {
+                    operation: Some(OperationRef {
+                        operation_id: "op-rpc-1".to_string(),
+                        idempotency_key: "idem-rpc-1".to_string(),
+                    }),
+                    stream_id: "stream-rpc-001".to_string(),
+                    stream_type: "live".to_string(),
+                    constraints: HashMap::from([("zone".to_string(), "z1".to_string())]),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(repeated.endpoints, allocation.endpoints);
 
             let node = service
                 .query_node(tonic::Request::new(QueryNodeRequest {
@@ -114,6 +219,42 @@ fn guard_control_allocates_lease_route_and_exposes_registered_endpoints() {
 }
 
 #[test]
+fn guard_control_compensates_failed_stream_allocation() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let store = InMemoryGuardStore::default();
+            register_stream_node(&store, "stream-rpc-fail");
+            let stream = Arc::new(RejectingStreamReceiveControl::default());
+            let service = GuardControlRpc::new_with_stream_control(store.clone(), stream.clone());
+
+            let error = service
+                .allocate_stream(tonic::Request::new(AllocateStreamRequest {
+                    operation: Some(OperationRef {
+                        operation_id: "op-rpc-fail".to_string(),
+                        idempotency_key: "idem-rpc-fail".to_string(),
+                    }),
+                    stream_id: "stream-rpc-fail".to_string(),
+                    stream_type: "live".to_string(),
+                    constraints: HashMap::new(),
+                }))
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.code(), tonic::Code::ResourceExhausted);
+            assert_eq!(stream.stops.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                store.get_lease("lease-op-rpc-fail").unwrap().state,
+                CoreLeaseState::Failed
+            );
+            assert_eq!(
+                store.get_route("route-op-rpc-fail").unwrap().state,
+                CoreRouteState::Closed
+            );
+        });
+}
+
+#[test]
 fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
     base::tokio::runtime::Runtime::new()
         .unwrap()
@@ -129,6 +270,7 @@ fn guard_control_checks_playback_ticket_stream_session_and_revocation() {
                     instance_id: "inst-1".to_string(),
                     idempotency_key: String::new(),
                     constraints: HashMap::new(),
+                    endpoints: vec![],
                     state: CoreLeaseState::Confirmed,
                     expires_at_ms: i64::MAX,
                 })

@@ -6,7 +6,7 @@ use gmv_guard_server::lease::{LeaseRequest, LeaseService};
 use gmv_guard_server::registry::{RegisterRequest, RegistryService};
 use gmv_guard_server::route::{RecoveryIssue, ResourceSnapshot, RouteService, SnapshotResource};
 use gmv_guard_server::store::InMemoryGuardStore;
-use gmv_guard_server::store::model::RouteRecord;
+use gmv_guard_server::store::model::{EndpointModeRecord, EndpointRecord, RouteRecord};
 
 fn stream_identity(node_id: &str, instance_id: &str) -> NodeIdentity {
     NodeIdentity::new(node_id, instance_id, NodeKind::Stream)
@@ -106,6 +106,50 @@ fn allocation_prefers_lower_active_lease_load() {
         .find(|score| score.node_id == "stream-a")
         .unwrap();
     assert_eq!(left_score.active_confirmed, 1);
+}
+
+#[test]
+fn allocation_skips_multi_node_with_exhausted_media_pool() {
+    let store = InMemoryGuardStore::default();
+    register_stream(&store, "stream-full", "inst-full");
+    let available = register_stream(&store, "stream-available", "inst-available");
+    for (node_id, free) in [("stream-full", "0"), ("stream-available", "1")] {
+        let mut node = store.get_node(node_id).unwrap();
+        node.endpoints.push(EndpointRecord {
+            name: "rtp".to_string(),
+            scheme: "rtp".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 28600,
+            mode: EndpointModeRecord::Multi,
+            labels: HashMap::from([
+                ("port_range_start".to_string(), "28600".to_string()),
+                ("port_range_end".to_string(), "28601".to_string()),
+            ]),
+        });
+        node.business_metrics
+            .insert("media_ports_free".to_string(), free.to_string());
+        store.upsert_node(node);
+    }
+
+    let result = AllocationService::new(store)
+        .allocate(AllocationRequest {
+            request_id: "req-capacity".to_string(),
+            resource_id: "stream-capacity".to_string(),
+            capability: "live".to_string(),
+            zone: Some("z1".to_string()),
+            constraints: HashMap::new(),
+        })
+        .unwrap();
+
+    assert_eq!(result.owner, available);
+    let full = result
+        .explain
+        .scores
+        .iter()
+        .find(|score| score.node_id == "stream-full")
+        .unwrap();
+    assert!(!full.eligible);
+    assert_eq!(full.reason, "media_port_pool_exhausted");
 }
 
 #[test]
@@ -226,7 +270,23 @@ fn lease_state_machine_rejects_stale_instance_and_expires() {
             ttl_ms: 10,
         })
         .unwrap();
+    RouteService::new(store.clone())
+        .create_allocated(RouteRecord {
+            route_id: "route-2".to_string(),
+            resource_id: "stream-002".to_string(),
+            node_id: "stream-a".to_string(),
+            instance_id: "inst-a".to_string(),
+            state: RouteState::Allocated,
+            desired_generation: 1,
+            observed_generation: 0,
+            observed_sequence: 0,
+        })
+        .unwrap();
     assert_eq!(service.expire_due(1_011), vec!["lease-2".to_string()]);
+    assert_eq!(
+        store.get_route("route-2").unwrap().state,
+        RouteState::Closed
+    );
 }
 
 #[test]

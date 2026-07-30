@@ -1,15 +1,15 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, Mutex, OnceLock},
-    time::Instant,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::serde::{Serialize, de::DeserializeOwned};
 use base::serde_json;
-use base::tokio::sync::{mpsc, oneshot};
+use base::tokio::sync::{Mutex, mpsc, oneshot};
 use base_rpc::RpcChannelConfig;
 use gmv_domain::info::media_info::MediaConfig;
 use gmv_domain::info::media_info_ext::MediaMap;
@@ -38,6 +38,7 @@ use gmv_protocol::stream::v1::{
 use tonic::transport::Channel;
 
 use crate::io::local::mp4::Mp4OutputInnerEvent;
+use crate::io::media_endpoint::{MediaEndpointManager, ReserveMediaEndpoint};
 use crate::io::talk::TalkManager;
 use crate::state::register::{FinalizeStreamResult, Register, StreamRuntimeObservation};
 
@@ -354,11 +355,8 @@ impl StreamControl for StreamControlRpc {
     ) -> Result<tonic::Response<StartReceiveResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("stream_control.start_receive, req:{request:?}");
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(control.start_receive(request)))
+        let mut control = self.inner.lock().await;
+        Ok(tonic::Response::new(control.start_receive(request).await))
     }
 
     async fn stop_receive(
@@ -367,11 +365,8 @@ impl StreamControl for StreamControlRpc {
     ) -> Result<tonic::Response<StopReceiveResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("stream_control.stop_receive, req:{request:?}");
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
-        Ok(tonic::Response::new(control.stop_receive(request)))
+        let mut control = self.inner.lock().await;
+        Ok(tonic::Response::new(control.stop_receive(request).await))
     }
 
     async fn query_stream(
@@ -380,10 +375,7 @@ impl StreamControl for StreamControlRpc {
     ) -> Result<tonic::Response<QueryStreamResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("stream_control.query_stream, req:{request:?}");
-        let control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        let control = self.inner.lock().await;
         Ok(tonic::Response::new(control.query_stream(request)))
     }
 
@@ -393,10 +385,7 @@ impl StreamControl for StreamControlRpc {
     ) -> Result<tonic::Response<CreateOutputResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("stream_control.create_output, req:{request:?}");
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        let mut control = self.inner.lock().await;
         Ok(tonic::Response::new(control.create_output(request)))
     }
 
@@ -406,10 +395,7 @@ impl StreamControl for StreamControlRpc {
     ) -> Result<tonic::Response<CloseOutputResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("stream_control.close_output, req:{request:?}");
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        let mut control = self.inner.lock().await;
         Ok(tonic::Response::new(control.close_output(request)))
     }
 
@@ -423,10 +409,7 @@ impl StreamControl for StreamControlRpc {
             request.stream_id,
             request.subscription_id
         );
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        let mut control = self.inner.lock().await;
         Ok(tonic::Response::new(
             control.release_subscription_outputs(request),
         ))
@@ -438,10 +421,7 @@ impl StreamControl for StreamControlRpc {
     ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("stream_control.get_playback_endpoints, req:{request:?}");
-        let control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        let control = self.inner.lock().await;
         Ok(tonic::Response::new(
             control.get_playback_endpoints(request),
         ))
@@ -456,10 +436,7 @@ impl StreamControl for StreamControlRpc {
             "stream_control.init_media, req: payload_bytes={}",
             request.payload_json.len()
         );
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("stream control lock poisoned"))?;
+        let mut control = self.inner.lock().await;
         Ok(tonic::Response::new(control.init_media(request)))
     }
 
@@ -578,11 +555,14 @@ impl StreamControl for StreamControlRpc {
             "stream_control.talk_close, req: payload_bytes={}",
             request.payload_json.len()
         );
-        Ok(tonic::Response::new(stream_unit_response(
-            decode_payload::<TalkCloseReq>(&request.payload_json).map(|value| {
-                TalkManager::close(&value.talk_id);
-            }),
-        )))
+        let result = match decode_payload::<TalkCloseReq>(&request.payload_json) {
+            Ok(value) => TalkManager::close(&value.talk_id)
+                .await
+                .map(|_| ())
+                .map_err(detail_from_error),
+            Err(error) => Err(error),
+        };
+        Ok(tonic::Response::new(stream_unit_response(result)))
     }
 
     async fn talk_online(
@@ -609,7 +589,7 @@ impl StreamControl for StreamControlRpc {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StreamControlAdapter {
     identity: NodeIdentity,
     receive_endpoint: Endpoint,
@@ -619,6 +599,7 @@ pub struct StreamControlAdapter {
     finalized_streams: HashMap<String, FinalizedStreamRuntime>,
     restart_close_watches: HashMap<String, RestartCloseWatch>,
     media_tx: Option<mpsc::Sender<u32>>,
+    media_endpoints: Option<Arc<MediaEndpointManager>>,
 }
 
 #[derive(Debug, Clone)]
@@ -682,7 +663,13 @@ impl StreamControlAdapter {
             finalized_streams: HashMap::new(),
             restart_close_watches: HashMap::new(),
             media_tx: None,
+            media_endpoints: None,
         }
+    }
+
+    pub fn with_media_endpoints(mut self, media_endpoints: Arc<MediaEndpointManager>) -> Self {
+        self.media_endpoints = Some(media_endpoints);
+        self
     }
 
     pub fn with_media_tx(mut self, media_tx: mpsc::Sender<u32>) -> Self {
@@ -694,7 +681,7 @@ impl StreamControlAdapter {
         self.media_tx.is_some() || self.streams.contains_key(stream_id)
     }
 
-    pub fn start_receive(&mut self, request: StartReceiveRequest) -> StartReceiveResponse {
+    pub async fn start_receive(&mut self, request: StartReceiveRequest) -> StartReceiveResponse {
         if !self.matches_expected(request.expected_stream.as_ref()) {
             return start_response(
                 &request.stream_id,
@@ -721,28 +708,62 @@ impl StreamControlAdapter {
         }
         if let Some(existing) = self.streams.get(&request.stream_id) {
             if existing.lease_id == request.lease_id {
+                if self.media_endpoints.is_none() {
+                    return start_response(
+                        &request.stream_id,
+                        existing.state,
+                        existing.endpoints.clone(),
+                        None,
+                    );
+                }
+            } else {
                 return start_response(
                     &request.stream_id,
-                    existing.state,
-                    existing.endpoints.clone(),
-                    None,
+                    StreamState::Failed,
+                    vec![],
+                    Some(error(
+                        "idempotency_conflict",
+                        "stream already has a different lease",
+                    )),
                 );
             }
-            return start_response(
-                &request.stream_id,
-                StreamState::Failed,
-                vec![],
-                Some(error(
-                    "idempotency_conflict",
-                    "stream already has a different lease",
-                )),
-            );
         }
         self.finalized_streams.remove(&request.stream_id);
-        let endpoints = if request.preferred_endpoints.is_empty() {
+        let endpoints = if let Some(media_endpoints) = &self.media_endpoints {
+            let expected_ssrc = request
+                .constraints
+                .get("expected_ssrc")
+                .and_then(|value| value.parse::<u32>().ok());
+            let reservation_ttl = (request.reservation_ttl_ms != 0)
+                .then(|| Duration::from_millis(request.reservation_ttl_ms));
+            match media_endpoints
+                .reserve(ReserveMediaEndpoint {
+                    stream_id: request.stream_id.clone(),
+                    lease_id: request.lease_id.clone(),
+                    route_id: request.route_id.clone(),
+                    expected_ssrc,
+                    reservation_ttl,
+                    confirmed: false,
+                })
+                .await
+            {
+                Ok(endpoint) => vec![endpoint.endpoint(&self.receive_endpoint.host)],
+                Err(error_value) => {
+                    return start_response(
+                        &request.stream_id,
+                        StreamState::Failed,
+                        vec![],
+                        Some(error(
+                            "endpoint_allocation_failed",
+                            &error_value.to_string(),
+                        )),
+                    );
+                }
+            }
+        } else if request.preferred_endpoints.is_empty() {
             vec![self.receive_endpoint.clone()]
         } else {
-            request.preferred_endpoints
+            request.preferred_endpoints.clone()
         };
         self.streams.insert(
             request.stream_id.clone(),
@@ -757,20 +778,36 @@ impl StreamControlAdapter {
         start_response(&request.stream_id, StreamState::Receiving, endpoints, None)
     }
 
-    pub fn stop_receive(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
+    pub async fn stop_receive(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
         let cutoff = now_ms().saturating_sub(10 * 60 * 1_000);
         self.finalized_streams
             .retain(|_, finalized| finalized.finalized_at_ms >= cutoff);
-        match StopReceivePhase::try_from(request.phase).unwrap_or(StopReceivePhase::Unspecified) {
+        let lease_id = self
+            .streams
+            .get(&request.stream_id)
+            .map(|stream| stream.lease_id.clone());
+        let stream_id = request.stream_id.clone();
+        let mut response = match StopReceivePhase::try_from(request.phase)
+            .unwrap_or(StopReceivePhase::Unspecified)
+        {
             StopReceivePhase::Unspecified => self.stop_receive_legacy(request),
             StopReceivePhase::QuiesceOutputs => self.quiesce_receive_outputs(request),
             StopReceivePhase::Finalize => self.finalize_receive(request),
+        };
+        if response.state == StreamState::Stopped as i32
+            && let (Some(media_endpoints), Some(lease_id)) = (&self.media_endpoints, lease_id)
+            && let Err(error_value) = media_endpoints.release(&stream_id, &lease_id).await
+        {
+            response.state = StreamState::Stopping as i32;
+            response.error = Some(error("endpoint_release_failed", &error_value.to_string()));
+            response.input_removed = false;
         }
+        response
     }
 
     fn stop_receive_legacy(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
         if self.media_tx.is_some() {
-            let _ = Register::close_stream_by_id(&request.stream_id);
+            Register::close_stream_by_id(&request.stream_id);
         }
         self.outputs
             .retain(|_, output| output.stream_id != request.stream_id);
@@ -1454,22 +1491,50 @@ impl StreamControlAdapter {
             resources: self
                 .streams
                 .iter()
-                .map(|(stream_id, stream)| ResourceReport {
-                    resource: Some(ResourceRef {
-                        resource_id: stream_id.clone(),
-                        resource_type: "stream".to_string(),
-                    }),
-                    state: match stream.state {
-                        StreamState::Receiving => ResourceState::Running as i32,
-                        StreamState::Stopping => ResourceState::Stopping as i32,
-                        StreamState::Stopped => ResourceState::Stopped as i32,
-                        StreamState::Failed => ResourceState::Failed as i32,
-                        _ => ResourceState::Starting as i32,
-                    },
-                    labels: HashMap::from([
+                .map(|(stream_id, stream)| {
+                    let mut labels = HashMap::from([
                         ("route_id".to_string(), stream.route_id.clone()),
                         ("lease_id".to_string(), stream.lease_id.clone()),
-                    ]),
+                    ]);
+                    if let Some(endpoint) = stream
+                        .endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.name == "rtp" || endpoint.scheme == "rtp")
+                    {
+                        labels.insert("media_host".to_string(), endpoint.host.clone());
+                        labels.insert("media_port".to_string(), endpoint.port.to_string());
+                        if let Some(endpoint_id) = endpoint.labels.get("endpoint_id") {
+                            labels.insert("endpoint_id".to_string(), endpoint_id.clone());
+                        }
+                        if let Some(generation) = endpoint.labels.get("generation") {
+                            labels.insert("endpoint_generation".to_string(), generation.clone());
+                        }
+                    }
+                    labels.insert(
+                        "listener_state".to_string(),
+                        match stream.state {
+                            StreamState::Receiving => "listening",
+                            StreamState::Stopping => "releasing",
+                            StreamState::Stopped => "stopped",
+                            StreamState::Failed => "failed",
+                            _ => "binding",
+                        }
+                        .to_string(),
+                    );
+                    ResourceReport {
+                        resource: Some(ResourceRef {
+                            resource_id: stream_id.clone(),
+                            resource_type: "stream".to_string(),
+                        }),
+                        state: match stream.state {
+                            StreamState::Receiving => ResourceState::Running as i32,
+                            StreamState::Stopping => ResourceState::Stopping as i32,
+                            StreamState::Stopped => ResourceState::Stopped as i32,
+                            StreamState::Failed => ResourceState::Failed as i32,
+                            _ => ResourceState::Starting as i32,
+                        },
+                        labels,
+                    }
                 })
                 .collect(),
         }
@@ -1732,6 +1797,10 @@ pub fn operation(operation_id: &str) -> OperationRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::general::cfg::{MediaListenerConf, MediaListenerMode, MediaPortRange};
+    use crate::io::media_endpoint::{MediaBootstrap, MediaEndpointManager, find_free_test_range};
+    use base::utils::rt::GlobalRuntime;
+    use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 
     #[test]
     fn local_mp4_is_reported_as_primary_output_format() {
@@ -1743,6 +1812,78 @@ mod tests {
             min_free_bytes: 0,
         });
         assert_eq!(primary_output_type_from_kind(&output), Some("mp4"));
+    }
+
+    #[tokio::test]
+    async fn start_and_stop_receive_manage_a_concrete_dynamic_endpoint() {
+        let port = find_free_test_range(1).start;
+        let manager = MediaEndpointManager::new(
+            GlobalRuntime::get_main_runtime(),
+            MediaListenerConf {
+                mode: MediaListenerMode::Multi,
+                bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                advertised_host: "127.0.0.1".to_string(),
+                single_port: 0,
+                port_range: MediaPortRange {
+                    start: port,
+                    end: port,
+                },
+                reservation_timeout_secs: 30,
+            },
+            MediaBootstrap::Multi,
+        )
+        .unwrap();
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            false,
+            u32::from(port),
+        );
+        let mut control =
+            StreamControlAdapter::new(node.identity.clone(), manager.capability_endpoint())
+                .with_media_endpoints(manager.clone());
+        let request = StartReceiveRequest {
+            operation: Some(operation("start-dynamic")),
+            stream_id: "stream-dynamic".to_string(),
+            route_id: "route-dynamic".to_string(),
+            lease_id: "lease-dynamic".to_string(),
+            expected_stream: Some(node.identity),
+            preferred_endpoints: vec![],
+            constraints: HashMap::from([("expected_ssrc".to_string(), "1001".to_string())]),
+            reservation_ttl_ms: 30_000,
+        };
+
+        let first = control.start_receive(request.clone()).await;
+        let repeated = control.start_receive(request).await;
+        assert_eq!(first.state, StreamState::Receiving as i32);
+        assert_eq!(first.receive_endpoints, repeated.receive_endpoints);
+        assert_eq!(first.receive_endpoints[0].port, u32::from(port));
+        assert_eq!(first.receive_endpoints[0].mode, EndpointMode::Single as i32);
+        assert!(
+            first.receive_endpoints[0]
+                .labels
+                .contains_key("endpoint_id")
+        );
+        assert!(first.receive_endpoints[0].labels.contains_key("generation"));
+
+        let stopped = control
+            .stop_receive(StopReceiveRequest {
+                operation: Some(operation("stop-dynamic")),
+                stream_id: "stream-dynamic".to_string(),
+                reason: "test".to_string(),
+                phase: StopReceivePhase::Unspecified as i32,
+                expected_ssrc: String::new(),
+                expected_lifecycle_generation: 0,
+                expected_packet_count: 0,
+            })
+            .await;
+        assert_eq!(stopped.state, StreamState::Stopped as i32);
+        let rebound_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let rebound_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        drop((rebound_tcp, rebound_udp));
     }
 
     #[test]
@@ -1768,8 +1909,8 @@ mod tests {
         assert_eq!(stale.packet_count, 2);
     }
 
-    #[test]
-    fn restart_close_watch_fences_a_new_receive_with_the_same_stream_id() {
+    #[tokio::test]
+    async fn restart_close_watch_fences_a_new_receive_with_the_same_stream_id() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -1793,14 +1934,18 @@ mod tests {
             },
         );
 
-        let response = control.start_receive(StartReceiveRequest {
-            operation: Some(operation("restart-stream-a")),
-            stream_id: "stream-a".to_string(),
-            route_id: "route-a".to_string(),
-            lease_id: "lease-a".to_string(),
-            expected_stream: Some(node.identity),
-            preferred_endpoints: vec![],
-        });
+        let response = control
+            .start_receive(StartReceiveRequest {
+                operation: Some(operation("restart-stream-a")),
+                stream_id: "stream-a".to_string(),
+                route_id: "route-a".to_string(),
+                lease_id: "lease-a".to_string(),
+                expected_stream: Some(node.identity),
+                preferred_endpoints: vec![],
+                constraints: HashMap::new(),
+                reservation_ttl_ms: 0,
+            })
+            .await;
 
         assert_eq!(response.state, StreamState::Stopping as i32);
         assert_eq!(
@@ -1824,8 +1969,8 @@ mod tests {
         assert_eq!(effective_stream_state(None, None), StreamState::Stopped);
     }
 
-    #[test]
-    fn stop_receive_removes_outputs_without_modern_stream_runtime() {
+    #[tokio::test]
+    async fn stop_receive_removes_outputs_without_modern_stream_runtime() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -1849,15 +1994,17 @@ mod tests {
             },
         );
 
-        let response = control.stop_receive(StopReceiveRequest {
-            operation: None,
-            stream_id: "legacy-stream".to_string(),
-            reason: "manual_stop".to_string(),
-            phase: StopReceivePhase::Unspecified as i32,
-            expected_ssrc: String::new(),
-            expected_lifecycle_generation: 0,
-            expected_packet_count: 0,
-        });
+        let response = control
+            .stop_receive(StopReceiveRequest {
+                operation: None,
+                stream_id: "legacy-stream".to_string(),
+                reason: "manual_stop".to_string(),
+                phase: StopReceivePhase::Unspecified as i32,
+                expected_ssrc: String::new(),
+                expected_lifecycle_generation: 0,
+                expected_packet_count: 0,
+            })
+            .await;
 
         assert_eq!(response.state, StreamState::Stopped as i32);
         assert!(control.outputs.is_empty());
@@ -1884,8 +2031,8 @@ mod tests {
         assert!(control.streams.is_empty());
     }
 
-    #[test]
-    fn same_input_supports_four_formats_and_multi_user_independent_close() {
+    #[tokio::test]
+    async fn same_input_supports_four_formats_and_multi_user_independent_close() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -1899,14 +2046,18 @@ mod tests {
             node.identity.clone(),
             endpoint("rtp", "rtp", "127.0.0.1", 30000),
         );
-        let started = control.start_receive(StartReceiveRequest {
-            operation: Some(operation("start-live")),
-            stream_id: "stream-a".to_string(),
-            route_id: "route-a".to_string(),
-            lease_id: "lease-a".to_string(),
-            expected_stream: Some(node.identity),
-            preferred_endpoints: vec![],
-        });
+        let started = control
+            .start_receive(StartReceiveRequest {
+                operation: Some(operation("start-live")),
+                stream_id: "stream-a".to_string(),
+                route_id: "route-a".to_string(),
+                lease_id: "lease-a".to_string(),
+                expected_stream: Some(node.identity),
+                preferred_endpoints: vec![],
+                constraints: HashMap::new(),
+                reservation_ttl_ms: 0,
+            })
+            .await;
         assert_eq!(started.state, StreamState::Receiving as i32);
 
         let mut output_ids = HashMap::new();
@@ -1990,8 +2141,8 @@ mod tests {
         assert_eq!(output_resource_type("hls"), output_resource_type("ll_hls"));
     }
 
-    #[test]
-    fn subscription_release_is_scoped_and_blocks_late_output_creation() {
+    #[tokio::test]
+    async fn subscription_release_is_scoped_and_blocks_late_output_creation() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -2005,14 +2156,18 @@ mod tests {
             node.identity.clone(),
             endpoint("rtp", "rtp", "127.0.0.1", 30000),
         );
-        control.start_receive(StartReceiveRequest {
-            operation: Some(operation("start-live")),
-            stream_id: "stream-a".to_string(),
-            route_id: "route-a".to_string(),
-            lease_id: "lease-a".to_string(),
-            expected_stream: Some(node.identity),
-            preferred_endpoints: vec![],
-        });
+        control
+            .start_receive(StartReceiveRequest {
+                operation: Some(operation("start-live")),
+                stream_id: "stream-a".to_string(),
+                route_id: "route-a".to_string(),
+                lease_id: "lease-a".to_string(),
+                expected_stream: Some(node.identity),
+                preferred_endpoints: vec![],
+                constraints: HashMap::new(),
+                reservation_ttl_ms: 0,
+            })
+            .await;
         for (operation_id, subscription_id) in [
             ("create-user-1", "subscription-1"),
             ("create-user-2", "subscription-2"),
@@ -2062,8 +2217,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stream_registers_heartbeats_starts_idempotently_and_snapshots() {
+    #[tokio::test]
+    async fn stream_registers_heartbeats_starts_idempotently_and_snapshots() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -2098,16 +2253,33 @@ mod tests {
             lease_id: "lease-a".to_string(),
             expected_stream: Some(node.identity.clone()),
             preferred_endpoints: vec![],
+            constraints: HashMap::new(),
+            reservation_ttl_ms: 0,
         };
         assert_eq!(
-            control.start_receive(request.clone()).state,
+            control.start_receive(request.clone()).await.state,
             StreamState::Receiving as i32
         );
         assert_eq!(
-            control.start_receive(request).state,
+            control.start_receive(request).await.state,
             StreamState::Receiving as i32
         );
-        assert_eq!(control.resource_snapshot().resources.len(), 1);
+        let snapshot = control.resource_snapshot();
+        assert_eq!(snapshot.resources.len(), 1);
+        assert_eq!(
+            snapshot.resources[0]
+                .labels
+                .get("media_port")
+                .map(String::as_str),
+            Some("30000")
+        );
+        assert_eq!(
+            snapshot.resources[0]
+                .labels
+                .get("listener_state")
+                .map(String::as_str),
+            Some("listening")
+        );
         let output = control.create_output(CreateOutputRequest {
             operation: Some(operation("out-1")),
             stream_id: "stream-a".to_string(),
@@ -2156,8 +2328,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn stream_rejects_stale_instance_without_touching_existing_state() {
+    #[tokio::test]
+    async fn stream_rejects_stale_instance_without_touching_existing_state() {
         let node = StreamGuardNode::new(
             "stream-1",
             "inst-1",
@@ -2176,14 +2348,18 @@ mod tests {
             instance_id: "old".to_string(),
             kind: NodeKind::Stream as i32,
         };
-        let response = control.start_receive(StartReceiveRequest {
-            operation: Some(operation("op-stale")),
-            stream_id: "stream-a".to_string(),
-            route_id: "route-a".to_string(),
-            lease_id: "lease-a".to_string(),
-            expected_stream: Some(stale),
-            preferred_endpoints: vec![],
-        });
+        let response = control
+            .start_receive(StartReceiveRequest {
+                operation: Some(operation("op-stale")),
+                stream_id: "stream-a".to_string(),
+                route_id: "route-a".to_string(),
+                lease_id: "lease-a".to_string(),
+                expected_stream: Some(stale),
+                preferred_endpoints: vec![],
+                constraints: HashMap::new(),
+                reservation_ttl_ms: 0,
+            })
+            .await;
         assert_eq!(response.state, StreamState::Failed as i32);
         assert_eq!(control.resource_snapshot().resources.len(), 0);
     }

@@ -11,7 +11,7 @@ use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, info, warn};
 use base::net::rw::{PacketWriter, U16BeLengthPrefixEncoder};
-use base::net::state::{Association, Event, IoEventType, Protocol, Zip};
+use base::net::state::Protocol;
 use base::once_cell::sync::Lazy;
 use base::once_cell::sync::OnceCell;
 use base::tokio::select;
@@ -28,6 +28,7 @@ use parking_lot::Mutex;
 use crate::general::cfg::StreamConf;
 use crate::guard_integration::{GuardEventPublish, publish_guard_event};
 use crate::io::call::call_session_hook_rpc;
+use crate::io::media_endpoint::{MediaEndpointLease, MediaEndpointManager, ReserveMediaEndpoint};
 use crate::state::register::Register;
 
 const TALK_INPUT_QUEUE_SIZE: usize = 32;
@@ -40,9 +41,7 @@ static TALK_SESSIONS: Lazy<DashMap<String, TalkSession>> = Lazy::new(DashMap::ne
 
 struct RtpIo {
     runtime: GlobalRuntime,
-    writer: PacketWriter<U16BeLengthPrefixEncoder>,
-    output_tx: mpsc::Sender<Zip>,
-    rtp_port: u16,
+    media_endpoints: Arc<MediaEndpointManager>,
 }
 
 struct TalkSession {
@@ -57,6 +56,7 @@ struct TalkSession {
     input_tx: mpsc::Sender<Vec<u8>>,
     cancel: CancellationToken,
     session_hook_endpoint: Option<String>,
+    endpoint: MediaEndpointLease,
 }
 
 #[derive(Clone, Copy)]
@@ -68,18 +68,14 @@ struct TalkTarget {
 pub struct TalkManager;
 
 impl TalkManager {
-    pub fn init_rtp_writer(
+    pub fn init(
         runtime: GlobalRuntime,
-        writer: PacketWriter<U16BeLengthPrefixEncoder>,
-        output_tx: mpsc::Sender<Zip>,
-        rtp_port: u16,
+        media_endpoints: Arc<MediaEndpointManager>,
     ) -> GlobalResult<()> {
         RTP_IO
             .set(RtpIo {
                 runtime,
-                writer,
-                output_tx,
-                rtp_port,
+                media_endpoints,
             })
             .map_err(|_| {
                 GlobalError::new_biz_error(
@@ -94,10 +90,28 @@ impl TalkManager {
         validate_open_req(&req)?;
 
         let rtp_io = rtp_io()?;
-        let rtp_port = rtp_io.rtp_port;
         let runtime = rtp_io.runtime.clone();
-        let writer = rtp_io.writer.clone();
-        let output_tx = rtp_io.output_tx.clone();
+        let media_endpoints = rtp_io.media_endpoints.clone();
+        let endpoint = media_endpoints
+            .reserve(ReserveMediaEndpoint {
+                stream_id: req.talk_id.clone(),
+                lease_id: if req.lease_id.is_empty() {
+                    format!("talk-{}", req.talk_id)
+                } else {
+                    req.lease_id.clone()
+                },
+                route_id: if req.route_id.is_empty() {
+                    format!("talk-{}", req.talk_id)
+                } else {
+                    req.route_id.clone()
+                },
+                expected_ssrc: Some(req.ssrc),
+                reservation_ttl: None,
+                confirmed: true,
+            })
+            .await?;
+        let rtp_port = endpoint.port;
+        let writer = endpoint.writer.clone();
         let (input_tx, input_rx) = mpsc::channel(TALK_INPUT_QUEUE_SIZE);
         let payload_type = Arc::new(AtomicU8::new(req.payload_type));
         let target = Arc::new(Mutex::new(None));
@@ -117,17 +131,30 @@ impl TalkManager {
             input_tx,
             cancel: cancel.clone(),
             session_hook_endpoint: req.session_hook_endpoint.clone(),
+            endpoint: endpoint.clone(),
         };
 
         match TALK_SESSIONS.entry(req.talk_id.clone()) {
-            Entry::Occupied(_) => Err(GlobalError::new_biz_error(
-                BaseErrorCode::AlreadyExists.code(),
-                "talk session already exists",
-                |msg| error!("{msg}: talk_id={}", req.talk_id),
-            )),
+            Entry::Occupied(existing) => {
+                let endpoint_is_owned = existing.get().endpoint.endpoint_id == endpoint.endpoint_id
+                    && existing.get().endpoint.generation == endpoint.generation;
+                drop(existing);
+                if !endpoint_is_owned {
+                    media_endpoints
+                        .release(&endpoint.stream_id, &endpoint.lease_id)
+                        .await?;
+                }
+                Err(GlobalError::new_biz_error(
+                    BaseErrorCode::AlreadyExists.code(),
+                    "talk session already exists",
+                    |msg| error!("{msg}: talk_id={}", req.talk_id),
+                ))
+            }
             Entry::Vacant(vac) => {
                 vac.insert(session);
                 let talk_id = req.talk_id.clone();
+                let cleanup_media_endpoints = media_endpoints.clone();
+                let cleanup_endpoint = endpoint.clone();
                 if let Err(err) = runtime.spawn(
                     "stream-talk-sender",
                     run_rtp_sender(
@@ -139,12 +166,21 @@ impl TalkManager {
                         payload_type,
                         target,
                         writer,
-                        output_tx,
+                        media_endpoints,
+                        endpoint,
                         input_rx,
                         cancel,
                     ),
                 ) {
                     TALK_SESSIONS.remove(&talk_id);
+                    if let Err(close_error) = cleanup_media_endpoints
+                        .release(&cleanup_endpoint.stream_id, &cleanup_endpoint.lease_id)
+                        .await
+                    {
+                        error!(
+                            "talk endpoint rollback failed: talk_id={talk_id}, error={close_error}"
+                        );
+                    }
                     return Err(err);
                 }
                 Ok(TalkOpenResp {
@@ -195,20 +231,22 @@ impl TalkManager {
         TALK_SESSIONS.len()
     }
 
-    pub fn close(talk_id: &str) -> bool {
+    pub async fn close(talk_id: &str) -> GlobalResult<bool> {
         match TALK_SESSIONS.remove(talk_id) {
             Some((_, session)) => {
-                if let Ok(rtp_io) = rtp_io() {
-                    close_talk_target(
-                        &rtp_io.output_tx,
-                        "active_close",
-                        current_target(&session.target),
-                    );
-                }
+                close_talk_target(
+                    &session.endpoint.writer,
+                    "active_close",
+                    current_target(&session.target),
+                );
                 session.cancel.cancel();
-                true
+                rtp_io()?
+                    .media_endpoints
+                    .release(&session.endpoint.stream_id, &session.endpoint.lease_id)
+                    .await?;
+                Ok(true)
             }
-            None => false,
+            None => Ok(false),
         }
     }
 
@@ -260,7 +298,11 @@ fn current_target(target: &Arc<Mutex<Option<TalkTarget>>>) -> Option<TalkTarget>
     *target.lock()
 }
 
-fn close_talk_target(output_tx: &mpsc::Sender<Zip>, reason: &str, target: Option<TalkTarget>) {
+fn close_talk_target(
+    writer: &PacketWriter<U16BeLengthPrefixEncoder>,
+    reason: &str,
+    target: Option<TalkTarget>,
+) {
     let Some(target) = target else {
         return;
     };
@@ -268,35 +310,11 @@ fn close_talk_target(output_tx: &mpsc::Sender<Zip>, reason: &str, target: Option
         return;
     }
 
-    let association = Association::new(
-        SocketAddr::from(([0, 0, 0, 0], 0)),
-        target.addr,
-        Protocol::TCP,
+    writer.remove_tcp_writer(&target.addr);
+    info!(
+        "talk tcp association closed: target={}, reason={reason}",
+        target.addr
     );
-    let event = Event {
-        association,
-        type_code: IoEventType::Close,
-    };
-    match output_tx.try_send(Zip::build_event(event)) {
-        Ok(_) => {
-            info!(
-                "talk tcp close event sent: target={}, reason={reason}",
-                target.addr
-            );
-        }
-        Err(TrySendError::Full(_)) => {
-            warn!(
-                "talk tcp close event dropped for full output channel: target={}, reason={reason}",
-                target.addr
-            );
-        }
-        Err(TrySendError::Closed(_)) => {
-            debug!(
-                "talk tcp close event dropped for closed output channel: target={}, reason={reason}",
-                target.addr
-            );
-        }
-    }
 }
 
 fn validate_open_req(req: &TalkOpenReq) -> GlobalResult<()> {
@@ -319,7 +337,8 @@ fn validate_open_req(req: &TalkOpenReq) -> GlobalResult<()> {
 
 fn build_input_url(talk_id: &str) -> String {
     let mut proxy_addr = Register::get_server_conf()
-        .proxy_addr
+        .http
+        .public_url
         .trim_end_matches('/')
         .to_string();
     if let Some(rest) = proxy_addr.strip_prefix("https://") {
@@ -364,7 +383,8 @@ async fn run_rtp_sender(
     payload_type: Arc<AtomicU8>,
     target: Arc<Mutex<Option<TalkTarget>>>,
     writer: PacketWriter<U16BeLengthPrefixEncoder>,
-    output_tx: mpsc::Sender<Zip>,
+    media_endpoints: Arc<MediaEndpointManager>,
+    endpoint: MediaEndpointLease,
     mut input_rx: mpsc::Receiver<Vec<u8>>,
     cancel: CancellationToken,
 ) {
@@ -437,8 +457,14 @@ async fn run_rtp_sender(
     }
 
     if let Some((_, session)) = TALK_SESSIONS.remove(&talk_id) {
-        close_talk_target(&output_tx, close_reason, current_target(&target));
+        close_talk_target(&writer, close_reason, current_target(&target));
         notify_talk_closed(&talk_id, close_reason, session.session_hook_endpoint).await;
+    }
+    if let Err(error) = media_endpoints
+        .release(&endpoint.stream_id, &endpoint.lease_id)
+        .await
+    {
+        error!("talk media endpoint release failed: talk_id={talk_id}, error={error}");
     }
     info!("talk sender closed: talk_id={talk_id}, ssrc={ssrc}");
 }

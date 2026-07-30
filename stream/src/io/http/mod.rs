@@ -19,9 +19,8 @@ pub struct HttpTlsConfig {
     pub private_key_path: PathBuf,
 }
 
-pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
-    let listener =
-        std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
+pub fn listen_http_server(addr: SocketAddr) -> GlobalResult<std::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(addr).hand_log(|msg| error!("{msg}"))?;
     Ok(listener)
 }
 

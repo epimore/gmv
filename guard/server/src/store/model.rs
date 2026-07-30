@@ -72,6 +72,7 @@ pub struct LeaseRecord {
     pub instance_id: String,
     pub idempotency_key: String,
     pub constraints: HashMap<String, String>,
+    pub endpoints: Vec<EndpointRecord>,
     pub state: LeaseState,
     pub expires_at_ms: i64,
 }

@@ -194,6 +194,10 @@ pub struct TalkOpenReq {
     pub frame_duration_ms: u16,
     pub input_timeout_secs: u16,
     #[serde(default)]
+    pub lease_id: String,
+    #[serde(default)]
+    pub route_id: String,
+    #[serde(default)]
     pub session_hook_endpoint: Option<String>,
 }
 

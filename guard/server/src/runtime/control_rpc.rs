@@ -10,6 +10,12 @@ use gmv_protocol::guard::v1::{
     QueryNodeRequest, QueryNodeResponse, QueryRouteRequest, QueryRouteResponse,
     RouteState as ProtoRouteState,
 };
+use gmv_protocol::stream::v1::{
+    StartReceiveRequest, StartReceiveResponse, StopReceivePhase, StopReceiveRequest,
+    StopReceiveResponse, StreamState, stream_control_client::StreamControlClient,
+};
+use std::sync::Arc;
+use std::time::Duration;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -19,12 +25,33 @@ use crate::gateway::{AllocationRequest, AllocationService};
 use crate::lease::{LeaseRequest, LeaseService};
 use crate::route::RouteService;
 use crate::store::InMemoryGuardStore;
-use crate::store::model::{EndpointModeRecord, EndpointRecord, PLAYBACK_TOKEN_TTL_MS, RouteRecord};
+use crate::store::model::{
+    EndpointModeRecord, EndpointRecord, LeaseRecord, NodeRecord, PLAYBACK_TOKEN_TTL_MS, RouteRecord,
+};
+
+#[tonic::async_trait]
+pub trait StreamReceiveControl: std::fmt::Debug + Send + Sync {
+    async fn start_receive(
+        &self,
+        node: &NodeRecord,
+        request: StartReceiveRequest,
+    ) -> Result<StartReceiveResponse, Status>;
+
+    async fn stop_receive(
+        &self,
+        node: &NodeRecord,
+        request: StopReceiveRequest,
+    ) -> Result<StopReceiveResponse, Status>;
+}
+
+#[derive(Debug, Default)]
+struct RpcStreamReceiveControl;
 
 #[derive(Debug, Clone)]
 pub struct GuardControlRpc {
     store: InMemoryGuardStore,
     auth: AuthState,
+    stream_control: Arc<dyn StreamReceiveControl>,
 }
 
 impl GuardControlRpc {
@@ -39,7 +66,37 @@ impl GuardControlRpc {
     }
 
     pub fn with_auth(store: InMemoryGuardStore, auth: AuthState) -> Self {
-        Self { store, auth }
+        Self {
+            store,
+            auth,
+            stream_control: Arc::new(RpcStreamReceiveControl),
+        }
+    }
+
+    pub fn with_stream_control(
+        store: InMemoryGuardStore,
+        auth: AuthState,
+        stream_control: Arc<dyn StreamReceiveControl>,
+    ) -> Self {
+        Self {
+            store,
+            auth,
+            stream_control,
+        }
+    }
+
+    pub fn new_with_stream_control(
+        store: InMemoryGuardStore,
+        stream_control: Arc<dyn StreamReceiveControl>,
+    ) -> Self {
+        Self::with_stream_control(
+            store,
+            AuthState::new(
+                std::iter::empty::<UserAccount>(),
+                crate::auth::SessionPolicy::default(),
+            ),
+            stream_control,
+        )
     }
 }
 
@@ -65,58 +122,144 @@ impl GuardControl for GuardControlRpc {
         } else {
             operation.operation_id.clone()
         };
-        let constraints = request.constraints.clone();
-        let allocation = AllocationService::new(self.store.clone())
-            .allocate(AllocationRequest {
-                request_id: operation_id.clone(),
-                resource_id: request.stream_id.clone(),
-                capability: request.stream_type.clone(),
-                zone: constraints.get("zone").cloned(),
-                constraints: constraints.clone(),
-            })
-            .map_err(status)?;
+        let idempotency_key = if operation.idempotency_key.is_empty() {
+            operation_id.clone()
+        } else {
+            operation.idempotency_key.clone()
+        };
         let lease_id = format!("lease-{operation_id}");
         let route_id = format!("route-{operation_id}");
-        LeaseService::new(self.store.clone())
-            .allocate(LeaseRequest {
-                lease_id: lease_id.clone(),
-                route_id: route_id.clone(),
-                resource_id: request.stream_id.clone(),
-                stream_type: request.stream_type.clone(),
-                idempotency_key: if operation.idempotency_key.is_empty() {
-                    operation_id.clone()
-                } else {
-                    operation.idempotency_key.clone()
-                },
-                owner: allocation.owner.clone(),
-                constraints,
-                now_ms: now_ms(),
-                ttl_ms: 30_000,
-            })
-            .map_err(status)?;
-        RouteService::new(self.store.clone())
-            .create_allocated(RouteRecord {
-                route_id: route_id.clone(),
-                resource_id: request.stream_id,
-                node_id: allocation.owner.node_id.clone(),
-                instance_id: allocation.owner.instance_id.clone(),
-                state: RouteState::Allocated,
-                desired_generation: 1,
-                observed_generation: 0,
-                observed_sequence: 0,
-            })
-            .map_err(status)?;
+        if let Some(existing) = self.store.get_lease(&lease_id) {
+            if existing.resource_id != request.stream_id
+                || existing.stream_type != request.stream_type
+                || existing.idempotency_key != idempotency_key
+                || existing.route_id != route_id
+            {
+                return Err(Status::already_exists(format!(
+                    "operation {operation_id} conflicts with an existing allocation"
+                )));
+            }
+            if matches!(
+                existing.state,
+                LeaseState::Failed | LeaseState::Released | LeaseState::Expired
+            ) {
+                return Err(Status::failed_precondition(format!(
+                    "lease {lease_id} is terminal: {:?}",
+                    existing.state
+                )));
+            }
+            if !existing.endpoints.is_empty() {
+                return Ok(Response::new(allocation_response(existing, 30_000)));
+            }
+        }
+        let constraints = request.constraints.clone();
+        let owner = if let Some(existing) = self.store.get_lease(&lease_id) {
+            NodeIdentity::new(existing.node_id, existing.instance_id, NodeKind::Stream)
+        } else {
+            let allocation = AllocationService::new(self.store.clone())
+                .allocate(AllocationRequest {
+                    request_id: operation_id.clone(),
+                    resource_id: request.stream_id.clone(),
+                    capability: request.stream_type.clone(),
+                    zone: constraints.get("zone").cloned(),
+                    constraints: constraints.clone(),
+                })
+                .map_err(status)?;
+            LeaseService::new(self.store.clone())
+                .allocate(LeaseRequest {
+                    lease_id: lease_id.clone(),
+                    route_id: route_id.clone(),
+                    resource_id: request.stream_id.clone(),
+                    stream_type: request.stream_type.clone(),
+                    idempotency_key,
+                    owner: allocation.owner.clone(),
+                    constraints: constraints.clone(),
+                    now_ms: now_ms(),
+                    ttl_ms: 30_000,
+                })
+                .map_err(status)?;
+            RouteService::new(self.store.clone())
+                .create_allocated(RouteRecord {
+                    route_id: route_id.clone(),
+                    resource_id: request.stream_id.clone(),
+                    node_id: allocation.owner.node_id.clone(),
+                    instance_id: allocation.owner.instance_id.clone(),
+                    state: RouteState::Allocated,
+                    desired_generation: 1,
+                    observed_generation: 0,
+                    observed_sequence: 0,
+                })
+                .map_err(status)?;
+            allocation.owner
+        };
         let node = self
             .store
-            .get_node(&allocation.owner.node_id)
+            .get_node(&owner.node_id)
             .ok_or_else(|| Status::not_found("allocated node disappeared"))?;
-        Ok(Response::new(AllocateStreamResponse {
-            lease_id,
-            route_id,
-            stream_node: Some(proto_identity(&allocation.owner)),
-            endpoints: node.endpoints.into_iter().map(proto_endpoint).collect(),
-            ttl_ms: 30_000,
-        }))
+        let start_result = start_receive(
+            self.stream_control.as_ref(),
+            &node,
+            &operation_id,
+            &request.stream_id,
+            &route_id,
+            &lease_id,
+            constraints,
+        )
+        .await;
+        let receive_endpoints = match start_result {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                if let Err(stop_error) = stop_receive(
+                    self.stream_control.as_ref(),
+                    &node,
+                    &operation_id,
+                    &request.stream_id,
+                    "guard_allocation_failed",
+                )
+                .await
+                {
+                    base::log::error!(
+                        "guard allocation compensation failed: stream_id={}, lease_id={}, reason={stop_error}",
+                        request.stream_id,
+                        lease_id
+                    );
+                }
+                self.fail_allocation(&lease_id, &route_id, &owner.instance_id);
+                return Err(error);
+            }
+        };
+        let mut endpoints = node
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.name != "rtp")
+            .cloned()
+            .collect::<Vec<_>>();
+        endpoints.extend(receive_endpoints);
+        let mut lease = self
+            .store
+            .get_lease(&lease_id)
+            .ok_or_else(|| Status::not_found(format!("lease {lease_id}")))?;
+        lease.endpoints = endpoints;
+        if let Err(error) = self.store.update_lease(lease.clone()) {
+            if let Err(stop_error) = stop_receive(
+                self.stream_control.as_ref(),
+                &node,
+                &operation_id,
+                &request.stream_id,
+                "guard_store_failed",
+            )
+            .await
+            {
+                base::log::error!(
+                    "guard allocation store compensation failed: stream_id={}, lease_id={}, reason={stop_error}",
+                    request.stream_id,
+                    lease_id
+                );
+            }
+            self.fail_allocation(&lease_id, &route_id, &owner.instance_id);
+            return Err(status(error));
+        }
+        Ok(Response::new(allocation_response(lease, 30_000)))
     }
 
     async fn confirm_lease(
@@ -126,6 +269,7 @@ impl GuardControl for GuardControlRpc {
         let request = request.into_inner();
         debug!("guard_control.confirm_lease, req:{request:?}");
         self.transition_lease(request, LeaseTransition::Confirm)
+            .await
     }
 
     async fn fail_lease(
@@ -134,7 +278,7 @@ impl GuardControl for GuardControlRpc {
     ) -> Result<Response<LeaseResponse>, Status> {
         let request = request.into_inner();
         debug!("guard_control.fail_lease, req:{request:?}");
-        self.transition_lease(request, LeaseTransition::Fail)
+        self.transition_lease(request, LeaseTransition::Fail).await
     }
 
     async fn release_lease(
@@ -144,6 +288,7 @@ impl GuardControl for GuardControlRpc {
         let request = request.into_inner();
         debug!("guard_control.release_lease, req:{request:?}");
         self.transition_lease(request, LeaseTransition::Release)
+            .await
     }
 
     async fn query_node(
@@ -288,7 +433,19 @@ impl GuardControl for GuardControlRpc {
 }
 
 impl GuardControlRpc {
-    fn transition_lease(
+    fn fail_allocation(&self, lease_id: &str, route_id: &str, instance_id: &str) {
+        if let Err(error) = LeaseService::new(self.store.clone()).fail(lease_id, instance_id) {
+            base::log::error!(
+                "guard allocation lease compensation failed: lease_id={lease_id}, reason={error}"
+            );
+        }
+        if let Some(mut route) = self.store.get_route(route_id) {
+            route.state = RouteState::Closed;
+            self.store.upsert_route(route);
+        }
+    }
+
+    async fn transition_lease(
         &self,
         request: ProtoLeaseRequest,
         transition: LeaseTransition,
@@ -297,6 +454,40 @@ impl GuardControlRpc {
             return Err(Status::invalid_argument(
                 "lease_id and expected_instance_id are required",
             ));
+        }
+        let current = self
+            .store
+            .get_lease(&request.lease_id)
+            .ok_or_else(|| Status::not_found(format!("lease {}", request.lease_id)))?;
+        if current.instance_id != request.expected_instance_id {
+            return Err(Status::failed_precondition(format!(
+                "lease {} belongs to {} not {}",
+                request.lease_id, current.instance_id, request.expected_instance_id
+            )));
+        }
+        if matches!(transition, LeaseTransition::Fail | LeaseTransition::Release)
+            && !current.endpoints.is_empty()
+            && !matches!(
+                current.state,
+                LeaseState::Failed | LeaseState::Released | LeaseState::Expired
+            )
+        {
+            let node = self
+                .store
+                .get_node(&current.node_id)
+                .ok_or_else(|| Status::not_found(format!("node {}", current.node_id)))?;
+            stop_receive(
+                self.stream_control.as_ref(),
+                &node,
+                &format!("lease-{}", request.lease_id),
+                &current.resource_id,
+                match transition {
+                    LeaseTransition::Fail => "guard_lease_failed",
+                    LeaseTransition::Release => "guard_lease_released",
+                    LeaseTransition::Confirm => unreachable!(),
+                },
+            )
+            .await?;
         }
         let lease = match transition {
             LeaseTransition::Confirm => LeaseService::new(self.store.clone())
@@ -327,6 +518,204 @@ enum LeaseTransition {
     Confirm,
     Fail,
     Release,
+}
+
+fn allocation_response(lease: LeaseRecord, ttl_ms: u64) -> AllocateStreamResponse {
+    let owner = NodeIdentity::new(
+        lease.node_id.clone(),
+        lease.instance_id.clone(),
+        NodeKind::Stream,
+    );
+    AllocateStreamResponse {
+        lease_id: lease.lease_id,
+        route_id: lease.route_id,
+        stream_node: Some(proto_identity(&owner)),
+        endpoints: lease.endpoints.into_iter().map(proto_endpoint).collect(),
+        ttl_ms,
+    }
+}
+
+async fn start_receive(
+    control: &dyn StreamReceiveControl,
+    node: &NodeRecord,
+    operation_id: &str,
+    stream_id: &str,
+    route_id: &str,
+    lease_id: &str,
+    constraints: std::collections::HashMap<String, String>,
+) -> Result<Vec<EndpointRecord>, Status> {
+    let response = control
+        .start_receive(
+            node,
+            StartReceiveRequest {
+                operation: Some(gmv_protocol::common::v1::OperationRef {
+                    operation_id: operation_id.to_string(),
+                    idempotency_key: operation_id.to_string(),
+                }),
+                stream_id: stream_id.to_string(),
+                route_id: route_id.to_string(),
+                lease_id: lease_id.to_string(),
+                expected_stream: Some(proto_identity(&node.identity)),
+                preferred_endpoints: node.endpoints.iter().cloned().map(proto_endpoint).collect(),
+                constraints,
+                reservation_ttl_ms: 30_000,
+            },
+        )
+        .await
+        .map_err(|error| Status::unavailable(format!("stream StartReceive failed: {error}")))?;
+    if let Some(error) = response
+        .error
+        .filter(|error| !error.code.is_empty() || !error.message.is_empty())
+    {
+        return Err(if error.code == "endpoint_allocation_failed" {
+            Status::resource_exhausted(error.message)
+        } else {
+            Status::failed_precondition(format!("{}: {}", error.code, error.message))
+        });
+    }
+    if response.state != StreamState::Receiving as i32 {
+        return Err(Status::failed_precondition(format!(
+            "stream StartReceive returned state {}",
+            response.state
+        )));
+    }
+    let endpoints = response
+        .receive_endpoints
+        .into_iter()
+        .map(endpoint_record)
+        .collect::<Result<Vec<_>, _>>()?;
+    if !endpoints.iter().any(|endpoint| {
+        endpoint.name == "rtp"
+            && endpoint.mode == EndpointModeRecord::Single
+            && !endpoint.host.is_empty()
+            && endpoint.port > 0
+    }) {
+        return Err(Status::failed_precondition(
+            "stream StartReceive returned no concrete RTP endpoint",
+        ));
+    }
+    Ok(endpoints)
+}
+
+async fn stop_receive(
+    control: &dyn StreamReceiveControl,
+    node: &NodeRecord,
+    operation_id: &str,
+    stream_id: &str,
+    reason: &str,
+) -> Result<(), Status> {
+    let response = control
+        .stop_receive(
+            node,
+            StopReceiveRequest {
+                operation: Some(gmv_protocol::common::v1::OperationRef {
+                    operation_id: format!("{operation_id}-compensate"),
+                    idempotency_key: format!("{operation_id}-compensate"),
+                }),
+                stream_id: stream_id.to_string(),
+                reason: reason.to_string(),
+                phase: StopReceivePhase::Unspecified as i32,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| Status::unavailable(format!("stream StopReceive failed: {error}")))?;
+    if response.state != StreamState::Stopped as i32 {
+        return Err(Status::failed_precondition(format!(
+            "stream StopReceive returned state {}",
+            response.state
+        )));
+    }
+    Ok(())
+}
+
+fn grpc_uri(node: &NodeRecord) -> Result<String, Status> {
+    let endpoint = node
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.name == "grpc" || matches!(endpoint.scheme.as_str(), "grpc" | "grpcs")
+        })
+        .ok_or_else(|| Status::failed_precondition("stream grpc endpoint missing"))?;
+    let scheme = if endpoint.scheme == "grpcs" {
+        "https"
+    } else {
+        "http"
+    };
+    Ok(format!("{scheme}://{}:{}", endpoint.host, endpoint.port))
+}
+
+async fn connect_rpc(uri: &str) -> Result<tonic::transport::Channel, Status> {
+    let mut config = base_rpc::RpcChannelConfig::new(uri.to_string());
+    if uri.starts_with("https://") {
+        config.tls = Some(base_rpc::RpcClientTlsConfig {
+            domain_name: url::Url::parse(uri)
+                .ok()
+                .and_then(|url| url.host_str().map(ToString::to_string)),
+            ca_certificate_pem: None,
+            client_certificate_pem: None,
+            client_private_key_pem: None,
+            use_native_roots: true,
+            handshake_timeout: Duration::from_secs(5),
+        });
+    }
+    base_rpc::connect_channel(&config)
+        .await
+        .map_err(|error| Status::unavailable(format!("connect stream RPC failed: {error}")))
+}
+
+#[tonic::async_trait]
+impl StreamReceiveControl for RpcStreamReceiveControl {
+    async fn start_receive(
+        &self,
+        node: &NodeRecord,
+        request: StartReceiveRequest,
+    ) -> Result<StartReceiveResponse, Status> {
+        let uri = grpc_uri(node)?;
+        StreamControlClient::new(connect_rpc(&uri).await?)
+            .start_receive(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn stop_receive(
+        &self,
+        node: &NodeRecord,
+        request: StopReceiveRequest,
+    ) -> Result<StopReceiveResponse, Status> {
+        let uri = grpc_uri(node)?;
+        StreamControlClient::new(connect_rpc(&uri).await?)
+            .stop_receive(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+}
+
+fn endpoint_record(endpoint: ProtoEndpoint) -> Result<EndpointRecord, Status> {
+    if endpoint.host.is_empty() || endpoint.port == 0 {
+        return Err(Status::failed_precondition(
+            "stream returned an invalid endpoint",
+        ));
+    }
+    let mode = match ProtoEndpointMode::try_from(endpoint.mode)
+        .unwrap_or(ProtoEndpointMode::Unspecified)
+    {
+        ProtoEndpointMode::Single => EndpointModeRecord::Single,
+        ProtoEndpointMode::Multi => EndpointModeRecord::Multi,
+        ProtoEndpointMode::Unspecified => {
+            return Err(Status::failed_precondition(
+                "stream returned endpoint mode unspecified",
+            ));
+        }
+    };
+    Ok(EndpointRecord {
+        name: endpoint.name,
+        scheme: endpoint.scheme,
+        host: endpoint.host,
+        port: endpoint.port,
+        mode,
+        labels: endpoint.labels,
+    })
 }
 
 fn proto_identity(identity: &NodeIdentity) -> ProtoIdentity {

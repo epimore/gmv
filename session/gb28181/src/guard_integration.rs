@@ -177,7 +177,6 @@ pub async fn allocate_stream_node_with_constraints(
         .hand_log(|msg| log_error!("{msg}"))?
         .into_inner();
     let node = stream_node_from_allocation(&response)?;
-    StreamNodeRegistry::upsert(node.clone());
     Ok(AllocatedStreamNode {
         node,
         lease_id: response.lease_id,
@@ -208,7 +207,7 @@ pub async fn ensure_stream_node(node_id: &str) -> GlobalResult<StreamNode> {
             |msg| log_error!("{msg}: node={node_id}"),
         )
     })?;
-    let node = stream_node_from_parts(&identity.node_id, response.endpoints)?;
+    let node = stream_node_from_parts(&identity.node_id, response.endpoints, false)?;
     StreamNodeRegistry::upsert(node.clone());
     Ok(node)
 }
@@ -313,10 +312,14 @@ fn stream_node_from_allocation(allocation: &AllocateStreamResponse) -> GlobalRes
             |msg| log_error!("{msg}: lease_id={}", allocation.lease_id),
         )
     })?;
-    stream_node_from_parts(&identity.node_id, allocation.endpoints.clone())
+    stream_node_from_parts(&identity.node_id, allocation.endpoints.clone(), true)
 }
 
-fn stream_node_from_parts(node_id: &str, endpoints: Vec<Endpoint>) -> GlobalResult<StreamNode> {
+fn stream_node_from_parts(
+    node_id: &str,
+    endpoints: Vec<Endpoint>,
+    require_concrete_rtp: bool,
+) -> GlobalResult<StreamNode> {
     let grpc = endpoints
         .iter()
         .find(|endpoint| {
@@ -325,7 +328,10 @@ fn stream_node_from_parts(node_id: &str, endpoints: Vec<Endpoint>) -> GlobalResu
         .ok_or_else(|| missing_stream_endpoint(node_id, "grpc"))?;
     let rtp = endpoints
         .iter()
-        .find(|endpoint| endpoint.name == "rtp" || endpoint.scheme == "rtp")
+        .find(|endpoint| {
+            (endpoint.name == "rtp" || endpoint.scheme == "rtp")
+                && (!require_concrete_rtp || endpoint.mode == EndpointMode::Single as i32)
+        })
         .ok_or_else(|| missing_stream_endpoint(node_id, "rtp"))?;
     let http = endpoints
         .iter()
@@ -2801,6 +2807,8 @@ impl SessionControlAdapter {
             lease_id: allocation.lease_id.clone(),
             expected_stream: allocation.stream_node.clone(),
             preferred_endpoints: allocation.endpoints.clone(),
+            constraints: HashMap::new(),
+            reservation_ttl_ms: 0,
         }
     }
 
@@ -3686,6 +3694,40 @@ mod tests {
         assert!(validate_snapshot_to_mode(1).is_ok());
         assert!(validate_snapshot_to_mode(-1).is_err());
         assert!(validate_snapshot_to_mode(2).is_err());
+    }
+
+    #[test]
+    fn allocation_uses_only_concrete_rtp_endpoint_for_sdp() {
+        let endpoint = |name: &str, scheme: &str, port: u32, mode: EndpointMode| Endpoint {
+            name: name.to_string(),
+            scheme: scheme.to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            mode: mode as i32,
+            labels: HashMap::new(),
+        };
+        let mut allocation = AllocateStreamResponse {
+            lease_id: "lease-1".to_string(),
+            route_id: "route-1".to_string(),
+            stream_node: Some(NodeIdentity {
+                node_id: "stream-1".to_string(),
+                instance_id: "instance-1".to_string(),
+                kind: NodeKind::Stream as i32,
+            }),
+            endpoints: vec![
+                endpoint("grpc", "grpc", 19082, EndpointMode::Single),
+                endpoint("http", "http", 28570, EndpointMode::Single),
+                endpoint("rtp", "rtp", 28600, EndpointMode::Multi),
+            ],
+            ttl_ms: 30_000,
+        };
+        assert!(stream_node_from_allocation(&allocation).is_err());
+
+        allocation
+            .endpoints
+            .push(endpoint("rtp", "rtp", 28607, EndpointMode::Single));
+        let node = stream_node_from_allocation(&allocation).unwrap();
+        assert_eq!(node.pub_port, 28607);
     }
 
     fn cloud_recording(

@@ -392,16 +392,16 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
 
     let (ssrc, talk_id) = id_builder::build_ssrc_stream_id(device_id, &channel_id, true).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
-    let talk_constraints = match audio.trans_mode {
-        TransMode::TcpPassive => HashMap::from([
+    let mut talk_constraints = HashMap::from([("expected_ssrc".to_string(), ssrc.clone())]);
+    if matches!(audio.trans_mode, TransMode::TcpPassive) {
+        talk_constraints.extend([
             ("transport".to_string(), "tcp_passive".to_string()),
             (
                 "requires_dedicated_media_endpoint".to_string(),
                 "true".to_string(),
             ),
-        ]),
-        TransMode::Udp | TransMode::TcpActive => HashMap::new(),
-    };
+        ]);
+    }
     let allocation = crate::guard_integration::allocate_stream_node_with_constraints(
         &format!("talk-{talk_id}"),
         &talk_id,
@@ -423,6 +423,8 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         payload_type: audio.payload_type,
         frame_duration_ms: audio.frame_duration_ms,
         input_timeout_secs: DEFAULT_TALK_INPUT_TIMEOUT_SECS,
+        lease_id: allocation.lease_id.clone(),
+        route_id: allocation.route_id.clone(),
         session_hook_endpoint: Some(crate::state::SessionGrpcConf::get().endpoint()),
     };
     let open_resp = match stream_rpc::talk_open(&stream_node, &open_req).await {
@@ -432,6 +434,20 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             return Err(err);
         }
     };
+    if open_resp.rtp_port != stream_node.pub_port {
+        cleanup_talk_open(&stream_node, &talk_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "talk endpoint mismatch").await;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "talk endpoint does not match stream allocation",
+            |msg| {
+                error!(
+                    "{msg}: talk_id={talk_id}, allocated_port={}, returned_port={}",
+                    stream_node.pub_port, open_resp.rtp_port
+                )
+            },
+        ));
+    }
 
     let sn = crate::gb::sip::sequence::next_sn();
     let broadcast_invite =
@@ -803,12 +819,13 @@ async fn start_invite_stream(
     };
 
     let stream_type = stream_type_for_access(am);
-    let allocation = crate::guard_integration::allocate_stream_node(
+    let allocation = crate::guard_integration::allocate_stream_node_with_constraints(
         &format!("{stream_type}-{stream_id}"),
         &stream_id,
         stream_type,
         device_id,
         channel_id,
+        HashMap::from([("expected_ssrc".to_string(), ssrc.clone())]),
     )
     .await?;
     let stream_node = allocation.node.clone();

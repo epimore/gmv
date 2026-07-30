@@ -5,6 +5,7 @@ use crate::gateway::explain::AllocationExplain;
 use crate::gateway::filter::eligible;
 use crate::gateway::score::ScoreBreakdown;
 use crate::store::InMemoryGuardStore;
+use crate::store::model::EndpointModeRecord;
 use crate::store::model::{LeaseRecord, NodeRecord};
 
 #[derive(Debug, Clone)]
@@ -57,9 +58,12 @@ impl AllocationService {
                 let host_id = host_id(&node);
                 let host_active = active_host_load(&leases, &host_by_node, &host_id);
                 let tcp_passive_busy = requires_tcp_passive_isolation && load.tcp_passive_talks > 0;
-                let eligible = !tcp_passive_busy;
+                let media_capacity_exhausted = media_capacity_exhausted(&node);
+                let eligible = !tcp_passive_busy && !media_capacity_exhausted;
                 let reason = if tcp_passive_busy {
                     "tcp_passive_domain_busy".to_string()
+                } else if media_capacity_exhausted {
+                    "media_port_pool_exhausted".to_string()
                 } else {
                     "eligible".to_string()
                 };
@@ -113,6 +117,19 @@ impl AllocationService {
             },
         })
     }
+}
+
+fn media_capacity_exhausted(node: &NodeRecord) -> bool {
+    let dynamic_media = node
+        .endpoints
+        .iter()
+        .any(|endpoint| endpoint.name == "rtp" && endpoint.mode == EndpointModeRecord::Multi);
+    dynamic_media
+        && node
+            .business_metrics
+            .get("media_ports_free")
+            .and_then(|value| value.parse::<u64>().ok())
+            == Some(0)
 }
 
 #[derive(Default)]

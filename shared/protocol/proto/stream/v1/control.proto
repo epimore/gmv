@@ -30,12 +30,19 @@ message StartReceiveRequest {
   string route_id = 3;
   string lease_id = 4;
   gmv.common.v1.NodeIdentity expected_stream = 5;
+  // Node registration endpoints describe node capabilities. Preferred endpoints
+  // constrain allocation but are not concrete media listeners.
   repeated gmv.common.v1.Endpoint preferred_endpoints = 6;
+  map<string, string> constraints = 7;
+  uint64 reservation_ttl_ms = 8;
 }
 
 message StartReceiveResponse {
   string stream_id = 1;
   StreamState state = 2;
+  // Receive endpoints are concrete listeners allocated for this stream. Dynamic
+  // endpoints carry endpoint_id and generation labels and must not be replaced
+  // with a node-level ENDPOINT_MODE_MULTI capability endpoint.
   repeated gmv.common.v1.Endpoint receive_endpoints = 3;
   gmv.common.v1.ErrorDetail error = 4;
 }
