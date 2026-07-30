@@ -762,11 +762,11 @@ impl GbChannelImageView {
     }
 }
 
-const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?) ORDER BY create_time DESC,id DESC LIMIT ? OFFSET ?";
+const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,CAST(COALESCE(file_size,0) AS SIGNED) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?) ORDER BY create_time DESC,id DESC LIMIT ? OFFSET ?";
 const GB_CHANNEL_IMAGE_LIST_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?) ORDER BY create_time DESC,id DESC LIMIT ? OFFSET ?";
 const GB_CHANNEL_IMAGE_COUNT_MYSQL: &str = "SELECT CAST(COUNT(*) AS SIGNED) AS total FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?)";
 const GB_CHANNEL_IMAGE_COUNT_SQLITE: &str = "SELECT COUNT(*) AS total FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?)";
-const GB_CHANNEL_IMAGE_GET_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE id=? AND device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0";
+const GB_CHANNEL_IMAGE_GET_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,CAST(COALESCE(file_size,0) AS SIGNED) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE id=? AND device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0";
 const GB_CHANNEL_IMAGE_GET_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE id=? AND device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0";
 
 #[cfg(test)]
@@ -788,5 +788,13 @@ mod tests {
 
         assert_eq!(next, 2);
         assert_eq!(format_device_id(&prefix, next), "51010000001327000002");
+    }
+
+    #[test]
+    fn mysql_image_queries_decode_file_size_as_i64() {
+        let signed_file_size = "CAST(COALESCE(file_size,0) AS SIGNED) AS file_size";
+
+        assert!(GB_CHANNEL_IMAGE_LIST_MYSQL.contains(signed_file_size));
+        assert!(GB_CHANNEL_IMAGE_GET_MYSQL.contains(signed_file_size));
     }
 }
