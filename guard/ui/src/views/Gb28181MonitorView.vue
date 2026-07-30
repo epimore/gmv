@@ -112,8 +112,8 @@
         </div>
         <div class="monitor-actions">
           <el-date-picker v-if="multiMode === 'playback'" v-model="multiDefaultRange" type="datetimerange"
-            range-separator="至" start-placeholder="默认开始时间" end-placeholder="默认结束时间"
-            format="YYYY-MM-DD HH:mm:ss" :clearable="true" class="multi-default-range" />
+            range-separator="至" start-placeholder="默认开始时间" end-placeholder="默认结束时间" format="YYYY-MM-DD HH:mm:ss"
+            :clearable="true" class="multi-default-range" />
           <el-select v-model="selectedMultiNodeId" filterable placeholder="选择 Session 节点" class="multi-node-select"
             :loading="listNodeLoading" @change="selectMultiNode">
             <el-option v-for="option in sessionNodeOptions" :key="option.node.node_id" :label="listNodeLabel(option)"
@@ -138,8 +138,8 @@
           <el-button :loading="treeLoading || multiStopping" @click="resetTreeDevices">重置</el-button>
         </div>
         <div v-loading="treeLoading" class="tree-device-list">
-          <el-tree ref="multiDeviceTreeRef" class="device-channel-tree" :data="treeDeviceNodes" :props="treeProps" node-key="key" lazy
-            :load="loadTreeNode" accordion :expand-on-click-node="true" :highlight-current="true">
+          <el-tree ref="multiDeviceTreeRef" class="device-channel-tree" :data="treeDeviceNodes" :props="treeProps"
+            node-key="key" lazy :load="loadTreeNode" accordion :expand-on-click-node="true" :highlight-current="true">
             <template #default="{ data }">
               <div v-if="data.kind === 'device'" class="tree-device-node">
                 <div class="tree-device-title">
@@ -179,40 +179,47 @@
             <button type="button" class="multi-limit-help" aria-label="查看多画面上限为 6 路的原因"
               @mouseenter="multiLimitHelpHovered = true" @mouseleave="multiLimitHelpHovered = false"
               @click="multiLimitHelpPinned = !multiLimitHelpPinned" @blur="multiLimitHelpPinned = false">
-              <el-icon><QuestionFilled /></el-icon>
+              <el-icon>
+                <QuestionFilled />
+              </el-icon>
             </button>
           </el-tooltip>
         </div>
       </template>
       <div class="selected-channel-panel">
-        <div class="selected-channel-list" :class="{ playback: multiMode === 'playback', empty: !selectedTreeChannels.length }">
+        <div class="selected-channel-list"
+          :class="{ playback: multiMode === 'playback', empty: !selectedTreeChannels.length }">
           <article v-for="(channel, index) in selectedTreeChannels" :key="selectedChannelKey(channel)"
             class="selected-channel-item" :class="{ dragging: draggingTreeChannelIndex === index }" draggable="true"
-            @dragstart="handleSelectedChannelDragStart(index)" @dragover.prevent @drop="handleSelectedChannelDrop(index)"
-            @dragend="handleSelectedChannelDragEnd">
+            @dragstart="handleSelectedChannelDragStart(index)" @dragover.prevent
+            @drop="handleSelectedChannelDrop(index)" @dragend="handleSelectedChannelDragEnd">
             <div class="selected-channel-main" @click="focusSelectedMultiChannel(channel)">
               <span v-if="multiMode === 'playback'" class="selected-channel-index">{{ index + 1 }}.</span>
               <el-tooltip :content="selectedChannelTooltip(channel)" placement="top">
                 <b v-if="multiMode === 'playback'">{{ channel.device_id }} · {{ channel.channel_id }}</b>
                 <b v-else>{{ index + 1 }}. {{ channel.device_id }} · {{ channel.channel_id }}</b>
               </el-tooltip>
-              <span v-if="multiMode === 'playback'" class="selected-channel-status">{{ multiPlaybackSelectionStatus(channel) }}</span>
+              <span v-if="multiMode === 'playback'" class="selected-channel-status">{{
+                multiPlaybackSelectionStatus(channel) }}</span>
             </div>
             <div v-if="multiMode === 'playback'" class="selected-channel-playback">
               <el-date-picker v-model="channel.playback_range" type="datetimerange" range-separator="至"
-                start-placeholder="开始时间" end-placeholder="结束时间" :clearable="true"
-                format="YYYY-MM-DD HH:mm:ss" :disabled="channel.playback_locked" size="small" />
+                start-placeholder="开始时间" end-placeholder="结束时间" :clearable="true" format="YYYY-MM-DD HH:mm:ss"
+                :disabled="channel.playback_locked" size="small" />
               <div class="selected-channel-actions">
-                <el-button size="small" :disabled="channel.playback_locked || !isValidPlaybackRange(multiDefaultRange)" @click="restoreMultiPlaybackDefault(channel)">恢复默认</el-button>
-                <el-button size="small" type="primary" :disabled="channel.playback_locked || !isValidPlaybackRange(channel.playback_range)"
+                <el-button size="small" :disabled="channel.playback_locked || !isValidPlaybackRange(multiDefaultRange)"
+                  @click="restoreMultiPlaybackDefault(channel)">恢复默认</el-button>
+                <el-button size="small" type="primary"
+                  :disabled="channel.playback_locked || !isValidPlaybackRange(channel.playback_range)"
                   @click="confirmMultiPlayback(channel)">确认播放</el-button>
-                <el-button v-if="channel.playback_locked && canReplayMultiPlayback(channel)" size="small" type="primary" plain
-                  @click="replayMultiPlayback(channel)">重新播放</el-button>
+                <el-button v-if="channel.playback_locked && canReplayMultiPlayback(channel)" size="small" type="primary"
+                  plain @click="replayMultiPlayback(channel)">重新播放</el-button>
                 <el-button v-if="channel.playback_locked" size="small" type="warning" plain
                   @click="stopConfirmedMultiPlayback(channel)">停止并编辑</el-button>
               </div>
             </div>
-            <el-button class="selected-channel-remove" type="danger" link @click.stop="removeTreeChannel(channel)">移除</el-button>
+            <el-button class="selected-channel-remove" type="danger" link
+              @click.stop="removeTreeChannel(channel)">移除</el-button>
           </article>
           <el-empty v-if="!selectedTreeChannels.length" description="暂无已选通道" />
         </div>
@@ -221,15 +228,15 @@
 
     <GlassPanel class="span-12 multi-player-panel" :class="{ 'is-multi-fullscreen': multiFullscreen }">
       <div class="multi-player">
-        <GmvMultiGrid ref="multiGridRef" :grid-size="multiGridSize" :cells="multiGridCells" :visible-start="multiVisibleStart" @update:grid-size="handleMultiGridSizeChange"
+        <GmvMultiGrid ref="multiGridRef" :grid-size="multiGridSize" :cells="multiGridCells"
+          :visible-start="multiVisibleStart" @update:grid-size="handleMultiGridSizeChange"
           @snapshot="handleMultiSnapshot" @snapshot-error="handleMultiSnapshotError" @ptz="handleMultiPtz"
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
           @playback-rate-change="handleMultiPlaybackRateChange" @playback-state-change="handleMultiPlaybackStateChange"
           @playback-seek="handleMultiPlaybackSeek" @playback-progress="handleMultiPlaybackProgress"
-          @cloud-record-create="handleMultiCloudRecordCreate"
-          @playback-error="handleMultiPlaybackError"
-          @playback-switch-cancel="handleMultiPlaybackSwitchCancel"
-          @close="handleMultiClose" @reorder="handleMultiReorder">
+          @cloud-record-create="handleMultiCloudRecordCreate" @playback-error="handleMultiPlaybackError"
+          @playback-switch-cancel="handleMultiPlaybackSwitchCancel" @close="handleMultiClose"
+          @reorder="handleMultiReorder">
           <template #summary>
             <div class="multi-player-summary">
               <strong>多画面播放</strong>
@@ -239,15 +246,18 @@
           <template #actions>
             <div class="multi-player-actions">
               <template v-if="multiMode === 'playback'">
-                <el-button :loading="multiBulkBusy" :disabled="multiPlaybackStarting || !multiControllableCells.length" @click="toggleAllMultiPlayback">
+                <el-button :loading="multiBulkBusy" :disabled="multiPlaybackStarting || !multiControllableCells.length"
+                  @click="toggleAllMultiPlayback">
                   {{ multiPauseActionLabel }}
                 </el-button>
-                <el-select :model-value="multiDesiredRate" :disabled="multiBulkBusy || multiPlaybackStarting || !multiControllableCells.length"
-                  aria-label="统一倍速" class="multi-rate-select" @change="setAllMultiPlaybackRate">
+                <el-select :model-value="multiDesiredRate"
+                  :disabled="multiBulkBusy || multiPlaybackStarting || !multiControllableCells.length" aria-label="统一倍速"
+                  class="multi-rate-select" @change="setAllMultiPlaybackRate">
                   <el-option v-for="rate in playbackRates" :key="rate" :label="rate + 'x'" :value="rate" />
                 </el-select>
               </template>
-              <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏' }}</el-button>
+              <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏'
+                }}</el-button>
             </div>
           </template>
         </GmvMultiGrid>
@@ -270,18 +280,22 @@
         </div>
         <div class="monitor-actions">
           <el-button :loading="resourceLoading" @click="openResourceDrawer">资源能力</el-button>
-          <el-tooltip :content="deviceBroadcastReasonText" placement="bottom" :disabled="selectedDevice.monitor_status === 1 && !!availableAudioOutputs.length">
+          <el-tooltip :content="deviceBroadcastReasonText" placement="bottom"
+            :disabled="selectedDevice.monitor_status === 1 && !!availableAudioOutputs.length">
             <el-button v-if="!broadcastSession" type="warning" :loading="broadcastStarting"
-              :disabled="!canOperate || selectedDevice.monitor_status !== 1 || !availableAudioOutputs.length" @click="startBroadcast(selectedDevice.device_id)">设备广播</el-button>
+              :disabled="!canOperate || selectedDevice.monitor_status !== 1 || !availableAudioOutputs.length"
+              @click="startBroadcast(selectedDevice.device_id)">设备广播</el-button>
           </el-tooltip>
-          <el-button v-if="broadcastSession" type="danger" :loading="broadcastStarting" @click="stopBroadcast">停止广播</el-button>
+          <el-button v-if="broadcastSession" type="danger" :loading="broadcastStarting"
+            @click="stopBroadcast">停止广播</el-button>
           <el-button :loading="channelLoading" @click="reloadChannels">刷新通道</el-button>
           <el-button type="primary" @click="backToDevices">返回</el-button>
         </div>
       </div>
     </GlassPanel>
 
-    <GlassPanel v-if="showImages" class="span-12 fill-panel image-gallery-panel" title="抓拍图集" :subtitle="selectedChannelTitle">
+    <GlassPanel v-if="showImages" class="span-12 fill-panel image-gallery-panel" title="抓拍图集"
+      :subtitle="selectedChannelTitle">
       <div class="image-gallery-content" v-loading="imageLoading">
         <div class="image-gallery-toolbar">
           <div class="toolbar">
@@ -289,24 +303,26 @@
             <el-button :loading="imageLoading" @click="selectedChannel && loadImages(selectedChannel)">刷新图集</el-button>
           </div>
           <div class="image-time-filter">
-            <el-date-picker v-model="imageStartTime" type="datetime" placeholder="开始时间" format="YYYY-MM-DD HH:mm:ss" :clearable="true" />
+            <el-date-picker v-model="imageStartTime" type="datetime" placeholder="开始时间" format="YYYY-MM-DD HH:mm:ss"
+              :clearable="true" />
             <span>至</span>
-            <el-date-picker v-model="imageEndTime" type="datetime" placeholder="结束时间" format="YYYY-MM-DD HH:mm:ss" :clearable="true" />
+            <el-date-picker v-model="imageEndTime" type="datetime" placeholder="结束时间" format="YYYY-MM-DD HH:mm:ss"
+              :clearable="true" />
             <el-button type="primary" @click="queryImages">查询</el-button>
           </div>
         </div>
         <div v-if="images.length" class="image-grid">
           <article v-for="image in images" :key="image.session_node_id + ':' + image.image_id" class="image-card">
             <div class="image-preview">
-              <el-image v-if="image.image_url" class="gallery-image" :src="image.image_url" :alt="image.file_name || image.image_id"
-                :preview-src-list="imagePreviewUrls" :initial-index="imagePreviewUrls.indexOf(image.image_url)"
-                fit="cover" lazy preview-teleported>
+              <el-image v-if="image.image_url" class="gallery-image" :src="image.image_url"
+                :alt="image.file_name || image.image_id" :preview-src-list="imagePreviewUrls"
+                :initial-index="imagePreviewUrls.indexOf(image.image_url)" fit="cover" lazy preview-teleported>
                 <template #error><span>图片加载失败</span></template>
               </el-image>
               <span v-else>{{ image.can_preview ? '访问地址获取失败' : '不支持的图片格式' }}</span>
             </div>
             <div class="image-meta">
-              <div><b>{{ image.file_name || image.image_id }}</b><span>{{ formatTime(image.created_at_ms) }}</span></div>
+              <div><span>{{ formatTime(image.created_at_ms) }}</span></div>
               <el-button size="small" :type="selectedChannel?.over_pic_id === image.image_id ? 'success' : 'primary'"
                 :disabled="!canOperate || selectedChannel?.over_pic_id === image.image_id"
                 @click="setImageAsCover(image)">
@@ -316,11 +332,10 @@
           </article>
         </div>
         <el-empty v-else description="暂无抓拍图片" />
-        <el-pagination class="image-pagination" background
-          v-model:current-page="imagePage" v-model:page-size="imagePageSize"
-          :page-sizes="[12, 24, 48]" :total="imageTotal"
-          layout="total, sizes, prev, pager, next, jumper"
-          @current-change="changeImagePage" @size-change="changeImagePageSize" />
+        <el-pagination class="image-pagination" background v-model:current-page="imagePage"
+          v-model:page-size="imagePageSize" :page-sizes="[12, 24, 48]" :total="imageTotal"
+          layout="total, sizes, prev, pager, next, jumper" @current-change="changeImagePage"
+          @size-change="changeImagePageSize" />
       </div>
     </GlassPanel>
 
@@ -351,7 +366,8 @@
             </div> -->
             <footer class="channel-actions">
               <el-button-group class="channel-play-entry live">
-                <el-dropdown class="channel-live-dropdown" trigger="click" :disabled="!canPlayLive(channel) || playerRequesting"
+                <el-dropdown class="channel-live-dropdown" trigger="click"
+                  :disabled="!canPlayLive(channel) || playerRequesting"
                   @command="(value: LiveOutputType) => startLive(channel, value)">
                   <el-button class="channel-play-main" :disabled="!canPlayLive(channel) || playerRequesting"
                     :loading="isPlayRequesting('preview', channel)">直播</el-button>
@@ -408,13 +424,13 @@
         <section class="record-functional-block record-playback-panel">
           <h3>历史回放</h3>
           <div class="record-playback-controls">
-            <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至"
-              start-placeholder="回放开始时间" end-placeholder="回放结束时间" format="YYYY-MM-DD HH:mm:ss"
-              :clearable="true" style="width: 100%" />
+            <el-date-picker v-model="playbackRange" type="datetimerange" range-separator="至" start-placeholder="回放开始时间"
+              end-placeholder="回放结束时间" format="YYYY-MM-DD HH:mm:ss" :clearable="true" style="width: 100%" />
             <el-select :model-value="pendingPlaybackChannel ? channelPlaybackOutputType(pendingPlaybackChannel) : 'flv'"
               class="record-output-select" aria-label="回放播放格式"
               @change="(value: PlaybackOutputType) => pendingPlaybackChannel && setChannelPlaybackOutputType(pendingPlaybackChannel, value)">
-              <el-option v-for="option in playbackOutputOptions" :key="option.value" :label="option.label" :value="option.value" />
+              <el-option v-for="option in playbackOutputOptions" :key="option.value" :label="option.label"
+                :value="option.value" />
             </el-select>
             <el-button type="primary" :disabled="!playbackRange" @click="confirmPlaybackRange">开始播放</el-button>
           </div>
@@ -427,15 +443,18 @@
             </el-tag>
             <el-tag v-else size="small" type="info" effect="plain">尚未更新</el-tag>
             <small v-if="recordState?.current_batch">
-              更新范围：{{ formatRecordRange(recordState.current_batch.start_time_sec, recordState.current_batch.end_time_sec) }}
+              更新范围：{{ formatRecordRange(recordState.current_batch.start_time_sec,
+                recordState.current_batch.end_time_sec) }}
             </small>
           </div>
           <div class="record-update-controls">
-            <el-button :type="recordRangeMode === 'week' ? 'primary' : 'default'" @click="selectRecordShortcut('week')">近一周</el-button>
-            <el-button :type="recordRangeMode === 'month' ? 'primary' : 'default'" @click="selectRecordShortcut('month')">近一月</el-button>
+            <el-button :type="recordRangeMode === 'week' ? 'primary' : 'default'"
+              @click="selectRecordShortcut('week')">近一周</el-button>
+            <el-button :type="recordRangeMode === 'month' ? 'primary' : 'default'"
+              @click="selectRecordShortcut('month')">近一月</el-button>
             <el-date-picker v-model="recordUpdateRange" type="datetimerange" range-separator="至"
-              start-placeholder="更新开始时间" end-placeholder="更新结束时间" format="YYYY-MM-DD HH:mm:ss"
-              :clearable="true" @change="recordRangeMode = 'custom'" />
+              start-placeholder="更新开始时间" end-placeholder="更新结束时间" format="YYYY-MM-DD HH:mm:ss" :clearable="true"
+              @change="recordRangeMode = 'custom'" />
             <el-button type="primary" plain :loading="recordUpdating" :disabled="recordUpdateDisabled"
               @click="updateDeviceRecords">
               {{ recordRetryAfterSec > 0 ? `${recordRetryAfterSec}秒后可更新` : recordQuerying ? '更新中' : '更新' }}
@@ -462,10 +481,12 @@
                 <template #default="scope">{{ recordSequence(scope.$index) }}</template>
               </el-table-column>
               <el-table-column label="设备录像片段的时段" min-width="440">
-                <template #default="scope">{{ formatRecordRange(scope.row.start_time_sec, scope.row.end_time_sec) }}</template>
+                <template #default="scope">{{ formatRecordRange(scope.row.start_time_sec, scope.row.end_time_sec)
+                  }}</template>
               </el-table-column>
               <el-table-column label="时长" width="120">
-                <template #default="scope">{{ formatRecordDuration(scope.row.start_time_sec, scope.row.end_time_sec) }}</template>
+                <template #default="scope">{{ formatRecordDuration(scope.row.start_time_sec, scope.row.end_time_sec)
+                  }}</template>
               </el-table-column>
             </el-table>
             <el-pagination v-if="recordTotal > recordPageSize" class="record-pagination" background
@@ -484,21 +505,20 @@
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
             :media-mode="lastAction === '历史回放' ? 'playback' : 'live'" :stream-id="lastStream?.stream_id"
             :media-node-id="lastStream?.node_id" :session-node-id="lastStream?.session_node_id"
-            :audio-codec="lastStream?.audio_codec"
-            :poster="playerPoster" :capabilities="playerCapabilities"
+            :audio-codec="lastStream?.audio_codec" :poster="playerPoster" :capabilities="playerCapabilities"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
-            :cloud-record-locked-range="singleCloudRecordLockedRange"
-            :output-type="singlePlayerOutputType" :output-options="singlePlayerOutputOptions"
-            :output-switching="singleOutputSwitching" @output-type-change="handleSingleOutputTypeChange"
-            :startup-text="singleMediaOperation ? singleStartupText : undefined" :startup-can-cancel="singleCheckpointReached"
-            @snapshot="handleSingleSnapshot" @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz"
-            @playing="handleSinglePlaying" @playback-error="handleSinglePlaybackError"
-            @cloud-record-request="openCloudRecordings(selectedChannel)"
+            :cloud-record-locked-range="singleCloudRecordLockedRange" :output-type="singlePlayerOutputType"
+            :output-options="singlePlayerOutputOptions" :output-switching="singleOutputSwitching"
+            @output-type-change="handleSingleOutputTypeChange"
+            :startup-text="singleMediaOperation ? singleStartupText : undefined"
+            :startup-can-cancel="singleCheckpointReached" @snapshot="handleSingleSnapshot"
+            @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz" @playing="handleSinglePlaying"
+            @playback-error="handleSinglePlaybackError" @cloud-record-request="openCloudRecordings(selectedChannel)"
             @cloud-record-create="handleSingleCloudRecordCreate"
-            @playback-switch-cancel="handleSinglePlaybackSwitchCancel"
-            @playback-rate-change="handlePlaybackRateChange" @playback-seek="handlePlaybackSeek"
-            @playback-state-change="handlePlaybackStateChange" @playback-progress="handlePlaybackProgress" />
+            @playback-switch-cancel="handleSinglePlaybackSwitchCancel" @playback-rate-change="handlePlaybackRateChange"
+            @playback-seek="handlePlaybackSeek" @playback-state-change="handlePlaybackStateChange"
+            @playback-progress="handlePlaybackProgress" />
           <div v-if="playerRequesting" class="player-loading-badge" role="status" aria-live="polite">
             <span>{{ singleStartupText }}</span>
             <div v-if="singleCheckpointReached" class="player-loading-actions">
@@ -543,7 +563,8 @@
             <template #default="{ row }">{{ formatRecordRange(row.start_time_sec, row.end_time_sec) }}</template>
           </el-table-column>
           <el-table-column label="状态" width="90">
-            <template #default="{ row }"><el-tag :type="cloudStatusTag(row.status)">{{ cloudStatusText(row.status) }}</el-tag></template>
+            <template #default="{ row }"><el-tag :type="cloudStatusTag(row.status)">{{ cloudStatusText(row.status)
+                }}</el-tag></template>
           </el-table-column>
           <el-table-column label="进度" width="115">
             <template #default="{ row }"><el-progress :percentage="row.progress_percent" :stroke-width="8" /></template>
@@ -556,10 +577,13 @@
             label-class-name="cloud-actions-column">
             <template #default="{ row }">
               <div class="cloud-recording-actions">
-                <el-button v-if="row.can_stop" type="warning" link :disabled="!canOperate" @click="stopCloudTask(row)">停止下载</el-button>
+                <el-button v-if="row.can_stop" type="warning" link :disabled="!canOperate"
+                  @click="stopCloudTask(row)">停止下载</el-button>
                 <el-button type="primary" link :disabled="!row.can_play" @click="playCloudTask(row)">播放</el-button>
-                <el-button type="primary" link :disabled="!row.can_download" @click="downloadCloudTask(row)">本地下载</el-button>
-                <el-button type="danger" link :disabled="!canOperate || !row.can_delete" @click="deleteCloudTask(row)">删除</el-button>
+                <el-button type="primary" link :disabled="!row.can_download"
+                  @click="downloadCloudTask(row)">本地下载</el-button>
+                <el-button type="danger" link :disabled="!canOperate || !row.can_delete"
+                  @click="deleteCloudTask(row)">删除</el-button>
               </div>
             </template>
           </el-table-column>
@@ -600,46 +624,55 @@
       </template>
     </el-drawer>
 
-    <el-drawer v-model="resourceDrawer" title="资源识别覆盖管理" size="760px"
-      class="resource-capability-drawer" destroy-on-close>
+    <el-drawer v-model="resourceDrawer" title="资源识别覆盖管理" size="760px" class="resource-capability-drawer"
+      destroy-on-close>
       <div v-loading="resourceLoading" class="resource-capability-content">
         <el-alert title="资源类型优先采用人工覆盖；没有有效覆盖时使用枚举、设备编码和 ParentID 自动识别。" type="info" :closable="false" />
         <el-table :data="resources" max-height="620" empty-text="暂无 Catalog 资源">
           <el-table-column prop="resource_id" label="资源 ID" min-width="190" show-overflow-tooltip />
           <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
-          <el-table-column label="编码" width="72"><template #default="{ row }">{{ row.type_code || '-' }}</template></el-table-column>
-          <el-table-column label="有效类型" width="120"><template #default="{ row }">{{ resourceKindText(row.effective_kind) }}</template></el-table-column>
+          <el-table-column label="编码" width="72"><template #default="{ row }">{{ row.type_code || '-'
+              }}</template></el-table-column>
+          <el-table-column label="有效类型" width="120"><template #default="{ row }">{{ resourceKindText(row.effective_kind)
+              }}</template></el-table-column>
           <el-table-column label="来源/状态" width="130"><template #default="{ row }">
-            <el-tag :type="classificationTagType(row)">{{ classificationText(row) }}</el-tag>
-          </template></el-table-column>
-          <el-table-column label="业务所有者" min-width="170" show-overflow-tooltip><template #default="{ row }">{{ row.effective_owner_scope }} · {{ row.effective_owner_id || '-' }}</template></el-table-column>
+              <el-tag :type="classificationTagType(row)">{{ classificationText(row) }}</el-tag>
+            </template></el-table-column>
+          <el-table-column label="业务所有者" min-width="170" show-overflow-tooltip><template #default="{ row }">{{
+            row.effective_owner_scope }} · {{ row.effective_owner_id || '-' }}</template></el-table-column>
           <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }">
-            <el-button type="primary" link :disabled="!canManageResources" @click="editResource(row)">覆盖</el-button>
-            <el-button type="warning" link :disabled="!canManageResources || !row.confirmation || row.confirmation.status !== 1"
-              @click="resetResource(row)">恢复自动</el-button>
-          </template></el-table-column>
+              <el-button type="primary" link :disabled="!canManageResources" @click="editResource(row)">覆盖</el-button>
+              <el-button type="warning" link
+                :disabled="!canManageResources || !row.confirmation || row.confirmation.status !== 1"
+                @click="resetResource(row)">恢复自动</el-button>
+            </template></el-table-column>
         </el-table>
       </div>
     </el-drawer>
 
-    <el-dialog v-model="resourceEditDialog" title="人工覆盖资源识别" width="520px"
-      class="resource-confirm-dialog" destroy-on-close>
+    <el-dialog v-model="resourceEditDialog" title="人工覆盖资源识别" width="520px" class="resource-confirm-dialog"
+      destroy-on-close>
       <el-form :model="resourceForm" label-width="110px">
         <el-form-item label="资源 ID"><el-input :model-value="resourceEditing?.resource_id" disabled /></el-form-item>
-        <el-form-item label="默认建议"><el-input :model-value="resourceKindText(resourceEditing?.suggested_kind || 'unknown')" disabled /></el-form-item>
+        <el-form-item label="默认建议"><el-input
+            :model-value="resourceKindText(resourceEditing?.suggested_kind || 'unknown')" disabled /></el-form-item>
         <el-form-item label="资源类型"><el-select v-model="resourceForm.resource_kind" style="width:100%">
-          <el-option label="视频资源" value="video" /><el-option label="语音输入" value="audio_input" />
-          <el-option label="语音输出" value="audio_output" /><el-option label="其它/否决" value="other" />
-        </el-select></el-form-item>
+            <el-option label="视频资源" value="video" /><el-option label="语音输入" value="audio_input" />
+            <el-option label="语音输出" value="audio_output" /><el-option label="其它/否决" value="other" />
+          </el-select></el-form-item>
         <el-form-item label="所有者范围"><el-radio-group v-model="resourceForm.owner_scope" @change="syncResourceOwner">
-          <el-radio value="device">注册设备</el-radio><el-radio value="resource">Catalog 资源</el-radio>
-        </el-radio-group></el-form-item>
-        <el-form-item label="业务所有者"><el-select v-if="resourceForm.owner_scope === 'resource'" v-model="resourceForm.owner_id" filterable style="width:100%">
-          <el-option v-for="channel in ownerResourceOptions" :key="channel.channel_id" :label="displayChannelName(channel) + ' · ' + channel.channel_id" :value="channel.channel_id" />
-        </el-select><el-input v-else v-model="resourceForm.owner_id" disabled /></el-form-item>
-        <el-form-item label="说明"><el-input v-model="resourceForm.remark" type="textarea" maxlength="255" show-word-limit /></el-form-item>
+            <el-radio value="device">注册设备</el-radio><el-radio value="resource">Catalog 资源</el-radio>
+          </el-radio-group></el-form-item>
+        <el-form-item label="业务所有者"><el-select v-if="resourceForm.owner_scope === 'resource'"
+            v-model="resourceForm.owner_id" filterable style="width:100%">
+            <el-option v-for="channel in ownerResourceOptions" :key="channel.channel_id"
+              :label="displayChannelName(channel) + ' · ' + channel.channel_id" :value="channel.channel_id" />
+          </el-select><el-input v-else v-model="resourceForm.owner_id" disabled /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="resourceForm.remark" type="textarea" maxlength="255"
+            show-word-limit /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="resourceEditDialog = false">取消</el-button><el-button type="primary" :loading="resourceSaving" @click="saveResource">保存人工覆盖</el-button></template>
+      <template #footer><el-button @click="resourceEditDialog = false">取消</el-button><el-button type="primary"
+          :loading="resourceSaving" @click="saveResource">保存人工覆盖</el-button></template>
     </el-dialog>
   </div>
 </template>
@@ -1799,34 +1832,34 @@ async function startMultiCell(cell: MultiViewCell) {
     const requestId = `ui-multi-${cell.mode}-${Date.now()}-${cell.channel_id}`;
     const stream = cell.mode === 'live'
       ? await startGbPreview(cell.device_id, cell.channel_id, {
-          request_id: requestId,
-          session_node_id: cell.session_node_id,
-          output_type: cell.output_type,
-          audio_codec: 'aac',
-        }, {
-          signal: controller.signal,
-          onUpdate: (operation) => {
-            if (multiPlayVersions[key] !== version || multiViewDisposed) return;
-            const current = multiCells.value.find((item) => item.key === key);
-            if (current) upsertMultiCell({ ...current, operation, status: 'reconnecting' });
-          },
-        })
+        request_id: requestId,
+        session_node_id: cell.session_node_id,
+        output_type: cell.output_type,
+        audio_codec: 'aac',
+      }, {
+        signal: controller.signal,
+        onUpdate: (operation) => {
+          if (multiPlayVersions[key] !== version || multiViewDisposed) return;
+          const current = multiCells.value.find((item) => item.key === key);
+          if (current) upsertMultiCell({ ...current, operation, status: 'reconnecting' });
+        },
+      })
       : await startGbPlayback(cell.device_id, cell.channel_id, {
-          request_id: requestId,
-          session_node_id: cell.session_node_id,
-          playback_id: requestId,
-          start_time_sec: cell.playback_position_sec ?? cell.playback_start_sec,
-          end_time_sec: cell.playback_end_sec,
-          output_type: playbackSafeOutputType(cell.output_type),
-          audio_codec: 'aac',
-        }, {
-      signal: controller.signal,
-      onUpdate: (operation) => {
-        if (multiPlayVersions[key] !== version || multiViewDisposed) return;
-        const current = multiCells.value.find((item) => item.key === key);
-        if (current) upsertMultiCell({ ...current, operation, status: 'reconnecting' });
-      },
-    });
+        request_id: requestId,
+        session_node_id: cell.session_node_id,
+        playback_id: requestId,
+        start_time_sec: cell.playback_position_sec ?? cell.playback_start_sec,
+        end_time_sec: cell.playback_end_sec,
+        output_type: playbackSafeOutputType(cell.output_type),
+        audio_codec: 'aac',
+      }, {
+        signal: controller.signal,
+        onUpdate: (operation) => {
+          if (multiPlayVersions[key] !== version || multiViewDisposed) return;
+          const current = multiCells.value.find((item) => item.key === key);
+          if (current) upsertMultiCell({ ...current, operation, status: 'reconnecting' });
+        },
+      });
     if (multiPlayVersions[key] !== version || !isMultiCellSelected(key) || multiViewDisposed) {
       await stopMultiStream(stream);
       return;
@@ -3182,27 +3215,27 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
     const playbackRequestId = 'ui-monitor-playback-' + Date.now();
     const stream = kind === 'preview'
       ? await startGbPreview(
-          channel.device_id,
-          channel.channel_id,
-          { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, output_type: channelOutputType(channel), audio_codec: 'aac' },
-          {
-            signal: controller.signal,
-            onUpdate: (operation) => {
-              if (requestSeq === playRequestSeq) singleMediaOperation.value = operation;
-            },
+        channel.device_id,
+        channel.channel_id,
+        { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, output_type: channelOutputType(channel), audio_codec: 'aac' },
+        {
+          signal: controller.signal,
+          onUpdate: (operation) => {
+            if (requestSeq === playRequestSeq) singleMediaOperation.value = operation;
           },
-        )
+        },
+      )
       : await startGbPlayback(
-          channel.device_id,
-          channel.channel_id,
-          { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: channelPlaybackOutputType(channel), audio_codec: 'aac' },
-          {
-            signal: controller.signal,
-            onUpdate: (operation) => {
-              if (requestSeq === playRequestSeq) singleMediaOperation.value = operation;
-            },
+        channel.device_id,
+        channel.channel_id,
+        { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: channelPlaybackOutputType(channel), audio_codec: 'aac' },
+        {
+          signal: controller.signal,
+          onUpdate: (operation) => {
+            if (requestSeq === playRequestSeq) singleMediaOperation.value = operation;
           },
-        );
+        },
+      );
     if (requestSeq !== playRequestSeq || !playerDialog.value) {
       if (stream.stream_id) await releaseViewerStream(stream).catch(() => undefined);
       return;
@@ -3658,7 +3691,7 @@ onBeforeUnmount(() => {
   gap: 4px;
 }
 
-.cloud-recording-create-form label > span {
+.cloud-recording-create-form label>span {
   color: var(--muted);
   font-size: 12px;
 }
@@ -3674,7 +3707,7 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.cloud-recording-actions .el-button + .el-button {
+.cloud-recording-actions .el-button+.el-button {
   margin-left: 0;
 }
 
@@ -3715,7 +3748,7 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.record-update-controls .el-button + .el-button {
+.record-update-controls .el-button+.el-button {
   margin-left: 0;
 }
 
@@ -3750,6 +3783,7 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+
   .record-update-controls,
   .record-database-query {
     grid-template-columns: 1fr;
@@ -3872,11 +3906,11 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.multi-player-summary > strong {
+.multi-player-summary>strong {
   font-size: 16px;
 }
 
-.multi-player-summary > span {
+.multi-player-summary>span {
   overflow: hidden;
   color: var(--muted);
   font-size: 12px;
@@ -4718,14 +4752,14 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.image-gallery-content > .image-grid {
+.image-gallery-content>.image-grid {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
 }
 
-.image-gallery-content > .el-empty {
+.image-gallery-content>.el-empty {
   flex: 1;
 }
 
@@ -4772,7 +4806,7 @@ onBeforeUnmount(() => {
   padding: 10px;
 }
 
-.image-meta > div {
+.image-meta>div {
   display: grid;
   min-width: 0;
   gap: 4px;
