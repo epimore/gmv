@@ -52,8 +52,10 @@ impl StreamReceiveControl for FakeStreamReceiveControl {
     async fn stop_receive(
         &self,
         _node: &gmv_guard_server::store::model::NodeRecord,
-        _request: StopReceiveRequest,
+        request: StopReceiveRequest,
     ) -> Result<StopReceiveResponse, tonic::Status> {
+        assert_eq!(request.expected_lease_id, "lease-op-rpc-1");
+        assert_eq!(request.expected_route_id, "route-op-rpc-1");
         Ok(StopReceiveResponse {
             state: StreamState::Stopped as i32,
             ..Default::default()
@@ -88,8 +90,10 @@ impl StreamReceiveControl for RejectingStreamReceiveControl {
     async fn stop_receive(
         &self,
         _node: &gmv_guard_server::store::model::NodeRecord,
-        _request: StopReceiveRequest,
+        request: StopReceiveRequest,
     ) -> Result<StopReceiveResponse, tonic::Status> {
+        assert_eq!(request.expected_lease_id, "lease-op-rpc-fail");
+        assert_eq!(request.expected_route_id, "route-op-rpc-fail");
         self.stops.fetch_add(1, Ordering::Relaxed);
         Ok(StopReceiveResponse {
             state: StreamState::Stopped as i32,

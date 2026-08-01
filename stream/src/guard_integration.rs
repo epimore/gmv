@@ -345,6 +345,10 @@ impl StreamControlRpc {
             inner: Arc::new(Mutex::new(adapter)),
         }
     }
+
+    pub async fn resource_snapshot(&self) -> NodeResourceSnapshot {
+        self.inner.lock().await.resource_snapshot()
+    }
 }
 
 #[tonic::async_trait]
@@ -556,10 +560,14 @@ impl StreamControl for StreamControlRpc {
             request.payload_json.len()
         );
         let result = match decode_payload::<TalkCloseReq>(&request.payload_json) {
-            Ok(value) => TalkManager::close(&value.talk_id)
-                .await
-                .map(|_| ())
-                .map_err(detail_from_error),
+            Ok(value) => match TalkManager::close(&value.talk_id).await {
+                Ok(true) => {
+                    self.inner.lock().await.streams.remove(&value.talk_id);
+                    Ok(())
+                }
+                Ok(false) => Ok(()),
+                Err(error) => Err(detail_from_error(error)),
+            },
             Err(error) => Err(error),
         };
         Ok(tonic::Response::new(stream_unit_response(result)))
@@ -706,6 +714,16 @@ impl StreamControlAdapter {
                 Some(error("stream_closing", "stream is closing")),
             );
         }
+        if let (Some(media_endpoints), Some(existing)) = (
+            self.media_endpoints.as_ref(),
+            self.streams.get(&request.stream_id),
+        ) && existing.lease_id != request.lease_id
+            && !media_endpoints
+                .owns_active_lease(&request.stream_id, &existing.lease_id)
+                .await
+        {
+            self.streams.remove(&request.stream_id);
+        }
         if let Some(existing) = self.streams.get(&request.stream_id) {
             if existing.lease_id == request.lease_id {
                 if self.media_endpoints.is_none() {
@@ -782,10 +800,16 @@ impl StreamControlAdapter {
         let cutoff = now_ms().saturating_sub(10 * 60 * 1_000);
         self.finalized_streams
             .retain(|_, finalized| finalized.finalized_at_ms >= cutoff);
-        let lease_id = self
-            .streams
-            .get(&request.stream_id)
-            .map(|stream| stream.lease_id.clone());
+        if (!request.expected_lease_id.is_empty() || !request.expected_route_id.is_empty())
+            && !self.streams.get(&request.stream_id).is_some_and(|stream| {
+                (request.expected_lease_id.is_empty()
+                    || stream.lease_id == request.expected_lease_id)
+                    && (request.expected_route_id.is_empty()
+                        || stream.route_id == request.expected_route_id)
+            })
+        {
+            return stop_response(StreamState::Stopped, None, true, true, None);
+        }
         let stream_id = request.stream_id.clone();
         let mut response = match StopReceivePhase::try_from(request.phase)
             .unwrap_or(StopReceivePhase::Unspecified)
@@ -794,13 +818,28 @@ impl StreamControlAdapter {
             StopReceivePhase::QuiesceOutputs => self.quiesce_receive_outputs(request),
             StopReceivePhase::Finalize => self.finalize_receive(request),
         };
-        if response.state == StreamState::Stopped as i32
-            && let (Some(media_endpoints), Some(lease_id)) = (&self.media_endpoints, lease_id)
-            && let Err(error_value) = media_endpoints.release(&stream_id, &lease_id).await
-        {
-            response.state = StreamState::Stopping as i32;
-            response.error = Some(error("endpoint_release_failed", &error_value.to_string()));
-            response.input_removed = false;
+        if response.state == StreamState::Stopped as i32 {
+            let lease_id = self
+                .streams
+                .get(&stream_id)
+                .filter(|stream| stream.state == StreamState::Stopped)
+                .map(|stream| stream.lease_id.clone());
+            if let (Some(media_endpoints), Some(lease_id)) = (&self.media_endpoints, &lease_id)
+                && let Err(error_value) = media_endpoints.release(&stream_id, lease_id).await
+            {
+                response.state = StreamState::Stopping as i32;
+                response.error = Some(error("endpoint_release_failed", &error_value.to_string()));
+                response.input_removed = false;
+                return response;
+            }
+            if let Some(lease_id) = lease_id
+                && self
+                    .streams
+                    .get(&stream_id)
+                    .is_some_and(|stream| stream.lease_id == lease_id)
+            {
+                self.streams.remove(&stream_id);
+            }
         }
         response
     }
@@ -1850,7 +1889,7 @@ mod tests {
             stream_id: "stream-dynamic".to_string(),
             route_id: "route-dynamic".to_string(),
             lease_id: "lease-dynamic".to_string(),
-            expected_stream: Some(node.identity),
+            expected_stream: Some(node.identity.clone()),
             preferred_endpoints: vec![],
             constraints: HashMap::from([("expected_ssrc".to_string(), "1001".to_string())]),
             reservation_ttl_ms: 30_000,
@@ -1878,12 +1917,153 @@ mod tests {
                 expected_ssrc: String::new(),
                 expected_lifecycle_generation: 0,
                 expected_packet_count: 0,
+                expected_lease_id: "lease-dynamic".to_string(),
+                expected_route_id: "route-dynamic".to_string(),
             })
             .await;
         assert_eq!(stopped.state, StreamState::Stopped as i32);
         let rebound_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
         let rebound_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
         drop((rebound_tcp, rebound_udp));
+
+        let restarted = control
+            .start_receive(StartReceiveRequest {
+                operation: Some(operation("restart-dynamic")),
+                stream_id: "stream-dynamic".to_string(),
+                route_id: "route-restarted".to_string(),
+                lease_id: "lease-restarted".to_string(),
+                expected_stream: Some(node.identity.clone()),
+                preferred_endpoints: vec![],
+                constraints: HashMap::from([("expected_ssrc".to_string(), "1001".to_string())]),
+                reservation_ttl_ms: 30_000,
+            })
+            .await;
+        assert_eq!(restarted.state, StreamState::Receiving as i32);
+
+        let late_old_release = control
+            .stop_receive(StopReceiveRequest {
+                operation: Some(operation("late-old-release")),
+                stream_id: "stream-dynamic".to_string(),
+                reason: "late_old_lease".to_string(),
+                phase: StopReceivePhase::Unspecified as i32,
+                expected_ssrc: String::new(),
+                expected_lifecycle_generation: 0,
+                expected_packet_count: 0,
+                expected_lease_id: "lease-dynamic".to_string(),
+                expected_route_id: "route-dynamic".to_string(),
+            })
+            .await;
+        assert_eq!(late_old_release.state, StreamState::Stopped as i32);
+        assert_eq!(control.resource_snapshot().resources.len(), 1);
+        assert_eq!(
+            control.resource_snapshot().resources[0]
+                .labels
+                .get("lease_id")
+                .map(String::as_str),
+            Some("lease-restarted")
+        );
+
+        control.finalized_streams.insert(
+            "stream-dynamic".to_string(),
+            FinalizedStreamRuntime {
+                ssrc: 1001,
+                lifecycle_generation: 7,
+                last_packet_at_ms: 10,
+                packet_count: 20,
+                input_idle_timeout_ms: 4_000,
+                finalized_at_ms: now_ms(),
+            },
+        );
+        let late_old_finalize = control
+            .stop_receive(StopReceiveRequest {
+                operation: Some(operation("late-old-finalize")),
+                stream_id: "stream-dynamic".to_string(),
+                reason: "late_old_generation".to_string(),
+                phase: StopReceivePhase::Finalize as i32,
+                expected_ssrc: "1001".to_string(),
+                expected_lifecycle_generation: 7,
+                expected_packet_count: 20,
+                expected_lease_id: String::new(),
+                expected_route_id: String::new(),
+            })
+            .await;
+        assert_eq!(late_old_finalize.state, StreamState::Stopped as i32);
+        assert_eq!(control.resource_snapshot().resources.len(), 1);
+        assert_eq!(
+            control.resource_snapshot().resources[0]
+                .labels
+                .get("lease_id")
+                .map(String::as_str),
+            Some("lease-restarted")
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_dynamic_reservation_can_be_reallocated_with_a_new_lease() {
+        let port = find_free_test_range(1).start;
+        let manager = MediaEndpointManager::new(
+            GlobalRuntime::get_main_runtime(),
+            MediaListenerConf {
+                mode: MediaListenerMode::Multi,
+                bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                advertised_host: "127.0.0.1".to_string(),
+                single_port: 0,
+                port_range: MediaPortRange {
+                    start: port,
+                    end: port,
+                },
+                reservation_timeout_secs: 30,
+            },
+            MediaBootstrap::Multi,
+        )
+        .unwrap();
+        let node = StreamGuardNode::new(
+            "stream-1",
+            "inst-1",
+            "127.0.0.1",
+            "http://127.0.0.1:18080",
+            18080,
+            false,
+            u32::from(port),
+        );
+        let mut control =
+            StreamControlAdapter::new(node.identity.clone(), manager.capability_endpoint())
+                .with_media_endpoints(manager.clone());
+        let request = |lease_id: &str, route_id: &str| StartReceiveRequest {
+            operation: Some(operation(lease_id)),
+            stream_id: "stream-expired".to_string(),
+            route_id: route_id.to_string(),
+            lease_id: lease_id.to_string(),
+            expected_stream: Some(node.identity.clone()),
+            preferred_endpoints: vec![],
+            constraints: HashMap::from([("expected_ssrc".to_string(), "1001".to_string())]),
+            reservation_ttl_ms: 1,
+        };
+
+        assert_eq!(
+            control
+                .start_receive(request("lease-old", "route-old"))
+                .await
+                .state,
+            StreamState::Receiving as i32
+        );
+        base::tokio::time::sleep(Duration::from_millis(2)).await;
+        manager.expire_once().await;
+
+        assert_eq!(
+            control
+                .start_receive(request("lease-new", "route-new"))
+                .await
+                .state,
+            StreamState::Receiving as i32
+        );
+        assert_eq!(
+            control.resource_snapshot().resources[0]
+                .labels
+                .get("lease_id")
+                .map(String::as_str),
+            Some("lease-new")
+        );
     }
 
     #[test]
@@ -2003,6 +2183,8 @@ mod tests {
                 expected_ssrc: String::new(),
                 expected_lifecycle_generation: 0,
                 expected_packet_count: 0,
+                expected_lease_id: String::new(),
+                expected_route_id: String::new(),
             })
             .await;
 

@@ -324,9 +324,14 @@ fn route_reconcile_detects_running_orphan_conflict_and_stale_snapshot() {
             owner: owner.clone(),
             generation: 1,
             sequence: 1,
+            full: true,
             resources: vec![SnapshotResource {
                 resource_id: "res-1".to_string(),
+                resource_type: "stream".to_string(),
                 route_id: Some("route-1".to_string()),
+                lease_id: Some("lease-1".to_string()),
+                route_state: RouteState::Running,
+                endpoints: Vec::new(),
             }],
         })
         .unwrap();
@@ -340,6 +345,7 @@ fn route_reconcile_detects_running_orphan_conflict_and_stale_snapshot() {
             owner,
             generation: 1,
             sequence: 1,
+            full: true,
             resources: vec![],
         })
         .unwrap();

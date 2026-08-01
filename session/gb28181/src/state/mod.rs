@@ -4,7 +4,7 @@ use base::serde::Deserialize;
 use base::serde_default;
 use std::collections::HashMap;
 use std::fs;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -170,10 +170,8 @@ impl CheckFromConf for AlarmConf {
 #[derive(Debug, Clone)]
 pub struct StreamNode {
     pub name: String,
-    pub local_ip: Ipv4Addr,
-    pub local_port: u16,
     pub control_grpc_uri: String,
-    pub pub_ip: Ipv4Addr,
+    pub pub_host: String,
     pub pub_port: u16,
 }
 

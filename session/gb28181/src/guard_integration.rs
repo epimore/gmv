@@ -333,22 +333,14 @@ fn stream_node_from_parts(
                 && (!require_concrete_rtp || endpoint.mode == EndpointMode::Single as i32)
         })
         .ok_or_else(|| missing_stream_endpoint(node_id, "rtp"))?;
-    let http = endpoints
-        .iter()
-        .find(|endpoint| {
-            endpoint.name == "http" || matches!(endpoint.scheme.as_str(), "http" | "https")
-        })
-        .unwrap_or(grpc);
     Ok(StreamNode {
         name: node_id.to_string(),
-        local_ip: parse_ipv4(node_id, "http", &http.host)?,
-        local_port: u16::try_from(http.port).unwrap_or(u16::MAX),
         control_grpc_uri: base_rpc::rpc_endpoint_uri(
             grpc.scheme == "grpcs",
             &grpc.host,
             u16::try_from(grpc.port).unwrap_or(u16::MAX),
         ),
-        pub_ip: parse_ipv4(node_id, "rtp", &rtp.host)?,
+        pub_host: rtp.host.clone(),
         pub_port: u16::try_from(rtp.port).unwrap_or(u16::MAX),
     })
 }
@@ -359,18 +351,6 @@ fn missing_stream_endpoint(node_id: &str, endpoint: &str) -> GlobalError {
         "stream node endpoint is missing",
         |msg| log_error!("{msg}: node={node_id}, endpoint={endpoint}"),
     )
-}
-
-fn parse_ipv4(node_id: &str, endpoint: &str, host: &str) -> GlobalResult<std::net::Ipv4Addr> {
-    host.parse().map_err(|err| {
-        GlobalError::new_biz_error(
-            BaseErrorCode::InvalidRequest.code(),
-            "stream endpoint host must be an IPv4 address",
-            |msg| {
-                log_error!("{msg}: node={node_id}, endpoint={endpoint}, host={host}, err={err:?}")
-            },
-        )
-    })
 }
 
 pub async fn guard_record_running(device_id: &str, channel_id: &str) -> GlobalResult<bool> {
@@ -3726,7 +3706,20 @@ mod tests {
         allocation
             .endpoints
             .push(endpoint("rtp", "rtp", 28607, EndpointMode::Single));
+        allocation
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.name == "http")
+            .unwrap()
+            .host = "epimore.cn".to_string();
+        allocation
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.name == "rtp" && endpoint.mode == EndpointMode::Single as i32)
+            .unwrap()
+            .host = "media.epimore.cn".to_string();
         let node = stream_node_from_allocation(&allocation).unwrap();
+        assert_eq!(node.pub_host, "media.epimore.cn");
         assert_eq!(node.pub_port, 28607);
     }
 

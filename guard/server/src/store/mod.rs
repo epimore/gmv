@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::core::{GuardError, GuardResult};
+use crate::core::{GuardError, GuardResult, LeaseState, RouteState};
 use model::{
     EventRecord, LeaseRecord, NodeRecord, OutboxRecord, OutboxState, PlaybackTicketRecord,
     RouteRecord, StreamSessionOwnerRecord,
@@ -107,6 +107,48 @@ impl InMemoryGuardStore {
 
     pub fn routes(&self) -> Vec<RouteRecord> {
         self.inner.read().routes.values().cloned().collect()
+    }
+
+    pub fn resolve_active_allocation(
+        &self,
+        resource_id: &str,
+    ) -> GuardResult<Option<(LeaseRecord, RouteRecord)>> {
+        let inner = self.inner.read();
+        let known = inner
+            .leases
+            .values()
+            .filter(|lease| lease.resource_id == resource_id)
+            .collect::<Vec<_>>();
+        let active = known
+            .iter()
+            .filter(|lease| matches!(lease.state, LeaseState::Allocated | LeaseState::Confirmed))
+            .filter_map(|lease| {
+                let route = inner.routes.get(&lease.route_id)?;
+                (route.resource_id == resource_id
+                    && route.node_id == lease.node_id
+                    && route.instance_id == lease.instance_id
+                    && matches!(route.state, RouteState::Allocated | RouteState::Running))
+                .then_some(((*lease).clone(), route.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        match active.as_slice() {
+            [] if known.is_empty()
+                && !inner
+                    .routes
+                    .values()
+                    .any(|route| route.resource_id == resource_id) =>
+            {
+                Ok(None)
+            }
+            [] => Err(GuardError::Conflict(format!(
+                "resource {resource_id} has no consistent active allocation"
+            ))),
+            [allocation] => Ok(Some(allocation.clone())),
+            _ => Err(GuardError::Conflict(format!(
+                "resource {resource_id} has multiple active allocations"
+            ))),
+        }
     }
 
     pub fn upsert_playback_ticket(&self, ticket: PlaybackTicketRecord) {
@@ -556,5 +598,47 @@ mod tests {
         store.upsert_playback_ticket(playback_ticket("playback-token", "playback-a", 2_000));
         assert!(store.has_playback_ticket_for_stream("stream-a", 1_000));
         assert!(!store.has_playback_ticket_for_stream("stream-a", 2_000));
+    }
+
+    #[test]
+    fn active_allocation_is_resolved_by_lease_route_identity_not_map_order() {
+        let store = InMemoryGuardStore::default();
+        for (suffix, lease_state, route_state) in [
+            ("old", LeaseState::Released, RouteState::Closed),
+            ("current", LeaseState::Confirmed, RouteState::Running),
+        ] {
+            store
+                .insert_lease(LeaseRecord {
+                    lease_id: format!("lease-{suffix}"),
+                    route_id: format!("route-{suffix}"),
+                    resource_id: "stream-a".to_string(),
+                    stream_type: "live".to_string(),
+                    node_id: "stream-node".to_string(),
+                    instance_id: "stream-instance".to_string(),
+                    idempotency_key: format!("operation-{suffix}"),
+                    constraints: HashMap::new(),
+                    endpoints: Vec::new(),
+                    state: lease_state,
+                    expires_at_ms: i64::MAX,
+                })
+                .unwrap();
+            store.upsert_route(RouteRecord {
+                route_id: format!("route-{suffix}"),
+                resource_id: "stream-a".to_string(),
+                node_id: "stream-node".to_string(),
+                instance_id: "stream-instance".to_string(),
+                state: route_state,
+                desired_generation: 1,
+                observed_generation: 1,
+                observed_sequence: 1,
+            });
+        }
+
+        let (lease, route) = store
+            .resolve_active_allocation("stream-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(lease.lease_id, "lease-current");
+        assert_eq!(route.route_id, "route-current");
     }
 }

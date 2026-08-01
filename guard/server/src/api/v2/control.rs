@@ -1779,16 +1779,13 @@ impl BusinessControl {
                 node_id: session.identity.node_id.clone(),
                 instance_id: session.identity.instance_id.clone(),
             });
-        let lease = self
+        let allocation = self
             .store
-            .leases()
-            .into_iter()
-            .find(|lease| lease.resource_id == session_response.stream_id);
-        let route = self
-            .store
-            .routes()
-            .into_iter()
-            .find(|route| route.resource_id == session_response.stream_id);
+            .resolve_active_allocation(&session_response.stream_id)?;
+        let (lease, route) = allocation
+            .as_ref()
+            .map(|(lease, route)| (Some(lease), Some(route)))
+            .unwrap_or((None, None));
         Ok(StreamSummary {
             stream_id,
             device_id: device_id.to_string(),
@@ -1801,8 +1798,12 @@ impl BusinessControl {
                 .as_ref()
                 .map(|route| route.instance_id.clone())
                 .unwrap_or_else(|| session.identity.instance_id.clone()),
-            lease_id: lease.map(|lease| lease.lease_id).unwrap_or_default(),
-            route_id: route.map(|route| route.route_id).unwrap_or_default(),
+            lease_id: lease
+                .map(|lease| lease.lease_id.clone())
+                .unwrap_or_default(),
+            route_id: route
+                .map(|route| route.route_id.clone())
+                .unwrap_or_default(),
             endpoint: session_response.endpoint,
             video_codec: session_response.video_codec,
             audio_codec: session_response.audio_codec,
@@ -1826,6 +1827,18 @@ impl BusinessControl {
         operation_id: &str,
         stream_id: &str,
     ) -> GuardResult<StreamSummary> {
+        let active_route_id = match self.store.resolve_active_allocation(stream_id) {
+            Ok(Some((_, route))) => Some(route.route_id),
+            Ok(None) => None,
+            Err(error) => {
+                base::log::warn!(
+                    "guard stream stop found inconsistent allocation projection: stream_id={}, reason={}",
+                    stream_id,
+                    error
+                );
+                None
+            }
+        };
         let session = self.session_for_stream(stream_id)?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
@@ -1883,14 +1896,12 @@ impl BusinessControl {
         let session_instance_id = session.identity.instance_id.clone();
         if state == DeviceStreamState::Stopped {
             self.store.remove_stream_session_owner(stream_id);
-            if let Some(route) =
-                self.store.routes().into_iter().find(|route| {
-                    route.resource_id == stream_id && route.state != RouteState::Closed
-                })
-                && let Some(mut stored_route) = self.store.get_route(&route.route_id)
+            if let Some(mut route) = active_route_id
+                .as_deref()
+                .and_then(|route_id| self.store.get_route(route_id))
             {
-                stored_route.state = RouteState::Closed;
-                self.store.upsert_route(stored_route);
+                route.state = RouteState::Closed;
+                self.store.upsert_route(route);
             }
         }
         Ok(StreamSummary {
@@ -1930,6 +1941,18 @@ impl BusinessControl {
                 "subscription_id is required".to_string(),
             ));
         }
+        let active_route_id = match self.store.resolve_active_allocation(stream_id) {
+            Ok(Some((_, route))) => Some(route.route_id),
+            Ok(None) => None,
+            Err(error) => {
+                base::log::warn!(
+                    "guard stream release found inconsistent allocation projection: stream_id={}, reason={}",
+                    stream_id,
+                    error
+                );
+                None
+            }
+        };
         let session = self.session_for_stream(stream_id)?;
         let session_grpc = grpc_uri(&session)?;
         let mut session_client =
@@ -1965,25 +1988,24 @@ impl BusinessControl {
                 true,
             ));
         }
-        let state =
-            if response.state == DeviceStreamState::Running as i32 {
-                StreamSummaryState::Running
-            } else if response.state == DeviceStreamState::Stopped as i32 {
-                self.store.remove_stream_session_owner(stream_id);
-                if let Some(route) = self.store.routes().into_iter().find(|route| {
-                    route.resource_id == stream_id && route.state != RouteState::Closed
-                }) && let Some(mut stored_route) = self.store.get_route(&route.route_id)
-                {
-                    stored_route.state = RouteState::Closed;
-                    self.store.upsert_route(stored_route);
-                }
-                StreamSummaryState::Stopped
-            } else {
-                edge.invalid_response("stream_release_invalid_state");
-                return Err(GuardError::Conflict(
-                    "session returned invalid release state".to_string(),
-                ));
-            };
+        let state = if response.state == DeviceStreamState::Running as i32 {
+            StreamSummaryState::Running
+        } else if response.state == DeviceStreamState::Stopped as i32 {
+            self.store.remove_stream_session_owner(stream_id);
+            if let Some(mut route) = active_route_id
+                .as_deref()
+                .and_then(|route_id| self.store.get_route(route_id))
+            {
+                route.state = RouteState::Closed;
+                self.store.upsert_route(route);
+            }
+            StreamSummaryState::Stopped
+        } else {
+            edge.invalid_response("stream_release_invalid_state");
+            return Err(GuardError::Conflict(
+                "session returned invalid release state".to_string(),
+            ));
+        };
         edge.success();
         Ok(StreamSummary {
             stream_id: stream_id.to_string(),
@@ -2148,11 +2170,9 @@ impl BusinessControl {
     }
 
     fn stream_node_for_resource(&self, stream_id: &str) -> GuardResult<NodeRecord> {
-        let route = self
+        let (_, route) = self
             .store
-            .routes()
-            .into_iter()
-            .find(|route| route.resource_id == stream_id && route.state != RouteState::Closed)
+            .resolve_active_allocation(stream_id)?
             .ok_or_else(|| GuardError::NotFound(format!("stream {stream_id}")))?;
         self.store
             .get_node(&route.node_id)
@@ -2525,9 +2545,14 @@ impl BusinessControl {
             owner: avai.identity.clone(),
             generation: 1,
             sequence: 1,
+            full: false,
             resources: vec![SnapshotResource {
                 resource_id: task_id.clone(),
+                resource_type: "ai_task".to_string(),
                 route_id: Some(route_id.clone()),
+                lease_id: Some(lease_id.clone()),
+                route_state: RouteState::Running,
+                endpoints: Vec::new(),
             }],
         })?;
         Ok(AiTaskSummary {

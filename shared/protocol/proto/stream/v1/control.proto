@@ -55,6 +55,10 @@ message StopReceiveRequest {
   string expected_ssrc = 5;
   uint64 expected_lifecycle_generation = 6;
   uint64 expected_packet_count = 7;
+  // Guard lease termination uses these fields to fence a late release from a
+  // newer media runtime that reused the same business stream_id.
+  string expected_lease_id = 8;
+  string expected_route_id = 9;
 }
 
 message StopReceiveResponse {

@@ -9,6 +9,7 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   let previewOutputType = '';
   let playbackOutputType = '';
   let imageAccesses = 0;
+  const releasedStreams: string[] = [];
   let coverUpdates = 0;
   const imageLists: URLSearchParams[] = [];
   const session = {
@@ -125,6 +126,9 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
         last_progress_at_ms: Date.now(), checkpoint_ms: 8_000, hard_timeout_ms: 30_000,
         can_continue: false, result: previewStream, error: null,
       };
+    } else if (path.includes('/streams/') && path.endsWith('/release') && request.method() === 'POST') {
+      releasedStreams.push(path);
+      body = previewStream;
     } else if (path.endsWith('/playback') && request.method() === 'POST') {
       playbackOutputType = request.postDataJSON().output_type;
       body = {
@@ -166,6 +170,7 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await expect.poll(() => previewOutputType).toBe('ll_hls');
   await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeVisible();
   await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
+  await expect.poll(() => releasedStreams.length).toBe(1);
   const channelCard = page.locator('.channel-card');
   const actionRows = await channelCard.locator('.channel-actions').evaluate((footer) =>
     [...footer.children].map((child) => (child as HTMLElement).offsetTop),

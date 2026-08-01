@@ -401,6 +401,8 @@ async fn staged_stop_receive(
             expected_ssrc: expected_ssrc.to_string(),
             expected_lifecycle_generation: expected_generation,
             expected_packet_count,
+            expected_lease_id: String::new(),
+            expected_route_id: String::new(),
         })
         .await
         .map_err(|error| rpc_status(error, "stop_receive"))?
@@ -512,6 +514,8 @@ pub async fn stop_receive(node: &StreamNode, stream_id: &str, reason: &str) -> G
             expected_ssrc: String::new(),
             expected_lifecycle_generation: 0,
             expected_packet_count: 0,
+            expected_lease_id: String::new(),
+            expected_route_id: String::new(),
         })
         .await
         .map_err(|error| rpc_status(error, "stop_receive"))?

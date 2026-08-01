@@ -6,6 +6,7 @@ const FRAME_SAMPLES = 160;
 export interface GbBroadcastSession {
   summary: StreamSummary;
   stop: () => Promise<void>;
+  stopped: Promise<void>;
 }
 
 export async function startGbMicrophoneBroadcast(
@@ -22,15 +23,27 @@ export async function startGbMicrophoneBroadcast(
   let summary: StreamSummary | undefined;
   let socket: WebSocket | undefined;
   let context: AudioContext | undefined;
-  let stopped = false;
+  let localStopped = false;
+  let serverStopped = false;
+  let stopRequest: Promise<void> | undefined;
+  let resolveStopped: () => void = () => undefined;
+  const stopped = new Promise<void>((resolve) => { resolveStopped = resolve; });
 
   const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    media.getTracks().forEach((track) => track.stop());
-    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'broadcast stopped');
-    if (context && context.state !== 'closed') await context.close();
-    if (summary) await stopGbBroadcast(summary.stream_id).catch(() => undefined);
+    if (!localStopped) {
+      localStopped = true;
+      media.getTracks().forEach((track) => track.stop());
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'broadcast stopped');
+      if (context && context.state !== 'closed') await context.close();
+    }
+    if (!summary || serverStopped) return;
+    stopRequest ??= stopGbBroadcast(summary.stream_id)
+      .then(() => {
+        serverStopped = true;
+        resolveStopped();
+      })
+      .finally(() => { stopRequest = undefined; });
+    await stopRequest;
   };
 
   try {
@@ -66,12 +79,12 @@ export async function startGbMicrophoneBroadcast(
       if (socket?.readyState === WebSocket.OPEN) socket.send(frame);
     });
     worklet.port.onmessage = (event: MessageEvent<Float32Array>) => encoder.push(event.data);
-    media.getAudioTracks()[0]?.addEventListener('ended', () => void stop(), { once: true });
-    socket.addEventListener('close', () => void stop(), { once: true });
+    media.getAudioTracks()[0]?.addEventListener('ended', () => void stop().catch(() => undefined), { once: true });
+    socket.addEventListener('close', () => void stop().catch(() => undefined), { once: true });
     await context.resume();
-    return { summary, stop };
+    return { summary, stop, stopped };
   } catch (error) {
-    await stop();
+    await stop().catch(() => undefined);
     throw error;
   }
 }

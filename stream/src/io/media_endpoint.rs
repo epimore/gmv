@@ -248,6 +248,20 @@ impl MediaEndpointManager {
         self.conf.mode
     }
 
+    pub async fn owns_active_lease(&self, stream_id: &str, lease_id: &str) -> bool {
+        if self.conf.mode == MediaListenerMode::Single {
+            return true;
+        }
+        let state = self.state.lock().await;
+        state
+            .stream_index
+            .get(stream_id)
+            .and_then(|endpoint_id| state.endpoints.get(endpoint_id))
+            .is_some_and(|endpoint| {
+                endpoint.lease_id == lease_id && endpoint.state == MediaEndpointState::Listening
+            })
+    }
+
     pub fn capability_endpoint(&self) -> Endpoint {
         let (port, mode, labels) = match self.conf.mode {
             MediaListenerMode::Single => {

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,8 +13,8 @@ use base::utils::rt::GlobalRuntime;
 use base_rpc::{RpcChannelConfig, connect_channel};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
 use gmv_protocol::guard::v1::{
-    HostMetrics, NodeEvent, NodeHealth, NodeHeartbeat, NodeToGuardMessage, RegisterNodeRequest,
-    node_to_guard_message,
+    HostMetrics, NodeEvent, NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
+    RegisterNodeRequest, node_to_guard_message,
 };
 use sys_metrics::HostMetricsCollector;
 use tokio_stream::wrappers::ReceiverStream;
@@ -21,6 +23,8 @@ pub mod error;
 pub mod error_code;
 
 pub type BusinessMetrics = Arc<dyn Fn() -> HashMap<String, String> + Send + Sync>;
+pub type ResourceSnapshotFuture = Pin<Box<dyn Future<Output = NodeResourceSnapshot> + Send>>;
+pub type ResourceSnapshotProvider = Arc<dyn Fn() -> ResourceSnapshotFuture + Send + Sync>;
 
 #[derive(Clone)]
 pub struct NodeReporterConfig {
@@ -28,6 +32,7 @@ pub struct NodeReporterConfig {
     pub register: RegisterNodeRequest,
     pub health: NodeHealth,
     pub business_metrics: BusinessMetrics,
+    pub resource_snapshot: Option<ResourceSnapshotProvider>,
     pub reconnect_delay: Duration,
 }
 
@@ -38,6 +43,7 @@ impl NodeReporterConfig {
             register,
             health: NodeHealth::Ready,
             business_metrics: Arc::new(HashMap::new),
+            resource_snapshot: None,
             reconnect_delay: Duration::from_secs(3),
         }
     }
@@ -201,6 +207,9 @@ async fn run_connection(
     );
     let mut client = GuardNodeControlClient::new(channel);
     let mut register = config.register.clone();
+    if let Some(resource_snapshot) = config.resource_snapshot.as_ref() {
+        register.startup_snapshot = Some(resource_snapshot().await);
+    }
     register.host_metrics = collector.sample().ok().map(host_metrics);
     let response = client.register_node(register.clone()).await?.into_inner();
     let interval_ms = response.heartbeat_interval_ms.max(1_000);

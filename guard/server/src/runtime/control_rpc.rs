@@ -214,6 +214,8 @@ impl GuardControl for GuardControlRpc {
                     &node,
                     &operation_id,
                     &request.stream_id,
+                    &lease_id,
+                    &route_id,
                     "guard_allocation_failed",
                 )
                 .await
@@ -246,6 +248,8 @@ impl GuardControl for GuardControlRpc {
                 &node,
                 &operation_id,
                 &request.stream_id,
+                &lease_id,
+                &route_id,
                 "guard_store_failed",
             )
             .await
@@ -363,38 +367,31 @@ impl GuardControl for GuardControlRpc {
                 "UI session is not active",
             ));
         }
-        let lease = if ticket.lease_id.is_empty() {
+        let allocation = if ticket.lease_id.is_empty() && ticket.route_id.is_empty() {
             self.store
-                .leases()
-                .into_iter()
-                .find(|lease| lease.resource_id == request.stream_id)
+                .resolve_active_allocation(&request.stream_id)
+                .ok()
+                .flatten()
+        } else if !ticket.lease_id.is_empty() && !ticket.route_id.is_empty() {
+            self.store
+                .get_lease(&ticket.lease_id)
+                .zip(self.store.get_route(&ticket.route_id))
         } else {
-            self.store.get_lease(&ticket.lease_id)
+            None
         };
-        if !lease.as_ref().is_some_and(|lease| {
-            lease.resource_id == request.stream_id && lease.state == LeaseState::Confirmed
+        if !allocation.as_ref().is_some_and(|(lease, route)| {
+            lease.resource_id == request.stream_id
+                && lease.state == LeaseState::Confirmed
+                && lease.route_id == route.route_id
+                && lease.node_id == route.node_id
+                && lease.instance_id == route.instance_id
+                && route.resource_id == request.stream_id
+                && matches!(route.state, RouteState::Allocated | RouteState::Running)
         }) {
             self.store.revoke_playback_token(&request.token);
             return Ok(reject_playback(
                 "stream_not_active",
-                "stream has no confirmed lease",
-            ));
-        }
-        let route = if ticket.route_id.is_empty() {
-            self.store
-                .routes()
-                .into_iter()
-                .find(|route| route.resource_id == request.stream_id)
-        } else {
-            self.store.get_route(&ticket.route_id)
-        };
-        if !route.as_ref().is_some_and(|route| {
-            route.resource_id == request.stream_id && route.state != RouteState::Closed
-        }) {
-            self.store.revoke_playback_token(&request.token);
-            return Ok(reject_playback(
-                "stream_not_active",
-                "stream route is closed",
+                "stream has no consistent active allocation",
             ));
         }
         ticket.expires_at_ms = now + PLAYBACK_TOKEN_TTL_MS;
@@ -481,6 +478,8 @@ impl GuardControlRpc {
                 &node,
                 &format!("lease-{}", request.lease_id),
                 &current.resource_id,
+                &current.lease_id,
+                &current.route_id,
                 match transition {
                     LeaseTransition::Fail => "guard_lease_failed",
                     LeaseTransition::Release => "guard_lease_released",
@@ -499,9 +498,11 @@ impl GuardControlRpc {
         }
         .map_err(status)?;
         if matches!(transition, LeaseTransition::Release) {
-            for mut route in self.store.routes().into_iter().filter(|route| {
-                route.resource_id == lease.resource_id && route.state != RouteState::Closed
-            }) {
+            if let Some(mut route) = self
+                .store
+                .get_route(&lease.route_id)
+                .filter(|route| route.state != RouteState::Closed)
+            {
                 route.state = RouteState::Closed;
                 self.store.upsert_route(route);
             }
@@ -602,6 +603,8 @@ async fn stop_receive(
     node: &NodeRecord,
     operation_id: &str,
     stream_id: &str,
+    lease_id: &str,
+    route_id: &str,
     reason: &str,
 ) -> Result<(), Status> {
     let response = control
@@ -615,6 +618,8 @@ async fn stop_receive(
                 stream_id: stream_id.to_string(),
                 reason: reason.to_string(),
                 phase: StopReceivePhase::Unspecified as i32,
+                expected_lease_id: lease_id.to_string(),
+                expected_route_id: route_id.to_string(),
                 ..Default::default()
             },
         )

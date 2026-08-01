@@ -876,10 +876,11 @@ const multiBulkBusy = ref(false);
 const multiDesiredRate = ref(1);
 const playbackRates = [0.5, 1, 2, 4];
 const multiPlayVersions = reactive<Record<string, number>>({});
-const multiStopTasks = new Map<string, Promise<void>>();
+const viewerReleaseTasks = new Map<string, Promise<void>>();
+const pendingViewerReleases = new Map<string, StreamSummary>();
 const multiPreviewAborts = new Map<string, AbortController>();
 const multiOutputAborts = new Map<string, AbortController>();
-let stopCurrentStreamTask: Promise<void> | undefined;
+let stopCurrentStreamTask: Promise<boolean> | undefined;
 let singlePreviewAbort: AbortController | undefined;
 let singleOutputAbort: AbortController | undefined;
 let playRequestSeq = 0;
@@ -1477,7 +1478,7 @@ async function handleMultiModeChange(value: string | number | boolean | undefine
       return;
     }
   }
-  await stopAllMultiStreams({ quiet: true });
+  if (!await stopAllMultiStreams({ quiet: true })) return;
   multiMode.value = nextMode;
   const retained = previous.filter((item) => nextMode === 'live'
     ? canPlayLive(item.channel)
@@ -1506,7 +1507,7 @@ async function loadMultiViewCapability() {
   if (multiGridSize.value > 9 && multiViewLimit.value <= 6) multiGridSize.value = 9;
 }
 async function backToDeviceListFromMulti() {
-  await stopAllMultiStreams();
+  if (!await stopAllMultiStreams()) return;
   multiFullscreen.value = false;
   monitorMode.value = 'devices';
   selectedMultiNodeId.value = '';
@@ -1552,7 +1553,7 @@ async function queryTreeDevices() {
   }
 }
 async function resetTreeDevices() {
-  await stopAllMultiStreams({ quiet: true });
+  if (!await stopAllMultiStreams({ quiet: true })) return;
   clearTreeDeviceState();
   if (selectedMultiNodeOption.value) await queryTreeDevices();
 }
@@ -1924,24 +1925,38 @@ function isMultiCellSelected(key: string) {
 async function stopMultiStream(stream?: StreamSummary) {
   const streamId = stream?.stream_id;
   if (!streamId) return;
-  const taskKey = `${streamId}:${stream.subscription_id || 'legacy'}`;
-  const existing = multiStopTasks.get(taskKey);
-  if (existing) return existing;
-  let task: Promise<void>;
-  task = releaseViewerStream(stream).catch(() => undefined).finally(() => {
-    if (multiStopTasks.get(taskKey) === task) multiStopTasks.delete(taskKey);
-  });
-  multiStopTasks.set(taskKey, task);
-  return task;
+  return releaseViewerStream(stream);
 }
 
 async function releaseViewerStream(stream: StreamSummary) {
   if (!stream.subscription_id) return;
-  await releaseStream(
+  const key = `${stream.stream_id}:${stream.subscription_id}`;
+  pendingViewerReleases.set(key, stream);
+  const existing = viewerReleaseTasks.get(key);
+  if (existing) return existing;
+  let task: Promise<void>;
+  task = releaseStream(
     stream.stream_id,
     stream.subscription_id,
     `ui-stream-release-${crypto.randomUUID()}`,
-  );
+  ).then(() => {
+    pendingViewerReleases.delete(key);
+  }).finally(() => {
+    if (viewerReleaseTasks.get(key) === task) viewerReleaseTasks.delete(key);
+  });
+  viewerReleaseTasks.set(key, task);
+  return task;
+}
+
+async function retryPendingViewerReleases() {
+  const pending = [...pendingViewerReleases.values()];
+  if (!pending.length) return true;
+  const results = await Promise.allSettled(pending.map((stream) => releaseViewerStream(stream)));
+  if (results.some((result) => result.status === 'rejected')) {
+    ElMessage.error('仍有流资源释放失败，请重试');
+    return false;
+  }
+  return true;
 }
 
 async function closeTrackedOutputs(
@@ -1975,15 +1990,21 @@ async function stopMultiCell(key: string, options: { removeSelection?: boolean }
   multiOutputAborts.get(key)?.abort();
   multiOutputAborts.delete(key);
   multiPlaybackQueue.value = multiPlaybackQueue.value.filter((item) => item !== key);
+  try {
+    await disposeMultiCellMedia(cell);
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '多画面资源释放失败，请重试'));
+    return false;
+  }
   multiCells.value = multiCells.value.filter((item) => item.key !== key);
   if (removeSelection) {
     selectedTreeChannelKeys.value = selectedTreeChannelKeys.value.filter((item) => item !== key);
     selectedTreeChannelItems.value = selectedTreeChannelItems.value.filter((item) => selectedChannelKey(item) !== key);
   }
-  await disposeMultiCellMedia(cell);
+  return true;
 }
 async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
-  if (multiStopping.value) return;
+  if (multiStopping.value) return false;
   const cells = [...multiCells.value];
   const streams = cells.map((cell) => cell.stream).filter((stream): stream is StreamSummary => !!stream?.stream_id);
   multiStopping.value = true;
@@ -1993,15 +2014,20 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
     multiPreviewAborts.clear();
     for (const controller of multiOutputAborts.values()) controller.abort();
     multiOutputAborts.clear();
-    multiCells.value = [];
     multiPlaybackQueue.value = [];
+    const releases = await Promise.allSettled(cells.map((cell) => disposeMultiCellMedia(cell)));
+    if (releases.some((release) => release.status === 'rejected')) {
+      ElMessage.error('多画面资源释放失败，请重试');
+      return false;
+    }
+    multiCells.value = [];
     selectedTreeChannelKeys.value = [];
     selectedTreeChannelItems.value = [];
     multiGridManual.value = false;
     multiGridSize.value = 1;
     multiPage.value = 1;
-    await Promise.allSettled(cells.map((cell) => disposeMultiCellMedia(cell)));
     if (!options.quiet && streams.length) ElMessage.success('多画面已停止');
+    return true;
   } finally {
     multiStopping.value = false;
   }
@@ -2025,15 +2051,6 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
       pendingPlayKey.value = '';
     }
     const operation = singleMediaOperation.value;
-    if (closeDialog) playerDialog.value = false;
-    lastStream.value = undefined;
-    singlePlaybackState.value = 'playing';
-    singleOutput.value = undefined;
-    singlePendingSwitch.value = undefined;
-    singleOutputSwitching.value = false;
-    singleMediaOperation.value = undefined;
-    singleWaitAcknowledged.value = false;
-    if (clearAction) lastAction.value = '';
     if (operation?.state === 'preparing') {
       await cancelMediaOperation(operation.operation_id).catch(() => undefined);
     }
@@ -2043,8 +2060,24 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
         pendingSwitch?.previous_output,
         pendingSwitch?.next_output,
       ]);
-      await releaseViewerStream(stream).catch(() => undefined);
+      try {
+        await releaseViewerStream(stream);
+      } catch (error) {
+        if (closeDialog) playerDialog.value = true;
+        ElMessage.error(errorMessage(error, '流资源释放失败，请重试'));
+        return false;
+      }
     }
+    if (closeDialog) playerDialog.value = false;
+    lastStream.value = undefined;
+    singlePlaybackState.value = 'playing';
+    singleOutput.value = undefined;
+    singlePendingSwitch.value = undefined;
+    singleOutputSwitching.value = false;
+    singleMediaOperation.value = undefined;
+    singleWaitAcknowledged.value = false;
+    if (clearAction) lastAction.value = '';
+    return true;
   })().finally(() => {
     stopCurrentStreamTask = undefined;
   });
@@ -2053,7 +2086,8 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
 async function focusChannelInMultiView(channel: GbChannelInfo, mode: MultiMode = 'live') {
   const device = selectedDevice.value;
   if (!device) return;
-  await stopCurrentStream();
+  if (!await stopCurrentStream()) return;
+  if (!await retryPendingViewerReleases()) return;
   selectedDevice.value = undefined;
   selectedChannel.value = undefined;
   channels.value = [];
@@ -2638,7 +2672,8 @@ async function openChannelsFromDetail() {
   await openChannels(device);
 }
 async function openChannels(device: GbDeviceInfo) {
-  await stopCurrentStream();
+  if (!await stopCurrentStream()) return;
+  if (!await retryPendingViewerReleases()) return;
   selectedDevice.value = device;
   selectedChannel.value = undefined;
   showImages.value = false;
@@ -2675,8 +2710,9 @@ async function reloadChannels() {
   }
 }
 async function backToDevices() {
-  await stopBroadcast();
-  await stopCurrentStream();
+  if (!await stopBroadcast()) return;
+  if (!await stopCurrentStream()) return;
+  if (!await retryPendingViewerReleases()) return;
   selectedDevice.value = undefined;
   selectedChannel.value = undefined;
   channels.value = [];
@@ -3208,7 +3244,8 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
   singleWaitAcknowledged.value = false;
   pendingPlayKey.value = playRequestKey(kind, channel);
   try {
-    await stopCurrentStream({ closeDialog: false, clearAction: false, cancelPending: false });
+    if (!await stopCurrentStream({ closeDialog: false, clearAction: false, cancelPending: false })) return;
+    if (!await retryPendingViewerReleases()) return;
     const controller = new AbortController();
     singlePreviewAbort?.abort();
     singlePreviewAbort = controller;
@@ -3447,7 +3484,14 @@ async function startBroadcast(scopeId: string) {
   broadcastStarting.value = true;
   broadcastScopeId.value = scopeId;
   try {
-    broadcastSession.value = await startGbMicrophoneBroadcast(selectedDevice.value.device_id, scopeId);
+    const session = await startGbMicrophoneBroadcast(selectedDevice.value.device_id, scopeId);
+    broadcastSession.value = session;
+    void session.stopped.then(() => {
+      if (broadcastSession.value === session) {
+        broadcastSession.value = undefined;
+        broadcastScopeId.value = '';
+      }
+    });
     ElMessage.success('语音广播已开始');
   } catch (error) {
     ElMessage.error(errorMessage(error, '语音广播启动失败'));
@@ -3457,14 +3501,18 @@ async function startBroadcast(scopeId: string) {
 }
 async function stopBroadcast() {
   const session = broadcastSession.value;
-  if (!session) return;
-  broadcastSession.value = undefined;
+  if (!session) return true;
   broadcastStarting.value = true;
   try {
     await session.stop();
+    if (broadcastSession.value === session) broadcastSession.value = undefined;
     ElMessage.success('语音广播已停止');
+    return true;
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '语音广播停止失败，请重试'));
+    return false;
   } finally {
-    broadcastScopeId.value = '';
+    if (!broadcastSession.value) broadcastScopeId.value = '';
     broadcastStarting.value = false;
   }
 }
@@ -3578,7 +3626,12 @@ function handlePlaybackProgress({ mediaTimeMs }: { mediaTimeMs: number }) {
 async function finishPlaybackRange(stream: StreamSummary) {
   singlePlayerRef.value?.confirmPlaybackState(true);
   singlePlaybackState.value = 'playing';
-  await releaseViewerStream(stream).catch(() => undefined);
+  try {
+    await releaseViewerStream(stream);
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '回放资源释放失败，请重试关闭播放器'));
+    return;
+  }
   if (lastStream.value?.stream_id === stream.stream_id) {
     lastStream.value = { ...stream, endpoint: '', state: 'stopped' };
     ElMessage.success('历史回放已结束');
@@ -3601,10 +3654,12 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handlePlaybackPresenceWakeup);
 });
 onBeforeRouteLeave(async () => {
+  if (!await stopBroadcast()) return false;
+  if (!await stopAllMultiStreams({ quiet: true })) return false;
+  if (!await stopCurrentStream()) return false;
+  if (!await retryPendingViewerReleases()) return false;
   multiViewDisposed = true;
   stopPlaybackPresenceHeartbeat();
-  await stopBroadcast();
-  await stopAllMultiStreams({ quiet: true });
 });
 onBeforeUnmount(() => {
   multiViewDisposed = true;
@@ -3616,6 +3671,7 @@ onBeforeUnmount(() => {
   void stopBroadcast();
   void stopAllMultiStreams({ quiet: true });
   void stopCurrentStream();
+  void retryPendingViewerReleases();
 });
 </script>
 

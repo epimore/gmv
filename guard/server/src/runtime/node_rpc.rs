@@ -16,7 +16,7 @@ use gmv_protocol::guard::v1::guard_node_control_server::{
 use gmv_protocol::guard::v1::{
     EventPriority, GuardToNodeMessage, HostMetrics, NodeHealth, NodeHeartbeat,
     NodeResourceSnapshot, NodeToGuardMessage, RegisterDecision as ProtoRegisterDecision,
-    RegisterNodeRequest, RegisterNodeResponse, StreamAck, guard_to_node_message,
+    RegisterNodeRequest, RegisterNodeResponse, ResourceState, StreamAck, guard_to_node_message,
     node_to_guard_message,
 };
 use tonic::{Request, Response, Status, Streaming};
@@ -471,23 +471,58 @@ fn apply_snapshot(
     sequence: u64,
     snapshot: NodeResourceSnapshot,
 ) -> Result<(), GuardError> {
+    let full = snapshot.full;
     routes.apply_snapshot(ResourceSnapshot {
         owner,
         generation,
         sequence,
+        full,
         resources: snapshot
             .resources
             .into_iter()
             .filter_map(|resource| {
                 let resource_ref = resource.resource?;
+                let endpoints = snapshot_endpoint(&resource.labels).into_iter().collect();
                 Some(SnapshotResource {
                     resource_id: resource_ref.resource_id,
+                    resource_type: resource_ref.resource_type,
                     route_id: resource.labels.get("route_id").cloned(),
+                    lease_id: resource.labels.get("lease_id").cloned(),
+                    route_state: match ResourceState::try_from(resource.state) {
+                        Ok(ResourceState::Starting) => RouteState::Allocated,
+                        Ok(ResourceState::Running) => RouteState::Running,
+                        Ok(ResourceState::Stopping) => RouteState::Reconciling,
+                        Ok(ResourceState::Stopped) => RouteState::Closed,
+                        Ok(ResourceState::Failed) | Ok(ResourceState::Unspecified) | Err(_) => {
+                            RouteState::Orphaned
+                        }
+                    },
+                    endpoints,
                 })
             })
             .collect(),
     })?;
     Ok(())
+}
+
+fn snapshot_endpoint(labels: &std::collections::HashMap<String, String>) -> Option<EndpointRecord> {
+    let host = labels.get("media_host")?.clone();
+    let port = labels.get("media_port")?.parse().ok()?;
+    let mut endpoint_labels = std::collections::HashMap::new();
+    if let Some(endpoint_id) = labels.get("endpoint_id") {
+        endpoint_labels.insert("endpoint_id".to_string(), endpoint_id.clone());
+    }
+    if let Some(generation) = labels.get("endpoint_generation") {
+        endpoint_labels.insert("generation".to_string(), generation.clone());
+    }
+    Some(EndpointRecord {
+        name: "rtp".to_string(),
+        scheme: "rtp".to_string(),
+        host,
+        port,
+        mode: EndpointModeRecord::Single,
+        labels: endpoint_labels,
+    })
 }
 
 async fn apply_event(

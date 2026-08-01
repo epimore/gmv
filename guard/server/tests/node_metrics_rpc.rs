@@ -68,6 +68,9 @@ fn node_reporter_registers_and_updates_host_metrics_over_grpc() {
             config.reconnect_delay = Duration::from_millis(20);
             config.business_metrics =
                 Arc::new(|| HashMap::from([("receiving_streams".to_string(), "3".to_string())]));
+            config.resource_snapshot = Some(Arc::new(|| {
+                Box::pin(async { snapshot("stream-live", "route-live") })
+            }));
             let reporter_cancel = CancellationToken::new();
             let reporter = NodeReporter::spawn(config, reporter_cancel.clone());
 
@@ -83,6 +86,16 @@ fn node_reporter_registers_and_updates_host_metrics_over_grpc() {
                                 .map(String::as_str),
                             Some("3")
                         );
+                        assert_eq!(
+                            store.get_route("route-live").map(|route| route.resource_id),
+                            Some("stream-live".to_string())
+                        );
+                        let (lease, _) = store
+                            .resolve_active_allocation("stream-live")
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(lease.endpoints.len(), 1);
+                        assert_eq!(lease.endpoints[0].port, 30_000);
                         break;
                     }
                     base::tokio::time::sleep(Duration::from_millis(20)).await;
@@ -269,7 +282,14 @@ fn snapshot(resource_id: &str, route_id: &str) -> NodeResourceSnapshot {
                 resource_type: "stream".to_string(),
             }),
             state: ResourceState::Running as i32,
-            labels: HashMap::from([("route_id".to_string(), route_id.to_string())]),
+            labels: HashMap::from([
+                ("route_id".to_string(), route_id.to_string()),
+                ("lease_id".to_string(), format!("lease-{resource_id}")),
+                ("media_host".to_string(), "127.0.0.1".to_string()),
+                ("media_port".to_string(), "30000".to_string()),
+                ("endpoint_id".to_string(), format!("endpoint-{resource_id}")),
+                ("endpoint_generation".to_string(), "7".to_string()),
+            ]),
         }],
     }
 }

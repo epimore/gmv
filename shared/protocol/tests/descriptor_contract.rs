@@ -471,6 +471,14 @@ fn stream_output_lifecycle_contract_is_stable() {
         Some(7)
     );
     assert_eq!(
+        field_number("StopReceiveRequest", "expected_lease_id"),
+        Some(8)
+    );
+    assert_eq!(
+        field_number("StopReceiveRequest", "expected_route_id"),
+        Some(9)
+    );
+    assert_eq!(
         field_number("StopReceiveResponse", "outputs_closed"),
         Some(3)
     );

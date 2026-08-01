@@ -140,19 +140,18 @@ impl Daemon<StreamBootstrap> for App {
             let control_addr = grpc.listen_addr;
             let control_cancel = network_rt.cancel.clone();
             let control_shutdown = control_cancel.clone();
-            let control_media_tx = tx.clone();
-            let control_media_endpoints = media_endpoints.clone();
+            let control_rpc = StreamControlRpc::new(
+                StreamControlAdapter::new(control_identity, receive_endpoint)
+                    .with_media_endpoints(media_endpoints.clone())
+                    .with_media_tx(tx.clone()),
+            );
+            let server_rpc = control_rpc.clone();
             network_rt.spawn("stream-control-rpc", async move {
                 base::log::debug!(
                     "stream rpc service inbound: node_id={}, bind_addr={}, tls={}",
                     control_node_id,
                     control_addr,
                     grpc.tls.enabled
-                );
-                let rpc = StreamControlRpc::new(
-                    StreamControlAdapter::new(control_identity, receive_endpoint)
-                        .with_media_endpoints(control_media_endpoints)
-                        .with_media_tx(control_media_tx),
                 );
                 let mut server_config = base_rpc::RpcServerConfig::default();
                 if grpc.tls.enabled {
@@ -188,7 +187,7 @@ impl Daemon<StreamBootstrap> for App {
                     }
                 };
                 if let Err(err) = server
-                    .add_service(StreamControlServer::new(rpc))
+                    .add_service(StreamControlServer::new(server_rpc))
                     .serve_with_incoming_shutdown(incoming, async move {
                         control_shutdown.cancelled().await
                     })
@@ -213,6 +212,10 @@ impl Daemon<StreamBootstrap> for App {
                 node.guard_channel.clone(),
                 node.register_request(NodeResourceSnapshot::default()),
             );
+            reporter.resource_snapshot = Some(Arc::new(move || {
+                let control_rpc = control_rpc.clone();
+                Box::pin(async move { control_rpc.resource_snapshot().await })
+            }));
             let metrics_media_endpoints = media_endpoints.clone();
             reporter.business_metrics = Arc::new(move || {
                 let media_stats = metrics_media_endpoints.stats_snapshot();

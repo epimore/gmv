@@ -7036,9 +7036,7 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
         .filter(|route| !route.resource_id.starts_with("ai-"))
         .map(|route| {
             let owner = store.get_stream_session_owner(&route.resource_id);
-            let lease = leases
-                .iter()
-                .find(|lease| lease.resource_id == route.resource_id);
+            let lease = leases.iter().find(|lease| lease.route_id == route.route_id);
             StreamSummary {
                 stream_id: route.resource_id,
                 device_id: String::new(),
@@ -7062,15 +7060,20 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
                 playback_generation: 0,
                 playback_start_time_sec: 0,
                 playback_end_time_sec: 0,
-                state: if route.state == RouteState::Closed {
+                state: if route.state == RouteState::Closed
+                    || lease.is_some_and(|lease| lease.state == LeaseState::Released)
+                {
                     StreamSummaryState::Stopped
                 } else if lease
                     .map(|lease| {
                         lease.state == LeaseState::Failed || lease.state == LeaseState::Expired
                     })
                     .unwrap_or(false)
+                    || matches!(route.state, RouteState::Orphaned | RouteState::Conflict)
                 {
                     StreamSummaryState::Failed
+                } else if route.state == RouteState::Reconciling {
+                    StreamSummaryState::Stopping
                 } else {
                     StreamSummaryState::Running
                 },
@@ -7087,9 +7090,7 @@ fn real_ai_tasks(state: &HttpState) -> Vec<AiTaskSummary> {
         .into_iter()
         .filter(|route| route.resource_id.starts_with("ai-"))
         .map(|route| {
-            let lease = leases
-                .iter()
-                .find(|lease| lease.resource_id == route.resource_id);
+            let lease = leases.iter().find(|lease| lease.route_id == route.route_id);
             AiTaskSummary {
                 task_id: route.resource_id,
                 model: String::new(),
@@ -7107,8 +7108,12 @@ fn real_ai_tasks(state: &HttpState) -> Vec<AiTaskSummary> {
                     .unwrap_or(false)
                 {
                     AiTaskSummaryState::Failed
-                } else if route.state == RouteState::Closed {
+                } else if route.state == RouteState::Closed
+                    || lease.is_some_and(|lease| lease.state == LeaseState::Released)
+                {
                     AiTaskSummaryState::Cancelled
+                } else if matches!(route.state, RouteState::Orphaned | RouteState::Conflict) {
+                    AiTaskSummaryState::Failed
                 } else {
                     AiTaskSummaryState::Running
                 },
