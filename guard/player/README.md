@@ -57,7 +57,6 @@ guard/player
 │   │   ├── PtzPanel.vue
 │   │   ├── PresetPanel.vue
 │   │   ├── PlaybackTimeline.vue
-│   │   ├── TalkPanel.vue
 │   │   ├── StreamSwitcher.vue
 │   │   ├── DeviceStatusBar.vue
 │   │   ├── OsdLayer.vue
@@ -160,7 +159,7 @@ Core 负责：
 Core 不负责：
 
 - PTZ 请求。
-- 抓拍、录像、语音对讲业务 API。
+- 抓拍、录像等业务 API。
 - UI 布局。
 - 设备列表、通道列表、用户权限。
 - AI 框数据来源。
@@ -196,8 +195,6 @@ export interface GmvPlayerViewActions {
   ptz: GmvPtzCommand;
   presetCall: { presetId: string };
   presetSet: { presetId: string };
-  talkStart: undefined;
-  talkStop: undefined;
   playbackSeek: { timeMs: number };
   streamSwitch: { source: GmvSource };
 }
@@ -287,19 +284,6 @@ export interface GmvPlayerViewActions {
 
 - 时间轴组件只产生 `playbackSeek`、`rangeChange`、`speedChange` 事件。
 - 具体回放流创建由业务层调用接口完成。
-
-### 语音对讲
-
-目标：
-
-- 支持按住说话、点击开始/停止。
-- 显示麦克风权限、连接状态、音量状态。
-- 语音链路与视频播放链路解耦。
-
-验收：
-
-- 麦克风授权失败时 UI 有明确状态。
-- 结束对讲时释放 `MediaStreamTrack`。
 
 ### 码流切换
 
@@ -446,14 +430,13 @@ export interface GmvPlayerViewActions {
 - PTZ。
 - 预置点。
 - 回放时间轴。
-- 语音对讲。
 - AI 框。
 - 当前观看人数。
 
 验收：
 
 - 多宫格每路生命周期独立。
-- PTZ / 预置点 / 抓拍 / 录像 / 对讲均通过事件交给业务层。
+- PTZ / 预置点 / 抓拍 / 录像均通过事件交给业务层。
 - UI 在桌面端和常见大屏分辨率下不重叠。
 
 ### 阶段六：HLS-fMP4
@@ -501,7 +484,7 @@ video.js / xgplayer：可参考 UI，不作为 Core 强依赖。
 
 `guard/ui` 业务页面负责：
 
-- 调用预览、回放、PTZ、抓拍、录像、对讲 API。
+- 调用预览、回放、PTZ、抓拍、录像和语音广播 API；语音广播不通过播放器组件发起。
 - 把接口返回的 `endpoint` 转成 `GmvSource[]`。
 - 把设备状态、AI 结果、观看人数传入 `GmvPlayerView`。
 - 处理权限、确认弹窗、错误提示。
@@ -525,7 +508,7 @@ video.js / xgplayer：可参考 UI，不作为 Core 强依赖。
 - 观看人数查询或推送。
 - AI 框数据坐标系和时间戳。
 - 回放录像片段列表。
-- PTZ、预置点、抓拍、录像、语音对讲 API。
+- PTZ、预置点、抓拍、录像 API。
 
 ## 验证方式
 
@@ -591,7 +574,7 @@ pnpm -C guard/ui build
 />
 ```
 
-通用 `GmvPlayerControls` 只发出类型化 `GmvPlayerControlAction`，不直接持有 `GmvPlayerCore`，也不调用业务 API。`GmvPlayerView` 负责把播放、声音、倍速和全屏 action 映射到本地播放器，把截图、录像、对讲、PTZ、预置点、回放定位和码流切换继续通过原有业务事件交给调用方。
+通用 `GmvPlayerControls` 只发出类型化 `GmvPlayerControlAction`，不直接持有 `GmvPlayerCore`，也不调用业务 API。`GmvPlayerView` 负责把播放、声音、倍速和全屏 action 映射到本地播放器，把截图、录像、PTZ、预置点、回放定位和码流切换继续通过原有业务事件交给调用方。
 
 `controlsVisible` 仅保留一版兼容：`true` 映射为 `always`，`false` 映射为 `hidden`。新代码应使用 `controls.visibility`。
 
@@ -625,7 +608,7 @@ pnpm -C guard/ui build
 - HTTP-FLV 的 G711A/G711U 音频不由 mpegts.js 解码，遇到这类流应设置 hasAudio=false，只播放视频轨。
 - HTTP-FMP4 要求服务端 init segment 在前，后续 moof / mdat 时间戳连续。
 - 多宫格会放大 CPU、内存、网络和解码压力，默认应限制同时播放路数。
-- 语音对讲涉及麦克风权限和双向媒体链路，应与视频播放单独实现。
+- 语音广播涉及麦克风权限和独立下行媒体链路，由 `guard/ui` 业务层实现，不属于播放器能力。
 - LL-HLS 的最终兼容性仍需以最低支持 iOS、当前 iOS 和当前 macOS Safari 真机验证为准；桌面 Chromium/hls.js 测试不能替代 Apple 真机验收。
 
 ## 最小首期验收标准

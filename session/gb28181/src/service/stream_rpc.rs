@@ -6,15 +6,16 @@ use base::serde_json;
 use gmv_domain::info::media_info::MediaConfig;
 use gmv_domain::info::media_info_ext::MediaMap;
 use gmv_domain::info::obj::{
-    StreamInfoQo, StreamKey, StreamRecordInfo, TalkAnswerReq, TalkCloseReq, TalkOpenReq,
-    TalkOpenResp,
+    BroadcastCloseReq, BroadcastConfigureLegReq, BroadcastOpenReq, BroadcastOpenResp, StreamInfoQo,
+    StreamKey, StreamRecordInfo,
 };
 use gmv_nodec::error as node_error;
-use gmv_protocol::common::v1::{EndpointMode, ErrorDetail, OperationRef};
+use gmv_protocol::common::v1::{Endpoint, EndpointMode, ErrorDetail, OperationRef};
 use gmv_protocol::stream::v1::{
-    CreateOutputRequest, OutputInfo, QueryStreamRequest, QueryStreamResponse,
-    ReleaseSubscriptionOutputsRequest, StopReceivePhase, StopReceiveRequest, StopReceiveResponse,
-    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
+    ConfigureReceiveTransportRequest, CreateOutputRequest, MediaTransport, MediaTransportState,
+    OutputInfo, QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
+    StopReceivePhase, StopReceiveRequest, StopReceiveResponse, StreamBoolResponse,
+    StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
     stream_control_client::StreamControlClient,
 };
 use std::time::{Duration, Instant};
@@ -250,6 +251,70 @@ pub async fn init_media_ext(node: &StreamNode, value: &MediaMap) -> GlobalResult
         .map_err(|error| rpc_status(error, "init_media_ext"))?
         .into_inner();
     ensure_unit(response, "init_media_ext")
+}
+
+pub async fn configure_receive_transport(
+    node: &StreamNode,
+    operation_id: &str,
+    stream_id: &str,
+    lease_id: &str,
+    route_id: &str,
+    local_endpoint: &Endpoint,
+    media_transport: MediaTransport,
+    remote_endpoint: Option<Endpoint>,
+) -> GlobalResult<()> {
+    let endpoint_id = local_endpoint
+        .labels
+        .get("endpoint_id")
+        .cloned()
+        .unwrap_or_default();
+    let endpoint_generation = local_endpoint
+        .labels
+        .get("generation")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_default();
+    if endpoint_id.is_empty() || endpoint_generation == 0 {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream allocation is missing endpoint generation",
+            |msg| error!("{msg}: stream_id={stream_id}"),
+        ));
+    }
+    let mut client = client(node).await?;
+    let response = client
+        .configure_receive_transport(ConfigureReceiveTransportRequest {
+            operation: Some(OperationRef {
+                operation_id: operation_id.to_string(),
+                idempotency_key: operation_id.to_string(),
+            }),
+            stream_id: stream_id.to_string(),
+            route_id: route_id.to_string(),
+            lease_id: lease_id.to_string(),
+            endpoint_id,
+            endpoint_generation,
+            media_transport: media_transport as i32,
+            remote_endpoint,
+            connect_timeout_ms: 5_000,
+        })
+        .await
+        .map_err(|error| rpc_status(error, "configure_receive_transport"))?
+        .into_inner();
+    if let Some(error) = response.error {
+        return Err(error_detail(error, "configure_receive_transport"));
+    }
+    if response.state != MediaTransportState::Ready as i32 {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream transport is not ready",
+            |msg| {
+                error!(
+                    "{msg}: stream_id={stream_id}, transport={media_transport:?}, state={}",
+                    response.state
+                )
+            },
+        ));
+    }
+    Ok(())
 }
 
 pub async fn stream_online(node: &StreamNode, value: &StreamKey) -> GlobalResult<bool> {
@@ -577,72 +642,88 @@ pub async fn close_output(node: &StreamNode, value: &StreamInfoQo) -> GlobalResu
     ensure_unit(response, "close_output")
 }
 
-pub async fn talk_open(node: &StreamNode, value: &TalkOpenReq) -> GlobalResult<TalkOpenResp> {
+pub async fn broadcast_open(
+    node: &StreamNode,
+    value: &BroadcastOpenReq,
+) -> GlobalResult<BroadcastOpenResp> {
     let mut client = client(node).await?;
     let request = request(value)?;
     base::log::debug!(
-        "session rpc client outbound: method=stream_control.talk_open, node={}, req: payload_bytes={}",
+        "session rpc client outbound: method=stream_control.broadcast_open, node={}, req: payload_bytes={}",
         node.name,
         request.payload_json.len()
     );
     let response = client
-        .talk_open(request)
+        .broadcast_open(request)
         .await
-        .map_err(|error| rpc_status(error, "talk_open"))?
+        .map_err(|error| rpc_status(error, "broadcast_open"))?
         .into_inner();
-    decode_json(response, "talk_open")
+    decode_json(response, "broadcast_open")
 }
 
-pub async fn talk_answer(node: &StreamNode, value: &TalkAnswerReq) -> GlobalResult<()> {
+pub async fn broadcast_configure_leg(
+    node: &StreamNode,
+    value: &BroadcastConfigureLegReq,
+) -> GlobalResult<()> {
     let mut client = client(node).await?;
     let request = request(value)?;
     base::log::debug!(
-        "session rpc client outbound: method=stream_control.talk_answer, node={}, req: payload_bytes={}",
+        "session rpc client outbound: method=stream_control.broadcast_configure_leg, node={}, req: payload_bytes={}",
         node.name,
         request.payload_json.len()
     );
     let response = client
-        .talk_answer(request)
+        .broadcast_configure_leg(request)
         .await
-        .map_err(|error| rpc_status(error, "talk_answer"))?
+        .map_err(|error| rpc_status(error, "broadcast_configure_leg"))?
         .into_inner();
-    ensure_unit(response, "talk_answer")
+    ensure_unit(response, "broadcast_configure_leg")
 }
 
-pub async fn talk_close(node: &StreamNode, talk_id: &str) -> GlobalResult<()> {
-    let request = TalkCloseReq {
-        talk_id: talk_id.to_string(),
+pub async fn broadcast_close(
+    node: &StreamNode,
+    broadcast_id: &str,
+    leg_id: &str,
+) -> GlobalResult<()> {
+    let request = BroadcastCloseReq {
+        broadcast_id: broadcast_id.to_string(),
+        leg_id: leg_id.to_string(),
     };
     let mut client = client(node).await?;
     let request = self::request(&request)?;
     base::log::debug!(
-        "session rpc client outbound: method=stream_control.talk_close, node={}, req: payload_bytes={}",
+        "session rpc client outbound: method=stream_control.broadcast_close, node={}, req: payload_bytes={}",
         node.name,
         request.payload_json.len()
     );
     let response = client
-        .talk_close(request)
+        .broadcast_close(request)
         .await
-        .map_err(|error| rpc_status(error, "talk_close"))?
+        .map_err(|error| rpc_status(error, "broadcast_close"))?
         .into_inner();
-    ensure_unit(response, "talk_close")
+    ensure_unit(response, "broadcast_close")
 }
 
-pub async fn talk_online(node: &StreamNode, talk_id: &str) -> GlobalResult<bool> {
-    let request = TalkCloseReq {
-        talk_id: talk_id.to_string(),
+pub async fn broadcast_online(
+    node: &StreamNode,
+    broadcast_id: &str,
+    leg_id: &str,
+) -> GlobalResult<bool> {
+    let request = BroadcastCloseReq {
+        broadcast_id: broadcast_id.to_string(),
+        leg_id: leg_id.to_string(),
     };
     let mut client = client(node).await?;
     let request = self::request(&request)?;
     base::log::debug!(
-        "session rpc client outbound: method=stream_control.talk_online, node={}, req: payload_bytes={}",
+        "session rpc client outbound: method=stream_control.broadcast_online, node={}, req: payload_bytes={}",
         node.name,
         request.payload_json.len()
     );
     let response = client
-        .talk_online(request)
+        .broadcast_online(request)
         .await
-        .map_err(|error| rpc_status(error, "talk_online"))?
+        .map_err(|error| rpc_status(error, "broadcast_online"))?
         .into_inner();
-    ensure_bool(response, "talk_online")
+    ensure_bool(response, "broadcast_online")
 }

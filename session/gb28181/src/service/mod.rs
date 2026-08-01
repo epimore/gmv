@@ -1,4 +1,6 @@
 pub mod api_serv;
+mod broadcast;
+pub mod broadcast_close;
 pub mod cloud_recording;
 pub mod dialog_epoch;
 pub mod dialog_recovery;
@@ -8,8 +10,6 @@ pub mod playback_presence;
 pub mod record_query;
 pub mod stream_close;
 pub mod stream_rpc;
-mod talk;
-pub mod talk_close;
 
 pub const EXPIRES: u64 = 8;
 pub const SNAPSHOT_IDLE_EXPIRES: u64 = 20;

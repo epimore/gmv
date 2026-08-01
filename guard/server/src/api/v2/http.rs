@@ -32,14 +32,16 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
 use crate::api::v2::control::{
-    BusinessControl, DeviceStreamOptions, GbDevicePage, GbSessionConfigSummary,
+    BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl, DeviceStreamOptions,
+    GbDevicePage, GbSessionConfigSummary,
 };
 use crate::api::v2::model::{
     ActiveStreamDialogItem, ActiveStreamDialogPage, ActiveStreamManagementInfo,
     ActiveStreamMonitorItem, ActiveStreamViewerFormat, AiTaskSummary, AiTaskSummaryState,
-    DeviceSummary, MediaOperationError, MediaOperationState, MediaOperationSummary,
-    MediaTransportCapability, MonitoredStreamStopResponse, RuntimeStatus, StreamHistoryMonitorItem,
-    StreamHistoryMonitorPage, StreamOutputSummary, StreamSummary, StreamSummaryState,
+    BroadcastOperationSummary, DeviceSummary, MediaOperationError, MediaOperationState,
+    MediaOperationSummary, MediaTransportCapability, MonitoredStreamStopResponse, RuntimeStatus,
+    StreamHistoryMonitorItem, StreamHistoryMonitorPage, StreamOutputSummary, StreamSummary,
+    StreamSummaryState,
 };
 use crate::api::v2::paths;
 use crate::api::v2::{ApiV2, CursorQuery, EventQuery};
@@ -243,16 +245,23 @@ pub fn router(state: HttpState) -> Router {
             "/gb28181/cloud-recordings/{task_id}/access",
             post(issue_cloud_recording_access),
         )
+        .route("/gb28181/broadcasts/start", post(start_broadcast_operation))
         .route(
-            "/gb28181/devices/{device_id}/broadcast/start",
-            post(gb_broadcast),
+            "/gb28181/broadcasts/{broadcast_id}",
+            get(get_broadcast_operation),
         )
-        .route("/gb28181/broadcasts/{stream_id}/stop", post(stop_stream))
+        .route(
+            "/gb28181/broadcasts/{broadcast_id}/targets/{leg_id}/stop",
+            post(stop_broadcast_target),
+        )
+        .route(
+            "/gb28181/broadcasts/{broadcast_id}/stop-all",
+            post(stop_broadcast_operation),
+        )
         .route("/devices", get(devices))
         .route("/devices/{device_id}/preview", post(preview))
         .route("/devices/{device_id}/playback", post(playback))
         .route("/devices/{device_id}/download", post(download))
-        .route("/devices/{device_id}/talk", post(talk))
         .route("/devices/{device_id}/ptz", post(ptz))
         .route("/streams", get(streams))
         .route("/gb28181/streams", get(gb_active_streams))
@@ -406,13 +415,17 @@ const OPEN_BUSINESS_OPERATIONS: &[(&str, &[&str])] = &[
     ("/gb28181/cloud-recordings/{task_id}/stop", &["post"]),
     ("/gb28181/cloud-recordings/{task_id}/delete", &["post"]),
     ("/gb28181/cloud-recordings/{task_id}/access", &["post"]),
-    ("/gb28181/devices/{device_id}/broadcast/start", &["post"]),
-    ("/gb28181/broadcasts/{stream_id}/stop", &["post"]),
+    ("/gb28181/broadcasts/start", &["post"]),
+    ("/gb28181/broadcasts/{broadcast_id}", &["get"]),
+    (
+        "/gb28181/broadcasts/{broadcast_id}/targets/{leg_id}/stop",
+        &["post"],
+    ),
+    ("/gb28181/broadcasts/{broadcast_id}/stop-all", &["post"]),
     ("/devices", &["get"]),
     ("/devices/{device_id}/preview", &["post"]),
     ("/devices/{device_id}/playback", &["post"]),
     ("/devices/{device_id}/download", &["post"]),
-    ("/devices/{device_id}/talk", &["post"]),
     ("/devices/{device_id}/ptz", &["post"]),
     ("/streams", &["get"]),
     ("/gb28181/streams", &["get"]),
@@ -637,6 +650,12 @@ fn openapi_operation_tag(path: &str) -> &'static str {
 
 fn openapi_operation_summary(method: &str, path: &str) -> &'static str {
     match (method, path) {
+        ("post", "/gb28181/broadcasts/start") => "创建单目标或多目标语音广播任务",
+        ("get", "/gb28181/broadcasts/{broadcast_id}") => "查询语音广播任务及目标状态",
+        ("post", "/gb28181/broadcasts/{broadcast_id}/targets/{leg_id}/stop") => {
+            "停止语音广播中的指定目标"
+        }
+        ("post", "/gb28181/broadcasts/{broadcast_id}/stop-all") => "停止语音广播全部目标",
         ("get", "/dashboard") => "查询 Guard 业务总览",
         ("get", "/media/transport") => "查询媒体传输能力",
         ("get", "/media/operations") => "查询媒体操作列表",
@@ -691,13 +710,10 @@ fn openapi_operation_summary(method: &str, path: &str) -> &'static str {
         ("post", "/gb28181/cloud-recordings/{task_id}/stop") => "停止云端录像任务",
         ("post", "/gb28181/cloud-recordings/{task_id}/delete") => "删除云端录像任务",
         ("post", "/gb28181/cloud-recordings/{task_id}/access") => "签发云端录像访问地址",
-        ("post", "/gb28181/devices/{device_id}/broadcast/start") => "发起设备语音广播",
-        ("post", "/gb28181/broadcasts/{stream_id}/stop") => "停止设备语音广播",
         ("get", "/devices") => "查询可用设备",
         ("post", "/devices/{device_id}/preview") => "创建设备实时预览",
         ("post", "/devices/{device_id}/playback") => "创建设备录像回放",
         ("post", "/devices/{device_id}/download") => "创建设备录像下载",
-        ("post", "/devices/{device_id}/talk") => "创建设备语音对讲",
         ("post", "/devices/{device_id}/ptz") => "控制设备云台",
         ("get", "/streams") => "查询媒体流",
         ("get", "/gb28181/streams") => "分页查询 GB28181 活动流",
@@ -823,7 +839,7 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
             ("snapshot", false),
             ("over_pic_id", false),
             ("ptz_enable", false),
-            ("talk_enable", false),
+            ("broadcast_enable", false),
             ("audio_enable", false),
             ("record_enable", false),
             ("playback_enable", false),
@@ -878,11 +894,21 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
         "/gb28181/cloud-recordings/{task_id}/stop"
         | "/gb28181/cloud-recordings/{task_id}/delete" => &[("request_id", true)],
         "/gb28181/cloud-recordings/{task_id}/access" => &[("mode", false)],
-        "/gb28181/devices/{device_id}/broadcast/start"
-        | "/devices/{device_id}/preview"
+        "/gb28181/broadcasts/start" => &[
+            ("request_id", true),
+            ("token", false),
+            ("default_trans_mode", false),
+            ("codec", false),
+            ("sample_rate", false),
+            ("channel_count", false),
+            ("frame_duration_ms", false),
+            ("targets", true),
+        ],
+        "/gb28181/broadcasts/{broadcast_id}/targets/{leg_id}/stop"
+        | "/gb28181/broadcasts/{broadcast_id}/stop-all" => &[("request_id", false)],
+        "/devices/{device_id}/preview"
         | "/devices/{device_id}/playback"
-        | "/devices/{device_id}/download"
-        | "/devices/{device_id}/talk" => &[
+        | "/devices/{device_id}/download" => &[
             ("request_id", true),
             ("channel_id", true),
             ("session_node_id", false),
@@ -893,10 +919,10 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
             ("output_type", false),
             ("audio_codec", false),
             ("startup_timeout_ms", false),
-            ("talk_codec", false),
-            ("talk_sample_rate", false),
-            ("talk_channel_count", false),
-            ("talk_frame_duration_ms", false),
+            ("broadcast_codec", false),
+            ("broadcast_sample_rate", false),
+            ("broadcast_channel_count", false),
+            ("broadcast_frame_duration_ms", false),
             ("playback_id", false),
         ],
         "/devices/{device_id}/ptz" => &[
@@ -986,7 +1012,7 @@ fn openapi_field_type(name: &str) -> &'static str {
     match name {
         "registered_only" | "paused" | "renew" => "boolean",
         "speed_rate" | "longitude" | "latitude" => "number",
-        "items" => "array",
+        "items" | "targets" => "array",
         "limit"
         | "min_priority"
         | "page"
@@ -996,7 +1022,7 @@ fn openapi_field_type(name: &str) -> &'static str {
         | "heartbeat_sec"
         | "snapshot"
         | "ptz_enable"
-        | "talk_enable"
+        | "broadcast_enable"
         | "audio_enable"
         | "record_enable"
         | "playback_enable"
@@ -1006,9 +1032,9 @@ fn openapi_field_type(name: &str) -> &'static str {
         | "start_time_sec"
         | "end_time_sec"
         | "startup_timeout_ms"
-        | "talk_sample_rate"
-        | "talk_channel_count"
-        | "talk_frame_duration_ms"
+        | "broadcast_sample_rate"
+        | "broadcast_channel_count"
+        | "broadcast_frame_duration_ms"
         | "leftRight"
         | "upDown"
         | "inOut"
@@ -1025,6 +1051,14 @@ fn openapi_field_type(name: &str) -> &'static str {
 
 fn openapi_field_description(name: &str) -> &'static str {
     match name {
+        "broadcast_id" => "语音广播父任务唯一标识。",
+        "leg_id" => "语音广播目标媒体 leg 唯一标识。",
+        "targets" => "语音广播目标列表，每项包含设备、通道、Session 与可选传输模式。",
+        "default_trans_mode" => "广播任务默认媒体传输模式。",
+        "codec" => "浏览器上传的广播音频编码，当前固定为 PCMA。",
+        "sample_rate" => "广播输入采样率，当前固定为 8000 Hz。",
+        "channel_count" => "广播输入声道数，当前固定为单声道。",
+        "frame_duration_ms" => "广播输入音频帧时长，当前固定为 20 毫秒。",
         "operation_id" => "媒体或业务操作的唯一标识。",
         "node_id" => "Guard 注册节点的唯一标识。",
         "device_id" | "deviceId" => "设备唯一标识。",
@@ -1058,7 +1092,7 @@ fn openapi_field_description(name: &str) -> &'static str {
         "remark" => "资源确认备注。",
         "snapshot" => "是否启用截图能力。",
         "ptz_enable" => "是否启用云台控制。",
-        "talk_enable" => "是否启用语音对讲。",
+        "broadcast_enable" => "是否启用语音广播。",
         "audio_enable" => "是否启用音频。",
         "record_enable" => "是否启用录像。",
         "playback_enable" => "是否启用回放。",
@@ -1071,10 +1105,10 @@ fn openapi_field_description(name: &str) -> &'static str {
         "output_type" => "输出封装类型，例如 flv 或 hls。",
         "audio_codec" => "输出音频编码，例如 aac。",
         "startup_timeout_ms" => "等待媒体启动的超时时间，单位为毫秒。",
-        "talk_codec" => "语音对讲编码。",
-        "talk_sample_rate" => "语音对讲采样率。",
-        "talk_channel_count" => "语音对讲声道数。",
-        "talk_frame_duration_ms" => "语音对讲帧时长，单位为毫秒。",
+        "broadcast_codec" => "语音广播编码。",
+        "broadcast_sample_rate" => "语音广播采样率。",
+        "broadcast_channel_count" => "语音广播声道数。",
+        "broadcast_frame_duration_ms" => "语音广播帧时长，单位为毫秒。",
         "leftRight" => "水平控制值：0 停止、1 向左、2 向右。",
         "upDown" => "垂直控制值：0 停止、1 向上、2 向下。",
         "inOut" => "变倍控制值：0 停止、1 缩小、2 放大。",
@@ -1274,7 +1308,7 @@ async fn api_manifest(
     Ok(Json(base::serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "http": {"base_path": "/openapi/v1", "methods": ["GET", "POST"], "auth": "GMV-HMAC-SHA256-V1"},
-        "mqtt": {"protocol_versions": ["v3", "v5"], "default": "v3", "qos": 1, "command_actions": ["stream.start", "stream.stop", "stream.playback", "stream.download", "device.talk", "device.ptz", "ai.start", "ai.cancel", "playback.ticket.renew"]},
+        "mqtt": {"protocol_versions": ["v3", "v5"], "default": "v3", "qos": 1, "command_actions": ["stream.start", "stream.stop", "stream.playback", "stream.download", "device.broadcast", "device.ptz", "ai.start", "ai.cancel", "playback.ticket.renew"]},
         "scopes": ["*", "devices:read", "devices:write", "devices:control", "images:read", "audio:control", "streams:read", "streams:write", "streams:preview", "streams:playback", "recordings:read", "recordings:write", "events:read", "ai:read", "ai:write", "nodes:read", "leases:read", "runtime:read"]
     })))
 }
@@ -1376,16 +1410,23 @@ fn open_business_router(state: HttpState) -> Router<HttpState> {
             "/gb28181/cloud-recordings/{task_id}/access",
             post(issue_cloud_recording_access),
         )
+        .route("/gb28181/broadcasts/start", post(start_broadcast_operation))
         .route(
-            "/gb28181/devices/{device_id}/broadcast/start",
-            post(gb_broadcast),
+            "/gb28181/broadcasts/{broadcast_id}",
+            get(get_broadcast_operation),
         )
-        .route("/gb28181/broadcasts/{stream_id}/stop", post(stop_stream))
+        .route(
+            "/gb28181/broadcasts/{broadcast_id}/targets/{leg_id}/stop",
+            post(stop_broadcast_target),
+        )
+        .route(
+            "/gb28181/broadcasts/{broadcast_id}/stop-all",
+            post(stop_broadcast_operation),
+        )
         .route("/devices", get(devices))
         .route("/devices/{device_id}/preview", post(preview))
         .route("/devices/{device_id}/playback", post(playback))
         .route("/devices/{device_id}/download", post(download))
-        .route("/devices/{device_id}/talk", post(talk))
         .route("/devices/{device_id}/ptz", post(ptz))
         .route("/streams", get(streams))
         .route("/gb28181/streams", get(gb_active_streams))
@@ -1594,7 +1635,7 @@ fn open_business_scope(method: &Method, path: &str) -> Option<&'static str> {
     if path.contains("/ptz") {
         return Some("devices:control");
     }
-    if path.contains("/talk") || path.contains("/broadcast") {
+    if path.contains("/broadcast") {
         return Some("audio:control");
     }
     if path.contains("/preview") {
@@ -1623,7 +1664,6 @@ fn open_business_scope(method: &Method, path: &str) -> Option<&'static str> {
         || path.contains("/preview")
         || path.contains("/playback")
         || path.contains("/download")
-        || path.contains("/talk")
         || path.contains("/broadcast")
     {
         "streams"
@@ -3356,15 +3396,68 @@ struct PreviewRequest {
     #[serde(default)]
     startup_timeout_ms: Option<u64>,
     #[serde(default)]
-    talk_codec: String,
+    broadcast_codec: String,
     #[serde(default)]
-    talk_sample_rate: u32,
+    broadcast_sample_rate: u32,
     #[serde(default)]
-    talk_channel_count: u32,
+    broadcast_channel_count: u32,
     #[serde(default)]
-    talk_frame_duration_ms: u32,
+    broadcast_frame_duration_ms: u32,
     #[serde(default)]
     playback_id: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct BroadcastTargetRequest {
+    device_id: String,
+    channel_id: String,
+    #[serde(default)]
+    session_node_id: String,
+    #[serde(default)]
+    trans_mode: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct BroadcastOperationRequest {
+    request_id: String,
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    default_trans_mode: String,
+    #[serde(default = "default_broadcast_codec")]
+    codec: String,
+    #[serde(default = "default_broadcast_sample_rate")]
+    sample_rate: u32,
+    #[serde(default = "default_broadcast_channel_count")]
+    channel_count: u32,
+    #[serde(default = "default_broadcast_frame_duration_ms")]
+    frame_duration_ms: u32,
+    targets: Vec<BroadcastTargetRequest>,
+}
+
+#[derive(Debug, Default, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct BroadcastStopRequest {
+    #[serde(default)]
+    request_id: String,
+}
+
+fn default_broadcast_codec() -> String {
+    "PCMA".to_string()
+}
+
+fn default_broadcast_sample_rate() -> u32 {
+    8_000
+}
+
+fn default_broadcast_channel_count() -> u32 {
+    1
+}
+
+fn default_broadcast_frame_duration_ms() -> u32 {
+    20
 }
 
 fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
@@ -3376,11 +3469,14 @@ fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
         trans_mode: request.trans_mode.clone(),
         output_type: request.output_type.clone(),
         audio_codec: request.audio_codec.clone(),
-        talk_codec: request.talk_codec.clone(),
-        talk_sample_rate: request.talk_sample_rate,
-        talk_channel_count: request.talk_channel_count,
-        talk_frame_duration_ms: request.talk_frame_duration_ms,
+        broadcast_codec: request.broadcast_codec.clone(),
+        broadcast_sample_rate: request.broadcast_sample_rate,
+        broadcast_channel_count: request.broadcast_channel_count,
+        broadcast_frame_duration_ms: request.broadcast_frame_duration_ms,
         playback_id: request.playback_id.clone(),
+        broadcast_id: String::new(),
+        broadcast_leg_id: String::new(),
+        expected_stream_node_id: String::new(),
     }
 }
 
@@ -3813,7 +3909,7 @@ struct GbChannelResponse {
     snapshot: i64,
     over_pic_id: String,
     ptz_enable: i64,
-    talk_enable: i64,
+    broadcast_enable: i64,
     audio_enable: i64,
     record_enable: i64,
     playback_enable: i64,
@@ -3837,7 +3933,7 @@ struct GbChannelRequest {
     #[serde(default)]
     ptz_enable: i64,
     #[serde(default)]
-    talk_enable: i64,
+    broadcast_enable: i64,
     #[serde(default)]
     audio_enable: i64,
     #[serde(default)]
@@ -4400,7 +4496,7 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
         snapshot: record.snapshot,
         over_pic_id: record.over_pic_id,
         ptz_enable: record.ptz_enable,
-        talk_enable: record.talk_enable,
+        broadcast_enable: record.broadcast_enable,
         audio_enable: record.audio_enable,
         record_enable: record.record_enable,
         playback_enable: record.playback_enable,
@@ -4508,7 +4604,7 @@ fn gb_channel_request(
         snapshot: request.snapshot,
         over_pic_id: request.over_pic_id,
         ptz_enable: request.ptz_enable,
-        talk_enable: request.talk_enable,
+        broadcast_enable: request.broadcast_enable,
         audio_enable: request.audio_enable,
         record_enable: request.record_enable,
         playback_enable: request.playback_enable,
@@ -4543,7 +4639,7 @@ fn log_gb_device_request(path: &str, request: &GbDeviceRequest) {
 
 fn log_preview_request(path: &str, device_id: &str, request: &PreviewRequest) {
     debug!(
-        "{path}, req: device_id={}, request_id={}, channel_id={}, session_node_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}",
+        "{path}, req: device_id={}, request_id={}, channel_id={}, session_node_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, broadcast_codec={}, broadcast_sample_rate={}, broadcast_channel_count={}, broadcast_frame_duration_ms={}",
         device_id,
         request.request_id,
         request.channel_id,
@@ -4553,10 +4649,10 @@ fn log_preview_request(path: &str, device_id: &str, request: &PreviewRequest) {
         request.end_time_sec,
         request.trans_mode,
         request.output_type,
-        request.talk_codec,
-        request.talk_sample_rate,
-        request.talk_channel_count,
-        request.talk_frame_duration_ms
+        request.broadcast_codec,
+        request.broadcast_sample_rate,
+        request.broadcast_channel_count,
+        request.broadcast_frame_duration_ms
     );
 }
 
@@ -4595,10 +4691,10 @@ fn gb_preview_request(channel_id: String, request: GbStreamRequest) -> PreviewRe
         output_type: request.output_type,
         audio_codec: request.audio_codec,
         startup_timeout_ms: request.startup_timeout_ms,
-        talk_codec: String::new(),
-        talk_sample_rate: 0,
-        talk_channel_count: 0,
-        talk_frame_duration_ms: 0,
+        broadcast_codec: String::new(),
+        broadcast_sample_rate: 0,
+        broadcast_channel_count: 0,
+        broadcast_frame_duration_ms: 0,
         playback_id: request.playback_id,
     }
 }
@@ -5517,46 +5613,95 @@ async fn download(
     .await
 }
 
-async fn talk(
+async fn start_broadcast_operation(
     State(state): State<HttpState>,
     headers: HeaderMap,
-    Path(device_id): Path<String>,
-    Json(request): Json<PreviewRequest>,
-) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
-    start_device_stream_http(
-        state,
-        headers,
-        device_id,
-        request,
-        DeviceStreamHttpPolicy::input("device.talk", "talk started"),
-        |control, operation_id, device_id, channel_id, options| async move {
-            control
-                .start_talk_with_options(&operation_id, &device_id, &channel_id, options)
-                .await
-        },
-    )
-    .await
+    Json(request): Json<BroadcastOperationRequest>,
+) -> Result<(StatusCode, Json<BroadcastOperationSummary>), HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    if request.request_id.trim().is_empty() {
+        return Err(HttpError::bad_request("request_id is required"));
+    }
+    if request.codec != "PCMA"
+        || request.sample_rate != 8_000
+        || request.channel_count != 1
+        || request.frame_duration_ms != 20
+    {
+        return Err(HttpError::bad_request(
+            "broadcast_profile_unsupported: expected PCMA/8000/mono/20ms",
+        ));
+    }
+    let options = BroadcastOperationOptions {
+        token: request.token,
+        default_trans_mode: request.default_trans_mode,
+        codec: request.codec,
+        sample_rate: request.sample_rate,
+        channel_count: request.channel_count,
+        frame_duration_ms: request.frame_duration_ms,
+        targets: request
+            .targets
+            .into_iter()
+            .map(|target| BroadcastTargetOptions {
+                device_id: target.device_id,
+                channel_id: target.channel_id,
+                session_node_id: target.session_node_id,
+                trans_mode: target.trans_mode,
+            })
+            .collect(),
+    };
+    let summary = BusinessControl::new(state.api.store())
+        .start_broadcast_operation(&request.request_id, options)
+        .await?;
+    Ok((StatusCode::CREATED, Json(summary)))
 }
 
-async fn gb_broadcast(
+async fn get_broadcast_operation(
     State(state): State<HttpState>,
     headers: HeaderMap,
-    Path(device_id): Path<String>,
-    Json(request): Json<PreviewRequest>,
-) -> Result<(StatusCode, Json<StreamSummary>), HttpError> {
-    start_device_stream_http(
-        state,
-        headers,
-        device_id,
-        request,
-        DeviceStreamHttpPolicy::input("device.broadcast", "broadcast started"),
-        |control, operation_id, device_id, channel_id, options| async move {
-            control
-                .start_talk_with_options(&operation_id, &device_id, &channel_id, options)
-                .await
-        },
-    )
-    .await
+    Path(broadcast_id): Path<String>,
+) -> Result<Json<BroadcastOperationSummary>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    Ok(Json(
+        BusinessControl::new(state.api.store()).get_broadcast_operation(&broadcast_id)?,
+    ))
+}
+
+async fn stop_broadcast_target(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((broadcast_id, leg_id)): Path<(String, String)>,
+    Json(request): Json<BroadcastStopRequest>,
+) -> Result<Json<BroadcastOperationSummary>, HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = if request.request_id.trim().is_empty() {
+        Uuid::now_v7().to_string()
+    } else {
+        request.request_id
+    };
+    Ok(Json(
+        BusinessControl::new(state.api.store())
+            .stop_broadcast_target(&operation_id, &broadcast_id, &leg_id)
+            .await?,
+    ))
+}
+
+async fn stop_broadcast_operation(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(broadcast_id): Path<String>,
+    Json(request): Json<BroadcastStopRequest>,
+) -> Result<Json<BroadcastOperationSummary>, HttpError> {
+    require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = if request.request_id.trim().is_empty() {
+        Uuid::now_v7().to_string()
+    } else {
+        request.request_id
+    };
+    Ok(Json(
+        BusinessControl::new(state.api.store())
+            .stop_broadcast_operation(&operation_id, &broadcast_id)
+            .await?,
+    ))
 }
 
 struct DeviceStreamHttpPolicy<'a> {
@@ -5575,22 +5720,13 @@ impl<'a> DeviceStreamHttpPolicy<'a> {
             required_role: Role::Viewer,
         }
     }
-
-    fn input(operation_kind: &'a str, success_message: &'a str) -> Self {
-        Self {
-            operation_kind,
-            success_message,
-            issue_ticket: false,
-            required_role: Role::Operator,
-        }
-    }
 }
 
 async fn start_media_operation_http<F, Fut>(
     state: HttpState,
     headers: HeaderMap,
     device_id: String,
-    request: PreviewRequest,
+    mut request: PreviewRequest,
     policy: DeviceStreamHttpPolicy<'_>,
     rpc_start: F,
 ) -> Result<(StatusCode, Json<MediaOperationSummary>), HttpError>
@@ -5598,6 +5734,16 @@ where
     F: FnOnce(BusinessControl, String, String, String, DeviceStreamOptions) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<StreamSummary, GuardError>> + Send + 'static,
 {
+    request.trans_mode = match request.trans_mode.trim().to_ascii_lowercase().as_str() {
+        "" | "udp" => "udp".to_string(),
+        "tcp_active" => "tcp_active".to_string(),
+        "tcp_passive" => "tcp_passive".to_string(),
+        _ => {
+            return Err(HttpError::bad_request(
+                "invalid_media_transport: expected udp, tcp_active, or tcp_passive",
+            ));
+        }
+    };
     log_preview_request(policy.operation_kind, &device_id, &request);
     let (ui_session_token, session) =
         require_write_with_token(&state.auth, &headers, policy.required_role)?;
@@ -7050,6 +7196,7 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
                 endpoint: String::new(),
                 video_codec: String::new(),
                 audio_codec: String::new(),
+                broadcast_profile: String::new(),
                 subscription_id: String::new(),
                 session_node_id: owner
                     .as_ref()

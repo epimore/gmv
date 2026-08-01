@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use gmv_nodec::error::META_GLOBAL_CODE;
@@ -33,10 +34,11 @@ use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
 use gmv_protocol::stream::v1::{
     CloseOutputRequest, CreateOutputRequest, GetPlaybackEndpointsRequest, OutputInfo, OutputState,
 };
+use uuid::Uuid;
 
 use crate::api::v2::model::{
-    AiTaskSummary, AiTaskSummaryState, StreamOutputState, StreamOutputSummary, StreamSummary,
-    StreamSummaryState,
+    AiTaskSummary, AiTaskSummaryState, BroadcastOperationSummary, BroadcastTargetSummary,
+    StreamOutputState, StreamOutputSummary, StreamSummary, StreamSummaryState,
 };
 use crate::core::{
     ConnectionState, GmvGuardErrorCode, GuardError, GuardResult, LeaseState, NodeIdentity,
@@ -46,7 +48,13 @@ use crate::gateway::{AllocationRequest, AllocationService};
 use crate::lease::{LeaseRequest, LeaseService};
 use crate::route::{ResourceSnapshot, RouteService, SnapshotResource};
 use crate::store::InMemoryGuardStore;
-use crate::store::model::{NodeRecord, RouteRecord, StreamSessionOwnerRecord};
+use crate::store::model::{
+    BroadcastOperationRecord, BroadcastTargetRecord, EndpointModeRecord, NodeRecord, RouteRecord,
+    StreamSessionOwnerRecord,
+};
+
+static BROADCAST_OPERATION_SETUP: LazyLock<base::tokio::sync::Mutex<()>> =
+    LazyLock::new(|| base::tokio::sync::Mutex::new(()));
 
 #[derive(Debug, Clone)]
 pub struct BusinessControl {
@@ -78,11 +86,33 @@ pub struct DeviceStreamOptions {
     pub trans_mode: String,
     pub output_type: String,
     pub audio_codec: String,
-    pub talk_codec: String,
-    pub talk_sample_rate: u32,
-    pub talk_channel_count: u32,
-    pub talk_frame_duration_ms: u32,
+    pub broadcast_codec: String,
+    pub broadcast_sample_rate: u32,
+    pub broadcast_channel_count: u32,
+    pub broadcast_frame_duration_ms: u32,
     pub playback_id: String,
+    pub broadcast_id: String,
+    pub broadcast_leg_id: String,
+    pub expected_stream_node_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BroadcastTargetOptions {
+    pub device_id: String,
+    pub channel_id: String,
+    pub session_node_id: String,
+    pub trans_mode: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BroadcastOperationOptions {
+    pub token: String,
+    pub default_trans_mode: String,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u32,
+    pub frame_duration_ms: u32,
+    pub targets: Vec<BroadcastTargetOptions>,
 }
 
 struct RpcEdge<'a> {
@@ -1590,13 +1620,13 @@ impl BusinessControl {
         .await
     }
 
-    pub async fn start_talk(
+    pub async fn start_broadcast(
         &self,
         operation_id: &str,
         device_id: &str,
         channel_id: &str,
     ) -> GuardResult<StreamSummary> {
-        self.start_talk_with_options(
+        self.start_broadcast_with_options(
             operation_id,
             device_id,
             channel_id,
@@ -1605,7 +1635,7 @@ impl BusinessControl {
         .await
     }
 
-    pub async fn start_talk_with_options(
+    pub async fn start_broadcast_with_options(
         &self,
         operation_id: &str,
         device_id: &str,
@@ -1613,13 +1643,278 @@ impl BusinessControl {
         options: DeviceStreamOptions,
     ) -> GuardResult<StreamSummary> {
         self.start_device_stream(
-            DeviceStreamKind::Talk,
+            DeviceStreamKind::Broadcast,
             operation_id,
             device_id,
             channel_id,
             options,
         )
         .await
+    }
+
+    pub async fn start_broadcast_operation(
+        &self,
+        operation_id: &str,
+        options: BroadcastOperationOptions,
+    ) -> GuardResult<BroadcastOperationSummary> {
+        let setup_guard = BROADCAST_OPERATION_SETUP.lock().await;
+        if let Some(existing) = self.store.find_broadcast_operation_by_request(operation_id) {
+            return Ok(broadcast_operation_summary(existing));
+        }
+        if options.targets.is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "broadcast_targets_required".to_string(),
+            ));
+        }
+        if options.targets.len() > 50 {
+            return Err(GuardError::InvalidConfig(
+                "broadcast_target_capacity_exceeded".to_string(),
+            ));
+        }
+
+        let default_transport = normalize_broadcast_transport(&options.default_trans_mode)?;
+        let mut resolved = Vec::with_capacity(options.targets.len());
+        let mut target_keys = HashSet::with_capacity(options.targets.len());
+        for mut target in options.targets {
+            if target.device_id.trim().is_empty() || target.channel_id.trim().is_empty() {
+                return Err(GuardError::InvalidConfig(
+                    "broadcast_target_identity_required".to_string(),
+                ));
+            }
+            if target.session_node_id.trim().is_empty() {
+                target.session_node_id = self
+                    .get_gb_device(&target.device_id)
+                    .await?
+                    .ok_or_else(|| {
+                        GuardError::NotFound(format!("GB28181 device {}", target.device_id))
+                    })?
+                    .session_node_id;
+            }
+            let transport = if target.trans_mode.trim().is_empty() {
+                default_transport.clone()
+            } else {
+                normalize_broadcast_transport(&target.trans_mode)?
+            };
+            let target_key = format!(
+                "{}:{}:{}",
+                target.device_id, target.channel_id, target.session_node_id
+            );
+            if !target_keys.insert(target_key.clone()) {
+                return Err(GuardError::Conflict(
+                    "duplicate_broadcast_target".to_string(),
+                ));
+            }
+            target.trans_mode = transport;
+            resolved.push((target_key, target));
+        }
+
+        let transports = resolved
+            .iter()
+            .map(|(_, target)| target.trans_mode.as_str())
+            .collect::<Vec<_>>();
+        let stream_node = self.select_broadcast_stream_node(&transports, resolved.len())?;
+        let broadcast_id = format!("broadcast-{}", Uuid::now_v7());
+        let shared_token = if options.token.trim().is_empty() {
+            format!("gmv-{operation_id}")
+        } else {
+            options.token
+        };
+        let mut operation = BroadcastOperationRecord {
+            broadcast_id: broadcast_id.clone(),
+            operation_id: operation_id.to_string(),
+            stream_node_id: stream_node.identity.node_id.clone(),
+            input_url: String::new(),
+            state: "starting".to_string(),
+            targets: resolved
+                .iter()
+                .enumerate()
+                .map(|(index, (target_key, target))| BroadcastTargetRecord {
+                    target_key: target_key.clone(),
+                    device_id: target.device_id.clone(),
+                    channel_id: target.channel_id.clone(),
+                    session_node_id: target.session_node_id.clone(),
+                    leg_id: format!("{broadcast_id}-{:02}", index + 1),
+                    transport: target.trans_mode.clone(),
+                    profile: String::new(),
+                    state: "starting".to_string(),
+                    reason: String::new(),
+                })
+                .collect(),
+        };
+        self.store.upsert_broadcast_operation(operation.clone());
+        drop(setup_guard);
+
+        for index in 0..operation.targets.len() {
+            let target = operation.targets[index].clone();
+            let result = self
+                .start_broadcast_with_options(
+                    &format!("{operation_id}-leg-{}", index + 1),
+                    &target.device_id,
+                    &target.channel_id,
+                    DeviceStreamOptions {
+                        session_node_id: target.session_node_id.clone(),
+                        token: shared_token.clone(),
+                        trans_mode: target.transport.clone(),
+                        broadcast_codec: options.codec.clone(),
+                        broadcast_sample_rate: options.sample_rate,
+                        broadcast_channel_count: options.channel_count,
+                        broadcast_frame_duration_ms: options.frame_duration_ms,
+                        broadcast_id: broadcast_id.clone(),
+                        broadcast_leg_id: target.leg_id.clone(),
+                        expected_stream_node_id: stream_node.identity.node_id.clone(),
+                        ..DeviceStreamOptions::default()
+                    },
+                )
+                .await;
+            match result {
+                Ok(summary)
+                    if operation.input_url.is_empty()
+                        || operation.input_url == summary.endpoint =>
+                {
+                    operation.input_url = summary.endpoint;
+                    operation.targets[index].profile = summary.broadcast_profile;
+                    operation.targets[index].state = "running".to_string();
+                }
+                Ok(summary) => {
+                    let _ = self
+                        .stop_stream(
+                            &format!("{operation_id}-rollback-{}", index + 1),
+                            &summary.stream_id,
+                        )
+                        .await;
+                    operation.targets[index].state = "failed".to_string();
+                    operation.targets[index].reason =
+                        "broadcast_input_endpoint_mismatch".to_string();
+                }
+                Err(error) => {
+                    base::log::warn!(
+                        "broadcast target start failed: broadcast_id={}, leg_id={}, device_id={}, channel_id={}, reason={error}",
+                        broadcast_id,
+                        target.leg_id,
+                        target.device_id,
+                        target.channel_id
+                    );
+                    operation.targets[index].state = "failed".to_string();
+                    operation.targets[index].reason = "broadcast_target_start_failed".to_string();
+                }
+            }
+            self.store.upsert_broadcast_operation(operation.clone());
+        }
+        operation.state = aggregate_broadcast_start_state(&operation.targets).to_string();
+        self.store.upsert_broadcast_operation(operation.clone());
+        Ok(broadcast_operation_summary(operation))
+    }
+
+    pub fn get_broadcast_operation(
+        &self,
+        broadcast_id: &str,
+    ) -> GuardResult<BroadcastOperationSummary> {
+        self.store
+            .get_broadcast_operation(broadcast_id)
+            .map(broadcast_operation_summary)
+            .ok_or_else(|| GuardError::NotFound(format!("broadcast {broadcast_id}")))
+    }
+
+    pub async fn stop_broadcast_target(
+        &self,
+        operation_id: &str,
+        broadcast_id: &str,
+        leg_id: &str,
+    ) -> GuardResult<BroadcastOperationSummary> {
+        let mut operation = self
+            .store
+            .get_broadcast_operation(broadcast_id)
+            .ok_or_else(|| GuardError::NotFound(format!("broadcast {broadcast_id}")))?;
+        let target = operation
+            .targets
+            .iter_mut()
+            .find(|target| target.leg_id == leg_id)
+            .ok_or_else(|| GuardError::NotFound(format!("broadcast leg {leg_id}")))?;
+        if target.state == "running" || target.state == "starting" {
+            match self.stop_stream(operation_id, leg_id).await {
+                Ok(summary) => {
+                    target.state = match summary.state {
+                        StreamSummaryState::Stopped => "stopped",
+                        _ => "stopping",
+                    }
+                    .to_string();
+                    target.reason.clear();
+                }
+                Err(error) => {
+                    base::log::warn!(
+                        "broadcast target stop failed: broadcast_id={broadcast_id}, leg_id={leg_id}, reason={error}"
+                    );
+                    target.state = "failed".to_string();
+                    target.reason = "broadcast_target_stop_failed".to_string();
+                }
+            }
+        }
+        operation.state = aggregate_broadcast_runtime_state(&operation.targets).to_string();
+        self.store.upsert_broadcast_operation(operation.clone());
+        Ok(broadcast_operation_summary(operation))
+    }
+
+    pub async fn stop_broadcast_operation(
+        &self,
+        operation_id: &str,
+        broadcast_id: &str,
+    ) -> GuardResult<BroadcastOperationSummary> {
+        let mut operation = self
+            .store
+            .get_broadcast_operation(broadcast_id)
+            .ok_or_else(|| GuardError::NotFound(format!("broadcast {broadcast_id}")))?;
+        let active_legs = operation
+            .targets
+            .iter()
+            .filter(|target| target.state == "running" || target.state == "starting")
+            .map(|target| target.leg_id.clone())
+            .collect::<Vec<_>>();
+        let mut stops = base::tokio::task::JoinSet::new();
+        for (index, leg_id) in active_legs.iter().enumerate() {
+            let control = self.clone();
+            let leg_id = leg_id.clone();
+            let leg_operation_id = format!("{operation_id}-leg-{}", index + 1);
+            stops.spawn(async move {
+                let result = control.stop_stream(&leg_operation_id, &leg_id).await;
+                (leg_id, result)
+            });
+        }
+        while let Some(result) = stops.join_next().await {
+            let (leg_id, stop_result) = result.map_err(|error| {
+                GuardError::user_visible(
+                    "broadcast_stop_task_failed",
+                    format!("broadcast stop task failed: {error}"),
+                    "广播停止任务异常，请重试",
+                    true,
+                    BTreeMap::new(),
+                )
+            })?;
+            let target = operation
+                .targets
+                .iter_mut()
+                .find(|target| target.leg_id == leg_id)
+                .expect("active broadcast leg must belong to operation");
+            match stop_result {
+                Ok(summary) => {
+                    target.state = match summary.state {
+                        StreamSummaryState::Stopped => "stopped",
+                        _ => "stopping",
+                    }
+                    .to_string();
+                    target.reason.clear();
+                }
+                Err(error) => {
+                    base::log::warn!(
+                        "broadcast target stop failed: broadcast_id={broadcast_id}, leg_id={leg_id}, reason={error}"
+                    );
+                    target.state = "failed".to_string();
+                    target.reason = "broadcast_target_stop_failed".to_string();
+                }
+            }
+        }
+        operation.state = aggregate_broadcast_runtime_state(&operation.targets).to_string();
+        self.store.upsert_broadcast_operation(operation.clone());
+        Ok(broadcast_operation_summary(operation))
     }
 
     async fn start_device_stream(
@@ -1710,14 +2005,17 @@ impl BusinessControl {
             trans_mode: options.trans_mode,
             output_type: options.output_type,
             audio_codec: options.audio_codec,
-            talk_codec: options.talk_codec,
-            talk_sample_rate: options.talk_sample_rate,
-            talk_channel_count: options.talk_channel_count,
-            talk_frame_duration_ms: options.talk_frame_duration_ms,
+            broadcast_codec: options.broadcast_codec,
+            broadcast_sample_rate: options.broadcast_sample_rate,
+            broadcast_channel_count: options.broadcast_channel_count,
+            broadcast_frame_duration_ms: options.broadcast_frame_duration_ms,
             playback_id: options.playback_id.clone(),
+            broadcast_id: options.broadcast_id,
+            broadcast_leg_id: options.broadcast_leg_id,
+            expected_stream_node_id: options.expected_stream_node_id,
         };
         base::log::debug!(
-            "guard rpc client outbound: method=session_control.start_{}, node={}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
+            "guard rpc client outbound: method=session_control.start_{}, node={}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, broadcast_codec={}, broadcast_sample_rate={}, broadcast_channel_count={}, broadcast_frame_duration_ms={}, expected_session={:?}",
             kind.prefix(),
             session.identity.node_id,
             request.operation,
@@ -1733,10 +2031,10 @@ impl BusinessControl {
             request.trans_mode,
             request.output_type,
             request.audio_codec,
-            request.talk_codec,
-            request.talk_sample_rate,
-            request.talk_channel_count,
-            request.talk_frame_duration_ms,
+            request.broadcast_codec,
+            request.broadcast_sample_rate,
+            request.broadcast_channel_count,
+            request.broadcast_frame_duration_ms,
             request.expected_session
         );
         let edge = RpcEdge::new(
@@ -1750,7 +2048,7 @@ impl BusinessControl {
             DeviceStreamKind::Live => session_client.start_live(request).await,
             DeviceStreamKind::Playback => session_client.start_playback(request).await,
             DeviceStreamKind::Download => session_client.start_download(request).await,
-            DeviceStreamKind::Talk => session_client.start_talk(request).await,
+            DeviceStreamKind::Broadcast => session_client.start_broadcast(request).await,
         })?;
         if let Some(error) = non_empty_error(session_response.error) {
             edge.business_rejection(&error);
@@ -1807,6 +2105,7 @@ impl BusinessControl {
             endpoint: session_response.endpoint,
             video_codec: session_response.video_codec,
             audio_codec: session_response.audio_codec,
+            broadcast_profile: session_response.broadcast_profile,
             subscription_id: if session_response.subscription_id.is_empty() {
                 requested_subscription_id
             } else {
@@ -1915,6 +2214,7 @@ impl BusinessControl {
             endpoint: String::new(),
             video_codec: String::new(),
             audio_codec: String::new(),
+            broadcast_profile: String::new(),
             subscription_id: String::new(),
             session_node_id,
             session_instance_id,
@@ -2018,6 +2318,7 @@ impl BusinessControl {
             endpoint: String::new(),
             video_codec: String::new(),
             audio_codec: String::new(),
+            broadcast_profile: String::new(),
             subscription_id: subscription_id.to_string(),
             session_node_id: session.identity.node_id,
             session_instance_id: session.identity.instance_id,
@@ -2743,6 +3044,96 @@ impl BusinessControl {
             .ok_or_else(|| GuardError::NotFound(format!("no {:?} node for {capability}", kind)))
     }
 
+    fn select_broadcast_stream_node(
+        &self,
+        transports: &[&str],
+        target_count: usize,
+    ) -> GuardResult<NodeRecord> {
+        let tcp_passive_count = transports
+            .iter()
+            .filter(|transport| **transport == "tcp_passive")
+            .count();
+        let operations = self.store.broadcast_operations();
+        self.store
+            .nodes()
+            .into_iter()
+            .filter(|node| {
+                node.identity.kind == NodeKind::Stream
+                    && node.connection == ConnectionState::Connected
+                    && node.scheduling == SchedulingState::Enabled
+                    && node.capabilities.iter().any(|item| item == "broadcast")
+            })
+            .filter(|node| {
+                let rtp_endpoints = node
+                    .endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.name == "rtp" || endpoint.scheme == "rtp")
+                    .collect::<Vec<_>>();
+                let supports = |requested: &str| {
+                    requested == "udp"
+                        || rtp_endpoints
+                            .iter()
+                            .filter_map(|endpoint| endpoint.labels.get("media_transports"))
+                            .flat_map(|value| value.split(','))
+                            .any(|value| value.trim() == requested)
+                };
+                let label_values = |name: &str| {
+                    rtp_endpoints
+                        .iter()
+                        .filter_map(|endpoint| endpoint.labels.get(name))
+                        .flat_map(|value| value.split(','))
+                        .map(str::trim)
+                        .collect::<HashSet<_>>()
+                };
+                let packetizations = label_values("broadcast_packetizations");
+                let max_parents = rtp_endpoints
+                    .iter()
+                    .filter_map(|endpoint| endpoint.labels.get("max_broadcast_parents"))
+                    .filter_map(|value| value.parse::<usize>().ok())
+                    .max()
+                    .unwrap_or(0);
+                let max_legs = rtp_endpoints
+                    .iter()
+                    .filter_map(|endpoint| endpoint.labels.get("max_broadcast_legs"))
+                    .filter_map(|value| value.parse::<usize>().ok())
+                    .max()
+                    .unwrap_or(0);
+                let active_operations = operations
+                    .iter()
+                    .filter(|operation| {
+                        operation.stream_node_id == node.identity.node_id
+                            && operation.state != "stopped"
+                            && operation.state != "failed"
+                    })
+                    .collect::<Vec<_>>();
+                let active_legs = active_operations
+                    .iter()
+                    .flat_map(|operation| operation.targets.iter())
+                    .filter(|target| {
+                        target.state == "starting"
+                            || target.state == "running"
+                            || target.state == "stopping"
+                    })
+                    .count();
+                transports.iter().all(|transport| supports(transport))
+                    && packetizations.contains("raw_g711")
+                    && packetizations.contains("rtp_ps_g711")
+                    && active_operations.len() < max_parents
+                    && target_count <= max_legs
+                    && active_legs.saturating_add(target_count) <= max_legs
+                    && (tcp_passive_count <= 1
+                        || rtp_endpoints
+                            .iter()
+                            .any(|endpoint| endpoint.mode == EndpointModeRecord::Multi))
+            })
+            .min_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id))
+            .ok_or_else(|| {
+                GuardError::Capacity(
+                    "no stream node has the required broadcast capability and capacity".to_string(),
+                )
+            })
+    }
+
     fn select_session_node(
         &self,
         node_id: &str,
@@ -2764,6 +3155,71 @@ impl BusinessControl {
             return Err(node_unavailable("session", action, node_id));
         }
         Ok(node)
+    }
+}
+
+fn normalize_broadcast_transport(value: &str) -> GuardResult<String> {
+    let normalized = if value.trim().is_empty() {
+        "udp"
+    } else {
+        value.trim()
+    };
+    match normalized {
+        "udp" | "tcp_active" | "tcp_passive" => Ok(normalized.to_string()),
+        _ => Err(GuardError::InvalidConfig(
+            "invalid_media_transport".to_string(),
+        )),
+    }
+}
+
+fn aggregate_broadcast_start_state(targets: &[BroadcastTargetRecord]) -> &'static str {
+    let running = targets
+        .iter()
+        .filter(|target| target.state == "running")
+        .count();
+    if running == targets.len() {
+        "running"
+    } else if running > 0 {
+        "partial"
+    } else {
+        "failed"
+    }
+}
+
+fn aggregate_broadcast_runtime_state(targets: &[BroadcastTargetRecord]) -> &'static str {
+    if targets
+        .iter()
+        .any(|target| target.state == "running" || target.state == "starting")
+    {
+        "partial"
+    } else if targets.iter().any(|target| target.state == "stopping") {
+        "stopping"
+    } else {
+        "stopped"
+    }
+}
+
+fn broadcast_operation_summary(operation: BroadcastOperationRecord) -> BroadcastOperationSummary {
+    BroadcastOperationSummary {
+        broadcast_id: operation.broadcast_id,
+        stream_node_id: operation.stream_node_id,
+        input_url: operation.input_url,
+        state: operation.state,
+        target_summaries: operation
+            .targets
+            .into_iter()
+            .map(|target| BroadcastTargetSummary {
+                target_key: target.target_key,
+                device_id: target.device_id,
+                channel_id: target.channel_id,
+                session_node_id: target.session_node_id,
+                leg_id: target.leg_id,
+                transport: target.transport,
+                profile: target.profile,
+                state: target.state,
+                reason: target.reason,
+            })
+            .collect(),
     }
 }
 
@@ -3050,7 +3506,7 @@ enum DeviceStreamKind {
     Live,
     Playback,
     Download,
-    Talk,
+    Broadcast,
 }
 
 impl DeviceStreamKind {
@@ -3063,7 +3519,7 @@ impl DeviceStreamKind {
             Self::Live => "live",
             Self::Playback => "playback",
             Self::Download => "download",
-            Self::Talk => "talk",
+            Self::Broadcast => "broadcast",
         }
     }
 
@@ -3072,7 +3528,7 @@ impl DeviceStreamKind {
             Self::Live => "start_live",
             Self::Playback => "start_playback",
             Self::Download => "start_download",
-            Self::Talk => "start_talk",
+            Self::Broadcast => "start_broadcast",
         }
     }
 
@@ -3081,7 +3537,7 @@ impl DeviceStreamKind {
             Self::Live => "device.live",
             Self::Playback => "device.playback",
             Self::Download => "device.download",
-            Self::Talk => "device.talk",
+            Self::Broadcast => "device.broadcast",
         }
     }
 }
@@ -3227,6 +3683,44 @@ mod tests {
         assert_eq!(
             details.get("remote_code").map(String::as_str),
             Some("snapshot_rejected")
+        );
+    }
+
+    #[test]
+    fn broadcast_transport_and_parent_state_are_strictly_aggregated() {
+        assert_eq!(normalize_broadcast_transport("").unwrap(), "udp");
+        assert_eq!(
+            normalize_broadcast_transport("tcp_active").unwrap(),
+            "tcp_active"
+        );
+        assert!(normalize_broadcast_transport("tcp").is_err());
+
+        let target = |state: &str| BroadcastTargetRecord {
+            target_key: state.to_string(),
+            device_id: "device".to_string(),
+            channel_id: state.to_string(),
+            session_node_id: "session".to_string(),
+            leg_id: state.to_string(),
+            transport: "udp".to_string(),
+            profile: "raw_g711".to_string(),
+            state: state.to_string(),
+            reason: String::new(),
+        };
+        assert_eq!(
+            aggregate_broadcast_start_state(&[target("running"), target("running")]),
+            "running"
+        );
+        assert_eq!(
+            aggregate_broadcast_start_state(&[target("running"), target("failed")]),
+            "partial"
+        );
+        assert_eq!(
+            aggregate_broadcast_start_state(&[target("failed")]),
+            "failed"
+        );
+        assert_eq!(
+            aggregate_broadcast_runtime_state(&[target("stopped"), target("failed")]),
+            "stopped"
         );
     }
 }

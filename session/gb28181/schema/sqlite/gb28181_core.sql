@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS gb28181_device_channel_conf (
     channel_id VARCHAR(20) NOT NULL,
     alias_name VARCHAR(16) NULL,
     ptz_enable INTEGER NULL DEFAULT 2,
-    talk_enable INTEGER NULL DEFAULT 2,
+    broadcast_enable INTEGER NULL DEFAULT 2,
     audio_enable INTEGER NULL DEFAULT 2,
     snapshot_enable INTEGER NULL DEFAULT 2,
     record_enable INTEGER NULL DEFAULT 2,
@@ -245,6 +245,7 @@ CREATE INDEX IF NOT EXISTS idx_gb28181_record_stream_id ON gb28181_record (strea
 
 CREATE TABLE IF NOT EXISTS gb28181_sip_dialog_session (
     stream_id VARCHAR(64) NOT NULL PRIMARY KEY,
+    parent_stream_id VARCHAR(64) NULL,
     device_id VARCHAR(32) NOT NULL,
     channel_id VARCHAR(32) NOT NULL,
     session_type VARCHAR(16) NOT NULL,

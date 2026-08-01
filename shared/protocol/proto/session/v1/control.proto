@@ -9,7 +9,7 @@ service SessionControl {
   rpc StartLive(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StartPlayback(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StartDownload(StartDeviceStreamRequest) returns (DeviceStreamResponse);
-  rpc StartTalk(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StartBroadcast(StartDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
   rpc ListActiveStreams(ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
   rpc ListActiveStreamDialogs(ListActiveStreamDialogsRequest) returns (ListActiveStreamDialogsResponse);
@@ -73,12 +73,15 @@ message StartDeviceStreamRequest {
   uint32 end_time_sec = 9;
   string trans_mode = 10;
   string output_type = 11;
-  string talk_codec = 12;
-  uint32 talk_sample_rate = 13;
-  uint32 talk_channel_count = 14;
-  uint32 talk_frame_duration_ms = 15;
+  string broadcast_codec = 12;
+  uint32 broadcast_sample_rate = 13;
+  uint32 broadcast_channel_count = 14;
+  uint32 broadcast_frame_duration_ms = 15;
   string audio_codec = 16;
   string playback_id = 17;
+  string broadcast_id = 18;
+  string broadcast_leg_id = 19;
+  string expected_stream_node_id = 20;
 }
 
 message StopDeviceStreamRequest {
@@ -312,6 +315,7 @@ message DeviceStreamResponse {
   string session_instance_id = 9;
   string playback_id = 10;
   uint64 playback_generation = 11;
+  string broadcast_profile = 12;
 }
 
 enum DeviceStreamState {
@@ -486,7 +490,7 @@ message GbChannel {
   int64 snapshot = 18;
   string over_pic_id = 19;
   int64 ptz_enable = 20;
-  int64 talk_enable = 21;
+  int64 broadcast_enable = 21;
   int64 audio_enable = 22;
   int64 record_enable = 23;
   int64 playback_enable = 24;

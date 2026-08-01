@@ -105,12 +105,12 @@ impl MqttCommandExecutor {
                         .await
                         .map(|_| ())
                 }
-                CommandAction::StreamTalk => {
+                CommandAction::DeviceBroadcast => {
                     let device_id = payload_string(&command.payload, "device_id")
                         .unwrap_or_else(|| command.target.clone());
                     let channel_id = required_payload_string(&command.payload, "channel_id")?;
                     self.control
-                        .start_talk_with_options(
+                        .start_broadcast_with_options(
                             &command.command_id,
                             &device_id,
                             &channel_id,
@@ -308,11 +308,14 @@ fn device_stream_options(payload: &Value) -> DeviceStreamOptions {
         trans_mode: payload_string(payload, "trans_mode").unwrap_or_default(),
         output_type: payload_string(payload, "output_type").unwrap_or_default(),
         audio_codec: payload_string(payload, "audio_codec").unwrap_or_default(),
-        talk_codec: payload_string(payload, "talk_codec").unwrap_or_default(),
-        talk_sample_rate: payload_u32(payload, "talk_sample_rate"),
-        talk_channel_count: payload_u32(payload, "talk_channel_count"),
-        talk_frame_duration_ms: payload_u32(payload, "talk_frame_duration_ms"),
+        broadcast_codec: payload_string(payload, "broadcast_codec").unwrap_or_default(),
+        broadcast_sample_rate: payload_u32(payload, "broadcast_sample_rate"),
+        broadcast_channel_count: payload_u32(payload, "broadcast_channel_count"),
+        broadcast_frame_duration_ms: payload_u32(payload, "broadcast_frame_duration_ms"),
         playback_id: payload_string(payload, "playback_id").unwrap_or_default(),
+        broadcast_id: String::new(),
+        broadcast_leg_id: String::new(),
+        expected_stream_node_id: String::new(),
     }
 }
 

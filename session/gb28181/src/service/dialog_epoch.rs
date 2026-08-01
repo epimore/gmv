@@ -1,7 +1,7 @@
 use base::log::{error, info};
 
 use crate::gb::sip::runtime_cache::SipRuntimeCache;
-use crate::service::{stream_close, talk_close};
+use crate::service::{broadcast_close, stream_close};
 use crate::state::session::Cache;
 use crate::storage::db_task::{self, DbTask};
 use crate::storage::dialog_session::SipDialogSessionRepository;
@@ -15,8 +15,8 @@ pub fn close(device_id: &str, registration_epoch_id: Option<String>, reason: &'s
     for stream_id in Cache::stream_ids_by_device(device_id) {
         stream_close::begin(stream_id);
     }
-    for talk_id in Cache::talk_ids_by_device(device_id) {
-        talk_close::begin(talk_id);
+    for broadcast_id in Cache::broadcast_ids_by_device(device_id) {
+        broadcast_close::begin(broadcast_id);
     }
     Cache::reset_device_state(device_id);
 

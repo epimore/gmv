@@ -294,8 +294,8 @@ export interface GbSessionConfigInfo { domain: string; domain_id: string; wan_ip
 export interface GbDeviceInfo { device_id: string; session_node_id: string; domain_id: string; domain: string; longitude: string | null; latitude: string | null; address: string | null; pwd: string | null; pwd_check: number; alias: string | null; status: number; heartbeat_sec: number; snapshot_to_mode: number; del: number; create_time: string | null; tenant_id: string | null; sys_org_code: string | null; create_by: string | null; update_by: string | null; update_time: string | null; monitor_status: number; device_type: string | null; manufacturer: string | null; model: string | null; firmware: string | null; gb_version: string | null; max_camera: number; camera_in_count: number; camera_off_count: number; register_time: string | null }
 export interface GbDevicePage { items: GbDeviceInfo[]; total: number; page: number; page_size: number }
 export interface GbDevicePayload { device_id?: string; session_node_id?: string; domain_id?: string; domain?: string; longitude?: string; latitude?: string; address?: string; pwd?: string; pwd_check?: number; alias?: string; status?: number; heartbeat_sec?: number; snapshot_to_mode?: number; tenant_id?: string; sys_org_code?: string; create_by?: string; update_by?: string }
-export interface GbChannelInfo { device_id: string; channel_id: string; name: string; manufacturer: string; model: string; owner: string; status: string; civil_code: string; address: string; parent_id: string; ip_address: string; port: number; longitude: string; latitude: string; ptz_type: string; alias_name: string; pic_url: string; snapshot: number; over_pic_id: string; ptz_enable: number; talk_enable: number; audio_enable: number; record_enable: number; playback_enable: number; alarm_enable: number; biz_enable: number; sort_no: number; created_at_ms: number; updated_at_ms: number; cover_image_id: string }
-export interface GbChannelPayload { channel_id: string; name?: string; manufacturer?: string; model?: string; owner?: string; status?: string; civil_code?: string; address?: string; parent_id?: string; ip_address?: string; port?: number; longitude?: string; latitude?: string; ptz_type?: string; alias_name?: string; pic_url?: string; snapshot?: number; over_pic_id?: string; ptz_enable?: number; talk_enable?: number; audio_enable?: number; record_enable?: number; playback_enable?: number; alarm_enable?: number; biz_enable?: number; sort_no?: number }
+export interface GbChannelInfo { device_id: string; channel_id: string; name: string; manufacturer: string; model: string; owner: string; status: string; civil_code: string; address: string; parent_id: string; ip_address: string; port: number; longitude: string; latitude: string; ptz_type: string; alias_name: string; pic_url: string; snapshot: number; over_pic_id: string; ptz_enable: number; broadcast_enable: number; audio_enable: number; record_enable: number; playback_enable: number; alarm_enable: number; biz_enable: number; sort_no: number; created_at_ms: number; updated_at_ms: number; cover_image_id: string }
+export interface GbChannelPayload { channel_id: string; name?: string; manufacturer?: string; model?: string; owner?: string; status?: string; civil_code?: string; address?: string; parent_id?: string; ip_address?: string; port?: number; longitude?: string; latitude?: string; ptz_type?: string; alias_name?: string; pic_url?: string; snapshot?: number; over_pic_id?: string; ptz_enable?: number; broadcast_enable?: number; audio_enable?: number; record_enable?: number; playback_enable?: number; alarm_enable?: number; biz_enable?: number; sort_no?: number }
 export interface GbChannelImageInfo { image_id: string; device_id: string; channel_id: string; image_url: string; created_at_ms: number; file_name: string; content_type: string; file_size: number; can_preview: boolean; session_node_id: string }
 export interface GbChannelImageAccess { url: string; expires_at_ms: number; content_type: string; file_name: string; file_size: number }
 export interface GbChannelImagePage { items: GbChannelImageInfo[]; total: number; page: number; page_size: number }
@@ -322,8 +322,22 @@ export interface CloudRecordingSummary {
 }
 export interface CloudRecordingList { items: CloudRecordingSummary[]; total: number; page: number; page_size: number }
 export interface CloudRecordingAccess { url: string; expires_at_ms: number; content_type: string; file_name: string; file_size: number }
-export interface GbStreamPayload { request_id: string; session_node_id?: string; token?: string; start_time_sec?: number; end_time_sec?: number; playback_id?: string; trans_mode?: string; output_type?: string; audio_codec?: 'aac' }
-export interface GbBroadcastPayload extends GbStreamPayload { channel_id: string; talk_codec: 'PCMA'; talk_sample_rate: 8000; talk_channel_count: 1; talk_frame_duration_ms: 20 }
+export type MediaTransport = 'udp' | 'tcp_active' | 'tcp_passive';
+export interface GbStreamPayload { request_id: string; session_node_id?: string; token?: string; start_time_sec?: number; end_time_sec?: number; playback_id?: string; trans_mode?: MediaTransport; output_type?: string; audio_codec?: 'aac' }
+export interface GbBroadcastTargetPayload { device_id: string; channel_id: string; session_node_id?: string; trans_mode?: MediaTransport }
+export interface GbBroadcastOperationPayload {
+  request_id: string; token?: string; default_trans_mode?: MediaTransport; codec: 'PCMA'; sample_rate: 8000;
+  channel_count: 1; frame_duration_ms: 20; targets: GbBroadcastTargetPayload[];
+}
+export interface GbBroadcastTargetSummary extends GbBroadcastTargetPayload {
+  target_key: string; session_node_id: string; leg_id: string; transport: MediaTransport;
+  profile: string; state: 'starting' | 'running' | 'stopping' | 'stopped' | 'failed'; reason: string;
+}
+export interface GbBroadcastOperationSummary {
+  broadcast_id: string; stream_node_id: string; input_url: string;
+  state: 'starting' | 'running' | 'partial' | 'stopping' | 'stopped' | 'failed';
+  target_summaries: GbBroadcastTargetSummary[];
+}
 
 const gbPath = (value: string) => encodeURIComponent(value);
 export const getGbSessionNodeConfig = (nodeId: string) => request<GbSessionConfigInfo>('/gb28181/session-nodes/' + gbPath(nodeId) + '/config');
@@ -396,8 +410,10 @@ export async function startGbPlayback(
   const operation = await request<MediaOperationSummary<StreamSummary>>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/playback', { method: 'POST', body: JSON.stringify(payload) }, true, 3_000);
   return waitMediaOperation(operation, options);
 }
-export const startGbBroadcast = (deviceId: string, payload: GbBroadcastPayload) => request<StreamSummary>('/gb28181/devices/' + gbPath(deviceId) + '/broadcast/start', { method: 'POST', body: JSON.stringify(payload) });
-export const stopGbBroadcast = (broadcastId: string) => request<StreamSummary>('/gb28181/broadcasts/' + gbPath(broadcastId) + '/stop', { method: 'POST', body: '{}' });
+export const startGbBroadcast = (payload: GbBroadcastOperationPayload) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/start', { method: 'POST', body: JSON.stringify(payload) });
+export const getGbBroadcast = (broadcastId: string) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/' + gbPath(broadcastId));
+export const stopGbBroadcast = (broadcastId: string, requestId = `ui-broadcast-stop-${Date.now()}`) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/' + gbPath(broadcastId) + '/stop-all', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
+export const stopGbBroadcastTarget = (broadcastId: string, legId: string, requestId = `ui-broadcast-leg-stop-${Date.now()}`) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/' + gbPath(broadcastId) + '/targets/' + gbPath(legId) + '/stop', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export interface GbPtzPayload { leftRight: number; upDown: number; inOut: number; horizonSpeed: number; verticalSpeed: number; zoomSpeed: number }
 export const sendGbPtz = (deviceId: string, channelId: string, payload: GbPtzPayload) => request<{ accepted: boolean; count: number }>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/ptz', { method: 'POST', body: JSON.stringify({ deviceId, channelId, ...payload }) });
 export const takeGbSnapshot = (deviceId: string, channelId: string) => request<GbSnapshotInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/images', { method: 'POST', body: JSON.stringify({ request_id: 'ui-snapshot-' + Date.now() }) });

@@ -54,8 +54,6 @@
           @ptz="(payload) => emit('ptz', { index: visibleIndex(index), payload })"
           @preset-call="(payload) => emit('presetCall', { index: visibleIndex(index), payload })"
           @preset-set="(payload) => emit('presetSet', { index: visibleIndex(index), payload })"
-          @talk-start="() => emit('talkStart', { index: visibleIndex(index) })"
-          @talk-stop="() => emit('talkStop', { index: visibleIndex(index) })"
           @playback-seek="(payload) => emit('playbackSeek', { index: visibleIndex(index), payload })"
           @playback-rate-change="(payload) => emit('playbackRateChange', { index: visibleIndex(index), payload })"
           @playback-state-change="(payload) => emit('playbackStateChange', { index: visibleIndex(index), payload })"
@@ -139,8 +137,6 @@ const emit = defineEmits<{
   ptz: [{ index: number; payload: GmvPtzCommand }];
   presetCall: [{ index: number; payload: { presetId: string } }];
   presetSet: [{ index: number; payload: { presetId: string } }];
-  talkStart: [{ index: number }];
-  talkStop: [{ index: number }];
   playbackSeek: [{ index: number; payload: { timeMs: number } }];
   playbackRateChange: [{ index: number; payload: { rate: number } }];
   playbackStateChange: [{ index: number; payload: { paused: boolean } }];

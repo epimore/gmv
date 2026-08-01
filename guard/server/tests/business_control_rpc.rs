@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
 
-use gmv_guard_server::api::v2::control::{BusinessControl, DeviceStreamOptions};
+use gmv_guard_server::api::v2::control::{
+    BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl, DeviceStreamOptions,
+};
 use gmv_guard_server::api::v2::model::StreamSummaryState;
 use gmv_guard_server::core::{
     ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState,
@@ -45,11 +47,13 @@ use gmv_protocol::session::v1::{
 };
 use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
 use gmv_protocol::stream::v1::{
-    CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
-    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, QueryStreamRequest,
-    QueryStreamResponse, ReleaseSubscriptionOutputsRequest, ReleaseSubscriptionOutputsResponse,
-    StartReceiveRequest, StartReceiveResponse, StopReceiveRequest, StopReceiveResponse,
-    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
+    CloseOutputRequest, CloseOutputResponse, ConfigureReceiveTransportRequest,
+    ConfigureReceiveTransportResponse, CreateOutputRequest, CreateOutputResponse,
+    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaTransportState,
+    QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
+    ReleaseSubscriptionOutputsResponse, StartReceiveRequest, StartReceiveResponse,
+    StopReceiveRequest, StopReceiveResponse, StreamBoolResponse, StreamJsonRequest,
+    StreamJsonResponse, StreamState, StreamUnitResponse,
 };
 
 #[test]
@@ -348,7 +352,7 @@ fn gb28181_update_channel_uses_session_rpc() {
                     alias_name: "front".to_string(),
                     snapshot: 1,
                     ptz_enable: 1,
-                    talk_enable: 2,
+                    broadcast_enable: 2,
                     audio_enable: 2,
                     record_enable: 0,
                     playback_enable: 1,
@@ -405,7 +409,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                         "device.live".to_string(),
                         "device.playback".to_string(),
                         "device.download".to_string(),
-                        "device.talk".to_string(),
+                        "device.broadcast".to_string(),
                         "device.ptz".to_string(),
                         "protocol.gb28181".to_string(),
                     ],
@@ -428,7 +432,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                         "device.live".to_string(),
                         "device.playback".to_string(),
                         "device.download".to_string(),
-                        "device.talk".to_string(),
+                        "device.broadcast".to_string(),
                         "device.ptz".to_string(),
                         "protocol.gb28181".to_string(),
                     ],
@@ -447,7 +451,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                         "live".to_string(),
                         "playback".to_string(),
                         "download".to_string(),
-                        "talk".to_string(),
+                        "broadcast".to_string(),
                     ],
                     endpoints: vec![
                         grpc_endpoint(stream_addr),
@@ -457,6 +461,43 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                             host: "127.0.0.1".to_string(),
                             port: 30000,
                             mode: EndpointModeRecord::Single,
+                            labels: HashMap::from([
+                                (
+                                    "media_transports".to_string(),
+                                    "udp,tcp_active,tcp_passive".to_string(),
+                                ),
+                                (
+                                    "broadcast_packetizations".to_string(),
+                                    "raw_g711,rtp_ps_g711".to_string(),
+                                ),
+                                ("max_broadcast_parents".to_string(), "8".to_string()),
+                                ("max_broadcast_legs".to_string(), "50".to_string()),
+                            ]),
+                        },
+                    ],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: Default::default(),
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "stream-legacy",
+                        "stream-legacy-inst",
+                        NodeKind::Stream,
+                    ),
+                    capabilities: vec!["broadcast".to_string()],
+                    endpoints: vec![
+                        grpc_endpoint(stream_addr),
+                        EndpointRecord {
+                            name: "rtp".to_string(),
+                            scheme: "rtp".to_string(),
+                            host: "127.0.0.1".to_string(),
+                            port: 31000,
+                            mode: EndpointModeRecord::Multi,
                             labels: HashMap::new(),
                         },
                     ],
@@ -613,11 +654,94 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             );
             assert_eq!(
                 control
-                    .start_talk("op-talk-rpc", "device-1", "channel-1")
+                    .start_broadcast("op-broadcast-rpc", "device-1", "channel-1")
                     .await
                     .unwrap()
                     .stream_id,
-                "talk-op-talk-rpc"
+                "broadcast-op-broadcast-rpc"
+            );
+            let broadcast = control
+                .start_broadcast_operation(
+                    "op-multi-broadcast-rpc",
+                    BroadcastOperationOptions {
+                        token: "shared-broadcast-token".to_string(),
+                        default_trans_mode: "udp".to_string(),
+                        codec: "PCMA".to_string(),
+                        sample_rate: 8_000,
+                        channel_count: 1,
+                        frame_duration_ms: 20,
+                        targets: vec![
+                            BroadcastTargetOptions {
+                                device_id: "device-1".to_string(),
+                                channel_id: "channel-1".to_string(),
+                                session_node_id: "session-rpc".to_string(),
+                                trans_mode: "udp".to_string(),
+                            },
+                            BroadcastTargetOptions {
+                                device_id: "device-2".to_string(),
+                                channel_id: "channel-2".to_string(),
+                                session_node_id: "session-rpc-b".to_string(),
+                                trans_mode: "udp".to_string(),
+                            },
+                        ],
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(broadcast.state, "running");
+            assert_eq!(broadcast.stream_node_id, "stream-rpc");
+            assert_eq!(broadcast.target_summaries.len(), 2);
+            assert!(
+                broadcast
+                    .target_summaries
+                    .iter()
+                    .all(|target| target.state == "running" && target.profile == "raw_g711")
+            );
+            let repeated = control
+                .start_broadcast_operation(
+                    "op-multi-broadcast-rpc",
+                    BroadcastOperationOptions {
+                        token: String::new(),
+                        default_trans_mode: "udp".to_string(),
+                        codec: "PCMA".to_string(),
+                        sample_rate: 8_000,
+                        channel_count: 1,
+                        frame_duration_ms: 20,
+                        targets: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(repeated, broadcast);
+            let stopped_one = control
+                .stop_broadcast_target(
+                    "op-stop-one-broadcast-rpc",
+                    &broadcast.broadcast_id,
+                    &broadcast.target_summaries[0].leg_id,
+                )
+                .await
+                .unwrap();
+            assert_eq!(stopped_one.state, "partial");
+            let stopped_all = control
+                .stop_broadcast_operation("op-stop-all-broadcast-rpc", &broadcast.broadcast_id)
+                .await
+                .unwrap();
+            assert_eq!(stopped_all.state, "stopping");
+            assert!(
+                stopped_all
+                    .target_summaries
+                    .iter()
+                    .all(|target| target.state == "stopped" || target.state == "stopping")
+            );
+            assert_eq!(
+                control
+                    .stop_broadcast_operation(
+                        "op-stop-all-broadcast-rpc-repeated",
+                        &broadcast.broadcast_id,
+                    )
+                    .await
+                    .unwrap(),
+                stopped_all
             );
             assert_eq!(
                 control
@@ -698,15 +822,15 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .execute(RoutedCommand {
                     integration_id: String::new(),
                     expires_at_ms: i64::MAX,
-                    command_id: "mqtt-talk-1".to_string(),
-                    action: CommandAction::StreamTalk,
+                    command_id: "mqtt-broadcast-1".to_string(),
+                    action: CommandAction::DeviceBroadcast,
                     target: "device-2".to_string(),
                     payload: base::serde_json::json!({ "channel_id": "channel-2" }),
                 })
                 .await
                 .unwrap();
             assert_eq!(
-                operations.get("mqtt-talk-1").unwrap().status,
+                operations.get("mqtt-broadcast-1").unwrap().status,
                 OperationStatus::Succeeded
             );
             executor
@@ -936,13 +1060,13 @@ impl SessionControl for FakeSession {
         )))
     }
 
-    async fn start_talk(
+    async fn start_broadcast(
         &self,
         request: tonic::Request<StartDeviceStreamRequest>,
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         Ok(tonic::Response::new(fake_device_response(
             request.into_inner(),
-            "talk",
+            "broadcast",
         )))
     }
 
@@ -962,6 +1086,7 @@ impl SessionControl for FakeSession {
             session_instance_id: String::new(),
             playback_id: String::new(),
             playback_generation: 0,
+            broadcast_profile: String::new(),
         }))
     }
 
@@ -1294,6 +1419,18 @@ impl StreamControl for FakeStream {
         }))
     }
 
+    async fn configure_receive_transport(
+        &self,
+        _request: tonic::Request<ConfigureReceiveTransportRequest>,
+    ) -> Result<tonic::Response<ConfigureReceiveTransportResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ConfigureReceiveTransportResponse {
+            state: MediaTransportState::Ready as i32,
+            local_endpoint: None,
+            remote_endpoint: None,
+            error: None,
+        }))
+    }
+
     async fn stop_receive(
         &self,
         _request: tonic::Request<StopReceiveRequest>,
@@ -1408,7 +1545,7 @@ impl StreamControl for FakeStream {
         Ok(tonic::Response::new(StreamUnitResponse { error: None }))
     }
 
-    async fn talk_open(
+    async fn broadcast_open(
         &self,
         _request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
@@ -1418,21 +1555,21 @@ impl StreamControl for FakeStream {
         }))
     }
 
-    async fn talk_answer(
+    async fn broadcast_configure_leg(
         &self,
         _request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
         Ok(tonic::Response::new(StreamUnitResponse { error: None }))
     }
 
-    async fn talk_close(
+    async fn broadcast_close(
         &self,
         _request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
         Ok(tonic::Response::new(StreamUnitResponse { error: None }))
     }
 
-    async fn talk_online(
+    async fn broadcast_online(
         &self,
         _request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
@@ -1444,14 +1581,27 @@ impl StreamControl for FakeStream {
 }
 
 fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> DeviceStreamResponse {
-    let stream_id = request
+    let operation_stream_id = request
         .operation
+        .clone()
         .and_then(|operation| {
             (!operation.idempotency_key.is_empty()).then_some(operation.idempotency_key)
         })
         .map(|id| format!("{prefix}-{id}"))
         .unwrap_or_default();
-    let endpoint = format!("rtp://127.0.0.1:30000/{stream_id}");
+    let stream_id = if prefix == "broadcast" && !request.broadcast_leg_id.is_empty() {
+        request.broadcast_leg_id.clone()
+    } else {
+        operation_stream_id
+    };
+    let endpoint = if prefix == "broadcast" && !request.broadcast_id.is_empty() {
+        format!(
+            "ws://127.0.0.1:8080/broadcast/input/{}",
+            request.broadcast_id
+        )
+    } else {
+        format!("rtp://127.0.0.1:30000/{stream_id}")
+    };
     DeviceStreamResponse {
         stream_id,
         state: DeviceStreamState::Running as i32,
@@ -1464,6 +1614,11 @@ fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> Devi
         session_instance_id: String::new(),
         playback_id: request.playback_id,
         playback_generation: 0,
+        broadcast_profile: if prefix == "broadcast" {
+            "raw_g711".to_string()
+        } else {
+            String::new()
+        },
     }
 }
 

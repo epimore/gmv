@@ -34,8 +34,6 @@
       @record-stop="logAction('recordStop', $event)"
       @preset-call="logAction('presetCall', $event)"
       @preset-set="logAction('presetSet', $event)"
-      @talk-start="logAction('talkStart', $event)"
-      @talk-stop="logAction('talkStop', $event)"
       @playback-seek="logAction('playbackSeek', $event)"
       @stream-switch="logAction('streamSwitch', $event)"
     />
@@ -75,14 +73,13 @@ const cells = ref<GmvGridCell[]>(
       snapshot: true,
       record: true,
       playback: true,
-      talk: true,
       streamSwitch: true,
       audio: true,
       aiOverlay: true,
     },
     controls: {
       items: ['play', 'audio', 'snapshot', 'info', 'fullscreen'],
-      overflowItems: ['ptz', 'record', 'talk', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
+      overflowItems: ['ptz', 'record', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
       visibility: 'always',
       autoHideDelayMs: 3000,
       playbackRates: [0.5, 1, 2, 4],

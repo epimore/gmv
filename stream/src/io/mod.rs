@@ -5,4 +5,3 @@ pub mod local;
 pub mod media_endpoint;
 pub mod rtp_handler;
 pub mod splitter;
-pub mod talk;

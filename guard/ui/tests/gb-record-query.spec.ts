@@ -38,7 +38,7 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
     device_id: device.device_id, channel_id: '34020000001320000001', name: '入口相机', manufacturer: 'GMV',
     model: 'test', owner: '', status: 'ON', civil_code: '', address: '', parent_id: device.device_id,
     ip_address: '', port: 0, longitude: '', latitude: '', ptz_type: '3', alias_name: '', pic_url: '',
-    snapshot: 1, over_pic_id: '', ptz_enable: 1, talk_enable: 2, audio_enable: 2, record_enable: 1,
+    snapshot: 1, over_pic_id: '', ptz_enable: 1, broadcast_enable: 2, audio_enable: 2, record_enable: 1,
     playback_enable: 1, alarm_enable: 1, biz_enable: 1, sort_no: 1, created_at_ms: 0, updated_at_ms: 0,
     cover_image_id: '16873',
   };

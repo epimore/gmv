@@ -1,10 +1,10 @@
 INVITE sip:34020000001110000009@198.51.100.20:5060 SIP/2.0
-Via: SIP/2.0/UDP 192.0.2.10:25600;rport;branch=z9hG4bK-talk-normal
+Via: SIP/2.0/UDP 192.0.2.10:25600;rport;branch=z9hG4bK-broadcast-normal
 Max-Forwards: 70
-From: <sip:34020000002000000001@3402000000>;tag=platform-talk-normal
+From: <sip:34020000002000000001@3402000000>;tag=platform-broadcast-normal
 To: <sip:34020000001110000009@198.51.100.20:5060>
 Contact: <sip:34020000002000000001@192.0.2.10:25600>
-Call-ID: talk-normal@gmv.test
+Call-ID: broadcast-normal@gmv.test
 CSeq: 23 INVITE
 Subject: 34020000001320000102:8202,34020000002000000001:0
 Content-Type: application/sdp

@@ -2,7 +2,10 @@ use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::error;
 use gmv_domain::info::media_info_ext::MediaExt;
+use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use regex::Regex;
+use std::collections::HashMap;
+use std::net::IpAddr;
 
 use crate::gb::SessionConf;
 use crate::state::model::TransMode;
@@ -224,6 +227,40 @@ pub fn validate_invite_answer_sdp(remote_sdp: &str, expected_ssrc: &str) -> Glob
     Ok(())
 }
 
+pub fn remote_media_endpoint(remote_sdp: &str) -> GlobalResult<Endpoint> {
+    let info = SdpInfo::parse_lossy(remote_sdp);
+    let host = info.connection_addr.unwrap_or_default();
+    let ip = host.parse::<IpAddr>().map_err(|_| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "media_peer_policy_required",
+            |msg| error!("{msg}: invalid SDP connection address"),
+        )
+    })?;
+    if ip.is_unspecified() || ip.is_multicast() {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "media_peer_unreachable",
+            |msg| error!("{msg}: remote_addr={ip}"),
+        ));
+    }
+    let port = info.media_port.filter(|port| *port != 0).ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "media_peer_policy_required",
+            |msg| error!("{msg}: missing SDP media port"),
+        )
+    })?;
+    Ok(Endpoint {
+        name: "rtp-peer".to_string(),
+        scheme: "rtp".to_string(),
+        host,
+        port: u32::from(port),
+        mode: EndpointMode::Single as i32,
+        labels: HashMap::from([("address_policy".to_string(), "sdp_exact".to_string())]),
+    })
+}
+
 fn invalid_answer_sdp(reason: &str, expected_ssrc: &str, actual_ssrc: Option<&str>) -> GlobalError {
     GlobalError::new_biz_error(
         BaseErrorCode::InvalidState.code(),
@@ -275,7 +312,7 @@ fn extract_f_field(me: &mut MediaExt, sdp: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_invite_answer_sdp;
+    use super::{remote_media_endpoint, validate_invite_answer_sdp};
 
     const VALID_VIDEO_ANSWER: &str = "v=0\r\n\
 o=34020000001320000001 0 0 IN IP4 198.51.100.20\r\n\
@@ -297,5 +334,16 @@ y=0100008199\r\n";
     fn invite_answer_rejects_missing_y_ssrc() {
         let without_y = VALID_VIDEO_ANSWER.replace("y=0100008199\r\n", "");
         assert!(validate_invite_answer_sdp(&without_y, "0100008199").is_err());
+    }
+
+    #[test]
+    fn remote_media_endpoint_uses_explicit_sdp_address() {
+        let endpoint = remote_media_endpoint(VALID_VIDEO_ANSWER).unwrap();
+        assert_eq!(endpoint.host, "198.51.100.20");
+        assert_eq!(endpoint.port, 30_000);
+        assert_eq!(endpoint.labels["address_policy"], "sdp_exact");
+
+        let unspecified = VALID_VIDEO_ANSWER.replace("198.51.100.20", "0.0.0.0");
+        assert!(remote_media_endpoint(&unspecified).is_err());
     }
 }

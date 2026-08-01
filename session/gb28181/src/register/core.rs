@@ -22,7 +22,7 @@ use crate::gb::sip::NativeSipRuntimeHandle;
 use crate::register::event::{self, Event};
 pub(crate) use crate::register::network::{DeviceSession, Network, RegistrationClass};
 use crate::register::schedule::TimeScheduler;
-use crate::service::{stream_close, talk_close};
+use crate::service::{broadcast_close, stream_close};
 use crate::state::session::Cache as GeneralCache;
 use crate::storage::db_task::{self, DbTask};
 use crate::storage::entity::{GmvDevice, GmvOauth};
@@ -38,7 +38,7 @@ pub enum TimeScheduleKey {
     DeviceRegistration(Arc<str>),
     DeviceReconnect(Arc<str>, u64),
     StreamClosing(Arc<str>, u64),
-    TalkClosing(Arc<str>, u64),
+    BroadcastClosing(Arc<str>, u64),
     CatalogSubscription(Arc<str>, u64),
     PlaybackPauseExpiry(Arc<str>, u64),
     PlaybackPresenceExpiry(Arc<str>, u64),
@@ -182,7 +182,7 @@ impl Register {
         }
         if reconnected || previous_session.association != association {
             stream_close::retry_device(device_id);
-            talk_close::retry_device(device_id);
+            broadcast_close::retry_device(device_id);
         }
         Ok(())
     }
@@ -467,7 +467,7 @@ impl Register {
                         registration_cseq,
                     );
                     stream_close::retry_device(device_id.as_ref());
-                    talk_close::retry_device(device_id.as_ref());
+                    broadcast_close::retry_device(device_id.as_ref());
                     return Ok(outcome);
                 }
                 Err(ds) => ds,
@@ -506,7 +506,7 @@ impl Register {
         );
         if !matches!(outcome, RegisterOutcome::NewEpoch) {
             stream_close::retry_device(device_id.as_ref());
-            talk_close::retry_device(device_id.as_ref());
+            broadcast_close::retry_device(device_id.as_ref());
         }
         Ok(outcome)
     }

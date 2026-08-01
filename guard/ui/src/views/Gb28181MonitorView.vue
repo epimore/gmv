@@ -124,6 +124,29 @@
               </div>
             </el-option>
           </el-select>
+          <el-select v-model="mediaTransport" aria-label="广播媒体传输模式" style="width: 150px">
+            <el-option label="UDP" value="udp" />
+            <el-option label="TCP 主动" value="tcp_active" />
+            <el-option label="TCP 被动" value="tcp_passive" />
+          </el-select>
+          <el-tooltip :content="broadcastStatusText" placement="bottom">
+            <el-button v-if="!broadcastSession" type="warning" :loading="broadcastStarting"
+              :disabled="!canOperate || !selectedTreeChannels.length" @click="startMultiBroadcast">
+              广播所选通道
+            </el-button>
+          </el-tooltip>
+          <el-popover v-if="broadcastSession" placement="bottom-end" :width="520" trigger="click">
+            <template #reference><el-button>目标状态</el-button></template>
+            <div v-for="target in broadcastSession.summary.target_summaries" :key="target.leg_id" class="broadcast-target-row">
+              <span>{{ target.device_id }} / {{ target.channel_id }}</span>
+              <StatusPill :label="target.state" :tone="target.state === 'running' ? 'ONLINE' : target.state === 'failed' ? 'ERROR' : 'OFFLINE'" />
+              <span>{{ target.profile || '-' }} · {{ target.transport }}</span>
+              <el-button v-if="target.state === 'running'" link type="danger" @click="stopBroadcastLeg(target.leg_id)">停止</el-button>
+            </div>
+          </el-popover>
+          <el-button v-if="broadcastSession" type="danger" :loading="broadcastStarting" @click="stopBroadcast">
+            停止全部广播
+          </el-button>
           <el-button type="primary" @click="backToDeviceListFromMulti">返回设备列表</el-button>
         </div>
       </div>
@@ -201,6 +224,13 @@
               </el-tooltip>
               <span v-if="multiMode === 'playback'" class="selected-channel-status">{{
                 multiPlaybackSelectionStatus(channel) }}</span>
+              <el-select v-if="canBroadcastChannel(channel.channel)"
+                v-model="broadcastTransportOverrides[selectedChannelKey(channel)]" clearable size="small"
+                placeholder="继承广播传输" aria-label="目标广播传输覆盖" @click.stop>
+                <el-option label="UDP" value="udp" />
+                <el-option label="TCP 主动" value="tcp_active" />
+                <el-option label="TCP 被动" value="tcp_passive" />
+              </el-select>
             </div>
             <div v-if="multiMode === 'playback'" class="selected-channel-playback">
               <el-date-picker v-model="channel.playback_range" type="datetimerange" range-separator="至"
@@ -279,6 +309,11 @@
           <span>Session {{ selectedDevice.session_node_id || '-' }}</span>
         </div>
         <div class="monitor-actions">
+          <el-select v-model="mediaTransport" aria-label="媒体传输模式" style="width: 150px">
+            <el-option label="UDP" value="udp" />
+            <el-option label="TCP 主动" value="tcp_active" />
+            <el-option label="TCP 被动" value="tcp_passive" />
+          </el-select>
           <el-button :loading="resourceLoading" @click="openResourceDrawer">资源能力</el-button>
           <el-tooltip :content="deviceBroadcastReasonText" placement="bottom"
             :disabled="selectedDevice.monitor_status === 1 && !!availableAudioOutputs.length">
@@ -600,7 +635,7 @@
         <el-form-item label="排序"><el-input-number v-model="configForm.sort_no" :min="0" :max="999999" /></el-form-item>
         <el-form-item label="云台控制"><el-select v-model="configForm.ptz_enable"><el-option v-for="option in confOptions"
               :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
-        <el-form-item label="语音对讲"><el-select v-model="configForm.talk_enable"><el-option v-for="option in confOptions"
+        <el-form-item label="语音广播"><el-select v-model="configForm.broadcast_enable"><el-option v-for="option in confOptions"
               :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
         <el-form-item label="音频"><el-select v-model="configForm.audio_enable"><el-option v-for="option in confOptions"
               :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
@@ -714,12 +749,15 @@ import {
   startGbPlayback,
   startGbPreview,
   stopCloudRecording,
+  stopGbBroadcastTarget,
   takeGbSnapshot,
   updateGbChannel,
   type GbChannelImageInfo,
   type GbChannelInfo,
   type GbChannelPayload,
   type GbChannelRecordsInfo,
+  type GbBroadcastTargetPayload,
+  type MediaTransport,
   type GbDeviceInfo,
   type GbPtzPayload,
   type GbRecordSegmentInfo,
@@ -852,6 +890,8 @@ const resourceSaving = ref(false);
 const broadcastStarting = ref(false);
 const broadcastSession = ref<GbBroadcastSession>();
 const broadcastScopeId = ref('');
+const mediaTransport = ref<MediaTransport>('udp');
+const broadcastTransportOverrides = reactive<Record<string, MediaTransport | ''>>({});
 const deviceSnapshotLoading = reactive<Record<string, boolean>>({});
 const channelOutputTypes = reactive<Record<string, LiveOutputType>>({});
 const channelPlaybackOutputTypes = reactive<Record<string, PlaybackOutputType>>({});
@@ -981,6 +1021,13 @@ const audioOutputs = computed(() => resources.value.filter((resource) => resourc
 const availableAudioOutputs = computed(() => audioOutputs.value.filter((resource) => resource.available));
 const deviceBroadcastReason = computed(() => selectedDevice.value?.monitor_status !== 1 ? 'DEVICE_OFFLINE' : availableAudioOutputs.value.length ? '' : audioOutputs.value[0]?.unavailable_reason || 'NO_AUDIO_OUTPUT');
 const deviceBroadcastReasonText = computed(() => broadcastReasonText(deviceBroadcastReason.value));
+const broadcastStatusText = computed(() => {
+  const summary = broadcastSession.value?.summary;
+  if (!summary) return `将向 ${selectedTreeChannels.value.length} 个所选通道下发一份麦克风音频`;
+  const running = summary.target_summaries.filter((target) => target.state === 'running').length;
+  const failed = summary.target_summaries.filter((target) => target.state === 'failed').length;
+  return `广播 ${summary.state}：运行 ${running}，失败 ${failed}，共 ${summary.target_summaries.length}`;
+});
 const ownerResourceOptions = computed(() => channels.value.filter((channel) => channel.channel_id !== resourceEditing.value?.resource_id));
 const selectedTreeChannels = computed<SelectedChannelRef[]>(() => selectedTreeChannelItems.value);
 const multiLimitHelpVisible = computed(() => multiLimitHelpHovered.value || multiLimitHelpPinned.value);
@@ -1152,7 +1199,6 @@ const playerCapabilities = computed<GmvViewCapabilities>(() => {
     record: false,
     playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
     audio: channel ? canAudio(channel) && hasAudio : false,
-    talk: false,
     streamSwitch: false,
     aiOverlay: false,
   };
@@ -1312,7 +1358,6 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
     record: false,
     playback: cell.mode === 'playback' && canPlayback(cell.channel),
     audio: hasAudio && canAudio(cell.channel),
-    talk: false,
     streamSwitch: cell.sources.length > 1,
     aiOverlay: false,
   };
@@ -1439,6 +1484,7 @@ function clearTreeChannelState() {
   clearTreeLoadedChannelState();
   selectedTreeChannelKeys.value = [];
   selectedTreeChannelItems.value = [];
+  for (const key of Object.keys(broadcastTransportOverrides)) delete broadcastTransportOverrides[key];
 }
 function clearTreeDeviceBrowserState() {
   treeDeviceId.value = '';
@@ -1648,7 +1694,8 @@ async function toggleTreeChannel(channel: GbChannelInfo, checked: boolean) {
   await stopMultiCell(key);
 }
 async function removeTreeChannel(channel: SelectedChannelRef) {
-  await stopMultiCell(selectedChannelKey(channel));
+  const key = selectedChannelKey(channel);
+  if (await stopMultiCell(key)) delete broadcastTransportOverrides[key];
 }
 function restoreMultiPlaybackDefault(channel: SelectedChannelRef) {
   if (channel.playback_locked) return;
@@ -2023,6 +2070,7 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
     multiCells.value = [];
     selectedTreeChannelKeys.value = [];
     selectedTreeChannelItems.value = [];
+    for (const key of Object.keys(broadcastTransportOverrides)) delete broadcastTransportOverrides[key];
     multiGridManual.value = false;
     multiGridSize.value = 1;
     multiPage.value = 1;
@@ -3254,7 +3302,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       ? await startGbPreview(
         channel.device_id,
         channel.channel_id,
-        { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, output_type: channelOutputType(channel), audio_codec: 'aac' },
+        { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, trans_mode: mediaTransport.value, output_type: channelOutputType(channel), audio_codec: 'aac' },
         {
           signal: controller.signal,
           onUpdate: (operation) => {
@@ -3265,7 +3313,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       : await startGbPlayback(
         channel.device_id,
         channel.channel_id,
-        { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), output_type: channelPlaybackOutputType(channel), audio_codec: 'aac' },
+        { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), trans_mode: mediaTransport.value, output_type: channelPlaybackOutputType(channel), audio_codec: 'aac' },
         {
           signal: controller.signal,
           onUpdate: (operation) => {
@@ -3405,7 +3453,7 @@ function openConfig(channel: GbChannelInfo) {
     name: channel.name,
     alias_name: channel.alias_name || '',
     ptz_enable: confValue(channel.ptz_enable),
-    talk_enable: confValue(channel.talk_enable),
+    broadcast_enable: confValue(channel.broadcast_enable),
     audio_enable: confValue(channel.audio_enable),
     snapshot: confValue(channel.snapshot),
     record_enable: confValue(channel.record_enable),
@@ -3481,10 +3529,34 @@ async function resetResource(resource: GbResourceInfo) {
 }
 async function startBroadcast(scopeId: string) {
   if (!selectedDevice.value || broadcastStarting.value || broadcastSession.value) return;
+  await startBroadcastTargets([{
+    device_id: selectedDevice.value.device_id,
+    channel_id: scopeId,
+    session_node_id: selectedDevice.value.session_node_id,
+    trans_mode: mediaTransport.value,
+  }], scopeId);
+}
+async function startMultiBroadcast() {
+  const targets = selectedTreeChannels.value
+    .filter((item) => canBroadcastChannel(item.channel))
+    .map<GbBroadcastTargetPayload>((item) => ({
+      device_id: item.device_id,
+      channel_id: item.channel_id,
+      session_node_id: item.session_node_id,
+      trans_mode: broadcastTransportOverrides[selectedChannelKey(item)] || mediaTransport.value,
+    }));
+  if (!targets.length) {
+    ElMessage.warning('请选择至少一个支持语音广播的在线通道');
+    return;
+  }
+  await startBroadcastTargets(targets, `multi:${targets.length}`);
+}
+async function startBroadcastTargets(targets: GbBroadcastTargetPayload[], scopeId: string) {
+  if (broadcastStarting.value || broadcastSession.value) return;
   broadcastStarting.value = true;
   broadcastScopeId.value = scopeId;
   try {
-    const session = await startGbMicrophoneBroadcast(selectedDevice.value.device_id, scopeId);
+    const session = await startGbMicrophoneBroadcast(targets, mediaTransport.value);
     broadcastSession.value = session;
     void session.stopped.then(() => {
       if (broadcastSession.value === session) {
@@ -3497,6 +3569,16 @@ async function startBroadcast(scopeId: string) {
     ElMessage.error(errorMessage(error, '语音广播启动失败'));
   } finally {
     broadcastStarting.value = false;
+  }
+}
+async function stopBroadcastLeg(legId: string) {
+  const session = broadcastSession.value;
+  if (!session) return;
+  try {
+    session.summary = await stopGbBroadcastTarget(session.summary.broadcast_id, legId);
+    ElMessage.success('广播目标已停止');
+  } catch (error) {
+    ElMessage.error(errorMessage(error, '广播目标停止失败'));
   }
 }
 async function stopBroadcast() {
@@ -3676,6 +3758,13 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.broadcast-target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
 .record-dialog-content {
   display: grid;
   gap: 16px;

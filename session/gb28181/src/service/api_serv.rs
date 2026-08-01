@@ -13,7 +13,10 @@ use gmv_domain::info::format::{CMaf, Mp4};
 use gmv_domain::info::media_info::{MediaConfig, OutputAudioCodec};
 use gmv_domain::info::media_info_ext::MediaMap;
 use gmv_domain::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
-use gmv_domain::info::obj::{TalkAnswerReq, TalkInfo, TalkOpenReq, TalkStartModel, TalkStopModel};
+use gmv_domain::info::obj::{
+    BroadcastConfigureLegReq, BroadcastInfo, BroadcastOpenReq, BroadcastStartModel,
+    BroadcastStopModel,
+};
 use gmv_domain::info::output::{
     DashFmp4Output, HlsPlaylistProfile, LocalMp4Output, OutputEnum, OutputKind,
 };
@@ -22,17 +25,18 @@ use crate::gb::SessionConf;
 use crate::gb::sip::command as sip_command;
 use crate::gb::sip::invite::AcceptBroadcastInviteRequest;
 use crate::register::core::Register;
-use crate::service::talk::{
-    DEFAULT_TALK_INPUT_TIMEOUT_SECS, TalkAudioOptions, append_gmv_token, parse_broadcast_invite,
+use crate::service::broadcast::{
+    BroadcastAudioOptions, DEFAULT_BROADCAST_INPUT_TIMEOUT_SECS, append_gmv_token,
+    parse_broadcast_invite,
 };
-use crate::service::{EXPIRES, KEY_STREAM_IN, stream_close, stream_rpc, talk_close};
+use crate::service::{EXPIRES, KEY_STREAM_IN, broadcast_close, stream_close, stream_rpc};
 use crate::state;
 use crate::state::model::{
     CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
     PtzControlModel, StreamInfo, StreamQo, TransMode,
 };
 use crate::state::session::AccessMode;
-use crate::state::session::TalkSessionState;
+use crate::state::session::BroadcastSessionState;
 use crate::state::{DownloadConf, StreamNode, session};
 use crate::storage::dialog_session::{DialogSessionType, DialogState, SipDialogSessionRepository};
 use crate::utils::id_builder;
@@ -361,7 +365,10 @@ pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalRe
     Ok(true)
 }
 
-pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<TalkInfo> {
+pub async fn broadcast_start(
+    model: BroadcastStartModel,
+    token: String,
+) -> GlobalResult<BroadcastInfo> {
     let device_id = &model.device_id;
     if !Register::has_session(device_id) {
         return Err(GlobalError::new_biz_error(
@@ -375,26 +382,46 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         .channel_id
         .clone()
         .unwrap_or_else(|| device_id.clone());
-    let audio = TalkAudioOptions::try_from_model(&model)?;
+    let audio = BroadcastAudioOptions::try_from_model(&model)?;
     let setup_lock =
-        state::session::Cache::stream_setup_lock(device_id, &channel_id, AccessMode::Talk);
+        state::session::Cache::stream_setup_lock(device_id, &channel_id, AccessMode::Broadcast);
     let _setup_guard = setup_lock.lock().await;
 
-    if state::session::Cache::talk_map_get_by_device_channel(device_id, &channel_id).is_some() {
+    if state::session::Cache::broadcast_map_get_by_device_channel(device_id, &channel_id).is_some()
+    {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::AlreadyExists.code(),
-            "talk session already exists",
+            "broadcast session already exists",
             |msg| error!("{msg}: device_id={device_id}, channel_id={channel_id}"),
         ));
     }
     let target_id =
         crate::storage::mapper::resolve_broadcast_target_id(device_id, &channel_id).await?;
 
-    let (ssrc, talk_id) = id_builder::build_ssrc_stream_id(device_id, &channel_id, true).await?;
+    let (ssrc, generated_leg_id) =
+        id_builder::build_ssrc_stream_id(device_id, &channel_id, true).await?;
+    let broadcast_id = model
+        .broadcast_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&generated_leg_id)
+        .to_string();
+    let leg_id = model
+        .leg_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&generated_leg_id)
+        .to_string();
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
-    let mut talk_constraints = HashMap::from([("expected_ssrc".to_string(), ssrc.clone())]);
+    let mut broadcast_constraints = HashMap::from([
+        ("expected_ssrc".to_string(), ssrc.clone()),
+        (
+            "media_transport".to_string(),
+            trans_mode_name(audio.trans_mode).to_string(),
+        ),
+    ]);
     if matches!(audio.trans_mode, TransMode::TcpPassive) {
-        talk_constraints.extend([
+        broadcast_constraints.extend([
             ("transport".to_string(), "tcp_passive".to_string()),
             (
                 "requires_dedicated_media_endpoint".to_string(),
@@ -402,19 +429,31 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             ),
         ]);
     }
+    if let Some(expected_stream_node_id) = model
+        .expected_stream_node_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        broadcast_constraints.insert(
+            "expected_stream_node_id".to_string(),
+            expected_stream_node_id.to_string(),
+        );
+    }
     let allocation = crate::guard_integration::allocate_stream_node_with_constraints(
-        &format!("talk-{talk_id}"),
-        &talk_id,
-        "talk",
+        &format!("broadcast-{leg_id}"),
+        &leg_id,
+        "broadcast",
         device_id,
         &channel_id,
-        talk_constraints,
+        broadcast_constraints,
     )
     .await?;
     let stream_node = allocation.node.clone();
     let node_name = stream_node.name.clone();
-    let open_req = TalkOpenReq {
-        talk_id: talk_id.clone(),
+    let open_req = BroadcastOpenReq {
+        broadcast_id: broadcast_id.clone(),
+        leg_id: leg_id.clone(),
+        leg_stream_id: leg_id.clone(),
         ssrc: u32ssrc,
         token: token.clone(),
         codec: audio.codec.clone(),
@@ -422,27 +461,28 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         channel_count: audio.channel_count,
         payload_type: audio.payload_type,
         frame_duration_ms: audio.frame_duration_ms,
-        input_timeout_secs: DEFAULT_TALK_INPUT_TIMEOUT_SECS,
+        input_timeout_secs: DEFAULT_BROADCAST_INPUT_TIMEOUT_SECS,
         lease_id: allocation.lease_id.clone(),
         route_id: allocation.route_id.clone(),
         session_hook_endpoint: Some(crate::state::SessionGrpcConf::get().endpoint()),
     };
-    let open_resp = match stream_rpc::talk_open(&stream_node, &open_req).await {
+    let open_resp = match stream_rpc::broadcast_open(&stream_node, &open_req).await {
         Ok(data) => data,
         Err(err) => {
-            crate::guard_integration::fail_stream_lease(&allocation, "talk_open failed").await;
+            crate::guard_integration::fail_stream_lease(&allocation, "broadcast_open failed").await;
             return Err(err);
         }
     };
     if open_resp.rtp_port != stream_node.pub_port {
-        cleanup_talk_open(&stream_node, &talk_id).await;
-        crate::guard_integration::fail_stream_lease(&allocation, "talk endpoint mismatch").await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast endpoint mismatch")
+            .await;
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
-            "talk endpoint does not match stream allocation",
+            "broadcast endpoint does not match stream allocation",
             |msg| {
                 error!(
-                    "{msg}: talk_id={talk_id}, allocated_port={}, returned_port={}",
+                    "{msg}: broadcast_id={broadcast_id}, allocated_port={}, returned_port={}",
                     stream_node.pub_port, open_resp.rtp_port
                 )
             },
@@ -454,7 +494,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         match sip_command::broadcast_notify_and_wait(device_id, &target_id, sn).await {
             Ok(invite) => invite,
             Err(err) => {
-                cleanup_talk_open(&stream_node, &talk_id).await;
+                cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
                 crate::guard_integration::fail_stream_lease(&allocation, "broadcast notify failed")
                     .await;
                 return Err(err);
@@ -465,7 +505,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         Ok(answer) => answer,
         Err(err) => {
             sip_command::reject_broadcast_invite(&invite.call_id, 488, "Unsupported broadcast SDP");
-            cleanup_talk_open(&stream_node, &talk_id).await;
+            cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
             crate::guard_integration::fail_stream_lease(&allocation, "broadcast sdp unsupported")
                 .await;
             return Err(err);
@@ -473,7 +513,7 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
     };
     if !audio.compatible_answer(&answer.codec, answer.sample_rate) {
         sip_command::reject_broadcast_invite(&invite.call_id, 488, "Unsupported broadcast codec");
-        cleanup_talk_open(&stream_node, &talk_id).await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
         crate::guard_integration::fail_stream_lease(&allocation, "broadcast codec unsupported")
             .await;
         return Err(GlobalError::new_biz_error(
@@ -487,28 +527,34 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
             },
         ));
     }
-    let answer_req = TalkAnswerReq {
-        talk_id: talk_id.clone(),
+    let answer_req = BroadcastConfigureLegReq {
+        broadcast_id: broadcast_id.clone(),
+        leg_id: leg_id.clone(),
         device_ip: answer.device_ip,
         device_port: answer.device_port,
         protocol: answer.protocol.get_value().to_string(),
         payload_type: answer.payload_type,
+        transport: trans_mode_name(audio.trans_mode).to_string(),
+        packetization: answer.packetization.to_string(),
+        inner_codec: answer.inner_codec.to_string(),
+        rtp_clock_rate: answer.rtp_clock_rate,
     };
-    if let Err(err) = stream_rpc::talk_answer(&stream_node, &answer_req).await {
+    if let Err(err) = stream_rpc::broadcast_configure_leg(&stream_node, &answer_req).await {
         sip_command::reject_broadcast_invite(
             &invite.call_id,
             500,
             "Prepare broadcast media failed",
         );
-        cleanup_talk_open(&stream_node, &talk_id).await;
-        crate::guard_integration::fail_stream_lease(&allocation, "talk_answer failed").await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast_answer failed").await;
         return Err(err);
     }
     if let Err(err) = sip_command::accept_broadcast_invite(AcceptBroadcastInviteRequest {
         device_id: device_id.clone(),
         registration_epoch_id: broadcast_invite.registration_epoch_id,
         channel_id: channel_id.clone(),
-        talk_id: talk_id.clone(),
+        broadcast_id: leg_id.clone(),
+        parent_broadcast_id: broadcast_id.clone(),
         media_node_id: node_name.clone(),
         media_ip: stream_node.pub_host.clone(),
         media_port: open_resp.rtp_port,
@@ -518,13 +564,39 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
     })
     .await
     {
-        cleanup_talk_open(&stream_node, &talk_id).await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
         crate::guard_integration::fail_stream_lease(&allocation, "accept broadcast failed").await;
         return Err(err);
     }
 
-    let talk_state = TalkSessionState {
-        talk_id: talk_id.clone(),
+    let transport_ready = stream_rpc::broadcast_online(&stream_node, &broadcast_id, &leg_id).await;
+    if !matches!(transport_ready, Ok(true)) {
+        let _ = sip_command::invite_stop_by_device(
+            device_id,
+            crate::gb::sip::InviteStopRequest {
+                call_id: Some(invite.call_id.clone()),
+                stream_id: Some(leg_id.clone()),
+                terminal_reason: "broadcast_transport_not_ready".to_string(),
+            },
+        )
+        .await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast transport not ready")
+            .await;
+        return match transport_ready {
+            Err(error) => Err(error),
+            Ok(false) => Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "broadcast_transport_not_ready",
+                |msg| error!("{msg}: broadcast_id={broadcast_id}"),
+            )),
+            Ok(true) => unreachable!(),
+        };
+    }
+
+    let broadcast_state = BroadcastSessionState {
+        parent_broadcast_id: broadcast_id.clone(),
+        broadcast_id: leg_id.clone(),
         device_id: device_id.clone(),
         channel_id: channel_id.clone(),
         ssrc: u32ssrc,
@@ -538,28 +610,30 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
         close_terminal_reason: None,
         guard_lease: Some(allocation.guard_lease()),
     };
-    if !state::session::Cache::talk_map_insert(talk_state.clone()) {
+    if !state::session::Cache::broadcast_map_insert(broadcast_state.clone()) {
         let _ = sip_command::invite_stop_by_device(
             device_id,
             crate::gb::sip::InviteStopRequest {
-                call_id: Some(talk_state.call_id.clone()),
-                stream_id: Some(talk_id.clone()),
+                call_id: Some(broadcast_state.call_id.clone()),
+                stream_id: Some(leg_id.clone()),
                 terminal_reason: "start_commit_failed".to_string(),
             },
         )
         .await;
-        cleanup_talk_open(&stream_node, &talk_id).await;
-        crate::guard_integration::fail_stream_lease(&allocation, "talk state conflict").await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast state conflict").await;
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::AlreadyExists.code(),
-            "talk session already exists",
-            |msg| error!("{msg}: talk_id={talk_id}"),
+            "broadcast session already exists",
+            |msg| error!("{msg}: broadcast_id={broadcast_id}, leg_id={leg_id}"),
         ));
     }
     crate::guard_integration::confirm_stream_lease(&allocation).await?;
 
-    Ok(TalkInfo {
-        talk_id,
+    Ok(BroadcastInfo {
+        broadcast_id,
+        leg_id,
+        profile: answer.packetization.to_string(),
         input_url: append_gmv_token(open_resp.input_url, &token),
         codec: open_resp.codec,
         sample_rate: open_resp.sample_rate,
@@ -568,23 +642,28 @@ pub async fn talk_start(model: TalkStartModel, token: String) -> GlobalResult<Ta
     })
 }
 
-pub async fn talk_stop(model: TalkStopModel, _token: String) -> GlobalResult<bool> {
-    talk_stop_with_reason(model, "session_close").await
+pub async fn broadcast_stop(model: BroadcastStopModel, _token: String) -> GlobalResult<bool> {
+    broadcast_stop_with_reason(model, "session_close").await
 }
 
-pub async fn talk_stop_with_reason(
-    model: TalkStopModel,
+pub async fn broadcast_stop_with_reason(
+    model: BroadcastStopModel,
     terminal_reason: &str,
 ) -> GlobalResult<bool> {
-    let Some(talk) = state::session::Cache::talk_map_get(&model.talk_id) else {
+    let Some(broadcast) = state::session::Cache::broadcast_map_get(&model.broadcast_id) else {
         return Ok(false);
     };
-    let started = talk_close::begin_with_reason(model.talk_id, terminal_reason);
+    let started = broadcast_close::begin_with_reason(model.broadcast_id, terminal_reason);
 
     if let Ok(stream_node) =
-        crate::guard_integration::ensure_stream_node(&talk.stream_node_name).await
+        crate::guard_integration::ensure_stream_node(&broadcast.stream_node_name).await
     {
-        cleanup_talk_open(&stream_node, &talk.talk_id).await;
+        cleanup_broadcast_open(
+            &stream_node,
+            &broadcast.parent_broadcast_id,
+            &broadcast.broadcast_id,
+        )
+        .await;
     }
 
     Ok(started)
@@ -613,17 +692,26 @@ pub async fn peer_dialog_terminated(call_id: String) -> bool {
         release_guard_lease(stream.guard_lease);
         return true;
     }
-    if let Some(talk) = state::session::Cache::talk_map_remove_by_call_id(&call_id) {
+    if let Some(broadcast) = state::session::Cache::broadcast_map_remove_by_call_id(&call_id) {
         if let Ok(stream_node) =
-            crate::guard_integration::ensure_stream_node(&talk.stream_node_name).await
+            crate::guard_integration::ensure_stream_node(&broadcast.stream_node_name).await
         {
-            cleanup_talk_open(&stream_node, &talk.talk_id).await;
+            cleanup_broadcast_open(
+                &stream_node,
+                &broadcast.parent_broadcast_id,
+                &broadcast.broadcast_id,
+            )
+            .await;
         }
         info!(
-            "talk dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, talk_id={}, ssrc={}, call_id={}",
-            talk.device_id, talk.channel_id, talk.talk_id, talk.ssrc, talk.call_id
+            "broadcast dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, broadcast_id={}, ssrc={}, call_id={}",
+            broadcast.device_id,
+            broadcast.channel_id,
+            broadcast.broadcast_id,
+            broadcast.ssrc,
+            broadcast.call_id
         );
-        release_guard_lease(talk.guard_lease);
+        release_guard_lease(broadcast.guard_lease);
         return true;
     }
     if persisted.transitioned {
@@ -707,7 +795,7 @@ async fn persist_peer_dialog_terminated(call_id: &str) -> PeerDialogPersistence 
         {
             Ok(true) => {
                 result.transitioned = true;
-                if session.session_type != DialogSessionType::Talk {
+                if session.session_type != DialogSessionType::Broadcast {
                     result
                         .streams_to_cleanup
                         .push((session.stream_id.clone(), session.media_node_id.clone()));
@@ -787,6 +875,7 @@ async fn start_invite_stream(
     trans_mode: Option<TransMode>,
     custom_media_config: Option<CustomMediaConfig>,
 ) -> GlobalResult<(String, String, String, Option<String>, Option<String>)> {
+    let trans_mode = trans_mode.unwrap_or(TransMode::Udp);
     let live = matches!(am, AccessMode::Live);
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, live).await?;
     let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
@@ -825,7 +914,13 @@ async fn start_invite_stream(
         stream_type,
         device_id,
         channel_id,
-        HashMap::from([("expected_ssrc".to_string(), ssrc.clone())]),
+        HashMap::from([
+            ("expected_ssrc".to_string(), ssrc.clone()),
+            (
+                "media_transport".to_string(),
+                trans_mode_name(trans_mode).to_string(),
+            ),
+        ]),
     )
     .await?;
     let stream_node = allocation.node.clone();
@@ -839,7 +934,7 @@ async fn start_invite_stream(
                 &node_name,
                 &stream_node.pub_host,
                 stream_node.pub_port,
-                trans_mode.unwrap_or(TransMode::Udp),
+                trans_mode,
                 &ssrc,
                 &stream_id,
                 prepare_media,
@@ -853,7 +948,7 @@ async fn start_invite_stream(
                 &node_name,
                 &stream_node.pub_host,
                 stream_node.pub_port,
-                trans_mode.unwrap_or(TransMode::Udp),
+                trans_mode,
                 &ssrc,
                 &stream_id,
                 st,
@@ -869,7 +964,7 @@ async fn start_invite_stream(
                 &node_name,
                 &stream_node.pub_host,
                 stream_node.pub_port,
-                trans_mode.unwrap_or(TransMode::Udp),
+                trans_mode,
                 &ssrc,
                 &stream_id,
                 st,
@@ -879,7 +974,7 @@ async fn start_invite_stream(
             )
             .await
         }
-        AccessMode::Talk => unreachable!("talk does not use start_invite_stream"),
+        AccessMode::Broadcast => unreachable!("broadcast does not use start_invite_stream"),
     };
     let (invite_accepted, media_ext) = match invite_res {
         Ok(value) => value,
@@ -889,6 +984,62 @@ async fn start_invite_stream(
             return Err(err);
         }
     };
+    let remote_endpoint = match crate::gb::sip::sdp::remote_media_endpoint(
+        &invite_accepted.remote_sdp,
+    ) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            if let Err(close_error) = sip_command::invite_stop_by_device(
+                device_id,
+                crate::gb::sip::InviteStopRequest {
+                    call_id: Some(invite_accepted.call_id.clone()),
+                    stream_id: Some(stream_id.clone()),
+                    terminal_reason: "media_peer_policy_failed".to_string(),
+                },
+            )
+            .await
+            {
+                error!(
+                    "close invite after media peer policy failure failed: stream_id={stream_id}, error={close_error}"
+                );
+            }
+            cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+            crate::guard_integration::fail_stream_lease(&allocation, "media peer policy failed")
+                .await;
+            return Err(err);
+        }
+    };
+    if let Err(err) = stream_rpc::configure_receive_transport(
+        &stream_node,
+        &format!("transport-{stream_id}"),
+        &stream_id,
+        &allocation.lease_id,
+        &allocation.route_id,
+        &allocation.media_endpoint,
+        protocol_media_transport(trans_mode),
+        Some(remote_endpoint),
+    )
+    .await
+    {
+        if let Err(close_error) = sip_command::invite_stop_by_device(
+            device_id,
+            crate::gb::sip::InviteStopRequest {
+                call_id: Some(invite_accepted.call_id.clone()),
+                stream_id: Some(stream_id.clone()),
+                terminal_reason: "stream_transport_not_ready".to_string(),
+            },
+        )
+        .await
+        {
+            error!(
+                "close invite after transport failure failed: stream_id={stream_id}, error={close_error}"
+            );
+        }
+        cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "stream transport not ready")
+            .await;
+        return Err(err);
+    }
     let map = MediaMap {
         ssrc: u32ssrc,
         ext: media_ext,
@@ -989,6 +1140,22 @@ async fn start_invite_stream(
     ));
 }
 
+fn trans_mode_name(mode: TransMode) -> &'static str {
+    match mode {
+        TransMode::Udp => "udp",
+        TransMode::TcpActive => "tcp_active",
+        TransMode::TcpPassive => "tcp_passive",
+    }
+}
+
+fn protocol_media_transport(mode: TransMode) -> gmv_protocol::stream::v1::MediaTransport {
+    match mode {
+        TransMode::Udp => gmv_protocol::stream::v1::MediaTransport::Udp,
+        TransMode::TcpActive => gmv_protocol::stream::v1::MediaTransport::TcpActive,
+        TransMode::TcpPassive => gmv_protocol::stream::v1::MediaTransport::TcpPassive,
+    }
+}
+
 fn normalized_codec(value: Option<&str>) -> Option<String> {
     let codec = value?.trim().to_ascii_lowercase();
     match codec.as_str() {
@@ -1004,7 +1171,7 @@ fn stream_type_for_access(am: AccessMode) -> &'static str {
         AccessMode::Live => "live",
         AccessMode::Back => "playback",
         AccessMode::Down => "download",
-        AccessMode::Talk => "talk",
+        AccessMode::Broadcast => "broadcast",
     }
 }
 
@@ -1140,8 +1307,8 @@ async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<Bas
     res
 }
 
-async fn cleanup_talk_open(node: &StreamNode, talk_id: &str) {
-    let _ = stream_rpc::talk_close(node, talk_id)
+async fn cleanup_broadcast_open(node: &StreamNode, broadcast_id: &str, leg_id: &str) {
+    let _ = stream_rpc::broadcast_close(node, broadcast_id, leg_id)
         .await
         .hand_log(|msg| error!("{msg}"));
 }

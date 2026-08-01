@@ -50,6 +50,13 @@ impl AllocationService {
         let candidates = nodes
             .into_iter()
             .filter(|node| eligible(node, &request.capability, request.zone.as_deref()))
+            .filter(|node| {
+                request
+                    .constraints
+                    .get("expected_stream_node_id")
+                    .filter(|value| !value.is_empty())
+                    .is_none_or(|expected| node.identity.node_id == *expected)
+            })
             .collect::<Vec<_>>();
         let mut scores = candidates
             .into_iter()
@@ -57,13 +64,17 @@ impl AllocationService {
                 let load = active_load(&leases, &node.identity.node_id);
                 let host_id = host_id(&node);
                 let host_active = active_host_load(&leases, &host_by_node, &host_id);
-                let tcp_passive_busy = requires_tcp_passive_isolation && load.tcp_passive_talks > 0;
+                let tcp_passive_busy =
+                    requires_tcp_passive_isolation && load.tcp_passive_broadcasts > 0;
                 let media_capacity_exhausted = media_capacity_exhausted(&node);
-                let eligible = !tcp_passive_busy && !media_capacity_exhausted;
+                let media_supported = supports_requested_media(&node, &request.constraints);
+                let eligible = !tcp_passive_busy && !media_capacity_exhausted && media_supported;
                 let reason = if tcp_passive_busy {
                     "tcp_passive_domain_busy".to_string()
                 } else if media_capacity_exhausted {
                     "media_port_pool_exhausted".to_string()
+                } else if !media_supported {
+                    "media_transport_unsupported".to_string()
                 } else {
                     "eligible".to_string()
                 };
@@ -76,7 +87,7 @@ impl AllocationService {
                     active_allocated: load.active_allocated,
                     active_confirmed: load.active_confirmed,
                     host_active,
-                    tcp_passive_talks: load.tcp_passive_talks,
+                    tcp_passive_broadcasts: load.tcp_passive_broadcasts,
                     load_cost,
                     tie_breaker: stable_tie_breaker(&request.resource_id, &node.identity.node_id),
                     eligible,
@@ -136,7 +147,7 @@ fn media_capacity_exhausted(node: &NodeRecord) -> bool {
 struct ActiveLoad {
     active_allocated: u32,
     active_confirmed: u32,
-    tcp_passive_talks: u32,
+    tcp_passive_broadcasts: u32,
 }
 
 fn active_load(leases: &[LeaseRecord], node_id: &str) -> ActiveLoad {
@@ -151,7 +162,7 @@ fn active_load(leases: &[LeaseRecord], node_id: &str) -> ActiveLoad {
             LeaseState::Failed | LeaseState::Released | LeaseState::Expired => continue,
         }
         if requires_tcp_passive_isolation(&lease.stream_type, &lease.constraints) {
-            load.tcp_passive_talks += 1;
+            load.tcp_passive_broadcasts += 1;
         }
     }
     load
@@ -186,15 +197,33 @@ fn requires_tcp_passive_isolation(
     stream_type: &str,
     constraints: &HashMap<String, String>,
 ) -> bool {
-    if stream_type != "talk" {
+    if stream_type != "broadcast" {
         return false;
     }
     constraints
         .get("requires_dedicated_media_endpoint")
         .is_some_and(|value| truthy(value))
         || constraints
-            .get("transport")
+            .get("media_transport")
+            .or_else(|| constraints.get("transport"))
             .is_some_and(|value| normalized(value) == "tcppassive")
+}
+
+fn supports_requested_media(node: &NodeRecord, constraints: &HashMap<String, String>) -> bool {
+    let requested = constraints
+        .get("media_transport")
+        .or_else(|| constraints.get("transport"))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "udp".to_string());
+    if requested == "udp" {
+        return true;
+    }
+    node.endpoints
+        .iter()
+        .filter(|endpoint| endpoint.name == "rtp" || endpoint.scheme == "rtp")
+        .filter_map(|endpoint| endpoint.labels.get("media_transports"))
+        .flat_map(|value| value.split(','))
+        .any(|transport| transport.trim() == requested)
 }
 
 fn truthy(value: &str) -> bool {

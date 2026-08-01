@@ -14,8 +14,8 @@ use base_rpc::RpcChannelConfig;
 use gmv_domain::info::format::{CMaf, Flv, Mp4};
 use gmv_domain::info::media_info::{OutputAudioCodec, TranscodeConfig};
 use gmv_domain::info::obj::{
-    OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState,
-    TalkClosedEvent, TalkStartModel, TalkStopModel, UnknownStreamEvent,
+    BroadcastClosedEvent, BroadcastStartModel, BroadcastStopModel, OutputStreamInfo,
+    RegisterStreamInfo, StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
 };
 use gmv_domain::info::output::{
     DashFmp4Output, HlsFmp4Output, HlsPlaylistProfile, HttpFlvOutput, LocalMp4Output, OutputKind,
@@ -129,6 +129,7 @@ async fn guard_control_client() -> GlobalResult<GuardControlClient<Channel>> {
 #[derive(Debug, Clone)]
 pub struct AllocatedStreamNode {
     pub node: StreamNode,
+    pub media_endpoint: Endpoint,
     pub lease_id: String,
     pub route_id: String,
     pub instance_id: String,
@@ -177,8 +178,18 @@ pub async fn allocate_stream_node_with_constraints(
         .hand_log(|msg| log_error!("{msg}"))?
         .into_inner();
     let node = stream_node_from_allocation(&response)?;
+    let media_endpoint = response
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            (endpoint.name == "rtp" || endpoint.scheme == "rtp")
+                && endpoint.mode == EndpointMode::Single as i32
+        })
+        .cloned()
+        .ok_or_else(|| missing_stream_endpoint(&node.name, "rtp"))?;
     Ok(AllocatedStreamNode {
         node,
+        media_endpoint,
         lease_id: response.lease_id,
         route_id: response.route_id,
         instance_id: response
@@ -475,7 +486,7 @@ impl SessionGuardNode {
                 "device.playback".to_string(),
                 "device.download".to_string(),
                 "device.cloud_recording".to_string(),
-                "device.talk".to_string(),
+                "device.broadcast".to_string(),
                 "device.ptz".to_string(),
                 "protocol.gb28181".to_string(),
             ],
@@ -693,11 +704,11 @@ impl SessionControl for SessionControlRpc {
         self.start_device_stream(request, "download").await
     }
 
-    async fn start_talk(
+    async fn start_broadcast(
         &self,
         request: tonic::Request<StartDeviceStreamRequest>,
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
-        self.start_device_stream(request, "talk").await
+        self.start_device_stream(request, "broadcast").await
     }
 
     async fn stop_device_stream(
@@ -785,11 +796,11 @@ impl SessionControl for SessionControlRpc {
             None
         };
         if let Some(dialog) = monitored_dialog.as_ref()
-            && crate::state::session::Cache::talk_map_get(&request.stream_id).is_none()
+            && crate::state::session::Cache::broadcast_map_get(&request.stream_id).is_none()
             && crate::state::session::Cache::stream_map_query_input(&request.stream_id).is_none()
         {
             if dialog.state == DialogState::Inviting {
-                if dialog.session_type != DialogSessionType::Talk {
+                if dialog.session_type != DialogSessionType::Broadcast {
                     let err = stream_close::close_unlinked_inviting_stream(dialog).await;
                     let mut response = device_error(err);
                     response.stream_id = request.stream_id.clone();
@@ -797,11 +808,18 @@ impl SessionControl for SessionControlRpc {
                     response.session_instance_id = identity.instance_id;
                     return Ok(tonic::Response::new(response));
                 }
-                let media_result = if dialog.session_type == DialogSessionType::Talk {
+                let media_result = if dialog.session_type == DialogSessionType::Broadcast {
                     match ensure_stream_node(&dialog.media_node_id).await {
-                        Ok(node) => stream_rpc::talk_close(&node, &dialog.stream_id)
-                            .await
-                            .map(|_| ()),
+                        Ok(node) => stream_rpc::broadcast_close(
+                            &node,
+                            dialog
+                                .parent_stream_id
+                                .as_deref()
+                                .unwrap_or(&dialog.stream_id),
+                            &dialog.stream_id,
+                        )
+                        .await
+                        .map(|_| ()),
                         Err(err) => Err(err),
                     }
                 } else {
@@ -901,10 +919,11 @@ impl SessionControl for SessionControlRpc {
             }
             playback_presence::clear_for_subscription(&request.stream_id, &request.subscription_id);
         }
-        let state = if crate::state::session::Cache::talk_map_get(&request.stream_id).is_some() {
-            api_serv::talk_stop_with_reason(
-                TalkStopModel {
-                    talk_id: request.stream_id.clone(),
+        let state = if crate::state::session::Cache::broadcast_map_get(&request.stream_id).is_some()
+        {
+            api_serv::broadcast_stop_with_reason(
+                BroadcastStopModel {
+                    broadcast_id: request.stream_id.clone(),
                 },
                 if request.reason == "manual_stop" {
                     "manual_stop"
@@ -1834,14 +1853,14 @@ impl SessionControl for SessionControlRpc {
         let request = request.into_inner();
         if let Some(channel) = request.channel.as_ref() {
             debug!(
-                "session_control.update_gb_channel, req: device_id={}, channel_id={}, alias_name={}, snapshot={}, over_pic_id={}, ptz_enable={}, talk_enable={}, audio_enable={}, record_enable={}, playback_enable={}, alarm_enable={}, biz_enable={}, sort_no={}",
+                "session_control.update_gb_channel, req: device_id={}, channel_id={}, alias_name={}, snapshot={}, over_pic_id={}, ptz_enable={}, broadcast_enable={}, audio_enable={}, record_enable={}, playback_enable={}, alarm_enable={}, biz_enable={}, sort_no={}",
                 channel.device_id,
                 channel.channel_id,
                 channel.alias_name,
                 channel.snapshot,
                 channel.over_pic_id,
                 channel.ptz_enable,
-                channel.talk_enable,
+                channel.broadcast_enable,
                 channel.audio_enable,
                 channel.record_enable,
                 channel.playback_enable,
@@ -2247,7 +2266,7 @@ fn supported_media_formats(session_type: DialogSessionType) -> Vec<String> {
         DialogSessionType::Live => &["flv", "fmp4", "hls", "ll_hls"],
         DialogSessionType::Playback => &["flv", "fmp4", "hls"],
         DialogSessionType::Download => &["flv", "fmp4", "hls", "mp4"],
-        DialogSessionType::Talk => &[],
+        DialogSessionType::Broadcast => &[],
     };
     formats.iter().map(|format| (*format).to_string()).collect()
 }
@@ -2274,8 +2293,17 @@ async fn probe_dialog_media(
             String::new(),
         );
     };
-    if dialog.session_type == DialogSessionType::Talk {
-        return match stream_rpc::talk_online(&node, &dialog.stream_id).await {
+    if dialog.session_type == DialogSessionType::Broadcast {
+        return match stream_rpc::broadcast_online(
+            &node,
+            dialog
+                .parent_stream_id
+                .as_deref()
+                .unwrap_or(&dialog.stream_id),
+            &dialog.stream_id,
+        )
+        .await
+        {
             Ok(true) => (
                 "running".to_string(),
                 "online".to_string(),
@@ -2455,7 +2483,7 @@ impl SessionControlRpc {
     ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
         let request = request.into_inner();
         debug!(
-            "session_control.start_{stream_type}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, talk_codec={}, talk_sample_rate={}, talk_channel_count={}, talk_frame_duration_ms={}, expected_session={:?}",
+            "session_control.start_{stream_type}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, broadcast_codec={}, broadcast_sample_rate={}, broadcast_channel_count={}, broadcast_frame_duration_ms={}, expected_session={:?}",
             request.operation,
             request.device_id,
             request.channel_id,
@@ -2469,10 +2497,10 @@ impl SessionControlRpc {
             request.trans_mode,
             request.output_type,
             request.audio_codec,
-            request.talk_codec,
-            request.talk_sample_rate,
-            request.talk_channel_count,
-            request.talk_frame_duration_ms,
+            request.broadcast_codec,
+            request.broadcast_sample_rate,
+            request.broadcast_channel_count,
+            request.broadcast_frame_duration_ms,
             request.expected_session
         );
         let identity = {
@@ -2505,6 +2533,16 @@ impl SessionControlRpc {
                     )));
                 }
             };
+        let requested_trans_mode = match trans_mode(&request.trans_mode) {
+            Ok(mode) => mode,
+            Err(detail) => {
+                return Ok(tonic::Response::new(device_response(
+                    "",
+                    DeviceStreamState::Failed,
+                    Some(detail),
+                )));
+            }
+        };
         let subscription_id = token.clone();
         let playback_id = if request.playback_id.trim().is_empty() {
             operation_id(request.operation.as_ref())
@@ -2516,7 +2554,7 @@ impl SessionControlRpc {
                 PlayLiveModel {
                     device_id: request.device_id.clone(),
                     channel_id: optional_channel(&request.channel_id),
-                    trans_mode: trans_mode(&request.trans_mode),
+                    trans_mode: requested_trans_mode,
                     custom_media_config: media_config.clone(),
                 },
                 token,
@@ -2534,7 +2572,7 @@ impl SessionControlRpc {
                 PlayBackModel {
                     device_id: request.device_id.clone(),
                     channel_id: optional_channel(&request.channel_id),
-                    trans_mode: trans_mode(&request.trans_mode),
+                    trans_mode: requested_trans_mode,
                     custom_media_config: media_config,
                     st: request.start_time_sec,
                     et: request.end_time_sec,
@@ -2554,7 +2592,7 @@ impl SessionControlRpc {
                 PlayBackModel {
                     device_id: request.device_id.clone(),
                     channel_id: optional_channel(&request.channel_id),
-                    trans_mode: trans_mode(&request.trans_mode),
+                    trans_mode: requested_trans_mode,
                     custom_media_config: media_config,
                     st: request.start_time_sec,
                     et: request.end_time_sec,
@@ -2570,20 +2608,28 @@ impl SessionControlRpc {
                     info.audio_codec.unwrap_or_default(),
                 )
             }),
-            "talk" => api_serv::talk_start(
-                TalkStartModel {
+            "broadcast" => api_serv::broadcast_start(
+                BroadcastStartModel {
                     device_id: request.device_id.clone(),
                     channel_id: optional_channel(&request.channel_id),
+                    broadcast_id: optional_channel(&request.broadcast_id),
+                    leg_id: optional_channel(&request.broadcast_leg_id),
+                    expected_stream_node_id: optional_channel(&request.expected_stream_node_id),
                     transport: empty_to_none(request.trans_mode.clone()),
-                    codec: empty_to_none(request.talk_codec.clone()),
-                    sample_rate: non_zero(request.talk_sample_rate),
-                    channel_count: u8_non_zero(request.talk_channel_count),
-                    frame_duration_ms: u16_non_zero(request.talk_frame_duration_ms),
+                    codec: empty_to_none(request.broadcast_codec.clone()),
+                    sample_rate: non_zero(request.broadcast_sample_rate),
+                    channel_count: u8_non_zero(request.broadcast_channel_count),
+                    frame_duration_ms: u16_non_zero(request.broadcast_frame_duration_ms),
                 },
                 token,
             )
             .await
-            .map(|info| stream_response(info.talk_id, info.input_url, String::new(), info.codec)),
+            .map(|info| {
+                let mut response =
+                    stream_response(info.leg_id, info.input_url, String::new(), info.codec);
+                response.broadcast_profile = info.profile;
+                response
+            }),
             _ => Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
                 "unsupported stream type",
@@ -2674,9 +2720,9 @@ impl SessionHook for SessionHookRpc {
                     },
                 }
             }
-            "stream.talk_closed" => {
-                let value: TalkClosedEvent = decode_payload(&request.payload_json)?;
-                hook_response(hook_serv::talk_closed(value).await, None::<()>)?
+            "stream.broadcast_closed" => {
+                let value: BroadcastClosedEvent = decode_payload(&request.payload_json)?;
+                hook_response(hook_serv::broadcast_closed(value).await, None::<()>)?
             }
             _ => SessionHookResponse {
                 accepted: false,
@@ -2787,6 +2833,7 @@ impl SessionControlAdapter {
             preferred_endpoints: allocation.endpoints.clone(),
             constraints: HashMap::new(),
             reservation_ttl_ms: 0,
+            media_transport: gmv_protocol::stream::v1::MediaTransport::Udp as i32,
         }
     }
 
@@ -3017,6 +3064,7 @@ fn device_response(
         session_instance_id: String::new(),
         playback_id: String::new(),
         playback_generation: 0,
+        broadcast_profile: String::new(),
     }
 }
 
@@ -3159,7 +3207,7 @@ fn gb_channel_proto(
         snapshot: row.snapshot,
         over_pic_id: row.over_pic_id,
         ptz_enable: row.ptz_enable,
-        talk_enable: row.talk_enable,
+        broadcast_enable: row.broadcast_enable,
         audio_enable: row.audio_enable,
         record_enable: row.record_enable,
         playback_enable: row.playback_enable,
@@ -3182,7 +3230,7 @@ fn gb_channel_config_update(
         snapshot: channel.snapshot,
         over_pic_id: channel.over_pic_id,
         ptz_enable: channel.ptz_enable,
-        talk_enable: channel.talk_enable,
+        broadcast_enable: channel.broadcast_enable,
         audio_enable: channel.audio_enable,
         record_enable: channel.record_enable,
         playback_enable: channel.playback_enable,
@@ -3465,6 +3513,7 @@ fn stream_response(
         session_instance_id: String::new(),
         playback_id: String::new(),
         playback_generation: 0,
+        broadcast_profile: String::new(),
     }
 }
 
@@ -3484,6 +3533,7 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
         session_instance_id: String::new(),
         playback_id: String::new(),
         playback_generation: 0,
+        broadcast_profile: String::new(),
     }
 }
 
@@ -3526,13 +3576,16 @@ fn u16_non_zero(value: u32) -> Option<u16> {
     u16::try_from(value).ok().filter(|value| *value != 0)
 }
 
-fn trans_mode(value: &str) -> Option<TransMode> {
+fn trans_mode(value: &str) -> Result<Option<TransMode>, ErrorDetail> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "" => None,
-        "udp" => Some(TransMode::Udp),
-        "tcp_active" | "tcpactive" | "tcp-active" => Some(TransMode::TcpActive),
-        "tcp_passive" | "tcppassive" | "tcp-passive" => Some(TransMode::TcpPassive),
-        _ => None,
+        "" => Ok(None),
+        "udp" => Ok(Some(TransMode::Udp)),
+        "tcp_active" => Ok(Some(TransMode::TcpActive)),
+        "tcp_passive" => Ok(Some(TransMode::TcpPassive)),
+        _ => Err(error(
+            "invalid_media_transport",
+            "media transport must be udp, tcp_active, or tcp_passive",
+        )),
     }
 }
 
@@ -4007,7 +4060,7 @@ mod tests {
             supported_media_formats(DialogSessionType::Download),
             ["flv", "fmp4", "hls", "mp4"]
         );
-        assert!(supported_media_formats(DialogSessionType::Talk).is_empty());
+        assert!(supported_media_formats(DialogSessionType::Broadcast).is_empty());
     }
 
     #[test]

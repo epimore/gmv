@@ -154,7 +154,7 @@ import type {
 import PlayerControls from './PlayerControls.vue';
 
 const defaultControls: GmvPlayerControlsConfig = {
-  items: ['play', 'audio', 'snapshot', 'info', 'fullscreen', 'ptz', 'record', 'talk', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
+  items: ['play', 'audio', 'snapshot', 'info', 'fullscreen', 'ptz', 'record', 'streamSwitch', 'playbackRate', 'timeline', 'presets'],
   visibility: 'auto',
   autoHideDelayMs: 3000,
   playbackRates: [0.5, 1, 2, 4],
@@ -211,8 +211,6 @@ const emit = defineEmits<{
   ptz: [GmvPtzCommand];
   presetCall: [{ presetId: string }];
   presetSet: [{ presetId: string }];
-  talkStart: [];
-  talkStop: [];
   playbackSeek: [{ timeMs: number }];
   playbackRateChange: [{ rate: number }];
   playbackStateChange: [{ paused: boolean }];
@@ -280,7 +278,6 @@ const isFullscreen = ref(false);
 const infoOpen = ref(false);
 const ptzOpen = ref(false);
 const recording = ref(false);
-const talking = ref(false);
 const audioEnabled = ref(false);
 const ptzSpeed = ref(64);
 const playbackRate = ref(1);
@@ -316,7 +313,6 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
   infoOpen: infoOpen.value,
   ptzOpen: ptzOpen.value,
   recording: recording.value,
-  talking: talking.value,
   playbackRate: playbackRate.value,
   seekMs: seekMs.value,
   durationMs: props.playbackDurationMs ?? 86_400_000,
@@ -680,15 +676,6 @@ function snapshotFileName() {
   return `${name}-${timestamp}.png`;
 }
 
-function toggleTalk() {
-  talking.value = !talking.value;
-  if (talking.value) {
-    emit('talkStart');
-  } else {
-    emit('talkStop');
-  }
-}
-
 function ptz(action: GmvPtzCommand['action']) {
   if (props.capabilities.ptz === false) return;
   emit('ptz', { action, speed: ptzSpeed.value });
@@ -836,9 +823,6 @@ function handleControlAction(action: GmvPlayerControlAction) {
       break;
     case 'cloud-record-create':
       emit('cloudRecordCreate', { startTimeMs: action.startTimeMs, endTimeMs: action.endTimeMs });
-      break;
-    case 'talk-toggle':
-      toggleTalk();
       break;
     case 'stream-switch':
       switchSource(action.sourceUrl);

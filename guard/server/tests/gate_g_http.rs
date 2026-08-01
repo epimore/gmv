@@ -285,10 +285,16 @@ fn ui_api_requires_registered_nodes_for_device_operations() {
             let (status, _, _) = call(
                 &app,
                 write_request(
-                    "/api/v2/devices/34020000001320000001/talk",
+                    "/api/v2/gb28181/broadcasts/start",
                     &cookie,
                     &csrf,
-                    json!({ "request_id": "ui-talk", "channel_id": "ch-1" }),
+                    json!({
+                        "request_id": "ui-broadcast",
+                        "targets": [{
+                            "device_id": "34020000001320000001",
+                            "channel_id": "ch-1"
+                        }]
+                    }),
                 ),
             )
             .await;

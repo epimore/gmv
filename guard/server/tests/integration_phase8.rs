@@ -37,7 +37,7 @@ fn mqtt_commands_enforce_schema_ttl_permissions_and_idempotency() {
             "stream.stop".to_string(),
             "stream.playback".to_string(),
             "stream.download".to_string(),
-            "device.talk".to_string(),
+            "device.broadcast".to_string(),
             "ai.start".to_string(),
             "ai.cancel".to_string(),
         ],
@@ -63,7 +63,7 @@ fn mqtt_commands_enforce_schema_ttl_permissions_and_idempotency() {
     for (action, expected) in [
         ("stream.playback", CommandAction::StreamPlayback),
         ("stream.download", CommandAction::StreamDownload),
-        ("device.talk", CommandAction::StreamTalk),
+        ("device.broadcast", CommandAction::DeviceBroadcast),
         ("ai.start", CommandAction::AiStart),
         ("ai.cancel", CommandAction::AiCancel),
     ] {

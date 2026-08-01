@@ -1,19 +1,19 @@
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
 use base::log::error;
-use gmv_domain::info::obj::TalkStartModel;
+use gmv_domain::info::obj::BroadcastStartModel;
 
 use crate::gb::sip::GbIncomingInviteEvent;
 use crate::state::model::TransMode;
 
-const DEFAULT_TALK_CODEC: &str = "PCMA";
-const DEFAULT_TALK_SAMPLE_RATE: u32 = 8000;
-const DEFAULT_TALK_CHANNEL_COUNT: u8 = 1;
-const DEFAULT_TALK_FRAME_DURATION_MS: u16 = 20;
+const DEFAULT_BROADCAST_CODEC: &str = "PCMA";
+const DEFAULT_BROADCAST_SAMPLE_RATE: u32 = 8000;
+const DEFAULT_BROADCAST_CHANNEL_COUNT: u8 = 1;
+const DEFAULT_BROADCAST_FRAME_DURATION_MS: u16 = 20;
 
-pub(super) const DEFAULT_TALK_INPUT_TIMEOUT_SECS: u16 = 15;
+pub(super) const DEFAULT_BROADCAST_INPUT_TIMEOUT_SECS: u16 = 15;
 
-pub(super) struct TalkAudioOptions {
+pub(super) struct BroadcastAudioOptions {
     pub codec: String,
     pub payload_type: u8,
     pub sample_rate: u32,
@@ -22,34 +22,38 @@ pub(super) struct TalkAudioOptions {
     pub trans_mode: TransMode,
 }
 
-impl TalkAudioOptions {
-    pub fn try_from_model(model: &TalkStartModel) -> GlobalResult<Self> {
-        let codec_input = model.codec.as_deref().unwrap_or(DEFAULT_TALK_CODEC);
-        let Some((codec, payload_type)) = normalize_talk_codec(codec_input) else {
+impl BroadcastAudioOptions {
+    pub fn try_from_model(model: &BroadcastStartModel) -> GlobalResult<Self> {
+        let codec_input = model.codec.as_deref().unwrap_or(DEFAULT_BROADCAST_CODEC);
+        let Some((codec, payload_type)) = normalize_broadcast_codec(codec_input) else {
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
-                "unsupported talk codec",
+                "unsupported broadcast codec",
                 |msg| error!("{msg}: {codec_input}"),
             ));
         };
-        if codec != DEFAULT_TALK_CODEC {
+        if codec != DEFAULT_BROADCAST_CODEC {
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
-                "only PCMA talk audio is supported",
+                "only PCMA broadcast audio is supported",
                 |msg| error!("{msg}: codec={codec_input}"),
             ));
         }
-        let sample_rate = model.sample_rate.unwrap_or(DEFAULT_TALK_SAMPLE_RATE);
-        let channel_count = model.channel_count.unwrap_or(DEFAULT_TALK_CHANNEL_COUNT);
+        let sample_rate = model.sample_rate.unwrap_or(DEFAULT_BROADCAST_SAMPLE_RATE);
+        let channel_count = model
+            .channel_count
+            .unwrap_or(DEFAULT_BROADCAST_CHANNEL_COUNT);
         let frame_duration_ms = model
             .frame_duration_ms
-            .unwrap_or(DEFAULT_TALK_FRAME_DURATION_MS);
-        let trans_mode = normalize_talk_transport(model.transport.as_deref())?;
+            .unwrap_or(DEFAULT_BROADCAST_FRAME_DURATION_MS);
+        let trans_mode = normalize_broadcast_transport(model.transport.as_deref())?;
 
-        if sample_rate != DEFAULT_TALK_SAMPLE_RATE || channel_count != DEFAULT_TALK_CHANNEL_COUNT {
+        if sample_rate != DEFAULT_BROADCAST_SAMPLE_RATE
+            || channel_count != DEFAULT_BROADCAST_CHANNEL_COUNT
+        {
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::Unsupported.code(),
-                "only 8kHz mono talk audio is supported",
+                "only 8kHz mono broadcast audio is supported",
                 |msg| error!("{msg}: sample_rate={sample_rate}, channel_count={channel_count}"),
             ));
         }
@@ -58,7 +62,7 @@ impl TalkAudioOptions {
         {
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidRequest.code(),
-                "invalid talk frame duration",
+                "invalid broadcast frame duration",
                 |msg| error!("{msg}: frame_duration_ms={frame_duration_ms}"),
             ));
         }
@@ -74,28 +78,34 @@ impl TalkAudioOptions {
     }
 
     pub fn compatible_answer(&self, codec: &str, sample_rate: u32) -> bool {
-        normalize_talk_codec(codec)
+        if codec.eq_ignore_ascii_case("PS") {
+            return sample_rate == 90_000 && self.codec == "PCMA";
+        }
+        normalize_broadcast_codec(codec)
             .map(|(answer_codec, _)| answer_codec == self.codec && sample_rate == self.sample_rate)
             .unwrap_or(false)
     }
 }
 
-pub(super) struct TalkSdpAnswer {
+pub(super) struct BroadcastSdpAnswer {
     pub device_ip: String,
     pub device_port: u16,
     pub protocol: base::net::state::Protocol,
     pub payload_type: u8,
     pub codec: String,
     pub sample_rate: u32,
+    pub packetization: &'static str,
+    pub inner_codec: &'static str,
+    pub rtp_clock_rate: u32,
 }
 
 pub(super) fn parse_broadcast_invite(
     invite: &GbIncomingInviteEvent,
-) -> GlobalResult<TalkSdpAnswer> {
+) -> GlobalResult<BroadcastSdpAnswer> {
     parse_broadcast_sdp(&invite.remote_sdp, &invite.call_id)
 }
 
-fn parse_broadcast_sdp(remote_sdp: &str, call_id: &str) -> GlobalResult<TalkSdpAnswer> {
+fn parse_broadcast_sdp(remote_sdp: &str, call_id: &str) -> GlobalResult<BroadcastSdpAnswer> {
     let sdp = gmv_pjsip::gb28181::sdp::SdpInfo::parse_lossy(remote_sdp);
     let has_audio = remote_sdp
         .lines()
@@ -112,24 +122,24 @@ fn parse_broadcast_sdp(remote_sdp: &str, call_id: &str) -> GlobalResult<TalkSdpA
             |msg| error!("call_id={call_id}; {msg}"),
         ));
     }
-    parse_talk_sdp(remote_sdp, &sdp)
+    parse_broadcast_profile(remote_sdp, &sdp)
 }
 
-fn parse_talk_sdp(
+fn parse_broadcast_profile(
     remote_sdp: &str,
     sdp: &gmv_pjsip::gb28181::sdp::SdpInfo,
-) -> GlobalResult<TalkSdpAnswer> {
+) -> GlobalResult<BroadcastSdpAnswer> {
     let device_ip = sdp.connection_addr.clone().ok_or_else(|| {
         GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
-            "talk sdp missing audio connection address",
+            "broadcast sdp missing audio connection address",
             |msg| error!("{msg}"),
         )
     })?;
     let device_port = sdp.media_port.ok_or_else(|| {
         GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
-            "talk sdp missing audio media port",
+            "broadcast sdp missing audio media port",
             |msg| error!("{msg}"),
         )
     })?;
@@ -147,7 +157,7 @@ fn parse_talk_sdp(
     if codec.is_empty() {
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::Unsupported.code(),
-            "unsupported talk payload type",
+            "unsupported broadcast payload type",
             |msg| error!("{msg}: pt={payload_type}"),
         ));
     }
@@ -162,13 +172,36 @@ fn parse_talk_sdp(
             }
         })
         .unwrap_or(base::net::state::Protocol::UDP);
-    Ok(TalkSdpAnswer {
+    let (packetization, inner_codec, rtp_clock_rate) = if codec == "PS" {
+        let has_pcma_evidence = remote_sdp.lines().map(str::trim).any(|line| {
+            line.strip_prefix("f=")
+                .is_some_and(|value| value.split('/').collect::<Vec<_>>().get(6) == Some(&"1"))
+        });
+        if sample_rate != 90_000 || !has_pcma_evidence {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "broadcast_inner_codec_unknown",
+                |msg| {
+                    error!(
+                        "{msg}: codec={codec}, clock_rate={sample_rate}, call_id evidence missing"
+                    )
+                },
+            ));
+        }
+        ("rtp_ps_g711", "PCMA", 90_000)
+    } else {
+        ("raw_g711", "PCMA", sample_rate)
+    };
+    Ok(BroadcastSdpAnswer {
         device_ip,
         device_port,
         protocol,
         payload_type,
         codec,
         sample_rate,
+        packetization,
+        inner_codec,
+        rtp_clock_rate,
     })
 }
 
@@ -178,32 +211,23 @@ pub(super) fn append_gmv_token(input_url: String, token: &str) -> String {
     format!("{input_url}{sep}gmv-token={encoded}")
 }
 
-fn normalize_talk_transport(transport: Option<&str>) -> GlobalResult<TransMode> {
+fn normalize_broadcast_transport(transport: Option<&str>) -> GlobalResult<TransMode> {
     let Some(transport) = transport else {
         return Ok(TransMode::Udp);
     };
-    let compact = transport
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .map(|ch| ch.to_ascii_uppercase())
-        .collect::<String>();
-    match compact.as_str() {
-        "" | "UDP" => Ok(TransMode::Udp),
-        "TCP" | "TCPPASSIVE" | "PASSIVE" => Ok(TransMode::TcpPassive),
-        "TCPACTIVE" | "ACTIVE" => Err(GlobalError::new_biz_error(
-            BaseErrorCode::Unsupported.code(),
-            "tcp active talk is not supported",
-            |msg| error!("{msg}: transport={transport}"),
-        )),
+    match transport.trim().to_ascii_lowercase().as_str() {
+        "" | "udp" => Ok(TransMode::Udp),
+        "tcp_passive" => Ok(TransMode::TcpPassive),
+        "tcp_active" => Ok(TransMode::TcpActive),
         _ => Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidRequest.code(),
-            "unsupported talk transport",
+            "unsupported broadcast transport",
             |msg| error!("{msg}: transport={transport}"),
         )),
     }
 }
 
-fn normalize_talk_codec(codec: &str) -> Option<(&'static str, u8)> {
+fn normalize_broadcast_codec(codec: &str) -> Option<(&'static str, u8)> {
     let compact = codec
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
@@ -238,7 +262,7 @@ fn parse_rtpmap_from_sdp(sdp: &str, payload_type: u8) -> Option<(String, u32)> {
 mod tests {
     use crate::state::model::TransMode;
 
-    use super::{TalkAudioOptions, parse_broadcast_sdp};
+    use super::{BroadcastAudioOptions, parse_broadcast_sdp};
 
     fn fixture_sdp(packet: &str) -> &str {
         packet
@@ -258,7 +282,7 @@ mod tests {
         assert_eq!(answer.sample_rate, 8000);
 
         assert!(parse_broadcast_sdp(&valid.replace("a=recvonly", "a=sendrecv"), "call-2").is_err());
-        assert!(parse_broadcast_sdp(&valid.replace("s=Play", "s=Talk"), "call-3").is_err());
+        assert!(parse_broadcast_sdp(&valid.replace("s=Play", "s=Broadcast"), "call-3").is_err());
     }
 
     #[test]
@@ -282,7 +306,7 @@ mod tests {
         assert_eq!(ps_answer.sample_rate, 90_000);
         assert!(vendor.contains("f=v/////a/1/8/1"));
 
-        let requested = TalkAudioOptions {
+        let requested = BroadcastAudioOptions {
             codec: "PCMA".to_string(),
             payload_type: 8,
             sample_rate: 8_000,
@@ -291,6 +315,9 @@ mod tests {
             trans_mode: TransMode::Udp,
         };
         assert!(requested.compatible_answer(&raw_answer.codec, raw_answer.sample_rate));
-        assert!(!requested.compatible_answer(&ps_answer.codec, ps_answer.sample_rate));
+        assert!(requested.compatible_answer(&ps_answer.codec, ps_answer.sample_rate));
+        assert_eq!(ps_answer.packetization, "rtp_ps_g711");
+        assert_eq!(ps_answer.inner_codec, "PCMA");
+        assert_eq!(ps_answer.rtp_clock_rate, 90_000);
     }
 }

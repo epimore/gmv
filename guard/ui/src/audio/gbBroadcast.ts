@@ -1,17 +1,23 @@
-import { startGbBroadcast, stopGbBroadcast, type StreamSummary } from '../api/client';
+import {
+  startGbBroadcast,
+  stopGbBroadcast,
+  type GbBroadcastOperationSummary,
+  type GbBroadcastTargetPayload,
+  type MediaTransport,
+} from '../api/client';
 
 const TARGET_SAMPLE_RATE = 8000;
 const FRAME_SAMPLES = 160;
 
 export interface GbBroadcastSession {
-  summary: StreamSummary;
+  summary: GbBroadcastOperationSummary;
   stop: () => Promise<void>;
   stopped: Promise<void>;
 }
 
 export async function startGbMicrophoneBroadcast(
-  deviceId: string,
-  scopeId: string,
+  targets: GbBroadcastTargetPayload[],
+  transport: MediaTransport = 'udp',
 ): Promise<GbBroadcastSession> {
   if (!window.isSecureContext) throw new Error('语音广播需要 HTTPS 安全上下文');
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前浏览器不支持麦克风采集');
@@ -20,7 +26,7 @@ export async function startGbMicrophoneBroadcast(
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     video: false,
   });
-  let summary: StreamSummary | undefined;
+  let summary: GbBroadcastOperationSummary | undefined;
   let socket: WebSocket | undefined;
   let context: AudioContext | undefined;
   let localStopped = false;
@@ -37,7 +43,7 @@ export async function startGbMicrophoneBroadcast(
       if (context && context.state !== 'closed') await context.close();
     }
     if (!summary || serverStopped) return;
-    stopRequest ??= stopGbBroadcast(summary.stream_id)
+    stopRequest ??= stopGbBroadcast(summary.broadcast_id)
       .then(() => {
         serverStopped = true;
         resolveStopped();
@@ -47,18 +53,18 @@ export async function startGbMicrophoneBroadcast(
   };
 
   try {
-    summary = await startGbBroadcast(deviceId, {
+    summary = await startGbBroadcast({
       request_id: `ui-broadcast-${Date.now()}`,
-      channel_id: scopeId,
-      talk_codec: 'PCMA',
-      talk_sample_rate: 8000,
-      talk_channel_count: 1,
-      talk_frame_duration_ms: 20,
-      trans_mode: 'udp',
+      default_trans_mode: transport,
+      codec: 'PCMA',
+      sample_rate: 8000,
+      channel_count: 1,
+      frame_duration_ms: 20,
+      targets,
     });
-    if (!summary.endpoint) throw new Error('广播媒体输入地址为空');
+    if (!summary.input_url) throw new Error('广播媒体输入地址为空');
 
-    socket = new WebSocket(new URL(summary.endpoint, window.location.href));
+    socket = new WebSocket(new URL(summary.input_url, window.location.href));
     socket.binaryType = 'arraybuffer';
     await waitForSocket(socket);
 

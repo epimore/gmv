@@ -14,7 +14,8 @@ use base_rpc::RpcChannelConfig;
 use gmv_domain::info::media_info::MediaConfig;
 use gmv_domain::info::media_info_ext::MediaMap;
 use gmv_domain::info::obj::{
-    StreamInfoQo, StreamKey, StreamRecordInfo, TalkAnswerReq, TalkCloseReq, TalkOpenReq,
+    BroadcastCloseReq, BroadcastConfigureLegReq, BroadcastOpenReq, StreamInfoQo, StreamKey,
+    StreamRecordInfo,
 };
 use gmv_domain::info::output::{OutputEnum, OutputKind};
 use gmv_nodec::NodeEventSender;
@@ -27,19 +28,22 @@ use gmv_protocol::guard::v1::{
     guard_control_client::GuardControlClient, node_to_guard_message,
 };
 use gmv_protocol::stream::v1::{
-    CloseOutputRequest, CloseOutputResponse, CreateOutputRequest, CreateOutputResponse,
-    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, OutputInfo, OutputState,
-    QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
-    ReleaseSubscriptionOutputsResponse, StartReceiveRequest, StartReceiveResponse,
-    StopReceivePhase, StopReceiveRequest, StopReceiveResponse, StreamBoolResponse,
-    StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse, ViewerFormatCount,
-    stream_control_server::StreamControl,
+    CloseOutputRequest, CloseOutputResponse, ConfigureReceiveTransportRequest,
+    ConfigureReceiveTransportResponse, CreateOutputRequest, CreateOutputResponse,
+    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaTransport, MediaTransportState,
+    OutputInfo, OutputState, QueryStreamRequest, QueryStreamResponse,
+    ReleaseSubscriptionOutputsRequest, ReleaseSubscriptionOutputsResponse, StartReceiveRequest,
+    StartReceiveResponse, StopReceivePhase, StopReceiveRequest, StopReceiveResponse,
+    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
+    ViewerFormatCount, stream_control_server::StreamControl,
 };
 use tonic::transport::Channel;
 
+use crate::io::broadcast::BroadcastManager;
 use crate::io::local::mp4::Mp4OutputInnerEvent;
-use crate::io::media_endpoint::{MediaEndpointManager, ReserveMediaEndpoint};
-use crate::io::talk::TalkManager;
+use crate::io::media_endpoint::{
+    ConnectMediaEndpoint, MediaConnectionState, MediaEndpointManager, ReserveMediaEndpoint,
+};
 use crate::state::register::{FinalizeStreamResult, Register, StreamRuntimeObservation};
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
@@ -243,7 +247,7 @@ impl StreamGuardNode {
                 "live".to_string(),
                 "playback".to_string(),
                 "download".to_string(),
-                "talk".to_string(),
+                "broadcast".to_string(),
             ],
         }
     }
@@ -361,6 +365,24 @@ impl StreamControl for StreamControlRpc {
         base::log::debug!("stream_control.start_receive, req:{request:?}");
         let mut control = self.inner.lock().await;
         Ok(tonic::Response::new(control.start_receive(request).await))
+    }
+
+    async fn configure_receive_transport(
+        &self,
+        request: tonic::Request<ConfigureReceiveTransportRequest>,
+    ) -> Result<tonic::Response<ConfigureReceiveTransportResponse>, tonic::Status> {
+        let request = request.into_inner();
+        base::log::debug!(
+            "stream_control.configure_receive_transport, req: stream_id={}, endpoint_id={}, generation={}, transport={}",
+            request.stream_id,
+            request.endpoint_id,
+            request.endpoint_generation,
+            request.media_transport
+        );
+        let control = self.inner.lock().await;
+        Ok(tonic::Response::new(
+            control.configure_receive_transport(request).await,
+        ))
     }
 
     async fn stop_receive(
@@ -509,18 +531,18 @@ impl StreamControl for StreamControlRpc {
         )))
     }
 
-    async fn talk_open(
+    async fn broadcast_open(
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!(
-            "stream_control.talk_open, req: payload_bytes={}",
+            "stream_control.broadcast_open, req: payload_bytes={}",
             request.payload_json.len()
         );
         Ok(tonic::Response::new(
-            match decode_payload::<TalkOpenReq>(&request.payload_json) {
-                Ok(value) => match TalkManager::open(value).await {
+            match decode_payload::<BroadcastOpenReq>(&request.payload_json) {
+                Ok(value) => match BroadcastManager::open(value).await {
                     Ok(response) => json_response(&response),
                     Err(error) => StreamJsonResponse {
                         payload_json: vec![],
@@ -535,34 +557,40 @@ impl StreamControl for StreamControlRpc {
         ))
     }
 
-    async fn talk_answer(
+    async fn broadcast_configure_leg(
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!(
-            "stream_control.talk_answer, req: payload_bytes={}",
+            "stream_control.broadcast_configure_leg, req: payload_bytes={}",
             request.payload_json.len()
         );
-        Ok(tonic::Response::new(stream_unit_response(
-            decode_payload::<TalkAnswerReq>(&request.payload_json)
-                .and_then(|value| TalkManager::answer(value).map_err(detail_from_error)),
-        )))
+        let result = match decode_payload::<BroadcastConfigureLegReq>(&request.payload_json) {
+            Ok(value) => BroadcastManager::configure_leg(value)
+                .await
+                .map_err(detail_from_error),
+            Err(error) => Err(error),
+        };
+        Ok(tonic::Response::new(stream_unit_response(result)))
     }
 
-    async fn talk_close(
+    async fn broadcast_close(
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!(
-            "stream_control.talk_close, req: payload_bytes={}",
+            "stream_control.broadcast_close, req: payload_bytes={}",
             request.payload_json.len()
         );
-        let result = match decode_payload::<TalkCloseReq>(&request.payload_json) {
-            Ok(value) => match TalkManager::close(&value.talk_id).await {
+        let result = match decode_payload::<BroadcastCloseReq>(&request.payload_json) {
+            Ok(value) => match BroadcastManager::close(&value.broadcast_id, &value.leg_id).await {
                 Ok(true) => {
-                    self.inner.lock().await.streams.remove(&value.talk_id);
+                    if value.leg_id.is_empty() || !BroadcastManager::is_online(&value.broadcast_id)
+                    {
+                        self.inner.lock().await.streams.remove(&value.broadcast_id);
+                    }
                     Ok(())
                 }
                 Ok(false) => Ok(()),
@@ -573,20 +601,29 @@ impl StreamControl for StreamControlRpc {
         Ok(tonic::Response::new(stream_unit_response(result)))
     }
 
-    async fn talk_online(
+    async fn broadcast_online(
         &self,
         request: tonic::Request<StreamJsonRequest>,
     ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!(
-            "stream_control.talk_online, req: payload_bytes={}",
+            "stream_control.broadcast_online, req: payload_bytes={}",
             request.payload_json.len()
         );
         Ok(tonic::Response::new(
-            match decode_payload::<TalkCloseReq>(&request.payload_json) {
-                Ok(value) => StreamBoolResponse {
-                    value: TalkManager::is_online(&value.talk_id),
-                    error: None,
+            match decode_payload::<BroadcastCloseReq>(&request.payload_json) {
+                Ok(value) => match BroadcastManager::wait_ready(
+                    &value.broadcast_id,
+                    &value.leg_id,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+                {
+                    Ok(value) => StreamBoolResponse { value, error: None },
+                    Err(error) => StreamBoolResponse {
+                        value: false,
+                        error: Some(detail_from_error(error)),
+                    },
                 },
                 Err(error) => StreamBoolResponse {
                     value: false,
@@ -690,6 +727,21 @@ impl StreamControlAdapter {
     }
 
     pub async fn start_receive(&mut self, request: StartReceiveRequest) -> StartReceiveResponse {
+        let transport = MediaTransport::try_from(request.media_transport)
+            .unwrap_or(MediaTransport::Unspecified);
+        if transport == MediaTransport::Unspecified && request.media_transport != 0 {
+            return start_response(
+                &request.stream_id,
+                StreamState::Failed,
+                vec![],
+                Some(error("invalid_media_transport", "unknown media transport")),
+            );
+        }
+        let transport = if transport == MediaTransport::Unspecified {
+            MediaTransport::Udp
+        } else {
+            transport
+        };
         if !self.matches_expected(request.expected_stream.as_ref()) {
             return start_response(
                 &request.stream_id,
@@ -765,7 +817,23 @@ impl StreamControlAdapter {
                 })
                 .await
             {
-                Ok(endpoint) => vec![endpoint.endpoint(&self.receive_endpoint.host)],
+                Ok(endpoint) => {
+                    let mut endpoint = endpoint.endpoint(&self.receive_endpoint.host);
+                    endpoint.labels.insert(
+                        "media_transport".to_string(),
+                        media_transport_name(transport).to_string(),
+                    );
+                    endpoint.labels.insert(
+                        "transport_state".to_string(),
+                        if transport == MediaTransport::TcpActive {
+                            "listening"
+                        } else {
+                            "ready"
+                        }
+                        .to_string(),
+                    );
+                    vec![endpoint]
+                }
                 Err(error_value) => {
                     return start_response(
                         &request.stream_id,
@@ -794,6 +862,129 @@ impl StreamControlAdapter {
             },
         );
         start_response(&request.stream_id, StreamState::Receiving, endpoints, None)
+    }
+
+    pub async fn configure_receive_transport(
+        &self,
+        request: ConfigureReceiveTransportRequest,
+    ) -> ConfigureReceiveTransportResponse {
+        let transport = MediaTransport::try_from(request.media_transport)
+            .unwrap_or(MediaTransport::Unspecified);
+        let local_endpoint = self.streams.get(&request.stream_id).and_then(|stream| {
+            stream
+                .endpoints
+                .iter()
+                .find(|endpoint| {
+                    endpoint.labels.get("endpoint_id") == Some(&request.endpoint_id)
+                        && endpoint
+                            .labels
+                            .get("generation")
+                            .and_then(|value| value.parse::<u64>().ok())
+                            == Some(request.endpoint_generation)
+                })
+                .cloned()
+        });
+        let Some(local_endpoint) = local_endpoint else {
+            return configure_transport_response(
+                MediaTransportState::Failed,
+                None,
+                request.remote_endpoint,
+                Some(error(
+                    "stale_endpoint_generation",
+                    "receive endpoint is stale",
+                )),
+            );
+        };
+        if transport == MediaTransport::Udp || transport == MediaTransport::TcpPassive {
+            return configure_transport_response(
+                MediaTransportState::Ready,
+                Some(local_endpoint),
+                request.remote_endpoint,
+                None,
+            );
+        }
+        if transport != MediaTransport::TcpActive {
+            return configure_transport_response(
+                MediaTransportState::Failed,
+                Some(local_endpoint),
+                request.remote_endpoint,
+                Some(error(
+                    "invalid_media_transport",
+                    "media transport is required",
+                )),
+            );
+        }
+        let Some(remote_endpoint) = request.remote_endpoint else {
+            return configure_transport_response(
+                MediaTransportState::Failed,
+                Some(local_endpoint),
+                None,
+                Some(error(
+                    "media_peer_policy_required",
+                    "TCP active requires a remote media endpoint",
+                )),
+            );
+        };
+        let remote_addr = format!("{}:{}", remote_endpoint.host, remote_endpoint.port)
+            .parse::<std::net::SocketAddr>();
+        let Ok(remote_addr) = remote_addr else {
+            return configure_transport_response(
+                MediaTransportState::Failed,
+                Some(local_endpoint),
+                Some(remote_endpoint),
+                Some(error(
+                    "media_peer_policy_required",
+                    "remote media endpoint must use an IP address and valid port",
+                )),
+            );
+        };
+        let Some(manager) = self.media_endpoints.as_ref() else {
+            return configure_transport_response(
+                MediaTransportState::Failed,
+                Some(local_endpoint),
+                Some(remote_endpoint),
+                Some(error(
+                    "media_transport_unsupported",
+                    "managed media endpoints are unavailable",
+                )),
+            );
+        };
+        let timeout = Duration::from_millis(request.connect_timeout_ms.clamp(1, 30_000));
+        match manager
+            .connect_tcp_active(ConnectMediaEndpoint {
+                stream_id: request.stream_id,
+                lease_id: request.lease_id,
+                route_id: request.route_id,
+                endpoint_id: request.endpoint_id,
+                generation: request.endpoint_generation,
+                remote_addr,
+                local_addr: None,
+                timeout,
+            })
+            .await
+        {
+            Ok(MediaConnectionState::Ready) => configure_transport_response(
+                MediaTransportState::Ready,
+                Some(local_endpoint),
+                Some(remote_endpoint),
+                None,
+            ),
+            Ok(state) => configure_transport_response(
+                media_connection_state(state),
+                Some(local_endpoint),
+                Some(remote_endpoint),
+                None,
+            ),
+            Err(error_value) => configure_transport_response(
+                MediaTransportState::Failed,
+                Some(local_endpoint),
+                Some(remote_endpoint),
+                Some(error(
+                    "stream_transport_not_ready",
+                    &error_value.to_string(),
+                )),
+            ),
+        }
     }
 
     pub async fn stop_receive(&mut self, request: StopReceiveRequest) -> StopReceiveResponse {
@@ -1707,6 +1898,38 @@ fn start_response(
     }
 }
 
+fn configure_transport_response(
+    state: MediaTransportState,
+    local_endpoint: Option<Endpoint>,
+    remote_endpoint: Option<Endpoint>,
+    error: Option<ErrorDetail>,
+) -> ConfigureReceiveTransportResponse {
+    ConfigureReceiveTransportResponse {
+        state: state as i32,
+        local_endpoint,
+        remote_endpoint,
+        error,
+    }
+}
+
+fn media_transport_name(transport: MediaTransport) -> &'static str {
+    match transport {
+        MediaTransport::Udp => "udp",
+        MediaTransport::TcpActive => "tcp_active",
+        MediaTransport::TcpPassive => "tcp_passive",
+        MediaTransport::Unspecified => "udp",
+    }
+}
+
+fn media_connection_state(state: MediaConnectionState) -> MediaTransportState {
+    match state {
+        MediaConnectionState::Listening => MediaTransportState::Listening,
+        MediaConnectionState::Connecting => MediaTransportState::Connecting,
+        MediaConnectionState::Ready => MediaTransportState::Ready,
+        MediaConnectionState::Failed => MediaTransportState::Failed,
+    }
+}
+
 fn expected_ssrc(request: &StopReceiveRequest) -> Option<u32> {
     let ssrc = request.expected_ssrc.trim().parse::<u32>().ok()?;
     (ssrc != 0).then_some(ssrc)
@@ -1893,6 +2116,7 @@ mod tests {
             preferred_endpoints: vec![],
             constraints: HashMap::from([("expected_ssrc".to_string(), "1001".to_string())]),
             reservation_ttl_ms: 30_000,
+            media_transport: MediaTransport::Udp as i32,
         };
 
         let first = control.start_receive(request.clone()).await;
@@ -1936,6 +2160,7 @@ mod tests {
                 preferred_endpoints: vec![],
                 constraints: HashMap::from([("expected_ssrc".to_string(), "1001".to_string())]),
                 reservation_ttl_ms: 30_000,
+                media_transport: MediaTransport::Udp as i32,
             })
             .await;
         assert_eq!(restarted.state, StreamState::Receiving as i32);
@@ -2038,6 +2263,7 @@ mod tests {
             preferred_endpoints: vec![],
             constraints: HashMap::from([("expected_ssrc".to_string(), "1001".to_string())]),
             reservation_ttl_ms: 1,
+            media_transport: MediaTransport::Udp as i32,
         };
 
         assert_eq!(
@@ -2124,6 +2350,7 @@ mod tests {
                 preferred_endpoints: vec![],
                 constraints: HashMap::new(),
                 reservation_ttl_ms: 0,
+                media_transport: MediaTransport::Udp as i32,
             })
             .await;
 
@@ -2238,6 +2465,7 @@ mod tests {
                 preferred_endpoints: vec![],
                 constraints: HashMap::new(),
                 reservation_ttl_ms: 0,
+                media_transport: MediaTransport::Udp as i32,
             })
             .await;
         assert_eq!(started.state, StreamState::Receiving as i32);
@@ -2348,6 +2576,7 @@ mod tests {
                 preferred_endpoints: vec![],
                 constraints: HashMap::new(),
                 reservation_ttl_ms: 0,
+                media_transport: MediaTransport::Udp as i32,
             })
             .await;
         for (operation_id, subscription_id) in [
@@ -2437,6 +2666,7 @@ mod tests {
             preferred_endpoints: vec![],
             constraints: HashMap::new(),
             reservation_ttl_ms: 0,
+            media_transport: MediaTransport::Udp as i32,
         };
         assert_eq!(
             control.start_receive(request.clone()).await.state,
@@ -2540,6 +2770,7 @@ mod tests {
                 preferred_endpoints: vec![],
                 constraints: HashMap::new(),
                 reservation_ttl_ms: 0,
+                media_transport: MediaTransport::Udp as i32,
             })
             .await;
         assert_eq!(response.state, StreamState::Failed as i32);

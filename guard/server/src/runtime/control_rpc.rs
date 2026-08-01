@@ -11,8 +11,9 @@ use gmv_protocol::guard::v1::{
     RouteState as ProtoRouteState,
 };
 use gmv_protocol::stream::v1::{
-    StartReceiveRequest, StartReceiveResponse, StopReceivePhase, StopReceiveRequest,
-    StopReceiveResponse, StreamState, stream_control_client::StreamControlClient,
+    MediaTransport, StartReceiveRequest, StartReceiveResponse, StopReceivePhase,
+    StopReceiveRequest, StopReceiveResponse, StreamState,
+    stream_control_client::StreamControlClient,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -545,6 +546,17 @@ async fn start_receive(
     lease_id: &str,
     constraints: std::collections::HashMap<String, String>,
 ) -> Result<Vec<EndpointRecord>, Status> {
+    let media_transport = match constraints
+        .get("media_transport")
+        .or_else(|| constraints.get("transport"))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("") | Some("udp") => MediaTransport::Udp,
+        Some("tcp_active") => MediaTransport::TcpActive,
+        Some("tcp_passive") => MediaTransport::TcpPassive,
+        Some(_) => return Err(Status::invalid_argument("invalid_media_transport")),
+    };
     let response = control
         .start_receive(
             node,
@@ -560,6 +572,7 @@ async fn start_receive(
                 preferred_endpoints: node.endpoints.iter().cloned().map(proto_endpoint).collect(),
                 constraints,
                 reservation_ttl_ms: 30_000,
+                media_transport: media_transport as i32,
             },
         )
         .await

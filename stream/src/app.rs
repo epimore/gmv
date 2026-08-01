@@ -1,6 +1,6 @@
 use crate::general::cfg::{GuardConf, MediaListenerConf, MediaListenerMode, ServerConf};
 use crate::io::media_endpoint::{MediaBootstrap, MediaEndpointManager};
-use crate::io::{http, rtp_handler, talk::TalkManager};
+use crate::io::{broadcast::BroadcastManager, http, rtp_handler};
 use crate::media;
 use crate::state::register::Register;
 use base::cfg_lib::{CliBasic, default_cli_basic};
@@ -121,7 +121,7 @@ impl Daemon<StreamBootstrap> for App {
             let media_endpoints = MediaEndpointManager::new(network_rt.clone(), media_conf, media)?;
             MediaEndpointManager::install_global(media_endpoints.clone())?;
             MediaEndpointManager::spawn_expiry_task(media_endpoints.clone())?;
-            TalkManager::init(network_rt.clone(), media_endpoints.clone())?;
+            BroadcastManager::init(network_rt.clone(), media_endpoints.clone())?;
             let receive_endpoint = media_endpoints.capability_endpoint();
             let mut node = StreamGuardNode::new(
                 node_name,
@@ -233,8 +233,8 @@ impl Daemon<StreamBootstrap> for App {
                         Register::active_stream_count().to_string(),
                     ),
                     (
-                        "active_talk_sessions".to_string(),
-                        TalkManager::active_session_count().to_string(),
+                        "active_broadcast_sessions".to_string(),
+                        BroadcastManager::active_session_count().to_string(),
                     ),
                     (
                         "media_ports_total".to_string(),

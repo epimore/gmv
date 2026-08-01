@@ -6,7 +6,10 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, info, warn};
 use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::net;
-use base::net::rw::{ManagedPacketIo, PacketDispatcher, PacketSplitter, U16BeLengthPrefixEncoder};
+use base::net::rw::{
+    ManagedPacketIo, ManagedTcpConnectOptions, ManagedTcpConnection, PacketDispatcher,
+    PacketSplitter, U16BeLengthPrefixEncoder,
+};
 use base::net::state::Protocol;
 use base::tokio_util::sync::CancellationToken;
 use base::utils::rt::GlobalRuntime;
@@ -61,6 +64,22 @@ pub fn start_managed(
         Arc::new(RtpReader::new(dispatch)),
         Arc::new(U16BeLengthPrefixEncoder),
     )
+}
+
+pub async fn connect_managed(
+    runtime: &GlobalRuntime,
+    io: &ManagedPacketIo<U16BeLengthPrefixEncoder>,
+    task_name: impl Into<String>,
+    options: ManagedTcpConnectOptions,
+    dispatch: Arc<EndpointDispatchContext>,
+) -> GlobalResult<ManagedTcpConnection<U16BeLengthPrefixEncoder>> {
+    io.connect_tcp::<RtpReader, RtpPacketSplitter>(
+        runtime,
+        task_name,
+        options,
+        Arc::new(RtpReader::new(dispatch)),
+    )
+    .await
 }
 
 pub struct EndpointDispatchContext {

@@ -291,9 +291,9 @@ function decorateEvent(event: EventItem, fetchedAt: number): EventRow {
     payloadText(payload?.stream_id) ??
     payloadText(payload?.device_id) ??
     payloadText(payload?.task_id) ??
-    payloadText(payload?.talk_id) ??
+    payloadText(payload?.broadcast_id) ??
     payloadText(payload?.playback_id) ??
-    event.payload.match(/(?:resource|stream|device|task|talk|playback)_id=([^;\s]+)/)?.[1] ??
+    event.payload.match(/(?:resource|stream|device|task|broadcast|playback)_id=([^;\s]+)/)?.[1] ??
     "-";
   const sourceNode =
     payloadText(payload?.producer_node_id) ??

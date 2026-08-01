@@ -118,6 +118,29 @@ pub struct StreamSessionOwnerRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BroadcastTargetRecord {
+    pub target_key: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub session_node_id: String,
+    pub leg_id: String,
+    pub transport: String,
+    pub profile: String,
+    pub state: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BroadcastOperationRecord {
+    pub broadcast_id: String,
+    pub operation_id: String,
+    pub stream_node_id: String,
+    pub input_url: String,
+    pub state: String,
+    pub targets: Vec<BroadcastTargetRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventRecord {
     pub event_id: String,
     pub topic: String,

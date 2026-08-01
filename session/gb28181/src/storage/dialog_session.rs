@@ -19,11 +19,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-const INSERT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,\
+const INSERT_COLUMNS: &str = "stream_id,parent_stream_id,device_id,channel_id,session_type,\
 signal_node_id,media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,\
 local_cseq,remote_cseq,contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,\
 state,established_at,terminated_at,terminal_reason,stop_reason,error_code,last_seen_at,expire_at,version,created_at,updated_at";
-const SELECT_COLUMNS: &str = "stream_id,device_id,channel_id,session_type,signal_node_id,\
+const SELECT_COLUMNS: &str = "stream_id,parent_stream_id,device_id,channel_id,session_type,signal_node_id,\
 media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,local_cseq,remote_cseq,\
 contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,terminated_at,terminal_reason,stop_reason,error_code,last_seen_at,\
 expire_at,version,created_at,updated_at";
@@ -34,7 +34,7 @@ pub enum DialogSessionType {
     Live,
     Playback,
     Download,
-    Talk,
+    Broadcast,
 }
 
 impl Display for DialogSessionType {
@@ -43,7 +43,7 @@ impl Display for DialogSessionType {
             Self::Live => "LIVE",
             Self::Playback => "PLAYBACK",
             Self::Download => "DOWNLOAD",
-            Self::Talk => "TALK",
+            Self::Broadcast => "BROADCAST",
         })
     }
 }
@@ -56,7 +56,7 @@ impl FromStr for DialogSessionType {
             "LIVE" => Ok(Self::Live),
             "PLAYBACK" => Ok(Self::Playback),
             "DOWNLOAD" => Ok(Self::Download),
-            "TALK" => Ok(Self::Talk),
+            "BROADCAST" => Ok(Self::Broadcast),
             _ => Err(invalid_data("invalid dialog session type")),
         }
     }
@@ -150,6 +150,7 @@ impl FromStr for DialogState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SipDialogSession {
     pub stream_id: String,
+    pub parent_stream_id: Option<String>,
     pub device_id: String,
     pub channel_id: String,
     pub session_type: DialogSessionType,
@@ -273,6 +274,7 @@ impl EstablishedDialogFields {
 #[derive(Clone, Debug, FromRow)]
 struct SipDialogSessionRow {
     stream_id: String,
+    parent_stream_id: Option<String>,
     device_id: String,
     channel_id: String,
     session_type: String,
@@ -311,6 +313,7 @@ impl TryFrom<SipDialogSessionRow> for SipDialogSession {
     fn try_from(row: SipDialogSessionRow) -> Result<Self, Self::Error> {
         let session = Self {
             stream_id: row.stream_id,
+            parent_stream_id: row.parent_stream_id,
             device_id: row.device_id,
             channel_id: row.channel_id,
             session_type: row.session_type.parse()?,
@@ -434,9 +437,10 @@ impl SipDialogSessionRepository {
         db::execute!(
             sqlx::AssertSqlSafe(format!(
                 "INSERT INTO gb28181_sip_dialog_session ({INSERT_COLUMNS}) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )),
             &session.stream_id,
+            &session.parent_stream_id,
             &session.device_id,
             &session.channel_id,
             session.session_type.to_string(),
@@ -1120,7 +1124,7 @@ impl SipDialogSessionRepository {
                     session.signal_node_id == signal_node_id
                         && session.media_node_id == media_node_id
                         && session.ssrc.as_deref() == Some(ssrc)
-                        && session.session_type != DialogSessionType::Talk
+                        && session.session_type != DialogSessionType::Broadcast
                         && matches!(
                             session.state,
                             DialogState::Established | DialogState::Terminating
@@ -1742,6 +1746,7 @@ mod tests {
     fn inviting(stream_id: &str) -> SipDialogSession {
         SipDialogSession {
             stream_id: stream_id.into(),
+            parent_stream_id: None,
             device_id: "34020000001320000001".into(),
             channel_id: "34020000001320000101".into(),
             session_type: DialogSessionType::Playback,
@@ -2022,9 +2027,9 @@ mod tests {
             future.created_at = at(3_000);
             future.updated_at = at(3_000);
 
-            let mut talk = matching.clone();
-            talk.stream_id = "unknown-talk".into();
-            talk.session_type = DialogSessionType::Talk;
+            let mut broadcast = matching.clone();
+            broadcast.stream_id = "unknown-broadcast".into();
+            broadcast.session_type = DialogSessionType::Broadcast;
 
             {
                 let mut storage = test_storage()
@@ -2032,7 +2037,7 @@ mod tests {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 storage.insert(matching.stream_id.clone(), matching.clone());
                 storage.insert(future.stream_id.clone(), future);
-                storage.insert(talk.stream_id.clone(), talk);
+                storage.insert(broadcast.stream_id.clone(), broadcast);
             }
 
             let sessions = SipDialogSessionRepository::find_active_by_media_ssrc_before(

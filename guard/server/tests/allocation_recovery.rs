@@ -26,8 +26,18 @@ fn register_stream_with_config(
     RegistryService::new(store.clone())
         .register(RegisterRequest {
             identity: identity.clone(),
-            capabilities: vec!["live".to_string(), "talk".to_string()],
-            endpoints: vec![],
+            capabilities: vec!["live".to_string(), "broadcast".to_string()],
+            endpoints: vec![EndpointRecord {
+                name: "rtp".to_string(),
+                scheme: "rtp".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 30_000,
+                mode: EndpointModeRecord::Multi,
+                labels: HashMap::from([(
+                    "media_transports".to_string(),
+                    "udp,tcp_active,tcp_passive".to_string(),
+                )]),
+            }],
             host_metrics: Default::default(),
             zone: Some("z1".to_string()),
             now_ms: 1_000,
@@ -65,6 +75,28 @@ fn allocation_filters_scores_and_explains_selection() {
             .iter()
             .any(|score| score.node_id == left.node_id)
     );
+}
+
+#[test]
+fn broadcast_leg_is_pinned_to_expected_stream_owner() {
+    let store = InMemoryGuardStore::default();
+    register_stream(&store, "stream-a", "inst-a");
+    let expected = register_stream(&store, "stream-b", "inst-b");
+
+    let result = AllocationService::new(store)
+        .allocate(AllocationRequest {
+            request_id: "req-pinned-broadcast".to_string(),
+            resource_id: "broadcast-leg-1".to_string(),
+            capability: "broadcast".to_string(),
+            zone: Some("z1".to_string()),
+            constraints: HashMap::from([(
+                "expected_stream_node_id".to_string(),
+                expected.node_id.clone(),
+            )]),
+        })
+        .unwrap();
+
+    assert_eq!(result.owner, expected);
 }
 
 #[test]
@@ -153,7 +185,7 @@ fn allocation_skips_multi_node_with_exhausted_media_pool() {
 }
 
 #[test]
-fn tcp_passive_talk_uses_distinct_stream_node() {
+fn tcp_passive_broadcast_uses_distinct_stream_node() {
     let store = InMemoryGuardStore::default();
     let left = register_stream(&store, "stream-a", "inst-a");
     let right = register_stream(&store, "stream-b", "inst-b");
@@ -166,11 +198,11 @@ fn tcp_passive_talk_uses_distinct_stream_node() {
     ]);
     LeaseService::new(store.clone())
         .allocate(LeaseRequest {
-            lease_id: "lease-talk-a".to_string(),
-            route_id: "route-talk-a".to_string(),
-            resource_id: "talk-a".to_string(),
-            stream_type: "talk".to_string(),
-            idempotency_key: "idem-talk-a".to_string(),
+            lease_id: "lease-broadcast-a".to_string(),
+            route_id: "route-broadcast-a".to_string(),
+            resource_id: "broadcast-a".to_string(),
+            stream_type: "broadcast".to_string(),
+            idempotency_key: "idem-broadcast-a".to_string(),
             owner: left,
             constraints: constraints.clone(),
             now_ms: 1_000,
@@ -180,9 +212,9 @@ fn tcp_passive_talk_uses_distinct_stream_node() {
 
     let result = AllocationService::new(store)
         .allocate(AllocationRequest {
-            request_id: "req-talk-b".to_string(),
-            resource_id: "talk-b".to_string(),
-            capability: "talk".to_string(),
+            request_id: "req-broadcast-b".to_string(),
+            resource_id: "broadcast-b".to_string(),
+            capability: "broadcast".to_string(),
             zone: Some("z1".to_string()),
             constraints,
         })

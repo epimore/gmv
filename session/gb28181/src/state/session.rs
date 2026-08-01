@@ -21,7 +21,7 @@ use gmv_domain::info::obj::BaseStreamInfo;
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(Cache::init);
 static STREAM_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
-static TALK_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static BROADCAST_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static CATALOG_SUBSCRIPTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub struct Cache {
@@ -102,8 +102,9 @@ struct CatalogSubscriptionState {
 }
 
 #[derive(Clone)]
-pub struct TalkSessionState {
-    pub talk_id: String,
+pub struct BroadcastSessionState {
+    pub parent_broadcast_id: String,
+    pub broadcast_id: String,
     pub device_id: String,
     pub channel_id: String,
     pub ssrc: u32,
@@ -118,14 +119,14 @@ pub struct TalkSessionState {
     pub guard_lease: Option<GuardLease>,
 }
 
-pub struct TalkCloseStart {
+pub struct BroadcastCloseStart {
     pub generation: u64,
     pub device_id: String,
     pub newly_started: bool,
 }
 
-pub struct TalkByeCommand {
-    pub talk_id: String,
+pub struct BroadcastByeCommand {
+    pub broadcast_id: String,
     pub generation: u64,
     pub device_id: String,
     pub call_id: String,
@@ -133,13 +134,15 @@ pub struct TalkByeCommand {
     pub terminal_reason: String,
 }
 
-pub struct TalkCloseInfo {
-    pub talk_id: String,
+pub struct BroadcastCloseInfo {
+    pub parent_broadcast_id: String,
+    pub broadcast_id: String,
     pub generation: u64,
     pub device_id: String,
     pub channel_id: String,
     pub ssrc: u32,
     pub call_id: String,
+    pub stream_node_name: String,
     pub last_error: Option<String>,
     pub guard_lease: Option<GuardLease>,
 }
@@ -342,9 +345,9 @@ impl Cache {
             .any(|stream| stream.ssrc == ssrc)
             || GENERAL_CACHE
                 .shared
-                .talk_map
+                .broadcast_map
                 .iter()
-                .any(|talk| talk.ssrc == ssrc)
+                .any(|broadcast| broadcast.ssrc == ssrc)
     }
 
     pub fn stream_map_update_source(
@@ -751,8 +754,12 @@ impl Cache {
         }
     }
 
-    pub fn talk_map_insert(state: TalkSessionState) -> bool {
-        match GENERAL_CACHE.shared.talk_map.entry(state.talk_id.clone()) {
+    pub fn broadcast_map_insert(state: BroadcastSessionState) -> bool {
+        match GENERAL_CACHE
+            .shared
+            .broadcast_map
+            .entry(state.broadcast_id.clone())
+        {
             Entry::Occupied(_) => false,
             Entry::Vacant(vac) => {
                 vac.insert(state);
@@ -761,176 +768,195 @@ impl Cache {
         }
     }
 
-    pub fn talk_map_remove(talk_id: &str) -> Option<TalkSessionState> {
-        let talk = GENERAL_CACHE
+    pub fn broadcast_map_remove(broadcast_id: &str) -> Option<BroadcastSessionState> {
+        let broadcast = GENERAL_CACHE
             .shared
-            .talk_map
-            .remove(talk_id)
+            .broadcast_map
+            .remove(broadcast_id)
             .map(|(_, state)| state)?;
-        Self::cancel_talk_close_timer(talk_id, &talk);
-        Some(talk)
+        Self::cancel_broadcast_close_timer(broadcast_id, &broadcast);
+        Some(broadcast)
     }
 
-    pub fn talk_map_get(talk_id: &str) -> Option<TalkSessionState> {
+    pub fn broadcast_map_get(broadcast_id: &str) -> Option<BroadcastSessionState> {
         GENERAL_CACHE
             .shared
-            .talk_map
-            .get(talk_id)
-            .map(|talk| talk.clone())
+            .broadcast_map
+            .get(broadcast_id)
+            .map(|broadcast| broadcast.clone())
     }
 
-    pub fn talk_is_restored(talk_id: &str) -> bool {
+    pub fn broadcast_is_restored(broadcast_id: &str) -> bool {
         GENERAL_CACHE
             .shared
-            .talk_map
-            .get(talk_id)
-            .is_some_and(|talk| talk.restored)
+            .broadcast_map
+            .get(broadcast_id)
+            .is_some_and(|broadcast| broadcast.restored)
     }
 
-    pub fn talk_map_remove_by_call_id(call_id: &str) -> Option<TalkSessionState> {
-        let talk_id = GENERAL_CACHE
+    pub fn broadcast_map_remove_by_call_id(call_id: &str) -> Option<BroadcastSessionState> {
+        let broadcast_id = GENERAL_CACHE
             .shared
-            .talk_map
+            .broadcast_map
             .iter()
-            .find_map(|talk| (talk.call_id == call_id).then(|| talk.key().clone()))?;
-        let talk = GENERAL_CACHE
+            .find_map(|broadcast| {
+                (broadcast.call_id == call_id).then(|| broadcast.key().clone())
+            })?;
+        let broadcast = GENERAL_CACHE
             .shared
-            .talk_map
-            .remove_if(&talk_id, |_, talk| talk.call_id == call_id)
-            .map(|(_, talk)| talk)?;
-        Self::cancel_talk_close_timer(&talk_id, &talk);
-        Some(talk)
+            .broadcast_map
+            .remove_if(&broadcast_id, |_, broadcast| broadcast.call_id == call_id)
+            .map(|(_, broadcast)| broadcast)?;
+        Self::cancel_broadcast_close_timer(&broadcast_id, &broadcast);
+        Some(broadcast)
     }
 
-    fn cancel_talk_close_timer(talk_id: &str, talk: &TalkSessionState) {
-        let Some(generation) = talk.closing_generation else {
+    fn cancel_broadcast_close_timer(broadcast_id: &str, broadcast: &BroadcastSessionState) {
+        let Some(generation) = broadcast.closing_generation else {
             return;
         };
         if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
-            let _ =
-                scheduler.remove_register(&crate::register::core::TimeScheduleKey::TalkClosing(
-                    Arc::from(talk_id),
+            let _ = scheduler.remove_register(
+                &crate::register::core::TimeScheduleKey::BroadcastClosing(
+                    Arc::from(broadcast_id),
                     generation,
-                ));
+                ),
+            );
         }
     }
 
-    pub fn talk_close_begin(talk_id: &str, terminal_reason: &str) -> Option<TalkCloseStart> {
-        let mut talk = GENERAL_CACHE.shared.talk_map.get_mut(talk_id)?;
-        let newly_started = talk.closing_generation.is_none();
+    pub fn broadcast_close_begin(
+        broadcast_id: &str,
+        terminal_reason: &str,
+    ) -> Option<BroadcastCloseStart> {
+        let mut broadcast = GENERAL_CACHE.shared.broadcast_map.get_mut(broadcast_id)?;
+        let newly_started = broadcast.closing_generation.is_none();
         if newly_started {
-            talk.closing_generation = Some(TALK_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed));
-            talk.bye_inflight_seq = None;
-            talk.close_last_error = None;
-            talk.close_terminal_reason = Some(terminal_reason.to_string());
+            broadcast.closing_generation =
+                Some(BROADCAST_CLOSE_GENERATION.fetch_add(1, Ordering::Relaxed));
+            broadcast.bye_inflight_seq = None;
+            broadcast.close_last_error = None;
+            broadcast.close_terminal_reason = Some(terminal_reason.to_string());
         }
-        Some(TalkCloseStart {
-            generation: talk.closing_generation?,
-            device_id: talk.device_id.clone(),
+        Some(BroadcastCloseStart {
+            generation: broadcast.closing_generation?,
+            device_id: broadcast.device_id.clone(),
             newly_started,
         })
     }
 
-    pub fn talk_close_take_bye(talk_id: &str) -> Option<TalkByeCommand> {
-        let mut talk = GENERAL_CACHE.shared.talk_map.get_mut(talk_id)?;
-        let generation = talk.closing_generation?;
-        if talk.bye_inflight_seq.is_some() {
+    pub fn broadcast_close_take_bye(broadcast_id: &str) -> Option<BroadcastByeCommand> {
+        let mut broadcast = GENERAL_CACHE.shared.broadcast_map.get_mut(broadcast_id)?;
+        let generation = broadcast.closing_generation?;
+        if broadcast.bye_inflight_seq.is_some() {
             return None;
         }
-        talk.seq = talk.seq.saturating_add(1);
-        talk.bye_inflight_seq = Some(talk.seq);
-        Some(TalkByeCommand {
-            talk_id: talk_id.to_string(),
+        broadcast.seq = broadcast.seq.saturating_add(1);
+        broadcast.bye_inflight_seq = Some(broadcast.seq);
+        Some(BroadcastByeCommand {
+            broadcast_id: broadcast_id.to_string(),
             generation,
-            device_id: talk.device_id.clone(),
-            call_id: talk.call_id.clone(),
-            seq: talk.seq,
-            terminal_reason: talk
+            device_id: broadcast.device_id.clone(),
+            call_id: broadcast.call_id.clone(),
+            seq: broadcast.seq,
+            terminal_reason: broadcast
                 .close_terminal_reason
                 .clone()
                 .unwrap_or_else(|| "session_close".to_string()),
         })
     }
 
-    pub fn talk_close_mark_failed(
-        talk_id: &str,
+    pub fn broadcast_close_mark_failed(
+        broadcast_id: &str,
         generation: u64,
         seq: u32,
         reason: String,
     ) -> bool {
         GENERAL_CACHE
             .shared
-            .talk_map
-            .get_mut(talk_id)
-            .is_some_and(|mut talk| {
-                if talk.closing_generation != Some(generation) || talk.bye_inflight_seq != Some(seq)
+            .broadcast_map
+            .get_mut(broadcast_id)
+            .is_some_and(|mut broadcast| {
+                if broadcast.closing_generation != Some(generation)
+                    || broadcast.bye_inflight_seq != Some(seq)
                 {
                     return false;
                 }
-                talk.bye_inflight_seq = None;
-                talk.close_last_error = Some(reason);
+                broadcast.bye_inflight_seq = None;
+                broadcast.close_last_error = Some(reason);
                 true
             })
     }
 
-    pub fn talk_close_ids_by_device(device_id: &str) -> Vec<String> {
+    pub fn broadcast_close_ids_by_device(device_id: &str) -> Vec<String> {
         GENERAL_CACHE
             .shared
-            .talk_map
+            .broadcast_map
             .iter()
-            .filter_map(|talk| {
-                (talk.device_id == device_id && talk.closing_generation.is_some())
-                    .then(|| talk.talk_id.clone())
+            .filter_map(|broadcast| {
+                (broadcast.device_id == device_id && broadcast.closing_generation.is_some())
+                    .then(|| broadcast.broadcast_id.clone())
             })
             .collect()
     }
 
-    pub fn talk_ids_by_device(device_id: &str) -> Vec<String> {
+    pub fn broadcast_ids_by_device(device_id: &str) -> Vec<String> {
         GENERAL_CACHE
             .shared
-            .talk_map
+            .broadcast_map
             .iter()
-            .filter_map(|talk| (talk.device_id == device_id).then(|| talk.key().clone()))
+            .filter_map(|broadcast| {
+                (broadcast.device_id == device_id).then(|| broadcast.key().clone())
+            })
             .collect()
     }
 
-    pub fn talk_ids() -> Vec<String> {
+    pub fn broadcast_ids() -> Vec<String> {
         GENERAL_CACHE
             .shared
-            .talk_map
+            .broadcast_map
             .iter()
-            .map(|talk| talk.key().clone())
+            .map(|broadcast| broadcast.key().clone())
             .collect()
     }
 
-    pub fn talk_close_complete(talk_id: &str, generation: u64) -> Option<TalkCloseInfo> {
-        let (_, talk) = GENERAL_CACHE
+    pub fn broadcast_close_complete(
+        broadcast_id: &str,
+        generation: u64,
+    ) -> Option<BroadcastCloseInfo> {
+        let (_, broadcast) = GENERAL_CACHE
             .shared
-            .talk_map
-            .remove_if(talk_id, |_, talk| {
-                talk.closing_generation == Some(generation)
+            .broadcast_map
+            .remove_if(broadcast_id, |_, broadcast| {
+                broadcast.closing_generation == Some(generation)
             })?;
         if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global() {
-            let _ =
-                scheduler.remove_register(&crate::register::core::TimeScheduleKey::TalkClosing(
-                    Arc::from(talk_id),
+            let _ = scheduler.remove_register(
+                &crate::register::core::TimeScheduleKey::BroadcastClosing(
+                    Arc::from(broadcast_id),
                     generation,
-                ));
+                ),
+            );
         }
-        Some(TalkCloseInfo {
-            talk_id: talk_id.to_string(),
+        Some(BroadcastCloseInfo {
+            parent_broadcast_id: broadcast.parent_broadcast_id,
+            broadcast_id: broadcast_id.to_string(),
             generation,
-            device_id: talk.device_id,
-            channel_id: talk.channel_id,
-            ssrc: talk.ssrc,
-            call_id: talk.call_id,
-            last_error: talk.close_last_error,
-            guard_lease: talk.guard_lease,
+            device_id: broadcast.device_id,
+            channel_id: broadcast.channel_id,
+            ssrc: broadcast.ssrc,
+            call_id: broadcast.call_id,
+            stream_node_name: broadcast.stream_node_name,
+            last_error: broadcast.close_last_error,
+            guard_lease: broadcast.guard_lease,
         })
     }
 
-    pub fn talk_close_force(talk_id: &str, generation: u64) -> Option<TalkCloseInfo> {
-        Self::talk_close_complete(talk_id, generation)
+    pub fn broadcast_close_force(
+        broadcast_id: &str,
+        generation: u64,
+    ) -> Option<BroadcastCloseInfo> {
+        Self::broadcast_close_complete(broadcast_id, generation)
     }
 
     pub fn has_dialog_call_id(call_id: &str) -> bool {
@@ -941,16 +967,16 @@ impl Cache {
             .any(|stream| stream.call_id == call_id)
             || GENERAL_CACHE
                 .shared
-                .talk_map
+                .broadcast_map
                 .iter()
-                .any(|talk| talk.call_id == call_id)
+                .any(|broadcast| broadcast.call_id == call_id)
     }
 
-    pub fn talk_map_get_by_device_channel(
+    pub fn broadcast_map_get_by_device_channel(
         device_id: &str,
         channel_id: &str,
-    ) -> Option<TalkSessionState> {
-        GENERAL_CACHE.shared.talk_map.iter().find_map(|item| {
+    ) -> Option<BroadcastSessionState> {
+        GENERAL_CACHE.shared.broadcast_map.iter().find_map(|item| {
             let value = item.value();
             if value.device_id == device_id && value.channel_id == channel_id {
                 Some(value.clone())
@@ -1176,26 +1202,26 @@ impl Cache {
                 }
             }
         }
-        let talk_ids = GENERAL_CACHE
+        let broadcast_ids = GENERAL_CACHE
             .shared
-            .talk_map
+            .broadcast_map
             .iter()
             .filter_map(|item| {
                 if item.device_id == device_id {
-                    Some(item.talk_id.clone())
+                    Some(item.broadcast_id.clone())
                 } else {
                     None
                 }
             })
             .collect::<Vec<_>>();
-        for talk_id in talk_ids {
-            if let Some((_, talk)) = GENERAL_CACHE.shared.talk_map.remove(&talk_id) {
-                if let Some(generation) = talk.closing_generation {
+        for broadcast_id in broadcast_ids {
+            if let Some((_, broadcast)) = GENERAL_CACHE.shared.broadcast_map.remove(&broadcast_id) {
+                if let Some(generation) = broadcast.closing_generation {
                     if let Some(scheduler) = crate::register::schedule::TimeScheduler::try_global()
                     {
                         let _ = scheduler.remove_register(
-                            &crate::register::core::TimeScheduleKey::TalkClosing(
-                                Arc::from(talk_id.as_str()),
+                            &crate::register::core::TimeScheduleKey::BroadcastClosing(
+                                Arc::from(broadcast_id.as_str()),
                                 generation,
                             ),
                         );
@@ -1343,7 +1369,7 @@ impl Cache {
                     entities: HashMap::new(),
                 }),
                 stream_map: Default::default(),
-                talk_map: Default::default(),
+                broadcast_map: Default::default(),
                 catalog_subscriptions: Default::default(),
                 device_map: Default::default(),
                 stream_setup_locks: Default::default(),
@@ -1606,7 +1632,7 @@ struct DeviceTable {
 struct Shared {
     state: Mutex<State>,
     stream_map: DashMap<String, StreamTable>,
-    talk_map: DashMap<String, TalkSessionState>,
+    broadcast_map: DashMap<String, BroadcastSessionState>,
     catalog_subscriptions: DashMap<String, CatalogSubscriptionState>,
     device_map: DashMap<String, Vec<DeviceTable>>,
     stream_setup_locks: DashMap<String, Arc<AsyncMutex<()>>>,
@@ -1646,7 +1672,7 @@ pub enum AccessMode {
     Live,
     Back,
     Down,
-    Talk,
+    Broadcast,
 }
 
 impl AccessMode {
@@ -1655,7 +1681,7 @@ impl AccessMode {
             AccessMode::Live => "live",
             AccessMode::Back => "back",
             AccessMode::Down => "down",
-            AccessMode::Talk => "talk",
+            AccessMode::Broadcast => "broadcast",
         }
     }
 }
@@ -1873,7 +1899,7 @@ mod tests {
         let device_id = "34020000001320009991";
         let other_device_id = "34020000001320009992";
         Cache::stream_setup_lock(device_id, "channel-1", AccessMode::Live);
-        Cache::stream_setup_lock(device_id, "channel-2", AccessMode::Talk);
+        Cache::stream_setup_lock(device_id, "channel-2", AccessMode::Broadcast);
         Cache::stream_setup_lock(other_device_id, "channel-1", AccessMode::Live);
 
         Cache::reset_device_state(device_id);
@@ -2029,16 +2055,17 @@ mod tests {
     }
 
     #[test]
-    fn talk_close_keeps_dialog_until_terminal_response() {
-        let talk_id = "closing-talk".to_string();
-        Cache::talk_map_remove(&talk_id);
-        Cache::talk_map_insert(super::TalkSessionState {
-            talk_id: talk_id.clone(),
-            device_id: "talk-device".to_string(),
-            channel_id: "talk-channel".to_string(),
+    fn broadcast_close_keeps_dialog_until_terminal_response() {
+        let broadcast_id = "closing-broadcast".to_string();
+        Cache::broadcast_map_remove(&broadcast_id);
+        Cache::broadcast_map_insert(super::BroadcastSessionState {
+            parent_broadcast_id: broadcast_id.clone(),
+            broadcast_id: broadcast_id.clone(),
+            device_id: "broadcast-device".to_string(),
+            channel_id: "broadcast-channel".to_string(),
             ssrc: 4567,
             stream_node_name: "s1".to_string(),
-            call_id: "talk-call-id".to_string(),
+            call_id: "broadcast-call-id".to_string(),
             seq: 8,
             restored: false,
             closing_generation: None,
@@ -2048,13 +2075,13 @@ mod tests {
             guard_lease: None,
         });
 
-        let start = Cache::talk_close_begin(&talk_id, "session_close").unwrap();
-        let command = Cache::talk_close_take_bye(&talk_id).unwrap();
+        let start = Cache::broadcast_close_begin(&broadcast_id, "session_close").unwrap();
+        let command = Cache::broadcast_close_take_bye(&broadcast_id).unwrap();
 
-        assert!(Cache::talk_map_get(&talk_id).is_some());
+        assert!(Cache::broadcast_map_get(&broadcast_id).is_some());
         assert_eq!(command.seq, 9);
         assert_eq!(command.terminal_reason, "session_close");
-        assert!(Cache::talk_close_complete(&talk_id, start.generation).is_some());
-        assert!(Cache::talk_map_get(&talk_id).is_none());
+        assert!(Cache::broadcast_close_complete(&broadcast_id, start.generation).is_some());
+        assert!(Cache::broadcast_map_get(&broadcast_id).is_none());
     }
 }

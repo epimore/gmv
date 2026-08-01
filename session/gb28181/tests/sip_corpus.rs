@@ -621,7 +621,7 @@ y=0100008201\r\n"
         download_offer,
         answer_video,
     );
-    let talk_offer = format!(
+    let broadcast_offer = format!(
         "v=0\r\n\
 o={CHANNEL_ID} 0 0 IN IP4 192.0.2.10\r\n\
 s=Talk\r\n\
@@ -632,7 +632,7 @@ a=sendrecv\r\n\
 a=rtpmap:8 PCMA/8000\r\n\
 y=0200008202\r\n"
     );
-    let talk_answer = format!(
+    let broadcast_answer = format!(
         "v=0\r\n\
 o={DEVICE_ID} 0 0 IN IP4 198.51.100.20\r\n\
 s=Talk\r\n\
@@ -645,12 +645,12 @@ y=0200008202\r\n"
     );
     push_invite(
         &mut assets,
-        "talk-normal",
-        &["/api/talk/start", "/api/talk/stop"],
+        "broadcast-normal",
+        &["/api/broadcast/start", "/api/broadcast/stop"],
         23,
         &format!("{CHANNEL_ID}:8202,{PLATFORM_ID}:0"),
-        talk_offer,
-        talk_answer,
+        broadcast_offer,
+        broadcast_answer,
     );
 
     let broadcast_raw_pcma = format!(
@@ -746,10 +746,10 @@ f=v/////a/1/8/1\r\n"
         "bye-normal",
         &[
             "/api/download/stop",
-            "/api/talk/stop",
+            "/api/broadcast/stop",
             "/hook/stream/input/timeout",
             "/hook/stream/idle",
-            "/hook/talk/closed",
+            "/hook/broadcast/closed",
         ],
         "BYE",
         26,
@@ -1361,8 +1361,8 @@ fn generated_sip_corpus_is_current_and_complete() {
         "/api/download/stop",
         "/api/downing/info",
         "/api/rm/file",
-        "/api/talk/start",
-        "/api/talk/stop",
+        "/api/broadcast/start",
+        "/api/broadcast/stop",
         "/edge/upload/picture/{token}",
         "/hook/stream/register",
         "/hook/stream/input/timeout",
@@ -1370,7 +1370,7 @@ fn generated_sip_corpus_is_current_and_complete() {
         "/hook/off/play",
         "/hook/stream/idle",
         "/hook/end/record",
-        "/hook/talk/closed",
+        "/hook/broadcast/closed",
     ] {
         assert!(manifest_text.contains(api), "manifest missing API {api}");
     }

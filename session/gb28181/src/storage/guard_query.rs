@@ -401,7 +401,7 @@ pub struct GbChannelView {
     pub snapshot: i64,
     pub over_pic_id: String,
     pub ptz_enable: i64,
-    pub talk_enable: i64,
+    pub broadcast_enable: i64,
     pub audio_enable: i64,
     pub record_enable: i64,
     pub playback_enable: i64,
@@ -440,12 +440,12 @@ impl GbChannelView {
             db::SessionDatabaseBackend::Mysql => {
                 db::execute!(
                     r#"INSERT INTO gb28181_device_channel_conf
-                    (device_id,channel_id,alias_name,ptz_enable,talk_enable,audio_enable,snapshot_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,over_pic_id,create_time,update_time)
+                    (device_id,channel_id,alias_name,ptz_enable,broadcast_enable,audio_enable,snapshot_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,over_pic_id,create_time,update_time)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
                     ON DUPLICATE KEY UPDATE
                     alias_name=VALUES(alias_name),
                     ptz_enable=VALUES(ptz_enable),
-                    talk_enable=VALUES(talk_enable),
+                    broadcast_enable=VALUES(broadcast_enable),
                     audio_enable=VALUES(audio_enable),
                     snapshot_enable=VALUES(snapshot_enable),
                     record_enable=VALUES(record_enable),
@@ -459,7 +459,7 @@ impl GbChannelView {
                     &channel.channel_id,
                     empty_string_to_none(channel.alias_name),
                     channel.ptz_enable,
-                    channel.talk_enable,
+                    channel.broadcast_enable,
                     channel.audio_enable,
                     channel.snapshot,
                     channel.record_enable,
@@ -474,12 +474,12 @@ impl GbChannelView {
             db::SessionDatabaseBackend::Sqlite => {
                 db::execute!(
                     r#"INSERT INTO gb28181_device_channel_conf
-                    (device_id,channel_id,alias_name,ptz_enable,talk_enable,audio_enable,snapshot_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,over_pic_id,create_time,update_time)
+                    (device_id,channel_id,alias_name,ptz_enable,broadcast_enable,audio_enable,snapshot_enable,record_enable,playback_enable,alarm_enable,biz_enable,sort_no,over_pic_id,create_time,update_time)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
                     ON CONFLICT(device_id, channel_id) DO UPDATE SET
                     alias_name=excluded.alias_name,
                     ptz_enable=excluded.ptz_enable,
-                    talk_enable=excluded.talk_enable,
+                    broadcast_enable=excluded.broadcast_enable,
                     audio_enable=excluded.audio_enable,
                     snapshot_enable=excluded.snapshot_enable,
                     record_enable=excluded.record_enable,
@@ -493,7 +493,7 @@ impl GbChannelView {
                     &channel.channel_id,
                     empty_string_to_none(channel.alias_name),
                     channel.ptz_enable,
-                    channel.talk_enable,
+                    channel.broadcast_enable,
                     channel.audio_enable,
                     channel.snapshot,
                     channel.record_enable,
@@ -602,7 +602,7 @@ pub struct GbChannelConfigUpdate {
     pub snapshot: i64,
     pub over_pic_id: String,
     pub ptz_enable: i64,
-    pub talk_enable: i64,
+    pub broadcast_enable: i64,
     pub audio_enable: i64,
     pub record_enable: i64,
     pub playback_enable: i64,
@@ -632,7 +632,7 @@ const GB_CHANNEL_COLUMNS_MYSQL: &str = r#"
     COALESCE(conf.snapshot_enable,0) AS snapshot,
     COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,
     COALESCE(conf.ptz_enable,0) AS ptz_enable,
-    COALESCE(conf.talk_enable,0) AS talk_enable,
+    COALESCE(conf.broadcast_enable,0) AS broadcast_enable,
     COALESCE(conf.audio_enable,0) AS audio_enable,
     COALESCE(conf.record_enable,0) AS record_enable,
     COALESCE(conf.playback_enable,0) AS playback_enable,
@@ -663,7 +663,7 @@ const GB_CHANNEL_COLUMNS_SQLITE: &str = r#"
     COALESCE(conf.snapshot_enable,0) AS snapshot,
     COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,
     COALESCE(conf.ptz_enable,0) AS ptz_enable,
-    COALESCE(conf.talk_enable,0) AS talk_enable,
+    COALESCE(conf.broadcast_enable,0) AS broadcast_enable,
     COALESCE(conf.audio_enable,0) AS audio_enable,
     COALESCE(conf.record_enable,0) AS record_enable,
     COALESCE(conf.playback_enable,0) AS playback_enable,
@@ -673,10 +673,10 @@ const GB_CHANNEL_COLUMNS_SQLITE: &str = r#"
     conf.create_time AS created_at,
     conf.update_time AS updated_at
 "#;
-const GB_CHANNEL_LIST_MYSQL: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.latitude AS CHAR),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? ORDER BY COALESCE(conf.sort_no,0),c.channel_id";
-const GB_CHANNEL_GET_MYSQL: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.latitude AS CHAR),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? AND c.channel_id=?";
-const GB_CHANNEL_LIST_SQLITE: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.latitude AS TEXT),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? ORDER BY COALESCE(conf.sort_no,0),c.channel_id";
-const GB_CHANNEL_GET_SQLITE: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.latitude AS TEXT),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.talk_enable,0) AS talk_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? AND c.channel_id=?";
+const GB_CHANNEL_LIST_MYSQL: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.latitude AS CHAR),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.broadcast_enable,0) AS broadcast_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? ORDER BY COALESCE(conf.sort_no,0),c.channel_id";
+const GB_CHANNEL_GET_MYSQL: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR NOW() >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS CHAR),'') AS longitude,\n    COALESCE(CAST(c.latitude AS CHAR),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS CHAR),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.broadcast_enable,0) AS broadcast_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? AND c.channel_id=?";
+const GB_CHANNEL_LIST_SQLITE: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.latitude AS TEXT),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.broadcast_enable,0) AS broadcast_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? ORDER BY COALESCE(conf.sort_no,0),c.channel_id";
+const GB_CHANNEL_GET_SQLITE: &str = "SELECT \n    c.device_id AS device_id,\n    c.channel_id AS channel_id,\n    COALESCE(c.name,'') AS name,\n    COALESCE(c.manufacturer,'') AS manufacturer,\n    COALESCE(c.model,'') AS model,\n    COALESCE(c.owner,'') AS owner,\n    CASE\n        WHEN COALESCE(o.status,1)=0 OR d.online_expire_time IS NULL OR CURRENT_TIMESTAMP >= d.online_expire_time THEN 'OFFLINE'\n        ELSE COALESCE(c.status,'UNKNOWN')\n    END AS status,\n    COALESCE(c.civil_code,'') AS civil_code,\n    COALESCE(c.address,'') AS address,\n    COALESCE(c.parent_id,'') AS parent_id,\n    COALESCE(c.ip_address,'') AS ip_address,\n    COALESCE(c.port,0) AS port,\n    COALESCE(CAST(c.longitude AS TEXT),'') AS longitude,\n    COALESCE(CAST(c.latitude AS TEXT),'') AS latitude,\n    COALESCE(c.ptz_type,'') AS ptz_type,\n    COALESCE(conf.alias_name,'') AS alias_name,\n    '' AS pic_url,\n    COALESCE(conf.snapshot_enable,0) AS snapshot,\n    COALESCE(CAST(conf.over_pic_id AS TEXT),'') AS over_pic_id,\n    COALESCE(conf.ptz_enable,0) AS ptz_enable,\n    COALESCE(conf.broadcast_enable,0) AS broadcast_enable,\n    COALESCE(conf.audio_enable,0) AS audio_enable,\n    COALESCE(conf.record_enable,0) AS record_enable,\n    COALESCE(conf.playback_enable,0) AS playback_enable,\n    COALESCE(conf.alarm_enable,0) AS alarm_enable,\n    COALESCE(conf.biz_enable,0) AS biz_enable,\n    COALESCE(conf.sort_no,0) AS sort_no,\n    conf.create_time AS created_at,\n    conf.update_time AS updated_at\n FROM gb28181_device_channel c LEFT JOIN gb28181_device_channel_conf conf ON conf.device_id=c.device_id AND conf.channel_id=c.channel_id LEFT JOIN gb28181_device d ON d.device_id=c.device_id LEFT JOIN gb28181_oauth o ON o.device_id=c.device_id WHERE c.device_id=? AND c.channel_id=?";
 
 #[derive(Debug, Clone, Default, FromRow)]
 pub struct GbChannelImageView {

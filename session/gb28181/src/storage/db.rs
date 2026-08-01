@@ -461,6 +461,7 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
     .await
     .hand_log(|msg| error!("{msg}"))?;
     const COLUMNS: &[(&str, &str)] = &[
+        ("parent_stream_id", "varchar(64) NULL"),
         ("playback_id", "varchar(64) NULL"),
         ("playback_start_sec", "bigint NULL"),
         ("playback_end_sec", "bigint NULL"),
@@ -681,6 +682,7 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
         .map(|row| row.get::<String, _>("name"))
         .collect();
     const COLUMNS: &[(&str, &str)] = &[
+        ("parent_stream_id", "VARCHAR(64) NULL"),
         ("playback_id", "VARCHAR(64) NULL"),
         ("playback_start_sec", "BIGINT NULL"),
         ("playback_end_sec", "BIGINT NULL"),
@@ -1104,7 +1106,13 @@ mod tests {
             .into_iter()
             .map(|row| row.get::<String, _>("name"))
             .collect::<Vec<_>>();
-            for column in ["terminated_at", "terminal_reason", "stop_reason", "error_code"] {
+            for column in [
+                "parent_stream_id",
+                "terminated_at",
+                "terminal_reason",
+                "stop_reason",
+                "error_code",
+            ] {
                 assert!(dialog_columns.iter().any(|item| item == column));
             }
 

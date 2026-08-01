@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS `gb28181_device_channel_conf`  (
   `channel_id` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '通道id',
   `alias_name` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '业务别名',
   `ptz_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '云台控制：0-禁用，1-启用，2-设备不支持',
-  `talk_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '语音对讲：0-禁用，1-启用，2-设备不支持',
+  `broadcast_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '语音广播：0-禁用，1-启用，2-设备不支持',
   `audio_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '音频播放/收音：0-禁用，1-启用，2-设备不支持',
   `snapshot_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '抓拍：0-禁用，1-启用，2-设备不支持',
   `record_enable` tinyint UNSIGNED NULL DEFAULT 2 COMMENT '录像：0-禁用，1-启用，2-设备不支持',
@@ -275,9 +275,10 @@ CREATE TABLE IF NOT EXISTS `gb28181_record`  (
 -- ----------------------------
 CREATE TABLE IF NOT EXISTS `gb28181_sip_dialog_session`  (
   `stream_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+  `parent_stream_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,
   `device_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
   `channel_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
-  `session_type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'LIVE/PLAYBACK/DOWNLOAD/TALK',
+  `session_type` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'LIVE/PLAYBACK/DOWNLOAD/BROADCAST',
   `signal_node_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
   `media_node_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
   `ssrc` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL,

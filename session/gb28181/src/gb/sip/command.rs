@@ -578,10 +578,11 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
     let registration_epoch_id = req.registration_epoch_id.clone();
     let now = Local::now().naive_local();
     let session = SipDialogSession {
-        stream_id: req.talk_id.clone(),
+        stream_id: req.broadcast_id.clone(),
+        parent_stream_id: Some(req.parent_broadcast_id),
         device_id: req.device_id.clone(),
         channel_id: req.channel_id.clone(),
-        session_type: DialogSessionType::Talk,
+        session_type: DialogSessionType::Broadcast,
         signal_node_id: signal_node_id.clone(),
         media_node_id: req.media_node_id,
         ssrc: Some(format!("{:010}", req.ssrc)),
@@ -615,15 +616,15 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         return Err(err);
     }
     if !Register::registration_epoch_matches(&req.device_id, registration_epoch_id.as_deref()) {
-        mark_inviting_terminal(&req.talk_id, &signal_node_id, DialogState::Orphan).await;
+        mark_inviting_terminal(&req.broadcast_id, &signal_node_id, DialogState::Orphan).await;
         reject_broadcast_invite(&req.invite.call_id, 481, "Registration epoch changed");
         return Err(GlobalError::new_biz_error(
             BaseErrorCode::InvalidState.code(),
             "device registration epoch changed while persisting broadcast INVITE",
             |msg| {
                 error!(
-                    "talk_id={}; call_id={}; {msg}",
-                    req.talk_id, req.invite.call_id
+                    "broadcast_id={}; call_id={}; {msg}",
+                    req.broadcast_id, req.invite.call_id
                 )
             },
         ));
@@ -643,7 +644,7 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         content_type: Some("application/sdp".into()),
         body: sdp.into_bytes(),
     }) {
-        mark_inviting_terminal(&req.talk_id, &signal_node_id, DialogState::Orphan).await;
+        mark_inviting_terminal(&req.broadcast_id, &signal_node_id, DialogState::Orphan).await;
         return Err(err);
     }
     let established_at = Local::now().naive_local();
@@ -661,7 +662,7 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         updated_at: established_at,
     };
     match SipDialogSessionRepository::cas_mark_established(
-        &req.talk_id,
+        &req.broadcast_id,
         &signal_node_id,
         registration_epoch_id.as_deref(),
         0,
@@ -673,7 +674,7 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         Ok(false) => {
             rollback_established_invite(
                 &req.device_id,
-                &req.talk_id,
+                &req.broadcast_id,
                 &signal_node_id,
                 &req.invite.call_id,
                 DialogState::Orphan,
@@ -683,8 +684,8 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
                 "broadcast dialog ESTABLISHED CAS lost",
                 |msg| {
                     error!(
-                        "talk_id={}; call_id={}; {msg}",
-                        req.talk_id, req.invite.call_id
+                        "broadcast_id={}; call_id={}; {msg}",
+                        req.broadcast_id, req.invite.call_id
                     )
                 },
             ));
@@ -692,7 +693,7 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         Err(err) => {
             rollback_established_invite(
                 &req.device_id,
-                &req.talk_id,
+                &req.broadcast_id,
                 &signal_node_id,
                 &req.invite.call_id,
                 DialogState::Orphan,
@@ -705,11 +706,11 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         &req.device_id,
         registration_epoch_id.as_deref(),
         req.invite.call_id.clone(),
-        req.talk_id.clone(),
+        req.broadcast_id.clone(),
     ) {
         rollback_established_invite(
             &req.device_id,
-            &req.talk_id,
+            &req.broadcast_id,
             &signal_node_id,
             &req.invite.call_id,
             DialogState::Orphan,
@@ -720,8 +721,8 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
             "device registration epoch changed while establishing broadcast INVITE",
             |msg| {
                 error!(
-                    "talk_id={}; call_id={}; {msg}",
-                    req.talk_id, req.invite.call_id
+                    "broadcast_id={}; call_id={}; {msg}",
+                    req.broadcast_id, req.invite.call_id
                 )
             },
         ));
@@ -962,6 +963,7 @@ where
     let registration_epoch_id = session.registration_epoch_id.clone();
     SipDialogSessionRepository::insert_inviting(&SipDialogSession {
         stream_id: stream_id.clone(),
+        parent_stream_id: None,
         device_id: device_id.clone(),
         channel_id: req.channel_id.clone(),
         session_type: req.session_type,
@@ -1479,7 +1481,8 @@ pub(crate) async fn send_prepared_invite_stop(
     pending: &PendingInviteStop,
 ) -> GlobalResult<()> {
     let use_restored = pending.stream_id.as_deref().is_some_and(|stream_id| {
-        GeneralCache::stream_is_restored(stream_id) || GeneralCache::talk_is_restored(stream_id)
+        GeneralCache::stream_is_restored(stream_id)
+            || GeneralCache::broadcast_is_restored(stream_id)
     }) || Register::get_connected_device_session(device_id).is_none();
     if use_restored {
         let session = load_durable_dialog(pending.stream_id.as_deref().unwrap_or_default()).await?;

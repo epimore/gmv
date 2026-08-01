@@ -11,7 +11,7 @@ use base::tokio_util::task::TaskTracker;
 use crate::gb::sip::subscription;
 use crate::register::core::{Inner, Register, TimeScheduleKey};
 use crate::register::schedule::ScheduleKey;
-use crate::service::{hook_serv, stream_close, talk_close};
+use crate::service::{broadcast_close, hook_serv, stream_close};
 use crate::state::session::Cache as GeneralCache;
 
 const MAX_WORKER_POOL: usize = 128;
@@ -140,8 +140,12 @@ async fn on_time_schedule(
                     "close deadline expired",
                 );
             }
-            ScheduleKey::Register(TimeScheduleKey::TalkClosing(talk_id, generation)) => {
-                talk_close::force_cleanup(talk_id.as_ref(), generation, "close deadline expired");
+            ScheduleKey::Register(TimeScheduleKey::BroadcastClosing(broadcast_id, generation)) => {
+                broadcast_close::force_cleanup(
+                    broadcast_id.as_ref(),
+                    generation,
+                    "close deadline expired",
+                );
             }
             ScheduleKey::Register(TimeScheduleKey::CatalogSubscription(device_id, generation)) => {
                 let _ = inner

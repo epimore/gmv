@@ -98,22 +98,26 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
         .ok_or_else(|| invalid_recovery(session, "durable dialog SSRC is missing"))?
         .parse::<u32>()
         .map_err(|_| invalid_recovery(session, "durable dialog SSRC is invalid"))?;
-    if session.session_type == DialogSessionType::Talk {
+    if session.session_type == DialogSessionType::Broadcast {
         if session.transport == DialogTransport::Udp
             && let Err(err) = ensure_udp_device_session(session).await
         {
             mark_orphan(session).await?;
             return Err(err);
         }
-        if !query_talk_online(session).await? {
+        if !query_broadcast_online(session).await? {
             mark_orphan(session).await?;
             return Ok(());
         }
         if session.state == DialogState::Established {
             touch_active_dialog(session).await?;
         }
-        if !Cache::talk_map_insert(crate::state::session::TalkSessionState {
-            talk_id: session.stream_id.clone(),
+        if !Cache::broadcast_map_insert(crate::state::session::BroadcastSessionState {
+            parent_broadcast_id: session
+                .parent_stream_id
+                .clone()
+                .unwrap_or_else(|| session.stream_id.clone()),
+            broadcast_id: session.stream_id.clone(),
             device_id: session.device_id.clone(),
             channel_id: session.channel_id.clone(),
             ssrc,
@@ -133,11 +137,11 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
         SipRuntimeCache::global()
             .restore_stream_index(session.call_id.clone(), session.stream_id.clone());
         info!(
-            "restored durable talk: talk_id={}, device_id={}, media_node={}, transport={}",
+            "restored durable broadcast: broadcast_id={}, device_id={}, media_node={}, transport={}",
             session.stream_id, session.device_id, session.media_node_id, session.transport
         );
         if session.state == DialogState::Terminating {
-            crate::service::talk_close::begin(session.stream_id.clone());
+            crate::service::broadcast_close::begin(session.stream_id.clone());
         }
         return Ok(());
     }
@@ -277,17 +281,17 @@ pub async fn run_reconciliation(cancel: base::tokio_util::sync::CancellationToke
                     }
                 }
                 DialogState::Terminating => {
-                    if dialog.session_type == DialogSessionType::Talk {
-                        crate::service::talk_close::begin(dialog.stream_id.clone());
+                    if dialog.session_type == DialogSessionType::Broadcast {
+                        crate::service::broadcast_close::begin(dialog.stream_id.clone());
                     } else {
                         crate::service::stream_close::begin(dialog.stream_id.clone());
                     }
                 }
                 DialogState::Established => {
-                    let probe = if dialog.session_type == DialogSessionType::Talk {
+                    let probe = if dialog.session_type == DialogSessionType::Broadcast {
                         base::tokio::time::timeout(
                             Duration::from_secs(3),
-                            query_talk_online(dialog),
+                            query_broadcast_online(dialog),
                         )
                         .await
                     } else if let Some(ssrc) = dialog
@@ -344,7 +348,7 @@ pub async fn run_reconciliation(cancel: base::tokio_util::sync::CancellationToke
 async fn reconcile_runtime_dialog_conflicts(signal_node_id: &str) {
     let runtime_ids = Cache::stream_ids()
         .into_iter()
-        .chain(Cache::talk_ids())
+        .chain(Cache::broadcast_ids())
         .collect::<HashSet<_>>();
     RUNTIME_DIALOG_CONFLICTS.retain(|stream_id| runtime_ids.contains(stream_id));
     for stream_id in runtime_ids {
@@ -391,8 +395,16 @@ async fn cleanup_setup_media(dialog: &SipDialogSession) -> GlobalResult<bool> {
     let Some(node) = crate::state::StreamNodeRegistry::get(&dialog.media_node_id) else {
         return Ok(false);
     };
-    if dialog.session_type == DialogSessionType::Talk {
-        stream_rpc::talk_close(&node, &dialog.stream_id).await
+    if dialog.session_type == DialogSessionType::Broadcast {
+        stream_rpc::broadcast_close(
+            &node,
+            dialog
+                .parent_stream_id
+                .as_deref()
+                .unwrap_or(&dialog.stream_id),
+            &dialog.stream_id,
+        )
+        .await
     } else {
         stream_rpc::stop_receive(&node, &dialog.stream_id, "setup_deadline").await
     }?;
@@ -451,9 +463,17 @@ pub async fn run_history_retention(cancel: base::tokio_util::sync::CancellationT
     }
 }
 
-async fn query_talk_online(session: &SipDialogSession) -> GlobalResult<bool> {
+async fn query_broadcast_online(session: &SipDialogSession) -> GlobalResult<bool> {
     let node = crate::guard_integration::ensure_stream_node(&session.media_node_id).await?;
-    stream_rpc::talk_online(&node, &session.stream_id).await
+    stream_rpc::broadcast_online(
+        &node,
+        session
+            .parent_stream_id
+            .as_deref()
+            .unwrap_or(&session.stream_id),
+        &session.stream_id,
+    )
+    .await
 }
 
 async fn query_media_online(session: &SipDialogSession, ssrc: u32) -> GlobalResult<bool> {
@@ -588,8 +608,8 @@ fn access_mode(session_type: DialogSessionType) -> GlobalResult<AccessMode> {
         DialogSessionType::Live => Ok(AccessMode::Live),
         DialogSessionType::Playback => Ok(AccessMode::Back),
         DialogSessionType::Download => Ok(AccessMode::Down),
-        DialogSessionType::Talk => Err(GlobalError::new_sys_error(
-            "TALK durable recovery is not supported",
+        DialogSessionType::Broadcast => Err(GlobalError::new_sys_error(
+            "BROADCAST durable recovery is not supported",
             |message| error!("{message}"),
         )),
     }

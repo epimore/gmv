@@ -186,7 +186,7 @@ function isStreamNode(node: NodeInfo) { return normalizeKind(node.kind) === 'str
 function isNodeOnline(node: NodeInfo) { return node.connection === 'CONNECTED' && node.scheduling === 'ENABLED'; }
 function sessionNodeLabel(node: NodeInfo) { return `${nodeKindLabel(node)} · ${node.node_id} · ${isNodeOnline(node) ? '在线' : '离线'}`; }
 function statusLabel(state: string): string { return ({ starting: '启动中', running: '运行中', stopping: '停止中', failed: '失败', unknown: '未知', conflict: '冲突', INVITING: '建立中', ESTABLISHED: '已建立', TERMINATING: '关闭中', TERMINATED: '已终止', ORPHAN: '异常终止' } as Record<string, string>)[state] || state; }
-function streamTypeLabel(value: string): string { return ({ LIVE: '直播', PLAYBACK: '回放', DOWNLOAD: '下载', TALK: '语音' } as Record<string, string>)[value.trim().toUpperCase()] || '未知'; }
+function streamTypeLabel(value: string): string { return ({ LIVE: '直播', PLAYBACK: '回放', DOWNLOAD: '下载', BROADCAST: '语音广播' } as Record<string, string>)[value.trim().toUpperCase()] || '未知'; }
 function normalizeMediaFormat(value: string): string { return value.trim().toLowerCase(); }
 function mediaFormatLabel(value: string): string { return ({ flv: 'HTTP-FLV', http_flv: 'HTTP-FLV', fmp4: 'fMP4', dash_fmp4: 'fMP4', hls: 'HLS', hls_fmp4: 'HLS', ll_hls: 'LL-HLS', mp4: 'MP4' } as Record<string, string>)[normalizeMediaFormat(value)] || value.toUpperCase(); }
 function formatDuration(ms: number): string { const seconds = Math.max(0, Math.floor(ms / 1000)); const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds % 3600 / 60); const remain = seconds % 60; return hours > 0 ? `${hours}时${minutes}分${remain}秒` : minutes > 0 ? `${minutes}分${remain}秒` : `${remain}秒`; }

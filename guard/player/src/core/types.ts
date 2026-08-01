@@ -87,7 +87,6 @@ export interface GmvViewCapabilities {
   record?: boolean;
   playback?: boolean;
   audio?: boolean;
-  talk?: boolean;
   streamSwitch?: boolean;
   aiOverlay?: boolean;
 }
@@ -102,7 +101,6 @@ export type GmvPlayerControl =
   | 'ptz'
   | 'record'
   | 'cloudRecord'
-  | 'talk'
   | 'streamSwitch'
   | 'playbackRate'
   | 'playbackClip'
@@ -131,7 +129,6 @@ export interface GmvPlayerControlsState {
   infoOpen: boolean;
   ptzOpen: boolean;
   recording: boolean;
-  talking: boolean;
   playbackRate: number;
   seekMs: number;
   durationMs: number;
@@ -157,7 +154,6 @@ export type GmvPlayerControlAction =
   | { type: 'ptz-toggle' }
   | { type: 'record-toggle' }
   | { type: 'cloud-record-request' }
-  | { type: 'talk-toggle' }
   | { type: 'stream-switch'; sourceUrl: string }
   | { type: 'rate-change'; rate: number }
   | { type: 'cloud-record-create'; startTimeMs: number; endTimeMs: number }

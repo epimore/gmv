@@ -6,6 +6,7 @@ import "common/v1/types.proto";
 
 service StreamControl {
   rpc StartReceive(StartReceiveRequest) returns (StartReceiveResponse);
+  rpc ConfigureReceiveTransport(ConfigureReceiveTransportRequest) returns (ConfigureReceiveTransportResponse);
   rpc StopReceive(StopReceiveRequest) returns (StopReceiveResponse);
   rpc QueryStream(QueryStreamRequest) returns (QueryStreamResponse);
   rpc CreateOutput(CreateOutputRequest) returns (CreateOutputResponse);
@@ -18,10 +19,10 @@ service StreamControl {
   rpc StreamOnline(StreamJsonRequest) returns (StreamBoolResponse);
   rpc RecordInfo(StreamJsonRequest) returns (StreamJsonResponse);
   rpc CloseOutputBySsrc(StreamJsonRequest) returns (StreamUnitResponse);
-  rpc TalkOpen(StreamJsonRequest) returns (StreamJsonResponse);
-  rpc TalkAnswer(StreamJsonRequest) returns (StreamUnitResponse);
-  rpc TalkClose(StreamJsonRequest) returns (StreamUnitResponse);
-  rpc TalkOnline(StreamJsonRequest) returns (StreamBoolResponse);
+  rpc BroadcastOpen(StreamJsonRequest) returns (StreamJsonResponse);
+  rpc BroadcastConfigureLeg(StreamJsonRequest) returns (StreamUnitResponse);
+  rpc BroadcastClose(StreamJsonRequest) returns (StreamUnitResponse);
+  rpc BroadcastOnline(StreamJsonRequest) returns (StreamBoolResponse);
 }
 
 message StartReceiveRequest {
@@ -35,6 +36,41 @@ message StartReceiveRequest {
   repeated gmv.common.v1.Endpoint preferred_endpoints = 6;
   map<string, string> constraints = 7;
   uint64 reservation_ttl_ms = 8;
+  MediaTransport media_transport = 9;
+}
+
+message ConfigureReceiveTransportRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string route_id = 3;
+  string lease_id = 4;
+  string endpoint_id = 5;
+  uint64 endpoint_generation = 6;
+  MediaTransport media_transport = 7;
+  gmv.common.v1.Endpoint remote_endpoint = 8;
+  uint64 connect_timeout_ms = 9;
+}
+
+message ConfigureReceiveTransportResponse {
+  MediaTransportState state = 1;
+  gmv.common.v1.Endpoint local_endpoint = 2;
+  gmv.common.v1.Endpoint remote_endpoint = 3;
+  gmv.common.v1.ErrorDetail error = 4;
+}
+
+enum MediaTransport {
+  MEDIA_TRANSPORT_UNSPECIFIED = 0;
+  MEDIA_TRANSPORT_UDP = 1;
+  MEDIA_TRANSPORT_TCP_ACTIVE = 2;
+  MEDIA_TRANSPORT_TCP_PASSIVE = 3;
+}
+
+enum MediaTransportState {
+  MEDIA_TRANSPORT_STATE_UNSPECIFIED = 0;
+  MEDIA_TRANSPORT_STATE_LISTENING = 1;
+  MEDIA_TRANSPORT_STATE_CONNECTING = 2;
+  MEDIA_TRANSPORT_STATE_READY = 3;
+  MEDIA_TRANSPORT_STATE_FAILED = 4;
 }
 
 message StartReceiveResponse {

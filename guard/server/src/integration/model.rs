@@ -315,7 +315,7 @@ impl IntegrationMqttConfig {
                     | "stream.stop"
                     | "stream.playback"
                     | "stream.download"
-                    | "device.talk"
+                    | "device.broadcast"
                     | "device.ptz"
                     | "ai.start"
                     | "ai.cancel"

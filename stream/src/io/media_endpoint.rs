@@ -1,13 +1,16 @@
 use std::collections::{HashMap, HashSet};
-use std::net::{TcpListener, UdpSocket};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{debug, error};
-use base::net::rw::{ManagedPacketIo, PacketWriter, U16BeLengthPrefixEncoder};
+use base::log::{debug, error, info};
+use base::net::rw::{
+    ManagedPacketIo, ManagedTcpConnectOptions, ManagedTcpConnection, PacketWriter,
+    U16BeLengthPrefixEncoder,
+};
 use base::tokio::sync::Mutex;
 use base::tokio::time::{self, MissedTickBehavior};
 use base::utils::rt::GlobalRuntime;
@@ -60,6 +63,35 @@ pub struct ReserveMediaEndpoint {
     pub confirmed: bool,
 }
 
+pub struct ConnectMediaEndpoint {
+    pub stream_id: String,
+    pub lease_id: String,
+    pub route_id: String,
+    pub endpoint_id: String,
+    pub generation: u64,
+    pub remote_addr: SocketAddr,
+    pub local_addr: Option<SocketAddr>,
+    pub timeout: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaConnectionState {
+    Listening,
+    Connecting,
+    Ready,
+    Failed,
+}
+
+struct MediaTransportSession {
+    lease_id: String,
+    route_id: String,
+    endpoint_id: String,
+    generation: u64,
+    state: MediaConnectionState,
+    remote_addr: Option<SocketAddr>,
+    connection: Option<ManagedTcpConnection<U16BeLengthPrefixEncoder>>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MediaEndpointState {
     Listening,
@@ -100,6 +132,7 @@ struct MediaEndpointStateStore {
     next_port_offset: usize,
     endpoints: HashMap<String, MediaEndpointRecord>,
     stream_index: HashMap<String, String>,
+    sessions: HashMap<String, MediaTransportSession>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -249,21 +282,18 @@ impl MediaEndpointManager {
     }
 
     pub async fn owns_active_lease(&self, stream_id: &str, lease_id: &str) -> bool {
-        if self.conf.mode == MediaListenerMode::Single {
-            return true;
-        }
         let state = self.state.lock().await;
-        state
-            .stream_index
-            .get(stream_id)
-            .and_then(|endpoint_id| state.endpoints.get(endpoint_id))
-            .is_some_and(|endpoint| {
-                endpoint.lease_id == lease_id && endpoint.state == MediaEndpointState::Listening
-            })
+        state.sessions.get(stream_id).is_some_and(|session| {
+            session.lease_id == lease_id
+                && state
+                    .endpoints
+                    .get(&session.endpoint_id)
+                    .is_some_and(|endpoint| endpoint.state == MediaEndpointState::Listening)
+        })
     }
 
     pub fn capability_endpoint(&self) -> Endpoint {
-        let (port, mode, labels) = match self.conf.mode {
+        let (port, mode, mut labels) = match self.conf.mode {
             MediaListenerMode::Single => {
                 (self.conf.single_port, EndpointMode::Single, HashMap::new())
             }
@@ -284,6 +314,16 @@ impl MediaEndpointManager {
                 ]),
             ),
         };
+        labels.insert(
+            "media_transports".to_string(),
+            "udp,tcp_active,tcp_passive".to_string(),
+        );
+        labels.insert(
+            "broadcast_packetizations".to_string(),
+            "raw_g711,rtp_ps_g711".to_string(),
+        );
+        labels.insert("max_broadcast_parents".to_string(), "8".to_string());
+        labels.insert("max_broadcast_legs".to_string(), "50".to_string());
         Endpoint {
             name: "rtp".to_string(),
             scheme: "rtp".to_string(),
@@ -307,7 +347,16 @@ impl MediaEndpointManager {
         }
         let mut state = self.state.lock().await;
         if self.conf.mode == MediaListenerMode::Single {
-            return state
+            if let Some(existing) = state.sessions.get(&request.stream_id) {
+                if existing.lease_id != request.lease_id || existing.route_id != request.route_id {
+                    return Err(GlobalError::new_biz_error(
+                        BaseErrorCode::AlreadyExists.code(),
+                        "stream already owns a different media endpoint lease",
+                        |msg| error!("{msg}: stream_id={}", request.stream_id),
+                    ));
+                }
+            }
+            let mut lease = state
                 .endpoints
                 .values()
                 .find(|endpoint| endpoint.permanent)
@@ -316,7 +365,23 @@ impl MediaEndpointManager {
                     GlobalError::new_sys_error("single media endpoint is unavailable", |msg| {
                         error!("{msg}")
                     })
+                })?;
+            lease.stream_id.clone_from(&request.stream_id);
+            lease.lease_id.clone_from(&request.lease_id);
+            lease.route_id.clone_from(&request.route_id);
+            state
+                .sessions
+                .entry(request.stream_id)
+                .or_insert(MediaTransportSession {
+                    lease_id: request.lease_id,
+                    route_id: request.route_id,
+                    endpoint_id: lease.endpoint_id.clone(),
+                    generation: lease.generation,
+                    state: MediaConnectionState::Listening,
+                    remote_addr: None,
+                    connection: None,
                 });
+            return Ok(lease);
         }
         let expected_ssrc = request
             .expected_ssrc
@@ -423,6 +488,18 @@ impl MediaEndpointManager {
                 .stream_index
                 .insert(request.stream_id.clone(), endpoint_id.clone());
             state.endpoints.insert(endpoint_id, record);
+            state.sessions.insert(
+                request.stream_id.clone(),
+                MediaTransportSession {
+                    lease_id: lease.lease_id.clone(),
+                    route_id: lease.route_id.clone(),
+                    endpoint_id: lease.endpoint_id.clone(),
+                    generation: lease.generation,
+                    state: MediaConnectionState::Listening,
+                    remote_addr: None,
+                    connection: None,
+                },
+            );
             let port_count = usize::from(self.conf.port_range.end - self.conf.port_range.start) + 1;
             state.next_port_offset = (offset + 1) % port_count;
             Register::bind_media_endpoint(
@@ -446,6 +523,144 @@ impl MediaEndpointManager {
         ))
     }
 
+    pub async fn connect_tcp_active(
+        &self,
+        request: ConnectMediaEndpoint,
+    ) -> GlobalResult<MediaConnectionState> {
+        let (io, dispatch) = {
+            let mut state = self.state.lock().await;
+            let session = state.sessions.get_mut(&request.stream_id).ok_or_else(|| {
+                GlobalError::new_biz_error(
+                    BaseErrorCode::NotFound.code(),
+                    "media endpoint lease was not found",
+                    |msg| error!("{msg}: stream_id={}", request.stream_id),
+                )
+            })?;
+            if session.lease_id != request.lease_id
+                || session.route_id != request.route_id
+                || session.endpoint_id != request.endpoint_id
+                || session.generation != request.generation
+            {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "stale_endpoint_generation",
+                    |msg| {
+                        error!(
+                            "{msg}: stream_id={}, endpoint_id={}, generation={}",
+                            request.stream_id, request.endpoint_id, request.generation
+                        )
+                    },
+                ));
+            }
+            if session.state == MediaConnectionState::Ready
+                && session.remote_addr == Some(request.remote_addr)
+            {
+                return Ok(MediaConnectionState::Ready);
+            }
+            if session.state == MediaConnectionState::Connecting {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::IoBusy.code(),
+                    "media endpoint is already connecting",
+                    |msg| error!("{msg}: stream_id={}", request.stream_id),
+                ));
+            }
+            if session.connection.is_some() {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "media endpoint is already connected to another peer",
+                    |msg| error!("{msg}: stream_id={}", request.stream_id),
+                ));
+            }
+            let endpoint = state.endpoints.get(&request.endpoint_id).ok_or_else(|| {
+                GlobalError::new_biz_error(
+                    BaseErrorCode::NotFound.code(),
+                    "media endpoint was not found",
+                    |msg| error!("{msg}: endpoint_id={}", request.endpoint_id),
+                )
+            })?;
+            if endpoint.generation != request.generation
+                || endpoint.state != MediaEndpointState::Listening
+            {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "stale_endpoint_generation",
+                    |msg| error!("{msg}: endpoint_id={}", request.endpoint_id),
+                ));
+            }
+            let io = endpoint.io.clone();
+            let dispatch = endpoint.dispatch.clone();
+            let session = state
+                .sessions
+                .get_mut(&request.stream_id)
+                .expect("checked session");
+            session.state = MediaConnectionState::Connecting;
+            session.remote_addr = Some(request.remote_addr);
+            info!(
+                "media transport state changed: action=connect_tcp_active, stage=connect, outcome=connecting, stream_id={}, endpoint_id={}, generation={}",
+                request.stream_id, request.endpoint_id, request.generation
+            );
+            (io, dispatch)
+        };
+
+        let result = rtp_handler::connect_managed(
+            &self.runtime,
+            io.as_ref(),
+            format!(
+                "stream-media-active-{}-{}",
+                request.endpoint_id, request.generation
+            ),
+            ManagedTcpConnectOptions {
+                remote_addr: request.remote_addr,
+                local_addr: request.local_addr,
+                timeout: request.timeout,
+            },
+            dispatch,
+        )
+        .await;
+
+        let mut state = self.state.lock().await;
+        let current = state.sessions.get_mut(&request.stream_id);
+        let still_current = current.as_ref().is_some_and(|session| {
+            session.lease_id == request.lease_id
+                && session.route_id == request.route_id
+                && session.endpoint_id == request.endpoint_id
+                && session.generation == request.generation
+        });
+        match result {
+            Ok(connection) if still_current => {
+                let session = current.expect("checked session");
+                session.connection = Some(connection);
+                session.state = MediaConnectionState::Ready;
+                info!(
+                    "media transport state changed: action=connect_tcp_active, stage=connect, outcome=ready, stream_id={}, endpoint_id={}, generation={}",
+                    request.stream_id, request.endpoint_id, request.generation
+                );
+                Ok(MediaConnectionState::Ready)
+            }
+            Ok(connection) => {
+                drop(state);
+                connection.close_and_wait().await?;
+                Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "stale_endpoint_generation",
+                    |msg| error!("{msg}: stream_id={}", request.stream_id),
+                ))
+            }
+            Err(error_value) => {
+                if still_current {
+                    let session = current.expect("checked session");
+                    session.state = MediaConnectionState::Failed;
+                    session.connection = None;
+                    info!(
+                        "media transport state changed: action=connect_tcp_active, stage=connect, outcome=failed, stream_id={}, endpoint_id={}, generation={}",
+                        request.stream_id, request.endpoint_id, request.generation
+                    );
+                }
+                Err(error_value)
+            }
+        }
+    }
+
     fn port_candidates(&self, start_offset: usize) -> Vec<(usize, u16)> {
         let count = usize::from(self.conf.port_range.end - self.conf.port_range.start) + 1;
         (0..count)
@@ -457,6 +672,29 @@ impl MediaEndpointManager {
     }
 
     pub async fn release(&self, stream_id: &str, lease_id: &str) -> GlobalResult<bool> {
+        if self.conf.mode == MediaListenerMode::Single {
+            let connection = {
+                let mut state = self.state.lock().await;
+                let Some(session) = state.sessions.get(stream_id) else {
+                    return Ok(false);
+                };
+                if session.lease_id != lease_id {
+                    return Err(GlobalError::new_biz_error(
+                        BaseErrorCode::InvalidState.code(),
+                        "media endpoint lease does not match",
+                        |msg| error!("{msg}: stream_id={stream_id}"),
+                    ));
+                }
+                state
+                    .sessions
+                    .remove(stream_id)
+                    .and_then(|session| session.connection)
+            };
+            if let Some(connection) = connection {
+                connection.close_and_wait().await?;
+            }
+            return Ok(true);
+        }
         let endpoint = {
             let mut state = self.state.lock().await;
             let Some(endpoint_id) = state.stream_index.get(stream_id).cloned() else {
@@ -486,6 +724,7 @@ impl MediaEndpointManager {
         {
             state.endpoints.remove(&endpoint.0);
             state.stream_index.remove(stream_id);
+            state.sessions.remove(stream_id);
             Register::unbind_media_endpoint(stream_id, &endpoint.0, endpoint.1);
         }
         Ok(true)
@@ -697,7 +936,10 @@ impl MediaEndpointManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaBootstrap, MediaEndpointManager, ReserveMediaEndpoint, find_free_test_range};
+    use super::{
+        ConnectMediaEndpoint, MediaBootstrap, MediaConnectionState, MediaEndpointManager,
+        ReserveMediaEndpoint, find_free_test_range,
+    };
     use crate::general::cfg::{MediaListenerConf, MediaListenerMode, MediaPortRange};
     use crate::io::rtp_handler;
     use base::utils::rt::GlobalRuntime;
@@ -804,13 +1046,70 @@ mod tests {
             .unwrap();
         assert_eq!(first.endpoint_id, second.endpoint_id);
         assert_eq!(first.port, range.start);
-        assert!(!manager.release("stream-a", "lease-a").await.unwrap());
+        assert!(manager.release("stream-a", "lease-a").await.unwrap());
+        assert!(!manager.owns_active_lease("stream-a", "lease-a").await);
         assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, range.start)).is_err());
 
         manager.shutdown().await.unwrap();
         let rebound_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, range.start)).unwrap();
         let rebound_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, range.start)).unwrap();
         drop((rebound_tcp, rebound_udp));
+    }
+
+    #[tokio::test]
+    async fn active_tcp_connection_is_ready_and_fenced_by_generation() {
+        let range = find_free_test_range(1);
+        let manager = MediaEndpointManager::new(
+            GlobalRuntime::get_main_runtime(),
+            multi_conf(range),
+            MediaBootstrap::Multi,
+        )
+        .unwrap();
+        let endpoint = manager
+            .reserve(request("stream-a", "lease-a", 1001))
+            .await
+            .unwrap();
+        let peer = base::tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let remote_addr = peer.local_addr().unwrap();
+
+        let state = manager
+            .connect_tcp_active(ConnectMediaEndpoint {
+                stream_id: endpoint.stream_id.clone(),
+                lease_id: endpoint.lease_id.clone(),
+                route_id: endpoint.route_id.clone(),
+                endpoint_id: endpoint.endpoint_id.clone(),
+                generation: endpoint.generation,
+                remote_addr,
+                local_addr: None,
+                timeout: Duration::from_secs(1),
+            })
+            .await
+            .unwrap();
+        assert_eq!(state, MediaConnectionState::Ready);
+        let (accepted, _) = peer.accept().await.unwrap();
+
+        let stale = manager
+            .connect_tcp_active(ConnectMediaEndpoint {
+                stream_id: endpoint.stream_id.clone(),
+                lease_id: endpoint.lease_id.clone(),
+                route_id: endpoint.route_id.clone(),
+                endpoint_id: endpoint.endpoint_id.clone(),
+                generation: endpoint.generation + 1,
+                remote_addr,
+                local_addr: None,
+                timeout: Duration::from_secs(1),
+            })
+            .await;
+        assert!(stale.is_err());
+
+        manager
+            .release(&endpoint.stream_id, &endpoint.lease_id)
+            .await
+            .unwrap();
+        drop(accepted);
+        manager.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -902,7 +1201,7 @@ mod tests {
             MediaBootstrap::Multi,
         )
         .unwrap();
-        let mut reserve = request("talk-a", "talk-lease-a", 1001);
+        let mut reserve = request("broadcast-a", "broadcast-lease-a", 1001);
         reserve.reservation_ttl = Some(Duration::from_millis(1));
         reserve.confirmed = true;
         let endpoint = manager.reserve(reserve).await.unwrap();
@@ -924,11 +1223,11 @@ mod tests {
             MediaBootstrap::Multi,
         )
         .unwrap();
-        let mut reserve = request("talk-a", "lease-a", 1001);
+        let mut reserve = request("broadcast-a", "lease-a", 1001);
         reserve.reservation_ttl = Some(Duration::from_millis(1));
         manager.reserve(reserve).await.unwrap();
 
-        let mut confirmed = request("talk-a", "lease-a", 1001);
+        let mut confirmed = request("broadcast-a", "lease-a", 1001);
         confirmed.confirmed = true;
         manager.reserve(confirmed).await.unwrap();
         base::tokio::time::sleep(Duration::from_millis(5)).await;

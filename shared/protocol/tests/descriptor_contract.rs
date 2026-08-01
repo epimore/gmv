@@ -565,6 +565,7 @@ fn stream_receive_allocation_contract_is_additive() {
         ("preferred_endpoints", 6),
         ("constraints", 7),
         ("reservation_ttl_ms", 8),
+        ("media_transport", 9),
     ] {
         assert_eq!(field("StartReceiveRequest", name).number, Some(number));
     }
@@ -577,6 +578,40 @@ fn stream_receive_allocation_contract_is_additive() {
             .type_name
             .as_deref(),
         Some(".gmv.common.v1.Endpoint")
+    );
+}
+
+#[test]
+fn session_broadcast_parent_and_leg_contract_is_stable() {
+    let descriptor = descriptor();
+    let session = descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("gmv.session.v1"))
+        .unwrap();
+    let field_number = |message_name: &str, field_name: &str| {
+        session
+            .message_type
+            .iter()
+            .find(|message| message.name.as_deref() == Some(message_name))
+            .unwrap()
+            .field
+            .iter()
+            .find(|field| field.name.as_deref() == Some(field_name))
+            .unwrap()
+            .number
+    };
+
+    for (name, number) in [
+        ("broadcast_id", 18),
+        ("broadcast_leg_id", 19),
+        ("expected_stream_node_id", 20),
+    ] {
+        assert_eq!(field_number("StartDeviceStreamRequest", name), Some(number));
+    }
+    assert_eq!(
+        field_number("DeviceStreamResponse", "broadcast_profile"),
+        Some(12)
     );
 }
 
@@ -656,6 +691,7 @@ fn start_receive_request_is_wire_compatible_with_legacy_callers() {
         preferred_endpoints: legacy.preferred_endpoints.clone(),
         constraints,
         reservation_ttl_ms: 30_000,
+        media_transport: gmv_protocol::stream::v1::MediaTransport::TcpPassive as i32,
     };
     let decoded_legacy =
         LegacyStartReceiveRequest::decode(current.encode_to_vec().as_slice()).unwrap();

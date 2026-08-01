@@ -201,15 +201,6 @@
         >
           下载
         </button>
-        <button
-          v-else-if="control === 'talk'"
-          type="button"
-          :disabled="capabilities.talk === false"
-          aria-label="切换对讲状态"
-          @click="emitSimple('talk-toggle')"
-        >
-          {{ state.talking ? "停对讲" : "对讲" }}
-        </button>
         <select
           v-else-if="control === 'streamSwitch'"
           :value="state.selectedSourceUrl"
@@ -371,15 +362,6 @@
           @click="emitSimple('cloud-record-request', true)"
         >
           下载
-        </button>
-        <button
-          v-else-if="control === 'talk'"
-          type="button"
-          :disabled="capabilities.talk === false"
-          aria-label="切换对讲状态"
-          @click="emitSimple('talk-toggle', true)"
-        >
-          {{ state.talking ? "停对讲" : "对讲" }}
         </button>
         <select
           v-else-if="control === 'streamSwitch'"
@@ -821,7 +803,6 @@ function emitSimple(
         | "ptz-toggle"
         | "record-toggle"
         | "cloud-record-request"
-        | "talk-toggle";
     }
   >["type"],
   fromOverflow = false,

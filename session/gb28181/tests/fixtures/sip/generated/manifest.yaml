@@ -355,50 +355,50 @@ packets:
       - /api/downing/info
       - /api/rm/file
       - /hook/end/record
-  - scenario_id: talk-normal
-    file: talk-normal-01-invite.sip
+  - scenario_id: broadcast-normal
+    file: broadcast-normal-01-invite.sip
     direction: platform-to-device
     transport: udp
     sip_method: INVITE
     expected_status: null
     source: synthetic-wire
-    sha256: 7f03f9b45d86f74f7fab5e71362e863e9be03f617894519172432e3b7bc96e90
+    sha256: 053917436f2bd790f05dd7caaefc7965540a4761cabd9e96bf77bb820cb5ca4f
     business_apis:
-      - /api/talk/start
-      - /api/talk/stop
-  - scenario_id: talk-normal
-    file: talk-normal-02-100.sip
+      - /api/broadcast/start
+      - /api/broadcast/stop
+  - scenario_id: broadcast-normal
+    file: broadcast-normal-02-100.sip
     direction: device-to-platform
     transport: udp
     sip_method: INVITE
     expected_status: 100
     source: synthetic-wire
-    sha256: a5c1ab13897d7188c921a613afcbdc420bfd2cf0794cfb3417f4cc8b94c7330f
+    sha256: 0175a8bd73b07a3e833f9813fcab781c099bbeef09d0f3e0165138534a1ad670
     business_apis:
-      - /api/talk/start
-      - /api/talk/stop
-  - scenario_id: talk-normal
-    file: talk-normal-03-200.sip
+      - /api/broadcast/start
+      - /api/broadcast/stop
+  - scenario_id: broadcast-normal
+    file: broadcast-normal-03-200.sip
     direction: device-to-platform
     transport: udp
     sip_method: INVITE
     expected_status: 200
     source: synthetic-wire
-    sha256: c78b1d3f614bef8b701ff557df65a958b183871053be084d7dd609a571dd6843
+    sha256: 9107a56697804c4778fff93b7ae2a16e7f3a6481e99868133947e7ae494a0ab1
     business_apis:
-      - /api/talk/start
-      - /api/talk/stop
-  - scenario_id: talk-normal
-    file: talk-normal-04-ack.sip
+      - /api/broadcast/start
+      - /api/broadcast/stop
+  - scenario_id: broadcast-normal
+    file: broadcast-normal-04-ack.sip
     direction: platform-to-device
     transport: udp
     sip_method: ACK
     expected_status: null
     source: synthetic-wire
-    sha256: 1dc16cdf0d040fa21bbcd677677c882ee8c7b60ed4b437ce65ac2f9392612995
+    sha256: bc38fcd730ad31a09f79b8a056e3f08aaffc2245eebb392d1b6c7149f910d234
     business_apis:
-      - /api/talk/start
-      - /api/talk/stop
+      - /api/broadcast/start
+      - /api/broadcast/stop
   - scenario_id: broadcast-raw-pcma
     file: broadcast-raw-pcma-01-invite.sip
     direction: device-to-platform
@@ -469,10 +469,10 @@ packets:
     sha256: 5722bad3ad605424ee165dfb42b6a5e9fb2a06fcbeb83305f39b40aa57b299d6
     business_apis:
       - /api/download/stop
-      - /api/talk/stop
+      - /api/broadcast/stop
       - /hook/stream/input/timeout
       - /hook/stream/idle
-      - /hook/talk/closed
+      - /hook/broadcast/closed
   - scenario_id: bye-normal
     file: bye-normal-02-200.sip
     direction: device-to-platform
@@ -483,10 +483,10 @@ packets:
     sha256: 68a9c1fe62dbe0b04f1145581cedebc344db7a0929d200cb4cfb791f667d3257
     business_apis:
       - /api/download/stop
-      - /api/talk/stop
+      - /api/broadcast/stop
       - /hook/stream/input/timeout
       - /hook/stream/idle
-      - /hook/talk/closed
+      - /hook/broadcast/closed
   - scenario_id: subscribe-normal
     file: subscribe-normal-01-request.sip
     direction: platform-to-device

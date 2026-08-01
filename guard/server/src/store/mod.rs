@@ -14,8 +14,8 @@ use parking_lot::RwLock;
 
 use crate::core::{GuardError, GuardResult, LeaseState, RouteState};
 use model::{
-    EventRecord, LeaseRecord, NodeRecord, OutboxRecord, OutboxState, PlaybackTicketRecord,
-    RouteRecord, StreamSessionOwnerRecord,
+    BroadcastOperationRecord, EventRecord, LeaseRecord, NodeRecord, OutboxRecord, OutboxState,
+    PlaybackTicketRecord, RouteRecord, StreamSessionOwnerRecord,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -36,9 +36,46 @@ struct StoreInner {
     playback_tickets: HashMap<String, PlaybackTicketRecord>,
     stream_session_owners: HashMap<String, StreamSessionOwnerRecord>,
     stream_input_owners: HashMap<String, StreamSessionOwnerRecord>,
+    broadcast_operations: HashMap<String, BroadcastOperationRecord>,
 }
 
 impl InMemoryGuardStore {
+    pub fn get_broadcast_operation(&self, broadcast_id: &str) -> Option<BroadcastOperationRecord> {
+        self.inner
+            .read()
+            .broadcast_operations
+            .get(broadcast_id)
+            .cloned()
+    }
+
+    pub fn find_broadcast_operation_by_request(
+        &self,
+        operation_id: &str,
+    ) -> Option<BroadcastOperationRecord> {
+        self.inner
+            .read()
+            .broadcast_operations
+            .values()
+            .find(|operation| operation.operation_id == operation_id)
+            .cloned()
+    }
+
+    pub fn upsert_broadcast_operation(&self, operation: BroadcastOperationRecord) {
+        self.inner
+            .write()
+            .broadcast_operations
+            .insert(operation.broadcast_id.clone(), operation);
+    }
+
+    pub fn broadcast_operations(&self) -> Vec<BroadcastOperationRecord> {
+        self.inner
+            .read()
+            .broadcast_operations
+            .values()
+            .cloned()
+            .collect()
+    }
+
     pub fn upsert_node(&self, node: NodeRecord) {
         self.inner
             .write()

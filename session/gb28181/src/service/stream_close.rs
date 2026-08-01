@@ -805,6 +805,7 @@ mod tests {
                 let stream_id = "force-finalizer-stream";
                 SipDialogSessionRepository::insert_inviting(&SipDialogSession {
                     stream_id: stream_id.into(),
+                    parent_stream_id: None,
                     device_id: "34020000001320000001".into(),
                     channel_id: "34020000001320000101".into(),
                     session_type: DialogSessionType::Live,

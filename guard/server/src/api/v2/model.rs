@@ -30,6 +30,8 @@ pub struct StreamSummary {
     pub endpoint: String,
     pub video_codec: String,
     pub audio_codec: String,
+    #[serde(default)]
+    pub broadcast_profile: String,
     pub subscription_id: String,
     pub session_node_id: String,
     pub session_instance_id: String,
@@ -38,6 +40,30 @@ pub struct StreamSummary {
     pub playback_start_time_sec: u32,
     pub playback_end_time_sec: u32,
     pub state: StreamSummaryState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastTargetSummary {
+    pub target_key: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub session_node_id: String,
+    pub leg_id: String,
+    pub transport: String,
+    pub profile: String,
+    pub state: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastOperationSummary {
+    pub broadcast_id: String,
+    pub stream_node_id: String,
+    pub input_url: String,
+    pub state: String,
+    pub target_summaries: Vec<BroadcastTargetSummary>,
 }
 
 #[derive(Debug, Clone, base::serde::Serialize)]

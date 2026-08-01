@@ -9,13 +9,13 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::serde_json;
 use gmv_domain::info::obj::{
-    InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo, StreamPlayInfo,
-    StreamRecordInfo, StreamState, TalkClosedEvent, UnknownStreamEvent,
+    BroadcastClosedEvent, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
+    StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
 };
 
 use crate::gb::SessionConf;
 use crate::register::core::{Register, TimeScheduleKey};
-use crate::service::{KEY_STREAM_IN, dialog_recovery, stream_close, talk_close};
+use crate::service::{KEY_STREAM_IN, broadcast_close, dialog_recovery, stream_close};
 use crate::state;
 use crate::state::DownloadConf;
 use crate::storage::dialog_session::{PlaybackPauseLease, SipDialogSessionRepository};
@@ -337,12 +337,17 @@ pub async fn end_record(stream_record_info: StreamRecordInfo) -> GlobalResult<()
     Ok(())
 }
 
-pub async fn talk_closed(event: TalkClosedEvent) -> bool {
-    let closed = talk_close::begin(event.talk_id.clone());
+pub async fn broadcast_closed(event: BroadcastClosedEvent) -> bool {
+    let leg_id = if event.leg_id.is_empty() {
+        event.broadcast_id.clone()
+    } else {
+        event.leg_id.clone()
+    };
+    let closed = broadcast_close::begin(leg_id.clone());
     if !closed {
         debug!(
-            "ignore duplicate or late talk_closed event: outcome=duplicate_or_late, talk_id={}, reason={}",
-            event.talk_id, event.reason
+            "ignore duplicate or late broadcast_closed event: outcome=duplicate_or_late, broadcast_id={}, leg_id={}, reason={}",
+            event.broadcast_id, leg_id, event.reason
         );
     }
     closed

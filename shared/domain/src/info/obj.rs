@@ -4,8 +4,8 @@ use base::serde::{Deserialize, Serialize};
 
 // stream data-plane endpoints
 pub const PLAY_PATH: &str = "/play/{stream_id}";
-pub const TALK_INPUT_PREFIX: &str = "/talk/input";
-pub const TALK_INPUT_PATH: &str = "/talk/input/{talk_id}";
+pub const BROADCAST_INPUT_PREFIX: &str = "/broadcast/input";
+pub const BROADCAST_INPUT_PATH: &str = "/broadcast/input/{broadcast_id}";
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
@@ -143,9 +143,15 @@ pub struct UnknownStreamEvent {
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
-pub struct TalkStartModel {
+pub struct BroadcastStartModel {
     pub device_id: String,
     pub channel_id: Option<String>,
+    #[serde(default)]
+    pub broadcast_id: Option<String>,
+    #[serde(default)]
+    pub leg_id: Option<String>,
+    #[serde(default)]
+    pub expected_stream_node_id: Option<String>,
     pub transport: Option<String>,
     pub codec: Option<String>,
     pub sample_rate: Option<u32>,
@@ -156,8 +162,12 @@ pub struct TalkStartModel {
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct TalkInfo {
-    pub talk_id: String,
+pub struct BroadcastInfo {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
+    #[serde(default)]
+    pub profile: String,
     pub input_url: String,
     pub codec: String,
     pub sample_rate: u32,
@@ -168,23 +178,29 @@ pub struct TalkInfo {
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
-pub struct TalkStopModel {
-    pub talk_id: String,
+pub struct BroadcastStopModel {
+    pub broadcast_id: String,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct TalkClosedEvent {
-    pub talk_id: String,
+pub struct BroadcastClosedEvent {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
     pub reason: String,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct TalkOpenReq {
-    pub talk_id: String,
+pub struct BroadcastOpenReq {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
+    #[serde(default)]
+    pub leg_stream_id: String,
     pub ssrc: u32,
     pub token: String,
     pub codec: String,
@@ -204,8 +220,9 @@ pub struct TalkOpenReq {
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct TalkOpenResp {
-    pub talk_id: String,
+pub struct BroadcastOpenResp {
+    pub broadcast_id: String,
+    pub leg_id: String,
     pub input_url: String,
     pub rtp_port: u16,
     pub codec: String,
@@ -218,17 +235,29 @@ pub struct TalkOpenResp {
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct TalkAnswerReq {
-    pub talk_id: String,
+pub struct BroadcastConfigureLegReq {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
     pub device_ip: String,
     pub device_port: u16,
     pub protocol: String,
     pub payload_type: u8,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub packetization: String,
+    #[serde(default)]
+    pub inner_codec: String,
+    #[serde(default)]
+    pub rtp_clock_rate: u32,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "base::serde")]
-pub struct TalkCloseReq {
-    pub talk_id: String,
+pub struct BroadcastCloseReq {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
 }
