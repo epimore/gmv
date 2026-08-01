@@ -236,7 +236,16 @@ fn parse_rtpmap_from_sdp(sdp: &str, payload_type: u8) -> Option<(String, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_broadcast_sdp;
+    use crate::state::model::TransMode;
+
+    use super::{TalkAudioOptions, parse_broadcast_sdp};
+
+    fn fixture_sdp(packet: &str) -> &str {
+        packet
+            .split_once("\r\n\r\n")
+            .expect("SIP fixture contains header/body separator")
+            .1
+    }
 
     #[test]
     fn broadcast_invite_requires_play_audio_recvonly_pcma() {
@@ -250,5 +259,38 @@ mod tests {
 
         assert!(parse_broadcast_sdp(&valid.replace("a=recvonly", "a=sendrecv"), "call-2").is_err());
         assert!(parse_broadcast_sdp(&valid.replace("s=Play", "s=Talk"), "call-3").is_err());
+    }
+
+    #[test]
+    fn raw_and_vendor_ps_fixtures_reproduce_current_codec_gate() {
+        let raw = fixture_sdp(include_str!(
+            "../../tests/fixtures/sip/generated/broadcast-raw-pcma-01-invite.sip"
+        ));
+        let raw_answer = parse_broadcast_sdp(raw, "raw-call").expect("raw PCMA fixture");
+        assert_eq!(raw_answer.payload_type, 8);
+        assert_eq!(raw_answer.codec, "PCMA");
+        assert_eq!(raw_answer.sample_rate, 8_000);
+
+        let vendor = fixture_sdp(include_str!(
+            "../../tests/fixtures/sip/generated/broadcast-vendor-ps-pcma-01-invite.sip"
+        ));
+        let ps_answer = parse_broadcast_sdp(vendor, "ps-call").expect("vendor PS fixture");
+        assert_eq!(ps_answer.device_ip, "192.168.110.254");
+        assert_eq!(ps_answer.device_port, 63_086);
+        assert_eq!(ps_answer.payload_type, 96);
+        assert_eq!(ps_answer.codec, "PS");
+        assert_eq!(ps_answer.sample_rate, 90_000);
+        assert!(vendor.contains("f=v/////a/1/8/1"));
+
+        let requested = TalkAudioOptions {
+            codec: "PCMA".to_string(),
+            payload_type: 8,
+            sample_rate: 8_000,
+            channel_count: 1,
+            frame_duration_ms: 20,
+            trans_mode: TransMode::Udp,
+        };
+        assert!(requested.compatible_answer(&raw_answer.codec, raw_answer.sample_rate));
+        assert!(!requested.compatible_answer(&ps_answer.codec, ps_answer.sample_rate));
     }
 }

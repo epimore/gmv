@@ -653,6 +653,62 @@ y=0200008202\r\n"
         talk_answer,
     );
 
+    let broadcast_raw_pcma = format!(
+        "v=0\r\n\
+o={DEVICE_ID} 0 0 IN IP4 198.51.100.20\r\n\
+s=Play\r\n\
+c=IN IP4 198.51.100.20\r\n\
+t=0 0\r\n\
+m=audio 30004 RTP/AVP 8\r\n\
+a=recvonly\r\n\
+a=rtpmap:8 PCMA/8000\r\n\
+f=v/////a/1/8/1\r\n"
+    );
+    assets.push(PacketAsset {
+        scenario_id: "broadcast-raw-pcma",
+        business_apis: &["/gb28181/devices/{device_id}/broadcast/start"],
+        file_name: "broadcast-raw-pcma-01-invite.sip".into(),
+        direction: "device-to-platform",
+        sip_method: "INVITE",
+        expected_status: None,
+        bytes: device_request(
+            "INVITE",
+            "broadcast-raw-pcma",
+            230,
+            Some("application/sdp"),
+            &broadcast_raw_pcma,
+            &[("Subject", &format!("{CHANNEL_ID}:8203,{PLATFORM_ID}:0"))],
+        ),
+    });
+
+    let broadcast_vendor_ps_pcma = format!(
+        "v=0\r\n\
+o={DEVICE_ID} 0 0 IN IP4 192.168.110.254\r\n\
+s=Play\r\n\
+c=IN IP4 192.168.110.254\r\n\
+t=0 0\r\n\
+m=audio 63086 RTP/AVP 96\r\n\
+a=recvonly\r\n\
+a=rtpmap:96 PS/90000\r\n\
+f=v/////a/1/8/1\r\n"
+    );
+    assets.push(PacketAsset {
+        scenario_id: "broadcast-vendor-ps-pcma",
+        business_apis: &["/gb28181/devices/{device_id}/broadcast/start"],
+        file_name: "broadcast-vendor-ps-pcma-01-invite.sip".into(),
+        direction: "device-to-platform",
+        sip_method: "INVITE",
+        expected_status: None,
+        bytes: device_request(
+            "INVITE",
+            "broadcast-vendor-ps-pcma",
+            231,
+            Some("application/sdp"),
+            &broadcast_vendor_ps_pcma,
+            &[("Subject", &format!("{CHANNEL_ID}:8204,{PLATFORM_ID}:0"))],
+        ),
+    });
+
     let seek = "PLAY RTSP/1.0\r\nCSeq: 1\r\nRange: npt=30-\r\n\r\n";
     push_exchange(
         &mut assets,
@@ -772,8 +828,8 @@ fn manifest(assets: &[PacketAsset]) -> String {
     let mut output = String::from(
         "version: 1\n\
 source: synthetic-wire\n\
-derived_from: 2026-06-13-live-invite-log\n\
-sanitization: rfc5737-addresses-and-fixed-gb28181-identifiers\n\
+derived_from: 2026-06-13-live-invite-log-and-2026-08-01-broadcast-invite-log\n\
+sanitization: rfc5737-signaling-addresses-private-media-address-and-fixed-gb28181-identifiers\n\
 generated_by: session/tests/sip_corpus.rs\n\
 integrity_test: generated_sip_corpus_is_current_and_complete\n\
 runtime_test: normal_gb28181_business_dialogues_use_owned_io\n\
