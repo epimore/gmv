@@ -159,7 +159,7 @@ pub async fn start_guard(
         users,
         SessionPolicy {
             allowed_origins: web_config.allowed_origins.clone(),
-            secure_cookie: web_config.tls.is_some(),
+            secure_cookie: web_config.session_cookie_secure,
             session_ttl: web_config.session_ttl,
             login_window: web_config.login_window,
             max_failed_attempts: web_config.max_failed_attempts,

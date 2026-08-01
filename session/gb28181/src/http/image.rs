@@ -15,7 +15,6 @@ use base::tokio::fs::File;
 use base::tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::gb::SessionConf;
 use crate::http::Http;
 use crate::storage::guard_query::GbChannelImageView;
 use crate::storage::pics::Pics;
@@ -131,16 +130,9 @@ pub async fn issue_ticket(
             expires_at_ms,
         },
     );
-    let session = SessionConf::get_session_by_conf();
     let http = Http::get_http_by_conf();
     Ok(IssuedAccess {
-        url: build_access_url(
-            &conf.public_base_url,
-            &session.wan_ip.to_string(),
-            http.port,
-            image_id,
-            &token,
-        ),
+        url: build_access_url(&conf.public_base_url, &http.public_url, image_id, &token),
         expires_at_ms,
         content_type: content_type.to_string(),
         file_name,
@@ -150,14 +142,13 @@ pub async fn issue_ticket(
 
 fn build_access_url(
     public_base_url: &str,
-    wan_ip: &str,
-    http_port: u16,
+    http_public_url: &str,
     image_id: &str,
     token: &str,
 ) -> String {
     let configured_base = public_base_url.trim();
     let base_url = if configured_base.is_empty() {
-        format!("http://{wan_ip}:{http_port}")
+        http_public_url.trim_end_matches('/').to_string()
     } else {
         configured_base.trim_end_matches('/').to_string()
     };
@@ -302,11 +293,18 @@ mod tests {
         assert_eq!(
             build_access_url(
                 "https://gmv.example.com/session-1/",
-                "192.0.2.10",
-                28567,
+                "http://192.0.2.10:28567",
                 "16873",
                 "token-1",
             ),
+            "https://gmv.example.com/session-1/images/16873/file?token=token-1"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_session_http_public_url() {
+        assert_eq!(
+            build_access_url("", "https://gmv.example.com/session-1/", "16873", "token-1",),
             "https://gmv.example.com/session-1/images/16873/file?token=token-1"
         );
     }

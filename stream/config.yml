@@ -19,14 +19,14 @@ server:
     listen_addr: 0.0.0.0:28570 #本机HTTP实际监听地址
     public_url: http://192.168.0.9:28570 #播放、WebSocket和节点HTTP endpoint使用的完整对外URL
     tls:
-      enabled: false # 必须与public_url的http/https scheme一致
+      enabled: false #仅控制本机HTTP监听TLS；若由Nginx终止HTTPS，可保持false并将public_url配置为https
       certificate_path: ""
       private_key_path: ""
   grpc:
     listen_addr: 0.0.0.0:19082 #本机control gRPC实际监听地址
-    advertised_addr: 192.168.0.9:19082 #注册给guard和其它节点的可达地址
+    advertised_url: http://192.168.0.9:19082 #注册给guard和其它节点的完整可达地址；scheme独立于本机TLS
     tls:
-      enabled: false # 启用后节点上报grpcs，并要求配置证书
+      enabled: false #仅控制本机control gRPC监听TLS；启用时要求配置证书
       certificate_path: ""
       private_key_path: ""
   media:

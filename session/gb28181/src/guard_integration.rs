@@ -449,19 +449,17 @@ impl SessionGuardNode {
     pub fn new(
         node_id: impl Into<String>,
         instance_id: impl Into<String>,
-        http_port: Option<u32>,
+        http_endpoint: (bool, String, u16),
     ) -> Self {
-        let mut endpoints = Vec::new();
-        if let Some(http_port) = http_port {
-            endpoints.push(Endpoint {
-                name: "http".to_string(),
-                scheme: "http".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: http_port,
-                mode: EndpointMode::Single as i32,
-                labels: HashMap::new(),
-            });
-        }
+        let (tls, host, port) = http_endpoint;
+        let endpoints = vec![Endpoint {
+            name: "http".to_string(),
+            scheme: if tls { "https" } else { "http" }.to_string(),
+            host,
+            port: u32::from(port),
+            mode: EndpointMode::Single as i32,
+            labels: HashMap::new(),
+        }];
         Self {
             guard_channel: rpc_channel_config(crate::state::GuardConf::get_or_default().endpoint),
             identity: NodeIdentity {
@@ -3808,12 +3806,22 @@ mod tests {
 
     #[test]
     fn session_builds_guard_and_stream_requests_then_records_running_stream() {
-        let node = SessionGuardNode::new("session-1", "inst-1", Some(18081));
+        let node = SessionGuardNode::new(
+            "session-1",
+            "inst-1",
+            (true, "session.example.com".to_string(), 443),
+        );
         let register = node.register_request(NodeResourceSnapshot {
             resources: vec![],
             full: true,
         });
         assert_eq!(register.identity.unwrap().kind, NodeKind::Session as i32);
+        assert!(register.endpoints.iter().any(|endpoint| {
+            endpoint.name == "http"
+                && endpoint.scheme == "https"
+                && endpoint.host == "session.example.com"
+                && endpoint.port == 443
+        }));
         assert!(register.capabilities.contains(&"device.ptz".to_string()));
         assert!(
             register
@@ -3921,7 +3929,11 @@ mod tests {
 
     #[test]
     fn session_rejects_stale_instance_and_keeps_autonomy_event_for_guard_loss() {
-        let node = SessionGuardNode::new("session-1", "inst-1", Some(18081));
+        let node = SessionGuardNode::new(
+            "session-1",
+            "inst-1",
+            (false, "127.0.0.1".to_string(), 18081),
+        );
         let mut control = SessionControlAdapter::new(node.identity.clone());
         let stale = NodeIdentity {
             node_id: "session-1".to_string(),

@@ -16,7 +16,6 @@ use base::tokio::io::{AsyncReadExt, AsyncSeekExt};
 use base::tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use crate::gb::SessionConf;
 use crate::http::Http;
 use crate::service::cloud_recording::{resolve_file_path, storage_root};
 use crate::state::DownloadConf;
@@ -106,16 +105,9 @@ pub async fn issue_ticket(task_id: &str, mode: &str) -> Result<IssuedAccess, ton
             absolute_expires_at_ms,
         },
     );
-    let session = SessionConf::get_session_by_conf();
     let http = Http::get_http_by_conf();
     Ok(IssuedAccess {
-        url: build_access_url(
-            &conf.public_base_url,
-            &session.wan_ip.to_string(),
-            http.port,
-            task_id,
-            &token,
-        ),
+        url: build_access_url(&conf.public_base_url, &http.public_url, task_id, &token),
         expires_at_ms: idle_expires_at_ms,
         content_type: "video/mp4".to_string(),
         file_name: format!("{}.{}", file.file_name, file_format.trim_start_matches('.')),
@@ -125,14 +117,13 @@ pub async fn issue_ticket(task_id: &str, mode: &str) -> Result<IssuedAccess, ton
 
 fn build_access_url(
     public_base_url: &str,
-    wan_ip: &str,
-    http_port: u16,
+    http_public_url: &str,
     task_id: &str,
     token: &str,
 ) -> String {
     let configured_base = public_base_url.trim();
     let base_url = if configured_base.is_empty() {
-        format!("http://{wan_ip}:{http_port}")
+        http_public_url.trim_end_matches('/').to_string()
     } else {
         configured_base.trim_end_matches('/').to_string()
     };
@@ -280,8 +271,7 @@ mod tests {
         assert_eq!(
             build_access_url(
                 "https://gmv.example.com/recordings/session-1/",
-                "192.0.2.10",
-                28567,
+                "http://192.0.2.10:28567",
                 "task-1",
                 "token-1",
             ),
@@ -290,10 +280,15 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_session_http_address() {
+    fn falls_back_to_session_http_public_url() {
         assert_eq!(
-            build_access_url("", "192.0.2.10", 28567, "task-1", "token-1"),
-            "http://192.0.2.10:28567/cloud-recordings/task-1/file?token=token-1"
+            build_access_url(
+                "",
+                "https://gmv.example.com/session-1/",
+                "task-1",
+                "token-1"
+            ),
+            "https://gmv.example.com/session-1/cloud-recordings/task-1/file?token=token-1"
         );
     }
 

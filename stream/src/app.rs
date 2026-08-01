@@ -94,7 +94,7 @@ impl Daemon<StreamBootstrap> for App {
             media_conf,
         } = bootstrap;
         let node_name = self.conf.name.clone();
-        let (http_public_host, http_public_port) =
+        let (http_public_tls, http_public_host, http_public_port) =
             self.conf.http.public_endpoint().map_err(|message| {
                 base::exception::GlobalError::new_biz_error(
                     base::err::BaseErrorCode::InvalidRequest.code(),
@@ -103,6 +103,14 @@ impl Daemon<StreamBootstrap> for App {
                 )
             })?;
         let grpc = self.conf.grpc.clone();
+        let (grpc_advertised_tls, grpc_advertised_host, grpc_advertised_port) =
+            grpc.advertised_endpoint().map_err(|message| {
+                base::exception::GlobalError::new_biz_error(
+                    base::err::BaseErrorCode::InvalidRequest.code(),
+                    &message,
+                    |msg| error!("{msg}"),
+                )
+            })?;
         let guard = GuardConf::init_by_conf();
         let started_at_epoch_ms = now_epoch_ms();
         let (tx, rx) = mpsc::channel(100);
@@ -121,7 +129,7 @@ impl Daemon<StreamBootstrap> for App {
                 http_public_host,
                 guard.endpoint.clone(),
                 u32::from(http_public_port),
-                self.conf.http.tls.enabled,
+                http_public_tls,
                 receive_endpoint.port,
             );
             node.endpoints.retain(|endpoint| endpoint.name != "rtp");
@@ -129,9 +137,9 @@ impl Daemon<StreamBootstrap> for App {
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
-                scheme: base_rpc::rpc_scheme(grpc.tls.enabled).to_string(),
-                host: grpc.advertised_addr.ip().to_string(),
-                port: u32::from(grpc.advertised_addr.port()),
+                scheme: base_rpc::rpc_scheme(grpc_advertised_tls).to_string(),
+                host: grpc_advertised_host,
+                port: u32::from(grpc_advertised_port),
                 mode: EndpointMode::Single as i32,
                 labels: HashMap::new(),
             });
@@ -359,7 +367,7 @@ RTP status        : {}"#,
         server_conf.http.listen_addr,
         server_conf.http.public_url,
         server_conf.grpc.listen_addr,
-        server_conf.grpc.advertised_addr,
+        server_conf.grpc.advertised_url,
         rtp_listen,
         rtp_public,
         rtp_status

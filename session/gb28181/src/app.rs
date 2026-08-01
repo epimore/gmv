@@ -4,7 +4,7 @@ use crate::storage::db::{self, SessionDatabaseBackend};
 use base::cfg_lib::{CliBasic, default_cli_basic};
 use base::daemon::Daemon;
 use base::exception::GlobalResult;
-use base::log::{error, info, warn};
+use base::log::{error, info};
 use base::logger;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ pub struct AppInfo {
 
 impl
     Daemon<(
-        Option<std::net::TcpListener>,
+        std::net::TcpListener,
         (Option<std::net::TcpListener>, Option<UdpSocket>),
         TcpListener,
     )> for AppInfo
@@ -42,7 +42,7 @@ impl
     fn init_privilege() -> GlobalResult<(
         Self,
         (
-            Option<std::net::TcpListener>,
+            std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
             TcpListener,
         ),
@@ -73,22 +73,19 @@ impl
                 ));
             }
         }
-        let http_listener = if app_info.http.enabled {
-            Some(app_info.http.listen_http_server()?)
-        } else {
-            None
-        };
+        let http_listener = app_info.http.listen_http_server()?;
         let tu = app_info.session_conf.listen_gb_server()?;
         let grpc = crate::state::SessionGrpcConf::get();
-        let grpc_listener = TcpListener::bind(grpc.addr).map_err(|error| {
+        let grpc_listener = TcpListener::bind(grpc.listen_addr).map_err(|error| {
             base::exception::GlobalError::new_sys_error(
-                &format!("bind session grpc {} failed: {error}", grpc.addr),
+                &format!("bind session grpc {} failed: {error}", grpc.listen_addr),
                 |_| {},
             )
         })?;
         banner(
             Self::cli_basic().version,
-            app_info.http.port,
+            app_info.http.listen_addr,
+            app_info.http.tls.enabled,
             format!(
                 "{}:{}",
                 app_info.session_conf.lan_ip, app_info.session_conf.wan_port
@@ -105,16 +102,20 @@ impl
     fn run_app(
         self,
         t: (
-            Option<std::net::TcpListener>,
+            std::net::TcpListener,
             (Option<std::net::TcpListener>, Option<UdpSocket>),
             TcpListener,
         ),
     ) -> GlobalResult<()> {
         let http = self.http;
         let node_id = self.session_conf.domain_id.clone();
-        let http_enabled = http.enabled;
-        let http_port = http.port;
+        let http_endpoint = http
+            .public_endpoint()
+            .expect("validated session HTTP public URL");
         let grpc = crate::state::SessionGrpcConf::get();
+        let (grpc_advertised_tls, grpc_advertised_host, grpc_advertised_port) = grpc
+            .advertised_endpoint()
+            .expect("validated session gRPC advertised URL");
         let started_at_epoch_ms = now_epoch_ms();
         let (http_listener, tu, grpc_listener) = t;
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
@@ -125,23 +126,19 @@ impl
                 GlobalRuntime::request_shutdown_with_error();
                 return;
             }
-            let mut node = SessionGuardNode::new(
-                node_id,
-                generate_instance_id(),
-                http_enabled.then_some(u32::from(http_port)),
-            );
+            let mut node = SessionGuardNode::new(node_id, generate_instance_id(), http_endpoint);
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),
-                scheme: grpc.scheme().to_string(),
-                host: grpc.addr.ip().to_string(),
-                port: u32::from(grpc.addr.port()),
+                scheme: base_rpc::rpc_scheme(grpc_advertised_tls).to_string(),
+                host: grpc_advertised_host,
+                port: u32::from(grpc_advertised_port),
                 mode: EndpointMode::Single as i32,
                 labels: HashMap::new(),
             });
             let control_identity = node.identity.clone();
             let control_node_id = control_identity.node_id.clone();
-            let control_addr = grpc.addr;
+            let control_addr = grpc.listen_addr;
             let control_cancel = service_rt.cancel.clone();
             let control_shutdown = control_cancel.clone();
             if let Err(err) = service_rt.spawn("session-control-rpc", async move {
@@ -247,23 +244,18 @@ impl
                 }
             };
             init_guard_event_sender(event_sender);
-            if let Some(http_listener) = http_listener {
-                match http.run(http_listener, service_rt.cancel.clone()).await {
-                    Ok(()) if service_rt.cancel.is_cancelled() => {
-                        base::log::debug!("HTTP service returned after cancellation")
-                    }
-                    Ok(()) => {
-                        error!("HTTP service stopped unexpectedly");
-                        GlobalRuntime::request_shutdown_with_error();
-                    }
-                    Err(err) => {
-                        error!("HTTP service stopped with error: {err}");
-                        GlobalRuntime::request_shutdown_with_error();
-                    }
+            match http.run(http_listener, service_rt.cancel.clone()).await {
+                Ok(()) if service_rt.cancel.is_cancelled() => {
+                    base::log::debug!("HTTP service returned after cancellation")
                 }
-            } else {
-                warn!("HTTP service disabled by configuration");
-                service_rt.cancel.cancelled().await;
+                Ok(()) => {
+                    error!("HTTP service stopped unexpectedly");
+                    GlobalRuntime::request_shutdown_with_error();
+                }
+                Err(err) => {
+                    error!("HTTP service stopped with error: {err}");
+                    GlobalRuntime::request_shutdown_with_error();
+                }
             }
             base::log::debug!("session network task exited");
         })?;
@@ -280,12 +272,13 @@ impl
 
 fn banner<F: FnOnce(String)>(
     version: &str,
-    http_port: u16,
+    http_addr: std::net::SocketAddr,
+    http_tls: bool,
     sip_listen_addr: String,
     sip_advertised_addr: String,
     f: F,
 ) {
-    let http_addr = format!("0.0.0.0:{http_port}");
+    let http_protocol = if http_tls { "HTTPS" } else { "HTTP" };
     let msg = format!(
         r#"
 ======================================================================
@@ -294,11 +287,11 @@ fn banner<F: FnOnce(String)>(
 ┌──────────────────┬──────────────────────┬──────────────┬──────────────┐
 │ Service          │ Address              │ Protocols    │  Status      │
 ├──────────────────┼──────────────────────┼──────────────┼──────────────┤
-│ Session HTTP     │ {:<20} │ HTTP         │ 🟢 Ready     │
+│ Session HTTP     │ {:<20} │ {:<12} │ 🟢 Ready     │
 │ SIP Listen       │ {:<20} │ TCP, UDP     │ 🟢 Listening │
 │ SIP Advertised   │ {:<20} │ TCP, UDP     │ 🟢 Ready     │
 └──────────────────┴──────────────────────┴──────────────┴──────────────┘"#,
-        version, http_addr, sip_listen_addr, sip_advertised_addr
+        version, http_addr, http_protocol, sip_listen_addr, sip_advertised_addr
     );
     f(msg);
 }

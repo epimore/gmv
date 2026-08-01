@@ -16,8 +16,12 @@ log:
           level: warn #日志等级
 
 http:
-    enabled: true
-    port: 28567
+    listen_addr: 0.0.0.0:28567 #本机HTTP/HTTPS实际监听地址
+    public_url: http://192.168.0.9:28567 #节点HTTP endpoint及图片/录像默认访问前缀使用的完整对外URL
+    tls:
+        enabled: false #仅控制本机HTTP监听TLS；若由Nginx终止HTTPS，可保持false并将public_url配置为https
+        certificate_path: ""
+        private_key_path: ""
 
 db:
     backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
@@ -51,9 +55,10 @@ guard:
 
 server:
     grpc:
-        addr: 127.0.0.1:19081 # session内部控制gRPC地址，注册到guard并用于节点间控制
+        listen_addr: 127.0.0.1:19081 #本机control gRPC实际监听地址
+        advertised_url: http://127.0.0.1:19081 #注册给guard和Stream回调使用的完整可达地址；scheme独立于本机TLS
         tls:
-            enabled: false # 推荐生产启用；启用后节点上报grpcs，并要求配置证书。
+            enabled: false #仅控制本机control gRPC监听TLS；启用时要求配置证书
             certificate_path: ""
             private_key_path: ""
     session:

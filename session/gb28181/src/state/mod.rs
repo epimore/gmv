@@ -15,8 +15,10 @@ pub mod session;
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.grpc", check)]
 pub struct SessionGrpcConf {
-    #[serde(default = "default_session_grpc_addr")]
-    pub addr: SocketAddr,
+    #[serde(default = "default_session_grpc_listen_addr")]
+    pub listen_addr: SocketAddr,
+    #[serde(default = "default_session_grpc_advertised_url")]
+    pub advertised_url: String,
     #[serde(default)]
     pub tls: GrpcTlsConf,
 }
@@ -33,7 +35,7 @@ pub struct GrpcTlsConf {
 }
 
 serde_default!(
-    default_session_grpc_addr,
+    default_session_grpc_listen_addr,
     SocketAddr,
     env_socket_addr(
         "GMV_SESSION_CONTROL_GRPC_ADDR",
@@ -41,14 +43,21 @@ serde_default!(
         "127.0.0.1:19081"
     )
 );
+serde_default!(
+    default_session_grpc_advertised_url,
+    String,
+    "http://127.0.0.1:19081".to_string()
+);
 
 impl CheckFromConf for SessionGrpcConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
-        if self.addr.port() == 0 {
+        if self.listen_addr.port() == 0 {
             return Err(FieldCheckError::BizError(
-                "server.grpc.addr端口不能为0".to_string(),
+                "server.grpc.listen_addr端口不能为0".to_string(),
             ));
         }
+        self.advertised_endpoint()
+            .map_err(FieldCheckError::BizError)?;
         if self.tls.enabled
             && (self.tls.certificate_path.as_os_str().is_empty()
                 || self.tls.private_key_path.as_os_str().is_empty())
@@ -67,15 +76,32 @@ impl SessionGrpcConf {
     }
 
     pub fn endpoint(&self) -> String {
-        base_rpc::rpc_endpoint_uri(
-            self.tls.enabled,
-            &self.addr.ip().to_string(),
-            self.addr.port(),
-        )
+        let (tls, host, port) = self
+            .advertised_endpoint()
+            .expect("validated session gRPC advertised URL");
+        base_rpc::rpc_endpoint_uri(tls, &host, port)
     }
 
-    pub fn scheme(&self) -> &'static str {
-        base_rpc::rpc_scheme(self.tls.enabled)
+    pub fn advertised_endpoint(&self) -> Result<(bool, String, u16), String> {
+        let url = url::Url::parse(&self.advertised_url)
+            .map_err(|error| format!("server.grpc.advertised_url地址无效: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("server.grpc.advertised_url必须使用http或https".to_string());
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err("server.grpc.advertised_url不能包含凭据".to_string());
+        }
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            return Err("server.grpc.advertised_url不能包含path、query或fragment".to_string());
+        }
+        let host = url
+            .host_str()
+            .filter(|host| !host.trim().is_empty())
+            .ok_or_else(|| "server.grpc.advertised_url必须包含host".to_string())?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| "server.grpc.advertised_url必须包含有效端口".to_string())?;
+        Ok((url.scheme() == "https", host.to_string(), port))
     }
 }
 
@@ -266,6 +292,54 @@ impl DownloadConf {
 
 #[cfg(test)]
 mod tests {
+    use super::{GrpcTlsConf, SessionGrpcConf};
+    use crate::http::Http;
+    use base::cfg_lib::conf::CheckFromConf;
+
+    #[test]
+    fn example_http_and_grpc_config_deserializes() {
+        let root: base::serde_yaml::Value =
+            base::serde_yaml::from_str(include_str!("../../config.yml")).unwrap();
+        let http: Http = base::serde_yaml::from_value(root.get("http").cloned().unwrap()).unwrap();
+        let grpc: SessionGrpcConf = base::serde_yaml::from_value(
+            root.get("server")
+                .and_then(|server| server.get("grpc"))
+                .cloned()
+                .unwrap(),
+        )
+        .unwrap();
+
+        http.public_endpoint().unwrap();
+        grpc.advertised_endpoint().unwrap();
+    }
+
+    #[test]
+    fn advertised_grpc_tls_is_independent_from_listener_tls() {
+        let conf = SessionGrpcConf {
+            listen_addr: "127.0.0.1:19081".parse().unwrap(),
+            advertised_url: "https://session-rpc.example.com:443".to_string(),
+            tls: GrpcTlsConf::default(),
+        };
+
+        assert_eq!(
+            conf.advertised_endpoint().unwrap(),
+            (true, "session-rpc.example.com".to_string(), 443)
+        );
+        assert_eq!(conf.endpoint(), "https://session-rpc.example.com:443");
+        conf._field_check().unwrap();
+    }
+
+    #[test]
+    fn grpc_config_ignores_extra_fields() {
+        let yaml = r#"
+listen_addr: 127.0.0.1:19081
+advertised_url: https://session-rpc.example.com
+addr: 127.0.0.1:18081
+"#;
+        let conf: SessionGrpcConf = base::serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(conf.listen_addr, "127.0.0.1:19081".parse().unwrap());
+        assert_eq!(conf.advertised_url, "https://session-rpc.example.com");
+    }
 
     fn print_banner(c: char) {
         let binary = match c {

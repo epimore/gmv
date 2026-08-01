@@ -208,6 +208,8 @@ pub struct HttpConfig {
     pub tls: HttpTlsConfig,
     #[serde(default)]
     pub media_https_http2_verified: bool,
+    #[serde(default)]
+    pub session_cookie_secure: bool,
     #[serde(default = "default_session_ttl_sec")]
     pub session_ttl_sec: u64,
     #[serde(default = "default_login_window_sec")]
@@ -224,6 +226,7 @@ impl Default for HttpConfig {
             ui_dist_dir: default_ui_dist_dir(),
             tls: HttpTlsConfig::default(),
             media_https_http2_verified: false,
+            session_cookie_secure: false,
             session_ttl_sec: default_session_ttl_sec(),
             login_window_sec: default_login_window_sec(),
             max_failed_attempts: default_max_failed_attempts(),
@@ -238,6 +241,10 @@ impl HttpConfig {
             .filter(|origin| !origin.trim().is_empty())
             .cloned()
             .collect()
+    }
+
+    pub fn session_cookie_secure(&self) -> bool {
+        self.tls.enabled || self.session_cookie_secure
     }
 
     fn validate(&self) -> GuardResult<()> {
@@ -903,6 +910,20 @@ mod tests {
         config.tls.enabled = false;
         config.bind_addr = "0.0.0.0:18080".parse().unwrap();
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn session_cookie_security_can_follow_proxy_https() {
+        let mut config = HttpConfig::default();
+        config.tls.enabled = false;
+        assert!(!config.session_cookie_secure());
+
+        config.session_cookie_secure = true;
+        assert!(config.session_cookie_secure());
+
+        config.session_cookie_secure = false;
+        config.tls.enabled = true;
+        assert!(config.session_cookie_secure());
     }
 
     #[test]

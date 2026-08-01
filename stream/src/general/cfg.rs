@@ -58,7 +58,7 @@ fn validate_media_timeouts(in_wait_timeout: u8, out_idle_timeout: u8) -> Result<
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 #[conf(prefix = "server", check)]
 pub struct ServerConf {
     #[serde(default = "default_name")]
@@ -75,19 +75,14 @@ pub enum MediaListenerMode {
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 pub struct MediaPortRange {
     pub start: u16,
     pub end: u16,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(
-    crate = "base::serde",
-    tag = "mode",
-    rename_all = "lowercase",
-    deny_unknown_fields
-)]
+#[serde(crate = "base::serde", tag = "mode", rename_all = "lowercase")]
 pub enum MediaServerConf {
     Single {
         listen_ip: IpAddr,
@@ -113,7 +108,7 @@ pub struct MediaListenerConf {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 pub struct HttpServerConf {
     pub listen_addr: SocketAddr,
     pub public_url: String,
@@ -122,7 +117,7 @@ pub struct HttpServerConf {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 pub struct HttpTlsConf {
     #[serde(default)]
     pub enabled: bool,
@@ -133,16 +128,16 @@ pub struct HttpTlsConf {
 }
 serde_default!(default_name, String, "stream-node-1".to_string());
 #[derive(Debug, Clone, Deserialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 pub struct GrpcServerConf {
     pub listen_addr: SocketAddr,
-    pub advertised_addr: SocketAddr,
+    pub advertised_url: String,
     #[serde(default)]
     pub tls: GrpcTlsConf,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 pub struct GrpcTlsConf {
     #[serde(default)]
     pub enabled: bool,
@@ -153,7 +148,7 @@ pub struct GrpcTlsConf {
 }
 
 impl HttpServerConf {
-    pub fn public_endpoint(&self) -> Result<(String, u16), String> {
+    pub fn public_endpoint(&self) -> Result<(bool, String, u16), String> {
         let url = url::Url::parse(&self.public_url)
             .map_err(|error| format!("server.http.public_url is invalid: {error}"))?;
         if !matches!(url.scheme(), "http" | "https") {
@@ -172,7 +167,33 @@ impl HttpServerConf {
         let port = url
             .port_or_known_default()
             .ok_or_else(|| "server.http.public_url must contain a valid port".to_string())?;
-        Ok((host.to_string(), port))
+        Ok((url.scheme() == "https", host.to_string(), port))
+    }
+}
+
+impl GrpcServerConf {
+    pub fn advertised_endpoint(&self) -> Result<(bool, String, u16), String> {
+        let url = url::Url::parse(&self.advertised_url)
+            .map_err(|error| format!("server.grpc.advertised_url is invalid: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("server.grpc.advertised_url must use http or https".to_string());
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err("server.grpc.advertised_url must not contain credentials".to_string());
+        }
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            return Err(
+                "server.grpc.advertised_url must not contain path, query or fragment".to_string(),
+            );
+        }
+        let host = url
+            .host_str()
+            .filter(|host| !host.trim().is_empty())
+            .ok_or_else(|| "server.grpc.advertised_url must contain a host".to_string())?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| "server.grpc.advertised_url must contain a valid port".to_string())?;
+        Ok((url.scheme() == "https", host.to_string(), port))
     }
 }
 
@@ -286,12 +307,6 @@ impl ServerConf {
             return Err("server.http.listen_addr port must not be zero".to_string());
         }
         let _ = self.http.public_endpoint()?;
-        let public_is_https = self.http.public_url.starts_with("https://");
-        if public_is_https != self.http.tls.enabled {
-            return Err(
-                "server.http.public_url scheme must match server.http.tls.enabled".to_string(),
-            );
-        }
         validate_tls_files(
             "server.http.tls",
             self.http.tls.enabled,
@@ -301,9 +316,7 @@ impl ServerConf {
         if self.grpc.listen_addr.port() == 0 {
             return Err("server.grpc.listen_addr port must not be zero".to_string());
         }
-        if self.grpc.advertised_addr.port() == 0 {
-            return Err("server.grpc.advertised_addr port must not be zero".to_string());
-        }
+        let _ = self.grpc.advertised_endpoint()?;
         validate_tls_files(
             "server.grpc.tls",
             self.grpc.tls.enabled,
@@ -408,7 +421,7 @@ http:
   public_url: http://127.0.0.1:28570
 grpc:
   listen_addr: 127.0.0.1:19082
-  advertised_addr: 127.0.0.1:19082
+  advertised_url: http://127.0.0.1:19082
 media:
   mode: single
   listen_ip: 0.0.0.0
@@ -423,7 +436,7 @@ http:
   public_url: http://127.0.0.1:28570
 grpc:
   listen_addr: 127.0.0.1:19082
-  advertised_addr: 127.0.0.1:19082
+  advertised_url: http://127.0.0.1:19082
 media:
   mode: multi
   listen_ip: 0.0.0.0
@@ -487,24 +500,58 @@ media:
     }
 
     #[test]
-    fn legacy_and_mode_irrelevant_fields_are_rejected() {
+    fn extra_and_mode_irrelevant_fields_are_ignored() {
         let legacy = format!("{SINGLE_SERVER_YAML}rtp_port: 28568\n");
-        assert!(parse_server(&legacy).is_err());
+        parse_server(&legacy).unwrap().validate().unwrap();
+
+        let extra_grpc = SINGLE_SERVER_YAML.replace(
+            "advertised_url: http://127.0.0.1:19082",
+            "advertised_url: http://127.0.0.1:19082\n  advertised_addr: 127.0.0.1:18082",
+        );
+        let server = parse_server(&extra_grpc).unwrap();
+        assert_eq!(server.grpc.advertised_url, "http://127.0.0.1:19082");
 
         let single_with_range =
             format!("{SINGLE_SERVER_YAML}  port_range:\n    start: 28600\n    end: 28663\n");
-        assert!(parse_server(&single_with_range).is_err());
+        assert_eq!(
+            parse_server(&single_with_range)
+                .unwrap()
+                .media_listener_conf()
+                .unwrap()
+                .mode,
+            MediaListenerMode::Single
+        );
 
         let multi_with_port = format!("{MULTI_SERVER_YAML}  port: 28568\n");
-        assert!(parse_server(&multi_with_port).is_err());
+        assert_eq!(
+            parse_server(&multi_with_port)
+                .unwrap()
+                .media_listener_conf()
+                .unwrap()
+                .mode,
+            MediaListenerMode::Multi
+        );
     }
 
     #[test]
-    fn url_tls_addresses_and_port_conflicts_are_rejected() {
-        let mut tls_mismatch = parse_server(SINGLE_SERVER_YAML).unwrap();
-        tls_mismatch.http.public_url = "https://127.0.0.1:28570".to_string();
-        assert!(tls_mismatch.validate().is_err());
+    fn public_and_advertised_tls_are_independent_from_listener_tls() {
+        let mut proxy_tls = parse_server(SINGLE_SERVER_YAML).unwrap();
+        proxy_tls.http.public_url = "https://stream.example.com/s1".to_string();
+        proxy_tls.grpc.advertised_url = "https://stream-rpc.example.com:443".to_string();
+        proxy_tls.validate().unwrap();
 
+        assert_eq!(
+            proxy_tls.http.public_endpoint().unwrap(),
+            (true, "stream.example.com".to_string(), 443)
+        );
+        assert_eq!(
+            proxy_tls.grpc.advertised_endpoint().unwrap(),
+            (true, "stream-rpc.example.com".to_string(), 443)
+        );
+    }
+
+    #[test]
+    fn invalid_urls_tls_files_and_port_conflicts_are_rejected() {
         let mut invalid_public_url = parse_server(SINGLE_SERVER_YAML).unwrap();
         invalid_public_url.http.public_url = "tcp://127.0.0.1:28570".to_string();
         assert!(invalid_public_url.validate().is_err());
@@ -514,9 +561,13 @@ media:
         missing_tls_files.http.tls.enabled = true;
         assert!(missing_tls_files.validate().is_err());
 
-        let mut zero_port = parse_server(SINGLE_SERVER_YAML).unwrap();
-        zero_port.grpc.advertised_addr = "127.0.0.1:0".parse().unwrap();
-        assert!(zero_port.validate().is_err());
+        let mut invalid_grpc_url = parse_server(SINGLE_SERVER_YAML).unwrap();
+        invalid_grpc_url.grpc.advertised_url = "grpc://127.0.0.1:19082".to_string();
+        assert!(invalid_grpc_url.validate().is_err());
+
+        let mut grpc_path = parse_server(SINGLE_SERVER_YAML).unwrap();
+        grpc_path.grpc.advertised_url = "https://rpc.example.com/control".to_string();
+        assert!(grpc_path.validate().is_err());
 
         let mut conflict = parse_server(SINGLE_SERVER_YAML).unwrap();
         conflict.grpc.listen_addr = "127.0.0.1:28570".parse().unwrap();

@@ -129,7 +129,7 @@ impl Default for SessionSqliteConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 pub struct SessionMysqlConfig {
     pub host: String,
     #[serde(default = "default_mysql_port")]
@@ -183,7 +183,7 @@ pub enum SessionMysqlSslMode {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
+#[serde(crate = "base::serde")]
 pub struct SessionMysqlAttrsConfig {
     pub log_global_sql_level: Option<String>,
     pub log_slow_sql_timeout_sec: Option<u64>,
