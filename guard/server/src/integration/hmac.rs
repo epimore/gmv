@@ -19,19 +19,21 @@ pub struct SignedRequest<'a> {
     pub method: &'a str,
     pub path: &'a str,
     pub query: &'a str,
+    pub request_id: &'a str,
     pub body: &'a [u8],
 }
 
 impl SignedRequest<'_> {
     pub fn canonical(&self) -> String {
         format!(
-            "{SIGNATURE_VERSION}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{SIGNATURE_VERSION}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             self.access_key,
             self.timestamp_ms,
             self.nonce,
             self.method.to_ascii_uppercase(),
             self.path,
             canonical_query(self.query),
+            self.request_id,
             body_sha256(self.body)
         )
     }
@@ -168,6 +170,7 @@ mod tests {
             method: "post",
             path: "/openapi/v1/devices",
             query,
+            request_id: "request-test-1",
             body,
         }
     }
@@ -203,13 +206,14 @@ mod tests {
                 method: "POST",
                 path: "/openapi/v1/devices",
                 query: "tag=z&name=%E4%B8%AD+%E6%96%87&tag=a%2Fb",
+                request_id: "request-test-1",
                 body: "{\"name\":\"摄像机 A\"}".as_bytes(),
             },
         )
         .unwrap();
         assert_eq!(
             signature,
-            "0ca1ce6a229f43e97774b7c33cb8d39587b519713f7c8461426839d180a7bc2e"
+            "927a91e9130182736dd2f825afdb0cb52f92dfd04d44b034b3d1b8d35cdf8e60"
         );
         assert!(include_str!("../../tests/fixtures/integration_hmac_v1.json").contains(&signature));
     }

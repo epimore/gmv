@@ -3,6 +3,10 @@ pub const SQLITE_0001: &str =
     include_str!("../../migrations/sqlite/0001_guard_preview_baseline.sql");
 pub const MYSQL_0003: &str = include_str!("../../migrations/mysql/0003_guard_integrations.sql");
 pub const SQLITE_0003: &str = include_str!("../../migrations/sqlite/0003_guard_integrations.sql");
+pub const MYSQL_0004: &str =
+    include_str!("../../migrations/mysql/0004_guard_command_idempotency.sql");
+pub const SQLITE_0004: &str =
+    include_str!("../../migrations/sqlite/0004_guard_command_idempotency.sql");
 
 pub const INTEGRATIONS_V2_COMPATIBILITY_SQL: &str = "INSERT INTO _base_db_migrations(version,name,applied_at_ms) \
      SELECT 3,'guard_integrations',applied_at_ms FROM _base_db_migrations \
@@ -54,8 +58,32 @@ pub const MYSQL_0003_INDEXES: &[(&str, &str, &str)] = &[(
     "CREATE INDEX idx_guard_outbox_integration_state ON guard_outbox(integration_id, state, next_attempt_at_ms)",
 )];
 
-pub fn migration_pairs() -> [(&'static str, &'static str); 2] {
-    [(MYSQL_0001, SQLITE_0001), (MYSQL_0003, SQLITE_0003)]
+pub const MYSQL_0004_COLUMNS: &[(&str, &str, &str)] = &[
+    (
+        "guard_command",
+        "request_hash",
+        "request_hash VARCHAR(64) NOT NULL DEFAULT ''",
+    ),
+    ("guard_command", "http_status", "http_status BIGINT NULL"),
+    (
+        "guard_command",
+        "response_body",
+        "response_body MEDIUMBLOB NULL",
+    ),
+];
+
+pub const MYSQL_0004_INDEXES: &[(&str, &str, &str)] = &[(
+    "guard_command",
+    "idx_guard_command_integration_created",
+    "CREATE INDEX idx_guard_command_integration_created ON guard_command(integration_id, created_at_ms)",
+)];
+
+pub fn migration_pairs() -> [(&'static str, &'static str); 3] {
+    [
+        (MYSQL_0001, SQLITE_0001),
+        (MYSQL_0003, SQLITE_0003),
+        (MYSQL_0004, SQLITE_0004),
+    ]
 }
 
 pub const MIGRATIONS: &[base_db::migration::Migration] = &[
@@ -69,6 +97,11 @@ pub const MIGRATIONS: &[base_db::migration::Migration] = &[
         name: "guard_integrations",
         sql: SQLITE_0003,
     },
+    base_db::migration::Migration {
+        version: 4,
+        name: "guard_command_idempotency",
+        sql: SQLITE_0004,
+    },
 ];
 
 pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
@@ -81,5 +114,10 @@ pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
         version: 3,
         name: "guard_integrations",
         sql: MYSQL_0003,
+    },
+    base_db::migration::Migration {
+        version: 4,
+        name: "guard_command_idempotency",
+        sql: MYSQL_0004,
     },
 ];

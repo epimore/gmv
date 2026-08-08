@@ -120,7 +120,8 @@ guard:
                 migrations,
                 [
                     (1, "guard_preview_baseline".to_string()),
-                    (3, "guard_integrations".to_string())
+                    (3, "guard_integrations".to_string()),
+                    (4, "guard_command_idempotency".to_string())
                 ]
             );
             let user_columns = base_db::sqlx::query_scalar::<_, String>(
@@ -181,7 +182,8 @@ fn sqlite_preserves_reserved_user_expiration_v2_and_applies_integrations_v3() {
                 [
                     (1, "guard_preview_baseline".to_string()),
                     (2, "guard_user_expiration".to_string()),
-                    (3, "guard_integrations".to_string())
+                    (3, "guard_integrations".to_string()),
+                    (4, "guard_command_idempotency".to_string())
                 ]
             );
             let integration_table = base_db::sqlx::query_scalar::<_, String>(
@@ -242,12 +244,16 @@ fn sqlite_aliases_integrations_v2_without_reapplying_schema() {
             .await
             .unwrap();
             assert_eq!(
-                migrations,
-                [
+                &migrations[..3],
+                &[
                     (1, "guard_preview_baseline".to_string(), 0),
                     (2, "guard_integrations".to_string(), 123),
                     (3, "guard_integrations".to_string(), 123)
                 ]
+            );
+            assert_eq!(
+                (migrations[3].0, migrations[3].1.as_str()),
+                (4, "guard_command_idempotency")
             );
 
             pool.close().await;

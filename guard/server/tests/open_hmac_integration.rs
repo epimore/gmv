@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use base_db::dbx::{
     DatabasePoolConfig,
@@ -19,7 +19,7 @@ use gmv_guard_server::integration::secret::IntegrationSecretCipher;
 use gmv_guard_server::operation::OperationService;
 use gmv_guard_server::outbox::OutboxRepository;
 use gmv_guard_server::store::InMemoryGuardStore;
-use gmv_guard_server::store::persistent::IntegrationRepository;
+use gmv_guard_server::store::persistent::{CommandRepository, IntegrationRepository};
 use gmv_guard_server::store::sqlite::SqliteStore;
 use tower::ServiceExt;
 
@@ -41,6 +41,7 @@ fn open_api_accepts_valid_hmac_and_rejects_nonce_replay() {
             .unwrap();
             let store = SqliteStore::new(pool);
             store.migrate().await.unwrap();
+            let commands = CommandRepository::Sqlite(store.clone());
             let integrations = IntegrationRepository::Sqlite(store);
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -54,7 +55,7 @@ fn open_api_accepts_valid_hmac_and_rejects_nonce_replay() {
                     inbound_enabled: true,
                     outbound_enabled: false,
                     enabled: true,
-                    scopes: vec!["nodes:read".to_string()],
+                    scopes: vec!["*".to_string()],
                     expires_at_ms: None,
                     config_version: 1,
                     created_by: "test".to_string(),
@@ -104,6 +105,7 @@ fn open_api_accepts_valid_hmac_and_rejects_nonce_replay() {
                 outbox: OutboxRepository::from(memory),
                 users: None,
                 integrations: Some(integrations),
+                commands: Some(commands),
                 integration_secrets: Some(cipher),
                 integration_nonces: HmacNonceCache::new(300_000, 100).unwrap(),
                 mqtt_runtime_protocol_version: "v3".to_string(),
@@ -122,6 +124,7 @@ fn open_api_accepts_valid_hmac_and_rejects_nonce_replay() {
                     method: "GET",
                     path: "/openapi/v1/nodes",
                     query: "zone=edge",
+                    request_id: "",
                     body: b"",
                 },
             )
@@ -145,9 +148,57 @@ fn open_api_accepts_valid_hmac_and_rejects_nonce_replay() {
                 StatusCode::OK
             );
             assert_eq!(
-                app.oneshot(signed_request()).await.unwrap().status(),
+                app.clone()
+                    .oneshot(signed_request())
+                    .await
+                    .unwrap()
+                    .status(),
                 StatusCode::UNAUTHORIZED
             );
+
+            let post_uri = "/openapi/v1/ai/tasks/missing/cancel";
+            let request_id = "request-replay-1";
+            let signed_post = |nonce: &'static str| {
+                let signature = sign_request(
+                    secret.as_bytes(),
+                    &SignedRequest {
+                        access_key: "ak_test",
+                        timestamp_ms: now_ms,
+                        nonce,
+                        method: "POST",
+                        path: post_uri,
+                        query: "",
+                        request_id,
+                        body: b"",
+                    },
+                )
+                .unwrap();
+                Request::post(post_uri)
+                    .header("x-gmv-access-key", "ak_test")
+                    .header("x-gmv-timestamp", now_ms.to_string())
+                    .header("x-gmv-nonce", nonce)
+                    .header("x-gmv-content-sha256", body_sha256(b""))
+                    .header("x-gmv-request-id", request_id)
+                    .header("x-gmv-signature", signature)
+                    .body(Body::empty())
+                    .unwrap()
+            };
+            let first = app
+                .clone()
+                .oneshot(signed_post("1111111111111111"))
+                .await
+                .unwrap();
+            let first_status = first.status();
+            let first_body = to_bytes(first.into_body(), usize::MAX).await.unwrap();
+            let replay = app
+                .clone()
+                .oneshot(signed_post("2222222222222222"))
+                .await
+                .unwrap();
+            let replay_status = replay.status();
+            let replay_body = to_bytes(replay.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(replay_status, first_status);
+            assert_eq!(replay_body, first_body);
 
             let _ = std::fs::remove_file(path);
         });

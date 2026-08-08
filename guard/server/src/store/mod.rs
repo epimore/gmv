@@ -1,3 +1,4 @@
+pub mod command;
 pub mod integration;
 pub mod migration;
 pub mod model;

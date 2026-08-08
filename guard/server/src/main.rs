@@ -12,11 +12,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("reset-admin-password") => reset_admin_password(&args[1..]),
         Some("encrypt") => crypto_command(&args[1..], CryptoAction::Encrypt),
         Some("decrypt") => crypto_command(&args[1..], CryptoAction::Decrypt),
+        Some("export-integration-contracts") => export_integration_contracts(&args[1..]),
         _ => {
             gmv_guard_server::run();
             Ok(())
         }
     }
+}
+
+fn export_integration_contracts(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let output_dir = match args {
+        [path] if !path.trim().is_empty() => std::path::PathBuf::from(path),
+        _ => {
+            return Err(GuardError::InvalidConfig(
+                "usage: guard export-integration-contracts <output-directory>".to_string(),
+            )
+            .into());
+        }
+    };
+    std::fs::create_dir_all(&output_dir)?;
+    let contracts = [
+        (
+            "openapi.json",
+            gmv_guard_server::api::v2::http::openapi_contract(),
+        ),
+        (
+            "asyncapi.json",
+            gmv_guard_server::api::v2::http::asyncapi_contract(),
+        ),
+        (
+            "manifest.json",
+            gmv_guard_server::api::v2::http::api_manifest_contract(),
+        ),
+    ];
+    for (name, contract) in contracts {
+        let mut bytes = base::serde_json::to_vec_pretty(&contract)?;
+        bytes.push(b'\n');
+        std::fs::write(output_dir.join(name), bytes)?;
+    }
+    std::fs::write(
+        output_dir.join("README.md"),
+        include_str!("../assets/integration-contract-readme.md"),
+    )?;
+    println!("exported integration contracts to {}", output_dir.display());
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

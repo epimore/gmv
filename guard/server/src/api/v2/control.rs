@@ -1100,6 +1100,7 @@ impl BusinessControl {
         Ok(channel)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_gb_channel_images(
         &self,
         session_node_id: &str,
@@ -1230,6 +1231,7 @@ impl BusinessControl {
         Ok(response)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn get_gb_channel_records(
         &self,
         session_node_id: &str,

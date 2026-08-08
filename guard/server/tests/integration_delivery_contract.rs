@@ -1,0 +1,229 @@
+use base_db::dbx::{
+    DatabasePoolConfig,
+    sqlitex::{SqliteConnectionConfig, build_sqlite_pool},
+};
+use gmv_guard_server::integration::model::{
+    Integration, IntegrationMqttConfig, IntegrationTransport,
+};
+use gmv_guard_server::mqttc::{CommandIdRepository, MqttCommandPolicy};
+use gmv_guard_server::store::command::{HttpCommandClaim, http_command_id};
+use gmv_guard_server::store::persistent::{CommandRepository, IntegrationRepository};
+use gmv_guard_server::store::sqlite::SqliteStore;
+
+#[test]
+fn sqlite_http_idempotency_survives_reopen_and_rejects_request_drift() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "guard-http-idempotency-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            let pool_config = DatabasePoolConfig {
+                max_size: 1,
+                min_idle: Some(0),
+                ..DatabasePoolConfig::default()
+            };
+            let store = SqliteStore::new(
+                build_sqlite_pool(SqliteConnectionConfig::new(&path), pool_config.clone()).unwrap(),
+            );
+            store.migrate().await.unwrap();
+            let repository = CommandRepository::Sqlite(store.clone());
+            let command_id = http_command_id("app-1", "request-1");
+            assert!(matches!(
+                repository
+                    .claim_http(
+                        &command_id,
+                        "app-1",
+                        "request-1",
+                        "POST /openapi/v1/streams/stream-1/stop",
+                        "hash-1",
+                        86_400_100,
+                        100,
+                    )
+                    .await
+                    .unwrap(),
+                HttpCommandClaim::Claimed { .. }
+            ));
+            repository
+                .complete_http(&command_id, 200, br#"{"accepted":true}"#, 101)
+                .await
+                .unwrap();
+            drop(repository);
+            drop(store);
+
+            let reopened = SqliteStore::new(
+                build_sqlite_pool(SqliteConnectionConfig::new(&path), pool_config).unwrap(),
+            );
+            reopened.migrate().await.unwrap();
+            let repository = CommandRepository::Sqlite(reopened.clone());
+            match repository
+                .claim_http(
+                    &command_id,
+                    "app-1",
+                    "request-1",
+                    "POST /openapi/v1/streams/stream-1/stop",
+                    "hash-1",
+                    86_400_100,
+                    102,
+                )
+                .await
+                .unwrap()
+            {
+                HttpCommandClaim::Completed {
+                    status,
+                    response_body,
+                    ..
+                } => {
+                    assert_eq!(status, 200);
+                    assert_eq!(response_body, br#"{"accepted":true}"#);
+                }
+                other => panic!("expected completed command, got {other:?}"),
+            }
+            assert!(
+                repository
+                    .claim_http(
+                        &command_id,
+                        "app-1",
+                        "request-1",
+                        "POST /openapi/v1/streams/stream-1/stop",
+                        "different-hash",
+                        86_400_100,
+                        103,
+                    )
+                    .await
+                    .is_err()
+            );
+            drop(repository);
+            drop(reopened);
+            let _ = std::fs::remove_file(path);
+        });
+}
+
+#[test]
+fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "guard-mqtt-authorization-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            let store = SqliteStore::new(
+                build_sqlite_pool(
+                    SqliteConnectionConfig::new(&path),
+                    DatabasePoolConfig {
+                        max_size: 1,
+                        min_idle: Some(0),
+                        ..DatabasePoolConfig::default()
+                    },
+                )
+                .unwrap(),
+            );
+            store.migrate().await.unwrap();
+            let integrations = IntegrationRepository::Sqlite(store.clone());
+            let mut integration = Integration {
+                integration_id: "app-1".to_string(),
+                name: "MQTT app".to_string(),
+                transport: IntegrationTransport::Mqtt,
+                inbound_enabled: true,
+                outbound_enabled: false,
+                enabled: true,
+                scopes: vec![],
+                expires_at_ms: None,
+                config_version: 1,
+                created_by: "test".to_string(),
+                created_at_ms: 100,
+                updated_at_ms: 100,
+            };
+            integrations.upsert(&integration).await.unwrap();
+            integrations
+                .upsert_mqtt_config(&IntegrationMqttConfig {
+                    integration_id: "app-1".to_string(),
+                    protocol_version: "v5".to_string(),
+                    allowed_actions: vec!["stream.stop".to_string()],
+                    command_topic: "gmv/commands/app-1".to_string(),
+                    result_topic: "gmv/command-results/app-1".to_string(),
+                    event_topic_prefix: "gmv/events/app-1".to_string(),
+                    updated_at_ms: 100,
+                })
+                .await
+                .unwrap();
+            let policy = MqttCommandPolicy::new(["stream.stop".to_string()], 60_000).unwrap();
+            let commands = CommandIdRepository::from(store.clone());
+            let payload = br#"{
+              "integration_id":"app-1",
+              "command_id":"cmd-1",
+              "issued_at_ms":1000,
+              "expires_at_ms":2000,
+              "action":"stream.stop",
+              "target":"stream-1"
+            }"#;
+            assert!(
+                policy
+                    .decode_authorized_topic_with_repository(
+                        "gmv/commands/app-1",
+                        payload,
+                        1500,
+                        "v5",
+                        &commands,
+                        &integrations,
+                    )
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            let unknown_topic = payload.replace_ascii(b"cmd-1", b"cmd-2");
+            assert!(
+                policy
+                    .decode_authorized_topic_with_repository(
+                        "gmv/commands/unknown",
+                        &unknown_topic,
+                        1500,
+                        "v5",
+                        &commands,
+                        &integrations,
+                    )
+                    .await
+                    .is_err()
+            );
+            integration.enabled = false;
+            integration.updated_at_ms = 200;
+            integrations.upsert(&integration).await.unwrap();
+            let disabled = payload.replace_ascii(b"cmd-1", b"cmd-3");
+            assert!(
+                policy
+                    .decode_authorized_topic_with_repository(
+                        "gmv/commands/app-1",
+                        &disabled,
+                        1500,
+                        "v5",
+                        &commands,
+                        &integrations,
+                    )
+                    .await
+                    .is_err()
+            );
+            drop(commands);
+            drop(integrations);
+            drop(store);
+            let _ = std::fs::remove_file(path);
+        });
+}
+
+trait ReplaceAscii {
+    fn replace_ascii(&self, from: &[u8], to: &[u8]) -> Vec<u8>;
+}
+
+impl ReplaceAscii for [u8] {
+    fn replace_ascii(&self, from: &[u8], to: &[u8]) -> Vec<u8> {
+        assert_eq!(from.len(), to.len());
+        let mut output = self.to_vec();
+        let index = output
+            .windows(from.len())
+            .position(|window| window == from)
+            .expect("test payload must contain source text");
+        output[index..index + from.len()].copy_from_slice(to);
+        output
+    }
+}

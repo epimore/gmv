@@ -151,11 +151,9 @@ pnpm -C guard/ui build
 交付物：
 
 ```text
-target/release/guard
+target/release/gmv-guard-server
 guard/server/config.yml
 guard/ui/dist/
-guard/server/migrations/manual/mysql/cleanup_legacy_preview_schema.sql
-guard/server/migrations/manual/sqlite/cleanup_legacy_preview_schema.sql
 ```
 
 推荐安装目录：
@@ -170,12 +168,6 @@ guard/server/migrations/manual/sqlite/cleanup_legacy_preview_schema.sql
     dist/
       index.html
       assets/
-  share/
-    sql/
-      mysql/
-        cleanup_legacy_preview_schema.sql
-      sqlite/
-        cleanup_legacy_preview_schema.sql
   data/
   logs/
 ```
@@ -227,10 +219,8 @@ pnpm -C guard/ui build
 交付物：
 
 ```text
-target/release/guard
+target/release/gmv-guard-server
 guard/server/config.yml
-guard/server/migrations/manual/mysql/cleanup_legacy_preview_schema.sql
-guard/server/migrations/manual/sqlite/cleanup_legacy_preview_schema.sql
 ```
 
 集成部署下，`guard.http.ui_dist_dir` 会被忽略，但可以保留在配置文件中。
@@ -311,10 +301,10 @@ Guard 默认构建同时支持 MySQL 和 SQLite bundled：
 
 | 组件 | 构建特性 | 二进制 | 大小 bytes | 大小 MiB | 相对全支持 |
 | --- | --- | --- | ---: | ---: | ---: |
-| Guard | `db-all` | `target/release/guard` | 21,014,272 | 20.04 | 基准 |
-| Guard | `db-mysql` | `target/release/guard` | 17,064,184 | 16.27 | -3.77 MiB |
-| Guard | `db-sqlite` | `target/release/guard` | 17,871,048 | 17.04 | -3.00 MiB |
-| Guard | `db-all,embed-ui` | `target/release/guard` | 24,134,712 | 23.02 | +2.98 MiB |
+| Guard | `db-all` | `target/release/gmv-guard-server` | 21,014,272 | 20.04 | 基准 |
+| Guard | `db-mysql` | `target/release/gmv-guard-server` | 17,064,184 | 16.27 | -3.77 MiB |
+| Guard | `db-sqlite` | `target/release/gmv-guard-server` | 17,871,048 | 17.04 | -3.00 MiB |
+| Guard | `db-all,embed-ui` | `target/release/gmv-guard-server` | 24,134,712 | 23.02 | +2.98 MiB |
 
 ## 6. Nginx TLS 和域名代理
 
@@ -686,7 +676,7 @@ source ./stream/env_ffmpeg.sh
 检查动态依赖：
 
 ```bash
-ldd target/release/guard
+ldd target/release/gmv-guard-server
 ldd target/release/gmv-session-gb28181
 ldd target/release/gmv-stream
 ```
@@ -712,8 +702,8 @@ cross build --release --target x86_64-unknown-linux-musl -p gmv-stream
 检查：
 
 ```bash
-file target/x86_64-unknown-linux-musl/release/guard
-ldd target/x86_64-unknown-linux-musl/release/guard || true
+file target/x86_64-unknown-linux-musl/release/gmv-guard-server
+ldd target/x86_64-unknown-linux-musl/release/gmv-guard-server || true
 ```
 
 如果显示 `not a dynamic executable`，说明没有常规动态库依赖。
@@ -975,6 +965,13 @@ journalctl -u gmv-stream -f
 - `guard_user`
 - `guard_outbox`
 - `guard_command`
+- `guard_integration`
+- `guard_integration_credential`
+- `guard_integration_http`
+- `guard_integration_mqtt`
+- `guard_integration_mapping`
+- `guard_integration_audit`
+- `guard_integration_delivery`
 
 节点、租约、运行路由和事件当前由 Guard 内存状态承载，不创建同名数据库表。该预览版不承诺旧 Guard 数据库原地升级，启动时不会自动删除旧表。
 
@@ -1006,17 +1003,7 @@ guard:
       ssl_mode: preferred
 ```
 
-需要显式清理旧预览数据库中的废弃 Guard 对象时，必须先停止 Guard 写入并完成备份，再按实际后端执行人工脚本：
-
-```bash
-# SQLite：先复制 guard.db 形成可恢复备份
-sqlite3 /opt/gmv/data/guard.db ".read /opt/gmv/share/sql/sqlite/cleanup_legacy_preview_schema.sql"
-
-# MySQL：DDL 会隐式提交，不能依赖事务回滚
-mysql -h 127.0.0.1 -u gmv -p gmv < /opt/gmv/share/sql/mysql/cleanup_legacy_preview_schema.sql
-```
-
-脚本只删除 `guard_node`、`guard_lease`、`guard_route`、`guard_event`、`guard_service_credential`、`guard_ui_session`、`guard_integration`、`guard_system_setting`，并精确删除对应旧 Guard 迁移账本记录。当前旧表没有独立命名的 secondary index；主键索引随 `DROP TABLE` 一并删除。脚本保留 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command` 及其他模块的账本记录。人工脚本不是启动 migration，也不是旧库兼容承诺。
+Guard migration 已嵌入二进制，并在 `auto_migrate=true` 时按 `_base_db_migrations` 自动执行。不得恢复或执行遗留预览库清理脚本：当前 `guard_integration*` 已是正式业务表，旧脚本可能造成第三方应用、凭据、mapping 和投递状态不可恢复丢失。历史库需要清理时必须先备份，并针对现场 schema 单独评审 SQL；发布包不提供通用删表脚本。
 
 ### 14.2 Session 数据库
 
@@ -1218,9 +1205,9 @@ https://your-domain.example.com/
 cd /home/ubuntu20/code/rs/mv/github/epimore/gmv
 
 rm -rf /tmp/gmv-delivery
-mkdir -p /tmp/gmv-delivery/{bin,config,systemd,nginx,certs,data,logs,pics,videos}
+mkdir -p /tmp/gmv-delivery/{bin,config,contracts,systemd,nginx,certs,data,logs,pics,videos}
 
-cp target/release/guard /tmp/gmv-delivery/bin/
+cp target/release/gmv-guard-server /tmp/gmv-delivery/bin/guard
 cp target/release/gmv-session-gb28181 /tmp/gmv-delivery/bin/
 cp target/release/gmv-stream /tmp/gmv-delivery/bin/
 
@@ -1228,12 +1215,13 @@ cp guard/server/config.yml /tmp/gmv-delivery/config/guard.yml
 cp session/gb28181/config.yml /tmp/gmv-delivery/config/session-gb28181.yml
 cp stream/config.yml /tmp/gmv-delivery/config/stream.yml
 cp PACKAGING_DEPLOYMENT.md /tmp/gmv-delivery/
+/tmp/gmv-delivery/bin/guard export-integration-contracts /tmp/gmv-delivery/contracts
 
 git rev-parse HEAD > /tmp/gmv-delivery/VERSION
 date -u +"build_time_utc=%Y-%m-%dT%H:%M:%SZ" >> /tmp/gmv-delivery/VERSION
 
 cd /tmp/gmv-delivery
-find bin config -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+find bin config contracts -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 tar -czf ../gmv-delivery-integrated.tar.gz .
 ```
 
@@ -1243,9 +1231,9 @@ tar -czf ../gmv-delivery-integrated.tar.gz .
 cd /home/ubuntu20/code/rs/mv/github/epimore/gmv
 
 rm -rf /tmp/gmv-delivery
-mkdir -p /tmp/gmv-delivery/{bin,config,systemd,nginx,certs,data,logs,pics,videos,guard-ui}
+mkdir -p /tmp/gmv-delivery/{bin,config,contracts,systemd,nginx,certs,data,logs,pics,videos,guard-ui}
 
-cp target/release/guard /tmp/gmv-delivery/bin/
+cp target/release/gmv-guard-server /tmp/gmv-delivery/bin/guard
 cp target/release/gmv-session-gb28181 /tmp/gmv-delivery/bin/
 cp target/release/gmv-stream /tmp/gmv-delivery/bin/
 cp -a guard/ui/dist /tmp/gmv-delivery/guard-ui/
@@ -1254,16 +1242,17 @@ cp guard/server/config.yml /tmp/gmv-delivery/config/guard.yml
 cp session/gb28181/config.yml /tmp/gmv-delivery/config/session-gb28181.yml
 cp stream/config.yml /tmp/gmv-delivery/config/stream.yml
 cp PACKAGING_DEPLOYMENT.md /tmp/gmv-delivery/
+/tmp/gmv-delivery/bin/guard export-integration-contracts /tmp/gmv-delivery/contracts
 
 git rev-parse HEAD > /tmp/gmv-delivery/VERSION
 date -u +"build_time_utc=%Y-%m-%dT%H:%M:%SZ" >> /tmp/gmv-delivery/VERSION
 
 cd /tmp/gmv-delivery
-find bin config guard-ui -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+find bin config contracts guard-ui -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 tar -czf ../gmv-delivery-split.tar.gz .
 ```
 
-实际交付前应把 `config/*.yml` 调整为目标现场 IP、域名、证书、数据库和节点 ID。
+实际交付前应把 `config/*.yml` 调整为目标现场 IP、域名、证书、数据库和节点 ID。仓库示例配置已保持 MQTT、HTTP integration 和 bootstrap secret 为空；不得把开发环境数据库、日志、broker 凭据、bootstrap 密码或 `guard.integrations.master_key` 打入通用交付包。现场 secret 应通过受控渠道单独注入，并将配置权限限制为服务账号可读。
 
 ## 19. 升级和回滚
 
@@ -1378,7 +1367,98 @@ ls third_party/pjproject-2.17/dist/lib/libpjsip*.a
 ~/.cargo/bin/cargo build -p gmv-session-gb28181 --release
 ```
 
-## 21. 发布前检查清单
+## 21. 第三方应用集成交付
+
+### 21.1 协议边界和接口入口
+
+HTTP 与 MQTT 是并列的外部协议适配器，不存在“以 HTTP 为标准把 MQTT 转成 HTTP”或反向转换。两种入口都完成独立认证、授权、幂等和 DTO 解码后进入 Guard 的 `BusinessControl`；Session、Stream、Avai 继续维护各自业务事实和资源状态机。
+
+| 能力 | 入口 | 身份 | 说明 |
+| --- | --- | --- | --- |
+| Guard UI | `/api/v2/**` | Cookie Session + CSRF | 供管理员、操作员和查看者使用 |
+| 第三方 HTTP | `/openapi/v1/**` | `GMV-HMAC-SHA256-V1` + integration scope | 不创建 Admin UI session，不开放用户、integration 管理和内部 RPC |
+| 第三方 MQTT command | `gmv/commands/{integration_id}` | Broker TLS/账号/ACL + Guard 应用级动态授权 | 每条消息检查应用状态、有效期、精确 topic、协议版本和 action |
+| MQTT command result | `gmv/command-results/{integration_id}` | Broker ACL | Guard 通过持久化 outbox 发布执行终态 |
+| HTTP callback / MQTT event | integration mapping | HMAC 或 Broker ACL | 先进入持久化 outbox，再按策略重试 |
+| 在线契约 | `/api-docs/**` | Admin UI session | 只读查看 OpenAPI、AsyncAPI 和 manifest |
+
+第三方离线开发契约由下面的命令生成，内容与在线文档同源：
+
+```bash
+/opt/gmv/bin/guard export-integration-contracts /opt/gmv/contracts
+```
+
+输出 `openapi.json`、`asyncapi.json`、`manifest.json` 和 `README.md`。导出物不得包含 Access Key、Secret、broker 凭据、master key 或现场 endpoint。
+
+### 21.2 HTTP HMAC 与幂等
+
+所有请求必须携带 `X-GMV-Access-Key`、`X-GMV-Timestamp`、`X-GMV-Nonce`、`X-GMV-Content-SHA256` 和 `X-GMV-Signature`。canonical request 字段顺序以导出 OpenAPI 的 `x-gmv-hmac.canonical_fields` 为准。
+
+所有 POST 还必须携带 `X-GMV-Request-ID`，并把该值放入 canonical request；GET 对应字段为空字符串。重试时保持相同请求 ID 和相同 method/path/query/body，使用新的 timestamp、nonce 和 signature。同一应用 24 小时内重复已完成请求返回原 HTTP 状态和正文；相同请求 ID 携带不同内容返回 409；处理中请求返回同一 `operation_id`。请求正文不持久化，Guard 只保存摘要和有限期响应重放数据。
+
+部署时必须满足：
+
+- `guard.integrations.master_key` 为 32 字节随机密钥的无填充 Base64；启用 HTTP integration 前必须设置。
+- 配置文件权限至少限制为服务账号和管理员可读，不能写入日志、URL、错误 details 或通用交付包。
+- 升级、回滚和迁移必须保留原 master key；更换为新值会使历史 credential ciphertext 无法解密。
+- integration 停用、过期、scope 收缩或 credential revoke 后，新请求立即失败。
+- Nginx 对 `/openapi/v1/**` 只提供 HTTPS、请求体大小和连接限流，不得改写签名使用的 path/query/body。
+
+### 21.3 MQTT Broker、TLS 和运行期授权
+
+MQTT 使用部署级单 Broker 连接。`guard.integrations.mqtt.protocol_version` 选择 `v3`（MQTT 3.1.1）或 `v5`（MQTT 5.0），应用配置必须与当前 runtime 一致；broker 地址、TLS、账号和协议版本变更后重启 Guard。
+
+应用启停、有效期、command topic 和 `allowed_actions` 由数据库维护，每条 command 执行前实时校验，因此这些变更不依赖重启。Guard 固定接收 `gmv/commands/#` 命名空间，但 wildcard subscription 只负责接收，不授予业务权限；未知 integration/topic/action 必须 fail-closed。
+
+Broker 最小 ACL 示例语义：
+
+```text
+Guard subscribe: gmv/commands/+
+Guard publish:   gmv/command-results/+
+Guard publish:   gmv/events/#
+Partner A publish:   gmv/commands/partner-a
+Partner A subscribe: gmv/command-results/partner-a
+Partner A subscribe: gmv/events/partner-a/#
+```
+
+生产环境启用 TLS，服务端证书需要完整校验；QoS 固定为 1，retain 关闭。第三方按 `command_id` 幂等消费 result，按 `event_id` 幂等消费 event。当前允许的九种 action 及各自 payload schema 以 `asyncapi.json` 为准。
+
+### 21.4 网络与持久化
+
+在原端口清单基础上增加：
+
+| 方向 | 目的 | 要求 |
+| --- | --- | --- |
+| 第三方 -> Nginx/Guard | `/openapi/v1/**` HTTPS | 仅开放必要来源，保留原始 path/query/body |
+| 管理员 -> Nginx/Guard | `/api-docs/**` HTTPS | 需要 Admin UI session，不匿名暴露 |
+| Guard -> MQTT Broker | TCP/TLS，通常 8883 | 最小账号和 topic ACL |
+| Guard -> callback endpoint | HTTPS 443 | DNS/IP/私网策略校验，禁止未授权内网地址和重定向 |
+
+Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command`、`guard_integration`、`guard_integration_credential`、`guard_integration_http`、`guard_integration_mqtt`、`guard_integration_mapping`、`guard_integration_audit`、`guard_integration_delivery`。升级前同时备份数据库和 Guard 配置；不得单独恢复数据库而遗漏对应 master key。
+
+### 21.5 第三方专项验收矩阵
+
+```text
+[ ] OpenAPI 含 58 个开放 path，且不含用户、角色、integration 管理和内部 RPC
+[ ] POST 缺失 X-GMV-Request-ID 时返回 400
+[ ] HMAC 正确请求成功，错误签名、过期 timestamp 和 nonce replay 被拒绝
+[ ] 同一请求 ID/相同内容跨 Guard 重启返回原响应
+[ ] 同一请求 ID/不同内容返回 409
+[ ] MQTT V3 或 V5 与现场 runtime 版本一致
+[ ] 九种 MQTT action 的 command/result schema 与实际 payload 一致
+[ ] 未知 topic、错误 integration_id、停用/过期应用和未授权 action 被拒绝
+[ ] 应用停用和 allowed_actions 收缩无需重启立即生效
+[ ] command result 包含 schema_version、integration_id、command_id、operation_id、state、error_code、occurred_at_ms
+[ ] HTTP callback 签名、超时、重试、失败终态和重启恢复通过
+[ ] MQTT event mapping、outbox retry、event_id 幂等和重启恢复通过
+[ ] HTTP/MQTT 播放票据续期只允许票据 owner，达到绝对期限或次数上限后拒绝
+[ ] 在线文档仅管理员可见，导出契约可在无 UI session 环境解析
+[ ] 交付包不含数据库、日志、secret、私钥、broker 凭据和前端 sourcemap
+```
+
+真实生产 broker、物理 GB28181 设备、外部 callback 和现场网络策略必须在部署环境完成最后验收；本地未执行的项目不得写成通过。
+
+## 22. 发布前检查清单
 
 构建检查：
 
@@ -1403,6 +1483,8 @@ ls third_party/pjproject-2.17/dist/lib/libpjsip*.a
 [ ] Nginx 域名、证书、反代路径正确
 [ ] SHA256SUMS 已生成
 [ ] VERSION 已记录版本、commit、目标平台、构建时间
+[ ] contracts/ 包含 OpenAPI、AsyncAPI、manifest 和第三方 README
+[ ] config/*.yml 已按目标环境生成，未直接复制开发凭据
 ```
 
 安全检查：
@@ -1414,6 +1496,9 @@ ls third_party/pjproject-2.17/dist/lib/libpjsip*.a
 [ ] 配置文件和证书私钥权限正确
 [ ] ui_dist_dir 未指向敏感目录
 [ ] 前端 dist 不含 sourcemap
+[ ] guard.integrations.master_key 已通过受控渠道注入并纳入升级备份
+[ ] MQTT 已启用 TLS、独立账号和最小 topic ACL
+[ ] 制品扫描确认不含数据库、日志、Access Key、Secret、broker 凭据或私钥
 ```
 
 验收检查：
@@ -1427,4 +1512,8 @@ ls third_party/pjproject-2.17/dist/lib/libpjsip*.a
 [ ] GB28181 设备接入正常
 [ ] 预览/回放链路正常
 [ ] 重启服务后自动恢复
+[ ] 第三方 HTTP HMAC、请求 ID 幂等和跨重启重放通过
+[ ] MQTT command/result、应用即时停用和权限收缩通过
+[ ] HTTP callback/MQTT event outbox 重试与恢复通过
+[ ] 在线文档和离线契约导出物逐项核对通过
 ```

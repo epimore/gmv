@@ -58,6 +58,7 @@ fn test_app(store: InMemoryGuardStore) -> axum::Router {
         outbox: OutboxRepository::from(store),
         users: None,
         integrations: None,
+        commands: None,
         integration_secrets: None,
         integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(300_000, 100)
             .unwrap(),

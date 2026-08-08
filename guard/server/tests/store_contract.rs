@@ -1,7 +1,8 @@
 use gmv_guard_server::auth::{Role, Secret};
 use gmv_guard_server::core::GuardConfig;
 use gmv_guard_server::store::migration::{
-    MYSQL_0003, MYSQL_0003_COLUMNS, MYSQL_0003_INDEXES, SQLITE_0003, migration_pairs,
+    MYSQL_0003, MYSQL_0003_COLUMNS, MYSQL_0003_INDEXES, MYSQL_0004_COLUMNS, MYSQL_0004_INDEXES,
+    SQLITE_0003, SQLITE_0004, migration_pairs,
 };
 
 #[test]
@@ -104,6 +105,18 @@ fn mysql_integration_mapping_index_fits_innodb_and_repair_steps_are_registered()
     for (_, index, _) in MYSQL_0003_INDEXES {
         assert!(
             SQLITE_0003.contains(index),
+            "SQLite migration missing MySQL repair index {index}"
+        );
+    }
+    for (_, column, _) in MYSQL_0004_COLUMNS {
+        assert!(
+            SQLITE_0004.contains(&format!("ADD COLUMN {column} ")),
+            "SQLite migration missing MySQL repair column {column}"
+        );
+    }
+    for (_, index, _) in MYSQL_0004_INDEXES {
+        assert!(
+            SQLITE_0004.contains(index),
             "SQLite migration missing MySQL repair index {index}"
         );
     }

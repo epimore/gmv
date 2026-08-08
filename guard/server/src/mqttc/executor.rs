@@ -12,6 +12,7 @@ use crate::outbox::OutboxRepository;
 use crate::store::InMemoryGuardStore;
 use crate::store::model::{INTEGRATION_PLAYBACK_MAX_RENEWALS, INTEGRATION_PLAYBACK_TOKEN_TTL_MS};
 use crate::store::model::{OutboxDestinationKind, OutboxRecord, OutboxState};
+use crate::store::persistent::IntegrationRepository;
 
 #[derive(Debug, Clone)]
 pub struct MqttCommandExecutor {
@@ -20,6 +21,7 @@ pub struct MqttCommandExecutor {
     store: InMemoryGuardStore,
     auth: Option<AuthState>,
     result_outbox: Option<(OutboxRepository, HashMap<String, String>)>,
+    result_integrations: Option<IntegrationRepository>,
 }
 
 impl MqttCommandExecutor {
@@ -30,6 +32,7 @@ impl MqttCommandExecutor {
             store,
             auth: None,
             result_outbox: None,
+            result_integrations: None,
         }
     }
 
@@ -44,6 +47,16 @@ impl MqttCommandExecutor {
         topics: HashMap<String, String>,
     ) -> Self {
         self.result_outbox = Some((repository, topics));
+        self
+    }
+
+    pub fn with_dynamic_result_outbox(
+        mut self,
+        repository: OutboxRepository,
+        integrations: IntegrationRepository,
+    ) -> Self {
+        self.result_outbox = Some((repository, HashMap::new()));
+        self.result_integrations = Some(integrations);
         self
     }
 
@@ -234,9 +247,15 @@ impl MqttCommandExecutor {
         let Some((repository, topics)) = &self.result_outbox else {
             return Ok(());
         };
-        let Some(topic) = topics.get(&command.integration_id) else {
-            return Ok(());
+        let topic = if let Some(integrations) = &self.result_integrations {
+            integrations
+                .mqtt_config(&command.integration_id)
+                .await?
+                .map(|config| config.result_topic)
+        } else {
+            topics.get(&command.integration_id).cloned()
         };
+        let Some(topic) = topic else { return Ok(()) };
         let now_ms = now_ms();
         let payload = base::serde_json::to_vec(&base::serde_json::json!({
             "schema_version": "v1",

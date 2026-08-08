@@ -77,6 +77,7 @@ impl WebhookClient {
                 method: "POST",
                 path: url.path(),
                 query: url.query().unwrap_or_default(),
+                request_id: "",
                 body: payload,
             },
         )?;

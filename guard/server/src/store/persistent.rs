@@ -20,6 +20,7 @@ use crate::integration::model::{
     IntegrationMapping, IntegrationMqttConfig,
 };
 use crate::outbox::OutboxRepository;
+use crate::store::command::HttpCommandClaim;
 #[cfg(feature = "db-mysql")]
 use crate::store::mysql::MysqlStore;
 #[cfg(feature = "db-sqlite")]
@@ -39,6 +40,82 @@ pub enum IntegrationRepository {
     Mysql(MysqlStore),
     #[cfg(feature = "db-sqlite")]
     Sqlite(SqliteStore),
+}
+
+#[derive(Debug, Clone)]
+pub enum CommandRepository {
+    #[cfg(feature = "db-mysql")]
+    Mysql(MysqlStore),
+    #[cfg(feature = "db-sqlite")]
+    Sqlite(SqliteStore),
+}
+
+impl CommandRepository {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_http(
+        &self,
+        command_id: &str,
+        integration_id: &str,
+        operation_id: &str,
+        action: &str,
+        request_hash: &str,
+        expires_at_ms: i64,
+        now_ms: i64,
+    ) -> GuardResult<HttpCommandClaim> {
+        match self {
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => {
+                store
+                    .claim_http_command(
+                        command_id,
+                        integration_id,
+                        operation_id,
+                        action,
+                        request_hash,
+                        expires_at_ms,
+                        now_ms,
+                    )
+                    .await
+            }
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => {
+                store
+                    .claim_http_command(
+                        command_id,
+                        integration_id,
+                        operation_id,
+                        action,
+                        request_hash,
+                        expires_at_ms,
+                        now_ms,
+                    )
+                    .await
+            }
+        }
+    }
+
+    pub async fn complete_http(
+        &self,
+        command_id: &str,
+        status: u16,
+        response_body: &[u8],
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        match self {
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => {
+                store
+                    .complete_http_command(command_id, status, response_body, now_ms)
+                    .await
+            }
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => {
+                store
+                    .complete_http_command(command_id, status, response_body, now_ms)
+                    .await
+            }
+        }
+    }
 }
 
 macro_rules! dispatch_integration {
@@ -107,6 +184,56 @@ impl IntegrationRepository {
 
     pub async fn upsert_mqtt_config(&self, value: &IntegrationMqttConfig) -> GuardResult<()> {
         dispatch_integration!(self, upsert_integration_mqtt_config(value))
+    }
+
+    pub async fn authorize_mqtt_command(
+        &self,
+        topic: &str,
+        integration_id: &str,
+        action: &str,
+        protocol_version: &str,
+        now_ms: i64,
+    ) -> GuardResult<IntegrationMqttConfig> {
+        let integration = self
+            .get(integration_id)
+            .await?
+            .filter(|integration| {
+                integration.transport == crate::integration::model::IntegrationTransport::Mqtt
+                    && integration.inbound_enabled
+                    && integration.enabled
+                    && integration
+                        .expires_at_ms
+                        .is_none_or(|expires_at| expires_at > now_ms)
+            })
+            .ok_or_else(|| {
+                GuardError::InvalidIdentity("MQTT integration is not active".to_string())
+            })?;
+        let config = self
+            .mqtt_config(&integration.integration_id)
+            .await?
+            .ok_or_else(|| {
+                GuardError::InvalidIdentity("MQTT integration config is missing".to_string())
+            })?;
+        if config.protocol_version != protocol_version {
+            return Err(GuardError::InvalidIdentity(
+                "MQTT integration protocol does not match runtime".to_string(),
+            ));
+        }
+        if config.command_topic != topic {
+            return Err(GuardError::InvalidIdentity(
+                "MQTT command topic is not authorized".to_string(),
+            ));
+        }
+        if !config
+            .allowed_actions
+            .iter()
+            .any(|allowed| allowed == action)
+        {
+            return Err(GuardError::InvalidIdentity(
+                "MQTT command action is not allowed".to_string(),
+            ));
+        }
+        Ok(config)
     }
 
     pub async fn list_mappings(
@@ -298,6 +425,15 @@ impl PersistentStore {
             Self::Mysql(store) => IntegrationRepository::Mysql(store.clone()),
             #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => IntegrationRepository::Sqlite(store.clone()),
+        }
+    }
+
+    pub fn command_repository(&self) -> CommandRepository {
+        match self {
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => CommandRepository::Mysql(store.clone()),
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => CommandRepository::Sqlite(store.clone()),
         }
     }
 

@@ -10,6 +10,7 @@ use crate::mqttc::mapping::{CommandAction, RoutedCommand};
 use crate::store::InMemoryGuardStore;
 #[cfg(feature = "db-mysql")]
 use crate::store::mysql::MysqlStore;
+use crate::store::persistent::IntegrationRepository;
 #[cfg(feature = "db-sqlite")]
 use crate::store::sqlite::SqliteStore;
 
@@ -62,6 +63,57 @@ impl CommandIdRepository {
             Self::Mysql(store) => store.claim_command(command_id, expires_at_ms, now_ms).await,
             #[cfg(feature = "db-sqlite")]
             Self::Sqlite(store) => store.claim_command(command_id, expires_at_ms, now_ms).await,
+        }
+    }
+
+    async fn claim_mqtt(&self, command: &MqttCommand, now_ms: i64) -> GuardResult<bool> {
+        let claimed = self
+            .claim(&command.command_id, command.expires_at_ms, now_ms)
+            .await?;
+        if !claimed {
+            return Ok(false);
+        }
+        match self {
+            Self::Memory(_) => {}
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => {
+                store
+                    .describe_claimed_command(
+                        &command.command_id,
+                        &command.integration_id,
+                        &command.action,
+                        now_ms,
+                    )
+                    .await?;
+            }
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => {
+                store
+                    .describe_claimed_command(
+                        &command.command_id,
+                        &command.integration_id,
+                        &command.action,
+                        now_ms,
+                    )
+                    .await?;
+            }
+        }
+        Ok(true)
+    }
+
+    pub async fn complete(
+        &self,
+        command_id: &str,
+        succeeded: bool,
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        let state = if succeeded { "SUCCEEDED" } else { "FAILED" };
+        match self {
+            Self::Memory(_) => Ok(()),
+            #[cfg(feature = "db-mysql")]
+            Self::Mysql(store) => store.complete_command(command_id, state, now_ms).await,
+            #[cfg(feature = "db-sqlite")]
+            Self::Sqlite(store) => store.complete_command(command_id, state, now_ms).await,
         }
     }
 }
@@ -129,10 +181,7 @@ impl MqttCommandPolicy {
         repository: &CommandIdRepository,
     ) -> GuardResult<Option<RoutedCommand>> {
         let (command, routed) = self.validate(None, payload, now_ms)?;
-        if !repository
-            .claim(&command.command_id, command.expires_at_ms, now_ms)
-            .await?
-        {
+        if !repository.claim_mqtt(&command, now_ms).await? {
             base::log::debug!(
                 "MQTT command reused: action=mqtt_command, stage=claim, outcome=duplicate, command_id={}, integration_id={}, command_action={}, target={}",
                 command.command_id,
@@ -153,10 +202,40 @@ impl MqttCommandPolicy {
         repository: &CommandIdRepository,
     ) -> GuardResult<Option<RoutedCommand>> {
         let (command, routed) = self.validate(Some(topic), payload, now_ms)?;
-        if !repository
-            .claim(&command.command_id, command.expires_at_ms, now_ms)
-            .await?
-        {
+        if !repository.claim_mqtt(&command, now_ms).await? {
+            base::log::debug!(
+                "MQTT command reused: action=mqtt_command, stage=claim, outcome=duplicate, command_id={}, integration_id={}, command_action={}, target={}, topic={}",
+                command.command_id,
+                command.integration_id,
+                command.action,
+                command.target,
+                topic
+            );
+            return Ok(None);
+        }
+        Ok(Some(routed))
+    }
+
+    pub async fn decode_authorized_topic_with_repository(
+        &self,
+        topic: &str,
+        payload: &[u8],
+        now_ms: i64,
+        protocol_version: &str,
+        repository: &CommandIdRepository,
+        integrations: &IntegrationRepository,
+    ) -> GuardResult<Option<RoutedCommand>> {
+        let (command, routed) = self.validate_command(payload, now_ms)?;
+        integrations
+            .authorize_mqtt_command(
+                topic,
+                &command.integration_id,
+                &command.action,
+                protocol_version,
+                now_ms,
+            )
+            .await?;
+        if !repository.claim_mqtt(&command, now_ms).await? {
             base::log::debug!(
                 "MQTT command reused: action=mqtt_command, stage=claim, outcome=duplicate, command_id={}, integration_id={}, command_action={}, target={}, topic={}",
                 command.command_id,
@@ -173,6 +252,35 @@ impl MqttCommandPolicy {
     fn validate(
         &self,
         topic: Option<&str>,
+        payload: &[u8],
+        now_ms: i64,
+    ) -> GuardResult<(MqttCommand, RoutedCommand)> {
+        let (command, routed) = self.validate_command(payload, now_ms)?;
+        let route_actions = topic
+            .and_then(|topic| self.topic_routes.get(topic))
+            .map(|(integration_id, actions)| {
+                if command.integration_id != *integration_id {
+                    return Err(GuardError::InvalidIdentity(
+                        "MQTT command integration does not match topic".to_string(),
+                    ));
+                }
+                Ok(actions)
+            })
+            .transpose()?;
+        let action_allowed = route_actions.map_or_else(
+            || self.allowed_actions.contains(&command.action),
+            |actions| actions.contains(&command.action),
+        );
+        if !action_allowed {
+            return Err(GuardError::InvalidIdentity(
+                "MQTT command action is not allowed".to_string(),
+            ));
+        }
+        Ok((command, routed))
+    }
+
+    fn validate_command(
+        &self,
         payload: &[u8],
         now_ms: i64,
     ) -> GuardResult<(MqttCommand, RoutedCommand)> {
@@ -194,26 +302,6 @@ impl MqttCommandPolicy {
         {
             return Err(GuardError::InvalidConfig(
                 "MQTT command TTL is invalid or expired".to_string(),
-            ));
-        }
-        let route_actions = topic
-            .and_then(|topic| self.topic_routes.get(topic))
-            .map(|(integration_id, actions)| {
-                if command.integration_id != *integration_id {
-                    return Err(GuardError::InvalidIdentity(
-                        "MQTT command integration does not match topic".to_string(),
-                    ));
-                }
-                Ok(actions)
-            })
-            .transpose()?;
-        let action_allowed = route_actions.map_or_else(
-            || self.allowed_actions.contains(&command.action),
-            |actions| actions.contains(&command.action),
-        );
-        if !action_allowed {
-            return Err(GuardError::InvalidIdentity(
-                "MQTT command action is not allowed".to_string(),
             ));
         }
         let action = CommandAction::parse(&command.action).ok_or_else(|| {

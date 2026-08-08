@@ -1,9 +1,10 @@
 use base_db::sqlx::MySqlPool;
 
 use crate::core::{GuardError, GuardResult};
+use crate::store::command::HttpCommandClaim;
 use crate::store::migration::{
     INTEGRATIONS_V2_COMPATIBILITY_SQL, MYSQL_0003, MYSQL_0003_COLUMNS, MYSQL_0003_INDEXES,
-    MYSQL_MIGRATIONS,
+    MYSQL_0004_COLUMNS, MYSQL_0004_INDEXES, MYSQL_MIGRATIONS,
 };
 use crate::store::model::{OutboxRecord, OutboxRow, outbox_from_row};
 
@@ -30,6 +31,7 @@ impl MysqlStore {
             .await
             .map_err(database_error)?;
         migrate_integrations_v3(&self.pool).await?;
+        migrate_command_idempotency_v4(&self.pool).await?;
         base_db::migration::run_mysql_migrations(&self.pool, MYSQL_MIGRATIONS)
             .await
             .map_err(database_error)
@@ -179,6 +181,156 @@ impl MysqlStore {
         .map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         Ok(true)
+    }
+
+    pub async fn describe_claimed_command(
+        &self,
+        command_id: &str,
+        integration_id: &str,
+        action: &str,
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        let result = base_db::sqlx::query("UPDATE guard_command SET integration_id=?,operation_id=?,action=?,state='CLAIMED',updated_at_ms=? WHERE command_id=?")
+            .bind(integration_id)
+            .bind(command_id)
+            .bind(action)
+            .bind(now_ms)
+            .bind(command_id)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        if result.rows_affected() == 0 {
+            return Err(GuardError::NotFound(format!("command {command_id}")));
+        }
+        Ok(())
+    }
+
+    pub async fn complete_command(
+        &self,
+        command_id: &str,
+        state: &str,
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        let result = base_db::sqlx::query(
+            "UPDATE guard_command SET state=?,updated_at_ms=? WHERE command_id=?",
+        )
+        .bind(state)
+        .bind(now_ms)
+        .bind(command_id)
+        .execute(&self.pool)
+        .await
+        .map_err(database_error)?;
+        if result.rows_affected() == 0 {
+            return Err(GuardError::NotFound(format!("command {command_id}")));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_http_command(
+        &self,
+        command_id: &str,
+        integration_id: &str,
+        operation_id: &str,
+        action: &str,
+        request_hash: &str,
+        expires_at_ms: i64,
+        now_ms: i64,
+    ) -> GuardResult<HttpCommandClaim> {
+        let mut tx = self.pool.begin().await.map_err(database_error)?;
+        base_db::sqlx::query("DELETE FROM guard_command WHERE expires_at_ms < ?")
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        let existing = base_db::sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<i64>,
+                Option<Vec<u8>>,
+            ),
+        >("SELECT integration_id,operation_id,action,request_hash,state,http_status,response_body FROM guard_command WHERE command_id=?")
+        .bind(command_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        if let Some((
+            stored_integration,
+            stored_operation,
+            stored_action,
+            stored_hash,
+            state,
+            status,
+            body,
+        )) = existing
+        {
+            tx.rollback().await.map_err(database_error)?;
+            if stored_integration != integration_id
+                || stored_action != action
+                || stored_hash != request_hash
+            {
+                return Err(GuardError::Conflict(
+                    "request id was already used with different request content".to_string(),
+                ));
+            }
+            return if state == "COMPLETED" {
+                Ok(HttpCommandClaim::Completed {
+                    operation_id: stored_operation,
+                    status: u16::try_from(status.unwrap_or(500)).unwrap_or(500),
+                    response_body: body.unwrap_or_default(),
+                })
+            } else {
+                Ok(HttpCommandClaim::Pending {
+                    operation_id: stored_operation,
+                })
+            };
+        }
+        base_db::sqlx::query("INSERT INTO guard_command(command_id,integration_id,operation_id,action,state,request_hash,expires_at_ms,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?)")
+            .bind(command_id)
+            .bind(integration_id)
+            .bind(operation_id)
+            .bind(action)
+            .bind("CLAIMED")
+            .bind(request_hash)
+            .bind(expires_at_ms)
+            .bind(now_ms)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        Ok(HttpCommandClaim::Claimed {
+            command_id: command_id.to_string(),
+            operation_id: operation_id.to_string(),
+        })
+    }
+
+    pub async fn complete_http_command(
+        &self,
+        command_id: &str,
+        status: u16,
+        response_body: &[u8],
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        let result = base_db::sqlx::query("UPDATE guard_command SET state='COMPLETED',http_status=?,response_body=?,updated_at_ms=? WHERE command_id=? AND state='CLAIMED'")
+            .bind(i64::from(status))
+            .bind(response_body)
+            .bind(now_ms)
+            .bind(command_id)
+            .execute(&self.pool)
+            .await
+            .map_err(database_error)?;
+        if result.rows_affected() == 0 {
+            return Err(GuardError::Conflict(
+                "HTTP idempotency command is not claimable".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn recover_stale_sending(
@@ -460,6 +612,65 @@ async fn migrate_integrations_v3(pool: &MySqlPool) -> GuardResult<()> {
         .as_millis();
     base_db::sqlx::query(
         "INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES (3,'guard_integrations',?)",
+    )
+    .bind(i64::try_from(applied_at_ms).unwrap_or(i64::MAX))
+    .execute(pool)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn migrate_command_idempotency_v4(pool: &MySqlPool) -> GuardResult<()> {
+    let existing = base_db::sqlx::query_scalar::<_, String>(
+        "SELECT name FROM _base_db_migrations WHERE version=4",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?;
+    if existing.is_some() {
+        return Ok(());
+    }
+
+    for &(table, column, definition) in MYSQL_0004_COLUMNS {
+        let exists = base_db::sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?)",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .map_err(database_error)?;
+        if exists == 0 {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD COLUMN {definition}"
+            )))
+            .execute(pool)
+            .await
+            .map_err(database_error)?;
+        }
+    }
+    for &(table, index, statement) in MYSQL_0004_INDEXES {
+        let exists = base_db::sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?)",
+        )
+        .bind(table)
+        .bind(index)
+        .fetch_one(pool)
+        .await
+        .map_err(database_error)?;
+        if exists == 0 {
+            base_db::sqlx::query(statement)
+                .execute(pool)
+                .await
+                .map_err(database_error)?;
+        }
+    }
+    let applied_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    base_db::sqlx::query(
+        "INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES (4,'guard_command_idempotency',?)",
     )
     .bind(i64::try_from(applied_at_ms).unwrap_or(i64::MAX))
     .execute(pool)

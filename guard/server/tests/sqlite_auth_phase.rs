@@ -146,6 +146,7 @@ guard:
                 outbox: persistent.outbox_repository(),
                 users: Some(persistent.user_repository()),
                 integrations: Some(persistent.integration_repository()),
+                commands: Some(persistent.command_repository()),
                 integration_secrets: None,
                 integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(
                     300_000, 100,

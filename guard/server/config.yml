@@ -69,7 +69,7 @@ guard:
     #   database: gmv
     #   username: root
     #   pass_crypto_enable: false
-    #   pass: "zaq12345"
+    #   pass: "" # 部署时通过受控配置注入，不得使用示例密码。
     #   ssl_mode: preferred # disabled | preferred | required | verify_ca | verify_identity
     #   attrs:
     #     log_global_sql_level: debug
@@ -85,23 +85,23 @@ guard:
       # 仅 guard_user 为空时写入一次，之后不会覆盖数据库用户。
       username: admin
       pass_crypto_enable: false # 密码是否加密，默认不加密。
-      pass: "zaq12345" # 空库首次启动前必须设置；已有用户后可留空，避免长期保存 bootstrap 密码。
-      local_login_only: false # 仅从配置文件读取；修改后需重启 guard 生效。
+      pass: "" # 空库首次启动前必须设置；已有用户后可留空，避免长期保存 bootstrap 密码。
+      local_login_only: true # 仅从配置文件读取；修改后需重启 guard 生效。
 
   integrations:
     # HTTP HMAC 凭证主密钥。已有凭证时必须保持不变；值为 32 字节密钥的无填充 Base64。
     master_key_crypto_enable: false # true 时填写 `guard encrypt <master_key>` 的输出。
-    master_key: "oa338+YmVNyBoGW79XB7+CsYEJSiXS2nHMeU12m1LWQ"
+    master_key: "" # 首次启用 HTTP integration 前生成并通过受控配置注入；升级时必须保持不变。
     mqtt:
-      enabled: true
+      enabled: false
       protocol_version: v3 # 可选 v3（MQTT 3.1.1）或 v5（MQTT 5.0）；切换后重建连接。
-      broker: mqtt-broker
+      broker: ""
       port: 1883
       client_id: gmv-guard
-      username: guard
+      username: ""
       pass_crypto_enable: false # 密码是否加密，默认不加密。
-      pass: "Gmv_EMQX_2026_Strong_Password"
-      tls: false # TLS 默认启用；开发/受控内网可显式关闭。
+      pass: ""
+      tls: true # TLS 默认启用；开发/受控内网可显式关闭。
       subscribe_topics:
         - gmv/commands/#
       publish_event_topics:

@@ -261,6 +261,7 @@ pub async fn start_guard(
         persistent.outbox_repository(),
         user_repository,
         integration_repository,
+        persistent.command_repository(),
         integration_secrets,
         config.integrations.mqtt.protocol_version.clone(),
         config.integrations.mqtt.enabled,
@@ -341,8 +342,7 @@ async fn spawn_mqtt_runtime(
     })?;
     let publisher = runtime.publisher.clone();
     let mut topics = mqtt.subscribe_topics.clone();
-    let mut topic_routes = Vec::new();
-    let mut result_topics = std::collections::HashMap::new();
+    topics.push("gmv/commands/#".to_string());
     for integration in integrations
         .list()
         .await?
@@ -358,31 +358,15 @@ async fn spawn_mqtt_runtime(
             .await?
         {
             topics.push(integration_mqtt.command_topic.clone());
-            result_topics.insert(
-                integration.integration_id.clone(),
-                integration_mqtt.result_topic.clone(),
-            );
-            topic_routes.push((
-                integration_mqtt.command_topic,
-                integration.integration_id,
-                integration_mqtt.allowed_actions,
-            ));
+            topics.push(integration_mqtt.command_topic);
         }
     }
     topics.sort();
     topics.dedup();
     let policy = MqttCommandPolicy::new(
-        [
-            "stream.start".to_string(),
-            "stream.stop".to_string(),
-            "device.ptz".to_string(),
-            "ai.start".to_string(),
-            "ai.cancel".to_string(),
-            "playback.ticket.renew".to_string(),
-        ],
+        crate::integration::model::MQTT_COMMAND_ACTIONS.map(str::to_string),
         300_000,
-    )?
-    .with_topic_routes(topic_routes)?;
+    )?;
     let repository = match persistent {
         #[cfg(feature = "db-mysql")]
         PersistentStore::Mysql(store) => CommandIdRepository::from(store.clone()),
@@ -391,7 +375,8 @@ async fn spawn_mqtt_runtime(
     };
     let executor = MqttCommandExecutor::new(operations, store)
         .with_auth(auth)
-        .with_result_outbox(persistent.outbox_repository(), result_topics);
+        .with_dynamic_result_outbox(persistent.outbox_repository(), integrations.clone());
+    let integrations = integrations.clone();
     let cancel = managed_runtime.cancel.clone();
     let shutdown = cancel.clone();
     let task = managed_runtime.spawn("guard-mqtt-runtime", async move {
@@ -399,7 +384,7 @@ async fn spawn_mqtt_runtime(
             runtime.run(cancel).await
         } else {
             runtime
-                .run_commands(topics, policy, repository, executor, cancel)
+                .run_commands(topics, policy, repository, executor, integrations, cancel)
                 .await
         };
         if let Err(error) = result {

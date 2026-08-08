@@ -1,5 +1,17 @@
 use crate::core::{GuardError, GuardResult};
 
+pub const MQTT_COMMAND_ACTIONS: [&str; 9] = [
+    "stream.start",
+    "stream.stop",
+    "stream.playback",
+    "stream.download",
+    "device.broadcast",
+    "device.ptz",
+    "ai.start",
+    "ai.cancel",
+    "playback.ticket.renew",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
 pub enum IntegrationTransport {
@@ -309,19 +321,7 @@ impl IntegrationMqttConfig {
         }
         let mut actions = std::collections::HashSet::new();
         for action in &self.allowed_actions {
-            if !matches!(
-                action.as_str(),
-                "stream.start"
-                    | "stream.stop"
-                    | "stream.playback"
-                    | "stream.download"
-                    | "device.broadcast"
-                    | "device.ptz"
-                    | "ai.start"
-                    | "ai.cancel"
-                    | "playback.ticket.renew"
-            ) || !actions.insert(action)
-            {
+            if !MQTT_COMMAND_ACTIONS.contains(&action.as_str()) || !actions.insert(action) {
                 return Err(GuardError::InvalidConfig(
                     "MQTT integration allowed_actions contains an invalid or duplicate action"
                         .to_string(),

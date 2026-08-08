@@ -14,6 +14,7 @@ use crate::core::{GuardError, GuardResult};
 use crate::mqttc::executor::MqttCommandExecutor;
 use crate::mqttc::publisher::{MqttPublishClient, MqttPublisher};
 use crate::mqttc::subscriber::{CommandIdRepository, MqttCommandPolicy};
+use crate::store::persistent::IntegrationRepository;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MqttProtocolVersion {
@@ -89,6 +90,7 @@ pub struct MqttRuntime {
     pub publisher: MqttPublisher,
     client: MqttClient,
     event_loop: MqttEventLoop,
+    protocol_version: MqttProtocolVersion,
 }
 
 impl MqttRuntime {
@@ -132,6 +134,7 @@ impl MqttRuntime {
             publisher: MqttPublisher::new(publish_client, config.retry),
             client,
             event_loop,
+            protocol_version: config.protocol_version,
         })
     }
 
@@ -145,6 +148,7 @@ impl MqttRuntime {
         policy: MqttCommandPolicy,
         repository: CommandIdRepository,
         executor: MqttCommandExecutor,
+        integrations: IntegrationRepository,
         cancel: CancellationToken,
     ) -> GuardResult<()> {
         if topics.is_empty() {
@@ -179,6 +183,8 @@ impl MqttRuntime {
                 policy,
                 repository,
                 executor,
+                integrations,
+                protocol_version: self.protocol_version,
             }),
         )
         .await
@@ -260,6 +266,8 @@ struct CommandRuntime {
     policy: MqttCommandPolicy,
     repository: CommandIdRepository,
     executor: MqttCommandExecutor,
+    integrations: IntegrationRepository,
+    protocol_version: MqttProtocolVersion,
 }
 
 impl CommandRuntime {
@@ -267,7 +275,14 @@ impl CommandRuntime {
         let now_ms = now_ms();
         if let Some(command) = self
             .policy
-            .decode_topic_with_repository(topic, payload, now_ms, &self.repository)
+            .decode_authorized_topic_with_repository(
+                topic,
+                payload,
+                now_ms,
+                self.protocol_version.as_str(),
+                &self.repository,
+                &self.integrations,
+            )
             .await?
         {
             base::log::info!(
@@ -279,7 +294,12 @@ impl CommandRuntime {
                 topic,
                 payload.len()
             );
-            self.executor.execute(command).await?;
+            let command_id = command.command_id.clone();
+            let result = self.executor.execute(command).await;
+            self.repository
+                .complete(&command_id, result.is_ok(), now_ms)
+                .await?;
+            result?;
         }
         Ok(())
     }

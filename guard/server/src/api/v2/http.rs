@@ -60,16 +60,18 @@ use crate::integration::model::{
     IntegrationTransport,
 };
 use crate::integration::secret::IntegrationSecretCipher;
+use crate::integration::{IntegrationPrincipal, principal as integration_principal};
 use crate::operation::OperationRequest;
 use crate::operation::{OperationRecord, OperationStatus};
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
+use crate::store::command::{HttpCommandClaim, http_command_id, validate_request_id};
 use crate::store::model::{
     EventRecord, INTEGRATION_PLAYBACK_MAX_LIFETIME_MS, INTEGRATION_PLAYBACK_MAX_RENEWALS,
     INTEGRATION_PLAYBACK_TOKEN_TTL_MS, LeaseRecord, NodeRecord, OutboxDestinationKind,
     OutboxRecord, OutboxState, PLAYBACK_TOKEN_TTL_MS, PlaybackTicketRecord,
 };
-use crate::store::persistent::{IntegrationRepository, UserRepository};
+use crate::store::persistent::{CommandRepository, IntegrationRepository, UserRepository};
 
 const CSRF_HEADER: &str = "x-csrf-token";
 const DEFAULT_GB_DEVICE_PAGE_SIZE: u32 = 20;
@@ -81,7 +83,10 @@ const HMAC_TIMESTAMP_HEADER: &str = "x-gmv-timestamp";
 const HMAC_NONCE_HEADER: &str = "x-gmv-nonce";
 const HMAC_CONTENT_SHA256_HEADER: &str = "x-gmv-content-sha256";
 const HMAC_SIGNATURE_HEADER: &str = "x-gmv-signature";
+const REQUEST_ID_HEADER: &str = "x-gmv-request-id";
 const MAX_OPEN_API_BODY_BYTES: usize = 1024 * 1024;
+const MAX_OPEN_API_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const HTTP_IDEMPOTENCY_TTL_MS: i64 = 86_400_000;
 
 #[derive(Debug, Clone)]
 pub struct HttpState {
@@ -90,6 +95,7 @@ pub struct HttpState {
     pub outbox: OutboxRepository,
     pub users: Option<UserRepository>,
     pub integrations: Option<IntegrationRepository>,
+    pub commands: Option<CommandRepository>,
     pub integration_secrets: Option<IntegrationSecretCipher>,
     pub integration_nonces: HmacNonceCache,
     pub mqtt_runtime_protocol_version: String,
@@ -510,6 +516,10 @@ async fn openapi_document(
     headers: HeaderMap,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
     require_role(&state.auth, &headers, Role::Admin)?;
+    Ok(Json(openapi_contract()))
+}
+
+pub fn openapi_contract() -> base::serde_json::Value {
     let mut paths = base::serde_json::Map::new();
     for (path, methods) in OPEN_BUSINESS_OPERATIONS {
         let mut operations = base::serde_json::Map::new();
@@ -526,11 +536,11 @@ async fn openapi_document(
             let mut operation = base::serde_json::json!({
                 "tags": [openapi_operation_tag(path)],
                 "summary": summary,
-                "description": format!("{summary}。请求须完成 GMV-HMAC-SHA256-V1 签名校验，并具备所列权限。"),
+                "description": format!("{summary}。请求须完成 GMV-HMAC-SHA256-V1 签名校验，并具备所列权限；POST 还必须提供已纳入签名的 X-GMV-Request-ID。"),
                 "x-gmv-required-scope": required_scope,
                 "parameters": openapi_operation_parameters(method, path),
                 "security": [{"GmvAccessKey": [], "GmvTimestamp": [], "GmvNonce": [], "GmvContentSha256": [], "GmvSignature": []}],
-                "responses": openapi_responses(summary)
+                "responses": openapi_responses(method, path, summary)
             });
             if let Some(request_body) = openapi_request_body(method, path) {
                 operation
@@ -542,12 +552,12 @@ async fn openapi_document(
         }
         paths.insert(format!("/openapi/v1{path}"), operations.into());
     }
-    Ok(Json(base::serde_json::json!({
+    base::serde_json::json!({
         "openapi": "3.1.0",
         "info": {
             "title": "GMV Guard 三方 HTTP 开放接口",
             "version": env!("CARGO_PKG_VERSION"),
-            "description": "面向第三方业务系统的 Guard Server HTTP 接口契约。所有请求与响应正文均使用 JSON，写请求仅使用 POST。"
+            "description": "面向第三方业务系统的 Guard Server HTTP 接口契约。所有请求与响应正文均使用 JSON，写请求仅使用 POST；HTTP 与 MQTT 是并列协议适配器，均进入 Guard 业务控制面。"
         },
         "tags": [
             {"name": "总览与运行状态", "description": "查询 Guard 汇总信息、运行状态和媒体传输能力。"},
@@ -590,9 +600,12 @@ async fn openapi_document(
             "description": "将以下字段按固定顺序组成 canonical_request 后计算 HMAC-SHA256。",
             "timestamp_unit": "毫秒",
             "clock_skew_ms": 300000,
-            "canonical_fields": ["version", "access_key", "timestamp_ms", "nonce", "method", "path", "canonical_query", "body_sha256"]
+            "canonical_fields": ["version", "access_key", "timestamp_ms", "nonce", "method", "path", "canonical_query", "request_id", "body_sha256"],
+            "request_id_header": REQUEST_ID_HEADER,
+            "request_id_required_for": ["POST"],
+            "idempotency_window_ms": HTTP_IDEMPOTENCY_TTL_MS
         }
-    })))
+    })
 }
 
 fn openapi_operation_parameters(method: &str, path: &str) -> Vec<base::serde_json::Value> {
@@ -619,6 +632,14 @@ fn openapi_operation_parameters(method: &str, path: &str) -> Vec<base::serde_jso
                 "description": openapi_field_description(name),
                 "schema": {"type": openapi_field_type(name)}
             })
+        }));
+    } else if method == "post" {
+        parameters.push(base::serde_json::json!({
+            "name": REQUEST_ID_HEADER,
+            "in": "header",
+            "required": true,
+            "description": "调用方生成的幂等请求标识，必须包含在 HMAC canonical_request 中；同一应用重复提交相同请求时返回原结果。",
+            "schema": {"type": "string", "minLength": 1, "maxLength": 128}
         }));
     }
     parameters
@@ -769,6 +790,13 @@ fn openapi_query_fields(path: &str) -> &'static [(&'static str, bool)] {
             ("page", false),
             ("page_size", false),
         ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images" => &[
+            ("session_node_id", true),
+            ("start_time_ms", false),
+            ("end_time_ms", false),
+            ("page", false),
+            ("page_size", false),
+        ],
         "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings" => &[
             ("session_node_id", true),
             ("page", false),
@@ -818,6 +846,7 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
             ("alias", false),
             ("status", false),
             ("heartbeat_sec", false),
+            ("snapshot_to_mode", false),
             ("tenant_id", false),
             ("sys_org_code", false),
             ("create_by", false),
@@ -859,6 +888,7 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
             ("audio_codec", false),
             ("startup_timeout_ms", false),
             ("playback_id", false),
+            ("stream_profile", false),
         ],
         "/gb28181/devices/{device_id}/channels/{channel_id}/ptz" => &[
             ("deviceId", true),
@@ -924,6 +954,7 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
             ("broadcast_channel_count", false),
             ("broadcast_frame_duration_ms", false),
             ("playback_id", false),
+            ("stream_profile", false),
         ],
         "/devices/{device_id}/ptz" => &[
             ("channel_id", true),
@@ -1002,6 +1033,41 @@ fn openapi_request_body(method: &str, path: &str) -> Option<base::serde_json::Va
 }
 
 fn openapi_field_schema(name: &str) -> base::serde_json::Value {
+    if name == "targets" {
+        return base::serde_json::json!({
+            "type": "array",
+            "minItems": 1,
+            "description": openapi_field_description(name),
+            "items": {
+                "type": "object",
+                "required": ["device_id", "channel_id", "session_node_id"],
+                "properties": {
+                    "device_id": openapi_field_schema("device_id"),
+                    "channel_id": openapi_field_schema("channel_id"),
+                    "session_node_id": openapi_field_schema("session_node_id"),
+                    "trans_mode": openapi_field_schema("trans_mode")
+                }
+            }
+        });
+    }
+    if name == "items" {
+        return base::serde_json::json!({
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "description": openapi_field_description(name),
+            "items": {
+                "type": "object",
+                "required": ["playback_id", "stream_id", "subscription_id", "generation"],
+                "properties": {
+                    "playback_id": openapi_field_schema("playback_id"),
+                    "stream_id": openapi_field_schema("stream_id"),
+                    "subscription_id": openapi_field_schema("subscription_id"),
+                    "generation": {"type": "integer", "minimum": 0, "description": "回放控制版本号。"}
+                }
+            }
+        });
+    }
     base::serde_json::json!({
         "type": openapi_field_type(name),
         "description": openapi_field_description(name)
@@ -1010,7 +1076,10 @@ fn openapi_field_schema(name: &str) -> base::serde_json::Value {
 
 fn openapi_field_type(name: &str) -> &'static str {
     match name {
-        "registered_only" | "paused" | "renew" => "boolean",
+        "registered_only" | "paused" | "renew" | "snapshot" | "ptz_enable" | "broadcast_enable"
+        | "audio_enable" | "record_enable" | "playback_enable" | "alarm_enable" | "biz_enable" => {
+            "boolean"
+        }
         "speed_rate" | "longitude" | "latitude" => "number",
         "items" | "targets" => "array",
         "limit"
@@ -1020,17 +1089,11 @@ fn openapi_field_type(name: &str) -> &'static str {
         | "pwd_check"
         | "status"
         | "heartbeat_sec"
-        | "snapshot"
-        | "ptz_enable"
-        | "broadcast_enable"
-        | "audio_enable"
-        | "record_enable"
-        | "playback_enable"
-        | "alarm_enable"
-        | "biz_enable"
         | "sort_no"
         | "start_time_sec"
         | "end_time_sec"
+        | "start_time_ms"
+        | "end_time_ms"
         | "startup_timeout_ms"
         | "broadcast_sample_rate"
         | "broadcast_channel_count"
@@ -1064,6 +1127,7 @@ fn openapi_field_description(name: &str) -> &'static str {
         "device_id" | "deviceId" => "设备唯一标识。",
         "channel_id" | "channelId" => "设备通道唯一标识。",
         "resource_id" => "设备资源唯一标识。",
+        "image_id" => "通道截图资源唯一标识。",
         "stream_id" => "媒体流唯一标识。",
         "playback_id" => "回放会话唯一标识。",
         "token" => "播放票据或业务令牌。",
@@ -1082,6 +1146,7 @@ fn openapi_field_description(name: &str) -> &'static str {
         "over_pic_id" => "通道覆盖图资源标识。",
         "status" => "启停状态。",
         "heartbeat_sec" => "设备心跳间隔，单位为秒。",
+        "snapshot_to_mode" => "设备截图投递模式。",
         "tenant_id" => "业务租户标识。",
         "sys_org_code" => "业务组织机构编码。",
         "create_by" => "创建人标识。",
@@ -1104,6 +1169,7 @@ fn openapi_field_description(name: &str) -> &'static str {
         "trans_mode" => "媒体传输模式。",
         "output_type" => "输出封装类型，例如 flv 或 hls。",
         "audio_codec" => "输出音频编码，例如 aac。",
+        "stream_profile" => "请求的视频码流档位，可选 main 或 sub。",
         "startup_timeout_ms" => "等待媒体启动的超时时间，单位为毫秒。",
         "broadcast_codec" => "语音广播编码。",
         "broadcast_sample_rate" => "语音广播采样率。",
@@ -1117,7 +1183,9 @@ fn openapi_field_description(name: &str) -> &'static str {
         "zoomSpeed" => "变倍速度。",
         "count" => "本次截图数量。",
         "interval" => "连续截图间隔。",
-        "mode" => "录像访问模式。",
+        "mode" => "资源访问模式，例如 inline 或 download。",
+        "start_time_ms" => "查询开始时间，Unix 毫秒时间戳。",
+        "end_time_ms" => "查询结束时间，Unix 毫秒时间戳。",
         "stream_node_id" => "负责媒体流的流节点标识。",
         "ssrc" => "RTP 同步源标识。",
         "dialog_state" => "GB28181 SIP Dialog 状态筛选值。",
@@ -1146,11 +1214,8 @@ fn openapi_field_description(name: &str) -> &'static str {
     }
 }
 
-fn openapi_responses(summary: &str) -> base::serde_json::Value {
-    let success_schema = base::serde_json::json!({
-        "type": ["object", "array"],
-        "description": format!("{summary}成功时返回的 JSON 数据。具体字段由当前 Guard 版本的业务响应决定。")
-    });
+fn openapi_responses(method: &str, path: &str, summary: &str) -> base::serde_json::Value {
+    let success_schema = openapi_success_schema(method, path, summary);
     let error_content = base::serde_json::json!({
         "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}
     });
@@ -1168,12 +1233,354 @@ fn openapi_responses(summary: &str) -> base::serde_json::Value {
     })
 }
 
+fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serde_json::Value {
+    let fields: &[&str] = match path {
+        "/dashboard" => &["node_count", "event_count", "next_after_id"],
+        "/media/transport" => &["scheme", "http_version", "multi_view_limit"],
+        "/media/operations" | "/media/operations/{operation_id}" => &[
+            "operation_id",
+            "state",
+            "stage",
+            "elapsed_ms",
+            "last_progress_at_ms",
+            "checkpoint_ms",
+            "hard_timeout_ms",
+            "can_continue",
+            "result",
+            "error",
+        ],
+        "/nodes" => &[
+            "node_id",
+            "instance_id",
+            "kind",
+            "service",
+            "protocol",
+            "display_name",
+            "connection",
+            "connection_label",
+            "health",
+            "health_label",
+            "scheduling",
+            "scheduling_label",
+            "endpoints",
+            "capabilities",
+            "zone",
+            "last_seen_at_ms",
+        ],
+        "/leases" => &[
+            "lease_id",
+            "route_id",
+            "resource_id",
+            "stream_type",
+            "node_id",
+            "instance_id",
+            "state",
+            "expires_at_ms",
+            "endpoints",
+        ],
+        "/events" => &["items", "next_after_id"],
+        "/devices" => &["device_id", "name", "session_node_id", "channels", "online"],
+        "/streams"
+        | "/devices/{device_id}/preview"
+        | "/devices/{device_id}/playback"
+        | "/devices/{device_id}/download"
+        | "/streams/{stream_id}/stop"
+        | "/streams/{stream_id}/release" => &[
+            "stream_id",
+            "device_id",
+            "channel_id",
+            "node_id",
+            "instance_id",
+            "lease_id",
+            "route_id",
+            "endpoint",
+            "video_codec",
+            "audio_codec",
+            "requested_stream_profile",
+            "effective_stream_profile",
+            "stream_profile_verification",
+            "subscription_id",
+            "session_node_id",
+            "playback_id",
+            "playback_generation",
+            "state",
+        ],
+        "/streams/{stream_id}/outputs" => {
+            &["output_id", "stream_id", "output_type", "endpoint", "state"]
+        }
+        "/ai/tasks" | "/ai/tasks/{task_id}/cancel" => &[
+            "task_id",
+            "model",
+            "stream_id",
+            "node_id",
+            "instance_id",
+            "lease_id",
+            "route_id",
+            "state",
+        ],
+        "/runtime/status" => &[
+            "guard_available",
+            "streams",
+            "running_streams",
+            "ai_tasks",
+            "running_ai_tasks",
+            "ptz_commands",
+        ],
+        path if path.contains("/broadcasts/") || path == "/gb28181/broadcasts/start" => &[
+            "broadcast_id",
+            "stream_node_id",
+            "input_url",
+            "state",
+            "target_summaries",
+        ],
+        path if path.contains("/images") => &[
+            "image_id",
+            "device_id",
+            "channel_id",
+            "session_node_id",
+            "url",
+            "created_at_ms",
+            "items",
+            "page",
+            "page_size",
+            "total",
+        ],
+        path if path.contains("cloud-recordings") => &[
+            "task_id",
+            "device_id",
+            "channel_id",
+            "session_node_id",
+            "state",
+            "start_time_sec",
+            "end_time_sec",
+            "url",
+            "items",
+            "page",
+            "page_size",
+            "total",
+        ],
+        path if path.contains("/records") => &[
+            "query_id",
+            "device_id",
+            "channel_id",
+            "start_time_sec",
+            "end_time_sec",
+            "items",
+            "page",
+            "page_size",
+            "total",
+        ],
+        path if path.contains("/gb28181/devices") => &[
+            "device_id",
+            "device_name",
+            "channel_id",
+            "channel_name",
+            "session_node_id",
+            "domain_id",
+            "registered",
+            "online",
+            "status",
+            "items",
+            "page",
+            "page_size",
+            "total",
+        ],
+        path if path.contains("/gb28181/streams") || path.contains("stream-history") => &[
+            "stream_id",
+            "session_node_id",
+            "stream_node_id",
+            "device_id",
+            "channel_id",
+            "ssrc",
+            "state",
+            "dialog_state",
+            "media_state",
+            "items",
+            "page",
+            "page_size",
+            "total",
+            "server_time_ms",
+        ],
+        _ => &["accepted", "operation_id", "state"],
+    };
+    let item_fields = fields
+        .iter()
+        .copied()
+        .filter(|field| !matches!(*field, "items" | "page" | "page_size" | "total"))
+        .collect::<Vec<_>>();
+    let is_array = method == "get"
+        && matches!(
+            path,
+            "/media/operations"
+                | "/nodes"
+                | "/leases"
+                | "/devices"
+                | "/streams"
+                | "/streams/{stream_id}/outputs"
+                | "/ai/tasks"
+        );
+    if is_array {
+        return base::serde_json::json!({
+            "type": "array",
+            "description": format!("{summary}成功时返回的数组。"),
+            "items": openapi_response_object_schema(summary, &item_fields)
+        });
+    }
+    openapi_response_object_schema(summary, fields)
+}
+
+fn openapi_response_object_schema(summary: &str, fields: &[&str]) -> base::serde_json::Value {
+    let properties = fields
+        .iter()
+        .map(|field| ((*field).to_string(), openapi_response_field_schema(field)))
+        .collect::<base::serde_json::Map<_, _>>();
+    base::serde_json::json!({
+        "type": "object",
+        "description": format!("{summary}成功时返回的 JSON 对象。"),
+        "properties": properties,
+        "additionalProperties": true
+    })
+}
+
+fn openapi_response_field_schema(field: &str) -> base::serde_json::Value {
+    if matches!(
+        field,
+        "items" | "channels" | "endpoints" | "capabilities" | "target_summaries"
+    ) {
+        return base::serde_json::json!({
+            "type": "array",
+            "description": "业务条目数组。",
+            "items": {"type": ["object", "string"], "description": "数组条目。"}
+        });
+    }
+    if matches!(
+        field,
+        "online" | "registered" | "accepted" | "guard_available" | "can_continue"
+    ) {
+        return base::serde_json::json!({"type": "boolean", "description": "业务布尔状态。"});
+    }
+    if field.ends_with("_ms")
+        || matches!(
+            field,
+            "node_count"
+                | "event_count"
+                | "page"
+                | "page_size"
+                | "total"
+                | "streams"
+                | "running_streams"
+                | "ai_tasks"
+                | "running_ai_tasks"
+                | "ptz_commands"
+                | "playback_generation"
+                | "multi_view_limit"
+        )
+    {
+        return base::serde_json::json!({"type": "integer", "description": "业务数值。"});
+    }
+    if matches!(field, "result" | "error") {
+        return base::serde_json::json!({"type": ["object", "null"], "description": "操作结果或错误详情。"});
+    }
+    base::serde_json::json!({"type": ["string", "null"], "description": "业务字段。"})
+}
+
+fn mqtt_action_payload_schemas() -> base::serde_json::Value {
+    base::serde_json::json!({
+        "StreamStartPayload": {
+            "type": "object",
+            "required": ["channel_id"],
+            "properties": {
+                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
+                "channel_id": {"type": "string", "description": "设备通道标识。"},
+                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
+                "trans_mode": {"type": "string", "description": "媒体传输模式。"},
+                "output_type": {"type": "string", "description": "输出封装类型。"},
+                "audio_codec": {"type": "string", "description": "输出音频编码。"},
+                "stream_profile": {"type": "string", "enum": ["main", "sub"], "description": "请求码流档位。"}
+            }
+        },
+        "StreamStopPayload": {
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "停止原因。"}}
+        },
+        "StreamPlaybackPayload": {
+            "type": "object",
+            "required": ["channel_id", "start_time_sec", "end_time_sec"],
+            "properties": {
+                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
+                "channel_id": {"type": "string", "description": "设备通道标识。"},
+                "start_time_sec": {"type": "integer", "description": "回放开始 Unix 秒时间戳。"},
+                "end_time_sec": {"type": "integer", "description": "回放结束 Unix 秒时间戳。"},
+                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
+                "output_type": {"type": "string", "description": "输出封装类型。"},
+                "stream_profile": {"type": "string", "enum": ["main", "sub"], "description": "请求码流档位。"}
+            }
+        },
+        "StreamDownloadPayload": {
+            "type": "object",
+            "required": ["channel_id", "start_time_sec", "end_time_sec"],
+            "properties": {
+                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
+                "channel_id": {"type": "string", "description": "设备通道标识。"},
+                "start_time_sec": {"type": "integer", "description": "下载开始 Unix 秒时间戳。"},
+                "end_time_sec": {"type": "integer", "description": "下载结束 Unix 秒时间戳。"},
+                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
+                "output_type": {"type": "string", "description": "下载输出封装类型。"}
+            }
+        },
+        "DeviceBroadcastPayload": {
+            "type": "object",
+            "required": ["channel_id"],
+            "properties": {
+                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
+                "channel_id": {"type": "string", "description": "设备通道标识。"},
+                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
+                "broadcast_codec": {"type": "string", "description": "广播音频编码。"},
+                "broadcast_sample_rate": {"type": "integer", "description": "广播采样率。"},
+                "broadcast_channel_count": {"type": "integer", "description": "广播声道数。"},
+                "broadcast_frame_duration_ms": {"type": "integer", "description": "广播帧时长。"}
+            }
+        },
+        "DevicePtzPayload": {
+            "type": "object",
+            "required": ["channel_id", "leftRight", "upDown", "inOut", "horizonSpeed", "verticalSpeed", "zoomSpeed"],
+            "properties": {
+                "channel_id": {"type": "string", "description": "设备通道标识。"},
+                "leftRight": {"type": "integer", "description": "水平控制值。"},
+                "upDown": {"type": "integer", "description": "垂直控制值。"},
+                "inOut": {"type": "integer", "description": "变倍控制值。"},
+                "horizonSpeed": {"type": "integer", "description": "水平速度。"},
+                "verticalSpeed": {"type": "integer", "description": "垂直速度。"},
+                "zoomSpeed": {"type": "integer", "description": "变倍速度。"}
+            }
+        },
+        "AiStartPayload": {
+            "type": "object",
+            "required": ["model"],
+            "properties": {
+                "stream_id": {"type": "string", "description": "媒体流标识；未提供时使用 command.target。"},
+                "model": {"type": "string", "description": "AI 模型标识。"}
+            }
+        },
+        "AiCancelPayload": {"type": "object", "properties": {}},
+        "PlaybackTicketRenewPayload": {
+            "type": "object",
+            "required": ["renew"],
+            "properties": {"renew": {"type": "boolean", "description": "true 续期，false 撤销。"}}
+        }
+    })
+}
+
 async fn asyncapi_document(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
     require_role(&state.auth, &headers, Role::Admin)?;
-    Ok(Json(base::serde_json::json!({
+    Ok(Json(asyncapi_contract()))
+}
+
+pub fn asyncapi_contract() -> base::serde_json::Value {
+    base::serde_json::json!({
         "asyncapi": "3.0.0",
         "info": {
             "title": "GMV Guard 三方 MQTT 接入",
@@ -1215,6 +1622,7 @@ async fn asyncapi_document(
                 "integrationId": {"description": "第三方应用唯一标识。"},
                 "eventType": {"description": "事件类型；Topic 中的点号按斜杠展开。"}
             },
+            "schemas": mqtt_action_payload_schemas(),
             "messages": {
                 "IntegrationCommand": {
                     "name": "IntegrationCommand",
@@ -1229,10 +1637,28 @@ async fn asyncapi_document(
                             "command_id": {"type": "string", "description": "第三方生成的全局唯一幂等命令标识。"},
                             "issued_at_ms": {"type": "integer", "description": "命令签发时间，Unix 毫秒时间戳。"},
                             "expires_at_ms": {"type": "integer", "description": "命令过期时间，Unix 毫秒时间戳。"},
-                            "action": {"type": "string", "description": "已授权的命令动作，例如 stream.start。"},
+                            "action": {"type": "string", "enum": crate::integration::model::MQTT_COMMAND_ACTIONS, "description": "应用已获授权的命令动作。"},
                             "target": {"type": "string", "description": "命令目标设备、通道、流或任务标识。"},
-                            "payload": {"type": "object", "description": "与 action 对应的 JSON 业务参数。"}
-                        }
+                            "payload": {
+                                "description": "与 action 对应的 JSON 业务参数。",
+                                "oneOf": [
+                                    {"$ref": "#/components/schemas/StreamStartPayload"},
+                                    {"$ref": "#/components/schemas/StreamStopPayload"},
+                                    {"$ref": "#/components/schemas/StreamPlaybackPayload"},
+                                    {"$ref": "#/components/schemas/StreamDownloadPayload"},
+                                    {"$ref": "#/components/schemas/DeviceBroadcastPayload"},
+                                    {"$ref": "#/components/schemas/DevicePtzPayload"},
+                                    {"$ref": "#/components/schemas/AiStartPayload"},
+                                    {"$ref": "#/components/schemas/AiCancelPayload"},
+                                    {"$ref": "#/components/schemas/PlaybackTicketRenewPayload"}
+                                ]
+                            }
+                        },
+                        "examples": [
+                            {"name": "stream.start", "payload": {"integration_id": "partner-a", "command_id": "cmd-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "stream.start", "target": "device-001", "payload": {"channel_id": "channel-001", "stream_profile": "main"}}},
+                            {"name": "device.ptz", "payload": {"integration_id": "partner-a", "command_id": "cmd-002", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "device.ptz", "target": "device-001", "payload": {"channel_id": "channel-001", "leftRight": 1, "upDown": 0, "inOut": 0, "horizonSpeed": 128, "verticalSpeed": 128, "zoomSpeed": 0}}},
+                            {"name": "playback.ticket.renew", "payload": {"integration_id": "partner-a", "command_id": "cmd-003", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "playback.ticket.renew", "target": "ticket-token", "payload": {"renew": true}}}
+                        ]
                     }
                 },
                 "CommandResult": {
@@ -1242,14 +1668,17 @@ async fn asyncapi_document(
                     "contentType": "application/json",
                     "payload": {
                         "type": "object",
-                        "required": ["command_id", "operation_id", "state"],
+                        "required": ["schema_version", "integration_id", "command_id", "operation_id", "state", "occurred_at_ms"],
                         "properties": {
+                            "schema_version": {"type": "string", "const": "v1", "description": "命令结果 schema 版本。"},
+                            "integration_id": {"type": "string", "description": "第三方应用标识。"},
                             "command_id": {"type": "string", "description": "对应第三方命令的幂等标识。"},
                             "operation_id": {"type": "string", "description": "Guard 内部业务操作标识。"},
-                            "state": {"type": "string", "description": "命令当前状态。"},
-                            "error_code": {"type": "string", "description": "失败时的稳定错误代码。"},
-                            "error_message": {"type": "string", "description": "失败时的中文错误说明。"}
-                        }
+                            "state": {"type": "string", "enum": ["succeeded", "failed"], "description": "命令执行终态。"},
+                            "error_code": {"type": ["string", "null"], "description": "失败时的稳定错误代码；成功时为 null。"},
+                            "occurred_at_ms": {"type": "integer", "description": "结果产生的 Unix 毫秒时间戳。"}
+                        },
+                        "examples": [{"schema_version": "v1", "integration_id": "partner-a", "command_id": "cmd-001", "operation_id": "cmd-001", "state": "succeeded", "error_code": null, "occurred_at_ms": 1700000001000_i64}]
                     }
                 },
                 "EventEnvelope": {
@@ -1297,7 +1726,7 @@ async fn asyncapi_document(
             "payload_compatible": true,
             "description": "应用选择的协议版本必须与 Guard 部署级 MQTT runtime 一致；两个版本使用相同 JSON Payload。"
         }
-    })))
+    })
 }
 
 async fn api_manifest(
@@ -1305,12 +1734,16 @@ async fn api_manifest(
     headers: HeaderMap,
 ) -> Result<Json<base::serde_json::Value>, HttpError> {
     require_role(&state.auth, &headers, Role::Admin)?;
-    Ok(Json(base::serde_json::json!({
+    Ok(Json(api_manifest_contract()))
+}
+
+pub fn api_manifest_contract() -> base::serde_json::Value {
+    base::serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "http": {"base_path": "/openapi/v1", "methods": ["GET", "POST"], "auth": "GMV-HMAC-SHA256-V1"},
-        "mqtt": {"protocol_versions": ["v3", "v5"], "default": "v3", "qos": 1, "command_actions": ["stream.start", "stream.stop", "stream.playback", "stream.download", "device.broadcast", "device.ptz", "ai.start", "ai.cancel", "playback.ticket.renew"]},
+        "http": {"base_path": "/openapi/v1", "methods": ["GET", "POST"], "auth": "GMV-HMAC-SHA256-V1", "request_id_header": REQUEST_ID_HEADER, "idempotency_window_ms": HTTP_IDEMPOTENCY_TTL_MS},
+        "mqtt": {"protocol_versions": ["v3", "v5"], "default": "v3", "qos": 1, "command_actions": crate::integration::model::MQTT_COMMAND_ACTIONS},
         "scopes": ["*", "devices:read", "devices:write", "devices:control", "images:read", "audio:control", "streams:read", "streams:write", "streams:preview", "streams:playback", "recordings:read", "recordings:write", "events:read", "ai:read", "ai:write", "nodes:read", "leases:read", "runtime:read"]
-    })))
+    })
 }
 
 fn open_business_router(state: HttpState) -> Router<HttpState> {
@@ -1484,19 +1917,36 @@ async fn authenticate_open_business_request(
     next: Next,
 ) -> Response {
     match authenticate_open_business_request_inner(&state, request).await {
-        Ok((request, token)) => {
-            let response = next.run(request).await;
-            state.auth.logout(&token);
-            response
+        Ok(OpenBusinessAuthentication::Execute {
+            request,
+            principal,
+            command_id,
+        }) => {
+            let response = integration_principal::scope(principal, next.run(request)).await;
+            if let Some(command_id) = command_id {
+                persist_open_business_response(&state, &command_id, response).await
+            } else {
+                response
+            }
         }
+        Ok(OpenBusinessAuthentication::Replay(response)) => response,
         Err(error) => error.into_response(),
     }
+}
+
+enum OpenBusinessAuthentication {
+    Execute {
+        request: Request<Body>,
+        principal: IntegrationPrincipal,
+        command_id: Option<String>,
+    },
+    Replay(Response),
 }
 
 async fn authenticate_open_business_request_inner(
     state: &HttpState,
     request: Request<Body>,
-) -> Result<(Request<Body>, String), HttpError> {
+) -> Result<OpenBusinessAuthentication, HttpError> {
     let access_key = required_header(request.headers(), HMAC_ACCESS_KEY_HEADER)?;
     let timestamp = required_header(request.headers(), HMAC_TIMESTAMP_HEADER)?
         .parse::<i64>()
@@ -1544,6 +1994,19 @@ async fn authenticate_open_business_request_inner(
         .ok_or_else(|| HttpError::internal("integration secret cipher is not configured"))?;
     let secret = cipher.decrypt(&credential.secret_ciphertext)?;
     let method = request.method().as_str().to_string();
+    let request_id = if request.method() == Method::POST {
+        let request_id = request
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| HttpError::bad_request("X-GMV-Request-ID is required for POST"))?;
+        validate_request_id(&request_id)?;
+        Some(request_id)
+    } else {
+        None
+    };
     let signed_uri = request
         .extensions()
         .get::<OriginalUri>()
@@ -1551,7 +2014,7 @@ async fn authenticate_open_business_request_inner(
         .unwrap_or_else(|| request.uri());
     let path = signed_uri.path().to_string();
     let query = signed_uri.query().unwrap_or_default().to_string();
-    let (mut parts, body) = request.into_parts();
+    let (parts, body) = request.into_parts();
     let body = to_bytes(body, MAX_OPEN_API_BODY_BYTES)
         .await
         .map_err(|_| HttpError::bad_request("request body exceeds the configured limit"))?;
@@ -1567,6 +2030,7 @@ async fn authenticate_open_business_request_inner(
             method: &method,
             path: &path,
             query: &query,
+            request_id: request_id.as_deref().unwrap_or_default(),
             body: &body,
         },
         &signature,
@@ -1580,35 +2044,89 @@ async fn authenticate_open_business_request_inner(
         .integration_nonces
         .claim(&access_key, &nonce, now_ms)
         .map_err(HttpError::from_auth)?;
-    let identity = format!("integration:{}", integration.integration_id);
-    let (token, session) =
-        state
-            .auth
-            .issue_service_session(&identity, Role::Admin, Duration::from_secs(300))?;
-    let cookie = format!("{SESSION_COOKIE}={token}");
-    parts.headers.insert(
-        COOKIE,
-        HeaderValue::from_str(&cookie)
-            .map_err(|_| HttpError::internal("invalid session cookie"))?,
-    );
-    parts.headers.insert(
-        HeaderName::from_static(CSRF_HEADER),
-        HeaderValue::from_str(&session.csrf_token)
-            .map_err(|_| HttpError::internal("invalid CSRF token"))?,
-    );
-    if request_method_requires_csrf(&method) {
-        let origin = state
-            .auth
-            .allowed_origins()
-            .first()
-            .ok_or_else(|| HttpError::internal("UI origin policy is empty"))?;
-        parts.headers.insert(
-            ORIGIN,
-            HeaderValue::from_str(origin)
-                .map_err(|_| HttpError::internal("invalid configured origin"))?,
-        );
+    let principal = IntegrationPrincipal {
+        integration_id: integration.integration_id,
+        scope: scope.to_string(),
+    };
+    let command_id = if let Some(request_id) = request_id {
+        let repository = state
+            .commands
+            .as_ref()
+            .ok_or_else(|| HttpError::internal("command repository is not configured"))?;
+        let command_id = http_command_id(&principal.integration_id, &request_id);
+        let action = format!("{} {}", method.to_ascii_uppercase(), path);
+        let request_hash =
+            body_sha256(format!("{}\n{}\n{}\n{}", method, path, query, content_sha256).as_bytes());
+        match repository
+            .claim_http(
+                &command_id,
+                &principal.integration_id,
+                &request_id,
+                &action,
+                &request_hash,
+                now_ms.saturating_add(HTTP_IDEMPOTENCY_TTL_MS),
+                now_ms,
+            )
+            .await?
+        {
+            HttpCommandClaim::Claimed { command_id, .. } => Some(command_id),
+            HttpCommandClaim::Pending { operation_id } => {
+                return Err(HttpError::from_operation(
+                    GuardError::Conflict("request is already in progress".to_string()),
+                    &operation_id,
+                ));
+            }
+            HttpCommandClaim::Completed {
+                operation_id: _,
+                status,
+                response_body,
+            } => {
+                let status = StatusCode::from_u16(status)
+                    .map_err(|_| HttpError::internal("stored HTTP status is invalid"))?;
+                let mut response = Response::new(Body::from(response_body));
+                *response.status_mut() = status;
+                response.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+                return Ok(OpenBusinessAuthentication::Replay(response));
+            }
+        }
+    } else {
+        None
+    };
+    Ok(OpenBusinessAuthentication::Execute {
+        request: Request::from_parts(parts, Body::from(body)),
+        principal,
+        command_id,
+    })
+}
+
+async fn persist_open_business_response(
+    state: &HttpState,
+    command_id: &str,
+    response: Response,
+) -> Response {
+    let status = response.status();
+    let (parts, body) = response.into_parts();
+    let body = match to_bytes(body, MAX_OPEN_API_RESPONSE_BYTES).await {
+        Ok(body) => body,
+        Err(_) => return HttpError::internal("open API response exceeds 16 MiB").into_response(),
+    };
+    let Some(repository) = &state.commands else {
+        return HttpError::internal("command repository is not configured").into_response();
+    };
+    let now_ms = match http_now_ms() {
+        Ok(now_ms) => now_ms,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) = repository
+        .complete_http(command_id, status.as_u16(), &body, now_ms)
+        .await
+    {
+        return HttpError::from(error).into_response();
     }
-    Ok((Request::from_parts(parts, Body::from(body)), token))
+    Response::from_parts(parts, Body::from(body))
 }
 
 fn required_header(headers: &HeaderMap, name: &'static str) -> Result<String, HttpError> {
@@ -1618,10 +2136,6 @@ fn required_header(headers: &HeaderMap, name: &'static str) -> Result<String, Ht
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(HttpError::unauthorized)
-}
-
-fn request_method_requires_csrf(method: &str) -> bool {
-    method != Method::GET.as_str()
 }
 
 fn open_business_scope(method: &Method, path: &str) -> Option<&'static str> {
@@ -1942,10 +2456,7 @@ async fn dashboard(
 ) -> Result<Json<DashboardResponse>, HttpError> {
     debug!("/api/v2/dashboard, req:<empty>");
     let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Viewer)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
+    session.require_role(Role::Viewer)?;
     let events = state.api.poll_events(EventQuery::default())?;
     Ok(Json(DashboardResponse {
         node_count: state.api.list_nodes().len(),
@@ -2201,10 +2712,7 @@ async fn events(
 ) -> Result<Json<EventPageResponse>, HttpError> {
     debug!("/api/v2/events, req:{query:?}");
     let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Viewer)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
+    session.require_role(Role::Viewer)?;
     let page = state.api.poll_events(EventQuery {
         cursor: CursorQuery {
             after_id: query.after_id,
@@ -2221,8 +2729,44 @@ async fn events(
     }))
 }
 
-fn authenticated(auth: &AuthState, headers: &HeaderMap) -> Result<UiSession, HttpError> {
-    authenticated_with_token(auth, headers).map(|(_, session)| session)
+#[derive(Debug, Clone)]
+struct RequestPrincipal {
+    username: String,
+    role: Role,
+    ui_session: Option<UiSession>,
+}
+
+impl RequestPrincipal {
+    fn from_ui(session: UiSession) -> Self {
+        Self {
+            username: session.username.clone(),
+            role: session.role,
+            ui_session: Some(session),
+        }
+    }
+
+    fn from_integration(principal: IntegrationPrincipal) -> Self {
+        Self {
+            username: principal.identity(),
+            role: Role::Operator,
+            ui_session: None,
+        }
+    }
+
+    fn require_role(&self, required: Role) -> Result<(), HttpError> {
+        if self.role.allows(required) {
+            Ok(())
+        } else {
+            Err(HttpError::forbidden("caller role is not allowed"))
+        }
+    }
+}
+
+fn authenticated(auth: &AuthState, headers: &HeaderMap) -> Result<RequestPrincipal, HttpError> {
+    if let Some(principal) = integration_principal::current() {
+        return Ok(RequestPrincipal::from_integration(principal));
+    }
+    authenticated_with_token(auth, headers).map(|(_, session)| RequestPrincipal::from_ui(session))
 }
 
 fn authenticated_with_token(
@@ -3313,10 +3857,7 @@ async fn outbox_records(
 ) -> Result<Json<Vec<OutboxResponse>>, HttpError> {
     debug!("/api/v2/integrations/outbox, req:{query:?}");
     let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Viewer)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
+    session.require_role(Role::Viewer)?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     Ok(Json(
         state
@@ -3336,11 +3877,12 @@ async fn retry_outbox(
     debug!("/api/v2/integrations/outbox/{{outbox_id}}/retry, req: outbox_id={outbox_id}");
     verify_origin(&state.auth, &headers)?;
     let session = authenticated(&state.auth, &headers)?;
-    state
-        .auth
-        .require_role(&session, Role::Operator)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
-    verify_csrf(&state.auth, &session, &headers)?;
+    session.require_role(Role::Operator)?;
+    let ui_session = session
+        .ui_session
+        .as_ref()
+        .ok_or_else(HttpError::unauthorized)?;
+    verify_csrf(&state.auth, ui_session, &headers)?;
     Ok(Json(
         state
             .outbox
@@ -3353,7 +3895,7 @@ async fn retry_outbox(
 fn operation_request(
     operation_id: String,
     kind: &str,
-    session: &UiSession,
+    session: &RequestPrincipal,
     required_role: Role,
 ) -> OperationRequest {
     OperationRequest {
@@ -3507,7 +4049,7 @@ fn issue_playback_ticket(
     state: &HttpState,
     mut stream: StreamSummary,
     ui_session_token: &str,
-    session: &UiSession,
+    session: &RequestPrincipal,
     required_role: Role,
 ) -> Result<StreamSummary, HttpError> {
     if stream.endpoint.is_empty() || stream.state != StreamSummaryState::Running {
@@ -3515,6 +4057,7 @@ fn issue_playback_ticket(
     }
     let token = Uuid::new_v4().to_string();
     let now_ms = http_now_ms()?;
+    let ui_session_token = playback_session_token(state, ui_session_token, session)?;
     let ticket = PlaybackTicketRecord {
         token: token.clone(),
         stream_id: stream.stream_id.clone(),
@@ -3526,7 +4069,7 @@ fn issue_playback_ticket(
         lease_id: stream.lease_id.clone(),
         route_id: stream.route_id.clone(),
         username: session.username.clone(),
-        ui_session_token: ui_session_token.to_string(),
+        ui_session_token,
         required_role,
         issued_at_ms: now_ms,
         expires_at_ms: now_ms + playback_ticket_ttl_ms(&session.username),
@@ -3559,7 +4102,7 @@ fn issue_stream_output_ticket(
     mut output: StreamOutputSummary,
     subscription_id: &str,
     ui_session_token: &str,
-    session: &UiSession,
+    session: &RequestPrincipal,
 ) -> Result<StreamOutputSummary, HttpError> {
     if output.endpoint.is_empty() {
         return Ok(output);
@@ -3578,6 +4121,7 @@ fn issue_stream_output_ticket(
         .find(|lease| lease.resource_id == output.stream_id);
     let token = Uuid::new_v4().to_string();
     let now_ms = http_now_ms()?;
+    let ui_session_token = playback_session_token(state, ui_session_token, session)?;
     let ticket = PlaybackTicketRecord {
         token: token.clone(),
         stream_id: output.stream_id.clone(),
@@ -3589,7 +4133,7 @@ fn issue_stream_output_ticket(
         lease_id: lease.map(|lease| lease.lease_id).unwrap_or_default(),
         route_id: route.map(|route| route.route_id).unwrap_or_default(),
         username: session.username.clone(),
-        ui_session_token: ui_session_token.to_string(),
+        ui_session_token,
         required_role: Role::Viewer,
         issued_at_ms: now_ms,
         expires_at_ms: now_ms + playback_ticket_ttl_ms(&session.username),
@@ -3599,6 +4143,25 @@ fn issue_stream_output_ticket(
     state.api.store().upsert_playback_ticket(ticket);
     output.endpoint = endpoint_with_playback_token(&output.endpoint, &token);
     Ok(output)
+}
+
+fn playback_session_token(
+    state: &HttpState,
+    candidate: &str,
+    session: &RequestPrincipal,
+) -> Result<String, HttpError> {
+    if !candidate.is_empty() || !session.username.starts_with("integration:") {
+        return Ok(candidate.to_string());
+    }
+    state
+        .auth
+        .issue_service_session(
+            &session.username,
+            Role::Viewer,
+            Duration::from_millis(INTEGRATION_PLAYBACK_TOKEN_TTL_MS as u64),
+        )
+        .map(|(token, _)| token)
+        .map_err(Into::into)
 }
 
 fn endpoint_with_playback_token(endpoint: &str, token: &str) -> String {
@@ -6643,11 +7206,14 @@ async fn cancel_media_operation(
     )))
 }
 
-fn operation_visible_to(record: &OperationRecord, session: &UiSession) -> bool {
+fn operation_visible_to(record: &OperationRecord, session: &RequestPrincipal) -> bool {
     session.role == Role::Admin || record.requested_by == session.username
 }
 
-fn require_operation_owner(record: &OperationRecord, session: &UiSession) -> Result<(), HttpError> {
+fn require_operation_owner(
+    record: &OperationRecord,
+    session: &RequestPrincipal,
+) -> Result<(), HttpError> {
     if operation_visible_to(record, session) {
         Ok(())
     } else {
@@ -7326,10 +7892,13 @@ fn real_status(state: &HttpState) -> RuntimeStatus {
     }
 }
 
-fn require_role(auth: &AuthState, headers: &HeaderMap, role: Role) -> Result<UiSession, HttpError> {
+fn require_role(
+    auth: &AuthState,
+    headers: &HeaderMap,
+    role: Role,
+) -> Result<RequestPrincipal, HttpError> {
     let session = authenticated(auth, headers)?;
-    auth.require_role(&session, role)
-        .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
+    session.require_role(role)?;
     Ok(session)
 }
 
@@ -7337,7 +7906,7 @@ fn require_write(
     auth: &AuthState,
     headers: &HeaderMap,
     role: Role,
-) -> Result<UiSession, HttpError> {
+) -> Result<RequestPrincipal, HttpError> {
     require_write_with_token(auth, headers, role).map(|(_, session)| session)
 }
 
@@ -7345,13 +7914,18 @@ fn require_write_with_token(
     auth: &AuthState,
     headers: &HeaderMap,
     role: Role,
-) -> Result<(String, UiSession), HttpError> {
+) -> Result<(String, RequestPrincipal), HttpError> {
+    if let Some(principal) = integration_principal::current() {
+        let principal = RequestPrincipal::from_integration(principal);
+        principal.require_role(role)?;
+        return Ok((String::new(), principal));
+    }
     verify_origin(auth, headers)?;
     let (token, session) = authenticated_with_token(auth, headers)?;
     auth.require_role(&session, role)
         .map_err(|_| HttpError::forbidden("UI role is not allowed"))?;
     verify_csrf(auth, &session, headers)?;
-    Ok((token, session))
+    Ok((token, RequestPrincipal::from_ui(session)))
 }
 
 #[derive(Debug, base::serde::Serialize)]
@@ -7644,9 +8218,10 @@ mod tests {
     use super::{
         GbStreamRequest, GuardError, HttpError, OPEN_BUSINESS_OPERATIONS, api_docs_contract_page,
         endpoint_with_playback_token, gb_preview_request, media_startup_timeout_ms,
-        node_connection_label, node_health_label, node_scheduling_label, open_business_scope,
-        openapi_operation_parameters, openapi_operation_summary, openapi_request_body,
-        openapi_responses, playback_control_owner_matches, playback_token_from_endpoint,
+        mqtt_action_payload_schemas, node_connection_label, node_health_label,
+        node_scheduling_label, open_business_scope, openapi_operation_parameters,
+        openapi_operation_summary, openapi_request_body, openapi_responses, openapi_success_schema,
+        playback_control_owner_matches, playback_token_from_endpoint,
     };
     use crate::auth::Role;
     use crate::core::{ConnectionState, HealthState, SchedulingState};
@@ -7852,9 +8427,61 @@ mod tests {
             }
         }
         assert!(
-            openapi_responses("查询业务数据")["200"]["description"]
+            openapi_responses("get", "/dashboard", "查询业务数据")["200"]["description"]
                 .as_str()
                 .is_some_and(contains_chinese)
+        );
+    }
+
+    #[test]
+    fn public_contract_has_explicit_success_and_nested_request_schemas() {
+        assert_eq!(OPEN_BUSINESS_OPERATIONS.len(), 58);
+        for (path, methods) in OPEN_BUSINESS_OPERATIONS {
+            for method in *methods {
+                let schema =
+                    openapi_success_schema(method, path, openapi_operation_summary(method, path));
+                assert_ne!(
+                    schema["type"],
+                    base::serde_json::json!(["object", "array"]),
+                    "success response type must be explicit: {method} {path}"
+                );
+                if schema["type"] == "array" {
+                    assert!(schema.get("items").is_some(), "array response needs items");
+                } else {
+                    assert!(
+                        schema["properties"]
+                            .as_object()
+                            .is_some_and(|value| !value.is_empty()),
+                        "object response needs properties: {method} {path}"
+                    );
+                }
+            }
+        }
+        let preview = openapi_request_body(
+            "post",
+            "/gb28181/devices/{device_id}/channels/{channel_id}/preview",
+        )
+        .unwrap();
+        assert!(
+            preview["content"]["application/json"]["schema"]["properties"]
+                .get("stream_profile")
+                .is_some()
+        );
+        let broadcast = openapi_request_body("post", "/gb28181/broadcasts/start").unwrap();
+        assert_eq!(
+            broadcast["content"]["application/json"]["schema"]["properties"]["targets"]["items"]["type"],
+            "object"
+        );
+        let heartbeat = openapi_request_body("post", "/playbacks/presence/heartbeat").unwrap();
+        assert_eq!(
+            heartbeat["content"]["application/json"]["schema"]["properties"]["items"]["items"]["type"],
+            "object"
+        );
+        assert_eq!(
+            mqtt_action_payload_schemas()
+                .as_object()
+                .map(base::serde_json::Map::len),
+            Some(crate::integration::model::MQTT_COMMAND_ACTIONS.len())
         );
     }
 
