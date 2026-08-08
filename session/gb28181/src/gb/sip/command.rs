@@ -1377,6 +1377,7 @@ where
         &signal_node_id,
         stream_profile.as_str(),
         verification,
+        Local::now().naive_local(),
     )
     .await;
     if !matches!(persisted, Ok(true)) {

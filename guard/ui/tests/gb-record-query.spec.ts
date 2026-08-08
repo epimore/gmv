@@ -7,6 +7,7 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   let cloudRecordingCreateRange: { start_time_sec: number; end_time_sec: number } | undefined;
   let recordQueryRange: { start_time_sec: number; end_time_sec: number } | undefined;
   let previewOutputType = '';
+  let previewStarts = 0;
   let playbackOutputType = '';
   let imageAccesses = 0;
   const releasedStreams: string[] = [];
@@ -120,6 +121,7 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
       body = { items: [image], total: 1, page: 1, page_size: 12 };
     }
     else if (path.endsWith('/preview') && request.method() === 'POST') {
+      previewStarts += 1;
       previewOutputType = request.postDataJSON().output_type;
       body = {
         operation_id: 'preview-operation-1', state: 'ready', stage: 'ready', elapsed_ms: 10,
@@ -128,7 +130,17 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
       };
     } else if (path.includes('/streams/') && path.endsWith('/release') && request.method() === 'POST') {
       releasedStreams.push(path);
-      body = previewStream;
+      if (releasedStreams.length === 1) {
+        status = 409;
+        body = {
+          code: 'conflict',
+          message: `session owner for stream ${previewStream.stream_id} is unavailable or stale`,
+          user_message: '操作未完成，请检查目标资源状态后重试',
+          retryable: false,
+        };
+      } else {
+        body = previewStream;
+      }
     } else if (path.endsWith('/playback') && request.method() === 'POST') {
       playbackOutputType = request.postDataJSON().output_type;
       body = {
@@ -171,6 +183,12 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeVisible();
   await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
   await expect.poll(() => releasedStreams.length).toBe(1);
+  await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeHidden();
+  await page.locator('.channel-live-dropdown').getByRole('button', { name: '直播', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'LL-HLS', exact: true }).click();
+  await expect.poll(() => previewStarts).toBe(2);
+  await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
+  await expect.poll(() => releasedStreams.length).toBe(2);
   const channelCard = page.locator('.channel-card');
   const actionRows = await channelCard.locator('.channel-actions').evaluate((footer) =>
     [...footer.children].map((child) => (child as HTMLElement).offsetTop),

@@ -670,6 +670,19 @@ async fn ensure_mysql_cloud_recording_columns() -> GlobalResult<()> {
         .await
         .hand_log(|msg| error!("{msg}"))?;
     }
+    repair_mysql_dialog_timestamp_order(mysql_pool()).await?;
+    Ok(())
+}
+
+#[cfg(feature = "db-mysql")]
+async fn repair_mysql_dialog_timestamp_order(pool: &MySqlPool) -> GlobalResult<()> {
+    base_db::sqlx::query(
+        "UPDATE gb28181_sip_dialog_session SET updated_at=established_at \
+         WHERE established_at IS NOT NULL AND updated_at<established_at",
+    )
+    .execute(pool)
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
     Ok(())
 }
 
@@ -877,6 +890,19 @@ async fn ensure_sqlite_cloud_recording_columns() -> GlobalResult<()> {
         "CREATE INDEX IF NOT EXISTS idx_gb28181_file_biz_id ON gb28181_file_info (biz_id, is_del, id DESC)",
     )
     .execute(sqlite_pool())
+    .await
+    .hand_log(|msg| error!("{msg}"))?;
+    repair_sqlite_dialog_timestamp_order(sqlite_pool()).await?;
+    Ok(())
+}
+
+#[cfg(feature = "db-sqlite")]
+async fn repair_sqlite_dialog_timestamp_order(pool: &SqlitePool) -> GlobalResult<()> {
+    base_db::sqlx::query(
+        "UPDATE gb28181_sip_dialog_session SET updated_at=established_at \
+         WHERE established_at IS NOT NULL AND updated_at<established_at",
+    )
+    .execute(pool)
     .await
     .hand_log(|msg| error!("{msg}"))?;
     Ok(())
@@ -1241,6 +1267,51 @@ mod tests {
             .await
             .expect("read legacy device mode");
             assert_eq!(mode, 0);
+
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(root);
+        });
+    }
+
+    #[test]
+    fn sqlite_dialog_timestamp_repair_is_idempotent() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let (pool, root) = temp_sqlite_pool("dialog-timestamp-repair");
+            base_db::sqlx::query(
+                "CREATE TABLE gb28181_sip_dialog_session (\
+                 stream_id TEXT PRIMARY KEY, established_at DATETIME, updated_at DATETIME NOT NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("create dialog table");
+            base_db::sqlx::query(
+                "INSERT INTO gb28181_sip_dialog_session \
+                 (stream_id,established_at,updated_at) VALUES (?,?,?)",
+            )
+            .bind("stream-1")
+            .bind("2026-08-08 18:48:52.654")
+            .bind("2026-08-08 18:48:52.000")
+            .execute(&pool)
+            .await
+            .expect("insert invalid timestamp order");
+
+            repair_sqlite_dialog_timestamp_order(&pool)
+                .await
+                .expect("repair timestamp order");
+            repair_sqlite_dialog_timestamp_order(&pool)
+                .await
+                .expect("repeat timestamp repair");
+
+            let values: (String, String) = base_db::sqlx::query_as(
+                "SELECT established_at,updated_at FROM gb28181_sip_dialog_session \
+                 WHERE stream_id=?",
+            )
+            .bind("stream-1")
+            .fetch_one(&pool)
+            .await
+            .expect("read repaired timestamps");
+            assert_eq!(values.0, values.1);
 
             pool.close().await;
             let _ = std::fs::remove_dir_all(root);

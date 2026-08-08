@@ -738,6 +738,7 @@ import { onBeforeRouteLeave } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { QuestionFilled } from '@element-plus/icons-vue';
 import {
+  ApiError,
   errorMessage,
   cancelMediaOperation,
   closeStreamOutput,
@@ -2059,6 +2060,12 @@ async function releaseViewerStream(stream: StreamSummary) {
     `ui-stream-release-${crypto.randomUUID()}`,
   ).then(() => {
     pendingViewerReleases.delete(key);
+  }).catch((error) => {
+    if (error instanceof ApiError && error.retryable === false) {
+      pendingViewerReleases.delete(key);
+      return;
+    }
+    throw error;
   }).finally(() => {
     if (viewerReleaseTasks.get(key) === task) viewerReleaseTasks.delete(key);
   });

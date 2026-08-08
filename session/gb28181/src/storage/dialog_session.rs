@@ -523,6 +523,7 @@ impl SipDialogSessionRepository {
         signal_node_id: &str,
         effective_stream_profile: &str,
         verification: &str,
+        updated_at: NaiveDateTime,
     ) -> GlobalResult<bool> {
         validate_len(stream_id, 64, "stream_id")?;
         validate_len(signal_node_id, 64, "signal_node_id")?;
@@ -544,16 +545,23 @@ impl SipDialogSessionRepository {
             }
             session.effective_stream_profile = Some(effective_stream_profile.to_string());
             session.stream_profile_verification = Some(verification.to_string());
+            if updated_at > session.updated_at {
+                session.updated_at = updated_at;
+            }
+            session.version += 1;
             return Ok(true);
         }
 
         let rows = db::execute!(
             "UPDATE gb28181_sip_dialog_session SET effective_stream_profile=?,\
-             stream_profile_verification=?,version=version+1,updated_at=CURRENT_TIMESTAMP \
+             stream_profile_verification=?,version=version+1,\
+             updated_at=CASE WHEN updated_at>? THEN updated_at ELSE ? END \
              WHERE stream_id=? AND signal_node_id=? AND session_type='LIVE' \
              AND state IN ('INVITING','ESTABLISHED')",
             effective_stream_profile,
             verification,
+            updated_at,
+            updated_at,
             stream_id,
             signal_node_id,
         )
@@ -1866,6 +1874,58 @@ mod tests {
             created_at: at(1_000),
             updated_at: at(1_000),
         }
+    }
+
+    #[test]
+    fn stream_profile_update_keeps_updated_at_monotonic() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let _guard = enable_dialog_test_storage();
+            let mut session = inviting("profile-time-stream");
+            session.session_type = DialogSessionType::Live;
+            session.requested_stream_profile = Some("main".to_string());
+            session.effective_stream_profile = Some("main".to_string());
+            session.stream_profile_verification = Some("UNVERIFIED".to_string());
+            SipDialogSessionRepository::insert_inviting(&session)
+                .await
+                .expect("insert live dialog");
+
+            assert!(
+                SipDialogSessionRepository::update_stream_profile_verification(
+                    &session.stream_id,
+                    &session.signal_node_id,
+                    "main",
+                    "CONFIRMED",
+                    at(900),
+                )
+                .await
+                .expect("update profile with an older timestamp")
+            );
+            let unchanged = SipDialogSessionRepository::find_by_stream_id(&session.stream_id)
+                .await
+                .expect("read live dialog")
+                .expect("live dialog exists");
+            assert_eq!(unchanged.updated_at, at(1_000));
+            assert_eq!(unchanged.version, 1);
+
+            assert!(
+                SipDialogSessionRepository::update_stream_profile_verification(
+                    &session.stream_id,
+                    &session.signal_node_id,
+                    "main",
+                    "CONFIRMED",
+                    at(1_100),
+                )
+                .await
+                .expect("update profile with a newer timestamp")
+            );
+            let advanced = SipDialogSessionRepository::find_by_stream_id(&session.stream_id)
+                .await
+                .expect("read updated live dialog")
+                .expect("updated live dialog exists");
+            assert_eq!(advanced.updated_at, at(1_100));
+            assert_eq!(advanced.version, 2);
+        });
     }
 
     #[test]

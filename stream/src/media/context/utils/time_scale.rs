@@ -215,6 +215,7 @@ impl TimelineNormalizer {
             return (None, ProcessResult::Ok);
         }
 
+        let global_base_us = self.global_base_us;
         let stream = match &mut self.streams[idx] {
             Some(s) => s,
             None => return (None, ProcessResult::Ok),
@@ -235,7 +236,58 @@ impl TimelineNormalizer {
         //     pts, self.global_base_us, global, scale_global, stream.time_base
         // );
         let res = stream.process(pkt, ssrc);
+        if global_base_us != i64::MAX {
+            let base = unsafe { av_rescale_q(global_base_us, AV_TIME_BASE_Q, stream.time_base) };
+            pkt.pts = pkt.pts.saturating_sub(base);
+            pkt.dts = pkt.dts.saturating_sub(base);
+        }
 
         (Some(scale_global), res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsmpeg::ffi::{AVCodecID_AV_CODEC_ID_H264, AVMediaType_AVMEDIA_TYPE_VIDEO};
+
+    fn packet(timestamp: i64, payload: &mut u8) -> AVPacket {
+        let mut packet = unsafe { std::mem::zeroed::<AVPacket>() };
+        packet.stream_index = 0;
+        packet.pts = timestamp;
+        packet.dts = timestamp;
+        packet.data = payload;
+        packet.size = 1;
+        packet
+    }
+
+    #[test]
+    fn rebases_large_live_timestamps_before_muxing() {
+        let time_base = AVRational {
+            num: 1,
+            den: 90_000,
+        };
+        let source_base = 3_712_587_622_i64;
+        let mut normalizer = TimelineNormalizer::new(1);
+        normalizer.init_stream(
+            0,
+            AVMediaType_AVMEDIA_TYPE_VIDEO,
+            time_base,
+            AVCodecID_AV_CODEC_ID_H264,
+            0,
+        );
+        normalizer.rescale_global_base_us(0, source_base);
+
+        let mut payload = 0_u8;
+        let mut first = packet(source_base, &mut payload);
+        assert_eq!(normalizer.process(&mut first, 1).1, ProcessResult::Ok);
+        assert!((0..=1).contains(&first.dts));
+        assert!((0..=1).contains(&first.pts));
+
+        let mut next = packet(source_base + 3_600, &mut payload);
+        assert_eq!(normalizer.process(&mut next, 1).1, ProcessResult::Ok);
+        assert!((3_600..=3_601).contains(&next.dts));
+        assert!((3_600..=3_601).contains(&next.pts));
+        assert!(next.dts < i64::from(i32::MAX));
     }
 }
