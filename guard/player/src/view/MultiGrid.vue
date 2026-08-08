@@ -102,6 +102,7 @@ export interface GmvGridCell {
   status?: GmvDeviceStatus;
   viewers?: number;
   mediaMode?: GmvMediaMode;
+  mediaTransport?: string;
   streamId?: string;
   mediaNodeId?: string;
   sessionNodeId?: string;

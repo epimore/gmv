@@ -124,7 +124,7 @@
               </div>
             </el-option>
           </el-select>
-          <el-select v-model="mediaTransport" aria-label="广播媒体传输模式" style="width: 150px">
+          <el-select v-model="mediaTransport" aria-label="媒体传输模式" style="width: 150px">
             <el-option label="UDP" value="udp" />
             <el-option label="TCP 主动" value="tcp_active" />
             <el-option label="TCP 被动" value="tcp_passive" />
@@ -539,6 +539,7 @@
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
             :channel-id="selectedChannel?.channel_id" :title="selectedChannelTitle" :status="playerStatus" :viewers="1"
             :media-mode="lastAction === '历史回放' ? 'playback' : 'live'" :stream-id="lastStream?.stream_id"
+            :media-transport="mediaTransportLabel(singleMediaTransport)"
             :media-node-id="lastStream?.node_id" :session-node-id="lastStream?.session_node_id"
             :audio-codec="lastStream?.audio_codec" :poster="playerPoster" :capabilities="playerCapabilities"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
@@ -891,6 +892,7 @@ const broadcastStarting = ref(false);
 const broadcastSession = ref<GbBroadcastSession>();
 const broadcastScopeId = ref('');
 const mediaTransport = ref<MediaTransport>('udp');
+const singleMediaTransport = ref<MediaTransport>();
 const broadcastTransportOverrides = reactive<Record<string, MediaTransport | ''>>({});
 const deviceSnapshotLoading = reactive<Record<string, boolean>>({});
 const channelOutputTypes = reactive<Record<string, LiveOutputType>>({});
@@ -956,6 +958,7 @@ interface MultiViewCell {
   operation?: MediaOperationSummary<unknown>;
   channel: GbChannelInfo;
   mode: MultiMode;
+  media_transport?: MediaTransport;
   output_type: LiveOutputType;
   playback_start_sec?: number;
   playback_end_sec?: number;
@@ -1261,6 +1264,7 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     status: multiPlayerDeviceStatus(cell.status),
     viewers: 1,
     mediaMode: cell.mode,
+    mediaTransport: mediaTransportLabel(cell.media_transport),
     streamId: cell.stream?.stream_id,
     mediaNodeId: cell.stream?.node_id,
     sessionNodeId: cell.session_node_id,
@@ -1445,6 +1449,11 @@ function channelKey(channel: GbChannelInfo) {
 }
 function multiDeviceKey(sessionNodeId: string, deviceId: string) {
   return `${sessionNodeId}:${deviceId}`;
+}
+function mediaTransportLabel(transport?: MediaTransport) {
+  if (transport === 'tcp_active') return 'TCP 主动';
+  if (transport === 'tcp_passive') return 'TCP 被动';
+  return transport === 'udp' ? 'UDP' : undefined;
 }
 function streamSources(stream?: StreamSummary, mode: MultiMode = 'live'): GmvSource[] {
   const endpoint = stream?.endpoint;
@@ -1873,6 +1882,7 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
 async function startMultiCell(cell: MultiViewCell) {
   const key = cell.key;
   const version = bumpMultiPlayVersion(key);
+  const transport = mediaTransport.value;
   const controller = new AbortController();
   multiPreviewAborts.get(key)?.abort();
   multiPreviewAborts.set(key, controller);
@@ -1882,6 +1892,7 @@ async function startMultiCell(cell: MultiViewCell) {
       ? await startGbPreview(cell.device_id, cell.channel_id, {
         request_id: requestId,
         session_node_id: cell.session_node_id,
+        trans_mode: transport,
         output_type: cell.output_type,
         audio_codec: 'aac',
       }, {
@@ -1898,6 +1909,7 @@ async function startMultiCell(cell: MultiViewCell) {
         playback_id: requestId,
         start_time_sec: cell.playback_position_sec ?? cell.playback_start_sec,
         end_time_sec: cell.playback_end_sec,
+        trans_mode: transport,
         output_type: playbackSafeOutputType(cell.output_type),
         audio_codec: 'aac',
       }, {
@@ -1915,6 +1927,7 @@ async function startMultiCell(cell: MultiViewCell) {
     upsertMultiCell({
       ...cell,
       stream,
+      media_transport: transport,
       sources: streamSources(stream, cell.mode),
       status: stream.state === 'running' ? 'playing' : 'online',
       playback_start_sec: cell.mode === 'playback' ? stream.playback_start_time_sec ?? cell.playback_start_sec : undefined,
@@ -2118,6 +2131,7 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     }
     if (closeDialog) playerDialog.value = false;
     lastStream.value = undefined;
+    singleMediaTransport.value = undefined;
     singlePlaybackState.value = 'playing';
     singleOutput.value = undefined;
     singlePendingSwitch.value = undefined;
@@ -2344,6 +2358,7 @@ async function handleMultiPlaybackProgress(event: { index: number; payload: { me
     upsertMultiCell({ ...cell, stream: undefined, sources: [], operation: undefined, playback_position_sec: positionSec, playback_state: undefined, status: 'stopped' });
     return;
   }
+  multiGridRef.value?.confirmPlaybackProgress(event.index, (positionSec - cell.playback_start_sec) * 1_000);
   upsertMultiCell({ ...cell, playback_position_sec: positionSec });
 }
 async function handleMultiCloudRecordCreate(event: { index: number; payload: { startTimeMs: number; endTimeMs: number } }) {
@@ -3297,12 +3312,13 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
     const controller = new AbortController();
     singlePreviewAbort?.abort();
     singlePreviewAbort = controller;
+    const transport = mediaTransport.value;
     const playbackRequestId = 'ui-monitor-playback-' + Date.now();
     const stream = kind === 'preview'
       ? await startGbPreview(
         channel.device_id,
         channel.channel_id,
-        { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, trans_mode: mediaTransport.value, output_type: channelOutputType(channel), audio_codec: 'aac' },
+        { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, trans_mode: transport, output_type: channelOutputType(channel), audio_codec: 'aac' },
         {
           signal: controller.signal,
           onUpdate: (operation) => {
@@ -3313,7 +3329,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       : await startGbPlayback(
         channel.device_id,
         channel.channel_id,
-        { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), trans_mode: mediaTransport.value, output_type: channelPlaybackOutputType(channel), audio_codec: 'aac' },
+        { request_id: playbackRequestId, session_node_id: selectedDevice.value?.session_node_id, playback_id: playbackRequestId, start_time_sec: Math.floor(range![0].getTime() / 1000), end_time_sec: Math.floor(range![1].getTime() / 1000), trans_mode: transport, output_type: channelPlaybackOutputType(channel), audio_codec: 'aac' },
         {
           signal: controller.signal,
           onUpdate: (operation) => {
@@ -3326,6 +3342,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       return;
     }
     lastStream.value = stream;
+    singleMediaTransport.value = transport;
     if (kind === 'playback') {
       playbackGeneration.value = stream.playback_generation ?? 0;
       singlePlaybackState.value = 'playing';
@@ -4766,6 +4783,11 @@ onBeforeUnmount(() => {
   width: min(280px, calc(100% - 12px));
   max-height: calc(100% - 58px);
   padding: 7px 8px;
+}
+
+.multi-player :deep(.gmv-player.has-playback-timeline .media-info-panel) {
+  bottom: 112px;
+  max-height: calc(100% - 124px);
 }
 
 .multi-player :deep(.ptz-panel) {

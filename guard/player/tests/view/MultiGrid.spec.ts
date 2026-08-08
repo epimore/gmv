@@ -102,6 +102,7 @@ describe("MultiGrid output selector", () => {
           playbackDurationMs: 60_000,
           playbackStartTimeMs: 1_000,
           playbackEndTimeMs: 61_000,
+          mediaTransport: "TCP 被动",
           capabilities: { playback: true },
           controls: { items: ["play", "timeline"], overflowItems: ["playbackRate"] },
         }],
@@ -115,10 +116,16 @@ describe("MultiGrid output selector", () => {
     player.vm.$emit("cloudRecordCreate", { startTimeMs: 10_000, endTimeMs: 130_000 });
     await wrapper.vm.$nextTick();
 
+    (wrapper.vm as unknown as { confirmPlaybackProgress: (index: number, timeMs: number) => void })
+      .confirmPlaybackProgress(0, 12_000);
+    await wrapper.vm.$nextTick();
+
     expect(wrapper.emitted("playbackRateChange")).toEqual([[{ index: 0, payload: { rate: 2 } }]]);
     expect(wrapper.emitted("playbackStateChange")).toEqual([[{ index: 0, payload: { paused: true } }]]);
     expect(wrapper.emitted("playbackProgress")).toEqual([[{ index: 0, payload: { mediaTimeMs: 12_000 } }]]);
     expect(wrapper.emitted("cloudRecordCreate")).toEqual([[{ index: 0, payload: { startTimeMs: 10_000, endTimeMs: 130_000 } }]]);
+    expect(player.props("mediaTransport")).toBe("TCP 被动");
+    expect((wrapper.get('[aria-label="回放进度"]').element as HTMLInputElement).value).toBe("12000");
     wrapper.unmount();
   });
 

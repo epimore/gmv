@@ -138,6 +138,7 @@ describe("GmvPlayerView make-before-break", () => {
         deviceId: "device-1",
         channelId: "channel-1",
         mediaMode: "live",
+        mediaTransport: "TCP 主动",
         streamId: "stream-1",
         mediaNodeId: "stream-node-1",
         sessionNodeId: "session-node-1",
@@ -169,6 +170,7 @@ describe("GmvPlayerView make-before-break", () => {
 
     const info = wrapper.get(".media-info-panel").text();
     expect(info).toContain("实时直播");
+    expect(info).toContain("点播传输TCP 主动");
     expect(info).toContain("HTTP-FLV");
     expect(info).toContain("H.264 · 1920×1080");
     expect(info).toContain("PCMA");

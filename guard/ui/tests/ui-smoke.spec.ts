@@ -405,6 +405,14 @@ test('多画面工作台已选通道空状态居中', async ({ page }) => {
   await page.goto('/gb28181/monitor');
   await page.getByRole('button', { name: '多画面工作台', exact: true }).click();
 
+  const mediaTransport = page.getByRole('combobox', { name: '媒体传输模式' });
+  await expect(mediaTransport).toBeVisible();
+  await page.locator('.monitor-actions .el-select').filter({ has: mediaTransport }).click();
+  await expect(page.getByRole('option', { name: 'UDP', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: 'TCP 主动', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: 'TCP 被动', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+
   const list = page.locator('.selected-channel-list.empty');
   const empty = list.locator('.el-empty');
   await expect(empty).toBeVisible();

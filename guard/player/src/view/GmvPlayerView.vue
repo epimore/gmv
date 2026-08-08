@@ -61,6 +61,7 @@
       <div class="media-info-row"><span>名称</span><b>{{ title || '-' }}</b></div>
       <div class="media-info-row"><span>设备/通道</span><b>{{ deviceId || '-' }} / {{ channelId || '-' }}</b></div>
       <div class="media-info-row"><span>播放模式</span><b>{{ mediaModeLabel }}</b></div>
+      <div v-if="mediaTransport" class="media-info-row"><span>点播传输</span><b>{{ mediaTransport }}</b></div>
       <div class="media-info-row"><span>媒体输出</span><b>{{ outputFormatLabel }}</b></div>
       <div class="media-info-row"><span>视频</span><b>{{ videoInfoText }}</b></div>
       <div class="media-info-row"><span>音频</span><b>{{ audioInfoText }}</b></div>
@@ -169,6 +170,7 @@ const props = withDefaults(
     status?: GmvDeviceStatus;
     viewers?: number;
     mediaMode?: GmvMediaMode;
+    mediaTransport?: string;
     streamId?: string;
     mediaNodeId?: string;
     sessionNodeId?: string;
