@@ -12,6 +12,7 @@ pub struct InvitePlayRequest {
     pub stream_id: String,
     pub media_node_id: String,
     pub session_type: DialogSessionType,
+    pub requested_stream_profile: Option<String>,
     pub device_host: String,
     pub device_port: u16,
     pub media_ip: String,

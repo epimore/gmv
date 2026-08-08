@@ -620,3 +620,9 @@ pnpm -C guard/ui build
 - 提供人工播放测试页面，可手动输入播放 URL 并进行 FLV / FMP4 / HLS 播放验证。
 - UI 操作通过事件抛出，不直接调用业务 API。
 - 文档、类型和示例能指导 `guard/ui` 接入。
+
+## GB28181 主/辅码流
+
+`GmvPlayerView` 支持 `streamProfile`、`streamProfileVerification`、`streamProfileOptions` 和 `streamProfileSwitching`。启用 `streamProfile` control 后，播放器发出 `streamProfileChange`；业务层负责创建目标流并更新 source。信息面板展示当前 effective profile，`networkDegraded` 仅表示建议业务层提示用户，不会自动降码率。
+
+Core 的 `playing` 事件经过视频帧栅栏确认；业务层可据此提交双槽切换并释放旧 subscription。

@@ -15,6 +15,7 @@ use crate::gb::SessionConf;
 use crate::gb::sip::runtime_cache::SipRuntimeCache;
 use crate::register::core::{DeviceSession, Register};
 use crate::service::stream_rpc;
+use crate::state::model::LiveStreamProfile;
 use crate::state::session::{AccessMode, Cache};
 use crate::storage::dialog_session::{
     DialogSessionType, DialogState, DialogTransport, SipDialogSession, SipDialogSessionRepository,
@@ -182,6 +183,14 @@ pub(crate) async fn recover_dialog(session: &SipDialogSession) -> GlobalResult<(
             session.ssrc.clone().unwrap_or_default(),
             session.stream_id.clone(),
             access_mode,
+            match session.effective_stream_profile.as_deref() {
+                Some("sub") | Some("SUB") => LiveStreamProfile::Sub,
+                _ => LiveStreamProfile::Main,
+            },
+            session
+                .stream_profile_verification
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("confirmed")),
         );
         SipRuntimeCache::global()
             .restore_stream_index(session.call_id.clone(), session.stream_id.clone());

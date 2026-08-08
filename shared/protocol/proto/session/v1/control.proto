@@ -82,6 +82,19 @@ message StartDeviceStreamRequest {
   string broadcast_id = 18;
   string broadcast_leg_id = 19;
   string expected_stream_node_id = 20;
+  VideoStreamProfile video_stream_profile = 21;
+}
+
+enum VideoStreamProfile {
+  VIDEO_STREAM_PROFILE_UNSPECIFIED = 0;
+  VIDEO_STREAM_PROFILE_MAIN = 1;
+  VIDEO_STREAM_PROFILE_SUB = 2;
+}
+
+enum StreamProfileVerification {
+  STREAM_PROFILE_VERIFICATION_UNSPECIFIED = 0;
+  STREAM_PROFILE_VERIFICATION_CONFIRMED = 1;
+  STREAM_PROFILE_VERIFICATION_UNVERIFIED = 2;
 }
 
 message StopDeviceStreamRequest {
@@ -133,6 +146,9 @@ message ActiveStreamItem {
   repeated ActiveStreamViewerFormat viewer_formats = 18;
   repeated string supported_formats = 19;
   string output_format = 20;
+  VideoStreamProfile requested_stream_profile = 21;
+  VideoStreamProfile effective_stream_profile = 22;
+  StreamProfileVerification stream_profile_verification = 23;
 }
 
 message ActiveStreamViewerFormat {
@@ -173,6 +189,9 @@ message ActiveStreamDialogItem {
   int64 established_at_ms = 10;
   int64 started_at_ms = 11;
   string session_type = 12;
+  VideoStreamProfile requested_stream_profile = 13;
+  VideoStreamProfile effective_stream_profile = 14;
+  StreamProfileVerification stream_profile_verification = 15;
 }
 
 message GetActiveStreamManagementRequest {
@@ -230,6 +249,9 @@ message StreamHistoryItem {
   bool legacy_terminal_time = 15;
   string terminal_reason_label = 16;
   string stop_reason = 17;
+  VideoStreamProfile requested_stream_profile = 18;
+  VideoStreamProfile effective_stream_profile = 19;
+  StreamProfileVerification stream_profile_verification = 20;
 }
 
 message SetPlaybackSpeedRequest {
@@ -316,6 +338,9 @@ message DeviceStreamResponse {
   string playback_id = 10;
   uint64 playback_generation = 11;
   string broadcast_profile = 12;
+  VideoStreamProfile requested_stream_profile = 13;
+  VideoStreamProfile effective_stream_profile = 14;
+  StreamProfileVerification stream_profile_verification = 15;
 }
 
 enum DeviceStreamState {

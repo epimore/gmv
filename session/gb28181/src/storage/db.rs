@@ -462,6 +462,9 @@ async fn ensure_mysql_playback_columns() -> GlobalResult<()> {
     .hand_log(|msg| error!("{msg}"))?;
     const COLUMNS: &[(&str, &str)] = &[
         ("parent_stream_id", "varchar(64) NULL"),
+        ("requested_stream_profile", "varchar(16) NULL"),
+        ("effective_stream_profile", "varchar(16) NULL"),
+        ("stream_profile_verification", "varchar(16) NULL"),
         ("playback_id", "varchar(64) NULL"),
         ("playback_start_sec", "bigint NULL"),
         ("playback_end_sec", "bigint NULL"),
@@ -683,6 +686,9 @@ async fn ensure_sqlite_playback_columns() -> GlobalResult<()> {
         .collect();
     const COLUMNS: &[(&str, &str)] = &[
         ("parent_stream_id", "VARCHAR(64) NULL"),
+        ("requested_stream_profile", "VARCHAR(16) NULL"),
+        ("effective_stream_profile", "VARCHAR(16) NULL"),
+        ("stream_profile_verification", "VARCHAR(16) NULL"),
         ("playback_id", "VARCHAR(64) NULL"),
         ("playback_start_sec", "BIGINT NULL"),
         ("playback_end_sec", "BIGINT NULL"),

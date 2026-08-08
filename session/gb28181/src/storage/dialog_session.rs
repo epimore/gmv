@@ -19,11 +19,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-const INSERT_COLUMNS: &str = "stream_id,parent_stream_id,device_id,channel_id,session_type,\
+const INSERT_COLUMNS: &str = "stream_id,parent_stream_id,device_id,channel_id,session_type,requested_stream_profile,effective_stream_profile,stream_profile_verification,\
 signal_node_id,media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,\
 local_cseq,remote_cseq,contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,\
 state,established_at,terminated_at,terminal_reason,stop_reason,error_code,last_seen_at,expire_at,version,created_at,updated_at";
-const SELECT_COLUMNS: &str = "stream_id,parent_stream_id,device_id,channel_id,session_type,signal_node_id,\
+const SELECT_COLUMNS: &str = "stream_id,parent_stream_id,device_id,channel_id,session_type,requested_stream_profile,effective_stream_profile,stream_profile_verification,signal_node_id,\
 media_node_id,ssrc,registration_epoch_id,call_id,local_uri,remote_uri,local_tag,remote_tag,local_cseq,remote_cseq,\
 contact_uri,route_set,local_sip_addr,remote_sip_addr,transport,state,established_at,terminated_at,terminal_reason,stop_reason,error_code,last_seen_at,\
 expire_at,version,created_at,updated_at";
@@ -154,6 +154,9 @@ pub struct SipDialogSession {
     pub device_id: String,
     pub channel_id: String,
     pub session_type: DialogSessionType,
+    pub requested_stream_profile: Option<String>,
+    pub effective_stream_profile: Option<String>,
+    pub stream_profile_verification: Option<String>,
     pub signal_node_id: String,
     pub media_node_id: String,
     pub ssrc: Option<String>,
@@ -188,6 +191,36 @@ impl SipDialogSession {
         validate_len(&self.stream_id, 64, "stream_id")?;
         validate_len(&self.device_id, 32, "device_id")?;
         validate_len(&self.channel_id, 32, "channel_id")?;
+        validate_optional_len(
+            self.requested_stream_profile.as_deref(),
+            16,
+            "requested_stream_profile",
+        )?;
+        validate_optional_len(
+            self.effective_stream_profile.as_deref(),
+            16,
+            "effective_stream_profile",
+        )?;
+        validate_optional_len(
+            self.stream_profile_verification.as_deref(),
+            16,
+            "stream_profile_verification",
+        )?;
+        if self
+            .requested_stream_profile
+            .as_deref()
+            .is_some_and(|value| !matches!(value, "main" | "sub"))
+            || self
+                .effective_stream_profile
+                .as_deref()
+                .is_some_and(|value| !matches!(value, "main" | "sub"))
+            || self
+                .stream_profile_verification
+                .as_deref()
+                .is_some_and(|value| !matches!(value, "CONFIRMED" | "UNVERIFIED"))
+        {
+            return Err(invalid_data("invalid live stream profile metadata"));
+        }
         validate_len(&self.signal_node_id, 64, "signal_node_id")?;
         validate_len(&self.media_node_id, 64, "media_node_id")?;
         validate_optional_len(self.ssrc.as_deref(), 16, "ssrc")?;
@@ -278,6 +311,9 @@ struct SipDialogSessionRow {
     device_id: String,
     channel_id: String,
     session_type: String,
+    requested_stream_profile: Option<String>,
+    effective_stream_profile: Option<String>,
+    stream_profile_verification: Option<String>,
     signal_node_id: String,
     media_node_id: String,
     ssrc: Option<String>,
@@ -317,6 +353,9 @@ impl TryFrom<SipDialogSessionRow> for SipDialogSession {
             device_id: row.device_id,
             channel_id: row.channel_id,
             session_type: row.session_type.parse()?,
+            requested_stream_profile: row.requested_stream_profile,
+            effective_stream_profile: row.effective_stream_profile,
+            stream_profile_verification: row.stream_profile_verification,
             signal_node_id: row.signal_node_id,
             media_node_id: row.media_node_id,
             ssrc: row.ssrc,
@@ -437,13 +476,16 @@ impl SipDialogSessionRepository {
         db::execute!(
             sqlx::AssertSqlSafe(format!(
                 "INSERT INTO gb28181_sip_dialog_session ({INSERT_COLUMNS}) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )),
             &session.stream_id,
             &session.parent_stream_id,
             &session.device_id,
             &session.channel_id,
             session.session_type.to_string(),
+            &session.requested_stream_profile,
+            &session.effective_stream_profile,
+            &session.stream_profile_verification,
             &session.signal_node_id,
             &session.media_node_id,
             &session.ssrc,
@@ -474,6 +516,49 @@ impl SipDialogSessionRepository {
         )
         .hand_log(|message| error!("{message}"))?;
         Ok(())
+    }
+
+    pub async fn update_stream_profile_verification(
+        stream_id: &str,
+        signal_node_id: &str,
+        effective_stream_profile: &str,
+        verification: &str,
+    ) -> GlobalResult<bool> {
+        validate_len(stream_id, 64, "stream_id")?;
+        validate_len(signal_node_id, 64, "signal_node_id")?;
+        validate_len(effective_stream_profile, 16, "effective_stream_profile")?;
+        validate_len(verification, 16, "stream_profile_verification")?;
+
+        #[cfg(test)]
+        if use_test_storage() {
+            let mut storage = test_storage()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(session) = storage.get_mut(stream_id) else {
+                return Ok(false);
+            };
+            if session.signal_node_id != signal_node_id
+                || session.session_type != DialogSessionType::Live
+            {
+                return Ok(false);
+            }
+            session.effective_stream_profile = Some(effective_stream_profile.to_string());
+            session.stream_profile_verification = Some(verification.to_string());
+            return Ok(true);
+        }
+
+        let rows = db::execute!(
+            "UPDATE gb28181_sip_dialog_session SET effective_stream_profile=?,\
+             stream_profile_verification=?,version=version+1,updated_at=CURRENT_TIMESTAMP \
+             WHERE stream_id=? AND signal_node_id=? AND session_type='LIVE' \
+             AND state IN ('INVITING','ESTABLISHED')",
+            effective_stream_profile,
+            verification,
+            stream_id,
+            signal_node_id,
+        )
+        .hand_log(|message| error!("{message}"))?;
+        Ok(rows == 1)
     }
 
     pub async fn cas_mark_established(
@@ -1750,6 +1835,9 @@ mod tests {
             device_id: "34020000001320000001".into(),
             channel_id: "34020000001320000101".into(),
             session_type: DialogSessionType::Playback,
+            requested_stream_profile: None,
+            effective_stream_profile: None,
+            stream_profile_verification: None,
             signal_node_id: "session-1".into(),
             media_node_id: "media-1".into(),
             ssrc: Some("1100000001".into()),

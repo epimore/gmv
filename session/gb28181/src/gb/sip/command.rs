@@ -25,7 +25,7 @@ use gmv_pjsip::{
 
 use crate::gb::SessionConf;
 use crate::register::core::Register;
-use crate::state::model::{PtzControlModel, TransMode};
+use crate::state::model::{LiveStreamProfile, PtzControlModel, TransMode};
 use crate::state::session::Cache as GeneralCache;
 use crate::storage::dialog_session::{
     DialogSessionType, DialogState, DialogTransport, EstablishedDialogFields, SipDialogSession,
@@ -583,6 +583,9 @@ pub async fn accept_broadcast_invite(req: AcceptBroadcastInviteRequest) -> Globa
         device_id: req.device_id.clone(),
         channel_id: req.channel_id.clone(),
         session_type: DialogSessionType::Broadcast,
+        requested_stream_profile: None,
+        effective_stream_profile: None,
+        stream_profile_verification: None,
         signal_node_id: signal_node_id.clone(),
         media_node_id: req.media_node_id,
         ssrc: Some(format!("{:010}", req.ssrc)),
@@ -967,6 +970,12 @@ where
         device_id: device_id.clone(),
         channel_id: req.channel_id.clone(),
         session_type: req.session_type,
+        requested_stream_profile: req.requested_stream_profile.clone(),
+        effective_stream_profile: req.requested_stream_profile.clone(),
+        stream_profile_verification: req
+            .requested_stream_profile
+            .as_ref()
+            .map(|_| "UNVERIFIED".to_string()),
         signal_node_id: signal_node_id.clone(),
         media_node_id: req.media_node_id.clone(),
         ssrc: Some(format_gb_ssrc(req.ssrc)),
@@ -1293,6 +1302,7 @@ pub async fn play_live_invite_wait<F>(
     trans_mode: TransMode,
     ssrc: &str,
     stream_id: &str,
+    stream_profile: LiveStreamProfile,
     prepare_media: F,
 ) -> GlobalResult<(GbInviteAcceptedEvent, MediaExt)>
 where
@@ -1302,7 +1312,15 @@ where
     let ssrc = normalize_gb_ssrc(ssrc)?;
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let protocol = transport_protocol(trans_mode, proto);
-    let sdp = sdp::play_live(channel_id, media_ip, media_port, trans_mode, &ssrc, true);
+    let sdp = sdp::play_live_with_profile(
+        channel_id,
+        media_ip,
+        media_port,
+        trans_mode,
+        &ssrc,
+        stream_profile,
+        true,
+    );
     let accepted = invite_play_and_wait(
         InvitePlayRequest {
             device_id: device_id.to_string(),
@@ -1310,6 +1328,7 @@ where
             stream_id: stream_id.to_string(),
             media_node_id: media_node_id.to_string(),
             session_type: DialogSessionType::Live,
+            requested_stream_profile: Some(stream_profile.as_str().to_string()),
             device_host: host,
             device_port: port,
             media_ip: media_ip.to_string(),
@@ -1326,6 +1345,60 @@ where
     )
     .await?;
     let ext = parse_media_ext_or_close(device_id, stream_id, &ssrc, &accepted).await?;
+    if let Some(actual) = ext.stream_number
+        && actual != stream_profile.stream_number()
+    {
+        close_invite_after_answer_error(
+            device_id,
+            stream_id,
+            &accepted,
+            "device stream profile mismatch",
+        )
+        .await;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "STREAM_PROFILE_MISMATCH",
+            |msg| {
+                error!(
+                    "{msg}: stream_id={stream_id}; requested_profile={}; actual_stream_number={actual}",
+                    stream_profile.as_str()
+                )
+            },
+        ));
+    }
+    let verification = if ext.stream_number.is_some() {
+        "CONFIRMED"
+    } else {
+        "UNVERIFIED"
+    };
+    let signal_node_id = SessionConf::get_session_by_conf().domain_id;
+    let persisted = SipDialogSessionRepository::update_stream_profile_verification(
+        stream_id,
+        &signal_node_id,
+        stream_profile.as_str(),
+        verification,
+    )
+    .await;
+    if !matches!(persisted, Ok(true)) {
+        close_invite_after_answer_error(
+            device_id,
+            stream_id,
+            &accepted,
+            "live stream profile persistence failed",
+        )
+        .await;
+    }
+    match persisted {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "live stream profile persistence lost dialog ownership",
+                |msg| error!("{msg}: stream_id={stream_id}; signal_node_id={signal_node_id}"),
+            ));
+        }
+        Err(err) => return Err(err),
+    }
     Ok((accepted, ext))
 }
 
@@ -1359,6 +1432,7 @@ where
             stream_id: stream_id.to_string(),
             media_node_id: media_node_id.to_string(),
             session_type: DialogSessionType::Playback,
+            requested_stream_profile: None,
             device_host: host,
             device_port: port,
             media_ip: media_ip.to_string(),
@@ -1409,6 +1483,7 @@ where
             stream_id: stream_id.to_string(),
             media_node_id: media_node_id.to_string(),
             session_type: DialogSessionType::Download,
+            requested_stream_profile: None,
             device_host: host,
             device_port: port,
             media_ip: media_ip.to_string(),

@@ -137,6 +137,24 @@ message QueryStreamResponse {
   uint64 input_idle_timeout_ms = 15;
   bool input_observed = 16;
   string primary_output_format = 17;
+  MediaReadinessStage readiness_stage = 18;
+  string video_codec = 19;
+  uint32 video_width = 20;
+  uint32 video_height = 21;
+  double video_fps = 22;
+  uint64 input_bitrate_bps = 23;
+  uint64 rtp_loss_count = 24;
+  uint64 queue_drop_count = 25;
+}
+
+enum MediaReadinessStage {
+  MEDIA_READINESS_STAGE_UNSPECIFIED = 0;
+  MEDIA_READINESS_STAGE_STARTING = 1;
+  MEDIA_READINESS_STAGE_INPUT_OBSERVED = 2;
+  MEDIA_READINESS_STAGE_DEMUX_READY = 3;
+  MEDIA_READINESS_STAGE_CODEC_READY = 4;
+  MEDIA_READINESS_STAGE_OUTPUT_READY = 5;
+  MEDIA_READINESS_STAGE_FAILED = 6;
 }
 
 message ViewerFormatCount {

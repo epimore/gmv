@@ -3,6 +3,8 @@ export type GmvCodec = 'h264' | 'h265';
 export type GmvMediaMode = 'live' | 'playback';
 export type GmvPlaybackRateMode = 'local-file' | 'remote-stream' | 'disabled';
 export type GmvDeviceStatus = 'online' | 'offline' | 'playing' | 'reconnecting' | 'error' | 'idle';
+export type GmvStreamProfile = 'main' | 'sub';
+export type GmvStreamProfileVerification = 'confirmed' | 'unverified' | 'unspecified';
 
 export interface GmvSource {
   protocol: GmvProtocol;
@@ -88,6 +90,7 @@ export interface GmvViewCapabilities {
   playback?: boolean;
   audio?: boolean;
   streamSwitch?: boolean;
+  streamProfile?: boolean;
   aiOverlay?: boolean;
 }
 
@@ -102,6 +105,7 @@ export type GmvPlayerControl =
   | 'record'
   | 'cloudRecord'
   | 'streamSwitch'
+  | 'streamProfile'
   | 'playbackRate'
   | 'playbackClip'
   | 'timeline'
@@ -137,10 +141,16 @@ export interface GmvPlayerControlsState {
   cloudRecordLockedRange?: GmvCloudRecordRange;
   selectedSourceUrl: string;
   selectedOutputType: string;
+  selectedStreamProfile: GmvStreamProfile;
 }
 
 export interface GmvPlayerOutputOption {
   value: string;
+  label: string;
+}
+
+export interface GmvStreamProfileOption {
+  value: GmvStreamProfile;
   label: string;
 }
 
@@ -155,6 +165,7 @@ export type GmvPlayerControlAction =
   | { type: 'record-toggle' }
   | { type: 'cloud-record-request' }
   | { type: 'stream-switch'; sourceUrl: string }
+  | { type: 'stream-profile-change'; profile: GmvStreamProfile }
   | { type: 'rate-change'; rate: number }
   | { type: 'cloud-record-create'; startTimeMs: number; endTimeMs: number }
   | { type: 'seek'; timeMs: number }

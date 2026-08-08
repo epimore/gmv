@@ -144,6 +144,8 @@ describe("GmvPlayerView make-before-break", () => {
         sessionNodeId: "session-node-1",
         audioCodec: "pcma",
         outputType: "flv",
+        streamProfile: "sub",
+        streamProfileVerification: "unverified",
         outputOptions: [{ value: "flv", label: "HTTP-FLV" }],
         controls: { items: ["info"], visibility: "always" },
       },

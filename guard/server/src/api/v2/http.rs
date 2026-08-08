@@ -21,7 +21,7 @@ use gmv_protocol::session::v1::{
     GbResource as RpcGbResource, GetGbChannelRecordsResponse as RpcGbChannelRecordsResponse,
     ListActiveStreamDialogsRequest, ListCloudRecordingsRequest, ListStreamHistoryRequest,
     PlaybackPresenceHeartbeat, ResetGbResourceConfirmationRequest,
-    SaveGbResourceConfirmationRequest,
+    SaveGbResourceConfirmationRequest, StreamProfileVerification, VideoStreamProfile,
 };
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -3374,6 +3374,26 @@ fn http_now_ms() -> Result<i64, HttpError> {
         .map_err(|error| HttpError::internal(format!("system clock before epoch: {error}")))
 }
 
+fn http_stream_profile_name(value: i32) -> String {
+    match VideoStreamProfile::try_from(value).unwrap_or(VideoStreamProfile::Unspecified) {
+        VideoStreamProfile::Sub => "sub",
+        VideoStreamProfile::Main => "main",
+        VideoStreamProfile::Unspecified => "",
+    }
+    .to_string()
+}
+
+fn http_profile_verification_name(value: i32) -> String {
+    match StreamProfileVerification::try_from(value)
+        .unwrap_or(StreamProfileVerification::Unspecified)
+    {
+        StreamProfileVerification::Confirmed => "confirmed",
+        StreamProfileVerification::Unverified => "unverified",
+        StreamProfileVerification::Unspecified => "",
+    }
+    .to_string()
+}
+
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 struct PreviewRequest {
@@ -3405,6 +3425,8 @@ struct PreviewRequest {
     broadcast_frame_duration_ms: u32,
     #[serde(default)]
     playback_id: String,
+    #[serde(default)]
+    stream_profile: String,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -3477,6 +3499,7 @@ fn device_stream_options(request: &PreviewRequest) -> DeviceStreamOptions {
         broadcast_id: String::new(),
         broadcast_leg_id: String::new(),
         expected_stream_node_id: String::new(),
+        stream_profile: request.stream_profile.clone(),
     }
 }
 
@@ -4101,6 +4124,8 @@ struct GbStreamRequest {
     startup_timeout_ms: Option<u64>,
     #[serde(default)]
     playback_id: String,
+    #[serde(default)]
+    stream_profile: String,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -4696,6 +4721,7 @@ fn gb_preview_request(channel_id: String, request: GbStreamRequest) -> PreviewRe
         broadcast_channel_count: 0,
         broadcast_frame_duration_ms: 0,
         playback_id: request.playback_id,
+        stream_profile: request.stream_profile,
     }
 }
 
@@ -6140,6 +6166,15 @@ async fn gb_active_stream_management(
                         .collect(),
                     supported_formats: item.supported_formats,
                     output_format: item.output_format,
+                    requested_stream_profile: http_stream_profile_name(
+                        item.requested_stream_profile,
+                    ),
+                    effective_stream_profile: http_stream_profile_name(
+                        item.effective_stream_profile,
+                    ),
+                    stream_profile_verification: http_profile_verification_name(
+                        item.stream_profile_verification,
+                    ),
                 }),
                 ended: None,
             }))
@@ -7197,6 +7232,9 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
                 video_codec: String::new(),
                 audio_codec: String::new(),
                 broadcast_profile: String::new(),
+                requested_stream_profile: String::new(),
+                effective_stream_profile: String::new(),
+                stream_profile_verification: String::new(),
                 subscription_id: String::new(),
                 session_node_id: owner
                     .as_ref()
@@ -7723,10 +7761,12 @@ mod tests {
                 audio_codec: "aac".to_string(),
                 startup_timeout_ms: None,
                 playback_id: String::new(),
+                stream_profile: "sub".to_string(),
             },
         );
 
         assert_eq!(request.session_node_id, "session-b");
+        assert_eq!(request.stream_profile, "sub");
     }
 
     #[test]

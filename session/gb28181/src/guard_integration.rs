@@ -54,9 +54,9 @@ use gmv_protocol::session::v1::{
     SessionHookRequest, SessionHookResponse, SetGbChannelCoverRequest, SetPlaybackSpeedRequest,
     SetPlaybackSpeedResponse, SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse,
     StartDeviceStreamRequest, StopCloudRecordingRequest, StopDeviceStreamRequest,
-    StreamHistoryItem, UpdateGbChannelRequest, UpdateGbChannelResponse, UpdateGbDeviceRequest,
-    UpdateGbDeviceResponse, session_control_server::SessionControl,
-    session_hook_server::SessionHook,
+    StreamHistoryItem, StreamProfileVerification, UpdateGbChannelRequest, UpdateGbChannelResponse,
+    UpdateGbDeviceRequest, UpdateGbDeviceResponse, VideoStreamProfile,
+    session_control_server::SessionControl, session_hook_server::SessionHook,
 };
 use gmv_protocol::stream::v1::{
     StartReceiveRequest, StartReceiveResponse, StreamState as ProtoStreamState,
@@ -68,8 +68,8 @@ use crate::service::{
     stream_rpc,
 };
 use crate::state::model::{
-    DeviceChannelIdent, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
-    PtzControlModel, SnapshotImage, TransMode,
+    DeviceChannelIdent, LiveStreamProfile, PlayBackModel, PlayLiveModel, PlaySeekModel,
+    PlaySpeedModel, PtzControlModel, SnapshotImage, TransMode,
 };
 use crate::state::session::GuardLease;
 use crate::state::{StreamNode, StreamNodeRegistry};
@@ -2193,6 +2193,7 @@ async fn active_stream_item(
 }
 
 fn active_dialog_item(identity: &NodeIdentity, dialog: SipDialogSession) -> ActiveStreamDialogItem {
+    let (requested_profile, effective_profile, verification) = dialog_stream_profiles(&dialog);
     ActiveStreamDialogItem {
         stream_id: dialog.stream_id,
         session_node_id: identity.node_id.clone(),
@@ -2209,6 +2210,9 @@ fn active_dialog_item(identity: &NodeIdentity, dialog: SipDialogSession) -> Acti
             .unwrap_or_default(),
         started_at_ms: local_datetime_ms(dialog.established_at.unwrap_or(dialog.created_at)),
         session_type: dialog.session_type.to_string(),
+        requested_stream_profile: requested_profile,
+        effective_stream_profile: effective_profile,
+        stream_profile_verification: verification,
     }
 }
 
@@ -2258,6 +2262,11 @@ fn active_stream_item_with_status(
         viewer_formats,
         supported_formats: supported_media_formats(dialog.session_type),
         output_format,
+        requested_stream_profile: dialog_profile_value(dialog.requested_stream_profile.as_deref()),
+        effective_stream_profile: dialog_profile_value(dialog.effective_stream_profile.as_deref()),
+        stream_profile_verification: dialog_verification_value(
+            dialog.stream_profile_verification.as_deref(),
+        ),
     }
 }
 
@@ -2444,6 +2453,7 @@ fn terminal_reason_label(reason: &str) -> &'static str {
 }
 
 fn history_stream_item(dialog: SipDialogSession) -> StreamHistoryItem {
+    let (requested_profile, effective_profile, verification) = dialog_stream_profiles(&dialog);
     let legacy_terminal_time = dialog.terminated_at.is_none();
     let ended_at = dialog.terminated_at.unwrap_or(dialog.updated_at);
     let started_at = dialog.established_at.unwrap_or(dialog.created_at);
@@ -2472,6 +2482,9 @@ fn history_stream_item(dialog: SipDialogSession) -> StreamHistoryItem {
         error_code: dialog.error_code.unwrap_or_default(),
         legacy_terminal_time,
         stop_reason: dialog.stop_reason.unwrap_or_default(),
+        requested_stream_profile: requested_profile,
+        effective_stream_profile: effective_profile,
+        stream_profile_verification: verification,
     }
 }
 
@@ -2543,6 +2556,16 @@ impl SessionControlRpc {
                 )));
             }
         };
+        let stream_profile = match live_stream_profile(stream_type, request.video_stream_profile) {
+            Ok(profile) => profile,
+            Err(detail) => {
+                return Ok(tonic::Response::new(device_response(
+                    "",
+                    DeviceStreamState::Failed,
+                    Some(detail),
+                )));
+            }
+        };
         let subscription_id = token.clone();
         let playback_id = if request.playback_id.trim().is_empty() {
             operation_id(request.operation.as_ref())
@@ -2556,17 +2579,30 @@ impl SessionControlRpc {
                     channel_id: optional_channel(&request.channel_id),
                     trans_mode: requested_trans_mode,
                     custom_media_config: media_config.clone(),
+                    stream_profile,
                 },
                 token,
             )
             .await
             .map(|info| {
-                stream_response(
+                let mut response = stream_response(
                     info.streamId,
                     info.url,
                     info.video_codec.unwrap_or_default(),
                     info.audio_codec.unwrap_or_default(),
-                )
+                );
+                response.requested_stream_profile = video_stream_profile_value(
+                    info.requested_stream_profile.unwrap_or(stream_profile),
+                );
+                response.effective_stream_profile = video_stream_profile_value(
+                    info.effective_stream_profile.unwrap_or(stream_profile),
+                );
+                response.stream_profile_verification = if info.stream_profile_verified {
+                    StreamProfileVerification::Confirmed as i32
+                } else {
+                    StreamProfileVerification::Unverified as i32
+                };
+                response
             }),
             "playback" => api_serv::play_back(
                 PlayBackModel {
@@ -3065,6 +3101,9 @@ fn device_response(
         playback_id: String::new(),
         playback_generation: 0,
         broadcast_profile: String::new(),
+        requested_stream_profile: VideoStreamProfile::Unspecified as i32,
+        effective_stream_profile: VideoStreamProfile::Unspecified as i32,
+        stream_profile_verification: StreamProfileVerification::Unspecified as i32,
     }
 }
 
@@ -3514,6 +3553,9 @@ fn stream_response(
         playback_id: String::new(),
         playback_generation: 0,
         broadcast_profile: String::new(),
+        requested_stream_profile: VideoStreamProfile::Unspecified as i32,
+        effective_stream_profile: VideoStreamProfile::Unspecified as i32,
+        stream_profile_verification: StreamProfileVerification::Unspecified as i32,
     }
 }
 
@@ -3534,6 +3576,9 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
         playback_id: String::new(),
         playback_generation: 0,
         broadcast_profile: String::new(),
+        requested_stream_profile: VideoStreamProfile::Unspecified as i32,
+        effective_stream_profile: VideoStreamProfile::Unspecified as i32,
+        stream_profile_verification: StreamProfileVerification::Unspecified as i32,
     }
 }
 
@@ -3586,6 +3631,55 @@ fn trans_mode(value: &str) -> Result<Option<TransMode>, ErrorDetail> {
             "invalid_media_transport",
             "media transport must be udp, tcp_active, or tcp_passive",
         )),
+    }
+}
+
+fn live_stream_profile(stream_type: &str, value: i32) -> Result<LiveStreamProfile, ErrorDetail> {
+    let profile = VideoStreamProfile::try_from(value)
+        .map_err(|_| error("invalid_stream_profile", "unknown video stream profile"))?;
+    match (stream_type, profile) {
+        ("live", VideoStreamProfile::Unspecified | VideoStreamProfile::Main) => {
+            Ok(LiveStreamProfile::Main)
+        }
+        ("live", VideoStreamProfile::Sub) => Ok(LiveStreamProfile::Sub),
+        (_, VideoStreamProfile::Unspecified | VideoStreamProfile::Main) => {
+            Ok(LiveStreamProfile::Main)
+        }
+        (_, VideoStreamProfile::Sub) => Err(error(
+            "stream_profile_unsupported",
+            "video stream profile is only supported for live preview",
+        )),
+    }
+}
+
+fn video_stream_profile_value(profile: LiveStreamProfile) -> i32 {
+    match profile {
+        LiveStreamProfile::Main => VideoStreamProfile::Main as i32,
+        LiveStreamProfile::Sub => VideoStreamProfile::Sub as i32,
+    }
+}
+
+fn dialog_stream_profiles(dialog: &SipDialogSession) -> (i32, i32, i32) {
+    (
+        dialog_profile_value(dialog.requested_stream_profile.as_deref()),
+        dialog_profile_value(dialog.effective_stream_profile.as_deref()),
+        dialog_verification_value(dialog.stream_profile_verification.as_deref()),
+    )
+}
+
+fn dialog_profile_value(profile: Option<&str>) -> i32 {
+    match profile.map(str::to_ascii_lowercase).as_deref() {
+        Some("main") => VideoStreamProfile::Main as i32,
+        Some("sub") => VideoStreamProfile::Sub as i32,
+        _ => VideoStreamProfile::Unspecified as i32,
+    }
+}
+
+fn dialog_verification_value(verification: Option<&str>) -> i32 {
+    match verification.map(str::to_ascii_lowercase).as_deref() {
+        Some("confirmed") => StreamProfileVerification::Confirmed as i32,
+        Some("unverified") => StreamProfileVerification::Unverified as i32,
+        _ => StreamProfileVerification::Unspecified as i32,
     }
 }
 

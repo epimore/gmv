@@ -11,6 +11,30 @@ use gmv_domain::info::filter::Filter;
 use gmv_domain::info::media_info::TranscodeConfig;
 use gmv_domain::info::output::{HlsPlaylistProfile, HttpFlvOutput, OutputEnum, OutputKind};
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(crate = "base::serde", rename_all = "lowercase")]
+pub enum LiveStreamProfile {
+    #[default]
+    Main,
+    Sub,
+}
+
+impl LiveStreamProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Sub => "sub",
+        }
+    }
+
+    pub fn stream_number(self) -> u8 {
+        match self {
+            Self::Main => 0,
+            Self::Sub => 1,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "base::serde")]
 pub struct StreamQo {
@@ -52,6 +76,8 @@ pub struct PlayLiveModel {
     pub trans_mode: Option<TransMode>,
     /// 自定义媒体处理：如转码、过滤、输出格式等
     pub custom_media_config: Option<CustomMediaConfig>,
+    #[serde(default)]
+    pub stream_profile: LiveStreamProfile,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -121,6 +147,9 @@ pub struct StreamInfo {
     pub url: String,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
+    pub requested_stream_profile: Option<LiveStreamProfile>,
+    pub effective_stream_profile: Option<LiveStreamProfile>,
+    pub stream_profile_verified: bool,
 }
 
 impl StreamInfo {
@@ -161,6 +190,9 @@ impl StreamInfo {
             streamId: stream_id,
             video_codec: None,
             audio_codec: None,
+            requested_stream_profile: None,
+            effective_stream_profile: None,
+            stream_profile_verified: false,
         };
         Ok(info)
     }
@@ -250,6 +282,7 @@ fn test1() {
             transcode: None,
             filter: Default::default(),
         }),
+        stream_profile: LiveStreamProfile::Main,
     };
     let json = serde_json::to_string(&a).unwrap();
     println!("{}", json);

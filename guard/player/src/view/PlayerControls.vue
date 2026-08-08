@@ -202,6 +202,17 @@
           下载
         </button>
         <select
+          v-else-if="control === 'streamProfile'"
+          :value="state.selectedStreamProfile"
+          :disabled="capabilities.streamProfile === false || streamProfileSwitching"
+          aria-label="切换主辅码流"
+          @change="emitStreamProfileChange($event)"
+        >
+          <option v-for="option in streamProfileOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+        <select
           v-else-if="control === 'streamSwitch'"
           :value="state.selectedSourceUrl"
           :disabled="capabilities.streamSwitch === false"
@@ -363,6 +374,17 @@
         >
           下载
         </button>
+        <select
+          v-else-if="control === 'streamProfile'"
+          :value="state.selectedStreamProfile"
+          :disabled="capabilities.streamProfile === false || streamProfileSwitching"
+          aria-label="切换主辅码流"
+          @change="emitStreamProfileChange($event, true)"
+        >
+          <option v-for="option in streamProfileOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
         <select
           v-else-if="control === 'streamSwitch'"
           :value="state.selectedSourceUrl"
@@ -541,6 +563,8 @@ import type {
   GmvPlayerControlsState,
   GmvPlayerOutputOption,
   GmvSource,
+  GmvStreamProfile,
+  GmvStreamProfileOption,
   GmvViewCapabilities,
 } from "../core/types";
 
@@ -552,6 +576,8 @@ const props = withDefaults(
     sources?: GmvSource[];
     outputOptions?: GmvPlayerOutputOption[];
     outputSwitching?: boolean;
+    streamProfileOptions?: GmvStreamProfileOption[];
+    streamProfileSwitching?: boolean;
     fullscreenSupported?: boolean;
   }>(),
   {
@@ -559,6 +585,8 @@ const props = withDefaults(
     sources: () => [],
     outputOptions: () => [],
     outputSwitching: false,
+    streamProfileOptions: () => [],
+    streamProfileSwitching: false,
     fullscreenSupported: false,
   },
 );
@@ -813,6 +841,14 @@ function emitSimple(
 
 function emitSourceChange(event: Event, fromOverflow = false) {
   emit("action", { type: "stream-switch", sourceUrl: (event.target as HTMLSelectElement).value });
+  afterAction(fromOverflow);
+}
+
+function emitStreamProfileChange(event: Event, fromOverflow = false) {
+  emit("action", {
+    type: "stream-profile-change",
+    profile: (event.target as HTMLSelectElement).value as GmvStreamProfile,
+  });
   afterAction(fromOverflow);
 }
 

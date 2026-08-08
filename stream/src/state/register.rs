@@ -1646,6 +1646,13 @@ impl Register {
             .and_then(|meta| meta.session_hook_endpoint.clone())
     }
 
+    pub fn stream_media_ext(stream_id: &str) -> Option<MediaExt> {
+        let arc = Self::get().inner.clone();
+        arc.stream_metadata_map
+            .get(stream_id)
+            .and_then(|meta| meta.media_ext.clone())
+    }
+
     pub fn build_stream_info(stream_id: Arc<str>) -> Option<BaseStreamInfo> {
         let arc = Self::get().inner.clone();
         arc.stream_metadata_map.get(&stream_id).map(|meta| {

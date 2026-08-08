@@ -129,6 +129,10 @@
             <el-option label="TCP 主动" value="tcp_active" />
             <el-option label="TCP 被动" value="tcp_passive" />
           </el-select>
+          <el-select v-if="multiMode === 'live'" v-model="multiDefaultStreamProfile" aria-label="多画面默认码流" style="width: 130px">
+            <el-option label="主码流" value="main" />
+            <el-option label="辅码流" value="sub" />
+          </el-select>
           <el-tooltip :content="broadcastStatusText" placement="bottom">
             <el-button v-if="!broadcastSession" type="warning" :loading="broadcastStarting"
               :disabled="!canOperate || !selectedTreeChannels.length" @click="startMultiBroadcast">
@@ -265,6 +269,8 @@
           @playback-rate-change="handleMultiPlaybackRateChange" @playback-state-change="handleMultiPlaybackStateChange"
           @playback-seek="handleMultiPlaybackSeek" @playback-progress="handleMultiPlaybackProgress"
           @cloud-record-create="handleMultiCloudRecordCreate" @playback-error="handleMultiPlaybackError"
+          @stream-profile-change="handleMultiStreamProfileChange"
+          @network-degraded="handleMultiNetworkDegraded"
           @playback-switch-cancel="handleMultiPlaybackSwitchCancel" @close="handleMultiClose"
           @reorder="handleMultiReorder">
           <template #summary>
@@ -286,6 +292,10 @@
                   <el-option v-for="rate in playbackRates" :key="rate" :label="rate + 'x'" :value="rate" />
                 </el-select>
               </template>
+              <el-select v-else v-model="multiDefaultStreamProfile" aria-label="多画面默认码流" style="width: 130px">
+                <el-option label="主码流" value="main" />
+                <el-option label="辅码流" value="sub" />
+              </el-select>
               <el-button plain @click="multiFullscreen = !multiFullscreen">{{ multiFullscreen ? '退出满屏' : '满屏'
                 }}</el-button>
             </div>
@@ -313,6 +323,10 @@
             <el-option label="UDP" value="udp" />
             <el-option label="TCP 主动" value="tcp_active" />
             <el-option label="TCP 被动" value="tcp_passive" />
+          </el-select>
+          <el-select v-if="lastAction !== '历史回放'" v-model="selectedLiveProfile" aria-label="直播码流类型" style="width: 130px">
+            <el-option label="主码流" value="main" />
+            <el-option label="辅码流" value="sub" />
           </el-select>
           <el-button :loading="resourceLoading" @click="openResourceDrawer">资源能力</el-button>
           <el-tooltip :content="deviceBroadcastReasonText" placement="bottom"
@@ -546,7 +560,12 @@
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
             :cloud-record-locked-range="singleCloudRecordLockedRange" :output-type="singlePlayerOutputType"
             :output-options="singlePlayerOutputOptions" :output-switching="singleOutputSwitching"
+            :stream-profile="lastAction === '历史回放' ? undefined : singleCommittedProfile"
+            :stream-profile-verification="lastAction === '历史回放' ? undefined : singleCommittedProfileVerification"
+            :stream-profile-options="streamProfileOptions" :stream-profile-switching="singleProfileSwitching"
             @output-type-change="handleSingleOutputTypeChange"
+            @stream-profile-change="handleSingleStreamProfileChange"
+            @network-degraded="handleSingleNetworkDegraded"
             :startup-text="singleMediaOperation ? singleStartupText : undefined"
             :startup-can-cancel="singleCheckpointReached" @snapshot="handleSingleSnapshot"
             @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz" @playing="handleSinglePlaying"
@@ -771,11 +790,12 @@ import {
   type PlaybackPresenceHeartbeatItem,
   type StreamSummary,
   type StreamOutputSummary,
+  type StreamProfile,
 } from '@/api/client';
 import { startGbMicrophoneBroadcast, type GbBroadcastSession } from '@/audio/gbBroadcast';
 import GlassPanel from '@/components/GlassPanel.vue';
 import StatusPill from '@/components/StatusPill.vue';
-import { GmvMultiGrid, GmvPlayerView, type GmvCloudRecordRange, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvViewCapabilities } from 'gmv-player';
+import { GmvMultiGrid, GmvPlayerView, type GmvCloudRecordRange, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvStreamProfileOption, type GmvViewCapabilities } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
 import { formatDateTime } from '@/utils/dateTime';
 
@@ -831,6 +851,17 @@ const detailDevice = ref<GbDeviceInfo>();
 const lastStream = ref<StreamSummary>();
 const singleOutput = ref<StreamOutputSummary>();
 const singleOutputSwitching = ref(false);
+const selectedLiveProfile = ref<StreamProfile>('main');
+const singleCommittedProfile = ref<StreamProfile>('main');
+const singleCommittedProfileVerification = ref<'confirmed' | 'unverified' | 'unspecified'>('unspecified');
+const singleProfileSwitching = ref(false);
+let singleProfileGeneration = 0;
+const singlePendingProfileSwitch = ref<{
+  generation: number;
+  source: StreamSummary;
+  target: StreamSummary;
+}>();
+const networkSuggestionOpen = ref(false);
 const singlePendingSwitch = ref<{
   previous_type: LiveOutputType;
   previous_output?: StreamOutputSummary;
@@ -911,12 +942,17 @@ const multiViewLimit = ref(6);
 const multiLimitHelpHovered = ref(false);
 const multiLimitHelpPinned = ref(false);
 const multiMode = ref<MultiMode>('live');
+const multiDefaultStreamProfile = ref<StreamProfile>('main');
 const multiDefaultRange = ref<[Date, Date]>();
 const multiPlaybackQueue = ref<string[]>([]);
 const multiPlaybackStarting = ref(false);
 const multiBulkBusy = ref(false);
 const multiDesiredRate = ref(1);
 const playbackRates = [0.5, 1, 2, 4];
+const streamProfileOptions: GmvStreamProfileOption[] = [
+  { value: 'main', label: '主码流' },
+  { value: 'sub', label: '辅码流' },
+];
 const multiPlayVersions = reactive<Record<string, number>>({});
 const viewerReleaseTasks = new Map<string, Promise<void>>();
 const pendingViewerReleases = new Map<string, StreamSummary>();
@@ -924,6 +960,7 @@ const multiPreviewAborts = new Map<string, AbortController>();
 const multiOutputAborts = new Map<string, AbortController>();
 let stopCurrentStreamTask: Promise<boolean> | undefined;
 let singlePreviewAbort: AbortController | undefined;
+let singleProfileAbort: AbortController | undefined;
 let singleOutputAbort: AbortController | undefined;
 let playRequestSeq = 0;
 let multiViewDisposed = false;
@@ -970,6 +1007,15 @@ interface MultiViewCell {
   cloud_record_locked_range?: GmvCloudRecordRange;
   output?: StreamOutputSummary;
   output_switching?: boolean;
+  stream_profile?: StreamProfile;
+  profile_verification?: 'confirmed' | 'unverified' | 'unspecified';
+  profile_switching?: boolean;
+  profile_generation?: number;
+  pending_profile_switch?: {
+    generation: number;
+    source: StreamSummary;
+    target: StreamSummary;
+  };
   pending_switch?: {
     previous_type: LiveOutputType;
     previous_output?: StreamOutputSummary;
@@ -1203,6 +1249,7 @@ const playerCapabilities = computed<GmvViewCapabilities>(() => {
     playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
     audio: channel ? canAudio(channel) && hasAudio : false,
     streamSwitch: false,
+    streamProfile: !!channel && lastAction.value !== '历史回放',
     aiOverlay: false,
   };
 });
@@ -1217,6 +1264,7 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const overflowItems: GmvPlayerControlsConfig['items'] = [];
   overflowItems.push('outputType');
   overflowItems.push('info');
+  if (!playback) overflowItems.push('streamProfile');
   if (channel && canAudio(channel)) overflowItems.push('audio');
   if (!playback && channel && canPtz(channel)) overflowItems.push('ptz');
   if (playback && channel && canPlayback(channel)) overflowItems.push('playbackRate');
@@ -1275,6 +1323,10 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     outputType: cell.mode === 'playback' ? playbackSafeOutputType(cell.output_type) : cell.output_type,
     outputOptions: cell.mode === 'playback' ? playbackOutputOptions : liveOutputOptions,
     outputSwitching: cell.output_switching,
+    streamProfile: cell.mode === 'live' ? (cell.stream_profile || cell.stream?.effective_stream_profile || 'main') : undefined,
+    streamProfileVerification: cell.mode === 'live' ? (cell.profile_verification || cell.stream?.stream_profile_verification || 'unspecified') : undefined,
+    streamProfileOptions,
+    streamProfileSwitching: cell.profile_switching,
     playbackDurationMs: playbackCellDurationMs(cell),
     playbackStartTimeMs: cell.mode === 'playback' && cell.playback_start_sec ? cell.playback_start_sec * 1_000 : undefined,
     playbackEndTimeMs: cell.mode === 'playback' && cell.playback_end_sec ? cell.playback_end_sec * 1_000 : undefined,
@@ -1363,6 +1415,7 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
     playback: cell.mode === 'playback' && canPlayback(cell.channel),
     audio: hasAudio && canAudio(cell.channel),
     streamSwitch: cell.sources.length > 1,
+    streamProfile: cell.mode === 'live',
     aiOverlay: false,
   };
 }
@@ -1379,6 +1432,7 @@ function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControls
   if (capabilities.audio) overflowItems.push('audio');
   if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
+  if (capabilities.streamProfile) overflowItems.push('streamProfile');
   if (capabilities.playback) overflowItems.push('playbackRate');
   return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000, playbackRates };
 }
@@ -1873,6 +1927,7 @@ async function startSelectedMultiChannel(channel?: SelectedChannelRef) {
     channel: channel.channel,
     mode: multiMode.value,
     output_type: multiMode.value === 'playback' ? playbackSafeOutputType(channel.output_type) : channel.output_type,
+    stream_profile: multiMode.value === 'live' ? multiDefaultStreamProfile.value : 'main',
   });
   if (multiMode.value === 'live') {
     const cell = multiCells.value.find((item) => item.key === key);
@@ -1895,6 +1950,7 @@ async function startMultiCell(cell: MultiViewCell) {
         trans_mode: transport,
         output_type: cell.output_type,
         audio_codec: 'aac',
+        stream_profile: cell.stream_profile || 'main',
       }, {
         signal: controller.signal,
         onUpdate: (operation) => {
@@ -1927,6 +1983,8 @@ async function startMultiCell(cell: MultiViewCell) {
     upsertMultiCell({
       ...cell,
       stream,
+      stream_profile: stream.effective_stream_profile || cell.stream_profile || 'main',
+      profile_verification: stream.stream_profile_verification || 'unspecified',
       media_transport: transport,
       sources: streamSources(stream, cell.mode),
       status: stream.state === 'running' ? 'playing' : 'online',
@@ -2040,6 +2098,12 @@ async function disposeMultiCellMedia(cell?: MultiViewCell) {
     ]);
     await stopMultiStream(cell.stream);
   }
+  const profileSource = cell.pending_profile_switch?.source;
+  if (profileSource
+    && (profileSource.stream_id !== cell.stream?.stream_id
+      || profileSource.subscription_id !== cell.stream?.subscription_id)) {
+    await stopMultiStream(profileSource);
+  }
 }
 async function stopMultiCell(key: string, options: { removeSelection?: boolean } = {}) {
   const removeSelection = options.removeSelection !== false;
@@ -2102,12 +2166,16 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     const stream = lastStream.value;
     const output = singleOutput.value;
     const pendingSwitch = singlePendingSwitch.value;
+    const pendingProfileSwitch = singlePendingProfileSwitch.value;
     if (cancelPending) {
       playRequestSeq += 1;
       singlePreviewAbort?.abort();
       singlePreviewAbort = undefined;
       singleOutputAbort?.abort();
       singleOutputAbort = undefined;
+      singleProfileAbort?.abort();
+      singleProfileAbort = undefined;
+      singleProfileGeneration += 1;
       playerRequesting.value = false;
       pendingPlayKey.value = '';
     }
@@ -2123,6 +2191,11 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
       ]);
       try {
         await releaseViewerStream(stream);
+        if (pendingProfileSwitch?.source
+          && (pendingProfileSwitch.source.stream_id !== stream.stream_id
+            || pendingProfileSwitch.source.subscription_id !== stream.subscription_id)) {
+          await releaseViewerStream(pendingProfileSwitch.source);
+        }
       } catch (error) {
         if (closeDialog) playerDialog.value = true;
         ElMessage.error(errorMessage(error, '流资源释放失败，请重试'));
@@ -2136,6 +2209,8 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     singleOutput.value = undefined;
     singlePendingSwitch.value = undefined;
     singleOutputSwitching.value = false;
+    singlePendingProfileSwitch.value = undefined;
+    singleProfileSwitching.value = false;
     singleMediaOperation.value = undefined;
     singleWaitAcknowledged.value = false;
     if (clearAction) lastAction.value = '';
@@ -2529,6 +2604,22 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
 
 async function handleMultiPlaying(event: { index: number }) {
   const cell = multiCellAtVisibleIndex(event.index);
+  const profilePending = cell?.pending_profile_switch;
+  if (cell && profilePending
+    && cell.profile_generation === profilePending.generation
+    && cell.stream?.stream_id === profilePending.target.stream_id
+    && cell.stream?.subscription_id === profilePending.target.subscription_id) {
+    upsertMultiCell({
+      ...cell,
+      stream_profile: profilePending.target.effective_stream_profile || profilePending.target.requested_stream_profile || cell.stream_profile || 'main',
+      profile_verification: profilePending.target.stream_profile_verification || 'unspecified',
+      pending_profile_switch: undefined,
+      profile_switching: false,
+      status: 'playing',
+      error: undefined,
+    });
+    await releaseViewerStream(profilePending.source).catch(() => undefined);
+  }
   const pending = cell?.pending_switch;
   if (!cell || !pending) return;
   upsertMultiCell({ ...cell, pending_switch: undefined, output_switching: false, status: 'playing', error: undefined });
@@ -2537,8 +2628,81 @@ async function handleMultiPlaying(event: { index: number }) {
   }
 }
 
+async function handleMultiStreamProfileChange(event: { index: number; payload: { profile: StreamProfile } }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (!cell || cell.mode !== 'live' || !cell.stream?.stream_id) return;
+  if (cell.profile_switching || cell.output_switching || event.payload.profile === (cell.stream_profile || 'main')) return;
+  const source = cell.stream;
+  const generation = (cell.profile_generation || 0) + 1;
+  upsertMultiCell({ ...cell, profile_generation: generation, profile_switching: true, error: undefined });
+  try {
+    const target = await startGbPreview(cell.device_id, cell.channel_id, {
+      request_id: `ui-multi-profile-${Date.now()}-${cell.channel_id}-${event.payload.profile}`,
+      session_node_id: cell.session_node_id,
+      trans_mode: cell.media_transport || mediaTransport.value,
+      output_type: cell.output_type,
+      audio_codec: 'aac',
+      stream_profile: event.payload.profile,
+    });
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (!current || current.profile_generation !== generation
+      || current.stream?.stream_id !== source.stream_id
+      || current.stream?.subscription_id !== source.subscription_id) {
+      await releaseViewerStream(target).catch(() => undefined);
+      return;
+    }
+    upsertMultiCell({
+      ...current,
+      stream: target,
+      sources: streamSources(target, 'live'),
+      pending_profile_switch: { generation, source, target },
+      profile_switching: true,
+      status: 'reconnecting',
+    });
+  } catch (error) {
+    const current = multiCells.value.find((item) => item.key === cell.key);
+    if (current?.profile_generation === generation) {
+      upsertMultiCell({ ...current, profile_switching: false, error: errorMessage(error, '切换主辅码流失败') });
+    }
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, `${cell.title} 切换主辅码流失败`));
+  }
+}
+
+async function handleMultiNetworkDegraded(event: { index: number }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (!cell || networkSuggestionOpen.value || (cell.stream_profile || 'main') !== 'main' || cell.profile_switching) return;
+  networkSuggestionOpen.value = true;
+  try {
+    await ElMessageBox.confirm(
+      `${cell.title} 网络持续不稳定，是否切换到辅码流以降低带宽占用？`,
+      '网络质量提示',
+      { type: 'warning', confirmButtonText: '切换到辅码流', cancelButtonText: '保持主码流' },
+    );
+    await handleMultiStreamProfileChange({ index: event.index, payload: { profile: 'sub' } });
+  } catch {
+    // 用户拒绝建议时保持当前码流。
+  } finally {
+    networkSuggestionOpen.value = false;
+  }
+}
+
 async function handleMultiPlaybackError(event: { index: number; payload: { message: string } }) {
   const cell = multiCellAtVisibleIndex(event.index);
+  const profilePending = cell?.pending_profile_switch;
+  if (cell && profilePending) {
+    upsertMultiCell({
+      ...cell,
+      stream: profilePending.source,
+      sources: streamSources(profilePending.source, 'live'),
+      pending_profile_switch: undefined,
+      profile_switching: false,
+      status: 'playing',
+      error: undefined,
+    });
+    await releaseViewerStream(profilePending.target).catch(() => undefined);
+    ElMessage.error(`切换主辅码流失败：${event.payload.message}`);
+    return;
+  }
   const pending = cell?.pending_switch;
   if (!cell) return;
   if (cell.mode === 'playback' && !pending) {
@@ -2837,6 +3001,19 @@ async function handleSingleOutputTypeChange(value: string) {
 }
 
 async function handleSinglePlaying() {
+  const profilePending = singlePendingProfileSwitch.value;
+  const currentStream = lastStream.value;
+  if (profilePending && currentStream
+    && profilePending.generation === singleProfileGeneration
+    && currentStream.stream_id === profilePending.target.stream_id
+    && currentStream.subscription_id === profilePending.target.subscription_id) {
+    singlePendingProfileSwitch.value = undefined;
+    singleProfileSwitching.value = false;
+    singleCommittedProfile.value = profilePending.target.effective_stream_profile || profilePending.target.requested_stream_profile || singleCommittedProfile.value;
+    singleCommittedProfileVerification.value = profilePending.target.stream_profile_verification || 'unspecified';
+    selectedLiveProfile.value = singleCommittedProfile.value;
+    await releaseViewerStream(profilePending.source).catch(() => undefined);
+  }
   const pending = singlePendingSwitch.value;
   const stream = lastStream.value;
   if (!pending || !stream) return;
@@ -2847,7 +3024,69 @@ async function handleSinglePlaying() {
   }
 }
 
+async function handleSingleStreamProfileChange(event: { profile: StreamProfile }) {
+  const channel = selectedChannel.value;
+  const source = lastStream.value;
+  if (!channel || !source?.stream_id || lastAction.value === '历史回放') return;
+  if (singleProfileSwitching.value || singleOutputSwitching.value || event.profile === singleCommittedProfile.value) return;
+  const generation = ++singleProfileGeneration;
+  const controller = new AbortController();
+  singleProfileAbort?.abort();
+  singleProfileAbort = controller;
+  singleProfileSwitching.value = true;
+  try {
+    const target = await startGbPreview(channel.device_id, channel.channel_id, {
+      request_id: `ui-single-profile-${Date.now()}-${event.profile}`,
+      session_node_id: source.session_node_id || selectedDevice.value?.session_node_id,
+      trans_mode: singleMediaTransport.value || mediaTransport.value,
+      output_type: channelOutputType(channel),
+      audio_codec: 'aac',
+      stream_profile: event.profile,
+    }, { signal: controller.signal });
+    const current = lastStream.value;
+    if (generation !== singleProfileGeneration || !current
+      || current.stream_id !== source.stream_id
+      || current.subscription_id !== source.subscription_id) {
+      await releaseViewerStream(target).catch(() => undefined);
+      return;
+    }
+    singlePendingProfileSwitch.value = { generation, source, target };
+    lastStream.value = target;
+  } catch (error) {
+    if (generation === singleProfileGeneration) singleProfileSwitching.value = false;
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换主辅码流失败'));
+  } finally {
+    if (singleProfileAbort === controller) singleProfileAbort = undefined;
+  }
+}
+
+async function handleSingleNetworkDegraded() {
+  if (networkSuggestionOpen.value || singleCommittedProfile.value !== 'main' || singleProfileSwitching.value) return;
+  networkSuggestionOpen.value = true;
+  try {
+    await ElMessageBox.confirm(
+      '当前网络持续不稳定，是否切换到辅码流以降低带宽占用？',
+      '网络质量提示',
+      { type: 'warning', confirmButtonText: '切换到辅码流', cancelButtonText: '保持主码流' },
+    );
+    await handleSingleStreamProfileChange({ profile: 'sub' });
+  } catch {
+    // 用户拒绝建议时保持当前码流。
+  } finally {
+    networkSuggestionOpen.value = false;
+  }
+}
+
 async function handleSinglePlaybackError(event: { message: string }) {
+  const profilePending = singlePendingProfileSwitch.value;
+  if (profilePending) {
+    singlePendingProfileSwitch.value = undefined;
+    singleProfileSwitching.value = false;
+    lastStream.value = profilePending.source;
+    await releaseViewerStream(profilePending.target).catch(() => undefined);
+    ElMessage.error(`切换主辅码流失败：${event.message}`);
+    return;
+  }
   const pending = singlePendingSwitch.value;
   const stream = lastStream.value;
   const channel = selectedChannel.value;
@@ -3318,7 +3557,7 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       ? await startGbPreview(
         channel.device_id,
         channel.channel_id,
-        { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, trans_mode: transport, output_type: channelOutputType(channel), audio_codec: 'aac' },
+        { request_id: 'ui-monitor-preview-' + Date.now(), session_node_id: selectedDevice.value?.session_node_id, trans_mode: transport, output_type: channelOutputType(channel), audio_codec: 'aac', stream_profile: selectedLiveProfile.value },
         {
           signal: controller.signal,
           onUpdate: (operation) => {
@@ -3342,6 +3581,8 @@ async function startPlay(kind: 'preview' | 'playback', channel: GbChannelInfo, r
       return;
     }
     lastStream.value = stream;
+    singleCommittedProfile.value = stream.effective_stream_profile || selectedLiveProfile.value;
+    singleCommittedProfileVerification.value = stream.stream_profile_verification || 'unspecified';
     singleMediaTransport.value = transport;
     if (kind === 'playback') {
       playbackGeneration.value = stream.playback_generation ?? 0;

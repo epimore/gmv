@@ -32,6 +32,12 @@ pub struct StreamSummary {
     pub audio_codec: String,
     #[serde(default)]
     pub broadcast_profile: String,
+    #[serde(default)]
+    pub requested_stream_profile: String,
+    #[serde(default)]
+    pub effective_stream_profile: String,
+    #[serde(default)]
+    pub stream_profile_verification: String,
     pub subscription_id: String,
     pub session_node_id: String,
     pub session_instance_id: String,
@@ -89,6 +95,9 @@ pub struct ActiveStreamMonitorItem {
     pub viewer_formats: Vec<ActiveStreamViewerFormat>,
     pub supported_formats: Vec<String>,
     pub output_format: String,
+    pub requested_stream_profile: String,
+    pub effective_stream_profile: String,
+    pub stream_profile_verification: String,
 }
 
 #[derive(Debug, Clone, base::serde::Serialize)]

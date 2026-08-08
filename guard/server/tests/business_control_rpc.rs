@@ -1087,6 +1087,9 @@ impl SessionControl for FakeSession {
             playback_id: String::new(),
             playback_generation: 0,
             broadcast_profile: String::new(),
+            requested_stream_profile: 0,
+            effective_stream_profile: 0,
+            stream_profile_verification: 0,
         }))
     }
 
@@ -1602,6 +1605,7 @@ fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> Devi
     } else {
         format!("rtp://127.0.0.1:30000/{stream_id}")
     };
+    let video_stream_profile = request.video_stream_profile;
     DeviceStreamResponse {
         stream_id,
         state: DeviceStreamState::Running as i32,
@@ -1619,6 +1623,9 @@ fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> Devi
         } else {
             String::new()
         },
+        requested_stream_profile: video_stream_profile,
+        effective_stream_profile: video_stream_profile,
+        stream_profile_verification: 1,
     }
 }
 

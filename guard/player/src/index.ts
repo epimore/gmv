@@ -24,5 +24,8 @@ export type {
   GmvProtocol,
   GmvPtzCommand,
   GmvSource,
+  GmvStreamProfile,
+  GmvStreamProfileOption,
+  GmvStreamProfileVerification,
   GmvViewCapabilities,
 } from './core/types';

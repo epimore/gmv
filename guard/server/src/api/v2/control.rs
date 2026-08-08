@@ -27,8 +27,8 @@ use gmv_protocol::session::v1::{
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
     SetGbChannelCoverRequest, SetPlaybackSpeedRequest, SetPlaybackStateRequest,
     SnapshotImageRequest, StartDeviceStreamRequest, StopCloudRecordingRequest,
-    StopDeviceStreamRequest, UpdateGbChannelRequest, UpdateGbChannelResponse,
-    UpdateGbDeviceRequest,
+    StopDeviceStreamRequest, StreamProfileVerification, UpdateGbChannelRequest,
+    UpdateGbChannelResponse, UpdateGbDeviceRequest, VideoStreamProfile,
 };
 use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
 use gmv_protocol::stream::v1::{
@@ -94,6 +94,7 @@ pub struct DeviceStreamOptions {
     pub broadcast_id: String,
     pub broadcast_leg_id: String,
     pub expected_stream_node_id: String,
+    pub stream_profile: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1937,13 +1938,16 @@ impl BusinessControl {
                 )
             }
         };
-        let input_key = kind.input_key(device_id, channel_id).map(|key| {
-            if requested_session_node_id.is_empty() {
-                key
-            } else {
-                format!("session:{requested_session_node_id}:{key}")
-            }
-        });
+        let stream_profile = normalize_stream_profile(kind, &options.stream_profile)?;
+        let input_key = kind
+            .input_key(device_id, channel_id, stream_profile)
+            .map(|key| {
+                if requested_session_node_id.is_empty() {
+                    key
+                } else {
+                    format!("session:{requested_session_node_id}:{key}")
+                }
+            });
         let session = match input_key.as_deref() {
             Some(key) => match self.store.get_stream_session_owner_by_input(key) {
                 Some(owner) => match self.session_node_for_owner(&owner) {
@@ -2013,6 +2017,7 @@ impl BusinessControl {
             broadcast_id: options.broadcast_id,
             broadcast_leg_id: options.broadcast_leg_id,
             expected_stream_node_id: options.expected_stream_node_id,
+            video_stream_profile: proto_stream_profile(stream_profile),
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.start_{}, node={}, req: operation={:?}, device_id={}, channel_id={}, token={}, start_time_sec={}, end_time_sec={}, trans_mode={}, output_type={}, audio_codec={}, broadcast_codec={}, broadcast_sample_rate={}, broadcast_channel_count={}, broadcast_frame_duration_ms={}, expected_session={:?}",
@@ -2106,6 +2111,17 @@ impl BusinessControl {
             video_codec: session_response.video_codec,
             audio_codec: session_response.audio_codec,
             broadcast_profile: session_response.broadcast_profile,
+            requested_stream_profile: matches!(kind, DeviceStreamKind::Live)
+                .then(|| stream_profile_name(session_response.requested_stream_profile))
+                .unwrap_or_default(),
+            effective_stream_profile: matches!(kind, DeviceStreamKind::Live)
+                .then(|| stream_profile_name(session_response.effective_stream_profile))
+                .unwrap_or_default(),
+            stream_profile_verification: matches!(kind, DeviceStreamKind::Live)
+                .then(|| {
+                    stream_profile_verification_name(session_response.stream_profile_verification)
+                })
+                .unwrap_or_default(),
             subscription_id: if session_response.subscription_id.is_empty() {
                 requested_subscription_id
             } else {
@@ -2215,6 +2231,9 @@ impl BusinessControl {
             video_codec: String::new(),
             audio_codec: String::new(),
             broadcast_profile: String::new(),
+            requested_stream_profile: String::new(),
+            effective_stream_profile: String::new(),
+            stream_profile_verification: String::new(),
             subscription_id: String::new(),
             session_node_id,
             session_instance_id,
@@ -2319,6 +2338,9 @@ impl BusinessControl {
             video_codec: String::new(),
             audio_codec: String::new(),
             broadcast_profile: String::new(),
+            requested_stream_profile: String::new(),
+            effective_stream_profile: String::new(),
+            stream_profile_verification: String::new(),
             subscription_id: subscription_id.to_string(),
             session_node_id: session.identity.node_id,
             session_instance_id: session.identity.instance_id,
@@ -3501,6 +3523,53 @@ fn now_ms() -> i64 {
         })
 }
 
+fn normalize_stream_profile(kind: DeviceStreamKind, value: &str) -> GuardResult<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "main" => Ok("main"),
+        "sub" if matches!(kind, DeviceStreamKind::Live) => Ok("sub"),
+        "sub" => Err(GuardError::user_visible(
+            "stream_profile_unsupported",
+            "stream_profile is only supported for live preview",
+            "主辅码流选择仅适用于实时点播",
+            false,
+            BTreeMap::new(),
+        )),
+        _ => Err(GuardError::user_visible(
+            "invalid_stream_profile",
+            "stream_profile must be main or sub",
+            "码流类型必须是主码流或辅码流",
+            false,
+            BTreeMap::new(),
+        )),
+    }
+}
+
+fn proto_stream_profile(profile: &str) -> i32 {
+    match profile {
+        "sub" => VideoStreamProfile::Sub as i32,
+        _ => VideoStreamProfile::Main as i32,
+    }
+}
+
+fn stream_profile_name(value: i32) -> String {
+    match VideoStreamProfile::try_from(value).unwrap_or(VideoStreamProfile::Unspecified) {
+        VideoStreamProfile::Sub => "sub",
+        VideoStreamProfile::Main | VideoStreamProfile::Unspecified => "main",
+    }
+    .to_string()
+}
+
+fn stream_profile_verification_name(value: i32) -> String {
+    match StreamProfileVerification::try_from(value)
+        .unwrap_or(StreamProfileVerification::Unspecified)
+    {
+        StreamProfileVerification::Confirmed => "confirmed",
+        StreamProfileVerification::Unverified => "unverified",
+        StreamProfileVerification::Unspecified => "unspecified",
+    }
+    .to_string()
+}
+
 #[derive(Debug, Clone, Copy)]
 enum DeviceStreamKind {
     Live,
@@ -3510,8 +3579,8 @@ enum DeviceStreamKind {
 }
 
 impl DeviceStreamKind {
-    fn input_key(self, device_id: &str, channel_id: &str) -> Option<String> {
-        matches!(self, Self::Live).then(|| format!("live:{device_id}:{channel_id}"))
+    fn input_key(self, device_id: &str, channel_id: &str, profile: &str) -> Option<String> {
+        matches!(self, Self::Live).then(|| format!("live:{device_id}:{channel_id}:{profile}"))
     }
 
     fn prefix(self) -> &'static str {
@@ -3557,6 +3626,22 @@ mod tests {
     use gmv_protocol::common::v1::ErrorDetail;
 
     use super::*;
+
+    #[test]
+    fn live_input_keys_isolate_main_and_sub_profiles() {
+        assert_eq!(
+            DeviceStreamKind::Live.input_key("device", "channel", "main"),
+            Some("live:device:channel:main".to_string())
+        );
+        assert_eq!(
+            DeviceStreamKind::Live.input_key("device", "channel", "sub"),
+            Some("live:device:channel:sub".to_string())
+        );
+        assert_ne!(
+            DeviceStreamKind::Live.input_key("device", "channel", "main"),
+            DeviceStreamKind::Live.input_key("device", "channel", "sub")
+        );
+    }
 
     #[test]
     fn live_input_owner_claim_is_atomic() {

@@ -32,8 +32,8 @@ use crate::service::broadcast::{
 use crate::service::{EXPIRES, KEY_STREAM_IN, broadcast_close, stream_close, stream_rpc};
 use crate::state;
 use crate::state::model::{
-    CustomMediaConfig, PlayBackModel, PlayLiveModel, PlaySeekModel, PlaySpeedModel,
-    PtzControlModel, StreamInfo, StreamQo, TransMode,
+    CustomMediaConfig, LiveStreamProfile, PlayBackModel, PlayLiveModel, PlaySeekModel,
+    PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo, TransMode,
 };
 use crate::state::session::AccessMode;
 use crate::state::session::BroadcastSessionState;
@@ -52,45 +52,60 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
     }
     let channel_id = play_live_model.channel_id.as_ref().unwrap_or(device_id);
     let am = AccessMode::Live;
+    let stream_profile = play_live_model.stream_profile;
     let output = play_live_model
         .custom_media_config
         .as_ref()
         .map(|p| p.output.clone());
-    let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
+    let setup_lock = state::session::Cache::stream_setup_lock_with_discriminator(
+        device_id,
+        channel_id,
+        am,
+        stream_profile.as_str(),
+    );
     let _setup_guard = setup_lock.lock().await;
 
-    if let Some((stream_id, proxy_addr)) = enable_invite_stream(
+    if let Some((stream_id, proxy_addr, profile_verified)) = enable_invite_stream(
         device_id,
         channel_id,
         &am,
+        stream_profile,
         &token,
         play_live_model.custom_media_config.as_ref(),
     )
     .await?
     {
-        let info = StreamInfo::build(stream_id.clone(), proxy_addr, output)?;
+        let mut info = StreamInfo::build(stream_id.clone(), proxy_addr, output)?;
+        info.requested_stream_profile = Some(stream_profile);
+        info.effective_stream_profile = Some(stream_profile);
+        info.stream_profile_verified = profile_verified;
         state::session::Cache::stream_map_insert_token(stream_id, token.clone());
         return Ok(with_play_token(info, &token));
     }
 
-    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
-        device_id,
-        channel_id,
-        &token,
-        am,
-        0,
-        0,
-        play_live_model.trans_mode,
-        play_live_model.custom_media_config,
-    )
-    .await?;
-    let info = StreamInfo::build_with_codecs(
+    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec, profile_verified) =
+        start_invite_stream(
+            device_id,
+            channel_id,
+            &token,
+            am,
+            0,
+            0,
+            play_live_model.trans_mode,
+            play_live_model.custom_media_config,
+            stream_profile,
+        )
+        .await?;
+    let mut info = StreamInfo::build_with_codecs(
         stream_id.clone(),
         proxy_addr,
         output,
         video_codec,
         audio_codec,
     )?;
+    info.requested_stream_profile = Some(stream_profile);
+    info.effective_stream_profile = Some(stream_profile);
+    info.stream_profile_verified = profile_verified;
     state::session::Cache::stream_map_insert_token(stream_id, token.clone());
     Ok(with_play_token(info, &token))
 }
@@ -255,7 +270,7 @@ async fn download_inner(
         }
     }
     let output = Some(down_conf.output.clone());
-    let (stream_id, node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
+    let (stream_id, node_name, proxy_addr, video_codec, audio_codec, _) = start_invite_stream(
         device_id,
         channel_id,
         &token,
@@ -264,6 +279,7 @@ async fn download_inner(
         et.saturating_add(1),
         play_back_model.trans_mode,
         Some(down_conf),
+        LiveStreamProfile::Main,
     )
     .await?;
     state::session::Cache::stream_map_insert_token(stream_id.clone(), token.clone());
@@ -303,7 +319,7 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
     let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
     let _setup_guard = setup_lock.lock().await;
 
-    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec) = start_invite_stream(
+    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec, _) = start_invite_stream(
         device_id,
         channel_id,
         &token,
@@ -312,6 +328,7 @@ pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalR
         et,
         play_back_model.trans_mode,
         play_back_model.custom_media_config,
+        LiveStreamProfile::Main,
     )
     .await?;
     let info = StreamInfo::build_with_codecs(
@@ -874,7 +891,8 @@ async fn start_invite_stream(
     et: u32,
     trans_mode: Option<TransMode>,
     custom_media_config: Option<CustomMediaConfig>,
-) -> GlobalResult<(String, String, String, Option<String>, Option<String>)> {
+    live_stream_profile: LiveStreamProfile,
+) -> GlobalResult<(String, String, String, Option<String>, Option<String>, bool)> {
     let trans_mode = trans_mode.unwrap_or(TransMode::Udp);
     let live = matches!(am, AccessMode::Live);
     let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, live).await?;
@@ -937,6 +955,7 @@ async fn start_invite_stream(
                 trans_mode,
                 &ssrc,
                 &stream_id,
+                live_stream_profile,
                 prepare_media,
             )
             .await
@@ -984,6 +1003,7 @@ async fn start_invite_stream(
             return Err(err);
         }
     };
+    let profile_verified = matches!(am, AccessMode::Live) && media_ext.stream_number.is_some();
     let remote_endpoint = match crate::gb::sip::sdp::remote_media_endpoint(
         &invite_accepted.remote_sdp,
     ) {
@@ -1107,12 +1127,14 @@ async fn start_invite_stream(
             base_stream_info.rtp_info.proxy_addr.clone(),
             node_name.clone(),
         );
-        state::session::Cache::device_map_insert(
+        state::session::Cache::device_map_insert_with_profile(
             device_id.to_string(),
             channel_id.to_string(),
             ssrc,
             stream_id.clone(),
             am,
+            live_stream_profile,
+            profile_verified,
             msc,
         );
         if let Err(err) = crate::guard_integration::confirm_stream_lease(&allocation).await {
@@ -1126,6 +1148,7 @@ async fn start_invite_stream(
             base_stream_info.rtp_info.proxy_addr,
             video_codec,
             audio_codec,
+            profile_verified,
         ));
     }
 
@@ -1179,12 +1202,18 @@ async fn enable_invite_stream(
     device_id: &String,
     channel_id: &String,
     am: &AccessMode,
+    live_stream_profile: LiveStreamProfile,
     subscription_id: &str,
     custom_media_config: Option<&CustomMediaConfig>,
-) -> GlobalResult<Option<(String, String)>> {
-    match state::session::Cache::device_map_get_invite_info(device_id, channel_id, am) {
+) -> GlobalResult<Option<(String, String, bool)>> {
+    match state::session::Cache::device_map_get_invite_info_with_profile(
+        device_id,
+        channel_id,
+        am,
+        live_stream_profile,
+    ) {
         None => Ok(None),
-        Some((stream_id, ssrc)) => {
+        Some((stream_id, ssrc, profile_verified)) => {
             let mut res = None;
             if let Some((node_name, proxy_addr)) =
                 state::session::Cache::stream_map_query_node(&stream_id)
@@ -1235,7 +1264,7 @@ async fn enable_invite_stream(
                                 .await?;
                             }
                         }
-                        res = Some((stream_id.clone(), proxy_addr));
+                        res = Some((stream_id.clone(), proxy_addr, profile_verified));
                     }
                 }
             }

@@ -30,8 +30,8 @@ use gmv_protocol::guard::v1::{
 use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, ConfigureReceiveTransportRequest,
     ConfigureReceiveTransportResponse, CreateOutputRequest, CreateOutputResponse,
-    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaTransport, MediaTransportState,
-    OutputInfo, OutputState, QueryStreamRequest, QueryStreamResponse,
+    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaReadinessStage, MediaTransport,
+    MediaTransportState, OutputInfo, OutputState, QueryStreamRequest, QueryStreamResponse,
     ReleaseSubscriptionOutputsRequest, ReleaseSubscriptionOutputsResponse, StartReceiveRequest,
     StartReceiveResponse, StopReceivePhase, StopReceiveRequest, StopReceiveResponse,
     StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
@@ -1298,6 +1298,30 @@ impl StreamControlAdapter {
             .get(&request.stream_id)
             .map(|stream| stream.primary_output_format.clone())
             .unwrap_or_default();
+        let output_ready = self.outputs.values().any(|output| {
+            output.stream_id == request.stream_id
+                && output.state == OutputState::Ready
+                && (self.media_tx.is_none()
+                    || Register::is_live_output_open(&request.stream_id, &output.output_type))
+        });
+        let readiness_stage = if state == StreamState::Failed {
+            MediaReadinessStage::Failed
+        } else if output_ready {
+            MediaReadinessStage::OutputReady
+        } else if observation.is_some() {
+            MediaReadinessStage::InputObserved
+        } else {
+            MediaReadinessStage::Starting
+        };
+        let media_ext = self
+            .media_tx
+            .as_ref()
+            .and_then(|_| Register::stream_media_ext(&request.stream_id));
+        let (video_width, video_height) = media_ext
+            .as_ref()
+            .and_then(|ext| ext.video_params.resolution)
+            .map(|(width, height)| (width.max(0) as u32, height.max(0) as u32))
+            .unwrap_or_default();
         QueryStreamResponse {
             stream_id: request.stream_id,
             state: state as i32,
@@ -1305,7 +1329,7 @@ impl StreamControlAdapter {
             playback_id: String::new(),
             playback_generation: 0,
             source_position_ms: 0,
-            media_ready: state == StreamState::Receiving,
+            media_ready: readiness_stage == MediaReadinessStage::OutputReady,
             terminal_reason: String::new(),
             viewer_count,
             viewer_formats,
@@ -1326,6 +1350,26 @@ impl StreamControlAdapter {
                 .unwrap_or_default(),
             input_observed: observation.is_some(),
             primary_output_format,
+            readiness_stage: readiness_stage as i32,
+            video_codec: media_ext
+                .as_ref()
+                .and_then(|ext| ext.video_params.codec_id.clone())
+                .unwrap_or_default(),
+            video_width,
+            video_height,
+            video_fps: media_ext
+                .as_ref()
+                .and_then(|ext| ext.video_params.fps)
+                .unwrap_or_default()
+                .max(0) as f64,
+            input_bitrate_bps: media_ext
+                .as_ref()
+                .and_then(|ext| ext.video_params.bitrate)
+                .unwrap_or_default()
+                .max(0) as u64
+                * 1_000,
+            rtp_loss_count: 0,
+            queue_drop_count: 0,
         }
     }
 

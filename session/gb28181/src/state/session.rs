@@ -19,6 +19,8 @@ use base::tokio::time::Instant;
 use gmv_domain::info::media_info::MediaConfig;
 use gmv_domain::info::obj::BaseStreamInfo;
 
+use crate::state::model::LiveStreamProfile;
+
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(Cache::init);
 static STREAM_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static BROADCAST_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -653,12 +655,36 @@ impl Cache {
         am: AccessMode,
         config: MediaConfig,
     ) {
+        Self::device_map_insert_with_profile(
+            device_id,
+            channel_id,
+            ssrc,
+            stream_id,
+            am,
+            LiveStreamProfile::Main,
+            false,
+            config,
+        );
+    }
+
+    pub fn device_map_insert_with_profile(
+        device_id: String,
+        channel_id: String,
+        ssrc: String,
+        stream_id: String,
+        am: AccessMode,
+        stream_profile: LiveStreamProfile,
+        stream_profile_verified: bool,
+        config: MediaConfig,
+    ) {
         let device_table = DeviceTable {
             channel_id,
             am,
             stream_id,
             config: Some(config),
             ssrc,
+            stream_profile,
+            stream_profile_verified,
         };
         Self::device_map_insert_table(device_id, device_table);
     }
@@ -669,6 +695,8 @@ impl Cache {
         ssrc: String,
         stream_id: String,
         am: AccessMode,
+        stream_profile: LiveStreamProfile,
+        stream_profile_verified: bool,
     ) {
         let device_table = DeviceTable {
             channel_id,
@@ -676,6 +704,8 @@ impl Cache {
             stream_id,
             config: None,
             ssrc,
+            stream_profile,
+            stream_profile_verified,
         };
         Self::device_map_insert_table(device_id, device_table);
     }
@@ -726,11 +756,33 @@ impl Cache {
         channel_id: &String,
         am: &AccessMode,
     ) -> Option<(String, String)> {
+        Self::device_map_get_invite_info_with_profile(
+            device_id,
+            channel_id,
+            am,
+            LiveStreamProfile::Main,
+        )
+        .map(|(stream_id, ssrc, _)| (stream_id, ssrc))
+    }
+
+    pub fn device_map_get_invite_info_with_profile(
+        device_id: &String,
+        channel_id: &String,
+        am: &AccessMode,
+        stream_profile: LiveStreamProfile,
+    ) -> Option<(String, String, bool)> {
         match GENERAL_CACHE.shared.device_map.get(device_id) {
             None => None,
             Some(m_map) => m_map.value().iter().find_map(|device_table| {
-                if device_table.channel_id.eq(channel_id) && device_table.am.eq(am) {
-                    Some((device_table.stream_id.clone(), device_table.ssrc.clone()))
+                if device_table.channel_id.eq(channel_id)
+                    && device_table.am.eq(am)
+                    && device_table.stream_profile == stream_profile
+                {
+                    Some((
+                        device_table.stream_id.clone(),
+                        device_table.ssrc.clone(),
+                        device_table.stream_profile_verified,
+                    ))
                 } else {
                     None
                 }
@@ -743,7 +795,26 @@ impl Cache {
         channel_id: &str,
         am: AccessMode,
     ) -> Arc<AsyncMutex<()>> {
-        let key = format!("{}:{}:{}", device_id, channel_id, am.as_str());
+        Self::stream_setup_lock_with_discriminator(device_id, channel_id, am, "")
+    }
+
+    pub fn stream_setup_lock_with_discriminator(
+        device_id: &str,
+        channel_id: &str,
+        am: AccessMode,
+        discriminator: &str,
+    ) -> Arc<AsyncMutex<()>> {
+        let key = if discriminator.is_empty() {
+            format!("{}:{}:{}", device_id, channel_id, am.as_str())
+        } else {
+            format!(
+                "{}:{}:{}:{}",
+                device_id,
+                channel_id,
+                am.as_str(),
+                discriminator
+            )
+        };
         match GENERAL_CACHE.shared.stream_setup_locks.entry(key) {
             Entry::Occupied(entry) => entry.get().clone(),
             Entry::Vacant(entry) => {
@@ -1627,6 +1698,8 @@ struct DeviceTable {
     stream_id: String,
     config: Option<MediaConfig>,
     ssrc: String,
+    stream_profile: LiveStreamProfile,
+    stream_profile_verified: bool,
 }
 
 struct Shared {

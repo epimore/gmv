@@ -316,6 +316,7 @@ fn device_stream_options(payload: &Value) -> DeviceStreamOptions {
         broadcast_id: String::new(),
         broadcast_leg_id: String::new(),
         expected_stream_node_id: String::new(),
+        stream_profile: payload_string(payload, "stream_profile").unwrap_or_default(),
     }
 }
 

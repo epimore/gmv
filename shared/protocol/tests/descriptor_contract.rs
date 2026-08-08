@@ -22,6 +22,35 @@ fn descriptor() -> FileDescriptorSet {
     FileDescriptorSet::decode(gmv_protocol::FILE_DESCRIPTOR_SET).unwrap()
 }
 
+fn descriptor_file<'a>(
+    descriptor: &'a FileDescriptorSet,
+    package: &str,
+) -> &'a prost_types::FileDescriptorProto {
+    descriptor
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some(package))
+        .unwrap()
+}
+
+fn descriptor_message<'a>(
+    file: &'a prost_types::FileDescriptorProto,
+    name: &str,
+) -> &'a prost_types::DescriptorProto {
+    file.message_type
+        .iter()
+        .find(|message| message.name.as_deref() == Some(name))
+        .unwrap()
+}
+
+fn descriptor_field_number(message: &prost_types::DescriptorProto, name: &str) -> Option<i32> {
+    message
+        .field
+        .iter()
+        .find(|field| field.name.as_deref() == Some(name))
+        .and_then(|field| field.number)
+}
+
 #[test]
 fn descriptor_contains_versioned_packages() {
     let descriptor = descriptor();
@@ -400,6 +429,50 @@ fn session_stream_monitoring_contract_is_stable() {
         Some(19)
     );
     assert_eq!(field_number("ActiveStreamItem", "output_format"), Some(20));
+}
+
+#[test]
+fn live_stream_profile_contract_is_stable() {
+    let descriptor = descriptor();
+    let session = descriptor_file(&descriptor, "gmv.session.v1");
+    let request = descriptor_message(session, "StartDeviceStreamRequest");
+    assert_eq!(
+        descriptor_field_number(request, "video_stream_profile"),
+        Some(21)
+    );
+
+    let response = descriptor_message(session, "DeviceStreamResponse");
+    assert_eq!(
+        descriptor_field_number(response, "requested_stream_profile"),
+        Some(13)
+    );
+    assert_eq!(
+        descriptor_field_number(response, "effective_stream_profile"),
+        Some(14)
+    );
+    assert_eq!(
+        descriptor_field_number(response, "stream_profile_verification"),
+        Some(15)
+    );
+
+    let active = descriptor_message(session, "ActiveStreamItem");
+    assert_eq!(
+        descriptor_field_number(active, "requested_stream_profile"),
+        Some(21)
+    );
+    assert_eq!(
+        descriptor_field_number(active, "effective_stream_profile"),
+        Some(22)
+    );
+    assert_eq!(
+        descriptor_field_number(active, "stream_profile_verification"),
+        Some(23)
+    );
+
+    let stream = descriptor_file(&descriptor, "gmv.stream.v1");
+    let query = descriptor_message(stream, "QueryStreamResponse");
+    assert_eq!(descriptor_field_number(query, "readiness_stage"), Some(18));
+    assert_eq!(descriptor_field_number(query, "queue_drop_count"), Some(25));
 }
 
 #[test]

@@ -16,6 +16,7 @@ const playingState: GmvPlayerControlsState = {
   seekMs: 0,
   selectedSourceUrl: "stream-a",
   selectedOutputType: "flv",
+  selectedStreamProfile: "main",
 };
 
 function mountControls(
@@ -33,6 +34,7 @@ function mountControls(
         record: true,
         playback: true,
         streamSwitch: true,
+        streamProfile: true,
         presets: true,
       },
       fullscreenSupported: true,
@@ -43,6 +45,10 @@ function mountControls(
       outputOptions: [
         { value: "flv", label: "HTTP-FLV" },
         { value: "hls", label: "HLS-fMP4" },
+      ],
+      streamProfileOptions: [
+        { value: "main", label: "Main" },
+        { value: "sub", label: "Sub" },
       ],
     },
     attachTo: document.body,
@@ -55,6 +61,23 @@ afterEach(() => {
 });
 
 describe("PlayerControls", () => {
+  it("emits a typed stream profile action and disables the selector while switching", async () => {
+    const wrapper = mountControls(
+      { items: ["streamProfile"], visibility: "always" },
+      { ...playingState, selectedStreamProfile: "main" },
+    );
+
+    const selector = wrapper.get<HTMLSelectElement>("select");
+    await selector.setValue("sub");
+    expect(wrapper.emitted("action")?.at(-1)).toEqual([
+      { type: "stream-profile-change", profile: "sub" },
+    ]);
+
+    await wrapper.setProps({ streamProfileSwitching: true });
+    expect(selector.element.disabled).toBe(true);
+    wrapper.unmount();
+  });
+
   it("下载入口使用独立一次性 action 并关闭更多菜单", async () => {
     const wrapper = mountControls({
       items: ["play"],

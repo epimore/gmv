@@ -60,6 +60,8 @@
           @playback-progress="(payload) => emit('playbackProgress', { index: visibleIndex(index), payload })"
           @cloud-record-create="(payload) => emit('cloudRecordCreate', { index: visibleIndex(index), payload })"
           @stream-switch="(payload) => emit('streamSwitch', { index: visibleIndex(index), payload })"
+          @stream-profile-change="(payload) => emit('streamProfileChange', { index: visibleIndex(index), payload })"
+          @network-degraded="(payload) => emit('networkDegraded', { index: visibleIndex(index), payload })"
           @output-type-change="(outputType) => emit('outputTypeChange', { index: visibleIndex(index), outputType })"
           @playing="(payload) => emit('playing', { index: visibleIndex(index), payload })"
           @playback-error="(payload) => emit('playbackError', { index: visibleIndex(index), payload })"
@@ -90,7 +92,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, type ComponentPublicInstance } from 'vue';
-import type { GmvAiBox, GmvCloudRecordRange, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvViewCapabilities } from '../core/types';
+import type { GmvAiBox, GmvCloudRecordRange, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvStreamProfile, GmvStreamProfileOption, GmvStreamProfileVerification, GmvViewCapabilities } from '../core/types';
 import GmvPlayerView from './GmvPlayerView.vue';
 
 export interface GmvGridCell {
@@ -115,6 +117,10 @@ export interface GmvGridCell {
   outputType?: string;
   outputOptions?: GmvPlayerOutputOption[];
   outputSwitching?: boolean;
+  streamProfile?: GmvStreamProfile;
+  streamProfileVerification?: GmvStreamProfileVerification;
+  streamProfileOptions?: GmvStreamProfileOption[];
+  streamProfileSwitching?: boolean;
   startupText?: string;
   startupCanCancel?: boolean;
   playbackDurationMs?: number;
@@ -144,6 +150,8 @@ const emit = defineEmits<{
   playbackProgress: [{ index: number; payload: { mediaTimeMs: number } }];
   cloudRecordCreate: [{ index: number; payload: { startTimeMs: number; endTimeMs: number } }];
   streamSwitch: [{ index: number; payload: { source: GmvSource } }];
+  streamProfileChange: [{ index: number; payload: { profile: GmvStreamProfile } }];
+  networkDegraded: [{ index: number; payload: { profile: GmvStreamProfile; windowMs: number } }];
   outputTypeChange: [{ index: number; outputType: string }];
   playing: [{ index: number; payload: { source?: GmvSource } }];
   playbackError: [{ index: number; payload: { message: string; source?: GmvSource } }];

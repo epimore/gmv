@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use crate::gb::SessionConf;
-use crate::state::model::TransMode;
+use crate::state::model::{LiveStreamProfile, TransMode};
 
 pub use gmv_pjsip::gb28181::sdp::{PlaySdpOptions, SdpInfo, build_play_sdp};
 
@@ -28,7 +28,27 @@ pub fn play_live(
     ssrc: &str,
     support_h265: bool,
 ) -> String {
-    build_common_play(
+    play_live_with_profile(
+        channel_id,
+        media_ip,
+        media_port,
+        stream_mode,
+        ssrc,
+        LiveStreamProfile::Main,
+        support_h265,
+    )
+}
+
+pub fn play_live_with_profile(
+    channel_id: &str,
+    media_ip: &str,
+    media_port: u16,
+    stream_mode: TransMode,
+    ssrc: &str,
+    stream_profile: LiveStreamProfile,
+    support_h265: bool,
+) -> String {
+    let mut sdp = build_common_play(
         channel_id,
         media_ip,
         media_port,
@@ -39,6 +59,21 @@ pub fn play_live(
         false,
         None,
         support_h265,
+    );
+    sdp = with_stream_number(sdp, ssrc, stream_profile);
+    sdp
+}
+
+fn with_stream_number(sdp: String, ssrc: &str, stream_profile: LiveStreamProfile) -> String {
+    let marker = format!("y={}\r\n", ssrc);
+    sdp.replacen(
+        &marker,
+        &format!(
+            "a=streamnumber:{}\r\n{}",
+            stream_profile.stream_number(),
+            marker
+        ),
+        1,
     )
 }
 
@@ -312,7 +347,8 @@ fn extract_f_field(me: &mut MediaExt, sdp: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{remote_media_endpoint, validate_invite_answer_sdp};
+    use super::{remote_media_endpoint, validate_invite_answer_sdp, with_stream_number};
+    use crate::state::model::LiveStreamProfile;
 
     const VALID_VIDEO_ANSWER: &str = "v=0\r\n\
 o=34020000001320000001 0 0 IN IP4 198.51.100.20\r\n\
@@ -328,6 +364,15 @@ y=0100008199\r\n";
     fn invite_answer_requires_matching_y_ssrc() {
         assert!(validate_invite_answer_sdp(VALID_VIDEO_ANSWER, "0100008199").is_ok());
         assert!(validate_invite_answer_sdp(VALID_VIDEO_ANSWER, "0100008200").is_err());
+    }
+
+    #[test]
+    fn live_sdp_carries_requested_stream_profile() {
+        let source = "v=0\r\ny=0100008199\r\n".to_string();
+        let main = with_stream_number(source.clone(), "0100008199", LiveStreamProfile::Main);
+        let sub = with_stream_number(source, "0100008199", LiveStreamProfile::Sub);
+        assert!(main.contains("a=streamnumber:0\r\n"));
+        assert!(sub.contains("a=streamnumber:1\r\n"));
     }
 
     #[test]

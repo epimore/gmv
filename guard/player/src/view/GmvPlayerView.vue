@@ -61,6 +61,7 @@
       <div class="media-info-row"><span>名称</span><b>{{ title || '-' }}</b></div>
       <div class="media-info-row"><span>设备/通道</span><b>{{ deviceId || '-' }} / {{ channelId || '-' }}</b></div>
       <div class="media-info-row"><span>播放模式</span><b>{{ mediaModeLabel }}</b></div>
+      <div v-if="mediaMode === 'live'" class="media-info-row"><span>码流类型</span><b>{{ streamProfileLabel }}</b></div>
       <div v-if="mediaTransport" class="media-info-row"><span>点播传输</span><b>{{ mediaTransport }}</b></div>
       <div class="media-info-row"><span>媒体输出</span><b>{{ outputFormatLabel }}</b></div>
       <div class="media-info-row"><span>视频</span><b>{{ videoInfoText }}</b></div>
@@ -128,6 +129,8 @@
       :sources="sources"
       :output-options="outputOptions"
       :output-switching="outputSwitching"
+      :stream-profile-options="streamProfileOptions"
+      :stream-profile-switching="streamProfileSwitching"
       :fullscreen-supported="fullscreenSupported"
       @action="handleControlAction"
       @visibility-change="handleControlsVisibilityChange"
@@ -150,6 +153,9 @@ import type {
   GmvPlayerOutputOption,
   GmvPtzCommand,
   GmvSource,
+  GmvStreamProfile,
+  GmvStreamProfileOption,
+  GmvStreamProfileVerification,
   GmvViewCapabilities,
 } from '../core/types';
 import PlayerControls from './PlayerControls.vue';
@@ -183,6 +189,10 @@ const props = withDefaults(
     outputType?: string;
     outputOptions?: GmvPlayerOutputOption[];
     outputSwitching?: boolean;
+    streamProfile?: GmvStreamProfile;
+    streamProfileVerification?: GmvStreamProfileVerification;
+    streamProfileOptions?: GmvStreamProfileOption[];
+    streamProfileSwitching?: boolean;
     startupText?: string;
     startupCanCancel?: boolean;
     playbackDurationMs?: number;
@@ -199,6 +209,10 @@ const props = withDefaults(
     aiBoxes: () => [],
     capabilities: () => ({}),
     outputOptions: () => [],
+    streamProfile: 'main',
+    streamProfileVerification: 'unspecified',
+    streamProfileOptions: () => [],
+    streamProfileSwitching: false,
     controlsVisible: undefined,
   },
 );
@@ -218,6 +232,8 @@ const emit = defineEmits<{
   playbackStateChange: [{ paused: boolean }];
   playbackProgress: [{ mediaTimeMs: number }];
   streamSwitch: [{ source: GmvSource }];
+  streamProfileChange: [{ profile: GmvStreamProfile }];
+  networkDegraded: [{ profile: GmvStreamProfile; windowMs: number }];
   outputTypeChange: [outputType: string];
   playing: [{ source?: GmvSource }];
   playbackError: [{ message: string; source?: GmvSource }];
@@ -226,6 +242,10 @@ const emit = defineEmits<{
 }>();
 
 const playerRef = ref<HTMLElement>();
+let networkDegradeTimer: number | undefined;
+let lastNetworkSuggestionAt = 0;
+const NETWORK_DEGRADE_WINDOW_MS = 10_000;
+const NETWORK_SUGGESTION_COOLDOWN_MS = 60_000;
 const videoARef = ref<HTMLVideoElement>();
 const videoBRef = ref<HTMLVideoElement>();
 const controlsRef = ref<InstanceType<typeof PlayerControls>>();
@@ -323,6 +343,7 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
   cloudRecordLockedRange: props.cloudRecordLockedRange,
   selectedSourceUrl: selectedSourceUrl.value,
   selectedOutputType: props.outputType ?? '',
+  selectedStreamProfile: props.streamProfile,
 }));
 const statusLabel = computed(() => {
   if (viewState.value === 'playing') return '播放中';
@@ -335,6 +356,10 @@ const statusLabel = computed(() => {
 });
 const currentSource = computed(() => activeSource.value ?? props.sources[0]);
 const mediaModeLabel = computed(() => props.mediaMode === 'playback' ? '历史回放' : '实时直播');
+const streamProfileLabel = computed(() => {
+  const label = props.streamProfile === 'sub' ? '辅码流' : '主码流';
+  return props.streamProfileVerification === 'unverified' ? `${label}（设备未回显）` : label;
+});
 const outputFormatLabel = computed(() => {
   const configured = props.outputOptions.find((option) => option.value === props.outputType)?.label;
   if (configured) return configured;
@@ -439,6 +464,11 @@ function formatDuration(timeMs: number) {
   return `${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}`;
 }
 
+function clearNetworkDegradeTimer() {
+  if (networkDegradeTimer !== undefined) window.clearTimeout(networkDegradeTimer);
+  networkDegradeTimer = undefined;
+}
+
 onMounted(() => {
   scheduleFrameProgress(0);
   scheduleFrameProgress(1);
@@ -447,6 +477,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  clearNetworkDegradeTimer();
   stopFrameProgress();
   document.removeEventListener('fullscreenchange', updateFullscreenState);
   destroyPlayer();
@@ -519,6 +550,7 @@ async function mountPlayer(sources = props.sources) {
     isLoading.value = false;
     lastError.value = '';
     startupProgress.value = undefined;
+    clearNetworkDegradeTimer();
     if (changed) {
       resetMediaStats();
       playbackRate.value = 1;
@@ -530,6 +562,21 @@ async function mountPlayer(sources = props.sources) {
       if (previousSlot !== slot) destroyPlayerSlot(previousSlot);
       emit('playing', { source: slotSource });
     });
+  }));
+  playerStops[slot].push(core.on('stalled', () => {
+    if (version !== playerLoadVersion || slot !== activeVideoSlot.value) return;
+    if (props.mediaMode !== 'live' || props.streamProfile !== 'main' || props.streamProfileSwitching) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    clearNetworkDegradeTimer();
+    networkDegradeTimer = window.setTimeout(() => {
+      networkDegradeTimer = undefined;
+      const now = Date.now();
+      if (version !== playerLoadVersion || slot !== activeVideoSlot.value) return;
+      if (props.mediaMode !== 'live' || props.streamProfile !== 'main' || props.streamProfileSwitching) return;
+      if (now - lastNetworkSuggestionAt < NETWORK_SUGGESTION_COOLDOWN_MS) return;
+      lastNetworkSuggestionAt = now;
+      emit('networkDegraded', { profile: 'main', windowMs: NETWORK_DEGRADE_WINDOW_MS });
+    }, NETWORK_DEGRADE_WINDOW_MS);
   }));
   playerStops[slot].push(core.on('paused', () => {
     if (slot === activeVideoSlot.value) {
@@ -828,6 +875,9 @@ function handleControlAction(action: GmvPlayerControlAction) {
       break;
     case 'stream-switch':
       switchSource(action.sourceUrl);
+      break;
+    case 'stream-profile-change':
+      emit('streamProfileChange', { profile: action.profile });
       break;
     case 'rate-change':
       setPlaybackRate(action.rate);
