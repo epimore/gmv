@@ -84,8 +84,8 @@ impl
         })?;
         banner(
             Self::cli_basic().version,
-            app_info.http.listen_addr,
-            app_info.http.tls.enabled,
+            &app_info.http,
+            &grpc,
             format!(
                 "{}:{}",
                 app_info.session_conf.lan_ip, app_info.session_conf.wan_port
@@ -272,26 +272,68 @@ impl
 
 fn banner<F: FnOnce(String)>(
     version: &str,
-    http_addr: std::net::SocketAddr,
-    http_tls: bool,
+    http: &Http,
+    grpc: &crate::state::SessionGrpcConf,
     sip_listen_addr: String,
     sip_advertised_addr: String,
     f: F,
 ) {
-    let http_protocol = if http_tls { "HTTPS" } else { "HTTP" };
+    let http_listen_protocol = if http.tls.enabled { "HTTPS" } else { "HTTP" };
+    let http_public_protocol = if http
+        .public_endpoint()
+        .expect("validated session HTTP public URL")
+        .0
+    {
+        "HTTPS"
+    } else {
+        "HTTP"
+    };
+    let grpc_listen_protocol = if grpc.tls.enabled { "gRPC/TLS" } else { "gRPC" };
+    let grpc_advertised_protocol = if grpc
+        .advertised_endpoint()
+        .expect("validated session gRPC advertised URL")
+        .0
+    {
+        "gRPC/TLS"
+    } else {
+        "gRPC"
+    };
+    let http_listen_addr = http.listen_addr.to_string();
+    let http_public_url = &http.public_url;
+    let grpc_listen_addr = grpc.listen_addr.to_string();
+    let grpc_advertised_url = &grpc.advertised_url;
+    let address_width = [
+        http_listen_addr.len(),
+        http_public_url.len(),
+        grpc_listen_addr.len(),
+        grpc_advertised_url.len(),
+        sip_listen_addr.len(),
+        sip_advertised_addr.len(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0)
+    .max(32);
+    let address_border = "─".repeat(address_width + 2);
+    let address_header = "Address";
+    let banner_width = address_width + 53;
+    let separator = "=".repeat(banner_width);
+    let title = format!("[GMV:SESSION-GB28181]   Version: {version}");
     let msg = format!(
         r#"
-======================================================================
-              [GMV:SESSION-GB28181]   Version: {}
-======================================================================
-┌──────────────────┬──────────────────────┬──────────────┬──────────────┐
-│ Service          │ Address              │ Protocols    │  Status      │
-├──────────────────┼──────────────────────┼──────────────┼──────────────┤
-│ Session HTTP     │ {:<20} │ {:<12} │ 🟢 Ready     │
-│ SIP Listen       │ {:<20} │ TCP, UDP     │ 🟢 Listening │
-│ SIP Advertised   │ {:<20} │ TCP, UDP     │ 🟢 Ready     │
-└──────────────────┴──────────────────────┴──────────────┴──────────────┘"#,
-        version, http_addr, http_protocol, sip_listen_addr, sip_advertised_addr
+{separator}
+{title:^banner_width$}
+{separator}
+┌──────────────────┬{address_border}┬──────────────┬──────────────┐
+│ Service          │ {address_header:<address_width$} │ Protocols    │  Status      │
+├──────────────────┼{address_border}┼──────────────┼──────────────┤
+│ Session HTTP     │ {http_listen_addr:<address_width$} │ {http_listen_protocol:<12} │ 🟢 Ready     │
+│ HTTP Public      │ {http_public_url:<address_width$} │ {http_public_protocol:<12} │ 🟢 Ready     │
+│ Session RPC      │ {grpc_listen_addr:<address_width$} │ {grpc_listen_protocol:<12} │ 🟢 Listening │
+│ RPC Advertised   │ {grpc_advertised_url:<address_width$} │ {grpc_advertised_protocol:<12} │ 🟢 Ready     │
+│ SIP Listen       │ {sip_listen_addr:<address_width$} │ TCP, UDP     │ 🟢 Listening │
+│ SIP Advertised   │ {sip_advertised_addr:<address_width$} │ TCP, UDP     │ 🟢 Ready     │
+└──────────────────┴{address_border}┴──────────────┴──────────────┘"#
     );
     f(msg);
 }

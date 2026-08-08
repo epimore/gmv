@@ -68,7 +68,9 @@ impl Daemon<GuardListeners> for AppInfo {
         banner(
             Self::cli_basic().version,
             &web_config.bind_addr.to_string(),
+            web_config.tls.is_some(),
             &config.grpc.bind_addr.to_string(),
+            config.grpc.tls.enabled,
             |msg| info!("{msg}"),
         );
         Ok((Self { config }, GuardListeners { web, rpc }))
@@ -528,19 +530,33 @@ fn now_ms() -> GuardResult<i64> {
         .min(i64::MAX as u128) as i64)
 }
 
-fn banner<F: FnOnce(String)>(version: &str, http_addr: &str, grpc_addr: &str, f: F) {
+fn banner<F: FnOnce(String)>(
+    version: &str,
+    http_addr: &str,
+    http_tls: bool,
+    grpc_addr: &str,
+    grpc_tls: bool,
+    f: F,
+) {
+    let http_protocol = if http_tls { "HTTPS" } else { "HTTP" };
+    let grpc_protocol = if grpc_tls { "gRPC/TLS" } else { "gRPC" };
+    let address_width = http_addr.len().max(grpc_addr.len()).max(32);
+    let address_border = "─".repeat(address_width + 2);
+    let address_header = "Address";
+    let banner_width = address_width + 53;
+    let separator = "=".repeat(banner_width);
+    let title = format!("[GMV:GUARD-SERVER]   Version: {version}");
     let msg = format!(
         r#"
-======================================================================
-                [GMV:GUARD-SERVER]   Version: {}
-======================================================================
-┌──────────────────┬──────────────────────┬──────────────┬──────────────┐
-│ Service          │ Address              │ Protocols    │  Status      │
-├──────────────────┼──────────────────────┼──────────────┼──────────────┤
-│ Guard HTTP       │ {:<20} │ HTTP         │ 🟢 Ready     │
-│ Guard RPC        │ {:<20} │ gRPC         │ 🟢 Listening │
-└──────────────────┴──────────────────────┴──────────────┴──────────────┘"#,
-        version, http_addr, grpc_addr
+{separator}
+{title:^banner_width$}
+{separator}
+┌──────────────────┬{address_border}┬──────────────┬──────────────┐
+│ Service          │ {address_header:<address_width$} │ Protocols    │  Status      │
+├──────────────────┼{address_border}┼──────────────┼──────────────┤
+│ Guard HTTP       │ {http_addr:<address_width$} │ {http_protocol:<12} │ 🟢 Ready     │
+│ Guard RPC        │ {grpc_addr:<address_width$} │ {grpc_protocol:<12} │ 🟢 Listening │
+└──────────────────┴{address_border}┴──────────────┴──────────────┘"#
     );
     f(msg);
 }

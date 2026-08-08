@@ -351,26 +351,42 @@ fn banner<F: FnOnce(String)>(
             "🟢 Dynamic",
         ),
     };
+    let http_listen_addr = server_conf.http.listen_addr.to_string();
+    let http_public_url = &server_conf.http.public_url;
+    let grpc_listen_addr = server_conf.grpc.listen_addr.to_string();
+    let grpc_advertised_url = &server_conf.grpc.advertised_url;
+    let address_width = [
+        http_listen_addr.len(),
+        http_public_url.len(),
+        grpc_listen_addr.len(),
+        grpc_advertised_url.len(),
+        rtp_listen.len(),
+        rtp_public.len(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0)
+    .max(32);
+    let address_border = "─".repeat(address_width + 2);
+    let address_header = "Address";
+    let banner_width = address_width + 53;
+    let separator = "=".repeat(banner_width);
+    let title = format!("[GMV:STREAM]   Version: {version}");
     let msg = format!(
         r#"
-======================================================================
-                    [GMV:STREAM]   Version: {}
-======================================================================
-HTTP listen       : {}
-HTTP public       : {}
-gRPC listen       : {}
-gRPC advertised   : {}
-RTP listen        : {}
-RTP advertised    : {}
-RTP status        : {}"#,
-        version,
-        server_conf.http.listen_addr,
-        server_conf.http.public_url,
-        server_conf.grpc.listen_addr,
-        server_conf.grpc.advertised_url,
-        rtp_listen,
-        rtp_public,
-        rtp_status
+{separator}
+{title:^banner_width$}
+{separator}
+┌──────────────────┬{address_border}┬──────────────┬──────────────┐
+│ Service          │ {address_header:<address_width$} │ Protocols    │  Status      │
+├──────────────────┼{address_border}┼──────────────┼──────────────┤
+│ Stream HTTP      │ {http_listen_addr:<address_width$} │ HTTP         │ 🟢 Ready     │
+│ HTTP Public      │ {http_public_url:<address_width$} │ HTTP         │ 🟢 Ready     │
+│ Stream RPC       │ {grpc_listen_addr:<address_width$} │ gRPC         │ 🟢 Listening │
+│ RPC Advertised   │ {grpc_advertised_url:<address_width$} │ gRPC         │ 🟢 Ready     │
+│ Stream RTP       │ {rtp_listen:<address_width$} │ TCP, UDP     │ {rtp_status:<11} │
+│ RTP Advertised   │ {rtp_public:<address_width$} │ TCP, UDP     │ 🟢 Ready     │
+└──────────────────┴{address_border}┴──────────────┴──────────────┘"#
     );
     f(msg);
 }
